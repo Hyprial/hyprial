@@ -13,11 +13,15 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from hyprial.kernel import CHANNEL_HEARTBEAT_INTERVAL_SECONDS
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.daemon.impl.api import HarnessDelivery, HarnessResultStatus
 from hyprial.kernel import Logger
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 from hyprial.daemon.impl.harnesses.carrier.codex_carrier_store  import CodexCarrierStore
 from hyprial.daemon.impl.harnesses.carrier.codex_carrier_support import TurnReportRelay
@@ -252,6 +256,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             logger: Logger | None = None,
             settlement_retry_seconds: float | None = None,
             clock: Callable[[], float] = time.monotonic,
+            actor_host: ActorHost | None = None,
         ) -> None:
             from hyprial.daemon.impl.harnesses.streaming.process  import StreamingTurnProcess
     
@@ -325,6 +330,12 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 name=f"hyprial-codex-interactive-carrier-{session_ref[:8]}",
                 daemon=True,
             )
+            # P7: the pump and the carrier shard share one engine. The CLI
+            # attach entry owns this custody; a daemon injection is borrowed.
+            self._hosts = ActorHostCustody(
+                actor_host, owner="codex-interactive-carrier"
+            )
+            host = self._hosts.host
             self._pump = StreamingTurnProcess(
                 harness="codex",
                 label="Codex interactive app-server",
@@ -335,6 +346,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 logger=logger,
                 reconnect_delay_seconds=0.25,
                 on_turn_started=self._on_turn_started,
+                actor_host=host,
             )
             assert self._store is not None
             self._carrier_runtime = InteractiveCarrierRuntime(
@@ -342,6 +354,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 actor=actor,
                 session_ref=session_ref,
                 store=self._store,
+                actor_host=host,
             )
             self._carrier_fact_capacity = self._carrier_runtime.capacity
             self._turn_reports = TurnReportRelay(
@@ -381,6 +394,10 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                     self._flush_whole_terminal_reports()
                     self._store.close()
                     self._store = None
+                if not self._hosts.shutdown(5.0):
+                    raise RuntimeError(
+                        "codex interactive carrier actor host did not shut down"
+                    )
 
         def _start_whole_terminal(self) -> None:
             """Follow native TUI turns on the shared app-server, when supported.

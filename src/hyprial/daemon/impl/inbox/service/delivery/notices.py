@@ -1,4 +1,10 @@
-"""Expired-sender notice helpers."""
+"""Expired-sender notice helpers.
+
+Decision note (slice GC4, group chat draft §4.7): a group row (its
+conversation id a ``g.`` group id) expires without a notice to its author.
+There is one row per woken member, so a stale message would tell its author
+once per member, and the group document is the message's copy.
+"""
 from __future__ import annotations
 
 import json
@@ -11,6 +17,7 @@ from hyprial.daemon.impl.inbox.contracts.api import (
     DeliveryLifecycle,
     InboxMessage,
 )
+from hyprial.kernel import is_group_id_segment
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +52,8 @@ class InboxServiceNoticesMixin:
         # in the PAC store, outside this authority, so use the workflow-
         # message-id prefix it is keyed on (a superset: alarms stay silent too).
         if message.message_id.startswith("workflow-"):
+            return None
+        if is_group_id_segment(message.conversation_id):
             return None
         created = self._format_notice_time(message.created_at_ms)
         text = (

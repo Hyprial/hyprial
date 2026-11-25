@@ -27,6 +27,7 @@ from hyprial.daemon.impl.inbox import (
     merge_delivery_status,
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.actor_hosts import new_actor_host
 
 TTL_MS = DEFAULT_HOLD_TTL_MS
 YEAR_MS = 365 * 86_400_000
@@ -306,7 +307,7 @@ def test_post_fetch_human_failure_uses_original_lark_alarm_route(
         node_id="pc",
         alarm_human_delivery=deliver_human,
     )
-    message = _message(sender="channel:lark:test-app")
+    message = _message(sender="adapter:lark:test-app")
     service.receive(message, now_ms=1)
 
     service.fail(message.recipient, message.message_id, "PROVIDER_BLOCKED")
@@ -885,7 +886,7 @@ def test_the_production_facade_answers_the_recipient_too(tmp_path: Path) -> None
 
     database = tmp_path / "inbox.sqlite3"
     coordinator = DeliveryCustodyCoordinator(
-        database, MemoryDeliveryTransport(), _Events(), node_id="node-bob"
+        database, MemoryDeliveryTransport(), _Events(), node_id="node-bob", actor_host=new_actor_host()
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     app: DaemonApplication | None = None
@@ -912,3 +913,54 @@ def test_the_production_facade_answers_the_recipient_too(tmp_path: Path) -> None
     assert mine["state"] == "fetched"
     assert transport.queries == [] or all("mallory" in q for q in transport.queries)
     assert theirs["records"] == []
+
+
+def test_cell_work_refused_settlement_projects_to_message_status_without_mutating_delivery_status(
+    tmp_path: Path,
+) -> None:
+    service = InboxService(
+        tmp_path / "inbox.sqlite3", MemoryDeliveryTransport(), node_id="node-bob"
+    )
+    app = _application(tmp_path, service)
+    app._transport = _CountingTransport()  # type: ignore[assignment]
+    inbound = _message("msg-cell-refused")
+    assert service.receive(inbound, now_ms=1_000).accepted
+    service.settle_harness_failure(
+        inbound.recipient,
+        inbound.message_id,
+        "CELL_WORK_REFUSED",
+        permanent=True,
+        max_attempts=3,
+        backoff_ms=(1_000,),
+        now_ms=2_000,
+    )
+    other = _message("msg-provider-failed")
+    assert service.receive(other, now_ms=1_000).accepted
+    service.settle_harness_failure(
+        other.recipient,
+        other.message_id,
+        "PROVIDER_AUTHENTICATION_FAILED",
+        permanent=True,
+        max_attempts=3,
+        backoff_ms=(1_000,),
+        now_ms=2_000,
+    )
+
+    refused_view = app.handle(
+        "message.status", {"from": inbound.recipient, "messageId": inbound.message_id}
+    )
+    sender_view = app.handle(
+        "message.status", {"from": inbound.sender, "messageId": inbound.message_id}
+    )
+    other_view = app.handle(
+        "message.status", {"from": other.recipient, "messageId": other.message_id}
+    )
+    raw = service.delivery_status_for_recipient(inbound.recipient, inbound.message_id)
+    service.close()
+
+    assert refused_view["state"] == "refused"
+    assert refused_view["records"][0]["reason"] == "CELL_WORK_REFUSED"
+    assert sender_view["state"] == "refused"
+    assert sender_view["records"][0]["reason"] == "CELL_WORK_REFUSED"
+    assert other_view["state"] == "fetched"
+    assert raw is not None and raw.state is TerminalState.FETCHED

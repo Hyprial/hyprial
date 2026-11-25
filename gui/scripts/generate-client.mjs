@@ -19,6 +19,8 @@ const METHOD_PATH = /^\/daemon\/request\/([A-Za-z0-9._-]+)$/;
 const RETRY_POLICIES = new Set(['never', 'safe']);
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const CALLABLE_UNSAFE_KEYS = new Set(['apply', 'arguments', 'bind', 'call', 'caller', 'length', 'name']);
+const METHOD = Symbol('method');
 
 export class GeneratorError extends Error {
   constructor(code, message) {
@@ -206,15 +208,6 @@ export function collectMethods(document) {
     }
     identifiers.set(key, method.name);
   }
-  for (const method of methods) {
-    const segments = method.name.split('.').map(camel);
-    for (let index = 1; index < segments.length; index += 1) {
-      const prefix = segments.slice(0, index).join('.');
-      if (identifiers.has(prefix)) {
-        fail('NAMESPACE_COLLISION', `${prefix} is both a method and a namespace of ${method.name}`);
-      }
-    }
-  }
   return methods;
 }
 
@@ -386,22 +379,48 @@ function buildTree(methods) {
       node[segment] ??= Object.create(null);
       node = node[segment];
     }
-    node[segments.at(-1)] = { method };
+    const leaf = segments.at(-1);
+    node[leaf] ??= Object.create(null);
+    node[leaf][METHOD] = method;
   }
   return root;
+}
+
+function methodLine(method, indent) {
+  const base = methodTypeBase(method.name);
+  return [
+    `${indent}(params: ${base}Params, options?: RequestOptions) {`,
+    `${indent}  return transport.invoke<${base}Result>('${method.name}', params, { ...options, retry: '${method.retry}' });`,
+    `${indent}},`,
+  ];
 }
 
 function renderTree(node, indent, lines) {
   for (const key of Object.keys(node).sort()) {
     const value = node[key];
-    if (value.method !== undefined) {
-      const method = value.method;
-      const base = methodTypeBase(method.name);
+    const method = value[METHOD];
+    const children = Object.keys(value).sort();
+    if (method !== undefined && children.length === 0) {
       lines.push(
         `${indent}/** ${method.name}; state: ${method.state}; mutates: ${String(method.mutates)}; retry: ${method.retry}. */`,
-        `${indent}${key}(params: ${base}Params, options?: RequestOptions) {`,
-        `${indent}  return transport.invoke<${base}Result>('${method.name}', params, { ...options, retry: '${method.retry}' });`,
-        `${indent}},`,
+        ...methodLine(method, indent).map((line) => line.replace(`${indent}(`, `${indent}${key}(`, 1)),
+      );
+    } else if (method !== undefined) {
+      for (const child of children) {
+        if (CALLABLE_UNSAFE_KEYS.has(child)) {
+          fail('UNSAFE_PROPERTY_NAME', `${method.name} cannot expose callable child ${child}`);
+        }
+      }
+      const base = methodTypeBase(method.name);
+      lines.push(
+        `${indent}/** ${method.name}; callable with nested methods; state: ${method.state}; mutates: ${String(method.mutates)}; retry: ${method.retry}. */`,
+        `${indent}${key}: Object.assign(`,
+        `${indent}  (params: ${base}Params, options?: RequestOptions) =>`,
+        `${indent}    transport.invoke<${base}Result>('${method.name}', params, { ...options, retry: '${method.retry}' }),`,
+        `${indent}  {`,
+        ...renderTree(value, `${indent}    `, []),
+        `${indent}  },`,
+        `${indent}),`,
       );
     } else {
       lines.push(`${indent}${key}: {`);

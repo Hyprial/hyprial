@@ -32,7 +32,7 @@ from typing import Any
 
 import typer
 
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.agent.provider.commands import provider_app
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
@@ -80,7 +80,7 @@ def agent_provider_grant_key(
         services = get_services()
         if len(set(actors)) != len(actors):
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT, "each --actor may be named once"
+                codes.INVALID_ARGUMENT, "each --actor may be named once"
             )
         wanted = {
             "source": _USER_SOURCE,
@@ -98,7 +98,7 @@ def agent_provider_grant_key(
                     continue
                 if held is not None and not replace:
                     raise services.CliError(
-                        ipc_errors.PROVIDER_CREDENTIAL_EXISTS,
+                        codes.PROVIDER_CREDENTIAL_EXISTS,
                         f"{actor} already holds grant {grant_id} for "
                         f"{held.get('entryId')}/{held.get('fieldName')}; pass "
                         "--replace with a higher --revision to replace it",

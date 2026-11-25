@@ -231,7 +231,7 @@ def _validate_schema(data: dict[str, Any]) -> None:
         label = f"members[{index}]"
         _required_string(member, "username", label)
         _required_string(member, "display", label)
-        for key in ("role", "home_node", "squire", "status"):
+        for key in ("role", "home_node", "status"):
             _optional_string(member, key, label)
         _optional_string_list(member, "machines", label)
 

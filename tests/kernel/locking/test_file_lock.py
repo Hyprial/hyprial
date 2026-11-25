@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from hyprial.kernel.impl.platform.file_lock import lock_exclusive, unlock
+from hyprial.kernel.impl.manysys.fs.file_lock import lock_exclusive, unlock
 
 _ROOT = Path(__file__).resolve().parents[3]
 _CHILD = """
 import os
 import sys
 
-from hyprial.kernel.impl.platform.file_lock import lock_exclusive, unlock
+from hyprial.kernel.impl.manysys.fs.file_lock import lock_exclusive, unlock
 
 descriptor = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)
 try:

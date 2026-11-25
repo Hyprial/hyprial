@@ -14,10 +14,10 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from hyprial.daemon.impl.transfer.archive.bundle import (
     BundleDeclarationMissing,
+    BundleError,
     export_bundle,
     load_manifest,
     validate_bundle,
@@ -27,9 +27,6 @@ from hyprial.daemon.impl.transfer.archive.envelope import (
     seal_envelope,
 )
 from hyprial.daemon.impl.transfer.landing.receive import receive_bundle
-from tests.support.transfer.rehearsal import UNSIGNED_REHEARSAL
-from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
-import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 OWNER = "owner@example.com"
 ACTOR = "codex-sw"
@@ -76,7 +73,6 @@ def test_a_platform_binary_is_declared_not_carried(tmp_path: Path) -> None:
         bundle_dir,
         tmp_path / "landed",
         dry_run=True,
-        signature=UNSIGNED_REHEARSAL,
     ).as_dict()
     assert receipt["target_must_provide"] == [dict(binary)]
 
@@ -145,59 +141,37 @@ def test_a_credential_envelope_has_to_be_where_the_manifest_says(
         )
         + "\n"
     )
-    runner = CliRunner()
     bundle_dir = tmp_path / "bundle"
 
-    exported = runner.invoke(
-        _cli_root_app,
-        [
-            "agent", "transfer", "bundle-export",
-            "--from",
-            str(home),
-            "--to",
-            str(bundle_dir),
-            "--owner",
-            OWNER,
-            "--actor",
-            ACTOR,
-            "--machine",
-            "laptop",
-            "--credential-envelope",
-            "config/envelope.json",
-            "--depends",
-            "external-config=config/agent.json",
-            "--depends",
-            "binary=!ripgrep",
-            "--json",
+    exported = export_bundle(
+        home,
+        bundle_dir,
+        owner=OWNER,
+        actor=ACTOR,
+        source_machine="laptop",
+        created_at=CREATED_AT,
+        credential_envelope="config/envelope.json",
+        dependencies=[
+            {"kind": "external-config", "present": True, "path": "config/agent.json"},
+            {"kind": "binary", "present": False, "note": "ripgrep"},
         ],
     )
-    assert exported.exit_code == 0, exported.output
-    payload = json.loads(exported.stdout)
-    assert payload["credential_envelope"] == "config/envelope.json"
-    assert [item["kind"] for item in payload["target_must_provide"]] == ["binary"]
+    assert exported.credential_envelope == "config/envelope.json"
+    assert [item["kind"] for item in exported.target_must_provide()] == ["binary"]
 
     # Declaring an envelope the bundle cannot honour refuses the export ...
-    refused = runner.invoke(
-        _cli_root_app,
-        [
-            "agent", "transfer", "bundle-export",
-            "--from",
-            str(home),
-            "--to",
-            str(tmp_path / "bundle-2"),
-            "--owner",
-            OWNER,
-            "--actor",
-            ACTOR,
-            "--machine",
-            "laptop",
-            "--credential-envelope",
-            "config/missing.json",
-        ],
-    )
-    assert refused.exit_code != 0
-    assert "credential envelope" in refused.output
-    assert "config/missing.json" in refused.output
+    with pytest.raises(BundleError) as refused:
+        export_bundle(
+            home,
+            tmp_path / "bundle-2",
+            owner=OWNER,
+            actor=ACTOR,
+            source_machine="laptop",
+            created_at=CREATED_AT,
+            credential_envelope="config/missing.json",
+        )
+    assert "credential envelope" in str(refused.value)
+    assert "config/missing.json" in str(refused.value)
 
     # ... and a bundle that loses the file after export is refused on receipt.
     manifest = load_manifest(bundle_dir)

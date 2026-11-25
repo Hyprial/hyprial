@@ -34,7 +34,7 @@ source counts carrier deliveries only.
 @dataclass(frozen=True, slots=True)
 class CapabilitySupport:
     level: SupportLevel
-    mechanism: str | None = None  # channel | agent_sdk | rpc | app_server | pty
+    mechanism: str | None = None  # channel | agent_sdk | rpc | app_server
     note: str | None = None  # required for DEGRADED: state what is lost
     plugin_kinds: frozenset[str] = frozenset()
 
@@ -69,11 +69,9 @@ _KNOWN_MECHANISMS = frozenset(
         "agent_sdk",
         "rpc",
         "app_server",
-        "dsh_api",
-        "dsh_tui",
-        "pty",
         "extension",
         "python_worker",
+        "acp",
     }
 )
 
@@ -116,6 +114,10 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         ),
         Capability.TURN_CONTROL: _native(),  # SDK interrupt on the managed path
         Capability.MODEL_SELECT: _native("channel"),
+        Capability.PERMISSION_SET: _unsupported(
+            "interactive claude policy is operator-owned; the authority apply "
+            "loop manages daemon-launched headless workers"
+        ),
     },
     ("claude", True): {
         Capability.HEADLESS_EXEC: _native("agent_sdk"),
@@ -126,6 +128,7 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.TURN_CONTROL: _native("agent_sdk"),
         Capability.EVENT_STREAM: _native("agent_sdk"),
         Capability.MODEL_SELECT: _native("agent_sdk"),
+        Capability.PERMISSION_SET: _native("agent_sdk"),
     },
     ("pi", True): {
         Capability.HEADLESS_EXEC: _native("rpc"),
@@ -136,6 +139,10 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.TURN_CONTROL: _native("rpc"),  # abort
         Capability.EVENT_STREAM: _native("rpc"),  # agent_settled
         Capability.MODEL_SELECT: _native("rpc"),  # --provider/--model, set_model
+        Capability.PERMISSION_SET: _unsupported(
+            "pi has no launch-time allow/deny tool policy wired yet; adapter "
+            "seam reserved"
+        ),
     },
     ("pi", False): {
         Capability.INTERACTIVE_ATTACH: _native(
@@ -157,7 +164,10 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
             "extension",
             plugin_kinds=frozenset({"skill", "pi-extension"}),
         ),  # --skill / --extension are session-scoped
-        Capability.MODEL_SELECT: _native("pty"),
+        Capability.MODEL_SELECT: _native("extension"),
+        Capability.PERMISSION_SET: _unsupported(
+            "interactive pi policy is operator-owned"
+        ),
     },
     ("codex", True): {
         Capability.HEADLESS_EXEC: _native("app_server"),
@@ -170,6 +180,10 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.TURN_CONTROL: _native("app_server"),
         Capability.EVENT_STREAM: _native("app_server"),
         Capability.MODEL_SELECT: _native("app_server"),
+        Capability.PERMISSION_SET: _unsupported(
+            "codex exposes approval and sandbox policy, not an allow/deny tool "
+            "list; adapter seam reserved"
+        ),
     },
     ("codex", False): {
         Capability.INTERACTIVE_ATTACH: _native("app_server"),
@@ -193,53 +207,8 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         ),
         Capability.TURN_CONTROL: _unsupported(),
         Capability.MODEL_SELECT: _native("app_server"),
-    },
-    ("dsh", True): {
-        Capability.HEADLESS_EXEC: _native("dsh_api"),
-        Capability.WAKE_PUSH: _native("dsh_api"),
-        Capability.PROACTIVE_SEND: _native("dsh_api"),
-        Capability.SESSION_LIFECYCLE: _degraded(
-            "dsh_api",
-            "managed sessions are deliberately not resumed across daemon restart: "
-            "the connector mints a fresh worker MCP identity per launch and refuses "
-            "to attach it to an existing DSH session (dsh.py), so a restarted worker "
-            "starts a new session",
-        ),
-        Capability.TOOL_INJECTION: _native("dsh_api"),
-        Capability.TURN_CONTROL: _native("dsh_api"),
-        Capability.EVENT_STREAM: _degraded(
-            "dsh_api", "turn events are polled from session.history"
-        ),
-        Capability.MODEL_SELECT: _native("dsh_api"),
-    },
-    ("dsh", False): {
-        Capability.INTERACTIVE_ATTACH: _native("dsh_tui"),
-        # A launcher-owned carrier writes formal wakes to a launch-scoped
-        # Cordis plugin socket; the plugin queues a synthetic user message via
-        # the DSH agent API and never touches the TUI input box.
-        Capability.WAKE_PUSH: _native("dsh_tui"),
-        Capability.PROACTIVE_SEND: _native("dsh_tui"),
-        Capability.SESSION_LIFECYCLE: _degraded(
-            "dsh_tui",
-            "exact resume is by DSH session id; daemon-restart recovery of a "
-            "CLI-hosted dsh-tui is not yet proven",
-        ),
-        Capability.TOOL_INJECTION: _native("dsh_tui"),
-        Capability.PLUGIN_INJECTION: _degraded(
-            "dsh_tui",
-            "MCP servers only; skills and other plugin kinds are not injected "
-            "by this carrier",
-            plugin_kinds=frozenset({"mcp"}),
-        ),
-        Capability.TURN_CONTROL: _unsupported(
-            "the dsh-tui carrier does not expose native turn control yet"
-        ),
-        Capability.EVENT_STREAM: _unsupported(
-            "the dsh-tui carrier does not expose a turn event stream yet"
-        ),
-        Capability.MODEL_SELECT: _unsupported(
-            "choose the model inside dsh-tui; hyprial agent start dsh does not own "
-            "provider/model selection yet"
+        Capability.PERMISSION_SET: _unsupported(
+            "interactive codex policy is operator-owned"
         ),
     },
     ("jev", True): {
@@ -252,6 +221,7 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.TURN_CONTROL: _unsupported(),
         Capability.EVENT_STREAM: _native("python_worker"),
         Capability.MODEL_SELECT: _native("python_worker"),
+        Capability.PERMISSION_SET: _unsupported("jev has no tool surface"),
     },
     ("jev", False): {
         Capability.INTERACTIVE_ATTACH: _unsupported("jev is a headless stateless caller"),
@@ -263,43 +233,58 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.TURN_CONTROL: _unsupported(),
         Capability.EVENT_STREAM: _unsupported(),
         Capability.MODEL_SELECT: _unsupported(),
+        Capability.PERMISSION_SET: _unsupported("jev has no tool surface"),
     },
-    # docs/design/design-user-proxy-harness.md §8: a packaged relay, no model.
-    ("user-proxy", True): {
-        Capability.HEADLESS_EXEC: _native("python_worker"),
-        Capability.WAKE_PUSH: _native("python_worker"),
-        Capability.PROACTIVE_SEND: _degraded(
-            "python_worker",
-            "sends only while handling a delivery (the forward frame); "
-            "cannot send without one",
+    ("agy", True): {
+        Capability.HEADLESS_EXEC: _native("acp"),
+        Capability.WAKE_PUSH: _native("acp"),
+        Capability.PROACTIVE_SEND: _native("acp"),
+        Capability.SESSION_LIFECYCLE: _native("acp"),
+        Capability.TOOL_INJECTION: _native("acp"),
+        Capability.TURN_CONTROL: _native("acp"),
+        Capability.EVENT_STREAM: _native("acp"),
+        Capability.MODEL_SELECT: _native("acp"),
+        Capability.PERMISSION_SET: _unsupported(
+            "agy exposes --dangerously-skip-permissions and ACP mode, not an allow/deny tool list; adapter seam reserved"
         ),
-        Capability.SESSION_LIFECYCLE: _unsupported("stateless relay"),
-        Capability.TOOL_INJECTION: _unsupported(),
-        Capability.PLUGIN_INJECTION: _unsupported(),
-        Capability.TURN_CONTROL: _unsupported(),
-        Capability.EVENT_STREAM: _degraded(
-            "python_worker", "decode/call/send metrics only"
-        ),
-        Capability.MODEL_SELECT: _unsupported("no model"),
     },
-    ("user-proxy", False): {
-        Capability.INTERACTIVE_ATTACH: _unsupported("user-proxy is a headless stateless relay"),
-        Capability.WAKE_PUSH: _unsupported(),
-        Capability.PROACTIVE_SEND: _unsupported(),
-        Capability.SESSION_LIFECYCLE: _unsupported("stateless relay"),
-        Capability.TOOL_INJECTION: _unsupported(),
-        Capability.PLUGIN_INJECTION: _unsupported(),
-        Capability.TURN_CONTROL: _unsupported(),
-        Capability.EVENT_STREAM: _unsupported(),
-        Capability.MODEL_SELECT: _unsupported(),
+    ("agy", False): {
+        Capability.INTERACTIVE_ATTACH: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.WAKE_PUSH: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.PROACTIVE_SEND: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.SESSION_LIFECYCLE: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.TOOL_INJECTION: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.PLUGIN_INJECTION: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.TURN_CONTROL: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.EVENT_STREAM: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.MODEL_SELECT: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
+        Capability.PERMISSION_SET: _unsupported(
+            "agy interactive TUI attach is deferred to phase 2 after cell-org I5-3"
+        ),
     },
 }
 
 _CONCURRENCY: dict[tuple[str, bool], HarnessConcurrency] = {
     ("jev", True): HarnessConcurrency("pool", 10),
     ("jev", False): HarnessConcurrency("pool", 10),
-    ("user-proxy", True): HarnessConcurrency("sequential", 1),
-    ("user-proxy", False): HarnessConcurrency("sequential", 1),
 }
 
 def worker_spec(

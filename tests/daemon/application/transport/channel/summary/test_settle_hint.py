@@ -1,8 +1,9 @@
-"""T15/T16: ``message.settle_hint`` is read-only and defers to the LinkGate.
+"""T15/T16: ``message.settle_hint`` is read-only and rule-fixed (T1b).
 
 A carrier asks at turn end whether the daemon still needs the message kept.
-The answer never mutates inbox state, and once a link gate is bound the gate
-owns the reclaimed-residue verdict.
+The answer never mutates inbox state.  Since the link gate was removed
+(CM-PLAN T1b) the rule is fixed: no row for the caller's keys -> ``ack``, a
+row that is not a request -> ``ack``, otherwise ``keep``.
 """
 
 from __future__ import annotations
@@ -11,20 +12,25 @@ import json
 from pathlib import Path
 
 from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage
-from tests.support.links.gate import PermissiveLinkGate
 
 from ..support import (
-    FakeLinkGate,
     _close_application_domains as _close_application_domains,
     durable_application,
+    official_address,
     register_actor,
 )
 
-READER = "agent:op:node-1:reader"
-DRIVER = "agent:op:node-1:driver"
 
-
-def _seed(app, message_id: str = "x", *, sender: str = DRIVER, recipient: str = READER) -> None:  # type: ignore[no-untyped-def]
+def _seed(  # type: ignore[no-untyped-def]
+    app,
+    message_id: str = "x",
+    *,
+    sender: str = "driver",
+    recipient: str = "reader",
+    intent: str = "request",
+) -> None:
+    sender = official_address(app, sender)
+    recipient = official_address(app, recipient)
     assert app._inbox.receive(
         InboxMessage(
             message_id=message_id,
@@ -32,7 +38,7 @@ def _seed(app, message_id: str = "x", *, sender: str = DRIVER, recipient: str = 
             sender=sender,
             recipient=recipient,
             payload=json.dumps({"message": "B"}).encode(),
-            intent="request",
+            intent=intent,
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
             created_at_ms=1,
             summary="S",
@@ -71,12 +77,16 @@ def test_settle_hint_is_keep_while_pending_and_ack_once_settled(tmp_path: Path) 
     assert _hint(app, "x") == {"ok": True, "messageId": "x", "hint": "ack", "pending": False}
 
 
+def test_settle_hint_acks_a_pending_row_that_is_not_a_request(tmp_path: Path) -> None:
+    app = durable_application(tmp_path)
+    register_actor(app, "reader")
+    _seed(app, "evt", intent="event")
+
+    assert _hint(app, "evt") == {"ok": True, "messageId": "evt", "hint": "ack", "pending": True}
+
+
 def test_settle_hint_acks_after_a_successful_reply(tmp_path: Path) -> None:
     app = durable_application(tmp_path)
-    # B2: an agent reply crosses the send-boundary link gate, and an unbound
-    # slot holds it (ruling 54).  This scenario is not about links, so it binds
-    # a permissive gate explicitly (wp2.md section 4.9 option a), once.
-    app.link_admission.bind(PermissiveLinkGate())
     register_actor(app, "reader")
     _seed(app)
 
@@ -98,7 +108,7 @@ def test_settle_hint_acks_after_a_successful_reply(tmp_path: Path) -> None:
 def test_settle_hint_acks_unknown_and_foreign_messages(tmp_path: Path) -> None:
     app = durable_application(tmp_path)
     register_actor(app, "reader")
-    _seed(app, "theirs", sender=READER, recipient=DRIVER)
+    _seed(app, "theirs", sender="reader", recipient="driver")
     before = _snapshot(app)
 
     assert _hint(app, "no-such-message") == {
@@ -114,33 +124,6 @@ def test_settle_hint_acks_unknown_and_foreign_messages(tmp_path: Path) -> None:
         "pending": False,
     }
     assert _snapshot(app) == before
-
-
-def test_settle_hint_defers_a_pending_verdict_to_the_gate(tmp_path: Path) -> None:
-    app = durable_application(tmp_path)
-    register_actor(app, "reader")
-    gate = FakeLinkGate(hint="ack")
-    app.link_admission.bind(gate)
-    _seed(app)
-
-    assert _hint(app, "x")["hint"] == "ack"
-    assert gate.hints == ["x"]
-
-    # A settled or unknown message never reaches the gate.
-    assert _hint(app, "unknown")["hint"] == "ack"
-    assert gate.hints == ["x"]
-
-
-def test_settle_hint_treats_an_invalid_gate_answer_as_keep(tmp_path: Path) -> None:
-    app = durable_application(tmp_path)
-    register_actor(app, "reader")
-    gate = FakeLinkGate(hint="banana")
-    app.link_admission.bind(gate)
-    _seed(app)
-
-    result = _hint(app, "x")
-
-    assert result == {"ok": True, "messageId": "x", "hint": "keep", "pending": True}
 
 
 # --- R4: owner onBehalfOf, and someone else's message ----------------------
@@ -169,7 +152,7 @@ def test_owner_on_behalf_of_cannot_ask_about_someone_elses_message(
 ) -> None:
     app = durable_application(tmp_path)
     register_actor(app, "reader")
-    _seed(app, "theirs", sender=READER, recipient=DRIVER)
+    _seed(app, "theirs", sender="reader", recipient="driver")
 
     result = app.handle(
         "message.settle_hint",

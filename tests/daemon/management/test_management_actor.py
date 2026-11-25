@@ -1,5 +1,4 @@
 import threading
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,9 +20,11 @@ class Harnesses:
         self.events.append(("restore", threading.get_ident()))
 
 
-def test_file_failure_compensates_on_owned_lane_and_releases_lease():
+def test_file_failure_compensates_on_owned_lane_and_releases_lease(actor_host):
     harnesses = Harnesses()
-    owner = RegistryManagementAuthority(harnesses, SimpleNamespace(pins=lambda: {}))
+    owner = RegistryManagementAuthority(
+        harnesses, actor_host=actor_host
+    )
     try:
         with pytest.raises(ValueError, match="file failure"):
             with owner.adapter_removal("adapter") as lease:
@@ -37,7 +38,7 @@ def test_file_failure_compensates_on_owned_lane_and_releases_lease():
         assert owner.close()
 
 
-def test_timed_out_begin_is_retired_after_snapshot_finishes():
+def test_timed_out_begin_is_retired_after_snapshot_finishes(actor_host):
     entered, release = threading.Event(), threading.Event()
     harnesses = Harnesses()
     original = harnesses.snapshot_adapter_registration
@@ -49,7 +50,9 @@ def test_timed_out_begin_is_retired_after_snapshot_finishes():
 
     harnesses.snapshot_adapter_registration = snapshot
     owner = RegistryManagementAuthority(
-        harnesses, SimpleNamespace(pins=lambda: {}), timeout=0.01
+        harnesses,
+        timeout=0.01,
+        actor_host=actor_host,
     )
     try:
         with pytest.raises(TimeoutError):
@@ -64,15 +67,17 @@ def test_timed_out_begin_is_retired_after_snapshot_finishes():
     assert not owner.status()["leaseActive"]
 
 
-def test_close_waits_for_an_active_file_compensation_lease():
-    owner = RegistryManagementAuthority(Harnesses(), SimpleNamespace(pins=lambda: {}))
+def test_close_waits_for_an_active_file_compensation_lease(actor_host):
+    owner = RegistryManagementAuthority(
+        Harnesses(), actor_host=actor_host
+    )
     with owner.adapter_removal("adapter"):
         assert not owner.close(0.01)
     assert owner.close(1)
 
 
 def test_timed_out_failed_begin_drops_abandoned_custody_even_if_wake_is_full(
-    monkeypatch,
+    actor_host,
 ):
     from hyprial.kernel.impl.actor_runtime import AdmissionResult
     from hyprial.daemon.impl.operations.management_actor import AbandonAdapterRemoval
@@ -86,16 +91,26 @@ def test_timed_out_failed_begin_drops_abandoned_custody_even_if_wake_is_full(
 
     harnesses.snapshot_adapter_registration = snapshot
     owner = RegistryManagementAuthority(
-        harnesses, SimpleNamespace(pins=lambda: {}), timeout=0.01
+        harnesses,
+        timeout=0.01,
+        actor_host=actor_host,
     )
-    original = owner._runtime.tell
 
-    def tell(handle, command):
-        if isinstance(command, AbandonAdapterRemoval):
-            return AdmissionResult.OVERLOADED
-        return original(handle, command)
+    class _RefusingAbandonCell:
+        __slots__ = ("_cell",)
 
-    monkeypatch.setattr(owner._runtime, "tell", tell)
+        def __init__(self, cell):
+            self._cell = cell
+
+        def tell(self, command):
+            if isinstance(command, AbandonAdapterRemoval):
+                return AdmissionResult.OVERLOADED
+            return self._cell.tell(command)
+
+        def stop(self, timeout):
+            return self._cell.stop(timeout)
+
+    owner._cell = _RefusingAbandonCell(owner._cell)
     try:
         with pytest.raises(TimeoutError):
             with owner.adapter_removal("adapter"):

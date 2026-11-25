@@ -23,12 +23,15 @@ from hyprial.daemon.impl.application.netendpoints.forwarding import _ForwardingO
 
 
 class _App(_ForwardingOpsMixin):
-    def __init__(self) -> None:
+    def __init__(self, actor_host: Any) -> None:
         self.logs: list[tuple[str, str, str, dict[str, Any]]] = []
         self.stop_event = threading.Event()
         self._forwarding_supervisor: object | None = None
         self._forwarding_cadence = None
         self._forwarding_reconcile_requests = self._new_forwarding_reconcile_requests()
+        self._agent_session_domains = SimpleNamespace(
+            actor_hosts=SimpleNamespace(host_for=lambda _owner: actor_host)
+        )
         self._runtime = object()
         self._maintenance_watchdog = SimpleNamespace(phase=lambda *_args: None)
         self._status_refresh_due = self._profile_refresh_due = float("inf")
@@ -93,8 +96,8 @@ def _wait(predicate, timeout: float = 3.0) -> bool:
     return predicate()
 
 
-def test_late_supervisor_request_never_overlaps_a_maintenance_reconcile() -> None:
-    app = _App()
+def test_late_supervisor_request_never_overlaps_a_maintenance_reconcile(actor_host) -> None:
+    app = _App(actor_host)
     try:
         # Maintenance ticks before any supervisor exists; its reconcile is held.
         ticker = app.tick()
@@ -117,8 +120,8 @@ def test_late_supervisor_request_never_overlaps_a_maintenance_reconcile() -> Non
         app.close()
 
 
-def test_maintenance_tick_during_a_request_reconcile_coalesces_behind_it() -> None:
-    app = _App()
+def test_maintenance_tick_during_a_request_reconcile_coalesces_behind_it(actor_host) -> None:
+    app = _App(actor_host)
     app._forwarding_supervisor = object()
     try:
         assert app._request_forwarding_reconcile("org-invite", org="group-a", user="bob")
@@ -138,8 +141,8 @@ def test_maintenance_tick_during_a_request_reconcile_coalesces_behind_it() -> No
 class _OrgApp(_App):
     """Adds what the real ``_build_service(app)`` reads; OrgFS is never touched."""
 
-    def __init__(self, home) -> None:
-        super().__init__()
+    def __init__(self, home, actor_host: Any) -> None:
+        super().__init__(actor_host)
         self.hyprial_home = home
         self.node_id = "node-a"
         self.owner = "owner@example"
@@ -162,14 +165,16 @@ def _bootstrap_service(app: _OrgApp):
     return service
 
 
-def test_bootstrap_redial_waits_on_the_cadence_instead_of_reconciling_inline(tmp_path) -> None:
+def test_bootstrap_redial_waits_on_the_cadence_instead_of_reconciling_inline(
+    tmp_path, actor_host
+) -> None:
     """Review fd203a80d: join/execute ``connect-inviter`` reconciled on the IPC thread.
 
     With a cadence run held, the bootstrap step's redial must not start a
     second reconcile beside it; it submits to the cadence and returns only
     once a run that started after its request has completed.
     """
-    app = _OrgApp(tmp_path)
+    app = _OrgApp(tmp_path, actor_host)
     app._forwarding_supervisor = object()
     service = _bootstrap_service(app)
     link = SimpleNamespace(space_id="tailnet-a")
@@ -194,13 +199,15 @@ def test_bootstrap_redial_waits_on_the_cadence_instead_of_reconciling_inline(tmp
         app.close()
 
 
-def test_bootstrap_redial_wait_is_bounded_with_a_typed_code(tmp_path, monkeypatch) -> None:
+def test_bootstrap_redial_wait_is_bounded_with_a_typed_code(
+    tmp_path, monkeypatch, actor_host
+) -> None:
     from hyprial.daemon.impl.org.network import ipc
     from hyprial.daemon.impl.org.network.service import OrgNetworkError
     from hyprial.kernel import ipc_errors
 
     monkeypatch.setattr(ipc, "REQUEST_MEMBERSHIP_WAIT_SECONDS", 0.2)
-    app = _OrgApp(tmp_path)
+    app = _OrgApp(tmp_path, actor_host)
     app._forwarding_supervisor = object()
     service = _bootstrap_service(app)
     try:
@@ -220,18 +227,18 @@ def test_bootstrap_redial_wait_is_bounded_with_a_typed_code(tmp_path, monkeypatc
 
 
 class _FailingOrgApp(_OrgApp):
-    def __init__(self, home, error: Exception) -> None:
-        super().__init__(home)
+    def __init__(self, home, error: Exception, actor_host: Any) -> None:
+        super().__init__(home, actor_host)
         self.error = error
 
     def _reconcile_forwarding_endpoints(self) -> None:
         raise self.error
 
 
-def _bootstrap_failure(tmp_path, error: Exception):
+def _bootstrap_failure(tmp_path, error: Exception, actor_host: Any):
     from hyprial.daemon.impl.org.network.service import OrgNetworkError
 
-    app = _FailingOrgApp(tmp_path, error)
+    app = _FailingOrgApp(tmp_path, error, actor_host)
     app._forwarding_supervisor = object()
     service = _bootstrap_service(app)
     try:
@@ -243,23 +250,28 @@ def _bootstrap_failure(tmp_path, error: Exception):
     raise AssertionError("a failed bootstrap redial did not fail the step")
 
 
-def test_uncoded_reconcile_failure_maps_to_forwarding_reconcile_failed(tmp_path) -> None:
+def test_uncoded_reconcile_failure_maps_to_forwarding_reconcile_failed(
+    tmp_path, actor_host
+) -> None:
     """Review 4089eadcb P2: the exception type name leaked into the IPC code."""
     from hyprial.kernel import ipc_errors
 
-    caught = _bootstrap_failure(tmp_path, RuntimeError("slot table unreadable"))
+    caught = _bootstrap_failure(
+        tmp_path, RuntimeError("slot table unreadable"), actor_host
+    )
     assert caught.code == ipc_errors.FORWARDING_RECONCILE_FAILED
     # The diagnostic keeps the error text; only the code is typed.
     assert "RuntimeError" in str(caught)
     assert "slot table unreadable" in str(caught)
 
 
-def test_coded_reconcile_failure_keeps_its_code(tmp_path) -> None:
+def test_coded_reconcile_failure_keeps_its_code(tmp_path, actor_host) -> None:
     from hyprial.daemon.impl.forwarding.policy import ForwardingSidecarError
     from hyprial.kernel import ipc_errors
 
     caught = _bootstrap_failure(
         tmp_path,
         ForwardingSidecarError("status stalled", code=ipc_errors.MEMBERSHIP_SIDECAR_TIMEOUT),
+        actor_host,
     )
     assert caught.code == ipc_errors.MEMBERSHIP_SIDECAR_TIMEOUT

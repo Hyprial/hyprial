@@ -27,14 +27,14 @@ def test_wait_and_identical_pending_replay_never_resubmit_io(home_owner, monkeyp
 
     _registry, actor, agent = home_owner(configured=True, preparer=hold)
     submissions = []
-    tell = actor._runtime.tell
+    tell = actor._cell.tell
 
-    def record(handle, command):
+    def record(command):
         if isinstance(command, _PrepareRuntimeCommand):
             submissions.append(command)
-        return tell(handle, command)
+        return tell(command)
 
-    monkeypatch.setattr(actor._runtime, "tell", record)
+    monkeypatch.setattr(actor._cell, "tell", record)
     command = _PrepareRuntimeCommand(
         "runtime:0", "worker", "pi", agent.cwd, TEST_TOOL_PROFILE,
         False, agent.entity_token,
@@ -69,7 +69,7 @@ def test_wait_unknown_does_not_admit_work(home_owner, monkeypatch):
         pytest.fail("a status query must not enqueue an actor command")
 
     with monkeypatch.context() as patch:
-        patch.setattr(actor._runtime, "tell", forbidden)
+        patch.setattr(actor._cell, "tell", forbidden)
         with pytest.raises(HomeOperationUnknown):
             actor.wait_home_access("never-submitted", timeout=0)
 

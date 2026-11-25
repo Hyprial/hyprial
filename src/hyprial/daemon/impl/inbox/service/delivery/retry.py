@@ -4,7 +4,6 @@ from hyprial.daemon import Alarm, audience_for_sender
 from hyprial.kernel import ipc_errors
 from hyprial.daemon.impl.inbox.contracts.api  import (
     AckResult,
-    DeliveryLifecycle,
     FailureResult,
     HarnessFailureAttempt,
     HarnessFailureSettlement,
@@ -21,6 +20,13 @@ from hyprial.daemon.impl.inbox.service.policy import (
     OFFLINE_RECHECK_INTERVAL_MS,
     online_retry_next_attempt_ms,
 )
+from hyprial.daemon.impl.inbox.envelope.columns import (
+    ENVELOPE_COLUMN_LIST,
+    ENVELOPE_PLACEHOLDERS,
+    envelope_values,
+    stored_message,
+)
+from hyprial.daemon.impl.inbox.envelope.payload import adopt_payload_envelope
 from hyprial.daemon.impl.inbox.service.synchronization import (
     _record_committed_change,
     _synchronized,
@@ -117,11 +123,8 @@ class InboxServiceRetryMixin:
                    WHERE recipient = ? AND message_id = ? AND consumed = 0""",
                 (now, now, recipient, message_id),
             )
-            if cursor.rowcount == 1:
-                self._ledger_ack_inbound_locked(recipient, message_id)
         if cursor.rowcount != 1:
             return AckResult(message_id, False, ipc_errors.MESSAGE_ACK_UNAVAILABLE)
-        self._forget_admission(message_id)
         message = self._row_message(row)
         self.retire_outbox_receipt(message.sender, message_id, now_ms=now)
         return AckResult(message_id, True)
@@ -429,6 +432,7 @@ class InboxServiceRetryMixin:
         self, message: InboxMessage, *, mailbox_node: str, now_ms: int | None = None
     ) -> AckResult:
         now = self._now_ms() if now_ms is None else now_ms
+        message = adopt_payload_envelope(message)
         used = int(
             self._db.execute(
                 "SELECT COALESCE(SUM(length(payload)), 0) FROM custody"
@@ -443,12 +447,13 @@ class InboxServiceRetryMixin:
             return AckResult(message.message_id, False, "MAILBOX_CAPACITY_EXCEEDED")
         with self._db:
             self._db.execute(
-                """INSERT INTO custody (
+                f"""INSERT INTO custody (
                        message_id, mailbox_node, conversation_id, sender, recipient,
                        payload, intent, lifecycle, idempotency_key, created_at_ms,
                        accepted_at_ms, message_expires_at_ms, expires_at_ms,
-                       next_attempt_ms, summary
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       next_attempt_ms, summary, {ENVELOPE_COLUMN_LIST}
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             {ENVELOPE_PLACEHOLDERS})""",
                 (
                     message.message_id,
                     mailbox_node,
@@ -471,6 +476,7 @@ class InboxServiceRetryMixin:
                     ),
                     now,
                     message.summary,
+                    *envelope_values(message),
                 ),
             )
         self._enforce_hold_capacity("custody", now)
@@ -530,6 +536,12 @@ class InboxServiceRetryMixin:
                 outcomes.append(
                     SubmissionResult(message.message_id, True, queued=False)
                 )
+            elif (
+                unclaimed := self._unclaimed_dead_letter(
+                    message.message_id, "custody"
+                )
+            ) is not None:
+                outcomes.append(unclaimed)
             else:
                 attempts = int(row["attempts"]) + 1
                 next_attempt_ms = online_retry_next_attempt_ms(
@@ -589,39 +601,7 @@ class InboxServiceRetryMixin:
             confirmation_attempts=int(row["confirmation_attempts"]),
         )
     def _row_message(self, row: sqlite3.Row) -> InboxMessage:
-        return InboxMessage(
-            message_id=str(row["message_id"]),
-            conversation_id=str(row["conversation_id"]),
-            sender=str(row["sender"]),
-            recipient=str(row["recipient"]),
-            payload=(row["payload"].encode("utf-8")
-                     if isinstance(row["payload"], str) else bytes(row["payload"])),
-            intent=str(row["intent"]),
-            lifecycle=DeliveryLifecycle(str(row["lifecycle"])),
-            idempotency_key=row["idempotency_key"],
-            created_at_ms=int(row["created_at_ms"]),
-            expires_at_ms=(
-                int(row["message_expires_at_ms"])
-                if "message_expires_at_ms" in row.keys()
-                and row["message_expires_at_ms"] is not None
-                else None
-            ),
-            # Only the inbox table carries the column; outbox/custody/
-            # system_notices rows flow through this same helper.
-            origin_node=(
-                str(row["origin_node"])
-                if "origin_node" in row.keys() and row["origin_node"] is not None
-                else None
-            ),
-            # inbox/outbox/custody (WP3-A) and system_notices (WP7) all
-            # carry the column; progress_events rows flow through this same
-            # helper without it and decode to None.
-            summary=(
-                str(row["summary"])
-                if "summary" in row.keys() and row["summary"] is not None
-                else None
-            ),
-        )
+        return stored_message(row)
     def _record_terminal(
         self,
         message: InboxMessage,
@@ -699,7 +679,6 @@ class InboxServiceRetryMixin:
                 self._outbox_to_dlq(row, reason, now_ms)
     def _delete_outbox(self, message_id: str) -> None:
         with self._db:
-            self._ledger_sent_for_outbox_locked(message_id, self._now_ms())
             self._db.execute("DELETE FROM outbox WHERE message_id = ?", (message_id,))
     @_synchronized
     def retire_outbox_receipt(
@@ -782,16 +761,6 @@ class InboxServiceRetryMixin:
             "INSERT INTO dlq(message_id, owner, payload, reason, failed_at_ms) "
             "VALUES (?, ?, ?, ?, ?)",
             (row["message_id"], row["sender"], row["payload"], reason, now_ms),
-        )
-        # The outbound ledger row reaches its terminal state with the same
-        # transaction that evicts the outbox row, so a release never follows
-        # a message that is already gone (WP2 §3.9).
-        self._db.execute(
-            """UPDATE link_ledger
-                  SET state = 'released', event_at_ms = ?, expires_at_ms = ?
-                WHERE actor = ? AND message_id = ? AND direction = 'out'
-                  AND state IN ('held', 'open')""",
-            (now_ms, now_ms + self.durable_ttl_ms, str(row["sender"]), str(row["message_id"])),
         )
         self._db.execute(
             "DELETE FROM outbox WHERE message_id = ?", (row["message_id"],)

@@ -22,6 +22,7 @@ from hyprial.daemon.impl.inbox import (
 )
 from hyprial.daemon.impl.inbox.actor import DeliveryCustody, InboxAuthorityTimeout
 from hyprial.daemon.impl.inbox.contracts.ports import CloseInboxCommand
+from tests.support.actor_hosts import new_actor_host
 
 
 class _Events:
@@ -43,7 +44,7 @@ def test_a_close_answered_after_its_deadline_still_releases_storage(
     monkeypatch.setattr(DeliveryCustody, "_handle", stalled_on_close)
     database = tmp_path / "inbox.sqlite3"
     coordinator = DeliveryCustodyCoordinator(
-        database, MemoryDeliveryTransport(), _Events(), node_id="close-timeout"
+        database, MemoryDeliveryTransport(), _Events(), node_id="close-timeout", actor_host=new_actor_host()
     )
     facade = DeliveryCustodyFacade(coordinator, database, timeout=0.2)
     handler = coordinator._active_handler

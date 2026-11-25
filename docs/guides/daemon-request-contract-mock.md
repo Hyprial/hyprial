@@ -18,12 +18,21 @@ MethodSpec declarations
        └─ generated client (H-02, later)    MethodSpec → OpenAPI → TS
 ```
 
-- The Contract Mock is a local, loopback-only development server. It needs no
-  daemon, home, socket, identity, credential store, Node or real provider.
+- The Contract Mock is one JavaScript module, `gui/contract-mock`, in two forms:
+  a local, loopback-only development server (`node gui/contract-mock/serve.ts`)
+  and a `fetch`-shaped function that runs inside the browser
+  (`connectContractMock`, `gui/src/dev/contract-mock`). It needs Node 24 (no
+  build step) and no daemon, home, socket, identity, credential store or real
+  provider. Python no longer serves anything: `contract/daemon-request/contract_mock`
+  only loads and validates the examples (`load_contract`, `check_contract`).
 - It is not H, not a browser-integration proof and not a permission or
   credential-write test. H-02/HM-01 own the transport/client parity check.
 - The mock reads only the committed business projection; it does not import
   `hyprial`, so it cannot quietly start a daemon or take a second schema copy.
+  The browser form imports `gui/src/dev/contract-mock/contract.generated.json`,
+  the same projection written by `npm --prefix gui run client:reference` and
+  byte-checked by `client:reference:check`; nothing else may import that table
+  (the `check_gui_mock_source.mjs` gate).
 
 ## 2. Current five-method gate
 
@@ -54,7 +63,7 @@ Do not hand-edit `contract/daemon-request/openapi.json`.
 ## 3. Run the mock
 
 ```sh
-PYTHONPATH=contract/daemon-request uv run python -m contract_mock \
+node gui/contract-mock/serve.ts \
   --scenario success \
   --host 127.0.0.1 --port 8770
 ```
@@ -87,7 +96,7 @@ A method with no case for the selected scenario returns HTTP 409
 success. Override one method:
 
 ```sh
-PYTHONPATH=contract/daemon-request uv run python -m contract_mock \
+node gui/contract-mock/serve.ts \
   --scenario success \
   --method-scenario agent.provider.default=unconfigured \
   --case agent.provider.login=installed
@@ -95,6 +104,30 @@ PYTHONPATH=contract/daemon-request uv run python -m contract_mock \
 
 A `--method-scenario` override that the method cannot satisfy fails at startup.
 An explicit `--case` wins over the quality selection.
+
+### Case selection inside a scenario
+
+Several cases may share one scenario shape (for example one success case per
+message view). The mock prefers the case whose declared params agree with the
+request; a declared param the request omits is not a conflict. A case may also
+answer a request whose declared params disagree only where no published result
+speaks about that field: a caller's own request content (the typed message text
+of a send) keeps the fixed example.
+
+A declared param that the published result also speaks about is a **selector**
+(`conversationId` and `view` for the chat reads, `spaceId`, `actor`, `name`
+elsewhere). When the request's selector disagrees with every case for the
+selected scenario the mock returns 409 `MOCK_EXAMPLE_MISSING` and no `result`.
+It never answers `message.history(conversationId=unknown)` with
+`conversation-1`'s messages. A method with no case at all for the scenario stays
+`MOCK_SCENARIO_MISSING`.
+
+Caller-minted identity keys (`idempotencyKey`, `operationKey`) are never
+selectors: no example can declare a fresh key, so the fixed case stays the
+answer. The client must treat that identity mismatch as `unknown`, never as an
+acceptance; `unknown` still does not permit an automatic resend. Cases that
+declare the same params (the key-lookup outcomes) resolve to the first declared
+case, which is what `--case` exists to override.
 
 ### Validation boundary
 
@@ -116,8 +149,8 @@ missing pre-dispatch control. Send an invalid body and the mock returns
 
 - `GET /healthz` — `{"ok": true}`, no auth.
 - `GET /mock/contract` — bearer-protected metadata: contract version/digest,
-  selected scenario, available scenarios, gaps, skipped un-mockable methods and
-  the envelope source. Not an H endpoint.
+  selected scenario, available scenarios, gaps, each method's declared `mutates`,
+  skipped un-mockable methods and the envelope source. Not an H endpoint.
 - CORS defaults to the local Vite origins `localhost`/`127.0.0.1` on ports
   5173 and 4173. Add another with repeatable `--allow-origin`; there is no
   wildcard. Loopback binding only.
@@ -125,12 +158,39 @@ missing pre-dispatch control. Send an invalid body and the mock returns
 ### Check mode
 
 ```sh
-PYTHONPATH=contract/daemon-request uv run python -m contract_mock \
-  --scenario success --check
+node gui/contract-mock/serve.ts --scenario success --check
 ```
 
-It loads and validates the projection, prints the available scenarios, and
-reports `BLOCKED` for a projection with no examples.
+It loads the projection, prints one line per method with its available
+scenarios and the case each method would serve, and reports `BLOCKED` (exit 2)
+for a projection with no examples. Schema validation of every example against
+its result and error schemas, the sensitive-material scan and the envelope
+validation of every example stay in Python (`check_contract`, run by the example
+gates); the JavaScript conformance test validates every reply against
+`http-envelope.schema.json`.
+
+### Presets, guards and the in-browser form
+
+`gui/contract-mock/presets.json` holds the policy that is not contract:
+named presets (a scenario plus per-method scenarios and cases), transitions
+(after a 200 reply to a method while a preset is current, switch to another
+preset) and input guards (a method accepts only parameters that equal documented
+synthetic values; the provider login accepts only the sentinel of §7). It holds
+references only: a payload key (`result`, `error`, `params`, `examples`) or a
+reference that does not resolve fails the mock at construction and the
+`check_gui_mock_source.mjs` gate. Select a preset with `--preset NAME`. The
+whole-params credential-prefix scan the Python server ran is gone; the sentinel
+equality remains, and example scanning stays in Python.
+
+Front-end work without a backend uses the same module in the browser:
+`connectContractMock({ scenario })` returns what `connectBrowserBackend` returns
+(a session, the generated client and the transport), with only `fetch` replaced.
+`contractExamples(method)` lists a method's declared cases for tests and
+fixtures. The module's params validator supports the JSON Schema subset the
+daemon catalog uses; a daemon change that adds another keyword (or `format`)
+fails the mock at load until `gui/contract-mock/schema.ts` learns it. The catalog
+digest the mock reports is the sha256 of the canonical projected table, not of
+the whole OpenAPI document.
 
 ## 4. Envelope and contract version
 
@@ -188,7 +248,7 @@ the request/result schemas. Regeneration is the only edit path.
 | --- | --- | --- |
 | declaration → OpenAPI snapshot | `uv run python scripts/verify/dump_daemon_openapi.py --check` | PASS |
 | five-method example coverage | `uv run python scripts/verify/check_agent_contract_examples.py` | BLOCKED (M-01/M-02) |
-| mock ↔ projection | mock loads `openapi.json`; startup validates every example/envelope | PASS for the generic fixture; BLOCKED for five methods |
+| mock ↔ projection | the mock loads `openapi.json` (`serve.ts --check`); `check_contract` validates every example/envelope; `gui/tests/contract-mock/conformance.test.ts` serves every case | PASS |
 | breaking diff base → head | `uv run python scripts/ci/check_daemon_contract_diff.py --base <old.json> --head contract/daemon-request/openapi.json [--pr-body-file pr-body.txt]` | script ready |
 | MethodSpec → TS client | H-02 generated client + its `--check`; HM-01 runs both on the combined tree | BLOCKED (H-02) |
 
@@ -231,7 +291,10 @@ files. Its injected `request(method, params)` expects the **business result**
 (for example `agents`, `provider`, `grants`, `actor`, `removed`), not the HTTP
 envelope.
 
-Two deliberate seams remain until H-02:
+(Historical; the GUI now reaches the mock through the generated client and
+`connectContractMock`, and the hand-written adapter below is gone.)
+
+Two deliberate seams remained until H-02:
 
 1. A single temporary transport adapter unwraps
    `{ok, result}`/`{ok, code, message, dispatch}` and maps a definite pre-dispatch

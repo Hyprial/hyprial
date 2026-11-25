@@ -1,10 +1,14 @@
 """Dispatch role/metadata admission survives replacement of legacy workflow."""
 
+from types import SimpleNamespace
+
 import pytest
 import yaml
 
+from hyprial.identity import PacError
 from hyprial.kernel import ipc_errors
 from hyprial.daemon.impl.dispatch.admission import dispatch_gate
+from hyprial.daemon.impl.dispatch.remote import RemoteWorkflow
 from hyprial.daemon.impl.pac.graphs.reactor import NullSender
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore
 from hyprial.daemon.impl.pac.workflows.runtime import GraphWorkflowService
@@ -16,6 +20,12 @@ from tests.daemon.dispatch.without.test_dispatch_without_pac import harness as h
 
 
 def interactive_entity(app):
+    """Register the pi TUI session and return the agent's official address.
+
+    Registration creates the agent, so its name URI ``PI_URI`` is retired
+    (ruling U1): sends, graph owners and routine actors address its id URI.
+    """
+
     app.handle(
         "session.register",
         {
@@ -27,15 +37,18 @@ def interactive_entity(app):
             "runtime": "pi_interactive",
         },
     )
-    assert app.agents.require(PI_URI).capabilities["interactive"] is True
+    agent = app.agents.require(PI_URI)
+    assert agent.capabilities["interactive"] is True
+    assert agent.uri != PI_URI
+    return agent.uri
 
 
 def test_execute_interactive_rejected_before_inbox(harness):
     app, *_ = harness
     _register_driver(app)
-    interactive_entity(app)
+    address = interactive_entity(app)
     with pytest.raises(ipc_errors.DaemonRequestError) as error:
-        _send(app, role="execute")
+        _send(app, role="execute", to=[address])
     assert error.value.code == ipc_errors.DISPATCH_ROLE_MISMATCH
     assert app._inbox.pending_all() == ()
 
@@ -44,14 +57,14 @@ def test_execute_interactive_rejected_before_inbox(harness):
 def test_non_execution_and_conversation_allowed(harness, role):
     app, *_ = harness
     _register_driver(app)
-    interactive_entity(app)
-    assert _send(app, **({"role": role} if role else {}))["ok"] is True
+    address = interactive_entity(app)
+    assert _send(app, to=[address], **({"role": role} if role else {}))["ok"] is True
 
 
 def test_graph_admission_cannot_bypass_interactive_gate(harness, tmp_path):
     app, *_ = harness
     _register_driver(app)
-    interactive_entity(app)
+    address = interactive_entity(app)
     service = GraphWorkflowService(
         state_dir=tmp_path / "pac",
         owner=app.owner,
@@ -65,7 +78,7 @@ def test_graph_admission_cannot_bypass_interactive_gate(harness, tmp_path):
             {
                 "version": 2,
                 "name": "dispatch",
-                "nodes": [{"id": "work", "owner": PI_URI, "task": "implement"}],
+                "nodes": [{"id": "work", "owner": address, "task": "implement"}],
             }
         )
         with pytest.raises(ipc_errors.DaemonRequestError) as error:
@@ -89,7 +102,7 @@ def test_routine_add_rejects_execute_targeting_known_interactive(
     harness, borrowed
 ):
     app, *_ = harness
-    interactive_entity(app)
+    address = interactive_entity(app)
     routine_service = app._routine_service
     app._routine_service = object()
     if borrowed:
@@ -100,7 +113,7 @@ def test_routine_add_rejects_execute_targeting_known_interactive(
                 "name": "interactive-routine",
                 "schedule": {"interval": "15m"},
                 "task": "do work",
-                "actor": PI_URI,
+                "actor": address,
                 "role": "execute",
                 "on_task_timeout": {
                     "action": "escalate",
@@ -110,7 +123,7 @@ def test_routine_add_rejects_execute_targeting_known_interactive(
         )
     else:
         document = yaml.safe_load(
-            render_template("selfdrive", owner=PI_URI, escalate_to="user:allen")
+            render_template("selfdrive", owner=address, escalate_to="user:allen")
         )
         document["role"] = "execute"
         raw = yaml.safe_dump(document)
@@ -198,3 +211,50 @@ def test_remote_owner_requires_available_home_daemon(harness, remote_user):
     with pytest.raises(ipc_errors.DaemonRequestError) as error:
         app._workflow_admit(spec, f"user:{app.owner}")
     assert error.value.code == ("WORKFLOW_REMOTE_OWNER_UNSUPPORTED" if remote_user else "WORKFLOW_REMOTE_UNAVAILABLE")
+
+
+@pytest.mark.parametrize("peer", ["ordinary", "expansion", "missing", "interactive"])
+def test_borrowed_remote_routine_uses_complete_admission_shape(harness, monkeypatch, peer):
+    """Real routine/remote admission; only the external wire response is synthetic."""
+
+    app, *_ = harness
+    target = "agent:other:remote-node:a.aaaaaaaaaaaaaaaaaaaaaaaaaa"
+    calls = []
+
+    def wire_call(owner, method, fields):
+        calls.append((owner, method, fields))
+        if peer in ("missing", "interactive"):
+            raise PacError(
+                "WORKFLOW_REMOTE_ACTOR_NOT_FOUND" if peer == "missing" else "DISPATCH_ROLE_MISMATCH",
+                "remote admission refused",
+            )
+        return {"ok": True, "features": ["pac-expansion-v1"] if peer == "expansion" else []}
+
+    remote = RemoteWorkflow.__new__(RemoteWorkflow)
+    remote.app = app
+    remote.wire = SimpleNamespace(call=wire_call)
+    spec = load_routine_text(yaml.safe_dump({
+        "version": 2, "mode": "scheduled", "name": "remote-borrowed",
+        "schedule": {"interval": "15m"}, "task": "work",
+        "actor": target, "role": "execute",
+        "on_task_timeout": {"action": "escalate", "escalate_to": "user:allen"},
+    }))
+    with monkeypatch.context() as patched:
+        patched.setattr(app, "_remote_workflow", remote)
+        if peer in ("missing", "interactive"):
+            with pytest.raises(ipc_errors.DaemonRequestError) as failure:
+                app._routine_admit(spec)
+            assert failure.value.code == (
+                "WORKFLOW_REMOTE_ACTOR_NOT_FOUND" if peer == "missing" else "DISPATCH_ROLE_MISMATCH"
+            )
+        else:
+            app._routine_admit(spec)
+    assert calls == [(target, "admit", {
+        "owner": target, "role": "execute", "firstOutputEta": None, "humanGatesDeclared": False,
+    })]
+    if peer == "ordinary":
+        with pytest.raises(PacError) as failure:
+            remote.admit(SimpleNamespace(
+                owner=target, role="plan", first_output_eta=None, human_gates=None, expands="slot",
+            ))
+        assert failure.value.code == "WORKFLOW_REMOTE_INVALID"

@@ -1,10 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from hyprial.identity.impl.agents.actor.ports import AcquireAgentRuntimeLaunchCommand
-from hyprial.kernel import ActorRuntime, DECLARED_HARNESSES
+from hyprial.kernel import DECLARED_HARNESSES, member_actor_registry_key
 from hyprial.kernel import ActorSpec
-from hyprial.kernel import AdmissionResult
+from hyprial.kernel import AdmissionResult, ipc_errors
 from hyprial.identity.impl.agents.registry._base import Agent
 from hyprial.identity.impl.agents.state.read_port import AgentActivityHints
 from hyprial.identity.impl.agents.actor.ports import AgentBindingProjection
@@ -24,13 +25,10 @@ from hyprial.identity.impl.agents.actor.ports import AgentRuntimeProjection
 from hyprial.identity.impl.agents.runtime.context import AgentToolProfile
 from hyprial.kernel import CallCostCounters
 from collections.abc import Callable, Mapping
-from hyprial.identity.impl.agents.runtime.grants import CapabilityGrant
 from hyprial.identity.impl.agents.actor.ports import ConfirmAgentLifecycleReceiptCommand
 from hyprial.kernel import DrainReport
 from hyprial.kernel import EffectCompleted
-from hyprial.kernel import EffectLane
 from hyprial.kernel import EffectRequest
-from hyprial.identity.impl.agents.runtime.grants import GrantJournalEntry
 from hyprial.identity.impl.agents.home.provisioner import HomePayloadFile
 from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
 from hyprial.identity.impl.agents.migration.entry import MigrationAuthorizationWindow
@@ -48,11 +46,6 @@ from hyprial.identity.impl.agents.state.liveness import RUNTIME_INTERACTIVE
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentDestroyReservationCommand
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentRuntimeLaunchCommand
 from hyprial.identity.impl.agents.actor.ports import RetireAgentLifecycleReceiptCommand
-from hyprial.identity.impl.agents.runtime.secrets import SecretGrant
-from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand
-from hyprial.identity.impl.agents.home.provisioner import WorkspaceSummary
-from hyprial.kernel import canonical_agent_uri
-from hyprial.kernel import parse_agent_uri
 from hyprial.identity.impl.agents.migration.actor import (
     bind_config_quiescent,
     config_rebind_quiescence,
@@ -62,13 +55,15 @@ import threading
 import time
 from uuid import uuid4
 
+if TYPE_CHECKING:
+    pass
+
 from ._base import (
     AgentHomeAccessError,
     AgentMigrationBusy,
     SenderIdentityError,
     _AGENT_COST_KEYS,
     _AgentProjectionState,
-    _AgentStateEffectCompleted,
     _VerifyLandingPayloadCommand,
     _ConfirmLandingHomeCommand,
     _DesiredStatePort,
@@ -77,9 +72,6 @@ from ._base import (
     _MigrationWaiter,
     _PendingHomeAccess,
     _PendingHomeMutation,
-    _PendingPinMutation,
-    _PinStateRequest,
-    _PinStateResult,
     _PrepareRuntimeCommand,
     _PrepareWorkspaceCommand,
     _RuntimeLaunchState,
@@ -90,6 +82,7 @@ from ._base import (
 )
 from ._generation_dispatch import _GenerationDispatchMixin
 from ._generation_ops import _GenerationOpsMixin
+from .read_queries import _AgentReadQueriesMixin
 from ._home_calls import HomeCallRegistry, await_home_call, command_fingerprint, home_operation_id
 @dataclass(slots=True)
 
@@ -110,9 +103,6 @@ class _AgentGeneration(_GenerationDispatchMixin, _GenerationOpsMixin):
     complete_home_call: Callable[
         [str, str | AgentRuntimeContext | _LegacyRuntimeResult | None, BaseException | None], None
     ] | None = None
-    state_effects: EffectLane[_PinStateRequest, _PinStateResult] | None = None
-    pending_pins: dict[tuple[str, int], _PendingPinMutation] | None = None
-    pending_pin_adapters: set[str] | None = None
     runtime_launches: _RuntimeLaunchState | None = None
     migration_begin: Callable[[MigrationRequest], None] | None = None
     migration_owner_call: Callable[[MigrationOwnerCall], None] | None = None
@@ -120,7 +110,9 @@ class _AgentGeneration(_GenerationDispatchMixin, _GenerationOpsMixin):
     migration_conflicts: Callable[[object], bool] | None = None
 
 
-class AgentActor:
+
+
+class AgentActor(_AgentReadQueriesMixin):
     """Serialized registry command sink with synchronous immutable projections."""
 
     def __init__(
@@ -134,11 +126,13 @@ class AgentActor:
         interactive_process_alive: Callable[[str], bool | None] | None = None,
         clock: Callable[[], float] | None = None,
         mailbox_capacity: int = 128,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
         session_originated: Callable[[str], bool] | None = None,
         home_runtime_preparers: Mapping[str, HomeRuntimePreparer | None] | None = None,
         home_notice_reporter: Callable[[AgentRuntimeContext], None] | None = None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("agent actor requires an actor host")
         self._registry = registry
         self._command_costs = CallCostCounters(_AGENT_COST_KEYS, wall=False)
         self._session_originated = session_originated
@@ -155,7 +149,6 @@ class AgentActor:
         self._events = event_sink
         self._version = _Version()
         self._projection = _AgentProjectionState()
-        self._runtime = runtime or ActorRuntime()
         self._generation = 0
         self._generation_lock = threading.Lock()
         self._pending_home: dict[
@@ -169,13 +162,8 @@ class AgentActor:
         self._migration_owner_waiters: dict[str, tuple[threading.Event, MigrationOwnerResult | None]] = {}
         self._migration_owner_responses: dict[str, tuple[MigrationOwnerCall, MigrationOwnerResult]] = {}
         self._migration_lease: tuple[str, str, str, str] | None = None
-        self._pending_pins: dict[
-            tuple[str, int], _PendingPinMutation
-        ] = {}
-        self._pending_pin_adapters: set[str] = set()
         self._runtime_launches = _RuntimeLaunchState()
         self._home_effects: AgentHomeEffectLane | None = None
-        self._state_effects: EffectLane[_PinStateRequest, _PinStateResult] | None = None
         try:
             self._home_effects = (
                 AgentHomeEffectLane(
@@ -186,18 +174,6 @@ class AgentActor:
                 if self._registry.home_enabled
                 else None
             )
-            self._state_effects = (
-                EffectLane[
-                    _PinStateRequest, _PinStateResult
-                ](
-                    name="agent-state-effect",
-                    execute=self._execute_state_effect,
-                    complete=self._admit_state_completion,
-                    workers=1,
-                )
-                if self._desired_state is not None
-                else None
-            )
             self._seed_bindings()
             _refresh_projection(
                 self._projection,
@@ -205,7 +181,7 @@ class AgentActor:
                 self._liveness,
                 self._version.read(),
             )
-            self._migration_effects = EffectLane[MigrationEffect, MigrationOutcome](
+            self._migration_effects = actor_host.effect_lane(
                 name="agent-migration-effect",
                 execute=self._execute_migration,
                 complete=self._admit_migration_completion,
@@ -216,8 +192,6 @@ class AgentActor:
         except Exception:
             if self._home_effects is not None:
                 self._home_effects.close(1.0)
-            if self._state_effects is not None:
-                self._state_effects.close(1.0)
             raise
         def factory() -> _AgentGeneration:
             with self._generation_lock:
@@ -236,9 +210,6 @@ class AgentActor:
                 home_effects=self._home_effects,
                 pending_home=self._pending_home,
                 complete_home_call=self._complete_home_call,
-                state_effects=self._state_effects,
-                pending_pins=self._pending_pins,
-                pending_pin_adapters=self._pending_pin_adapters,
                 runtime_launches=self._runtime_launches,
                 migration_begin=self._migration_begin,
                 migration_owner_call=self._migration_owner_call,
@@ -246,9 +217,9 @@ class AgentActor:
                 migration_conflicts=self._migration_conflicts,
             )
 
-        self._handle = None
+        self._cell = None
         try:
-            self._handle = self._runtime.start(
+            self._cell = actor_host.spawn(
                 ActorSpec(
                     name="agent-registry-authority",
                     handler_factory=factory,
@@ -256,15 +227,14 @@ class AgentActor:
                     undelivered_sink=self._undelivered,
                 )
             )
+            self._handle = self._cell.handle
             self._read_effects = AgentReadEffectPort(self._registry)
         except Exception:
             self._migration_effects.close(1.0)
             if self._home_effects is not None:
                 self._home_effects.close(1.0)
-            if self._state_effects is not None:
-                self._state_effects.close(1.0)
-            if self._handle is not None:
-                self._runtime.stop(self._handle, timeout=1.0)
+            if self._cell is not None:
+                self._cell.stop(timeout=1.0)
             raise
 
     def _undelivered(self, command: object, reason: str) -> None:
@@ -276,7 +246,7 @@ class AgentActor:
             return
         if isinstance(command, EffectCompleted):
             return  # Effect lane retains completion until Agent owner ACK.
-        if isinstance(command, (AgentHomeEffectCompleted, _AgentStateEffectCompleted)):
+        if isinstance(command, AgentHomeEffectCompleted):
             return  # Effect owners retain and retry completion until ACK.
         correlation = str(getattr(command, "correlation_id", ""))
         if isinstance(command, (_PrepareWorkspaceCommand, _PrepareRuntimeCommand, _MaterialiseLandingHomeCommand, _ConfirmLandingHomeCommand, _VerifyLandingPayloadCommand)):
@@ -295,12 +265,12 @@ class AgentActor:
     def _admit_home_completion(
         self, event: AgentHomeEffectCompleted
     ) -> AdmissionResult:
-        return self._runtime.tell(self._handle, event)
+        return self._cell.tell(event)
 
     def _admit_migration_completion(
         self, event: EffectCompleted[MigrationOutcome]
     ) -> AdmissionResult:
-        return self._runtime.tell(self._handle, event)
+        return self._cell.tell(event)
 
     def _execute_migration(self, effect: MigrationEffect) -> MigrationOutcome:
         return run_migration_effect(effect, self)
@@ -319,8 +289,6 @@ class AgentActor:
             with self._runtime_launches.condition:
                 offer = self._runtime_launches.contexts.get(command.launch_token)
             return None if offer is None else offer.receipt.actor
-        if isinstance(command, UnpinAgentAdapterCommand):
-            candidate = self._registry.pins().get(command.adapter)
         else:
             payload = getattr(command, "payload", command)
             candidate = getattr(payload, "actor", None)
@@ -373,17 +341,11 @@ class AgentActor:
                 self._migration_command_actor(pending.command) == agent.actor
                 for pending in self._pending_home.values()
             )
-            pin_busy = any(
-                pending.actor == agent.actor
-                or self._migration_command_actor(pending.command) == agent.actor
-                for pending in self._pending_pins.values()
-            )
             if (
                 busy
                 or destroy_busy
                 or (launch_busy and request.method != "agent.config.rebind")
                 or home_busy
-                or pin_busy
             ):
                 raise AgentMigrationBusy("Agent migration or target effect is busy")
             receipt = self._registry.home_receipt(agent.actor, validate_mirror=False)
@@ -523,8 +485,8 @@ class AgentActor:
         event = threading.Event()
         with self._migration_lock:
             self._migration_owner_waiters[command.call_id] = (event, None)
-        generation = self._runtime.snapshot(self._handle).generation
-        admission = self._runtime.tell(self._handle, command)
+        generation = self._cell.snapshot().generation
+        admission = self._cell.tell(command)
         if admission is not AdmissionResult.ACCEPTED:
             self._finish_migration_owner_waiter(
                 command.call_id, MigrationOwnerResult(failure=MigrationFailure.from_exception(AgentError(f"migration owner admission is {admission.value}")))
@@ -536,12 +498,12 @@ class AgentActor:
             # against the new generation; a refused retry cannot negate the
             # earlier accepted custody or an already committed result.
             try:
-                current = self._runtime.snapshot(self._handle)
+                current = self._cell.snapshot()
             except Exception:
                 continue
             if current.generation == generation:
                 continue
-            retry = self._runtime.tell(self._handle, command)
+            retry = self._cell.tell(command)
             if retry is AdmissionResult.ACCEPTED:
                 generation = current.generation
         with self._migration_lock:
@@ -594,7 +556,7 @@ class AgentActor:
                 submit = False
             entry.consumers += 1
         if submit:
-            admission = self._runtime.tell(self._handle, request)
+            admission = self._cell.tell(request)
             if admission is not AdmissionResult.ACCEPTED:
                 self._finish_migration_waiter(
                     token, MigrationOutcome.failed(AgentError(f"migration admission is {admission.value}"))
@@ -627,33 +589,9 @@ class AgentActor:
     ) -> None:
         self._home_calls.settle(correlation_id, value, error)
 
-    def _execute_state_effect(self, request: _PinStateRequest) -> _PinStateResult:
-        if self._desired_state is None:
-            return _PinStateResult(None)
-        settled = getattr(self._desired_state, "remove_channel_pin_settled", None)
-        _state, legacy = (
-            settled(request.adapter)
-            if callable(settled)
-            else self._desired_state.remove_channel_pin(request.adapter)
-        )
-        return _PinStateResult(legacy)
-
-    def _admit_state_completion(
-        self, event: EffectCompleted[_PinStateResult]
-    ) -> AdmissionResult:
-        return self._runtime.tell(
-            self._handle,
-            _AgentStateEffectCompleted(
-                event.operation_id,
-                event.generation,
-                result=event.result,
-                error_code=event.error,
-            ),
-        )
-
     @property
     def generation(self) -> int:
-        return self._runtime.snapshot(self._handle).generation
+        return self._cell.snapshot().generation
 
     @property
     def version(self) -> int:
@@ -666,7 +604,7 @@ class AgentActor:
         return self._command_costs
 
     def submit(self, command: object) -> PortAdmission:
-        admission = self._runtime.tell(self._handle, command)
+        admission = self._cell.tell(command)
         if admission is AdmissionResult.ACCEPTED:
             return PortAdmission.ACCEPTED
         port_admission = (
@@ -682,9 +620,9 @@ class AgentActor:
                 generation=self.generation,
                 version=self.version,
                 code=(
-                    "PORT_OVERLOADED"
+                    ipc_errors.PORT_OVERLOADED
                     if port_admission is PortAdmission.OVERLOADED
-                    else "PORT_CLOSING"
+                    else ipc_errors.PORT_CLOSING
                 ),
                 detail=f"agent command admission is {port_admission.value}",
                 admission=port_admission,
@@ -722,63 +660,31 @@ class AgentActor:
         return self._projection.read_binding_key(actor if agent is None else agent.uri)
 
     def read_local_actor(self, value: str) -> str | None:
-        parsed = parse_agent_uri(value)
-        if parsed is not None:
-            if parsed[:2] != (self._registry.owner, self._registry.machine):
-                hosted = self._projection.read_agent(value)
-                return (
-                    hosted.actor
-                    if hosted is not None and hosted.uri == value
-                    and hosted.hosted_by is not None else None
-                )
-            candidate = parsed[2]
-        elif ":" in value:
-            return None
-        else:
-            candidate = value
-        try:
-            return self._registry.normalize_actor(candidate)
-        except AgentError:
-            return None
+        from hyprial.identity.impl.agents.addressing import resolve_local_actor
+
+        return resolve_local_actor(
+            value,
+            owner=self._registry.owner,
+            machine=self._registry.machine,
+            read=self._projection.read_agent,
+            normalize=lambda name: self._projection.actor_key(
+                self._registry.normalize_actor(member_actor_registry_key(name))
+            ),
+        )
 
     def read_uri_for(self, actor: str) -> str:
-        name = self._registry.normalize_actor(actor)
-        projection = self._projection.read_agent(name)
-        if projection is not None and projection.hosted_by is not None:
-            return projection.uri
-        return canonical_agent_uri(self._registry.owner, self._registry.machine, name)
+        from hyprial.identity.impl.agents.addressing import official_agent_uri
 
-    def read_pins(self) -> tuple[tuple[str, str], ...]:
-        return tuple(sorted(
-            (adapter, agent.uri)
-            for agent in self._projection.read_agents()
-            for adapter in agent.pinned_adapters
-        ))
+        return official_agent_uri(
+            self.read_local_actor(actor)
+            or self._registry.normalize_actor(member_actor_registry_key(actor)),
+            owner=self._registry.owner,
+            machine=self._registry.machine,
+            read=self._projection.read_agent,
+        )
 
     def read_session_ref_retired(self, actor: str, session_ref: str) -> bool:
         return self._registry.is_session_ref_retired(actor, session_ref)
-
-    def read_capability_grants(
-        self, actor: str | None = None
-    ) -> tuple[CapabilityGrant, ...]:
-        return self._read_effects.capability_grants(actor)
-
-    def read_secret_inventory(
-        self, actor: str | None = None
-    ) -> tuple[SecretGrant, ...]:
-        return self._read_effects.secret_inventory(actor)
-
-    def prevalidate_home(self, actor: str) -> HomeReceipt:
-        return self._read_effects.validate_home(actor)
-
-    def read_grant_journal(self, actor: str) -> tuple[GrantJournalEntry, ...]:
-        return self._read_effects.grant_journal(actor)
-
-    def read_workspace_summary(self, actor: str) -> WorkspaceSummary:
-        return self._read_effects.workspace_summary(actor)
-
-    def resolve_workspace_path(self, actor: str) -> str:
-        return self._read_effects.workspace_path(actor)
 
     def prepare_workspace(self, actor: str) -> str:
         result = self._call_home_access(
@@ -866,7 +772,7 @@ class AgentActor:
             raise AgentHomeAccessError("Agent home filesystem authority is unavailable")
         call, submit = self._home_calls.reserve(command.correlation_id, command_fingerprint(command))
         if submit:
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._home_calls.abandon_unstarted(command.correlation_id, AgentHomeAccessError(
                     f"Agent home access admission is {admission.value}"
@@ -940,21 +846,16 @@ class AgentActor:
             if self._home_effects is None
             else self._home_effects.close(timeout * 0.35)
         )
-        state_complete = (
-            True
-            if self._state_effects is None
-            else self._state_effects.close(timeout * 0.20)
-        )
-        if not home_complete or not state_complete:
+        if not home_complete:
             # Keep the owner available to ACK accepted effects. A later close
             # can finish once those exact receipts have settled.
             return DrainReport(False, time.monotonic() - started, (self._handle,))
-        report = self._runtime.drain(max(0.0, timeout * 0.15))
+        report = self._cell.drain(max(0.0, timeout * 0.15))
         read_complete = self._read_effects.close(
             max(0.0, timeout - (time.monotonic() - started))
         )
         return DrainReport(
-            home_complete and state_complete and report.complete and read_complete,
+            home_complete and report.complete and read_complete,
             time.monotonic() - started,
             report.remaining,
         )

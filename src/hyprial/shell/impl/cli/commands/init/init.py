@@ -1,4 +1,17 @@
-"""The ``hyprial init`` home/identity/daemon initialization command."""
+# Decision record (Z-5 PR 2, owner decision 2026-11-18): ``hyprial init`` never logs in.
+# - On a home with no account init creates the home, starts the bootstrap daemon
+#   and reports ``phase: bootstrap``, ``owner: null`` and ``nextSteps:
+#   ["hyprial login"]`` (exit 0).  The result carries no ``identity``, ``device``,
+#   ``verificationUri`` or ``userCode``: those belong to ``hyprial login``, whose
+#   first login is one daemon operation.  A daemon that is already running in
+#   bootstrap gets the same next step.
+# - Malformed settings stay loud: ``node_owner_or_none`` raises on them before any
+#   daemon is started, exactly as it did when init decided whether to log in.
+# - Sign-in is the daemon's: init and login share no identity code any more.
+# - ``init`` stays a group so future initialization subcommands have a home,
+#   but a bare ``hyprial init`` still runs the initialization below (a
+#   deliberate exception to the help-on-bare-invocation rule).
+"""The ``hyprial init`` home/daemon initialization command."""
 
 from __future__ import annotations
 
@@ -6,18 +19,15 @@ from hyprial.shell.impl.cli.commands.common.groups import group
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
-from collections.abc import Callable
 from hyprial.kernel import DaemonLaunchResult
 from hyprial.kernel import ipc_errors
 import os
 import typer
-from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _INIT_READY_TIMEOUT_ENV, _announce_setup_guidance, _append_warning, _squire_setup_warning
+from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _INIT_READY_TIMEOUT_ENV, _append_warning
+from hyprial.shell.impl.cli.output import warn
 
-#: ``init`` is a group because ``onboarding`` lives under it, but a bare
-#: ``hyprial init`` still runs the initialization below (deliberate exception
-#: to the help-on-bare-invocation rule).
 init_app = group(
-    help="Initialize home and daemon, then plan first-run setup.",
+    help="Initialize home and daemon.",
     invoke_without_command=True,
     no_args_is_help=False,
 )
@@ -47,6 +57,20 @@ def _zenoh_endpoint_warning(result: JsonObject) -> JsonObject | None:
             "daemon has no explicit Zenoh listen/connect endpoints and "
             "auto-discovery is disabled; this node is isolated from every other "
             "node until endpoints are configured"
+        ),
+    }
+
+
+def _bootstrap_daemon_warning(result: JsonObject) -> JsonObject | None:
+    """Say so when the daemon init found is a bootstrap daemon that cannot serve."""
+
+    if result.get("phase") != "bootstrap":
+        return None
+    return {
+        "code": "DAEMON_BOOTSTRAP_NO_ACCOUNT",
+        "message": (
+            "a daemon is already running in bootstrap with no account; it cannot "
+            "serve this home until you run `hyprial login`"
         ),
     }
 
@@ -92,16 +116,32 @@ def _org_init_warning(warning: JsonObject | None) -> JsonObject | None:
     return warning
 
 
+def _refuse_malformed_settings() -> None:
+    """Raise on an unreadable settings.json: a daemon must not be started over it."""
+    from hyprial.daemon import node_owner_or_none
+
+    node_owner_or_none()
+
+
+def _add_login_next_step(result: JsonObject) -> None:
+    if result.get("phase") == "bootstrap":
+        result["nextSteps"] = ["hyprial login"]
+
+
 def _complete_initialization(
     *,
     ready_timeout: float,
     listen: str | None,
     connect: str | None,
     org_warning: JsonObject | None,
-    login_when_missing: Callable[[], JsonObject] | None,
-    committed_identity_generation: list[int] | None = None,
+    autoinstall: bool = True,
 ) -> JsonObject:
-    """Ensure owner and daemon after home creation, without command recursion."""
+    """Ensure the daemon after home creation, without command recursion.
+
+    A home with no account gets the bootstrap daemon and the next step
+    ``hyprial login``; init never signs in.  ``autoinstall`` is the launch
+    primitive's switch: ``hyprial init`` leaves it on.
+    """
     services = get_services()
 
     def already_running(status: Any) -> JsonObject:
@@ -114,9 +154,10 @@ def _complete_initialization(
                 "stop the running daemon before changing zenoh endpoints",
             )
         existing: JsonObject = DaemonLaunchResult.existing(status).to_payload()
+        _append_warning(existing, _bootstrap_daemon_warning(existing))
         _append_warning(existing, _org_init_warning(org_warning))
         _append_warning(existing, _zenoh_endpoint_warning(status))
-        _append_warning(existing, _squire_setup_warning())
+        _add_login_next_step(existing)
         return existing
 
     try:
@@ -126,93 +167,21 @@ def _complete_initialization(
     else:
         return already_running(status)
 
-    login_result: JsonObject | None = None
-    owner_override = os.environ.get("HYPRIAL_OWNER", "").strip()
-    if not owner_override:
-        from hyprial.daemon import node_owner_or_none, resolve_node_owner
+    if not os.environ.get("HYPRIAL_OWNER", "").strip():
+        _refuse_malformed_settings()
 
-        if node_owner_or_none() is None and login_when_missing is not None:
-            try:
-                login_result = login_when_missing()
-            except KeyboardInterrupt as error:
-                raise services.CliError(
-                    "INTERRUPTED",
-                    "login was interrupted; run `hyprial login` or rerun `hyprial init`",
-                    data={"nextSteps": ["hyprial login", "hyprial init"]},
-                ) from error
-            except services.CliError as error:
-                data = dict(error.data) if isinstance(error.data, dict) else {}
-                data["nextSteps"] = ["hyprial login", "hyprial init"]
-                raise services.CliError(
-                    error.code,
-                    f"{error}; run `hyprial login` or rerun `hyprial init`",
-                    data=data,
-                ) from error
-
-        # The resolver is the daemon's own authority. For a login entry this
-        # verifies the identity stage committed before the init half can launch;
-        # for init it also keeps malformed settings loud rather than treating
-        # them as an absent owner. An environment override stays on init's
-        # legacy fast path and is validated by the daemon itself.
-        resolve_node_owner()
-
-    # A login that just committed passes its generation so the daemon can
-    # refuse to serve if a later login slipped in after the lock was released;
-    # that later login wins and this one is reported superseded.
-    from hyprial.shell.impl.login.generation import superseded_error
-
-    committed = (
-        committed_identity_generation[-1] if committed_identity_generation else None
+    launched = services._launch_daemon_process(
+        ready_timeout=ready_timeout,
+        listen=listen,
+        connect=connect,
+        autoinstall=autoinstall,
     )
-
-    def superseded(cause: str) -> Exception | None:
-        return superseded_error(
-            services.CliError, services._hyprial_home(), committed, cause,
-            {"nextSteps": ["hyprial login"]},
-        )
-
-    try:
-        launched = services._launch_daemon_process(
-            ready_timeout=ready_timeout,
-            listen=listen,
-            connect=connect,
-            expected_identity_generation=committed,
-        )
-    except Exception as error:
-        lost = superseded("the daemon launched for it exited as stale")
-        if lost is not None:
-            raise lost from error
-        raise
-    lost = superseded("the serving daemon does not carry it")
-    if lost is not None:
-        raise lost
     if launched.already_running:
-        # The launcher's own optimistic probe won the race; re-wrap its
-        # answer through the same already-running branch as the probe
-        # above, warnings included.
         return already_running(launched.status)
     result = launched.to_payload()
     _append_warning(result, _org_init_warning(org_warning))
     _append_warning(result, _zenoh_endpoint_warning(result))
-    _append_warning(result, _squire_setup_warning())
-    if login_result is not None:
-        for key in ("identity", "device", "verificationUri", "userCode"):
-            if key in login_result:
-                result[key] = login_result[key]
-        device = login_result.get("device")
-        if isinstance(device, dict) and device.get("ready") is False:
-            _append_warning(
-                result,
-                {
-                    "code": "DEVICE_KEY_NOT_READY",
-                    "message": (
-                        "login identity was kept and the daemon started; "
-                        "install the hyprial-tailcat sidecar and rerun "
-                        "`hyprial login` to provision the device key"
-                    ),
-                    "data": device,
-                },
-            )
+    _add_login_next_step(result)
     return result
 
 
@@ -262,14 +231,11 @@ def init(
         ),
     ),
 ) -> None:
-    """Initialize home and daemon, establishing identity first when owner is absent.
+    """Initialize the home and start the daemon; never sign in.
 
-    Home creation, owner establishment, and daemon startup are one in-process
-    onboarding flow.  Since the tailnet cutover the only identity source is
-    the Hyprial service (the profile issuer): a home with no owner runs the
-    existing login path unchanged — no identity-source choice, no self-hosted
-    tailnet branch.  An existing owner still takes the pre-onboarding path
-    unchanged; no login implementation is copied or launched through a shell.
+    A home with an account starts its serving daemon.  A home with no account
+    starts the bootstrap daemon and the result names the next step,
+    ``hyprial login``, which runs the first login through that daemon.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -301,29 +267,11 @@ def init(
             )
         services.initialize_hyprial_home()
         org_warning = services._initialize_org_context()
-        committed_identity_generation: list[int] = []
-
-        def login_when_missing() -> JsonObject:
-            services = get_services()
-            # No identity-source choice since the tailnet cutover: an
-            # ownerless home goes straight to the service login
-            # (the profile issuer).
-            return services._run_login_cli_flow(
-                no_open=False,
-                json_output=json_output,
-                switch_account=False,
-                no_daemon=True,
-                first_time_setup=True,
-                committed_identity_generation=committed_identity_generation,
-            )
-
         result = services._complete_initialization(
             ready_timeout=ready_timeout,
             listen=listen,
             connect=connect,
             org_warning=org_warning,
-            login_when_missing=login_when_missing,
-            committed_identity_generation=committed_identity_generation,
         )
         # Autostart is the default, not an opt-in.  A daemon that is installed
         # but not supervised comes back only if a human starts it, which is
@@ -357,7 +305,8 @@ def init(
                     "detail": str(error),
                 }
         if not json_output:
-            _announce_setup_guidance(result)
+            if result.get("nextSteps"):
+                warn("hyprial: no account yet; next run `hyprial login`", json_output=False)
         return result
 
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False)

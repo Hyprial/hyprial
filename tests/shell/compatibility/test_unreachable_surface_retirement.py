@@ -28,6 +28,12 @@ RETIRED_MODULES = frozenset(
         "hyprial.daemon.impl.zenohd",
         "hyprial.transport.storage",
         "hyprial.mcp.http",
+        "hyprial.daemon.impl.request_catalog.adapter.pins",
+        "hyprial.daemon.impl.request_catalog.agent.authority",
+        "hyprial.shell.impl.cli.commands.adapter.pins",
+        "hyprial.shell.impl.cli.commands.agent.authority",
+        "hyprial.daemon.impl.composition.agent_pins",
+        "hyprial.identity.impl.agents.actor.adapter_removal",
     }
 )
 RETIRED_DEFINITIONS = frozenset(
@@ -46,6 +52,16 @@ RETIRED_DEFINITIONS = frozenset(
         "load_or_create_token",
         "select_wake_driver",
         "serve_http",
+        "AgentPinsFacade",
+        "PinAgentAdapterCommand",
+        "UnpinAgentAdapterCommand",
+        "PinConflictError",
+        "PinStateConflictError",
+        "AdapterPinProjection",
+        "AdapterRemovalCustody",
+        "normalize_pinned_adapters",
+        "ReserveAgentAdapterRemovalCommand",
+        "ReleaseAgentAdapterRemovalCommand",
     }
 )
 
@@ -242,4 +258,4 @@ def test_live_mcp_contract_passes_on_the_fixed_identity_server() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "mcp-tools: PASS 32/32"
+    assert completed.stdout.strip() == "mcp-tools: PASS 33/33"

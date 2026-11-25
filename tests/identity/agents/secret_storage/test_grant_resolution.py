@@ -87,22 +87,34 @@ def test_set_grant_resolve_and_rotate_remove(custody) -> None:
     assert all(value not in str(error.value) for value in (first, second))
 
 
-def test_legacy_file_is_migrated_and_directory_removed(custody) -> None:
+def test_legacy_file_is_ignored_and_store_miss_raises_missing(custody) -> None:
+    """Closed migration window: unencrypted files under secrets/ are never imported."""
     registry, resolver = custody
-    value = _legacy(registry)
-    assert _matches(resolver, value)
+    legacy_value = _legacy(registry)
     home = Path(registry.home_receipt("worker").path)
-    assert (home / "secrets.sqlite").is_file()
-    assert not (home / "secrets").exists()
-    assert _matches(resolver, value)
+    with pytest.raises(SecretResolutionError) as error:
+        resolver.resolve("worker", "routes")
+    assert error.value.category == "missing"
+    assert legacy_value not in str(error.value)
+    assert not (home / "secrets.sqlite").exists()
+    assert (home / "secrets" / "cloudflare-routes").is_file()
+
+    store = AgentSecretStore(home)
+    store.set(
+        service="unrelated", field="OTHER_TOKEN", value=secrets.token_hex(24),
+        actor="user:owner", via="cli", at_ms=1,
+    )
+    with pytest.raises(SecretResolutionError) as second_error:
+        resolver.resolve("worker", "routes")
+    assert second_error.value.category == "missing"
+    assert not store.list(service="cloudflare-routes")
 
 
 def test_store_authority_prevents_legacy_resurrection_after_remove(custody) -> None:
     registry, resolver = custody
-    value = _legacy(registry)
-    assert _matches(resolver, value)
+    _legacy(registry)
     store = AgentSecretStore(Path(registry.home_receipt("worker").path))
-    value = _write(store, rotate=True)
+    value = _write(store)
     assert _matches(resolver, value)
     store.remove(
         service="cloudflare-routes", field=None, actor="user:owner", via="cli", at_ms=3,
@@ -111,15 +123,26 @@ def test_store_authority_prevents_legacy_resurrection_after_remove(custody) -> N
         resolver.resolve("worker", "routes")
 
 
-def test_unrelated_store_service_does_not_disable_migration(custody) -> None:
+def test_native_directory_is_not_a_legacy_entry(custody) -> None:
     registry, resolver = custody
-    value = _legacy(registry)
-    store = AgentSecretStore(Path(registry.home_receipt("worker").path))
-    store.set(
-        service="unrelated", field="OTHER_TOKEN", value=secrets.token_hex(24),
-        actor="user:owner", via="cli", at_ms=1,
+    home = Path(registry.home_receipt("worker").path)
+    native = home / "secrets" / "native"
+    native.mkdir(parents=True, mode=0o700)
+    native.parent.chmod(0o700)
+    marker = native / "auth.json"
+    marker.write_text("{}", encoding="utf-8")
+    marker.chmod(0o600)
+    store = AgentSecretStore(home)
+    value = secrets.token_hex(24)
+    store.set(service="native", field="API_TOKEN", value=value, actor="user:owner", via="cli", at_ms=1)
+    registry.grant_secret(
+        "worker", grant_id="native", source=SecretSource.AGENT_PRIVATE,
+        entry_id="native", field_name="API_TOKEN", environment_names=("API_TOKEN",), revision=1,
     )
-    assert _matches(resolver, value)
+    matched = hmac.compare_digest(resolver.resolve("worker", "native").value, value)
+    assert matched
+    assert marker.read_text(encoding="utf-8") == "{}"
+    assert not any(event.action == "migrate" for event in store.history())
 
 
 @pytest.mark.parametrize("fence", ["agent", "receipt"])
@@ -146,7 +169,7 @@ def test_wrong_incarnation_refused_before_store_read(custody, monkeypatch, fence
     assert not any(event.action == "migrate" for event in store.history())
 
 
-@pytest.mark.parametrize("damage", ["mode", "symlink", "corrupt", "key"])
+@pytest.mark.parametrize("damage", ["mode", "symlink", "corrupt"])
 def test_unsafe_store_never_falls_back_to_legacy(custody, damage) -> None:
     registry, resolver = custody
     _legacy(registry)
@@ -158,8 +181,6 @@ def test_unsafe_store_never_falls_back_to_legacy(custody, damage) -> None:
         target = store.path.with_suffix(".parked")
         store.path.rename(target)
         store.path.symlink_to(target)
-    elif damage == "key":
-        store.key_path.unlink()
     else:
         store.path.write_bytes(b"not a database")
     with pytest.raises(SecretResolutionError):

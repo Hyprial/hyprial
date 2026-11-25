@@ -4,10 +4,14 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.kernel import Logger
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 from hyprial.daemon.impl.harnesses.streaming.process  import (
     StreamingTurnProcess,
@@ -55,6 +59,7 @@ class PiRpcProcess(StreamingTurnProcess):
         runtime_launch_custody: (
             Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
         ) = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         if spec.harness != "pi" or not spec.headless:
             raise ValueError("pi RPC requires a managed headless spec")
@@ -96,6 +101,7 @@ class PiRpcProcess(StreamingTurnProcess):
         # -- the operator's Pi root, which is what legacy pi always used.  A P2
         # launch with no grant refuses here instead of running secretless and
         # being blocked credential-invalid after its first failed turns.
+        proof = getattr(complete_launch, "native_auth_launch", None)
         self._provider_environment = pi_provider_environment(
             spec,
             (
@@ -112,6 +118,7 @@ class PiRpcProcess(StreamingTurnProcess):
                 else runtime_context.roots.projection_root
             ),
             allow_legacy_home_fallback=runtime_context is None,
+            on_native_selected=None if proof is None else proof.select,
         )
         # The complete environment is resolved ONCE per process (at factory
         # time) and re-bound verbatim into every reconnected RPC client: a
@@ -158,6 +165,7 @@ class PiRpcProcess(StreamingTurnProcess):
             force_stopped=self._force_stopped_client,
             on_turn_failure=adapted_observer,
             on_turn_completed=on_turn_completed,
+            actor_host=actor_host,
         )
 
     @property

@@ -53,7 +53,7 @@ Matrix absence produces a warning. A separate native Codex read-only sandbox smo
 ## Rollback
 
 1. Keep the new binary and the same owner. Stop/fence smolvm workers; resolve incomplete cleanup and lifecycle compensation. Stop the daemon through the normal operations procedure.
-2. Run `hyprial agent transfer runtime downgrade-state --output /absolute/new-export-dir --json`. It takes the existing daemon ownership fence and refuses active runtime pointers, unretired receipts or unfinished operations.
+2. Run `hyprial agent runtime downgrade-state --output /absolute/new-export-dir --json`. It takes the existing daemon ownership fence and refuses active runtime pointers, unretired receipts or unfinished operations.
 3. The tool durably exports removed runtime intent/references and retained terminal history before one SQLite transaction removes the new executable intent and changes root to schema 1. Agent identity, home files, sessions, grants and normal host/Docker intent remain. Terminal journal rows stay historical; no automatic reimport/start is offered.
 4. Only after successful verification may operations install the old binary and restore host workers. Keep the export and a consistent operations backup. Do not combine downgrade with owner migration.
 

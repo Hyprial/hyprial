@@ -66,22 +66,6 @@ def test_pac_default_missing_and_resident_native():
     bootstrap.write_text(audit +
         "from hyprial.daemon.impl.harnesses import agent_sdk\n"
         f"agent_sdk.sdk_worker_command = lambda **kw: {(uv, 'run', '--no-project', '--python', sys.executable, 'python', str(fake))!r}\n"
-        # Exercise the real PTY route for the last graph, without invoking Claude.
-        "from dataclasses import replace\n"
-        "from pathlib import Path\n"
-        "from hyprial.daemon.impl.harnesses.runtime.launcher import HarnessLauncher\n"
-        "from hyprial.daemon.impl.harnesses.protocol.common import PtyHarnessProcess\n"
-        "original_start = HarnessLauncher.start\n"
-        "original_spawn = PtyHarnessProcess.spawn\n"
-        "def observed_spawn(*args, **kwargs):\n"
-        f" Path({str(root / 'pty-spawned')!r}).touch()\n"
-        " return original_spawn(*args, **kwargs)\n"
-        "PtyHarnessProcess.spawn = observed_spawn\n"
-        "def start(self, spec):\n"
-        f" if spec.harness == 'claude' and Path({str(root / 'pty-mode')!r}).exists():\n"
-        f"  spec = replace(spec, headless=False, command={(sys.executable, str(fake))!r})\n"
-        " return original_start(self, spec)\n"
-        "HarnessLauncher.start = start\n"
         "from hyprial.shell.impl.cli.runtime.entry import main\nmain()\n"
     )
     identity = {"actor": f"user:{OWNER}"}
@@ -153,15 +137,7 @@ def test_pac_default_missing_and_resident_native():
         node.ipc("lifecycle.start", {"provider": "claude", "name": "resident", "headless": True,
                                     "cwd": str(work), "command": [uv, "run", "--no-project", "--python", sys.executable, "python", str(fake)]})
         assert node.ipc("agent.secret.list", {"actor": "resident"})["grants"] == []
-        ambient_native = Path(node.environment["HOME"]) / ".claude"
-        (root / "pty-mode").touch()
-        pty_graph = graph("pty-no-default")
-        pty_failed = wait_for(lambda: (result if (result := inspect(pty_graph))["node"]["state"] == "failed" else None))
-        assert pty_failed["node"]["reasonRef"] == "pac:launch_failed:CLAUDE_CREDENTIAL_MISSING"
-        assert not (root / "pty-spawned").exists()
         assert not (root / "host-bait-accessed").exists()
-        assert sorted(p.name for p in ambient_native.iterdir()) == [".credentials.json"]
-        assert (ambient_native / ".credentials.json").read_text() == '{"synthetic_state":"host-bait"}'
         events = log_events()
         assert all(token not in json.dumps(event) for event in events)
         sources = {event.get("credentialSource") for event in events if event.get("event") == "worker.claude.credential_source"}
@@ -169,7 +145,6 @@ def test_pac_default_missing_and_resident_native():
         (root / "result.json").write_text(json.dumps({"defaultGrant": "PASS", "missingStart": "PASS",
             "pacReason": failed["node"]["reasonRef"], "residentNativeWithoutFile": "PASS",
             "clearPreservesGrants": "PASS", "nativeDefaultPac": "PASS",
-            "workflowPtyNoSpawn": "PASS", "ptyPacReason": pty_failed["node"]["reasonRef"],
             "hostBaitNoAccess": "PASS", "agentNativeConfigAndTranscript": "PASS",
             "realProviderAuth": "NOT_RUN", "realKeychain": "NOT_RUN"}))
     finally:

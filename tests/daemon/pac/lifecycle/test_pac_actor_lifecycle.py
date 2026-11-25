@@ -36,6 +36,7 @@ from hyprial.daemon.impl.pac.graphs.authority import PacGraphAuthority
 from hyprial.kernel import AdmissionResult
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore, default_database_path
 from hyprial.daemon.impl.pac.workflows.runtime import close_workflow
+from tests.support.actor_hosts import new_actor_host
 
 USER_ALLEN = "user:allen"
 #: the fixture actor's execution binding (owner allen on machine test-node)
@@ -194,7 +195,7 @@ def test_pac_notification_and_actor_run_without_workflow_service(
         inbox_db,
         local,
         router,
-        node_id="node",
+        node_id="node", actor_host=new_actor_host(),
     )
     inbox = DeliveryCustodyFacade(custody, inbox_db, timeout=1.0)
     local.bind_receiver(inbox.receive)
@@ -790,7 +791,7 @@ def test_actor_requires_tier_uses_static_matrix_selection(
     launch = tmp_path / "launch.yaml"
     launch.write_text("cwd: /tmp\nargs: [--headless]\n")
     monkeypatch.setattr(
-        "hyprial.daemon.impl.squire.probe._subprocess_runner",
+        "hyprial.daemon.impl.harnesses.probe._subprocess_runner",
         lambda *_: pytest.fail("PAC selection probed a harness"),
     )
     resolved = FileLaunchResolver(tmp_path)("launch.yaml", node)

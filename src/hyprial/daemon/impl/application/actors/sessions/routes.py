@@ -71,7 +71,10 @@ class _SessionRoutesMixin(_SessionRouteRetryMixin, _SessionRouteMaintenanceMixin
     def _ensure_session_route_coordinator(self) -> SessionRouteCoordinator:
         coordinator = self._session_route_coordinator
         if coordinator is None:
-            coordinator = SessionRouteCoordinator(self._apply_session_route_request)
+            coordinator = SessionRouteCoordinator(
+                self._apply_session_route_request,
+                actor_host=self._actor_hosts.host_for("session-routes"),
+            )
             self._session_route_coordinator = coordinator
         return coordinator
 

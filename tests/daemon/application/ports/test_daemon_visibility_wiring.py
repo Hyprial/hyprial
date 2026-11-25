@@ -93,13 +93,18 @@ def _register_session(app: DaemonApplication, actor: str, session_ref: str) -> N
 
 def _hosted_visitor(
     app: DaemonApplication, *, session_ref: str = "visitor-session"
-) -> str:
-    """One hosted visitor with a daemon-minted session binding, plus a peer."""
+) -> tuple[str, str]:
+    """One hosted visitor with a daemon-minted session binding, plus a peer.
 
-    app.handle("agent.create", {"name": "native"})
-    app.agents.create_transfer_hosted("visitor", pinned_owner="guest")
-    _register_session(app, VISITOR_URI, session_ref)
-    return VISITOR_URI
+    Answers the official (id-form) addresses of the native peer and the
+    visitor; ``NATIVE_URI`` and ``VISITOR_URI`` are their retired name URIs.
+    """
+
+    native = app.handle("agent.create", {"name": "native"})["agent"]["uri"]
+    visitor = app.agents.create_transfer_hosted("visitor", pinned_owner="guest").uri
+    assert native != NATIVE_URI and visitor != VISITOR_URI
+    _register_session(app, visitor, session_ref)
+    return native, visitor
 
 
 def _targets(app: DaemonApplication, params: dict[str, Any]) -> list[str]:
@@ -146,29 +151,9 @@ def test_the_host_local_path_still_sees_every_target(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    native, visitor = _hosted_visitor(app)
 
-    assert _targets(app, {}) == sorted([NATIVE_URI, VISITOR_URI])
-
-
-def test_targets_preserve_stored_legacy_profile_owner_spelling(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> None:
-    app = _application(request, tmp_path)
-    app.user_profiles.ensure(
-        owner="legacy:owner",
-        owner_key="legacy-owner",
-        login_name="legacy-owner",
-        machine=NODE,
-        machine_key=NODE,
-    )
-    channel = "adapter:op:node-1:lark"
-    app.user_profiles.set_squire_channel("legacy-owner", channel)
-    app.user_profiles.bind_owner_open_id(
-        "legacy-owner", channel=channel, open_id="ou_legacy"
-    )
-
-    assert _targets(app, {}) == ["user:legacy:owner"]
+    assert _targets(app, {}) == sorted([native, visitor])
 
 
 def test_a_verified_native_caller_keeps_todays_view(
@@ -177,12 +162,12 @@ def test_a_verified_native_caller_keeps_todays_view(
     """Card 358 names hosted visitors; tightening native is a ruling."""
 
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
-    _register_session(app, NATIVE_URI, "native-session")
+    native, visitor = _hosted_visitor(app)
+    _register_session(app, native, "native-session")
 
-    rows = _targets(app, {"actor": NATIVE_URI, "sessionRef": "native-session"})
+    rows = _targets(app, {"actor": native, "sessionRef": "native-session"})
 
-    assert rows == sorted([NATIVE_URI, VISITOR_URI])
+    assert rows == sorted([native, visitor])
 
 
 # -- a hosted visitor is fenced to the ledger --------------------------------
@@ -192,41 +177,62 @@ def test_targets_fences_a_hosted_visitor_to_itself(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    native, visitor = _hosted_visitor(app)
 
-    rows = _targets(app, {"actor": VISITOR_URI, "sessionRef": "visitor-session"})
+    rows = _targets(app, {"actor": visitor, "sessionRef": "visitor-session"})
 
-    assert rows == [VISITOR_URI]
+    assert rows == [app.agents.uri_for("visitor")]
+    assert rows != [VISITOR_URI]
+
+
+def test_a_hosted_visitor_session_keeps_its_name_address_with_id_minting_off(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switch off, the pinned-owner name URI is the official address, unchanged."""
+
+    from hyprial.identity.impl.agents import addressing
+
+    monkeypatch.setattr(addressing, "ID_FORM_MINTING", False)
+    app = _application(request, tmp_path)
+    app.handle("agent.create", {"name": "native"})
+    app.agents.create_transfer_hosted("visitor", pinned_owner="guest")
+    _register_session(app, VISITOR_URI, "visitor-session")
+
+    assert app.agents.uri_for("visitor") == VISITOR_URI
+    assert app._canonical_interactive_actor(VISITOR_URI) == VISITOR_URI
+    assert _targets(app, {"actor": VISITOR_URI, "sessionRef": "visitor-session"}) == [
+        VISITOR_URI
+    ]
 
 
 def test_a_grant_widens_the_view_and_a_withdrawal_takes_effect_next_call(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
-    params = {"actor": VISITOR_URI, "sessionRef": "visitor-session"}
+    native, visitor = _hosted_visitor(app)
+    params = {"actor": visitor, "sessionRef": "visitor-session"}
 
-    assert _targets(app, params) == [VISITOR_URI]
+    assert _targets(app, params) == [visitor]
 
-    _grant(app, actor=VISITOR_URI, capability="see-actors", scope=[NATIVE_URI])
-    assert _targets(app, params) == sorted([NATIVE_URI, VISITOR_URI])
+    _grant(app, actor=visitor, capability="see-actors", scope=[native])
+    assert _targets(app, params) == sorted([native, visitor])
 
-    app.handle("agent.revoke", {"actor": VISITOR_URI, "grantId": "g1"})
-    assert _targets(app, params) == [VISITOR_URI]
+    app.handle("agent.revoke", {"actor": visitor, "grantId": "g1"})
+    assert _targets(app, params) == [visitor]
 
 
 def test_a_send_without_a_send_to_grant_is_refused_before_anything_queues(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    native, visitor = _hosted_visitor(app)
 
     with pytest.raises(DaemonRequestError) as failure:
-        _send(app, sender=VISITOR_URI, target=NATIVE_URI, session="visitor-session")
+        _send(app, sender=visitor, target=native, session="visitor-session")
 
     assert failure.value.code == "TARGET_NOT_AUTHORIZED"
-    assert failure.value.data["caller"] == VISITOR_URI
-    assert failure.value.data["target"] == NATIVE_URI
+    assert failure.value.data["caller"] == visitor
+    assert failure.value.data["target"] == native
     assert app._inbox.outbox_count() == 0  # type: ignore[union-attr]
 
 
@@ -234,16 +240,16 @@ def test_a_send_to_a_granted_target_proceeds_and_self_needs_no_grant(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
-    _grant(app, actor=VISITOR_URI, capability="send-to", scope=[NATIVE_URI])
+    native, visitor = _hosted_visitor(app)
+    _grant(app, actor=visitor, capability="send-to", scope=[native])
 
     granted = _send(
-        app, sender=VISITOR_URI, target=NATIVE_URI, session="visitor-session"
+        app, sender=visitor, target=native, session="visitor-session"
     )
     assert granted["ok"] is True
 
     itself = _send(
-        app, sender=VISITOR_URI, target=VISITOR_URI, session="visitor-session"
+        app, sender=visitor, target=visitor, session="visitor-session"
     )
     assert itself["ok"] is True
 
@@ -254,11 +260,11 @@ def test_the_host_local_send_path_is_not_fenced(
     """No session binding: the CLI/worker path keeps today's rules."""
 
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
-    _register_session(app, NATIVE_URI, "native-session")
+    native, visitor = _hosted_visitor(app)
+    _register_session(app, native, "native-session")
 
     # No send-to grant is recorded anywhere; the unfenced path still sends.
-    sent = _send(app, sender=NATIVE_URI, target=VISITOR_URI, session=None)
+    sent = _send(app, sender=native, target=visitor, session=None)
 
     assert sent["ok"] is True
 
@@ -282,14 +288,14 @@ def test_a_made_up_session_binding_cannot_send_and_does_not_narrow_targets(
     """
 
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    native, visitor = _hosted_visitor(app)
 
-    assert _targets(app, {"actor": NATIVE_URI, "sessionRef": "not-a-binding"}) == sorted(
-        [NATIVE_URI, VISITOR_URI]
+    assert _targets(app, {"actor": native, "sessionRef": "not-a-binding"}) == sorted(
+        [native, visitor]
     )
 
     with pytest.raises(DaemonRequestError) as send_failure:
-        _send(app, sender=NATIVE_URI, target=VISITOR_URI, session="not-a-binding")
+        _send(app, sender=native, target=visitor, session="not-a-binding")
 
     assert send_failure.value.code in {"STALE_SESSION", "SESSION_SUPERSEDED"}
     assert app._inbox.outbox_count() == 0  # type: ignore[union-attr]
@@ -301,15 +307,15 @@ def test_a_native_caller_whose_binding_went_stale_still_sees_the_list(
     """The reviewer's (b) case: no new refusal for a native agent's targets."""
 
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
-    _register_session(app, NATIVE_URI, "native-session")
-    _register_session(app, NATIVE_URI, "native-session-2")  # supersedes the first
+    native, visitor = _hosted_visitor(app)
+    _register_session(app, native, "native-session")
+    _register_session(app, native, "native-session-2")
 
-    assert _targets(app, {"actor": NATIVE_URI, "sessionRef": "native-session"}) == sorted(
-        [NATIVE_URI, VISITOR_URI]
+    assert _targets(app, {"actor": native, "sessionRef": "native-session"}) == sorted(
+        [native, visitor]
     )
-    assert _targets(app, {"actor": NATIVE_URI, "sessionRef": "native-session-2"}) == sorted(
-        [NATIVE_URI, VISITOR_URI]
+    assert _targets(app, {"actor": native, "sessionRef": "native-session-2"}) == sorted(
+        [native, visitor]
     )
 
 
@@ -319,12 +325,12 @@ def test_a_superseded_binding_cannot_borrow_the_ledger(
     """The visitor's grant must not answer for a stale binding."""
 
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
-    _grant(app, actor=VISITOR_URI, capability="see-actors", scope=[NATIVE_URI])
-    _register_session(app, VISITOR_URI, "visitor-session-2")
+    native, visitor = _hosted_visitor(app)
+    _grant(app, actor=visitor, capability="see-actors", scope=[native])
+    _register_session(app, visitor, "visitor-session-2")
 
     with pytest.raises(DaemonRequestError) as failure:
-        _targets(app, {"actor": VISITOR_URI, "sessionRef": "visitor-session"})
+        _targets(app, {"actor": visitor, "sessionRef": "visitor-session"})
 
     assert failure.value.code in {"SESSION_SUPERSEDED", "STALE_SESSION"}
 
@@ -338,11 +344,11 @@ def test_a_sessionless_claim_of_the_host_owner_user_is_the_l0_boundary(
     "AT09 item 1's attack: no ``sessionRef``, claim ``user:<host owner>``.\n\n    A user principal has no session to bind, so #1073's sender custody cannot\n    answer for it -- there is no session to compare the claim against.  The\n    claim therefore rides the same host-local path the operator's own CLI\n    sends use, and the recipient sees exactly the claimed ``user:<owner>``.\n    That is the L0 same-uid boundary the support table records: what keeps it\n    honest is uid ownership of the trusted socket, not this fence.  The\n    registered-agent half of the same attack *is* fenced once the sender-auth\n    rollout runs in enforce mode (``tests/daemon/delivery/message/test_authenticated_message_sender.py``\n    refuses a registered agent's sessionless claim there), which is why the\n    boundary is about principals without sessions, not about a missing check.\n    "
 
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    native, visitor = _hosted_visitor(app)
 
     sent = app.handle(
         "message.send",
-        {"from": f"user:{OWNER}", "to": [VISITOR_URI], "message": "claimed owner", "summary": "claimed owner"},
+        {"from": f"user:{OWNER}", "to": [visitor], "message": "claimed owner", "summary": "claimed owner"},
         _trusted_message_origin="ipc",
     )
 
@@ -351,8 +357,8 @@ def test_a_sessionless_claim_of_the_host_owner_user_is_the_l0_boundary(
         "message.send",
         {
             "from": f"user:{OWNER}",
-            "onBehalfOf": NATIVE_URI,
-            "to": [VISITOR_URI],
+            "onBehalfOf": native,
+            "to": [visitor],
             "message": "claimed owner, relayed",
             "summary": "claimed owner, relayed",
         },

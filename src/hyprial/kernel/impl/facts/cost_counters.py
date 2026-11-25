@@ -271,8 +271,8 @@ class RuntimeCpuCounters:
 
 
 # One daemon process owns one aggregate.  Tests may inject an isolated instance
-# into ActorRuntime/EffectLane; production uses this singleton at both choke
-# points and in the ps projection.
+# into the actor engine/EffectLane; production uses this singleton at both
+# choke points and in the ps projection.
 runtime_cpu_counters = RuntimeCpuCounters(
     excluded_owners=_RUNTIME_EXCLUDED_OWNERS
 )

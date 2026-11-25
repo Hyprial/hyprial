@@ -12,7 +12,6 @@ import fnmatch
 
 
 import hashlib
-
 import json
 
 
@@ -25,6 +24,7 @@ import json
 from typing import Callable
 
 from pycrdt import Doc
+
 
 
 
@@ -73,19 +73,30 @@ class FacadeContent:
 
 
     @_facade_locked
-    def listdir(self, space_id: str, node: NodeRef) -> tuple[NodeInfo, ...]:
+    def listdir(
+        self, space_id: str, node: NodeRef, *, recursive: bool = False
+    ) -> tuple[NodeInfo, ...]:
         space = self._space(space_id)
         parent = self._one(space, node)
         if parent.kind != "dir":
             raise OrgFsError("invalid-argument", {"message": "not a directory"})
+        if type(recursive) is not bool:
+            raise OrgFsError(
+                "invalid-argument", {"message": "recursive must be a boolean"}
+            )
         children = sorted(
             (
                 child
                 for child in space.nodes.values()
-                if child.parent == parent.node_id and not child.deleted
+                if not child.deleted
+                and (
+                    self._is_descendant(space, child.node_id, parent.node_id)
+                    if recursive
+                    else child.parent == parent.node_id
+                )
                 and self._member_row_visible(space, child)
             ),
-            key=lambda child: (child.name, child.node_id),
+            key=lambda child: (self._path(space, child.node_id), child.node_id),
         )
         return tuple(self._node_info(space, child.node_id) for child in children)
 
@@ -277,6 +288,7 @@ class FacadeContent:
             content=content,
             version=item.version,
             node=self._node_info(space, item.node_id),
+            content_revision=hashlib.sha256(space.contents[item.doc_id].export()).hexdigest(),
         )
 
 
@@ -628,8 +640,6 @@ class FacadeContent:
         handle_ref: list[StructuredOrgDoc] = []
 
         def commit(mutate: Callable[[Doc], None]) -> NodeInfo:
-            # User mutation runs only against a detached copy. The owner sees
-            # immutable bytes and fences them against the captured CRDT state.
             with self._space_lock(space_id):
                 current_space = self._space(space_id)
                 current = self._one(current_space, f"id:{node_id}")

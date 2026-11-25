@@ -26,7 +26,6 @@ from hyprial.daemon.impl.inbox.contracts.api import (
 
 from .support import (
     HUMAN_FACING,
-    PROXY,
     REQUESTER,
     WORKER,
     FakeHarnessFarm,
@@ -35,9 +34,7 @@ from .support import (
     _human_request,
     _in_channel_runtime,
     _notices_to,
-    _proxy_in_channel_runtime,
-    _proxy_request,
-    _proxy_runtime,
+    _notice_runtime,
     _request,
     _wait_for,
 )
@@ -45,7 +42,7 @@ from .support import (
 
 @pytest.mark.parametrize("sender", HUMAN_FACING)
 def test_failure_notice_never_becomes_an_inbox_leg_to_the_requester(
-    tmp_path: Path, sender: str
+    tmp_path: Path, sender: str, *, actor_host
 ) -> None:
     """The in-channel reply is the only leg: nothing is submitted to the
     inbox addressed to the person's chat, on any human-facing shape."""
@@ -61,7 +58,7 @@ def test_failure_notice_never_becomes_an_inbox_leg_to_the_requester(
     inbox.add(_human_request("req-h1", sender))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer)
+    runtime, events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer, actor_host=actor_host)
     try:
         runtime.on_timer()
         now["v"] += 1_500
@@ -86,7 +83,7 @@ def test_failure_notice_never_becomes_an_inbox_leg_to_the_requester(
 
 
 def test_no_progress_notice_goes_in_channel_without_touching_the_turn(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     sender = HUMAN_FACING[0]
     sink: list[tuple[str, str | None, str]] = []
@@ -100,7 +97,7 @@ def test_no_progress_notice_goes_in_channel_without_touching_the_turn(
     inbox.add(_human_request("req-h2", sender))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer)
+    runtime, events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer, actor_host=actor_host)
     try:
         runtime.on_timer()
         now["v"] += 500_000  # past pi's 480 s budget, no progress
@@ -116,13 +113,14 @@ def test_no_progress_notice_goes_in_channel_without_touching_the_turn(
     assert not [f for e, f in events if e == "availability_loud.diverted"]
 
 
-def test_owner_diversion_stays_retired_without_a_deliverer(tmp_path: Path) -> None:
+def test_owner_diversion_stays_retired_without_a_deliverer(
+    tmp_path: Path, *, actor_host
+) -> None:
     """No in-channel deliverer wired (an old composition, a user: shape with
     no chat handle): the notice is held loudly for retry -- it must NOT fall
     back to the owner channel (2026-10-13 retirement is unconditional for
     human-originated conversations)."""
 
-    calls: list[str] = []
     inbox = LoudInbox()
     inbox.add(_human_request("req-o1", HUMAN_FACING[0]))
     farm = FakeHarnessFarm()
@@ -130,7 +128,7 @@ def test_owner_diversion_stays_retired_without_a_deliverer(tmp_path: Path) -> No
     runtime, events = _in_channel_runtime(
         tmp_path, inbox, farm, now,
         deliverer=None,  # type: ignore[arg-type]
-        notifier=lambda text, *, idempotency_key: calls.append(text),
+        actor_host=actor_host,
     )
     try:
         _fail_once(runtime, farm, now, "req-o1")
@@ -138,14 +136,14 @@ def test_owner_diversion_stays_retired_without_a_deliverer(tmp_path: Path) -> No
     finally:
         runtime.stop()
 
-    assert calls == []
     assert not [f for e, f in events if e == "availability_loud.diverted"]
     held = [f for e, f in events if e == "availability_loud.delivery_failed"]
     assert len(held) == 1 and held[0]["code"] == "IN_CHANNEL_DELIVERY_UNWIRED"
 
 
-def test_an_agent_requester_never_reaches_the_owner_channel(tmp_path: Path) -> None:
-    calls: list[str] = []
+def test_an_agent_requester_never_reaches_the_owner_channel(
+    tmp_path: Path, *, actor_host
+) -> None:
     inbox = LoudInbox()
     inbox.add(_request("req-o2"))
     farm = FakeHarnessFarm()
@@ -153,17 +151,18 @@ def test_an_agent_requester_never_reaches_the_owner_channel(tmp_path: Path) -> N
     runtime, events = _in_channel_runtime(
         tmp_path, inbox, farm, now,
         deliverer=None,  # type: ignore[arg-type]
-        notifier=lambda text, *, idempotency_key: calls.append(text),
+        actor_host=actor_host,
     )
     try:
         _fail_once(runtime, farm, now, "req-o2")
     finally:
         runtime.stop()
     assert len(_notices_to(inbox, REQUESTER)) == 1  # unchanged path
-    assert calls == []
 
 
-def test_a_failing_deliverer_never_breaks_the_tick(tmp_path: Path) -> None:
+def test_a_failing_deliverer_never_breaks_the_tick(
+    tmp_path: Path, *, actor_host
+) -> None:
     def boom(message: InboxMessage, text: str) -> bool:
         raise RuntimeError("lark down")
 
@@ -171,7 +170,7 @@ def test_a_failing_deliverer_never_breaks_the_tick(tmp_path: Path) -> None:
     inbox.add(_human_request("req-o3", HUMAN_FACING[0]))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, events = _in_channel_runtime(tmp_path, inbox, farm, now, boom)
+    runtime, events = _in_channel_runtime(tmp_path, inbox, farm, now, boom, actor_host=actor_host)
     try:
         _fail_once(runtime, farm, now, "req-o3")
         runtime.on_timer()
@@ -185,7 +184,7 @@ def test_a_failing_deliverer_never_breaks_the_tick(tmp_path: Path) -> None:
 
 
 def test_the_owners_own_request_hears_it_in_their_own_chat(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """The 2026-09-26 requester-is-owner exemption retired with diversion:
     the owner waiting in a chat gets the notice in that chat -- the same
@@ -194,7 +193,6 @@ def test_the_owners_own_request_hears_it_in_their_own_chat(
     import time
 
     sender = HUMAN_FACING[0]  # the owner's own adapter, as it arrives in a notice
-    calls: list[str] = []
     sink: list[tuple[str, str | None, str]] = []
 
     def deliverer(message: InboxMessage, text: str) -> bool:
@@ -212,8 +210,7 @@ def test_the_owners_own_request_hears_it_in_their_own_chat(
         farm,
         now,
         deliverer,
-        notifier=lambda text, *, idempotency_key: calls.append(text),
-        owner_requester_addresses=(sender,),
+        actor_host=actor_host,
     )
     try:
         _fail_once(runtime, farm, now, "req-o4")
@@ -222,13 +219,12 @@ def test_the_owners_own_request_hears_it_in_their_own_chat(
     finally:
         runtime.stop()
 
-    assert calls == []
     assert [(s[0], s[1]) for s in sink] == [(sender, "req-o4")]
     assert not [f for e, f in events if e == "availability_loud.diverted"]
 
 
 def test_in_channel_text_drops_the_worker_uri_and_attempt_id(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     sender = HUMAN_FACING[0]
     sink: list[tuple[str, str | None, str]] = []
@@ -242,7 +238,7 @@ def test_in_channel_text_drops_the_worker_uri_and_attempt_id(
     inbox.add(_human_request("req-o6", sender))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, _events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer)
+    runtime, _events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer, actor_host=actor_host)
     try:
         _fail_once(runtime, farm, now, "req-o6")
     finally:
@@ -256,7 +252,7 @@ def test_in_channel_text_drops_the_worker_uri_and_attempt_id(
 
 
 def test_in_channel_no_progress_text_drops_the_silence_budget(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     sender = HUMAN_FACING[0]
     sink: list[tuple[str, str | None, str]] = []
@@ -270,7 +266,7 @@ def test_in_channel_no_progress_text_drops_the_silence_budget(
     inbox.add(_human_request("req-o7", sender))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, _events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer)
+    runtime, _events = _in_channel_runtime(tmp_path, inbox, farm, now, deliverer, actor_host=actor_host)
     try:
         runtime.on_timer()
         now["v"] += 500_000  # past pi's 480 s budget, no progress
@@ -285,7 +281,9 @@ def test_in_channel_no_progress_text_drops_the_silence_budget(
     assert "- attempt:" not in text
 
 
-def test_a_failed_notice_never_produces_a_notice_about_itself(tmp_path: Path) -> None:
+def test_a_failed_notice_never_produces_a_notice_about_itself(
+    tmp_path: Path, *, actor_host
+) -> None:
     """Negative for the chain: whoever the requester is, a delivery that IS a
     fail-loud notice gets no notice of its own when it fails."""
 
@@ -294,7 +292,7 @@ def test_a_failed_notice_never_produces_a_notice_about_itself(tmp_path: Path) ->
         worker=WORKER, harness="pi", generation=1, observed_at_ms=900,
     )
     notice = unavailable_notice(
-        identity, failure_code="ROUTE_SEND_FAILED", terminal=True,
+        identity, failure_code="USER_DELIVERY_FAILED", terminal=True,
         attempts=1, max_attempts=3, detail=None,
     )
     inbox = LoudInbox()
@@ -312,7 +310,7 @@ def test_a_failed_notice_never_produces_a_notice_about_itself(tmp_path: Path) ->
     )
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, events = _proxy_runtime(tmp_path, inbox, farm, now)
+    runtime, events = _notice_runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         _fail_once(runtime, farm, now, "notice-as-request")
         runtime.on_timer()
@@ -325,14 +323,16 @@ def test_a_failed_notice_never_produces_a_notice_about_itself(tmp_path: Path) ->
     assert [f for e, f in events if e == "availability_loud.notice_of_notice_suppressed"]
 
 
-def test_an_ordinary_request_from_an_agent_still_gets_its_notice(tmp_path: Path) -> None:
+def test_an_ordinary_request_from_an_agent_still_gets_its_notice(
+    tmp_path: Path, *, actor_host
+) -> None:
     """Negative control: the new guards leave the agent-requester path alone."""
 
     inbox = LoudInbox()
     inbox.add(_request("req-p3"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, _events = _proxy_runtime(tmp_path, inbox, farm, now)
+    runtime, _events = _notice_runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         _fail_once(runtime, farm, now, "req-p3")
     finally:
@@ -340,28 +340,8 @@ def test_an_ordinary_request_from_an_agent_still_gets_its_notice(tmp_path: Path)
     assert len(_notices_to(inbox, REQUESTER)) == 1
 
 
-def test_a_notice_for_a_user_proxy_relay_is_not_rehanded_to_the_owner(
-    tmp_path: Path,
-) -> None:
-    """The proxy leg reaches the person's DM on its own; the owner channel is
-    not a second copy (the in-DM ruling supersedes the 2026-09-26 divert)."""
+def test_a_route_address_is_not_a_human_facing_requester() -> None:
+    from hyprial.daemon import is_human_facing_requester
 
-    calls: list[str] = []
-    inbox = LoudInbox()
-    inbox.add(_proxy_request("req-p1"))
-    farm = FakeHarnessFarm()
-    now = {"v": 1_000}
-    runtime, events = _proxy_in_channel_runtime(
-        tmp_path, inbox, farm, now,
-        lambda text, *, idempotency_key: calls.append(text),
-    )
-    try:
-        _fail_once(runtime, farm, now, "req-p1")
-        runtime.on_timer()
-    finally:
-        runtime.stop()
-
-    notices = _notices_to(inbox, PROXY)
-    assert len(notices) == 1  # the relay leg, exactly once
-    assert calls == []
-    assert not [f for e, f in events if e == "availability_loud.diverted"]
+    assert all(is_human_facing_requester(sender) for sender in HUMAN_FACING)
+    assert is_human_facing_requester("route:hyprial-introducer-feishu:customer-dm") is False

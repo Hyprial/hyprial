@@ -1,0 +1,11 @@
+version: 2
+# The base E2E-015 fixture remains ordinary. Expansion-v1 uses a separate
+# trusted-policy fixture because policy comes from daemon HOME, never YAML.
+name: isolated-workflow
+on_failure: terminate
+defaults:
+  launch: {harness: codex, model: fixture}
+  timeout: 30s
+nodes:
+  - {id: build, task: Build the isolated fixture.}
+  - {id: review, task: Review the isolated fixture., after: [build]}

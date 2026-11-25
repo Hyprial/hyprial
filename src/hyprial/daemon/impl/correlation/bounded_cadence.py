@@ -8,8 +8,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable, Generic, TypeVar
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 _Result = TypeVar("_Result")
 
@@ -57,11 +57,12 @@ class BoundedCadence(Generic[_Result]):
         completed: Callable[[CadenceCompleted[_Result]], None] | None = None,
         *,
         mailbox_capacity: int = 8,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
     ) -> None:
         self._effect = effect
         self._completed = completed
-        self._runtime = runtime or ActorRuntime()
+        if actor_host is None:
+            raise ValueError("actor_host is required")
         self._lock = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
@@ -74,17 +75,17 @@ class BoundedCadence(Generic[_Result]):
         self._accepted = self._overloaded = self._coalesced = 0
         self._completed_count = self._failed = 0
         self._last_completed_at_ms: int | None = None
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name=name,
                 handler_factory=lambda: self._handle_command,
                 mailbox_capacity=mailbox_capacity,
             )
         )
-        self._effects: EffectLane[CadenceTick, CadenceCompleted[_Result]] = EffectLane(
+        self._effects = actor_host.effect_lane(
             name=f"{name}-effect",
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=lambda event: self._cell.tell(event),
             capacity=1,
         )
 
@@ -93,7 +94,7 @@ class BoundedCadence(Generic[_Result]):
             if self._closing:
                 return AdmissionResult.CLOSED
             tick = CadenceTick(uuid.uuid4().hex, self._epoch, observed_at_ms)
-            admitted = self._runtime.tell(self._handle, tick)
+            admitted = self._cell.tell(tick)
             if admitted is AdmissionResult.ACCEPTED:
                 self._accepted += 1
                 self._admitted_unhandled += 1
@@ -120,8 +121,8 @@ class BoundedCadence(Generic[_Result]):
             return False
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        stopped = self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
+        stopped = self._cell.stop(
+            max(0.0, deadline - time.monotonic())
         )
         with self._lock:
             self._closed = stopped

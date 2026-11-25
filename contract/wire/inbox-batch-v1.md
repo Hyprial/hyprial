@@ -7,6 +7,9 @@ one new IPC method, its request/response keys, the worker-channel exposure, the
 `inbox-batch-v1` rendering format, and the notice-consumption change it
 requires.
 
+The existing `message.status` remains the same IPC projection; its catalog
+binding does not change the batch or delivery-status response keys.
+
 Design: `docs/design/inbox-batch-delivery-2026-10-22.md`.
 
 ## Method
@@ -90,16 +93,28 @@ Schema version 1. The key set is fixed.
 - `items[].class` is one of `human`, `request`, `workflow`, `system`.
   `items[].expectedAction` is `reply` only for an ordinary or human message
   whose intent is `request`; otherwise `ack`.
-- `items[].origin` is the same provenance block `message.pending.list`
-  returns. The item and its corresponding `delivery.text` block are projected
+- `items[].origin` is the provenance block `message.pending.list` returns,
+  published in the declared shape only: `via`, `chatKind` (`dm`/`group`),
+  `provider`, `platformMessageId`, `platformCreatedAt`, `onBehalfOf`,
+  `mechanism` and `sender` (`kind`, `platformId`, `displayName`). A stored
+  field the shape does not declare, or one whose value is unusable, is left
+  out of the published view, and a `sender` without a `platformId` is left out
+  whole; storage is not rewritten and a stored origin never fails the read. An
+  origin with nothing left reads as the bare `via` of its sender. The item and its corresponding `delivery.text` block are projected
   from one origin-enriched immutable snapshot, so JSON and text cannot describe
-  different provenance. Text marks absent, observed, ambiguous, and unresolved
-  provenance as `NOT verified`; only verified provenance may name an owner.
-  An unresolved origin sender with `lookupFailed: true` is rendered as
-  `NOT verified: identity lookup failed`, in both inline text and spill files
-  (and in scalar delivery prompts). Without the boolean flag it remains
-  `NOT verified: sender unresolved`. This diagnostic exposes no underlying
-  database error or credentials and grants no owner authority.
+  different provenance. An origin sender is rendered as
+  `<displayName or platformId> (via <from>, account <platformId>)`, the same
+  for every adapter kind, in both inline text and spill files (and in scalar
+  delivery prompts); it makes no claim about who the person is and grants no
+  owner authority. An item without a recorded origin reads
+  `origin: (unrecorded)`.
+- An item whose `conversationId` is a group id (`g.` prefix) gains one trusted
+  text line in its header block, starting `group:`, after the origin lines. It
+  names the group conversation id (the only interpolated value, set by the
+  daemon), says that `harness_reply` answers in the group and not to the author
+  alone, and points at the `harness_read` tool with that `conversationId`
+  (the `conversations.history` request) for earlier messages. The JSON item keys are unchanged; direct items render
+  exactly as before.
 - Inline mode: `delivery.mode == "inline"`, `delivery.text` is the complete
   rendering, and every `items[].body` is the full body.
 - Spill mode (`delivery.text` exceeds `inlineLimitBytes`): `delivery.mode ==
@@ -123,7 +138,7 @@ The cursor is opaque: canonical JSON encoded as URL-safe base64 and MACed with
 the installation's persistent, domain-separated inbox identity
 (`hyprial/inbox-batch/v1`). It carries the actor digest, both source
 high-waters, the shared capture arrival ordinal, the exact ordered admitted
-members, the exact deferred (link-held) members, and — for a successor — the
+members, the exact deferred (unavailable at capture time, e.g. held by another acquirer) members, and — for a successor — the
 predecessor's digest. It is self-contained, is not a second durable store, and
 creates no batch ledger.
 

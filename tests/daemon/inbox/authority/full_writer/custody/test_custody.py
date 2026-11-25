@@ -10,24 +10,24 @@ itself and is bounded: a genuinely lost notice must go red within
 ``WAIT_TIMEOUT_SECONDS``, never hang.  The generation/RUNNING check stays as
 evidence that a restart happened.
 
+The caller sits on neither fixed side of the ``RetryIoCompleted`` handoff: the
+injected failure can escape before ``retry_due`` returns, or afterwards on the
+actor thread.  The first test below therefore does not require the caller to
+observe it -- the injected fault and the durable TTL outcome are the invariants
+-- while ``test_async_notice_fault_restarts_actor_without_rolling_back_ttl``
+pins the actor-owned ordering explicitly.
+
 Allen 2026-10-17: no inline comments in tests; decisions live here.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
+import contextlib
 import threading
 import time
 from pathlib import Path
 import pytest
-from hyprial.kernel.impl.actor_runtime import (
-    STATE_AUTHORITY,
-    ActorRuntime,
-    ActorSpec,
-    ActorState,
-    AdmissionResult,
-    SupervisionPolicy,
-)
+from hyprial.kernel.impl.actor_runtime import ActorState, AdmissionResult
 from hyprial.kernel.impl.contracts.ports import PortAdmission, PortCommandRejected
 from hyprial.daemon import ALARM_THROTTLE_WINDOW_MS, Alarm, AlarmResult
 from hyprial.daemon.impl.inbox import DeliveryCustodyCoordinator, DeliveryCustodyFacade, DeliveryLifecycle, InboxMessage, MemoryDeliveryTransport
@@ -45,47 +45,18 @@ from hyprial.daemon.impl.inbox.contracts.ports import AlarmCompleted, BoolMutati
 from ..support import (
     _BlockingFinalEvents,
     _BlockingProgressTransport,
-    _CompletionClosedRuntime,
-    _CountingCompletionRuntime,
-    _DoubleRestartReassociateRuntime,
+    _CompletionClosedHost,
+    _CountingCompletionHost,
+    _DoubleRestartReassociateHost,
     _Events,
+    _RestartObservedHost,
+    _actor_host,
     _actor_state,
     _message,
-    _runtime,
     WAIT_TIMEOUT_SECONDS,
     _wait_until,
     authority as authority,
 )
-
-
-class _RestartObservedRuntime(ActorRuntime):
-    def __init__(self) -> None:
-        super().__init__(
-            policies={
-                STATE_AUTHORITY: SupervisionPolicy(
-                    max_restarts=3,
-                    restart_window=10.0,
-                    base_backoff=0.0,
-                    max_backoff=0.0,
-                    jitter_ratio=0.0,
-                )
-            },
-            random_source=lambda: 0.5,
-        )
-        self._factory_calls = 0
-        self.restarted = threading.Event()
-
-    def start(self, spec: ActorSpec):  # type: ignore[override]
-        factory = spec.handler_factory
-
-        def observed_factory():
-            handler = factory()
-            self._factory_calls += 1
-            if self._factory_calls > 1:
-                self.restarted.set()
-            return handler
-
-        return super().start(replace(spec, handler_factory=observed_factory))
 
 
 def test_custody_retry_and_receipt_retirement_are_actor_owned(
@@ -155,9 +126,10 @@ def test_terminal_notice_failure_does_not_roll_back_ttl_outcome(
 
     monkeypatch.setattr(InboxService, "_persist_system_notice_locked", fail_once)
     generation = coordinator.generation
-    with pytest.raises(Exception):
+    with contextlib.suppress(Exception):
         facade.retry_due(now_ms=10**15)
     _wait_for_terminal_notice(facade, message.sender)
+    assert failed
     assert coordinator.generation > generation
     assert _actor_state(coordinator) is ActorState.RUNNING
     assert facade.outbox_count() == 0
@@ -174,13 +146,13 @@ def test_async_notice_fault_restarts_actor_without_rolling_back_ttl(
 ) -> None:
     events = _Events()
     transport = MemoryDeliveryTransport()
-    runtime = _RestartObservedRuntime()
+    runtime = _RestartObservedHost()
     database = tmp_path / "inbox.sqlite3"
     coordinator = DeliveryCustodyCoordinator(
         database,
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         node_id="node-b",
     )
     facade = DeliveryCustodyFacade(coordinator, database, timeout=WAIT_TIMEOUT_SECONDS)
@@ -308,17 +280,44 @@ def test_alarm_throttle_and_completion_are_correlated(
     assert requested[1].correlation_id != requested[0].correlation_id
 
 
+def test_alarm_throttle_in_a_default_conversation_is_per_message(
+    authority: tuple[DeliveryCustodyFacade, object, object, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hyprial.daemon.impl.conversations.ids import default_conversation_id
+
+    now_ms = ALARM_THROTTLE_WINDOW_MS + 100
+    monkeypatch.setattr(InboxService, "_now_ms", staticmethod(lambda: now_ms))
+    facade, _coordinator, _transport, _raw_events = authority
+    conversation = default_conversation_id("agent:op:node-a:alpha", "agent:op:node-b:beta")
+
+    def failed(message_id: str) -> Alarm:
+        return Alarm(
+            correlation_id=message_id,
+            message_id=message_id,
+            conversation_id=conversation,
+            sender="node-b",
+            recipient="owner",
+            reason="CONTROLLED_ALARM",
+            audience="operator",
+        )
+
+    assert facade.alarm_emitter.emit(failed("send-1"), terminal=False).status == "delivered"
+    assert facade.alarm_emitter.emit(failed("send-2"), terminal=False).status == "delivered"
+    assert facade.alarm_emitter.emit(failed("send-1"), terminal=False).status == "throttled"
+
+
 def test_progress_closed_completion_retains_custody_and_blocks_drain(
     tmp_path: Path,
 ) -> None:
-    runtime = _CompletionClosedRuntime()
+    runtime = _CompletionClosedHost()
     events = _Events()
     transport = MemoryDeliveryTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         node_id="node-b",
         completion_deadline=0.01,
         completion_backoff=(0.001,),
@@ -370,7 +369,7 @@ def test_progress_closed_completion_retains_custody_and_blocks_drain(
 def test_alarm_closed_completion_retains_custody_and_blocks_drain(
     tmp_path: Path,
 ) -> None:
-    runtime = _CompletionClosedRuntime()
+    runtime = _CompletionClosedHost()
     events = _Events()
     delivered = 0
 
@@ -383,7 +382,7 @@ def test_alarm_closed_completion_retains_custody_and_blocks_drain(
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=runtime,
+        actor_host=runtime,
         completion_deadline=0.01,
         completion_backoff=(0.001,),
         service_options={"alarm_human_delivery": deliver_human},
@@ -429,14 +428,14 @@ def test_alarm_closed_completion_retains_custody_and_blocks_drain(
 def test_progress_completion_reassociates_after_actor_restart_without_io_replay(
     tmp_path: Path,
 ) -> None:
-    runtime = _runtime()
+    runtime = _actor_host()
     events = _Events()
     transport = _BlockingProgressTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         node_id="node-b",
     )
     progress = ProgressEvent(
@@ -457,11 +456,11 @@ def test_progress_completion_reassociates_after_actor_restart_without_io_replay(
         )
     ) is PortAdmission.ACCEPTED
     assert transport.entered.wait(1.0)
-    assert runtime.tell(coordinator.handle, object()) is AdmissionResult.ACCEPTED
+    assert coordinator._cell.tell(object()) is AdmissionResult.ACCEPTED
     _wait_until(
         lambda: (
-            runtime.snapshot(coordinator.handle).generation == 2
-            and runtime.snapshot(coordinator.handle).state is ActorState.RUNNING
+            coordinator._cell.snapshot().generation == 2
+            and coordinator._cell.snapshot().state is ActorState.RUNNING
         )
     )
     transport.release.set()
@@ -488,14 +487,14 @@ def test_progress_completion_reassociates_after_actor_restart_without_io_replay(
 def test_completion_receipt_survives_double_restart_takeover_toctou(
     tmp_path: Path,
 ) -> None:
-    runtime = _DoubleRestartReassociateRuntime()
+    runtime = _DoubleRestartReassociateHost()
     events = _Events()
     transport = _BlockingProgressTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         node_id="node-b",
         completion_receipt_timeout=0.2,
     )
@@ -518,11 +517,11 @@ def test_completion_receipt_survives_double_restart_takeover_toctou(
             )
         ) is PortAdmission.ACCEPTED
         assert transport.entered.wait(1.0)
-        assert runtime.tell(coordinator.handle, object()) is AdmissionResult.ACCEPTED
+        assert coordinator._cell.tell(object()) is AdmissionResult.ACCEPTED
         _wait_until(
             lambda: (
-                runtime.snapshot(coordinator.handle).generation == 2
-                and runtime.snapshot(coordinator.handle).state is ActorState.RUNNING
+                coordinator._cell.snapshot().generation == 2
+                and coordinator._cell.snapshot().state is ActorState.RUNNING
             )
         )
         transport.release.set()
@@ -534,7 +533,7 @@ def test_completion_receipt_survives_double_restart_takeover_toctou(
             ),
             timeout=2.0,
         )
-        assert runtime.snapshot(coordinator.handle).generation == 3
+        assert coordinator._cell.snapshot().generation == 3
         assert transport.calls == 1
         assert len(
             [
@@ -559,14 +558,14 @@ def test_pending_receipt_waiter_does_not_enqueue_duplicate_completion(
     tmp_path: Path,
 ) -> None:
     correlation_id = "progress-held-processing"
-    runtime = _CountingCompletionRuntime()
+    runtime = _CountingCompletionHost()
     events = _BlockingFinalEvents(correlation_id)
     transport = MemoryDeliveryTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         node_id="node-b",
         completion_deadline=0.2,
         completion_backoff=(0.001,),
@@ -617,8 +616,7 @@ def test_pending_receipt_waiter_does_not_enqueue_duplicate_completion(
     completion = next(
         event for event in events.snapshot() if isinstance(event, DispatchIoCompleted)
     )
-    assert runtime.tell(
-        coordinator.handle,
+    assert coordinator._cell.tell(
         ReassociateIoCompletion(
             correlation_id=correlation_id,
             generation=coordinator.generation,

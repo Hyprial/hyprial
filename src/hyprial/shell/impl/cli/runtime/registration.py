@@ -12,10 +12,8 @@ re-export; the process entry exposes only ``main``.
 """
 from __future__ import annotations
 
-from typing import Any
 
 import typer
-from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.runtime.composition import CliRuntime
 
@@ -33,14 +31,15 @@ from hyprial.shell.impl.cli.commands.message import message_app
 from hyprial.shell.impl.cli.commands.message import read as _message_read  # noqa: F401
 from hyprial.shell.impl.cli.commands.message.outbox import outbox_app
 from hyprial.shell.impl.cli.commands.message.delivery import delivery_app
+from hyprial.shell.impl.cli.commands.message.threads import conversation_app
+from hyprial.shell.impl.cli.commands.message.threads import conversation as _message_conversation  # noqa: F401
+from hyprial.shell.impl.cli.commands.message.threads import history as _message_history  # noqa: F401
 from hyprial.shell.impl.cli.commands.message.observe import batch as _observe_batch  # noqa: F401
 from hyprial.shell.impl.cli.commands.message.observe import inbox as _observe_inbox  # noqa: F401
 from hyprial.shell.impl.cli.commands.message.observe import status as _observe_status  # noqa: F401
 from hyprial.shell.impl.cli.commands.message.observe import targets as _observe_targets  # noqa: F401
-from hyprial.shell.impl.cli.commands.link.commands import link_app
 from hyprial.shell.impl.cli.commands.log import log as _log_command  # noqa: F401
 from hyprial.shell.impl.cli.commands.message.observe import trajectory as _observe_trajectory  # noqa: F401
-from hyprial.shell.impl.cli.commands.init.onboarding import onboarding_app
 from hyprial.shell.impl.cli.commands.init.init import init_app
 from hyprial.shell.impl.cli.commands.daemon.commands import daemon_app
 from hyprial.shell.impl.cli.commands.daemon import service as _daemon_service  # noqa: F401
@@ -51,8 +50,6 @@ from hyprial.shell.impl.cli.commands.upgrade.commands import upgrade_app
 from hyprial.shell.impl.cli.commands.upgrade import autoupdate as _autoupdate  # noqa: F401
 from hyprial.shell.impl.cli.commands.daemon import restart as _daemon_restart  # noqa: F401
 from hyprial.shell.impl.cli.commands.gui import commands as _gui_commands  # noqa: F401
-from hyprial.shell.impl.cli.commands.squire.squire import squire_app
-from hyprial.shell.impl.cli.commands.squire.user_proxy import user_proxy_app
 from hyprial.shell.impl.cli.commands.agent.admin import (
     agent_app,
     config_app as agent_config_app,
@@ -66,12 +63,18 @@ from hyprial.shell.impl.cli.commands.agent import grant as _agent_grant  # noqa:
 from hyprial.shell.impl.cli.commands.agent import home as _agent_home  # noqa: F401
 from hyprial.shell.impl.cli.commands.agent import restore as _agent_restore  # noqa: F401
 from hyprial.shell.impl.cli.commands.agent import secret as _agent_secret  # noqa: F401
+from hyprial.shell.impl.cli.commands.agent.cell import cell_app
+from hyprial.shell.impl.cli.commands.agent.harness_args import (
+    args_app as agent_args_app,
+    register_harness_args_commands,
+)
 from hyprial.shell.impl.cli.commands.agent.provider import provider_app
 from hyprial.shell.impl.cli.commands.agent.runtime.tiers import tiers_app
 from hyprial.shell.impl.cli.commands.user.commands import user_app
+from hyprial.shell.impl.cli.commands.user.key import key_app as user_key_app
+from hyprial.shell.impl.cli.commands.user.provider import provider_app as user_provider_app
 from hyprial.shell.impl.cli.commands.adapter.admin import adapter_app, scopes_app
 from hyprial.shell.impl.cli.commands.adapter import authorize as _adapter_authorize  # noqa: F401
-from hyprial.shell.impl.cli.commands.adapter import pins as _adapter_pins  # noqa: F401
 from hyprial.shell.impl.cli.commands.adapter.routes import route_app
 from hyprial.shell.impl.cli.commands.adapter.data import identities_app, media_app
 from hyprial.shell.impl.cli.commands.routine.commands import routine_app
@@ -84,33 +87,12 @@ from hyprial.shell.impl.cli.commands.config.settings import config_app
 from hyprial.shell.impl.cli.commands.fs.commands import fs_app
 from hyprial.shell.impl.cli.commands.org.commands import org_app
 from hyprial.shell.impl.cli.commands.work import work_app
-from hyprial.shell.impl.cli.commands.transfer import (
-    TransferCliDependencies,
-    register_transfer_commands,
-)
-from hyprial.shell.impl.cli.commands.agent import order_agent_commands
+from hyprial.shell.impl.cli.commands.message.group import group_app, members_app as group_members_app
+from hyprial.shell.impl.cli.commands.message.group import groups as _message_groups  # noqa: F401
+from hyprial.shell.impl.cli.commands.message.group import members as _message_group_members  # noqa: F401
 
 
 _ASSEMBLED = False
-
-
-def _transfer_dependencies(runtime: CliRuntime) -> Any:
-    """Build the transfer family's explicit dependency object."""
-
-    from hyprial.shell.impl.cli.commands.common.services import get_services
-    from hyprial.shell.impl.cli.commands.transfer.move import parse_depends
-
-    services = get_services()
-    return TransferCliDependencies(
-        execute=runtime.execute,
-        daemon_request=runtime.request,
-        state_dir=services._state_dir,
-        error_type=services.CliError,
-        configured_home=services.configured_hyprial_home,
-        default_home=services.default_hyprial_home,
-        print=services.print,
-        parse_depends=parse_depends,
-    )
 
 
 def build_app(runtime: CliRuntime) -> typer.Typer:
@@ -123,8 +105,7 @@ def build_app(runtime: CliRuntime) -> typer.Typer:
     focused family tests.  A second assembly of the process root is rejected
     rather than silently duplicating mutable registration state.
 
-    B supplies move's handler/registrar and replaces the visible move command;
-    this function only wires real registrars and never adds an unimplemented
+    This function only wires real registrars and never adds an unimplemented
     placeholder.
     """
 
@@ -144,15 +125,17 @@ def build_app(runtime: CliRuntime) -> typer.Typer:
     runtime.add_family(agent_config_app, name="config", parent=agent_app)
     runtime.add_family(tiers_app, name="tiers", parent=agent_app)
     runtime.add_family(provider_app, name="provider", parent=agent_app)
+    runtime.add_family(cell_app, name="cell", parent=agent_app)
+    runtime.add_registrar(register_harness_args_commands, parent=agent_args_app)
+    runtime.add_family(agent_args_app, name="args", parent=agent_app)
     runtime.add_family(adapter_app, name="adapter")
     runtime.add_family(daemon_app, name="daemon")
     runtime.add_family(upgrade_app, name="upgrade", parent=daemon_app)
     runtime.add_family(service_app, name="service", parent=org_app)
-    runtime.add_family(squire_app, name="squire")
     runtime.add_family(socialware_app, name="socialware")
-    runtime.add_family(user_proxy_app, name="proxy", parent=user_app)
+    runtime.add_family(user_key_app, name="key", parent=user_app)
+    runtime.add_family(user_provider_app, name="provider", parent=user_app)
     runtime.add_family(message_app, name="message")
-    runtime.add_family(link_app, name="link", parent=agent_app)
     runtime.add_family(config_app, name="config")
     runtime.add_family(agent_app, name="agent")
     runtime.add_family(org_app, name="org")
@@ -161,22 +144,8 @@ def build_app(runtime: CliRuntime) -> typer.Typer:
     runtime.add_family(profile_app, name="profile")
     runtime.add_family(host_app, name="host")
 
-    transfer_runtime_app = group(
-        help="Probe an explicitly supplied transfer runtime without starting an agent.",
-        no_args_is_help=True,
-    )
-    agent_transfer_app = group(
-        help=(
-            "Protocol-level worker transfer commands driven by the two daemons and "
-            "scripts; use `agent move` as the operator entry point."
-        ),
-        no_args_is_help=True,
-    )
-    runtime.add_family(transfer_runtime_app, name="runtime", parent=agent_transfer_app)
-    runtime.add_family(agent_transfer_app, name="transfer", parent=agent_app, hidden=True)
     runtime.add_family(workflow_app, name="workflow")
     runtime.add_family(routine_app, name="routine")
-    runtime.add_family(onboarding_app, name="onboarding", parent=init_app)
     runtime.add_family(init_app, name="init")
     runtime.add_family(route_app, name="route", parent=adapter_app)
     runtime.add_family(identities_app, name="identities", parent=adapter_app)
@@ -186,13 +155,9 @@ def build_app(runtime: CliRuntime) -> typer.Typer:
     runtime.add_family(user_auth_app, name="user-auth", parent=adapter_app)
     runtime.add_family(outbox_app, name="outbox", parent=message_app)
     runtime.add_family(delivery_app, name="delivery", parent=message_app)
+    runtime.add_family(conversation_app, name="conversation", parent=message_app)
+    runtime.add_family(group_members_app, name="members", parent=group_app)
+    runtime.add_family(group_app, name="group", parent=message_app)
 
-    register_transfer_commands(
-        agent_app,
-        agent_transfer_app,
-        transfer_runtime_app,
-        lambda: _transfer_dependencies(runtime),
-    )
-    order_agent_commands()
     _ASSEMBLED = True
     return runtime.app

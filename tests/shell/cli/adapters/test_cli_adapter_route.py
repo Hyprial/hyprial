@@ -17,12 +17,46 @@ import json
 import os
 import subprocess
 import sys
+import signal
+import time
+
+import pytest
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[4]
 
 SECRET = "app-secret-must-never-be-printed-4a1d"
+_DAEMONS = None
+
+
+@pytest.fixture(autouse=True)
+def _route_daemons():
+    global _DAEMONS
+    _DAEMONS = {}
+    yield
+    for daemon in _DAEMONS.values():
+        if daemon.poll() is None:
+            daemon.send_signal(signal.SIGTERM)
+        daemon.wait(timeout=20)
+    _DAEMONS = None
+
+
+def _start_route_daemon(home: Path, environment: dict[str, str]) -> None:
+    if _DAEMONS is None or home in _DAEMONS:
+        return
+    daemon = subprocess.Popen(
+        [sys.executable, "-m", "hyprial.cli", "daemon", "run", "--json"],
+        cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    _DAEMONS[home] = daemon
+    deadline = time.monotonic() + 30
+    while not (home / "daemon.sock").exists():
+        assert daemon.poll() is None, "isolated daemon exited during startup"
+        assert time.monotonic() < deadline, "isolated daemon did not start"
+        time.sleep(0.05)
+
 
 
 def _env(home: Path) -> dict[str, str]:
@@ -31,6 +65,12 @@ def _env(home: Path) -> dict[str, str]:
         **os.environ,
         "HYPRIAL_HOME": str(home),
         "HARNESS_STATE_DIR": str(home),
+        "HYPRIAL_OWNER": "route-test",
+        "HYPRIAL_NODE_ID": "route-test-node",
+        "HYPRIAL_NETWORK_ISOLATED": "1",
+        "HYPRIAL_LARK_BASE_URL": "http://127.0.0.1:9",
+        "HYPRIAL_PEER_DISCOVERY": "0",
+        "HYPRIAL_ZENOH_CONNECT": "",
     }
     environment.pop("HYPRIAL_ZENOH_LISTEN", None)
     return environment
@@ -39,10 +79,13 @@ def _env(home: Path) -> dict[str, str]:
 def _run(
     home: Path, *arguments: str, stdin: str | None = None
 ) -> subprocess.CompletedProcess[str]:
+    environment = _env(home)
+    if arguments and arguments[0] == "route":
+        _start_route_daemon(home, environment)
     return subprocess.run(
         [sys.executable, "-m", "hyprial.cli", "adapter", *arguments],
         cwd=ROOT,
-        env=_env(home),
+        env=environment,
         input=stdin,
         text=True,
         capture_output=True,
@@ -98,7 +141,7 @@ def test_add_binds_a_second_route_without_touching_the_credential(
     assert stored["appId"] == "cli_demo"
 
 
-def test_add_refuses_an_existing_name_until_forced(tmp_path: Path) -> None:
+def test_add_refuses_an_existing_name_and_points_at_remove(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _seed(home, "allen-dm=oc_aaa")
 
@@ -107,15 +150,19 @@ def test_add_refuses_an_existing_name_until_forced(tmp_path: Path) -> None:
     )
     assert refused["ok"] is False
     assert refused["code"] == "ROUTE_EXISTS"
-    # Refusal is a no-op, not a partial write.
+    assert "hyprial adapter route remove demo allen-dm" in refused["error"]
     assert _channels(home)["gateways"][0]["routes"][0]["nativeId"] == "oc_aaa"
 
-    forced = _payload(
-        _run(home, "route", "add", "demo", "allen-dm=oc_zzz", "--force", "--json")
+    retired = _run(home, "route", "add", "demo", "allen-dm=oc_zzz", "--force", "--json")
+    assert retired.returncode != 0
+
+    assert _payload(_run(home, "route", "remove", "demo", "allen-dm", "--force", "--json"))["ok"] is True
+    rebound = _payload(
+        _run(home, "route", "add", "demo", "allen-dm=oc_zzz", "--json")
     )
-    assert forced["ok"] is True
-    assert forced["adapter"]["routes"][0]["nativeId"] == "oc_zzz"
-    assert _route_names(forced) == ["allen-dm"]
+    assert rebound["ok"] is True
+    assert rebound["adapter"]["routes"][0]["nativeId"] == "oc_zzz"
+    assert _route_names(rebound) == ["allen-dm"]
 
 
 def test_add_with_default_moves_the_gateway_default(tmp_path: Path) -> None:
@@ -146,7 +193,8 @@ def test_remove_refuses_the_default_route_until_forced(tmp_path: Path) -> None:
     home = tmp_path / "home"
     seeded = _seed(home, "allen-dm=oc_aaa", "team=oc_bbb")
     assert seeded["adapter"].get("defaultRoute") is None
-    _run(home, "route", "add", "demo", "allen-dm=oc_aaa", "--force", "--default")
+    assert _payload(_run(home, "route", "remove", "demo", "allen-dm", "--json"))["ok"] is True
+    assert _payload(_run(home, "route", "add", "demo", "allen-dm=oc_aaa", "--default", "--json"))["ok"] is True
 
     refused = _payload(
         _run(home, "route", "remove", "demo", "allen-dm", "--json")
@@ -160,11 +208,11 @@ def test_remove_refuses_the_default_route_until_forced(tmp_path: Path) -> None:
     )
     assert forced["ok"] is True
     assert _route_names(forced) == ["team"]
-    # Clearing the default is stated in the output, never implied.
-    assert "defaultRoute" not in forced["adapter"]
+    assert forced["adapter"]["defaultRoute"] is None
 
 
 def test_remove_reports_an_unbound_route_by_name(tmp_path: Path) -> None:
+    """The message names the read that shows what is bound, without a second request."""
     home = tmp_path / "home"
     _seed(home, "allen-dm=oc_aaa")
 
@@ -172,8 +220,7 @@ def test_remove_reports_an_unbound_route_by_name(tmp_path: Path) -> None:
 
     assert payload["ok"] is False
     assert payload["code"] == "ROUTE_NOT_FOUND"
-    # The message names what IS bound, so the caller can fix it in one step.
-    assert "allen-dm" in payload["error"]
+    assert "hyprial adapter route list demo" in payload["error"]
 
 
 def test_unknown_adapter_reports_adapter_not_found(tmp_path: Path) -> None:
@@ -204,11 +251,11 @@ def test_malformed_route_argument_is_rejected_before_any_write(
     assert (home / "channels.json").read_bytes() == before
 
 
-def test_list_reports_every_adapter_when_no_name_is_given(tmp_path: Path) -> None:
+def test_list_reports_the_named_adapter(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _seed(home, "allen-dm=oc_aaa")
 
-    payload = _payload(_run(home, "route", "list", "--json"))
+    payload = _payload(_run(home, "route", "list", "demo", "--json"))
 
     assert payload["ok"] is True
     names = [adapter["name"] for adapter in payload["adapters"]]
@@ -253,11 +300,10 @@ def test_candidates_report_the_chats_inbound_traffic_came_from(tmp_path: Path) -
     payload = _payload(_run(home, "route", "candidates", "demo", "--json"))
 
     assert payload["ok"] is True
-    assert payload["candidates"] == [{"chatId": "oc_dm", "chatType": "p2p"}]
-    # Another adapter's namespace is not this adapter's evidence.
+    assert payload["candidates"] == [{"chatId": "oc_dm", "chatType": "p2p", "chatName": None}]
     other = _payload(_run(home, "route", "candidates", "other", "--json"))
-    assert other["adapter"] == "other"
-    assert other["candidates"] == []
+    assert other["ok"] is False
+    assert other["code"] == "ADAPTER_NOT_FOUND"
 
 
 def test_route_output_never_contains_the_app_secret(tmp_path: Path) -> None:
@@ -272,3 +318,53 @@ def test_route_output_never_contains_the_app_secret(tmp_path: Path) -> None:
         result = _run(home, *arguments)
         assert SECRET not in result.stdout, arguments
         assert SECRET not in result.stderr, arguments
+
+
+def test_list_requires_an_adapter_name(tmp_path: Path) -> None:
+    """No daemon request returns every adapter's routes, so the CLI does not loop."""
+
+    home = tmp_path / "home"
+
+    result = _run(home, "route", "list", "--json")
+
+    assert result.returncode != 0
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["code"] == "INVALID_ARGUMENT"
+    assert "name" in payload["error"]
+
+
+@pytest.mark.parametrize("arguments,method,params", [
+    (("add", "demo", "ops=oc_ccc", "--default"), "adapter.routes.add",
+     {"name": "demo", "route": "ops", "chatId": "oc_ccc", "makeDefault": True}),
+    (("remove", "demo", "ops", "--force"), "adapter.routes.remove",
+     {"name": "demo", "route": "ops", "clearDefault": True}),
+    (("list", "demo"), "adapter.routes.list", {"name": "demo"}),
+    (("candidates", "demo"), "adapter.routes.candidates", {"name": "demo"}),
+])
+def test_each_route_command_sends_exactly_one_request(monkeypatch, arguments, method, params) -> None:
+    """F1a review: no revision pre-read, no per-adapter loop; writes omit ``expectedRevision``."""
+
+    from typer.testing import CliRunner
+
+    from hyprial.shell.impl.cli.commands.common import support as cli_support
+    from hyprial.shell.impl.cli.commands.common.root import app as root_app
+    from hyprial.shell.impl.cli.commands.common.services import get_services
+    import hyprial.shell.impl.cli.runtime.entry  # noqa: F401
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+    adapter = {"name": "demo", "provider": "lark", "appId": "cli_demo", "routes": [],
+               "defaultRoute": None, "revision": "0" * 64}
+
+    def daemon(name: str, request: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        calls.append((name, dict(request or {})))
+        if name == "adapter.routes.candidates":
+            return {"ok": True, "adapter": "demo", "candidates": []}
+        return {"ok": True, "adapter": adapter}
+
+    monkeypatch.setattr(cli_support, "_daemon_request", daemon)
+    monkeypatch.setattr(get_services(), "require_initialized_hyprial_home", lambda: None)
+    result = CliRunner().invoke(root_app, ["adapter", "route", *arguments, "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(method, params)]

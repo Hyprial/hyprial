@@ -12,7 +12,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from hyprial.shell.impl.cli.runtime import entry as cli
+from hyprial.kernel import ipc_errors
 
 import hyprial.daemon.impl.updates as updates
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
@@ -307,7 +307,7 @@ def test_autoupdate_run_without_daemon_does_not_upgrade(
     _enable_auto_upgrade(tmp_path / "home")
 
     def unavailable(*_args: object, **_kwargs: object) -> object:
-        raise cli.ipc_errors.DaemonUnavailableError("daemon is not running", {})
+        raise ipc_errors.DaemonUnavailableError("daemon is not running", {})
 
     monkeypatch.setattr(_cli_support, "_daemon_request", unavailable)
     monkeypatch.setattr(

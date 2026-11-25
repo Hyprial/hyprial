@@ -11,7 +11,7 @@ from hyprial.kernel.impl.ipc.client import _DAEMON_IPC_ROUNDTRIP_SECONDS
 from hyprial.kernel import ipc_errors
 from hyprial.daemon.impl.application import DaemonRequestError
 from hyprial.kernel import TIERS
-from hyprial.daemon.impl.squire.probe import ProbeRun
+from hyprial.daemon.impl.harnesses.probe import ProbeRun
 
 from tests.identity.agents.registry.entity.support import application
 from tests.identity.agents.registry.entity.support import _close_test_applications as _close_test_applications
@@ -64,7 +64,7 @@ def test_tier_start_resolves_static_choice_without_probing(wired, monkeypatch, t
     purpose is to pin exactly those two facts.
     """
 
-    import hyprial.daemon.impl.squire.probe as probe_module
+    import hyprial.daemon.impl.harnesses.probe as probe_module
     app, calls, log = wired
     probes = []
 
@@ -82,8 +82,8 @@ def test_tier_start_resolves_static_choice_without_probing(wired, monkeypatch, t
     assert probes == []
     assert calls[0][0] == "dispatch.matrix.resolve"
     assert calls[0][2] == _DAEMON_IPC_ROUNDTRIP_SECONDS
-    launch = next(params for method, params, _ in calls if method == "lifecycle.start")
-    assert launch["provider"] == selected.harness
+    launch = next(params for method, params, _ in calls if method == "agent.start")
+    assert launch["harness"] == selected.harness
     assert launch["model"] == selected.model
     caps = app.agents.require("foo").capabilities
     assert caps["model"] == selected.model
@@ -110,14 +110,14 @@ def test_tier_start_does_not_route_around_a_probed_dead_candidate(wired, monkeyp
     because the selection path does not probe at all.
     """
 
-    import hyprial.daemon.impl.squire.probe as probe_module
+    import hyprial.daemon.impl.harnesses.probe as probe_module
     app, calls, log = wired
     monkeypatch.setattr(probe_module, "_subprocess_runner", lambda *_: pytest.fail("selection probed a harness"))
     result = CliRunner().invoke(_cli_root_app, ["agent", "start", "--tier", "strong", "--name", "foo", "--headless", "--json"])
     assert result.exit_code == 0, result.output
     selected = TIERS["strong"][0]
-    launch = next(params for method, params, _ in calls if method == "lifecycle.start")
-    assert launch["provider"] == selected.harness
+    launch = next(params for method, params, _ in calls if method == "agent.start")
+    assert launch["harness"] == selected.harness
     assert launch["model"] == selected.model
     assert app.agents.require("foo").capabilities["tier"] == "strong"
     assert events(log)[0]["probes"] == []
@@ -132,11 +132,9 @@ def test_start_without_cwd_uses_and_creates_agent_workspace(wired):
     )
 
     assert result.exit_code == 0, result.output
-    expected = _cli_get_services()._hyprial_home() / "agents" / "foo" / "workspace"
-    create = next(params for method, params, _ in calls if method == "agent.create")
-    launch = next(params for method, params, _ in calls if method == "lifecycle.start")
-    assert create["cwd"] == str(expected)
-    assert launch["cwd"] == str(expected)
+    start = next(params for method, params, _ in calls if method == "agent.start")
+    assert start["harness"] == "codex"
+    expected = app._agent_session_domains.agent.resolve_workspace_path("foo")
     assert app.agents.require("foo").cwd == str(expected)
 
 
@@ -155,7 +153,7 @@ def test_tier_with_an_explicit_selection_is_refused_without_side_effects(wired, 
     which pinned the silent drop.
     """
 
-    import hyprial.daemon.impl.squire.probe as probe_module
+    import hyprial.daemon.impl.harnesses.probe as probe_module
     app, calls, log = wired
     monkeypatch.setattr(probe_module, "_subprocess_runner", lambda *_: pytest.fail("a refused start probed"))
     # hyprial options precede the native passthrough separator.
@@ -186,7 +184,7 @@ def test_explicit_selection_without_tier_still_starts(wired):
 
 @pytest.mark.parametrize("selection", [["--provider", "kimi-coding"], ["--model", "k3"], ["--", "--model", "k3"]])
 def test_partial_explicit_selection_without_harness_is_not_guessed(wired, monkeypatch, selection):
-    import hyprial.daemon.impl.squire.probe as probe_module
+    import hyprial.daemon.impl.harnesses.probe as probe_module
     app, calls, _ = wired
     monkeypatch.setattr(probe_module, "_subprocess_runner", lambda *_: pytest.fail("partial explicit selection was probed"))
     result = CliRunner().invoke(_cli_root_app, ["agent", "start", "--tier", "fast", "--name", "foo", "--headless", "--json", *selection])
@@ -204,14 +202,14 @@ def test_dead_probe_readings_do_not_block_start(wired, monkeypatch):
     selection starts the declared head instead, and no probe runs.
     """
 
-    import hyprial.daemon.impl.squire.probe as probe_module
+    import hyprial.daemon.impl.harnesses.probe as probe_module
     app, calls, log = wired
     monkeypatch.setattr(probe_module, "_subprocess_runner", lambda *_: pytest.fail("selection probed a harness"))
     result = CliRunner().invoke(_cli_root_app, ["agent", "start", "--tier", "super", "--name", "foo", "--headless", "--json"])
     assert result.exit_code == 0, result.output
     selected = TIERS["super"][0]
-    launch = next(params for method, params, _ in calls if method == "lifecycle.start")
-    assert launch["provider"] == selected.harness
+    launch = next(params for method, params, _ in calls if method == "agent.start")
+    assert launch["harness"] == selected.harness
     assert launch["model"] == selected.model
     assert app.agents.require("foo") is not None
     audit, = events(log)
@@ -258,5 +256,5 @@ def test_tier_view_and_tier_start_share_one_resolution_source(wired, monkeypatch
     assert started.exit_code == 0, started.output
     assert seen == ["fast"]
     selected = TIERS["fast"][0]
-    launch = next(params for method, params, _ in wired[1] if method == "lifecycle.start")
-    assert (launch["provider"], launch["model"]) == (selected.harness, selected.model)
+    launch = next(params for method, params, _ in wired[1] if method == "agent.start")
+    assert (launch["harness"], launch["model"]) == (selected.harness, selected.model)

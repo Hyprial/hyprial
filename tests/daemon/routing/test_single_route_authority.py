@@ -196,7 +196,6 @@ def test_session_owner_lease_is_acquired_released_and_stale_fenced(
     app._routes = routes  # type: ignore[assignment]
     app._harnesses = Harnesses()  # type: ignore[assignment]
     app._presence = Presence()  # type: ignore[assignment]
-    actor = "agent:owner:node:alice"
     base = {
         "actor": "alice",
         "cwd": str(tmp_path),
@@ -207,6 +206,9 @@ def test_session_owner_lease_is_acquired_released_and_stale_fenced(
     try:
         app.handle("session.register", {**base, "sessionRef": "old"})
         app.handle("session.register", {**base, "sessionRef": "new"})
+        alice = app.agents.require("alice")
+        actor = alice.uri
+        assert actor == f"agent:owner:node:{alice.agent_id}"
 
         assert ("ensure", actor, "session:old") in routes.operations
         assert ("ensure", actor, "session:new") in routes.operations
@@ -226,5 +228,5 @@ def test_session_owner_lease_is_acquired_released_and_stale_fenced(
         )
         assert routes.owners(actor) == (f"persona:{actor}",)
     finally:
-        assert app._agent_session_domains.close()
+        assert app._agent_session_domains.close(shutdown_hosts=False)
         inbox.close()

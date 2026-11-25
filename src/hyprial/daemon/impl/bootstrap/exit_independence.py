@@ -44,6 +44,42 @@ merely "somewhere before exiting".
 teardown hanging, which this cannot: if the steps below never return, the exit
 below is never reached, and the backstop is the only thing left that fires. The
 two cover disjoint failures and neither is redundant.
+
+Decision, 2026-11-16 (ownerless lifecycle loop): the same-PID loop must be able
+to return after a ``logout`` stop, so the CLI cannot claim unconditional
+ownership of the exit.  A serving daemon that stopped for any other reason is
+the process's last act, so ownership is conditional on the *stop reason*:
+
+* ``owns_process_exit``: always ours (embedded callers and the bootstrap
+  launcher; ``daemon run`` uses ``exit_unless_logout`` on every home).
+* ``exit_unless_logout``: ours unless the only stop requested was ``logout``.
+  The logout reason is sticky-overridden by every other request, so this errs
+  towards leaving.  Close-hang budget, stall watchdog and the SIGUSR1 dump are
+  available in both modes; only the final ``os._exit`` and the lingering-thread
+  grace are withheld for a pure logout, and the guards are released once the
+  steps have returned so the next bootstrap phase is not killed by them.
+* A logout whose teardown hangs is covered by the close-hang budget and ends
+  through the same ``os._exit`` a final stop uses; the next start finds a dead
+  process and a stale record and comes up in bootstrap.
+
+Decision, 2026-11-16 (final stop from bootstrap): ``exit_unless_logout`` only
+covers the serving application's ``run()``.  A final stop reached from the
+bootstrap phase (never logged in, or login, logout, bootstrap) returns the loop
+to the CLI with no serving application left to exit, so a non-daemon thread
+carried over from the serving phase would keep the finished interpreter alive.
+``leave_interpreter_after_loop`` is the CLI's last act once the loop has
+returned *and* the result envelope has been emitted: flush stdout and stderr,
+then leave through ``finish_shutdown`` (``EXIT_CLEAN`` for a clean loop,
+``EXIT_DIRTY`` for a failed one), never a bare ``sys.exit``.  It is called only
+by the real console entry (``main()`` marks the interpreter as owned); the same
+command invoked in-process returns normally.  There is no timer: the exit comes
+right after the flush, so the envelope can never be cut off.
+
+Decision, 2026-11-16 (release race): a backstop whose budget expired just before
+a clean logout released the guards would still pass the "still the active
+timer" check and exit 75 after the logout had completed.  The release now sets
+the cancel event under the backstop lock and the expiry commit re-checks the
+event under the same lock, so exactly one of them wins.
 """
 
 from __future__ import annotations
@@ -107,3 +143,59 @@ def finish_shutdown(
             errors.append(error)
     exit_process(EXIT_DIRTY if failed or errors else EXIT_CLEAN)
     return tuple(errors)
+
+
+LOGOUT_STOP_REASON = "logout"
+
+
+def process_exit_owned(application: object) -> bool:
+    """Whether this stop ends the process: unconditional ownership, or any non-logout stop."""
+
+    if getattr(application, "_owns_process_exit", False):
+        return True
+    if not getattr(application, "_exit_unless_logout", False):
+        return False
+    return getattr(application, "stop_reason", None) != LOGOUT_STOP_REASON
+
+
+def exit_guards_wanted(application: object) -> bool:
+    """Whether the process-level guards (backstop, stall dump, SIGUSR1) apply at all."""
+
+    return bool(
+        getattr(application, "_owns_process_exit", False)
+        or getattr(application, "_exit_unless_logout", False)
+    )
+
+
+def release_exit_guards_for_logout(application: object) -> None:
+    """After a pure logout returned control to the loop, stop the timers that would hit the next phase."""
+
+    if process_exit_owned(application) or not exit_guards_wanted(application):
+        return
+    cancel = getattr(application, "_exit_backstop_cancel", None)
+    if cancel is not None:
+        lock = getattr(application, "_exit_backstop_lock", None)
+        if lock is None:
+            cancel.set()
+        else:
+            with lock:
+                cancel.set()
+    from hyprial.daemon.impl.processes.shutdown_stall import cancel_shutdown_stall_dump
+
+    cancel_shutdown_stall_dump()
+
+
+def leave_interpreter_after_loop(
+    *,
+    failed: bool = False,
+    exit_process: Callable[[int], object] = os._exit,
+) -> tuple[BaseException, ...]:
+    """Flush the streams the result went to, then leave like a final stop does."""
+
+    import sys
+
+    return finish_shutdown(
+        steps=(lambda: sys.stdout.flush(), lambda: sys.stderr.flush()),
+        failed=failed,
+        exit_process=exit_process,
+    )

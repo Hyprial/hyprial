@@ -24,16 +24,18 @@ hyprial <域> <子命令> --help   # 参数面
 
 ## 命令组迁移（0.5.5.2）
 
-使用 `org service`、`org fs`、`user proxy`、`agent link`、`init onboarding`；
+使用 `org service`、`org fs`；
 `host` 保持顶层。旧顶层路径不是别名：退出 2，stdout 为空（含 `--json`），
 stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行。
 裸命令组显示帮助并退出 2；例外为 `init`（初始化）、`daemon upgrade`、
-`agent tiers`、`routine templates`（默认报告）。`init onboarding` 不先执行初始化。
+`agent tiers`、`routine templates`（默认报告）。
 
 ## 能力面地图(按域)
 
 ### daemon 生命周期与诊断
-- `hyprial init` — 启动 daemon(已含平滑重启逻辑);`hyprial doctor` — 健康检查
+- `hyprial init` — 创建 home 并启动 daemon(已含平滑重启逻辑),**不登录**:没有账号的 home 上只启动
+  bootstrap daemon 并提示 `hyprial login`;`hyprial login` — 首次登录由 daemon 一次性完成(显示验证 URL 与
+  用户码、`--no-open` 不开浏览器、设备登记失败仍退出 0 且 `device.ready:false`);`hyprial doctor` — 健康检查
 - 输出约定(所有命令):`--json` 时 stdout 恰好一个 JSON 对象且必带 `ok`;`ok:false` 退出码为 1
   (`doctor` 有 fail 项、`adapter scopes check` 缺必需 scope 时也是),参数错误退出 2;进度、提示、确认
   只在 stderr,不要从 stdout 截取设备码或链接。
@@ -56,6 +58,17 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
   Missing runState means `unknown (unsupported)`, never idle. Failed agent queries
   return an error, not an empty fleet. `daemon status` is still daemon-only, not
   an agent-status substitute; do not restore the retired root `ps` command.
+- cell 运行时排障（cell authority 为 `user:u.<sub>`）：无头消息一直 pending、`agent.attach` 的
+  `cell.state` 为 `deferred` 时，先检查 `<HYPRIAL_HOME>/settings.json` 是否含 `userId`（缺则运行 `hyprial login`）并查 daemon 日志（`state/logs/daemon.jsonl` 或 `hyprial log`）里
+  `cell.runtime_unavailable` 的 `reason`（`keys` 为不符的键名）：`authority-uid-missing`＝没有 uid（用 `HYPRIAL_OWNER`
+  部署的补设 `HYPRIAL_USER_ID`，登录态 home 缺 `userId` 的按登录线文档重新登录，再
+  `hyprial daemon restart`；uid 每个 serving 代只解析一次）；`cache-identity-mismatch`＝
+  `state/cells.sqlite3` 属于旧版本或另一身份；`cache-unreadable`＝读不出（只有 `-wal/-shm`、
+  文件损坏，或 daemon 正在 checkpoint，可重试）。日志 `cell.document_blocked`＝OrgFS 上该路径
+  有本机不采纳的文档（旧写法、他人改写、另一身份的副本），本机在该 space 的写出被阻塞，其他 space
+  照常。代码从不删除、改写或迁移这些文件与文档，也没有修复命令：一律照
+  `docs/guides/migration-cell-authority-uid.md` 人工处理（停机后离线备份并移走 cache 三文件、`hyprial fs rm` 移走
+  本人的旧文档），文档移走后下一个 pass 自动写出并记 `cell.document_unblocked`。
   `carrier-deliveries` is not whole-terminal coverage. `permission=unsupported`
   means `coverage.permissionWait=false`, not "no permission wait". `turn-age=-`
   is unknown, not zero. `suspected-stuck` is a warning, never proof of deadlock;
@@ -76,6 +89,18 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
   CLI goldens are not native acceptance. See
   `contract/daemon-lifecycle/run-state.md` and
   `contract/daemon-lifecycle/interactive-turn-refresh.md`.
+  UUID addressing: 人类视图每行以 `display(a.<id>)` 开头（显示名，否则 actor 名，括号里是
+  不可变的 agent id；无 id 的旧记录只显示名字）；`--json` 行新增 `agentId` 与 `displayName`
+  （null 表示显示名就是 actor 名），其余键不变。地址取 `uri` 字段，不要手拼
+  `agent:<owner>:<machine>:<actor>`。id-form 开关打开后，官方地址是
+  `agent:<owner>:<machine>:a.<id>`；开关打开前 `uri` 仍是名字形态。见
+  `contract/identity/agent-naming.md`。
+- `hyprial agent rename <name|a.id|uri> <new-display-name> [--json]` — 只改显示名；actor、
+  id、地址、home、grants、pins 都不变，改回 actor 名会清空 `displayName`。目前任何能调用
+  daemon 的人都可以改名（裁定 U2）。错误码：`AGENT_NOT_FOUND`（目标不存在）、
+  `AGENT_EXISTS`（名字被在用 agent 占用）、`INVALID_AGENT_NAME`（不是合法的裸名字）；
+  已销毁 agent 的名字可以再用，新建的是一个新 agent（新 id，不继承旧 agent 的任何东西）；`AGENT_ERROR` 的消息以底层码
+  开头，`DOMAIN_COMMAND_TIMEOUT` 表示结果未知，先 `hyprial agent list` 复查再重试。
 - `hyprial log --name <worker> / --actor / --since / --conversation / --correlation-id`
   — daemon 结构化日志查询;原始日志 `~/.hyprial/state/logs/daemon.jsonl`
 - `hyprial daemon upgrade` — 普通升级的持久源固定为公网
@@ -180,7 +205,6 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
   —— hyprial 自己的 worker 代理(Allen 2026-09-25 定):列出的模型厂商(默认 openai、anthropic)的 worker 走代理,
   其它厂商(deepseek、智谱、kimi)的 worker **去掉**代理直连;下一个 worker 启动即生效,不用重启 daemon;
   url 置空即清除。没配置时沿用 daemon 自己环境里的代理(含 all_proxy)。⛔ 重启生产 daemon 时不要剥掉代理变量。
-- `hyprial config set hints.userProxy off|on` —— 关掉/恢复 init、daemon restart、start 时的「user-proxy 未设置」提醒(不想要 user-proxy 的 owner 用);squire 未完成的提醒不受影响。
 - `hyprial config set dispatch.reminder "<text>"` —— `workflow plan` / `workflow run` 附带的派单 tier 提醒
   (Allen 2026-09-28 定:执行节点用 fast、规划设计节点用 strong;只是提醒,不改派单)。
   文本存在 `<HYPRIAL_HOME>/dispatch-policy.json`,文件缺失时用出厂默认;置空字符串即关闭。
@@ -194,29 +218,65 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
 - 不要把退役的一级 `hyprial install <app>` 当作别名；安装能力会在未来版本重新加入。
 
 ### GUI 工作空间（源码模式）
-- 旧独立 GUI（`src/gui`）与 Tauri 外壳（`app`）已退场；组件化 UI 以仓库根 `gui/` 为唯一主线。
-- 当前公开入口只有 `hyprial gui`（前端 `npm start`）和 `hyprial gui dev`
-  （`npm run dev`，Vite 热更新）。`start|status|stop|upgrade` 已退役并返回
+- 旧独立 GUI（`src/gui`）与旧 Tauri 外壳（`app`）已退场；组件化 UI 以仓库根 `gui/` 为唯一主线。最小原生壳在 `clients/native/`，运行 `hyprial gui --no-open --json --port 0 --stdin-stop`，不启动或停止 daemon。
+- 当前公开入口只有 `hyprial gui`（源码 checkout 先 `npm run build`，wheel 用内置 `_gui`；
+  两者都由同一个 Python 会话 host 提供）和 `hyprial gui dev`（`npm run dev` 的 Vite 热更新，
+  Python host 在公开端口前反向代理它；已无 Node host 与 `npm start`）。`start|status|stop|upgrade` 已退役并返回
   `INVALID_ARGUMENT`，没有兼容 shim，也不创建 `$HYPRIAL_HOME/apps/gui/`。
-- `--ip`、`--port` 控制前端；默认 `127.0.0.1:4173`，端口冲突明确失败。GUI 必须来自
-  独立 Git 工作树中的 `gui/package.json` 项目：可用 `--gui-home` 或
-  `HYPRIAL_GUI_HOME` 显式指定；显式入口保持原有语义且不创建任何工作树。
-  `hyprial gui dev` 在两者都未给出时，从可验证的源 Git 仓库 HEAD 创建或恢复
-  `<repo>/.worktrees/gui-dev-auto`（分支 `work/gui-dev-auto`，cone sparse 只物化
-  `gui/`）；仅当 `gui/node_modules` 缺失时执行 `npm ci --ignore-scripts`，已有
-  `node_modules` 不重装/更新。恢复/复用不 reset/clean/checkout -f/rebase/stash，
-  保留 auto 工作树的 dirty/untracked 文件，也不自动 commit/push。路径/分支被占用、
-  是 symlink、或不是同一仓库的工作树时明确冲突，不删除/搬移/复用他人工作树。启动输出中的
-  `gui_home`、`git_worktree`、`git_branch` 必须是 auto 工作树的真实值。
+- `--ip`、`--port` 控制前端；默认 `127.0.0.1:4173`，端口冲突明确失败；`--port 0` 让 host 绑定空闲
+  loopback 端口，启动记录的 `port`/`url` 是实际端口（dev 模式是 host 的端口，不是 Vite 的）。
+  `--stdin-stop`（仅 POSIX）让 stdin EOF 或 `shutdown` 行像 SIGTERM 一样回收子进程但退出码为 0，
+  不加则不读 stdin；`--json` 启动记录契约见 `contract/cli/gui-startup-record.v1.json`。普通 `hyprial gui`
+  只有两个目标：wheel 内置已校验的 `_gui`，或所在的源码 checkout；传 `--gui-home`
+  返回 `INVALID_ARGUMENT`，调用环境中设置 `HYPRIAL_GUI_HOME` 返回
+  `GUI_CONFIG_CONFLICT`（该变量只是 launcher 交给子进程的内部变量）。
+  `hyprial gui dev` 可用 `--gui-home` 或 `HYPRIAL_DEV_GUI_HOME` 指向另一个工作树的
+  `gui/`；两者都未给出时，在源码 checkout 内直接使用其自身 `gui/`（只读，不创建工作树
+  或分支、不 `npm ci`；缺 `node_modules` 时自行执行 `npm --prefix gui ci --ignore-scripts`），
+  安装态无 checkout 时使用受管的精确 `sourceCommit` 工作树（发布 wheel 不含 GUI 源码：无显式源时 `gui dev` 以 `INVALID_ARGUMENT` 拒绝，请用 `--gui-home` 或源码 checkout）。启动输出中的
+  `gui_home`、`git_worktree`、`git_branch` 是所选目录的真实值。
+- `--with-dev-tools` 是开发工具层的唯一开关（没有环境变量可替代；`gui dev` 自带；wheel 与源码
+  checkout 都接受）。不带时 `/dev-tools/*`、`/docs-assets/*` 为 404。带上后页面右下角出现“开发”浮动球
+  （模块索引）；daemon 驱动且有 Swagger UI 文件时面板内有“API 文档”链接，在新标签页打开 host 的
+  `/docs`，沿用页面会话，不需要也不显示 bearer（`request_http` 自带的 bearer 文档页已删除，它的 `/docs` 是 404，
+  没有环境变量能再打开它）。启动记录的可选布尔键
+  `dev_tools`、`api_docs` 说明本次是否开启。
+- `--live-source` 是另一个独立开关：页面来自 GUI 源码（Vite 在 host 后面，改动即时生效），需要 Git、
+  Node、npm；单独使用时没有工具层（`/docs`、`/docs-assets/*`、`/dev-tools/*` 为 404）。
+  `hyprial gui dev` 等价于 `--with-dev-tools --live-source`，与任一参数叠加结果不变。`--gui-home` 与
+  `HYPRIAL_DEV_GUI_HOME` 只在 live source 下生效，否则 `--gui-home` 返回 `INVALID_ARGUMENT`（提示加
+  `--live-source`）。启动记录的可选布尔键 `live_source` 与 `hot_reload` 相同，不暴露 Vite 端口；
+  `mode` 仅在两个开关都开启时为 `dev`。
 - `gui dev` 服务就绪后默认只打开一次浏览器，`--no-open` 抑制；opener 抛错不另启服务。
-  SIGTERM/SIGINT 在 discovery/自动工作树/npm 安装、阻塞 opener、启动 JSON 前后和运行中
-  均按 143/130 退出，只回收本次已记录的 frontend/backend 进程组与端口。
-- CLI 启动独立 Node 占位服务（`npm run stub -- --host 127.0.0.1 --port 0`），
-  解析 `HYPRIAL_STUB_READY`，把 loopback endpoint 作为
-  `HYPRIAL_BACKEND_ENDPOINT` 交给前端；普通和 dev 使用同一 GUI。业务请求统一返回
-  HTTP 501 / `not implemented: hyprial backend not wired`，不得把 fixture、mock、
-  空白页或 HTTP 200 当作真实登录/会话验收。
-- Ctrl-C/正常退出只回收本次启动的 npm/Node 进程组，不按名称或端口清理其他实例。
+  SIGTERM/SIGINT 在 discovery/受管工作树/npm 安装、阻塞 opener、启动 JSON 前后和运行中
+  均按 143/130 退出，只回收本次已记录的进程组（Python host；dev 时的 Vite；contract-mock 时的 Contract Mock），不按端口清理。
+- 业务请求经 `request_http` 到 daemon，由会话 host 持有浏览器会话；daemon 驱动下 host 在自己的进程内提供
+  `request_http`，`hyprial gui` 只起这一个 Python 子进程（`--json` 的 `backend_pid` 为 `null`，`backend_endpoint` 为空串；
+  contract-mock 才另有 Node 子进程）：安装态与源码态都是
+  同一个 Python host，`HYPRIAL_GUI_BACKEND_DRIVER` 未设时默认 `daemon`（wheel 上
+  `contract-mock` 返回 `GUI_MOCK_UNAVAILABLE`，源码态须显式选择它）；`hyprial gui` 在 home 的每种状态下都先确保 daemon
+  （没起就拉起，无 owner 的 home 起 bootstrap daemon；stderr `gui-daemon-ensure`），关闭 GUI 不停 daemon，
+  要停用 `hyprial daemon stop`；home 目录不存在返回 `GUI_HOME_NOT_INITIALIZED`，daemon 拉不起时返回启动原语的错误。
+  登录、登出时 principal 在原 GUI 进程内换绑，GUI 地址与浏览器 origin 不变。`--no-open` 时一次性登录
+  URL 写入 0600 的 `launch.url`（`hyprial gui --json` 的 `handoff_path`），不会打印到
+  stdout。旧的 HTTP 501 / `not implemented: hyprial backend not wired` 占位已删除，
+  `GUI_INSTALLED_BACKEND_UNSUPPORTED` 不再存在；不得把 fixture、mock、空白页或 HTTP 200
+  当作真实登录/会话验收。
+- 远程使用（SSH 隧道）：`hyprial gui --no-open --json` 的启动记录给出 `port` 与 `handoff_path`，
+  0600 文件（`launch.url`）里是带一次性 `#grant=…` 片段的完整 URL。隧道本地端口必须等于远端端口，
+  浏览器用 `127.0.0.1` 而不是 `localhost`（host 严格校验 Host/Origin）：
+  `ssh -N -L <port>:127.0.0.1:<port> <host>`。grant 自 handoff 完成起 60 秒内有效且只能用一次，
+  过期或使用后文件被删除，需重新启动；直接打开裸 origin 只会看到 SESSION_REQUIRED 页面
+  （“这个页面不能直接打开”）。agent 代用户启动 GUI、而用户要从另一台机器打开时，必须在回复里
+  立即、直接把 handoff 文件里的 URL 交给该用户（这是唯一入口），不得写入日志、工单、提交信息或共享频道：
+  这 60 秒内它就是登录凭据。`scripts/ops/dev_upgrade_smoke.py apply --gui`
+  （见 `scripts/ops/README.md`）把 `hyprial gui --no-open --json --stdin-stop` 作为脚本的子进程、为本次升级的目标 home
+  启动 GUI，校验启动记录、监听端口与 daemon 身份，检查（及可选的 `--gui-hold-minutes`，此时登录凭据有效期等于保持时长、
+  最多 10 分钟）结束时关闭其 stdin 停止 GUI；检查失败则回滚升级。停服务之前它先用已安装的 CLI 短暂启动一次
+  `hyprial gui --port 0 --stdin-stop` 探测（不是只读的：会短暂起 GUI host 并写一次性 grant 文件），该 home 已有前台 GUI
+  （`GUI_RUNTIME_BUSY`）时直接拒绝（exit 2，不停服务、不升级）；探测之后才出现的 GUI 仍由升级后的检查发现并回滚。
+  不读取 handoff，由 owner 自己读取。
+- Ctrl-C/正常退出只回收本次启动的 Python host、（dev 时的）Vite 与（contract-mock 时的）Contract Mock 进程组，不按名称或端口清理其他实例。
   Git worktree 只是工作树隔离，不是安全沙箱。
 - 操作、参数、环境接线和当前 NOT_RUN 项见 `docs/guides/gui-dev-mode.md`。
 
@@ -231,13 +291,9 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
   不手改 schemaVersion，不删除状态。恢复后不要先启动新版，否则会再次迁移。
   备份在状态 SQLite 的 `adapter_model_backup` 表中，重复迁移不覆盖；pins 和 inbox 不回退。
   新建 home 没有旧备份，不能用此命令降级。旧版直接读取 schema 3 会明确拒绝。
-- schema 3 下 runtime-only downgrade 不会降低状态版本。若要降到更早的 schema 1
-  版本，先按上一步恢复并安装支持 schema 2 的版本，再用该版的 runtime downgrade
-  入口清理 smolvm intent；不要直接改 schema 3。
 - `hyprial adapter add <name> [--new]` — **自动创建或收养飞书 App**
   并注册为 adapter；成功后自动尝试热加载到运行中的 daemon，结果见
-  `daemonReload`。设备授权流,需 TTY:无人值守时用 tmux 伪终端代跑
-  (`tmux new-session -d -s x '<cmd>'` → capture-pane 取 URL → 发给人点批准)。
+  `daemonReload`。设备授权流,需 TTY:无人值守时用伪终端代跑以获取授权链接并发给人点批准。
   人只需点一次授权链接。
 - `hyprial adapter add <name> --app-id ... --secret-file ...` — 只注册已有凭据的 App;
   也用于给已有 adapter 补路由(`--route <name>=<chat_id> --force`)
@@ -253,8 +309,11 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
 - `hyprial adapter reload` — **增量热加载**新/改 adapter 进运行中 daemon
 - `hyprial adapter start/stop/status/list/remove`;`remove` 成功后也会自动尝试热加载，
   `list` 的 `agent` 列显示当前绑定
-- `hyprial adapter pin <adapter> <canonical-actor-uri>` — 入站绑定到 agent;
-  `hyprial adapter unpin <adapter>` 解绑
+- 入站绑定写在 agent 的 cell 文档里:`hyprial agent cell show <agent> --json` 读出 cell 与 revision,
+  在 `members` 加 `{"ref": "<ref>", "role": "adapter"}`、在 `params."cell.members"."<ref>"` 写
+  `{"adapter": "<adapter>"}`,再 `hyprial agent cell apply <agent> --expected-revision N --file CELL.json`;
+  去掉该成员即解绑。一个 agent 可绑多个 adapter;同一 adapter 被多个 agent 声明时路由失败关闭(无人接收)。
+  旧的 pin/unpin 与 authority 子命令已退役,见 `docs/guides/cell-authority-migration.md`
 - `hyprial adapter user-auth check|complete` — lark-cli 用户凭据检查与设备流收尾
 - `hyprial adapter identities` — 平台身份 ↔ hyprial owner 映射(白名单校验源)
 - 本机 agent 与 adapter 不得同名。adapter create/add/onboard/start 与 agent create/start
@@ -266,17 +325,17 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
 - workflow plan/run/status/list/inspect/cancel 是图的高级入口；complete/fail 携带当前 request-id 与 reason-ref。
 - `hyprial workflow gc --dry-run [--json]` 只读预览下一次有界回收会删除的 workflow-owned
   worker agent；不带 `--dry-run` 会拒绝。选择规则与 daemon 内独立 PAC GC 服务相同，
-  借用 actor（即使名字以 `wf-` 开头）、未关闭图、清理未完成、在线或有 adapter pin
-  的 worker 都不会删除；`hyprial doctor` 的 `pac-gc` 项显示上次 pass 与当前 backlog。
+  借用 actor（即使名字以 `wf-` 开头）、未关闭图、清理未完成、在线或 cell 绑定了 adapter
+  (cell runtime 不可用或 cell 未加载时按已绑定处理,报 `adapter-bindings-unknown`)的 worker 都不会删除；`hyprial doctor` 的 `pac-gc` 项显示上次 pass 与当前 backlog。
 - `workflow-worker-cleanup` 的 `attention` 不是终态：daemon 在兜底扫描中自动重试（新 lifecycle
   operation id），本 actor 自己的旧实例（PAC 标记指向本图本节点，或无标记但 entity token 与回执一致）
   会被停掉并收敛到 `complete`；只有外来标记/外来 entity token 持续 attention，需人工核对。
   失败重试按 attempts 指数退避（5 分钟起翻倍，上限 6 小时）；扫描每 30 秒一轮，在途（含 graph authority effect 池）+新放行的重试最多 2 个；只限重试，首次评估（部署时约 186 个回填）、
   worktree-cleanup、expansion-preflight 不计入，开放图不保证有空闲 effect 线程。
-  `worker_in_use`：agent 被 adapter pin，或有已注册交互会话且在线（presence 缺失/报错按在用处理；
+  `worker_in_use`：agent 的 cell 绑定了 adapter（绑定未知按已绑定），或有已注册交互会话且在线（presence 缺失/报错按在用处理；
   已接线但未就绪的重启窗口读作离线，可能被 stop、不会被删），GC pass 报告如实记录 destroy 复核拒绝原因，
   cleanup 不停、GC 跳过、destroy 复核拒绝（`worker-in-use`），`lastObservation.inUse` 说明原因；
-  释放（unpin/退出会话）后下一轮自动继续，否则由人决定。
+  释放（从 cell 去掉 adapter 成员/退出会话）后下一轮自动继续，否则由人决定。
 - 工作流 YAML format 2 使用 name/nodes/edges/workers/defaults/on_failure。旧 targets/await/retry/report_to 执行格式已退役。
 - 节点默认独立临时 worker，显式 worker 键共享上下文，owner 全 URI 显式借用已有 actor。
 - 图结束回收所属 worker；借用对象不被接管或停止。完成是显式 flag，不解释回复文本。
@@ -284,6 +343,7 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
 - 相对 timeout 在派图时确定固定截止，等待依赖计入预算；不自动顺延或重试。报告需显式节点。
 - routine format 2 显式选择 mode: scheduled/source。定时模式串行、跳过重叠与错过周期，source 模式按任务 UUID 去重。
 - routine 默认创建并持有常驻协调 agent，也可执行工作；rm 回收自己拥有的 actor，pause 不回收。
+- routine 的 `launch` 决定其常驻协调 agent 的运行时；省略时 schema 默认 `{tier: fast}`，会解析成 fast 档第一候选 **codex/gpt-5.6-luna**，而不是所属 agent 的 harness/model。注册自驱 routine 时必须显式写与所属 agent 一致的 `launch`（字段与 CLI 的 `--provider/--model` 同名同义；如 `launch: {harness: claude, provider: deepseek, model: deepseek-flash}`，`tier` 与显式 harness/provider/model 二选一）。`routine add --template` 没有 launch 参数，需用带 `launch` 的 routine YAML 执行 `routine add <file>`，或注册后用 `routine set <name> <file>` 替换。
 - `hyprial workflow list [--all]` / `hyprial routine list [--all]`：不加 --json 时输出人读的表格。agent 默认只看到自己派的（或自己拥有的），加 --all 看本节点全部，不需要额外授权；主人在终端里直接运行，默认就能看到全部。--json 每行带 `lastProgressAtMs`（该图最新一条 journal 事件的时间；显式心跳命令 `workflow progress` 尚未提供，计划中，见 #1210）、`currentNode {nodeId,state}`（按依赖顺序第一个未完成的节点）（workflow），以及 `lastDispatchAtMs`、`lastOutcome`（routine）。判断是不是卡住，看这两个字段，别只看 state=running。
 - `hyprial workflow gc --dry-run [REPO ...] [--all]`：只读检查本机 Git worktree；目录或其 gitdir 链接已丢失、有未提交文件或有未推送提交都算 leftover。它只为已合并且干净、且 24 小时内没有活动的树建议 remove(刚从 origin/dev 新建、还在被 worker 用的树看起来和已完成的一样，所以按该树自己的 index/HEAD 修改时间排除)，建议前会提示先确认没人在用；只为 git 标记为 prunable 的树建议 prune；默认同时按 origin/HEAD、origin/dev、origin/main 判断是否已合并，不会执行这些命令。
 - `hyprial workflow overview show|publish <space>`：PAC 总览页。`publish` 把本机的任务线、Workflow 和 Routine 写成 orgfs 空间里的 `pac-overview/nodes/<节点>.js`（blob，只在内容变化时写），维护工作项视图资产 `pac-overview/work_items_view.js`，并维护合并所有节点的 `pac-overview/index.html`；它还会拉取其他节点尚未到达的文件、刷新本机 checkout，最后输出可以直接用浏览器打开的 `file://…/index.html`。页面每分钟自动重载。图数据只包含运行这条命令的调用方看得到的图，节点输出会脱敏并截断；页面另带 org 的全部工作项（状态、负责人/指派人、清单、验收标准、依赖、最近 20 条日志、打开/关闭时间；日志、验收与清单文本脱敏并截断），发布到某个空间即对该空间的读者可见。⚠️ 信任边界：空间里任何有写权限的成员都能往页面上放脚本，所以只发布到所有写入者都可信的空间；`publish` 会开启并保持本机对该空间的只读 checkout（`hyprial org fs space checkout <space> --disable` 关闭）。
@@ -336,35 +396,50 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
 ### agent / worker / 消息
 - Codex `skills/list` 的技能加载错误只产生提醒，不阻止 agent 启动；有错误的技能不会加载。
   查看启动结果的 `warnings` 或 daemon 日志的 `codex.skills.load_warning`，按脱敏后的错误原因修复。
-  Squire 缺少 YAML frontmatter 时，运行 `hyprial squire setup --step create-squire`。
-  setup 只自动更新逐字节匹配旧模板渲染结果的技能；自定义技能须手工补齐 frontmatter，或移到备份路径后重跑 setup。
+  Squire 缺少 YAML frontmatter 时，没有自动修复命令。由用户手工补齐 frontmatter；自定义技能也须手工修复。
 - `hyprial agent start codex|claude --name <name> --effort <level>` 在 `--` 前设置推理强度；支持交互、headless 与 resume。Codex 接受 `none|minimal|low|medium|high|xhigh|max|ultra`，Claude 接受 `low|medium|high|xhigh|max`；模型支持集由原生 harness 决定。不传时，DeepSeek/hyprial 模型厂商显式注入 Codex `high`、Claude `max`；原生 OpenAI/Anthropic 不注入值。不与尾随原生 effort 参数混用。详见 `docs/reference/harness-model-providers.md`。
-- **smolvm 回滚先降状态、后换二进制**：0.5.5.1 之前，保存过 `executionRuntime` 的机器保持 schema 2；schema 3 先走上面的 adapter 两步回滚路径。更旧的二进制会拒绝整个 daemon restore，连普通 host/Docker 都不会恢复。先用新版停止并清理 smolvm workers，停 daemon 后执行 `hyprial agent transfer runtime downgrade-state --output /absolute/new-export --json`；独占锁/残留资源/未完生命周期操作会拒绝。成功导出且降为 schema 1 后才能换旧版，不同时换 owner；agent 身份、home、session、grants 不删除。
-- `hyprial agent start codex --headless --name <name> --smolvm-spec /absolute/runtime.json`
-  显式实验运行形态，仅 Darwin arm64 + smolvm 1.19.0 + Codex；只挂选定 P2 home/config/workspace 与绑定 IPC socket。输入 JSON 内容和物料摘要持久化，每次恢复重核；失败不转成 host/Docker。物料由操作者提供，不自动安装。
-  崩溃恢复只复用 actor/state/spec 相符且已独占的私有目录，engine 与环境目录须本 uid、0700、非链接；旧实验目录权限不符先保留现场交运维核查。engine 未清完时 owner marker/状态指针必须保留，不能据空的环境对象认定清理完成；禁止全局 stop/prune/kill。
-  规格/资源/回滚见 `docs/domains/transfer-smolvm-runtime.md`。启动冒烟不等于已验真实模型、strict resume 或跨机支持；后续验收仍单独执行。Pi/Kimi 的产品准入裁定不变，本实现尚未接通它们。
-  P2 DeepSeek 的启动环境缺少有效 agent key 时立即拒绝启动；补齐授权 grant 后显式重启，不靠重连修复，也不回退宿主 key。此处是启动授权检查，不新增运行中撤权保证。
-- `hyprial agent transfer runtime probe --smolvm /absolute/smolvm --rootfs /absolute/rootfs --resize2fs /absolute/resize2fs --output /private/tmp/at08-1 --json`
-  使用显式提供的 smolvm 1.19.0 和本地 Linux rootfs 跑合成文件映射预检，不下载依赖。
-  输出目录必须不存在；输出根需足够短以容纳 Unix socket。固定单 VM 2 CPU / 1024 MiB，业务盘和 overlay 各 1 GiB，无网络、真实凭据或 daemon 连接。
-  留 stdout/stderr、退出码、权限/哈希、源 rootfs 和宿主目录前后对照及清理结果。
-  mapping PASS 仅证明该次合成映射；worker、harness 沙箱、认证及跨机仍为 NOT_RUN。
-  实机测试须先有测试资源授权，并经 `contract/e2e/with-machine-lock.py` 串行执行。
-- `hyprial agent host-invite <name> --owner <visitor-owner> [--cwd ...] [--preferred-harness ...] --json`
-  — 由受信 host 操作员创建访客的身份记录与 agent-home；owner 属于访客，machine 属于本机。
-  同名记录不收养、不覆盖；本机 owner 应用普通 `agent create`。owner 非空、无首尾空白、无冒号。
-  此入口仅创建记录，不启动 worker，不证明访客身份已由登录服务认证，也不提供进程隔离。
-  仅用于组织内受信访客（L0），不据此对外开放。
-  建好后可用 `hyprial agent start pi --name <name> --headless`（或其它已支持的 headless harness）启动；
-  启动与重启恢复沿用记录中的访客 owner，host 只提供运行位置。不得用 start 改访客归属。
-  此路径不扩大 transfer-receive 的启动权限；凭据、工具权限和进程隔离仍按各自能力验收。
+- P2 DeepSeek 的启动环境缺少有效 agent key 时立即拒绝启动；补齐授权 grant 后显式重启，不靠重连修复，也不回退宿主 key。此处是启动授权检查，不新增运行中撤权保证。
+- `hyprial agent attach <name> --json` / `hyprial agent detach <name> --json`
+  — 把一个不由 daemon 托管的外部 harness（如云端 Claude Code 会话）接成 agent：登记身份，
+  记录 `custody=external`，agent cell 只有这一个 harness 成员。daemon 不启动、不恢复、不停止它，
+  也不绑定默认 routine；`hyprial agent start <name>`（及 lifecycle 启动/恢复/routine 唤醒）对它一律
+  `INVALID_ARGUMENT` 拒绝；`agent create` 不接受 `custody` capability（只有 attach 能写）。
+  消息照常进它的收件箱。同名重复 attach 不变（`changed:false`）；
+  已被 daemon 托管的同名 agent 拒绝（`AGENT_EXISTS`）。detach 只移除 harness 成员，
+  身份、id、收件箱与历史保留，消息继续排队到再次 attach；它不是 stop/destroy。
+  cell 成员以 agent 记录为准：手工加进这个 cell 的成员会在下次对账时被移除。
+  OrgFS 不可用时 attach/detach 与收发照常，`cell.state` 为 `deferred`，恢复后自动补齐 cell；
+  `skipped`＝owner 不是 OrgFS 作者、不建 cell；`refused`＝cell 被拒（如已 retire），不自动重试。
+  ⚠️ 读写身份（未登记会话的外部 harness）：`message batch --from <name>` / `reply --from <name>` /
+  `ack --from <name>` **只在默认 `HYPRIAL_SENDER_AUTH_MODE=observe` 下可用**；`enforce` 下一律
+  `SENDER_NOT_AUTHENTICATED`。此时 reply/ack 用操作员形式 `--from user:<owner> --on-behalf-of <name>`；
+  读取（batch）目前没有操作员形式，enforce 下未登记会话的 attach harness 暂无受支持的读取路径。
+  **0.5.5.4 不支持在 `HYPRIAL_SENDER_AUTH_MODE=enforce` 下使用 attach（默认为 `observe`）**
+  （attach is not supported under `HYPRIAL_SENDER_AUTH_MODE=enforce` in 0.5.5.4; the default is `observe`；per Allen 2026-11-07）。
+  无会话时 `message read --from <name>` 被会话围栏拒绝（`STALE_SESSION`），正文以 batch 为准。
 - `hyprial agent grant <actor> --capability <cap> --scope <scope> [--grant-id <id>] [--revision <n>] --json`
   记录当前 agent 化身的授权；新 id 默认 UUID、revision 默认 1，更新同一 id 必须递增。
   `agent grant <actor> revoke <id>` 撤活动记录；`agent grants` 看全局台账，单个 actor 的台账与含销毁前的历史用 `agent grant <actor> list --audit`。
   scope 闭集：agent-home=`self`（不可撤）、isolation=`directory|container`、org-context=`accepted`；
-  see-actors/send-to 为 principal URI JSON 数组；tool-surface/channel 为名称 JSON 数组；shared-path 为 `{"path":"/absolute/path","mode":"ro|rw"}`。
+  see-actors/send-to 为 principal URI JSON 数组；tool-surface 为名称 JSON 数组（`channel` 能力已退役）；shared-path 为 `{"path":"/absolute/path","mode":"ro|rw"}`。
   本片只记账与格式校验，不限制运行权限，不代替 secret grant，也不证明调用方身份；执行者记为本机 host owner。
+- `hyprial agent teleport <name> --to <node> [--dry-run | --yes] [--json]`
+  — 经 daemon 网络把本机 agent 连同 home 与会话迁到另一个节点：本机停止并导出，目标恢复同一会话，
+  成功后本机的 agent 与 home 被移除。`--to` 是目标的 node id（对方 daemon 的 `HYPRIAL_NODE_ID`，未设置时为对方 home 里 `node-id` 文件的值），
+  不是 SSH 主机名，也没有 host 解析。只允许在同一用户 owner 的主机之间迁移。只迁已有 agent home、headless、harness 为 claude/codex/pi、无 pinned adapter、
+  cwd 未设置或为 `<home>/workspace` 的 agent；没有 home 的先 `agent ensure-home`。以该 agent 为执行主体的 routine（含已停用的）随 agent 迁移：本机先暂停原本启用的 routine 并等在途任务
+  结束（上限 120 s，超时为 `TELEPORT_IN_FLIGHT_TIMEOUT`，agent 与 routine 原样恢复），目标先以暂停状态创建（YAML 里指向源 agent 的 URI 改写为目标 agent），
+  commit 后只恢复原本启用的；成功后本机的 routine 与 agent 一并删除。先用 `--dry-run` 看预检与目标检查结果（不改动任何一侧）；正式执行须 `--yes`，
+  交互终端可改为确认提示，`--json` 或非终端无 `--yes` 返回 `CONFIRMATION_REQUIRED`。这是唯一的迁移命令；旧的 SSH 迁移链路已移除。
+  失败时源 agent 会被重启并保持原状，**唯一例外是 `TELEPORT_UNRESOLVED`**：目标对 receive 没有可读应答，
+  目标可能已经在跑该 agent，所以源 agent 刻意保持停止。此时按错误 `data.manualCheck` 人工核对：在目标 `hyprial agent list`
+  看是否有同名 agent；有且会话完好则在本机移除已停止的源 agent，没有则在本机 `hyprial agent start <name>`。
+  `TELEPORT_UNRESOLVED` 时本机不恢复也不删除任何 routine，`data.pausedRoutines` 是本次暂停的 routine，按核对结果处理：agent 在目标则这些
+  routine 也已在目标（暂停，待恢复），本机副本随 agent 一起删除；agent 没到目标则在本机逐个 `hyprial routine resume <name>`。
+  `TELEPORT_SOURCE_CLEANUP_FAILED` 表示 agent 已在目标运行、本机已停止的副本没移掉（或某个 routine 没删掉），须手工清理；此时没有发 commit，
+  `data.pausedRoutines` 是目标上仍暂停、在源侧原本启用的 routine，到目标节点逐个 `hyprial routine resume <name>`。结果里 `commit.ok=false`
+  同理（`commit.pausedRoutines` 非空）；原本就停用的 routine 在目标保持暂停，不算警告。
+  没有对端认证：任何能在 daemon 网络上到达目标节点的对端都能回应请求，见 KP-047（由独立 docs PR 登记），只在受信网络里用。
 - **每个 agent 自己的非模型凭据**:`hyprial agent secret set/rotate/list/history/remove`
   管理 `<agent home>/secrets.sqlite`;值只从非 TTY stdin 输入,list/history 不回显值。v1
   不自动扫描或迁移未授权的外部旧文件,owner 核对归属后逐条导入;无 validator 的服务缺省拒绝,只有显式
@@ -438,8 +513,8 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
     seeded/refused/not-configured，后两者在 stderr 给出修法。
     `hyprial agent provider default [--clear]` 查/清默认。
     ⛔ 不回溯已有 agent;`--preferred-harness` 与默认不同 ⇒ skipped;只有 operator shell 能改默认;
-    不给 host-invite 访客种入。`--provider hyprial`(#1407)走 `HYPRIAL_API_KEY` 的 secret grant,不经此路。
-- `hyprial agent start claude|codex|pi|dsh|jev --name ... [--headless] --cwd ... -- <harness args>`
+    不给非本机 owner 的 agent 种入。`--provider hyprial`(#1407)走 `HYPRIAL_API_KEY` 的 secret grant,不经此路。
+- `hyprial agent start claude|codex|pi|jev --name ... [--headless] --cwd ... -- <harness args>`
   `jev` is a packaged, headless TypeSafe worker: it accepts no script or model-vendor selector,
   model, or positional runtime arguments. It finds `TYPESAFE_API_KEY` the same
   way the user-side `jev` command does: if you can already run `jev` because the
@@ -451,14 +526,6 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   call fails `PROVIDER_AUTHENTICATION_FAILED` with a message starting
   `TYPESAFE_CREDENTIAL_FILE_ABSENT` / `_KEY_ABSENT` / `_ENV_ABSENT`.
   (headless claude 必带 --dangerously-skip-permissions)
-- `hyprial agent start dsh --name <name> [--resume <dsh-session-id>] --cwd <dir>` —— 启动/恢复真实
-  dsh-tui 交互会话。launcher 用 launch-scoped `--patch` 注入两层：tool-only
-  `@deepseek-ai/dsh-mcp-client`（`python -m hyprial.daemon.impl.mcp.entry agent-channel`）和 launch-scoped Cordis
-  注入插件；另起 `python -m hyprial.daemon.impl.mcp.entry dsh-carrier` 负责 register/refresh/heartbeat、InboxWatch 和
-  wake。入站消息通过插件 `agent.followup()` 进入模型，**不会碰 TUI 输入框、不会用
-  prompt.append/prompt.submit**。carrier 或插件失败会终止 TUI 并清理 launch dir。
-  交互 dsh 的 `--provider/--model` 尚未支持，模型在 TUI 内用 `/model` 选择；
-  用 `--resume <id>` 恢复既有 DSH 会话。
 - **起测试用的隔离 daemon 必须设 `HYPRIAL_NETWORK_ISOLATED=1`**(见 `docs/guides/network-isolation.md`):只允许 loopback
   endpoint,不做监听推导、对端发现、转发、gossip、用量抓取;设了但为空或拼错 ⇒ 拒启。起来后看
   daemon 起来后确认 `HYPRIAL_NETWORK_ISOLATED` 生效（由 daemon 实际生效的状态算出,⛔ 不是回显环境变量）:
@@ -466,13 +533,6 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   `zenoh` 检查项。只靠 `HYPRIAL_PEER_DISCOVERY=0` ⛔ 不算隔离。
   隔离 daemon 的 `org create` 只建本地 org/directory/ACL space，返回 `tailnetInitialized=false` 和 null 发布字段；
   不启动 sidecar，也不能用 `org invite`/`org join`。需要真实 membership 时改用 `tailcat_forwarding=True` 的本机 labrelay 拓扑。
-- `hyprial agent start user-proxy --name <person>-proxy -- --route route:<adapter>:<dm-route>`
-  —— 一人一个的消息中转 agent(打包的转发程序,无模型、无凭据、串行保序)。别人发给它的消息
-  转进该人的飞书 DM(帖子标明"转述自 <原发送者>");该人在 DM 里回复时**必须以 `@收件人` 开头**
-  (agent 名、agent URI 或 `route:<adapter>:<route>`),转发时去掉标记、以 user-proxy 身份发出;
-  不写收件人 ⇒ 不转,回一条格式说明,⛔ 不猜。收件人解析不到 ⇒ `FORWARD_TARGET_UNKNOWN`(不重投,
-  原发送者收到失败通知);发送故障照常重投。`--route` 的 adapter 必须是**该人专用**的 adapter
-  (它发来的消息才算"本人")。不开飞书时用 `hyprial message inbox <user-proxy>` 看。
 - 自动升级(03:17/15:17)固定检查公网源，并与手动升级共用上述 exact-commit
   `uv.lock` 约束路径；缺锁/导出失败不做未锁定安装，高于公网的版本以
   `declinedDowngrade` 跳过。需要升级时它只安装、**不重启**:装好后 daemon 仍跑旧代码,主人会收到"新版本已安装,等待确认后重启"。
@@ -486,7 +546,7 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   (daemon 解析并审计)。⛔ 不要再同时写 harness 名或厂商/模型参数:`agent start pi --tier super` 以前会
   **静默丢掉 --tier**,起一个没有模型的 pi(落到全局默认);现在直接 `INVALID_ARGUMENT`,什么都不创建。
   要指定模型就用显式写法:`hyprial agent start pi` 加厂商与模型两个选项(见 `hyprial agent start --help`)。
-- Pi 的 agent-home P2 启动前置对 `--headless` 与 `--tmux` 相同：每次启动都必须在 `--` 后显式传
+- Pi 的 agent-home P2 启动前置：每次启动都必须在 `--` 后显式传
   `--approve`，且 `--cwd` 必须是 Git working tree 内的目录。未显式 `--cwd` 时，agent 自有的默认
   `workspace/` 会初始化为独立 Git 仓库；绝不自动修改用户指定的 cwd。完整示例：
   `hyprial agent start pi --name worker --headless --cwd /absolute/path/to/git-working-tree -- --approve`。
@@ -497,10 +557,6 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   找不到 transcript ⇒ `RESUME_SESSION_NOT_FOUND`(什么都不起);起了却没续上 ⇒ `STRICT_RESUME_FAILED`(worker 已停)。
   交互转 headless 必须显式 `--replace-interactive` 并带 `--resume <sid>`;daemon 会先向带 PID/birth fence 的交互承载发 SIGTERM 并等待退出,超时或无 PID/birth fence/unknown 状态则拒绝切换（`INTERACTIVE_CARRIER_STOP_FAILED`，不是 `STRICT_RESUME_FAILED`）。不带 `--resume` 的 switch 在 CLI 和 daemon 都拒绝。
   `--cwd` 要与原会话一致(pi 只在当前 cwd 的会话目录里找)。
-- `hyprial agent start claude --tmux ...`(交互式 TUI 放进 detached tmux)可能返回 `CLAUDE_CONFIRMATION_REQUIRED`:
-  Claude Code 自己的启动确认在等人按(`data.prompt` = `folder-trust` 信任工作目录,或 `development-channels`
-  开发通道警告)。这两个确认是 CC 故意留给人的,没有受支持的预先同意 ⇒ 会话**保留**,按 `data.attach`
-  里的命令 attach、确认、detach,之后它自己注册。⛔ 不要当作失败重起(重起还是停在同一处)。
   (headless codex 带 `-- -a on-request -s workspace-write`;hyprial 客户端只批准 worker 自己的 harness-bridge MCP 工具调用,其它 elicitation 与命令/文件审批一律拒;reviewer 在 worker 线程级为 user,任何提供方下一致。批准≠授权,授权仍在 daemon 侧)
 - interactive codex(`hyprial agent start codex`,不带 `--headless`)的 harness 工具(`harness_reply/ack/read_body/send`)是 MCP 工具,
   需要 `on-request` 审批才能被调用:启动与 `--resume` 都自动带 `-a on-request`,审批弹窗在 TUI 里由人批准;
@@ -516,9 +572,10 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
 - `hyprial agent create` — 注册 agent 记录；未传 `--config` 时在该 agent home 的
   `config/` 建立最小显式 C，使 claude/codex/pi 默认启用 agent-home P2；未传
   `--cwd` 时默认使用同一 home 的 `workspace/`。同时绑定 15 分钟一次的默认
-  agent-home setup routine。显式 `--config`/`--cwd` 保持其原有含义。确定用途后先用
-  `hyprial routine add` 绑定新 routine，或用
-  `hyprial routine set <name> <file>` 原地修改；最后一个绑定不能直接 `routine remove`。
+  agent-home setup routine。显式 `--config`/`--cwd` 保持其原有含义。确定用途后先用带显式
+  `launch` 的 routine YAML（见「PAC workflow 与 routine」）执行 `hyprial routine add <file>`
+  绑定新 routine，或用 `hyprial routine set <name> <file>` 原地修改（不要依赖省略 launch 的默认值）；
+  最后一个绑定不能直接 `routine remove`。
   `hyprial agent list --json` 的 `agentsWithoutRoutine` 只读列出尚无绑定的既有 agent。
   managed worker 内的 `hyprial message send|reply|ack --from <自身 actor>` 会从环境携带
   daemon session fence；`send`/`reply` 还必须带 `--summary`；本机人工代发必须用
@@ -539,12 +596,15 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   agent 之后照样收到。⛔ 不要拿 MCP 的 harness_read 或 daemon 的 message.pending.list 来"看一眼":
   后者每次调用都会清掉该 actor 的系统通知。
 - MCP 会话内:harness_whoami/read/reply/ack/send/targets;
-  **回入站消息用 harness_reply(回复+消费一步),新话题才用 hyprial message send;新话题不是回复,会占你的 W**
-- **发消息:link、summary、回复**(2026-10-15 硬切后):
-  1. 发送前提:agent 只能向持有 link 的对端发送。第一次发送时 daemon 自动铸造 link:写本方
-     `link/<uri>.json`,等对端写回;这期间消息留在本方 outbox,`send` 当场返回
-     `queued: true, holdReason: LINK_MINTING`,不需要也不能手工批准。owner(`user:<owner>`)、
-     所有 `user:` 目标、`route:` 目标不受 link 约束。
+  **回入站消息用 harness_reply(回复+消费一步),新话题才用 hyprial message send;新话题不是回复**
+- **发消息:summary、回复**(2026-10-15 硬切后;2026-11-21 起发送不再经 link 闸门):
+  0. 给飞书里的人发文字或文件:发 `--to user:<owner>`,由你所在 cell 的 `on: "user"` 连接选 chat。
+     `route:<adapter>:<route>` 地址已退役,发给它报 `UNSUPPORTED_TARGET`(见
+     `docs/guides/migration-route-uri-retired.md`)。
+  1. 发送不经 link 闸门:向其它 agent、`user:` 目标的发送都直接投递(对方不在线时照常
+     进出站队列重试),不会因为 link 被挂起,结果里没有 `holdReason`,也不需要等 link 建好再重发。
+     link CLI 命令与 `link.*` / `threads.*` daemon 请求均已退役;见迁移指南
+     `docs/guides/send-link-and-thread-removal.md`。
   2. 命令面:
      - `hyprial message send --from <自身> --to <对端> [--to …] --summary "<≤512 字节>" "<正文>"`;
        `--summary` 必填,缺失、全空白、超长都在本地报 `SUMMARY_REQUIRED`(退出 1,`--json` 带
@@ -553,64 +613,48 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
      - `hyprial message read <messageId> --from <自身>`:取正文;是消费动作(记 fetched),不闭合,仍要
        reply 或 ack。
      - `hyprial message ack <messageId> --from <自身>`:不需回复时结算。
-     - `hyprial agent link list|stats --from <自身>`:看 link、k、W、cwnd、在途;`hyprial agent link add|drop
-       <peer> --from <自身>`:运维动作,`drop` 返回 `reclaiming`,回收异步完成,排干数见
-       `link.reclaimed` 事件。
-     - `hyprial message outbox list [--json]`:被 hold 的消息与 `holdReason`(该命令不接受 `--from`)。
-     - `hyprial agent top`:`W`(本节点容量)、`OUT`(出站在途)、`INJQ`(入站等待注入)三列,`—` 表示该
-       actor 没有这项数据。
+     - `hyprial message outbox list [--json]`:出站队列里尚未送达的消息(该命令不接受 `--from`)。
+     - 看会话记录(只读,不取走、不 ack;daemon 方法 `conversations.list` / `conversations.history`):
+       - `hyprial message conversation list [--limit N] [--cursor C] [--json]`:
+         会话(conversation cell,`c.…`)按最新在前,翻页用上一页给出的 `--cursor`。
+       - `hyprial message history --conversation <c.…> [--mode tail|older|after] [--cursor C] [--limit N] [--json]`:
+         一个会话的消息记录,往前翻用输出末行给出的 `--conversation … --mode older --cursor …`。
+       - 身份:worker 会话内默认读自己(带会话 fence);会话外默认是本机 operator `user:<owner>`,
+         看某个 agent 的视角加 `--on-behalf-of <agent>`。`message send --conversation` 仍是旧
+         `conversationId`,不是 `c.` id。
+     - `hyprial agent top`:显示进程指标与待投递队列计数 `Q`。
   3. 收到的消息:上下文里只有发送者、意图、messageId、summary、正文字节数;正文用 `hyprial message read`
      或 `harness_read_body` 取。
   4. 回复规则:只有带 reply-to 的消息才是回复(`hyprial message reply`、`harness_reply`)。对请求方再 `message send`
-     一条新消息不是回复:它占你的 W,原请求仍未闭合、继续占对方的 W;`message send` 返回 `openRequestsFrom`
+     一条新消息不是回复:原请求仍未闭合;`message send` 返回 `openRequestsFrom`
      时 CLI 会在 stderr 提示。载体(pi、codex、claude、headless)不会在轮末替你回复(不承诺自动回复)
      ;轮末未回复的请求会收到一条 system notice「N 条请求未回复」。
-  5. hold 原因与该做什么(四码八 detail):
-
-     | holdReason / detail | 意思 | agent 该做什么 |
-     | --- | --- | --- |
-     | `LINK_MINTING` / `minting`、`awaiting-peer` | 已写本方引用,等对端写回 | 什么都不做;daemon 放行。⛔ 不要重发 |
-     | `LINK_PEER_FULL` / `awaiting-peer` | 对端 link 数已满(v1 为估计) | 等;确有急事走 owner 升级。⛔ 不要换个话题重发 |
-     | `LINK_SELF_FULL` / `k` | 本方 link 已满且都有在途请求 | 先收回复或闭合自己的请求;需要时请运维 `agent link drop` |
-     | `LINK_SELF_FULL` / `churn` | 短时间回收过多 | 等一个周期 |
-     | `LINK_SELF_FULL` / `org-unavailable` | 本节点不在 org 空间或 orgfs 不可用 | 只剩 owner 通道;报 owner |
-     | `LINK_SELF_FULL` / `gate-unavailable` | daemon 的 link 服务未就绪 | 报运维;不要重发 |
-     | `LINK_WINDOW_FULL` / `cwnd` | 对该对端在途已达窗口 | 等它的回复 |
-     | `LINK_WINDOW_FULL` / `W` | 本节点未闭合事项已达 W | 先 reply 或 ack 入站的 pending,再发 |
-
-     hold 永远是 `ok: true`;被 hold 的消息到 TTL 未放行时写 `expired`。
-
-     **紧急旁路 `HYPRIAL_LINKS_BYPASS`(运维,需 owner 授权)**:link 准入限制默认关闭,即旁路默认开。
-     - 配置:daemon 环境里设 `HYPRIAL_LINKS_BYPASS=1` 明确开、设 `0` 明确关(也可在
-       `settings.json` 写 `{"links": {"bypass": true|false}}`),**重启 daemon 一次**。环境变量未设置
-       或为空时继续读 settings;settings 缺失/`null` 仍默认开,所以去掉变量不是关。非法值会让 link
-       服务起不来(发送全部 hold),改完先看日志 `link.service_composed` 的 `bypass` 字段。
-     - 生效后:只因 link 状态的 hold/拒绝全部放行,已 hold 的积压在启动那一轮放出;
-       **link 记账冻结**:不写 link 文件、不排队 intent、不做驱逐;启动日志 `link.bookkeeping_disabled`
-       出现一次。此时 `hyprial agent link add` 返回 `state:not-recorded`(reason
-       `bookkeeping-disabled-by-bypass`),`hyprial agent link list --json` 的 `bookkeeping` 为 `false`;
-       不要把它当 `established`。关掉旁路后 link 状态从头重建。
-       `hyprial agent link list --json`、`hyprial agent link stats --json` 的 `bypass` 为 `true`;每次放行记
-       `link.bypass_admitted`
-       (同一 actor/peer/原因 60 s 一条)。
-     - 仍然拦:身份(`CALLER_NOT_AUTHORIZED`)、回复校验、`LINK_RECLAIMED`;远端 agent 入站改为
-       「发送方 owner 是 org 目录空间成员」才收,非成员仍 `LINK_UNKNOWN`。
-     - 放弃的:W/cwnd/k 限流与 link 拓扑治理。若要恢复这些限制,显式设 `0`/`false`;关闭无需迁移。
-  6. 拒绝码(`ok: false`,退出 1):`SUMMARY_REQUIRED`;`LINK_WINDOW_FULL`(向非 owner 的人发新
-     请求而 W 已满,同步拒绝);`LINK_UNKNOWN`(对方节点找不到你的 link 文件:本节点没有加入 org
-     空间);`LINK_RECLAIMED`(link 已回收,那条请求已被排干,不能再回复);`MESSAGE_BODY_UNAVAILABLE`
+  5. 拒绝码(`ok: false`,退出 1):`SUMMARY_REQUIRED`;`MESSAGE_BODY_UNAVAILABLE`
      (不可读或不存在);`MESSAGE_REPLY_UNAVAILABLE`(reply 的原请求已闭合或不存在:用 message ack 结算你这侧的行,
-     若仍要对话另发新消息,它占 W);保留名 `dispatch-coordinator`、`_turn-hooks` 不能注册为 agent
+     若仍要对话另发新消息);保留名 `dispatch-coordinator`、`_turn-hooks` 不能注册为 agent
      (`INVALID_AGENT_NAME`)。
-  7. MCP:`harness_send(to, summary, message)`,`to` 可为数组;`harness_reply(messageId, summary,
+  6. MCP:`harness_send(to, summary, message)`,`to` 可为数组;`harness_reply(messageId, summary,
      message)`;`harness_read` 返回 summary 与 bodyBytes;`harness_read_body(messageId)` 取正文。
+     读一个会话的历史(尤其是群:没被唤醒的成员靠它补看错过的消息):
+     `harness_read(conversationId=<g.… 或 c.…>, mode=tail|older|after, cursor, limit)`,
+     往前翻用上一页的 `nextOlderCursor`,配 `mode=older`;它只读不结算任何消息。
+     只有群的当前成员能读群历史,其他人(含已被移出的)报 `CONVERSATION_NOT_MEMBER`。
+  7. 群聊（`g.…`）唤醒与 @（mention）规则（2026-11-21 裁定）:
+     - 一条群消息**只唤醒 `mentions` 里列出的 agent 成员**，不论作者是人还是 agent；没有 `@` 任何人的消息照常写入群历史但不唤醒任何人。
+     - **群内 `reply` 默认 `@` 被回复消息的作者**：经 `hyprial message reply` 或 `harness_reply` 在群内回复时，daemon 会默认把被回复消息的作者记入 `mentions`（仅当该作者仍是当前 `agent` 成员且不是自己时；回复人类 owner、回复自己或原发件人已移出群时不加）。可再用 `--mention <成员名或a.id>`（`harness_reply` 为 `mentions`）追加其他成员，或用 `--no-mention`（`harness_reply` 为 `noMention=true`）取消默认的 `@`；两个 agent 互相用 `reply` 回复会持续互相唤醒（无跳数上限），需要停止追问时请传 `--no-mention` / `noMention=true`：
+       `hyprial message reply <messageId> --from <自身> [--mention <成员名或a.id>] [--no-mention] --summary "<≤512 字节>" "<正文>"`
+       `hyprial message send --from <自身> --conversation <g.…> --mention <成员名或a.id> [--reply-to <messageId>] --summary "<≤512 字节>" "<正文>"`（`--mention` 可重复；群发送不传 `--to`）。
+     - 想不被 `@` 也定时跟进并回复一个群，不要指望默认唤醒——给自己加一个定时查看该群历史（`hyprial message history --conversation <g.…>`）的 `routine`，作为运行时数据配置。
   8. 载体审批(裁定 77):interactive codex 以 `on-request` 审批策略启动(有人在场,工具审批交给 TUI
      用户);`-a never` 只用于 headless,该策略下 codex 拒绝全部 MCP 调用。agent 在 interactive
      codex 里调用 `harness_reply`/`harness_read_body` 时出现审批提示是正常流程,由 TUI 前的人批准。
-- **发文件/图片到飞书**:`hyprial message send --from <URI> --to route:<adapter>:<route> --summary "<≤512 字节>" --file <路径> "说明文字"`
-  (图片用 `--image`,可重复多个)。adapter 会上传后发成飞书的文件/图片消息,返回里
-  `resourceDeliveries[].kind` 为 `file`/`image`。限制:只支持 `route:` 目标(不支持 agent、`user:`),
-  不能挂在 replyTo 上;文件 ≤30MB、图片 ≤10MB、不能是空文件、要有扩展名。
+- **发文件/图片到飞书**:`hyprial message send --from <URI> --to user:<owner> --summary "<≤512 字节>" --file <路径> "说明文字"`
+  (图片用 `--image`,可重复多个)。文字和附件推到与文字副本相同的 chat(你所在 cell 的 `on: "user"`
+  连接;没有 adapter 成员时是本机 user agent cell),返回里 `pushed: true` 且
+  `resourceDeliveries[].kind` 为 `file`/`image`。限制:只支持本机 owner 的 `user:<owner>` 目标
+  (agent 或别的 owner 报 `UNSUPPORTED_TARGET`),不能挂在 replyTo 上(`INVALID_ARGUMENT`);
+  推送只尝试一次,`pushed: false` 时文字和附件都没有发出;`pushed: true` 带 `pushCode` 时文字已到,
+  `resourceDeliveries` 只列已发出的附件,其余没发(CLI 重发一次会换新 key,文字会再到一次,只补附件就只发附件);文件 ≤30MB、图片 ≤10MB、不能是空文件、要有扩展名。
   **路径规则**(daemon 强制,报 `ATTACHMENT_PATH_REFUSED`):agent 只能发自己 workspace
   (`<hyprial home>/agents/<名>/workspace`)或自己会话工作目录下的文件。hyprial home 里的
   其它文件(secrets、配置、别的 agent 的 home)和 daemon 状态目录一律不能发;指向那里的
@@ -624,26 +668,19 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   要覆盖显式传 `overwrite=true`(CLI `--overwrite`),否则报 `reason: exists`。
 - **注入只含 summary;每条收到的消息都带 `from` 与 `to`**(harness_read 行、headless worker
   注入首行 `[Harness Network message from <from> to <to> …]`、pi 附着注入都一样;首行格式不变,
-  正文用 `hyprial message read` 取)。飞书进来的消息 `from`
-  是 adapter(`adapter:lark:<名>`,回复走它),**真正说话的人在 `origin.sender`**:
-  `displayName`、`owner`、`standing`。**只有 `standing: verified` 且有 `owner` 才算"这是 <owner> 本人"**;
-  `verified` 而 `owner` 为空 = 身份已确认的访客(没有 hyprial 账号),名字可信,但不是任何人的授权;
-  `observed`(只有平台显示名,谁都能改成任何名字)、`ambiguous`、`unresolved` 一律 ⛔ 不当作主人的授权,
-  正文首行也会写明 `NOT verified`。名字对不上人时,补登记用
-  `hyprial user bind <KEY> --adapter <ADAPTER> --open-id <OPEN_ID> --confirmed-by <WHO>`
-  (由确认绑定的协调者或人执行)。授权白名单的键必须是经绑定核验的平台身份,
-  绝不能是群或通道；验证用 `hyprial user show <KEY>`，必要时用
-  `hyprial adapter identities find <ADAPTER> --id <OPEN_ID>`。
-- `hyprial user add|bind|unbind|list|show` 现在面对 daemon 的合并身份视图
-  (`identity.*` IPC)。绑定行带有五种行级来源 `source`（`casdoor-login`、
-  `org-directory`、`local-override`、`legacy-user-bind`、`legacy-identities`）
-  与 `confirmedBy`；不直接读取本机用户库。`user list --json` 输出 CLI 的
-  `{"rows": [...]}` envelope，不照搬 daemon 的 `{"bindings": [...]}`。
-  `user bind <key> --adapter <名> --open-id <id>` 是让发送人解析为该用户的确认路径，
-  协调者也可以确认；每次写入必须带 `--confirmed-by <谁>`。
-- 想查“这是谁”用 `user whois`；用 `user bindings audit` 检查旧的
-  `legacy-user-bind` 与 `legacy-identities` 两类行。访客没有 owner，永远不是任何人的授权；授权白名单的键必须是
-  经绑定核验的平台身份，绝不能是群或通道。
+  正文用 `hyprial message read` 取)。经 adapter 来的消息(任何种类的 adapter 都一样)`from`
+  是 adapter 地址(如 `adapter:lark:<名>`,回复走它),说话的平台账号在 `origin.sender`:
+  `platformId`(平台账号 id)、`displayName`(adapter 自己观测到的显示名,可能为空);
+  `origin.chatKind` 是 `dm` 或 `group`,另有 `platformMessageId`、`platformCreatedAt`。
+  提示行写作 `<显示名或账号 id> (via <adapter 地址>, account <账号 id>)`。
+  **经 adapter 来的消息,说话人是拥有该平台账号的人;hyprial 不判定他是不是 owner。
+  owner 的指令以 `user:<owner>` 的身份到达(GUI、CLI)。**
+  查某个账号在 adapter 上记录的显示名用 `hyprial adapter identities find <ADAPTER> --id <ID>`。
+- `hyprial user add|show|list` 是本机只记名字的人员登记(member 带 hyprial owner,guest 没有),
+  经 daemon 的 `identity.users.add|list`;`add` 必须带 `--confirmed-by <谁>`。
+  `user list --json` 输出 `{"rows": [...]}`,每行是一个人(`userKey`、`kind`、`owner`、名字)。
+  hyprial 不记录谁拥有哪个 IM 账号:没有 `user bind|unbind|whois|bindings`,
+  人员登记也不影响入站消息的说话人呈现。
 - 会话的 harness-bridge MCP/技能面由 `hyprial agent start` 启动时从 HYPRIAL_HOME 统一注入,
   不依赖启动目录的本地注册;额外 MCP server / skill / 扩展在
   `$HYPRIAL_HOME/plugins/plugins.json` 声明,按 harness 能力注入

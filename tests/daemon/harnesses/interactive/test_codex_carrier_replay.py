@@ -643,15 +643,11 @@ def test_reopened_inbox_cursor_is_replayed_by_daemon_not_locally(
         MemoryDeliveryTransport,
     )
     from hyprial.daemon.impl.inbox.batch.service import capture_batch
-    from hyprial.daemon.impl.dispatch.admission import LinkAdmission
-    from tests.daemon.application.transport.channel.support import FakeLinkGate
 
-    admission = LinkAdmission()
-    admission.bind(FakeLinkGate())
     path = tmp_path / "cursor-inbox.sqlite3"
     private = tmp_path / "actor-state"
     private.mkdir(mode=0o700)
-    inbox = InboxService(path, MemoryDeliveryTransport(), link_admission=admission)
+    inbox = InboxService(path, MemoryDeliveryTransport())
     request.addfinalizer(inbox.close)
     for message_id in ("a", "b"):
         inbox.receive(
@@ -674,7 +670,7 @@ def test_reopened_inbox_cursor_is_replayed_by_daemon_not_locally(
     item = replace(delivery(), message=original.text, batch_cursor=original.cursor)
     assert inbox.ack(ACTOR, "a").acknowledged
     inbox.close()
-    inbox = InboxService(path, MemoryDeliveryTransport(), link_admission=admission)
+    inbox = InboxService(path, MemoryDeliveryTransport())
     request.addfinalizer(inbox.close)
     responses = []
     try:

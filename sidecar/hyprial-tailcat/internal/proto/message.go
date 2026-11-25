@@ -507,8 +507,11 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if wire.PeerPort == 0 {
 		wire.PeerPort = DefaultPeerPort
 	}
-	if !strings.HasPrefix(wire.InboundTarget, "unix:") || !filepath.IsAbs(strings.TrimPrefix(wire.InboundTarget, "unix:")) || wire.ControlPort == wire.PeerPort {
-		return Command{}, ProtocolError("private Unix inboundTarget and separate control port required")
+	if err := validateInboundTarget(wire.InboundTarget); err != nil {
+		return Command{}, err
+	}
+	if wire.ControlPort == wire.PeerPort {
+		return Command{}, ProtocolError("controlPort and peerPort must differ")
 	}
 	if wire.DERPMapURL != "" && !strings.HasPrefix(wire.DERPMapURL, "https://") {
 		return Command{}, ProtocolError("derpMapURL must be https")
@@ -681,6 +684,23 @@ func ValidateExposure(port int, target, proxyProtocol, admission string) error {
 		return validateTCPTarget(target)
 	default:
 		return ProtocolError("target must start with unix: or tcp:")
+	}
+	return nil
+}
+
+func validateInboundTarget(target string) error {
+	if strings.HasPrefix(target, "unix:") {
+		if !filepath.IsAbs(strings.TrimPrefix(target, "unix:")) {
+			return ProtocolError("inboundTarget unix path must be absolute")
+		}
+		return nil
+	}
+	if !strings.HasPrefix(target, "tcp:") {
+		return ProtocolError("inboundTarget must be unix:<path> or tcp:127.0.0.1:<port>")
+	}
+	address, err := netip.ParseAddrPort(strings.TrimPrefix(target, "tcp:"))
+	if err != nil || address.Addr().String() != "127.0.0.1" || address.Port() == 0 {
+		return ProtocolError("inboundTarget must be tcp:127.0.0.1:<port>")
 	}
 	return nil
 }

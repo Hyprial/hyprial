@@ -1,4 +1,4 @@
-"""Installed GUI resources: verified wheel assets and the static server."""
+"""Installed GUI resources: the verified wheel assets and their manifest."""
 
 from .resources import (
     GuiAssetError,
@@ -7,7 +7,6 @@ from .resources import (
     installed_asset_root,
     load_assets,
     read_manifest,
-    resolve_explicit_assets,
     verify_manifest_files,
     write_manifest,
 )
@@ -19,7 +18,6 @@ __all__ = [
     "installed_asset_root",
     "load_assets",
     "read_manifest",
-    "resolve_explicit_assets",
     "verify_manifest_files",
     "write_manifest",
 ]

@@ -97,6 +97,21 @@ def test_runtime_execute_reads_the_current_injected_output_boundary(monkeypatch)
     assert calls == [("first-result", True)]
 
 
+def test_runtime_execute_forwards_ensure_daemon_only_when_it_is_false(monkeypatch) -> None:
+    from hyprial.shell.impl.cli.runtime import entry
+
+    calls: list[dict[str, Any]] = []
+
+    def record(operation, *, json_output: bool, **kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(_cli_support, "_execute", record)
+    entry.runtime.execute(lambda: None, json_output=True)
+    entry.runtime.execute(lambda: None, json_output=True, ensure_daemon=False)
+    entry.runtime.execute(lambda: None, json_output=True, ensure_daemon=True)
+    assert calls == [{}, {"ensure_daemon": False}, {}]
+
+
 def test_legacy_service_snapshot_does_not_grow() -> None:
     """New B/C code uses CliRuntime; the old flat snapshot is frozen."""
 
@@ -104,7 +119,9 @@ def test_legacy_service_snapshot_does_not_grow() -> None:
 
     from hyprial.shell.impl.cli.commands.common.services import CliServices
 
-    assert len(fields(CliServices)) == 54
+    assert len(fields(CliServices)) == 40
+    assert "_stored_user_proxy_route" not in {field.name for field in fields(CliServices)}
+    assert "_sample_process_table" not in {field.name for field in fields(CliServices)}
 
 
 def test_composition_module_does_not_import_the_entry_or_a_command_family() -> None:
@@ -197,3 +214,26 @@ def test_process_composition_rejects_an_independent_app(monkeypatch) -> None:
     )
     with pytest.raises(ValueError, match="process root app"):
         registration.build_app(independent)
+
+
+def test_request_timeout_allowance_is_optional_and_forwarded(monkeypatch):
+    calls = []
+
+    def request(method, params=None, **kwargs):
+        calls.append((method, params, kwargs))
+        return {"ok": True}
+
+    runtime = CliRuntime(app=typer.Typer(), request_resolver=lambda: request,
+                         execute_resolver=lambda operation, **kwargs: operation())
+    runtime.request("ping")
+    assert calls[-1] == ("ping", None, {})
+    runtime.request("top.inspect", {}, timeout_allowance=5.0)
+    assert calls[-1] == ("top.inspect", {}, {"timeout_allowance": 5.0})
+
+    kernel_calls = []
+    monkeypatch.setattr(_cli_support, "daemon_request", lambda *args, **kwargs:
+                        kernel_calls.append((args, kwargs)) or {"ok": True})
+    _cli_support._daemon_request("ping")
+    assert "timeout_allowance" not in kernel_calls[-1][1]
+    _cli_support._daemon_request("top.inspect", timeout_allowance=5.0)
+    assert kernel_calls[-1][1]["timeout_allowance"] == 5.0

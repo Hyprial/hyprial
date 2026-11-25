@@ -9,7 +9,12 @@ fields are generated from the merged declarations. The authoritative
 params/result/error schemas are
 `contract/daemon-request/openapi.json`; do not copy this table into code.
 
-## 1. Five-method matrix
+Update 2026-11-03 (UUID addressing lane C): agent rows now carry the additive
+`agentId` and `displayName` keys, and `agent.rename` is a sixth declared
+method. Both are covered in `contract/identity/agent-naming.md`; the rows below
+that mention them supersede the older "no display name" notes.
+
+## 1. Agent method matrix
 
 | CLI | Method | Read/write | Retry | HTTP | Legal empty/unconfigured | Handler path |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -18,8 +23,9 @@ params/result/error schemas are
 | `hyprial agent provider default` | `agent.provider.default` | mixed read/write (`--clear`) | `never` | projected | yes: `provider: null` (unconfigured) | existing provider handler |
 | `hyprial agent provider login` | `agent.provider.login` | write | `never` | projected | no: the write returns receipts or fails; must state the reason | existing provider handler |
 | `hyprial agent provider logout` | `agent.provider.logout` | write | `never` | projected | yes: `removed: []`/`absent` with a reason | existing provider handler |
+| `hyprial agent rename` | `agent.rename` | write | `never` | not exposed (`http_exposed=False` until the HTTP write admission lands) | no: answers the renamed agent row or fails with a declared code | `request_catalog/agent/rename.py` -> `app.agents.rename` |
 
-All five are audience `local-operator` + `bound-agent`. The target `actor` is a
+All six are audience `local-operator` + `bound-agent`. The target `actor` is a
 business parameter; the HTTP caller identity is bound by the entry principal,
 never by a request-body field. `http_exposed` is declaration/projection
 eligibility, not proof that a live H server is running.
@@ -40,7 +46,7 @@ independent files.
 
 | Feature method | Daemon params | Business result fields used | UI view model | Notes/gaps |
 | --- | --- | --- | --- | --- |
-| `listAgents()` | `{}` | `agents[].actor` or `.uri`, `.name` | `AgentOption {actor,label}` | `agent.list` has no `name` field in the accepted-shape candidate; the adapter falls back to `actor`. Do not invent a display name. |
+| `listAgents()` | `{}` | `agents[].actor` or `.uri`, `.name` | `AgentOption {actor,label}` | `agent.list` has no `name` field; the adapter falls back to `actor`. Rows now carry `agentId` and `displayName` (null means the display is the actor), so a label may use `displayName ?? actor`; do not invent any other display name. |
 | `getDefault()` | `{}` | `provider: string \| null` | plain provider or `null` | `null` is the unconfigured state. `previous`, `credentialSource`, `defaultCredential` exist but are not used by the current view. |
 | `listGrants(actor)` | `{actor}` | `grants[].grantId`, `.source`, `.fieldName`, `.environmentNames` | `AgentGrant {id,source,field,environments}` | `source` is an enum (`user-provider`, `agent-private`, `agent-shared`). Omitted `actor` is a valid all-agent query but is not used by this adapter. |
 | `login(actor,provider,files)` | `{actor,provider,files}` plus optional `force`, `setupToken`, `makeDefault` | `ok`, `actor`, `provider`, `credentialSource`, `files[]`, `default` | success/failure only | `files` is a non-empty list of `{filename, contentBase64}`. The UI needs an explicit input; there is no production credential-picker or upstream OAuth flow. Never send a real credential to the mock. |
@@ -59,6 +65,7 @@ UI control just to satisfy the matrix.
 | `agent.provider.default` | configured provider | unconfigured (`provider: null`) | non-object body (the object schema accepts every object) | legacy provider value/combination rejected by handler | provider unsupported / target unauthorized |
 | `agent.provider.login` | file receipts | not applicable (reason required) | non-object body (the object schema accepts every object) | missing/invalid file, actor or `makeDefault` (handler) | credential exists / unsafe path / target unauthorized |
 | `agent.provider.logout` | removed files | nothing removed (`absent`) | `actor`/`provider` wrong JSON type | actor-first requiredness rejected by handler | provider unsupported / unsafe path / target unauthorized |
+| `agent.rename` | renamed agent row | not applicable | missing/empty/non-string `name` or `displayName`, extra key | `INVALID_AGENT_NAME` | `AGENT_NOT_FOUND` / `AGENT_EXISTS` / `AGENT_ERROR` |
 
 The validation boundary is declared, not inferred from `INVALID_ARGUMENT`:
 `invalid-params` must fail the projected schema (pre-dispatch) and may use any
@@ -74,14 +81,16 @@ input.
 
 The actual case names, values and error codes are generated from the accepted
 declarations. `check_agent_contract_examples.py` is the gate; the Contract Mock
-reports missing scenarios as `MOCK_SCENARIO_MISSING`.
+reports missing scenarios as `MOCK_SCENARIO_MISSING` and a selected scenario with
+no case describing the request's selector fields as `MOCK_EXAMPLE_MISSING`.
 
 ## 4. Known UI gaps (do not fake)
 
-- No agent display name; `agent.list` does not provide one in the current
-  result shape.
+- No agent display-name editor in the frontend. `agent.list` rows carry
+  `displayName` and `agentId` since UUID addressing; `agent.rename` exists but
+  is not HTTP-exposed yet.
 - No provider catalog, model catalog, provider→model relation, tier probe or
-  provider login status field. Those are not part of these five methods.
+  provider login status field. Those are not part of these six methods.
 - No native credential file picker, OAuth page or setup-token entry component.
   The frontend must make the accepted input explicit; the mock accepts only the
   synthetic sentinel.

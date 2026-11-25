@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import sys
@@ -19,7 +20,7 @@ from hyprial.shell.impl.request_http.server import RequestHttpServer, StartupRef
 
 OWNER = "h01-owner"
 NODE = "h01-node"
-ACTOR = f"agent:{OWNER}:{NODE}:operator"
+ACTOR = f"user:{OWNER}"
 
 from tests.integration.request_http.conftest import (  # noqa: E402
     HttpProcess,
@@ -125,16 +126,16 @@ def test_unreachable_backend_exits_3(isolation) -> None:
     assert "BACKEND_UNAVAILABLE" in result.stderr
 
 
-def test_actor_from_another_node_exits_3(isolation, daemon) -> None:
+def test_actor_from_another_owner_exits_2(isolation, daemon) -> None:
     payload = {
         "schemaVersion": 1,
         "backend": {"kind": "local-daemon", "socket": str(isolation.socket_path)},
-        "principal": {"kind": "local-operator", "owner": OWNER, "actor": f"agent:{OWNER}:other-node:operator"},
+        "principal": {"kind": "local-operator", "owner": OWNER, "actor": "user:other-owner"},
         "runtime": {"dir": str(isolation.runtime)},
     }
     result = _start_invalid(isolation, payload)
-    assert result.returncode == 3
-    assert "PRINCIPAL_CONFIG_MISMATCH" in result.stderr
+    assert result.returncode == 2
+    assert "CONFIG_INVALID" in result.stderr
 
 
 def test_declaration_mismatch_refuses_before_binding(tmp_path: Path) -> None:
@@ -182,3 +183,64 @@ def test_declaration_mismatch_refuses_before_binding(tmp_path: Path) -> None:
     with pytest.raises(StartupRefusal, match="declarations differ"):
         server.start()
     assert not (tmp_path / "runtime" / "server.json").exists()
+
+
+def _local_gui_config(isolation, *, owner: str | None, actor: str | None) -> Path:
+    document: dict = {
+        "schemaVersion": 1,
+        "backend": {"kind": "local-daemon", "socket": str(isolation.socket_path)},
+        "principal": {"kind": "local-gui", "owner": owner, "actor": actor},
+        "listen": {"host": "127.0.0.1", "port": 0},
+        "security": {
+            "allowedOrigins": ["http://127.0.0.1:4173"],
+            "allowedHosts": ["127.0.0.1", "localhost"],
+        },
+        "runtime": {"dir": str(isolation.runtime)},
+        "home": str(isolation.home),
+        "stateDir": str(isolation.state),
+    }
+    return write_config(isolation, document)
+
+
+def test_a_local_gui_config_is_refused_by_the_standalone_entry_and_hosts_nothing(isolation) -> None:
+    """The standalone entry serves no local-gui config, whatever the home holds.
+
+    It exits 2 with ``CONFIG_INVALID``: it publishes no ``server.json``, writes no
+    ``bootstrap.json`` and leaves the state locks free for a real daemon.
+    """
+
+    from hyprial.daemon import DaemonStateOwnershipFence
+
+    (isolation.home / "settings.json").write_text(
+        json.dumps({"version": 1}), encoding="utf-8"
+    )
+    isolation.env.pop("HYPRIAL_OWNER", None)
+    isolation.env.pop("HYPRIAL_USER_ID", None)
+    config = _local_gui_config(isolation, owner=None, actor=None)
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "hyprial.shell.impl.request_http", "serve", "--config", str(config)],
+        cwd=isolation.root,
+        env=isolation.env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        _, stderr = process.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        process.communicate(timeout=30)
+        raise
+    finally:
+        if process.poll() is None:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            process.wait(timeout=10)
+
+    assert process.returncode == 2
+    assert "CONFIG_INVALID" in stderr
+    assert not (isolation.runtime / "server.json").exists()
+    assert not (isolation.state / "bootstrap.json").exists()
+    DaemonStateOwnershipFence.acquire(isolation.state, timeout=0).close()

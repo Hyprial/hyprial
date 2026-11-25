@@ -20,13 +20,28 @@ from hyprial.daemon.impl.state_persistence import ReadJournalQuery, StatePersist
 SLOW_WRITE = 0.5
 
 
-def _authority(tmp_path: Path) -> StatePersistenceAuthority:
+def _authority(tmp_path: Path, actor_host) -> StatePersistenceAuthority:
     state_db = StateDatabase(tmp_path / "lifecycle-operations.sqlite3")
-    return StatePersistenceAuthority(DesiredStateStore(tmp_path / "desired.json", state_db))
+    return StatePersistenceAuthority(
+        DesiredStateStore(tmp_path / "desired.json", state_db), actor_host=actor_host
+    )
 
 
-def test_a_journal_read_does_not_wait_for_a_slow_write(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    authority = _authority(tmp_path)
+class _RecordingCell:
+    def __init__(self, cell, told: list[type]) -> None:
+        self._cell = cell
+        self._told = told
+
+    def tell(self, command):  # type: ignore[no-untyped-def]
+        self._told.append(type(command))
+        return self._cell.tell(command)
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self._cell, name)
+
+
+def test_a_journal_read_does_not_wait_for_a_slow_write(tmp_path: Path, actor_host, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    authority = _authority(tmp_path, actor_host)
     writing = threading.Event()
     original = authority._journal_store.next_generation
 
@@ -37,13 +52,7 @@ def test_a_journal_read_does_not_wait_for_a_slow_write(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(authority._journal_store, "next_generation", slow_write)
     told: list[type] = []
-    original_tell = authority._runtime.tell
-
-    def tell(handle, command):  # type: ignore[no-untyped-def]
-        told.append(type(command))
-        return original_tell(handle, command)
-
-    monkeypatch.setattr(authority._runtime, "tell", tell)
+    authority._cell = _RecordingCell(authority._cell, told)
     try:
         writer = threading.Thread(target=authority.journal.next_generation)
         writer.start()

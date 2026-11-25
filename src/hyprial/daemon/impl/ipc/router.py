@@ -1,4 +1,23 @@
-"""The daemon IPC dispatch router: handle(), the restore gate and the generic method families."""
+"""The daemon IPC dispatch router: handle(), the restore gate and the generic method families.
+
+S3 (implS3, 2026-11-02): the legacy branches for the registry-migrated names
+``routine.list``/``routine.status``/``workflow.list`` were dead dispatch (the
+registry gate answers first); the cleanup keeps every un-migrated sibling and
+the status ownership pre-guard narrowed accordingly.
+
+2026-11-08 single-route gate: remaining legacy handlers and rejection/policy
+branches explicitly exclude registered names. They stay after the terminating
+registry dispatch; pre-dispatch authorization and unregistered siblings retain
+their existing behavior and static network-call visibility.
+
+2026-11-17 single list (daemon-first-z4b-router-only-refusal-20261117): after
+the registry and migrated-name refusals, a name that is neither ``shutdown`` nor
+in ``ROUTER_ONLY_METHODS`` is refused ``METHOD_NOT_FOUND`` before any inline
+branch runs.  The table is the admission list the bootstrap host also reads; a
+test keeps it equal to the branches below.  ``agent.migrate.<unknown>`` and
+``routine.<unknown>`` run a parameter or ownership check before their refusal,
+so they bypass the guard and keep answering exactly as they did.
+"""
 from __future__ import annotations
 import hashlib
 import os
@@ -10,9 +29,6 @@ from hyprial.identity import (
     AgentHomeError as RegistryHomeError,
 )
 from hyprial.kernel import DaemonRequestError, ipc_errors
-from hyprial.daemon.impl.operations.management import (
-    EnsureSquireRegistryCommand,
-)
 from hyprial.kernel import (
     canonical_user_uri,
     DEFAULT_PEER_PORT,
@@ -25,33 +41,32 @@ from hyprial.daemon.impl.forwarding  import (
 from hyprial.daemon.impl.composition  import (
     DomainCommandError,
 )
-from hyprial.daemon.impl.links.ports import (
-    IPC_LINK_ADD,
-    IPC_LINK_DROP,
-    IPC_LINK_LIST,
-    IPC_LINK_STATS,
-)
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
 )
-from hyprial.daemon.impl.request_catalog import METHOD_REGISTRY, MIGRATED_FAMILIES
-from hyprial.daemon.impl.links.ports import (
+from hyprial.daemon.impl.request_catalog import METHOD_REGISTRY
+from hyprial.daemon.impl.request_catalog.migration import (
+    MIGRATED_FAMILIES,
+    MIGRATED_METHODS,
+    ROUTER_ONLY_METHODS,
+)
+from hyprial.kernel.interface import (
     IPC_MESSAGE_READ_BODY,
     IPC_MESSAGE_SETTLE_HINT,
 )
+_NAMES_CHECKED_BEFORE_REFUSAL = ("agent.migrate.", "routine.")
 _RESTORE_GATE_LIGHT_METHODS = frozenset({"ping", "shutdown", "daemon.catalog"})
 _IPC_STATS_METHODS = frozenset(
     {
         "worker.channel.request",
         "adapter.list",
-        "adapter.pin",
-        "adapter.pins",
         "adapter.reload",
         "adapter.start",
         "adapter.status",
         "adapter.stop",
-        "adapter.unpin",
+        "agent.cell.get",
+        "agent.cell.update",
         "agent.create",
         "agent.config.rebind",
         "agent.destroy",
@@ -61,12 +76,12 @@ _IPC_STATS_METHODS = frozenset(
         "agent.grant",
         "agent.grants",
         "agent.home-census",
-        "agent.host-invite",
         "agent.list",
         "agent.migrate.execute",
         "agent.migrate.preflight",
         "agent.migrate.rollback",
         "agent.readiness",
+        "agent.rename",
         "agent.resolve",
         "agent.resume.restore",
         "agent.restore-policy",
@@ -86,7 +101,6 @@ _IPC_STATS_METHODS = frozenset(
         "agent.secret.revoke",
         "agent.start.preflight",
         "agent.unblock",
-        "autoupdate.notify",
         "autoupdate.status",
         "autoupdate.trigger",
         "daemon.catalog",
@@ -94,23 +108,11 @@ _IPC_STATS_METHODS = frozenset(
         "down",
         "hosts",
         "identity.whoami",
-        "identity.resolve",
-        "identity.bindings.list",
-        "identity.binding.publish",
-        "identity.binding.withdraw",
-        "identity.override.set",
-        "identity.override.clear",
         "identity.users.list",
         "identity.users.add",
         "lifecycle.start",
-        "lifecycle.start-smolvm",
-        IPC_LINK_ADD,
-        IPC_LINK_DROP,
-        IPC_LINK_LIST,
-        IPC_LINK_STATS,
         "lifecycle.resume.preflight",
         "management.adapter.remove",
-        "management.squire.ensure",
         "message.ack",
         "message.history",
         "message.pending.list",
@@ -204,15 +206,6 @@ _IPC_STATS_METHODS = frozenset(
         "shutdown",
         "targets",
         "top.snapshot",
-        "transfer.complete",
-        "transfer.custody.override",
-        "transfer.land",
-        "transfer.plan",
-        "transfer.precheck",
-        "transfer.quiesce",
-        "transfer.receive",
-        "transfer.recipientKey",
-        "transfer.resume",
         "upgrade.steps.run", "upgrade.steps.status",
         "workflow.cancel", "workflow.complete",
         "workflow.fail",
@@ -227,43 +220,8 @@ _IPC_STATS_METHODS = frozenset(
         "workflow.status",
         "workflow.worker.restart",
         "workflow.worker.stop",
-        "work.add",
-        "work.check",
-        "work.done",
-        "work.keywords",
-        "work.link",
-        "work.ls",
-        "work.note",
-        "work.repair",
-        "work.resolve",
-        "work.show",
-        "work.status",
     }
 )
-
-# Org network lifecycle (tailnet cutover §4.3/§5): IPC method -> handler name in
-# ``daemon.impl.org.network.ipc``. Imported lazily so the router stays cheap.
-_ORG_NETWORK_METHODS = {
-    "org.create": "ipc_org_create",
-    "org.delete": "ipc_org_delete",
-    "org.execute": "ipc_org_execute",
-    "org.invite": "ipc_org_invite",
-    "org.join": "ipc_org_join",
-    "org.leave": "ipc_org_leave",
-    "org.list": "ipc_org_list",
-    "org.network": "ipc_org_network",
-    "org.remove": "ipc_org_remove",
-    "org.repair": "ipc_org_repair",
-}
-
-# Owner-node ACL entry authorizations.  Separate from _ORG_NETWORK_METHODS
-# because these handlers authenticate the caller and therefore need the
-# trusted message origin threaded through.
-_ORG_ACL_METHODS = {
-    "org.acl.grant": "ipc_org_acl_grant",
-    "org.acl.ls": "ipc_org_acl_ls",
-    "org.acl.revoke": "ipc_org_acl_revoke",
-}
 
 class _IpcDispatchMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
@@ -361,10 +319,6 @@ class _IpcDispatchMixin:
                 "identityMode": self.identity_mode,
                 "identityIssuer": self.identity_issuer,
                 "socket": str(self.socket_path),
-                "migration": {
-                    "status": "applied",
-                    "rewrittenCells": self._owner_migration_rewrites,
-                },
                 # Three phases: "restoring" while the restore thread runs,
                 # "serving" once the gate opens, and "reconciled" once the
                 # first reconcile round holds a readiness report for every
@@ -422,12 +376,9 @@ class _IpcDispatchMixin:
             "service.guide",
             "service.list",
         }:
-            from hyprial.daemon.impl.service_connect import ServiceConnectError
-
-            try:
-                return self._handle_service_connect(method, params)
-            except ServiceConnectError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
+            return METHOD_REGISTRY.invoke(
+                self, method, params, trusted_message_origin=_trusted_message_origin
+            )
         assert self._inbox is not None
         assert self._harnesses is not None
         assert self._presence is not None
@@ -438,105 +389,27 @@ class _IpcDispatchMixin:
                 params,
                 trusted_message_origin=_trusted_message_origin,
             )
-        if method.split(".", 1)[0] in MIGRATED_FAMILIES:
-            # A migrated-family name that is not declared must not fall through
-            # to a legacy branch: the family has no compatibility chain.
+        if method in MIGRATED_METHODS or method.split(".", 1)[0] in MIGRATED_FAMILIES:
+            # A migrated name that is not declared must not fall through to a
+            # legacy branch.  The precise set covers a partially migrated
+            # family; the family set covers a family with no legacy members.
+            raise DaemonRequestError(
+                ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
+            )
+        if (
+            method != "shutdown"
+            and method not in ROUTER_ONLY_METHODS
+            and not method.startswith(_NAMES_CHECKED_BEFORE_REFUSAL)
+        ):
             raise DaemonRequestError(
                 ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
             )
         if method == "worker.channel.request":
             return self._ipc_worker_channel_request(params)
-        if method.startswith("orgfs."):
-            return self._ipc_orgfs(
-                method, params, _trusted_message_origin=_trusted_message_origin
-            )
-        if method.startswith("work."):
-            return self._handle_work(method, params)
-        if method == "management.squire.ensure":
-            return self._ipc_management_squire_ensure(params)
-        if method == "management.adapter.remove":
-            return self._ipc_management_adapter_remove(params)
-        if method == "network.exposures":
-            return self._ipc_network_exposures()
-        if method == "network.expose":
-            return self._ipc_network_expose(params)
-        if method == "network.unexpose":
-            return self._ipc_network_unexpose(params)
-        if method == "network.peerKey":
-            return self._ipc_network_peer_key(params)
-        if method == "upgrade.steps.status":
-            from hyprial.daemon.impl.upgrade import upgrade_step_status
-            from hyprial.daemon.impl.upgrade.steps.mcp_entry import legacy_processes
-
-            status = upgrade_step_status(self.state_dir)
-            status["legacyProcesses"] = legacy_processes()
-            return status
-        if method == "upgrade.steps.run":
-            from pathlib import Path as _Path
-
-            from hyprial.daemon.impl.upgrade import run_upgrade_steps
-
-            run = params.get("apply", True) if isinstance(params, dict) else True
-            if not run:
-                return {"ok": False, "code": ipc_errors.INVALID_ARGUMENT, "error": "apply required"}
-            return run_upgrade_steps(self.state_dir, home=_Path.home())
-        if method == "autoupdate.status":
-            return self._ipc_autoupdate_status()
         if method == "autoupdate.trigger":
             return self._ipc_autoupdate_trigger()
-        if method == "autoupdate.notify":
-            return self._ipc_autoupdate_notify(params)
         if method == "ps":
             return self._ipc_ps(params)
-        if method == "top.snapshot":
-            return self._ipc_top_snapshot()
-        if method == "identity.whoami":
-            return self._ipc_identity_whoami(params)
-        if method.startswith("identity."):
-            from hyprial.daemon.impl.identity import handle_identity_ipc
-
-            binding_operator = True
-            peer_pid = None
-            if method in {
-                "identity.binding.publish",
-                "identity.binding.withdraw",
-            }:
-                binding_operator, peer_pid = self._identity_binding_operator(
-                    params, trusted_message_origin=_trusted_message_origin
-                )
-
-            return handle_identity_ipc(
-                self._identity_resolver,
-                method,
-                params,
-                operator=(
-                    binding_operator
-                    if method.startswith("identity.binding.")
-                    else _trusted_message_origin != "worker"
-                ),
-                peer_pid=peer_pid,
-                binding_withdraw=self._withdraw_identity_binding,
-                binding_publish=self._publish_identity_binding_explicit,
-                binding_status=lambda: self._identity_binding_suppression().status(),
-            )
-        if method == "org.publish":
-            return self._ipc_org_publish()
-        if method == "org.fetch":
-            return self._ipc_org_fetch(params)
-        if method in _ORG_NETWORK_METHODS:
-            from hyprial.daemon.impl.org.network import ipc as org_network_ipc
-
-            handler = getattr(org_network_ipc, _ORG_NETWORK_METHODS[method])
-            return handler(self, params)
-        if method in _ORG_ACL_METHODS:
-            from hyprial.daemon.impl.org.network import ipc as org_network_ipc
-
-            handler = getattr(org_network_ipc, _ORG_ACL_METHODS[method])
-            return handler(self, params, _trusted_message_origin)
-        if method == "targets":
-            return self._ipc_targets(params)
-        if method == "hosts":
-            return self._ipc_hosts(params)
         if method in {"session.register", "session.register_guarded"}:
             return self._ipc_session_register(
                 params,
@@ -553,44 +426,27 @@ class _IpcDispatchMixin:
             return self._ipc_session_heartbeat(params)
         if method == "session.unregister":
             return self._ipc_session_unregister(params)
-        if method == "message.query":
-            return self._ipc_message_query(params)
-        if method == "message.history":
-            return self._ipc_message_history(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.pending.list":
             return self._ipc_message_pending_list(method, params, _trusted_message_origin=_trusted_message_origin)
-        if method == "message.pending.batch":
-            return self._ipc_message_pending_batch(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.pending.wait":
             return self._ipc_message_pending_wait(method, params, _trusted_message_origin=_trusted_message_origin)
-        if method.startswith("routine."):
+        if method.startswith("routine.") and method not in METHOD_REGISTRY:
             routine_caller = self._workflow_caller(params)
             if method in (
                 "routine.remove",
-                "routine.pause",
-                "routine.resume",
                 "routine.set",
-                "routine.status",
             ) and self._routine_service is not None:
                 current = self._routine_service.status(name=_required_string(params.get("name"), "name"))
-                if routine_caller not in (canonical_user_uri(self.owner), current["owner"], current.get("actor")):
+                if routine_caller != canonical_user_uri(self.owner) and not self._routine_caller_is(
+                    routine_caller, current["owner"], current.get("actor")
+                ):
                     raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "caller does not own this routine")
         if method == "routine.add":
             return self._ipc_routine_add(params)
-        if method == "routine.list":
-            return self._ipc_routine_list(params, routine_caller)
-        if method == "routine.status":
-            return self._ipc_routine_status(params)
-        if method == "routine.audit":
-            return self._ipc_routine_audit()
         if method == "routine.remove":
             return self._ipc_routine_remove(params)
         if method == "routine.set":
             return self._ipc_routine_set(params)
-        if method == "routine.pause":
-            return self._ipc_routine_pause(params)
-        if method == "routine.resume":
-            return self._ipc_routine_resume(params)
         if method == "dispatch.matrix.resolve":
             return self._ipc_dispatch_matrix_resolve(params)
         if method == "workflow.remote.current":
@@ -613,88 +469,36 @@ class _IpcDispatchMixin:
             "pac.actor.stop",
         ):
             return self._ipc_pac_write(method, params)
-        if method == "pac.gc.preview":
-            return self._ipc_pac_gc_preview()
-        if method in ("workflow.status", "workflow.list", "workflow.node.inspect", "workflow.cancel", "workflow.history.list", "workflow.history.status"):
+        if method in ("workflow.status", "workflow.node.inspect", "workflow.cancel", "workflow.history.status"):
             return self._ipc_workflow_status_group(method, params)
-        if method == "progress.list":
-            return self._ipc_progress_list(method, params, _trusted_message_origin=_trusted_message_origin)
-        if method == "message.send":
-            return self._ipc_message_send(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.reply":
             return self._ipc_message_reply(method, params, _trusted_message_origin=_trusted_message_origin)
-        if method == "message.status":
-            return self._ipc_message_status(params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.ack":
             return self._ipc_message_ack(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == IPC_MESSAGE_READ_BODY:
             return self._ipc_message_read_body(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == IPC_MESSAGE_SETTLE_HINT:
             return self._ipc_message_settle_hint(method, params, _trusted_message_origin=_trusted_message_origin)
-        if method == "outbox.list":
-            return self._ipc_outbox_list()
         if method == "outbox.prune":
             return self._ipc_outbox_prune(params)
         if method in {
             "lifecycle.start",
-            "lifecycle.start-smolvm",
             "lifecycle.resume.preflight",
         }:
             return self._ipc_lifecycle_start(method, params)
         if method == "down":
             return self._ipc_down(params)
-        if method == "transfer.custody.override":
-            return self._ipc_transfer_custody_override(params)
-        if method == "transfer.land":
-            return self._ipc_transfer_land(params)
-        if method == "transfer.plan":
-            return self._ipc_transfer_plan(params)
-        if method == "transfer.quiesce":
-            return self._ipc_transfer_quiesce(params)
-        if method == "transfer.precheck":
-            return self._ipc_transfer_precheck(params)
-        if method == "transfer.recipientKey":
-            return self._ipc_transfer_recipient_key(params)
-        if method == "transfer.receive":
-            return self._ipc_transfer_receive(params)
-        if method == "transfer.resume":
-            return self._ipc_transfer_resume(params)
-        if method == "transfer.complete":
-            return self._ipc_transfer_complete(params)
-        if method == "adapter.reload":
-            return self._ipc_adapter_reload()
-        if method == "adapter.list":
-            return self._ipc_adapter_list()
-        if method == "adapter.status":
-            return self._ipc_adapter_status(params)
-        if method == "adapter.start":
-            return self._ipc_adapter_start(params)
-        if method == "adapter.stop":
-            return self._ipc_adapter_stop(params)
-        if method == "adapter.pin":
-            return self._ipc_adapter_pin(params)
-        if method == "adapter.unpin":
-            return self._ipc_adapter_unpin(params)
-        if method == "adapter.pins":
-            return self._ipc_adapter_pins()
-        if method.startswith("agent."):
+        if method.startswith("agent.") and method not in METHOD_REGISTRY:
             if method == "agent.config.rebind" and _trusted_message_origin == "worker":
                 raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "config rebind requires local operator IPC")
+            from hyprial.daemon.impl.user_agent.admin import refuse_legacy_agent_method
+
+            refuse_legacy_agent_method(self, method, params)
             # One boundary for the agent RPCs: the registry raises its own
             # typed errors, and every one of them already carries the IPC code
             # it should surface as. Translating here keeps handle()'s contract
             # (DaemonRequestError, always) without restating those codes.
             try:
-                if method in (
-                    "agent.provider.login",
-                    "agent.provider.logout",
-                    "agent.provider.default",
-                ):
-                    return self._handle_agent_provider_request(
-                        method, params, trusted_message_origin=_trusted_message_origin
-                    )
-                if method == "agent.create":
-                    return self._handle_agent_create_with_default(params)
                 return self._handle_agent(method, params)
             except (AgentError, DomainCommandError) as error:
                 raise DaemonRequestError(error.code, str(error), data=getattr(error, "data", None)) from error
@@ -725,41 +529,6 @@ class _IpcDispatchMixin:
         return self.handle(
             inner_method, inner_params, _trusted_message_origin="worker"
         )
-
-    def _ipc_management_squire_ensure(self, params) -> Any:
-        command = EnsureSquireRegistryCommand.from_payload(params)
-        result = self._registry_management_handler().ensure_squire(command)
-        return {"ok": True, **result.to_payload()}
-
-    def _ipc_management_adapter_remove(self, params) -> Any:
-        from hyprial.daemon.impl.bootstrap.adapter_registration import (
-            AdapterConfigConflictError,
-            AdapterNotFoundError,
-            remove_lark_gateway,
-        )
-        from hyprial.kernel import DesiredStateError
-        from hyprial.kernel import PersistentConfigError
-
-        name = _required_string(params.get("name"), "name")
-        try:
-            return remove_lark_gateway(
-                hyprial_home=self.hyprial_home,
-                state_dir=self.state_dir,
-                name=name,
-                management=self._registry_management_handler(),
-            )
-        except AdapterNotFoundError as error:
-            raise DaemonRequestError(
-                ipc_errors.ADAPTER_NOT_FOUND, str(error)
-            ) from error
-        except AdapterConfigConflictError as error:
-            raise DaemonRequestError(error.code, str(error)) from error
-        except PersistentConfigError as error:
-            raise DaemonRequestError(
-                ipc_errors.INVALID_ARGUMENT, str(error)
-            ) from error
-        except DesiredStateError as error:
-            raise DaemonRequestError("DESIRED_STATE_ERROR", str(error)) from error
 
     def _ipc_network_exposures(self) -> Any:
         return {
@@ -935,9 +704,6 @@ class _IpcDispatchMixin:
             ),
             "scheduler": self._autoupdate.status(),
         }
-
-    def _ipc_autoupdate_notify(self, params) -> Any:
-        return self._deliver_autoupdate_restart_notification(params)
 
     def _ipc_shutdown(self, params=None) -> Any:
         expected = (params or {}).get("expectedEpoch")

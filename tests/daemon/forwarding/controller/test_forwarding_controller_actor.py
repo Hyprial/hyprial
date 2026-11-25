@@ -5,7 +5,7 @@ import threading
 from hyprial.daemon.impl.forwarding import ForwardingControllerAuthority
 
 
-def test_native_sidecar_io_has_one_typed_owner_and_immutable_status() -> None:
+def test_native_sidecar_io_has_one_typed_owner_and_immutable_status(actor_host) -> None:
     calls: list[str] = []
 
     class Controller:
@@ -26,7 +26,7 @@ def test_native_sidecar_io_has_one_typed_owner_and_immutable_status() -> None:
         def close(self) -> None:
             calls.append("close")
 
-    owner = ForwardingControllerAuthority(Controller())
+    owner = ForwardingControllerAuthority(Controller(), actor_host=actor_host)
     assert owner.pid == 123
     assert owner.status() == (("peer-a",), {})
     assert owner.peers_reported is True
@@ -38,7 +38,7 @@ def test_native_sidecar_io_has_one_typed_owner_and_immutable_status() -> None:
     ]
 
 
-def test_blocked_native_call_keeps_close_ordered_behind_it() -> None:
+def test_blocked_native_call_keeps_close_ordered_behind_it(actor_host) -> None:
     entered = threading.Event()
     release = threading.Event()
     calls: list[str] = []
@@ -53,7 +53,7 @@ def test_blocked_native_call_keeps_close_ordered_behind_it() -> None:
         def close(self) -> None:
             calls.append("close")
 
-    owner = ForwardingControllerAuthority(Controller())
+    owner = ForwardingControllerAuthority(Controller(), actor_host=actor_host)
     worker = threading.Thread(target=owner.status)
     worker.start()
     assert entered.wait(1)
@@ -68,7 +68,7 @@ def test_blocked_native_call_keeps_close_ordered_behind_it() -> None:
     assert calls == ["status", "close"]
 
 
-def test_membership_calls_from_a_request_path_are_bounded_with_a_stable_code() -> None:
+def test_membership_calls_from_a_request_path_are_bounded_with_a_stable_code(actor_host) -> None:
     """A stalled membership command must not hang an IPC reply (0.5.5.1 hotfix).
 
     The sidecar I/O owner is serial and gave every membership command a 35s
@@ -95,7 +95,7 @@ def test_membership_calls_from_a_request_path_are_bounded_with_a_stable_code() -
         def close(self) -> None:
             pass
 
-    owner = ForwardingControllerAuthority(Controller())
+    owner = ForwardingControllerAuthority(Controller(), actor_host=actor_host)
     started = time.monotonic()
     with pytest.raises(ForwardingSidecarError) as caught:
         owner.membership_request("invite-create", {"tailnetId": "t"}, timeout=0.05)

@@ -10,6 +10,7 @@ here as callbacks, never imported.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from hyprial.daemon.impl.configuration.identity import normalize_agent_recipient
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _optional_boolean,
+    _optional_string_param,
     _required_string,
 )
 from hyprial.daemon.impl.orgfs.api import OrgFsError
@@ -46,6 +48,7 @@ from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
 )
+from hyprial.daemon.impl.org.membership.invites import InviteService
 from hyprial.daemon.impl.org.network.service import (
     OrgNetworkError,
     OrgNetworkService,
@@ -56,7 +59,16 @@ from hyprial.daemon.impl.org.network.state import (
     remove_org_acl_grant,
 )
 from hyprial.identity import address_path
-from hyprial.identity import InviteError
+from hyprial.identity import InviteError, decode_invite
+from hyprial.daemon.impl.org.cell_actor import ensure_org_cell_actors
+from hyprial.daemon.impl.org.network.lifecycle.binding import (
+    NETWORK_STATUS_PROBE_SECONDS,
+)
+from hyprial.daemon.impl.org.cell_actor.sync import (
+    ensure_owner_org_cell,
+    lookup_owner_org_cell,
+    owner_org_cell_bound,
+)
 
 
 def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
@@ -74,15 +86,24 @@ def _build_service(
 
     fs = app._require_orgfs_runtime().facade
 
-    def membership_request(op: str, params: dict) -> dict:
+    def bounded_membership_request(op: str, params: dict, bound: float | None) -> dict:
         app._start_forwarding_supervisor()
         supervisor = getattr(app, '_forwarding_supervisor', None)
         if supervisor is None:
             raise ForwardingSidecarError('Tailnet sidecar unavailable.', code='MEMBERSHIP_NOT_INITIALIZED')
-        timeout = membership_wait_seconds(op, membership_timeout)
+        timeout = membership_wait_seconds(op, bound)
         if service._join_budget is not None:
             timeout = service._join_budget.remaining(op, timeout)
         return supervisor.membership_request(op, params, timeout=timeout)
+
+    def membership_request(op: str, params: dict) -> dict:
+        return bounded_membership_request(op, params, membership_timeout)
+
+    def network_status_probe() -> dict:
+        bound = NETWORK_STATUS_PROBE_SECONDS
+        if membership_timeout is not None:
+            bound = min(bound, membership_timeout)
+        return bounded_membership_request("membership-status", {}, bound)
 
     def map_peer(peer: str, address: str) -> int | None:
         # The invite/join bootstrap connects a peer by assigning it a
@@ -155,6 +176,53 @@ def _build_service(
         )
         return value if isinstance(value, str) and value else None
 
+    def ensure_owner_cell(org: str, space_id: str):
+        cell = ensure_owner_org_cell(app, org=org, space_id=space_id)
+        return cell.params if cell is not None else None
+
+    def _canonical_org_lookup_name(org: str) -> str:
+        return org if org.startswith("group-") else f"group-{org}"
+
+    def owner_cell_roster(org: str):
+        projected = getattr(app, "authenticated_oidc_roster", None)
+        if callable(projected):
+            roster = projected(org)
+            if isinstance(roster, dict):
+                return roster
+        cell = lookup_owner_org_cell(app, org=_canonical_org_lookup_name(org))
+        if cell is None:
+            return None
+        params = cell.params.get("org.members")
+        return params if isinstance(params, dict) else None
+
+    def owner_cell_issuer(org: str):
+        projected = getattr(app, "authenticated_oidc_issuer", None)
+        if callable(projected):
+            issuer = projected(org)
+            if isinstance(issuer, str) and issuer:
+                return issuer
+        cell = lookup_owner_org_cell(app, org=_canonical_org_lookup_name(org))
+        if cell is None:
+            return None
+        issuer = cell.params.get("org.issuer")
+        return issuer if isinstance(issuer, str) and issuer else None
+
+    def owner_cell_binding(org: str):
+        cell = lookup_owner_org_cell(app, org=_canonical_org_lookup_name(org))
+        if cell is None:
+            return None
+        return {
+            "parent": cell.param("org.parent"),
+            "tailnet": cell.param("org.tailnet"),
+            "directorySpace": cell.param("org.directorySpace"),
+        }
+
+    def org_cell_bound(org: str, space_id: str) -> bool | None:
+        try:
+            return owner_org_cell_bound(app, org=org, space_id=space_id)
+        except Exception:  # noqa: BLE001 - an unreadable cell runtime degrades to unknown
+            return None
+
     service = OrgNetworkService(
         fs=fs,
         home=Path(app.hyprial_home),
@@ -175,6 +243,13 @@ def _build_service(
         read_own_address=read_own_address,
         forwarding_status=lambda: app._forwarding_status_json(),
         membership_request=membership_request,
+        network_probe=network_status_probe,
+        ensure_owner_cell=ensure_owner_cell,
+        owner_cell_roster=owner_cell_roster,
+        oidc_issuer=owner_cell_issuer,
+        oidc_roster=owner_cell_roster,
+        org_cell_bound=org_cell_bound,
+        owner_cell_binding=owner_cell_binding,
         network_isolated=bool(getattr(app, "network_isolated", False)),
         # Casdoor group membership is the authority (design §2): owner-side
         # commands write it first; absent config = not this node's job.
@@ -192,6 +267,17 @@ def _request_service(app: Any) -> OrgNetworkService:
     return _build_service(app)
 
 
+def _org_actors(app: Any):
+    return ensure_org_cell_actors(app, service_factory=lambda: _request_service(app))
+
+
+def _org_from_link(link: str) -> str | None:
+    try:
+        return decode_invite(link).org
+    except (InviteError, ValueError):
+        return None
+
+
 def _translate(error: BaseException) -> DaemonRequestError:
     if isinstance(error, OrgFsError):
         return DaemonRequestError(error.code, str(error), error.details)
@@ -206,126 +292,239 @@ def _translate(error: BaseException) -> DaemonRequestError:
 
 def ipc_org_create(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
+    parent_value = params.get("parent")
+    parent = None if parent_value is None else _required_string(parent_value, "parent")
+    actors = _org_actors(app)
     try:
-        return _access_changed(
-            app, "org-create", _request_service(app).create(org), org=org
-        )
+        result = actors.for_org(org).org_create(parent=parent)
+        return _access_changed(app, "org-create", result, org=org)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
+    finally:
+        actors.prune_if_unowned(org)
 
 
 def ipc_org_repair(app: Any, params: JsonObject) -> dict:
     org_value = params.get("org")
     org = None if org_value is None else _required_string(org_value, "org")
     apply = _optional_boolean(params.get("apply"), "apply") or False
+    actors = _org_actors(app)
     try:
-        return _request_service(app).repair(org, apply=apply)
+        if org is not None:
+            return actors.for_org(org).org_repair(apply=apply)
+        service = _request_service(app)
+        candidates = service.repair_candidates()
+        repaired: list[dict[str, Any]] = []
+        if apply:
+            for candidate in candidates:
+                if candidate["repairable"]:
+                    result = actors.for_org(str(candidate["org"])).org_repair(apply=True)
+                    repaired.extend(result.get("repaired", []))
+        return {"apply": apply, "candidates": candidates, "repaired": repaired}
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
+    finally:
+        if org is not None:
+            actors.prune_if_unowned(org)
 
 
 def ipc_org_invite(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     user = _required_string(params.get("user"), "user")
+    actors = _org_actors(app)
     try:
-        result = _request_service(app).invite(org, user)
+        result = actors.for_org(org).org_invite(user)
         _membership_changed(app, org, user)
         return _access_changed(app, "org-invite", result, org=org, user=user)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
-
-
-def _publish_identity_binding_after_join(app: Any) -> None:
-    """The binding proof is an add-on: it never fails a completed join."""
-
-    try:
-        app._publish_identity_binding()
-    except Exception as error:  # noqa: BLE001 - the join already succeeded
-        app._log(
-            "warn",
-            "identity",
-            "identity.org-binding.publish-after-join-failed",
-            reason=type(error).__name__,
-        )
+    finally:
+        actors.prune_if_unowned(org)
 
 
 def ipc_org_execute(app: Any, params: JsonObject) -> dict:
     link = _required_string(params.get("link"), "link")
+    org = _org_from_link(link)
+    actors = _org_actors(app)
+    claims = _trusted_oidc_claims(app)
     try:
-        result = _request_service(app).execute(link)
-        result = _access_changed(app, "org-execute", result, org=result.get("org"))
-        _publish_identity_binding_after_join(app)
-        return result
+        if org is not None:
+            result = actors.for_org(org).org_execute(link, claims=claims) if claims is not None else actors.for_org(org).org_execute(link)
+        else:
+            service = _request_service(app)
+            result = service.execute(link, claims=claims) if claims is not None else service.execute(link)
+        return _access_changed(app, "org-execute", result, org=result.get("org"))
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
+    finally:
+        if org is not None:
+            actors.prune_if_unowned(org)
+
+
+def _trusted_oidc_claims(app: Any) -> Mapping[str, Any] | None:
+    reader = getattr(app, "authenticated_oidc_claims", None)
+    if callable(reader):
+        claims = reader()
+        return claims if isinstance(claims, Mapping) else None
+    claims = getattr(app, "oidc_claims", None)
+    if getattr(app, "oidc_claims_verified", False) is True and isinstance(claims, Mapping):
+        return claims
+    return None
+
+
+def _join_and_settle(app: Any, link: str, claims: Mapping[str, Any] | None = None) -> dict:
+    """One join: the org service and the reconcile request."""
+
+    org = _org_from_link(link)
+    actors = _org_actors(app)
+    try:
+        if org is not None:
+            result = actors.for_org(org).org_join(link, claims=claims) if claims is not None else actors.for_org(org).org_join(link)
+        else:
+            service = _request_service(app)
+            result = service.join(link, claims=claims) if claims is not None else service.join(link)
+        return _access_changed(app, "org-join", result, org=result.get("org"))
+    finally:
+        if org is not None:
+            actors.prune_if_unowned(org)
 
 
 def ipc_org_join(app: Any, params: JsonObject) -> dict:
     """``org.join``: the §5.1 alias of execute, all three link forms."""
 
     link = _required_string(params.get("link"), "link")
+    claims = _trusted_oidc_claims(app)
     try:
-        result = _request_service(app).join(link)
-        result = _access_changed(app, "org-join", result, org=result.get("org"))
-        _publish_identity_binding_after_join(app)
-        return result
-    except OrgFsError as error:
+        return _join_and_settle(app, link, claims)
+    except (OrgFsError, ForwardingSidecarError) as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
+        raise _translate(error) from error
+
+
+def _accept_and_settle(app: Any, link: str) -> dict:
+    org = _org_from_link(link)
+    actors = _org_actors(app)
+    claims = _trusted_oidc_claims(app)
+    try:
+        if org is not None:
+            result = actors.for_org(org).org_accept_invite(link, claims=claims) if claims is not None else actors.for_org(org).org_accept_invite(link)
+        else:
+            service = _request_service(app)
+            result = service.accept_invite(link, claims=claims) if claims is not None else service.accept_invite(link)
+        return _access_changed(app, "org-join", result, org=result.get("org"))
+    finally:
+        if org is not None:
+            actors.prune_if_unowned(org)
+
+
+def _invite_service(app: Any) -> InviteService:
+    return InviteService(
+        orgs=_request_service(app),
+        join=lambda link: _accept_and_settle(app, link),
+        log=lambda level, domain, event, **fields: app._log(
+            level, domain, event, **fields
+        ),
+    )
+
+
+def ipc_org_invites_list(app: Any, params: JsonObject) -> dict:
+    """``org.invites.list``: what this device still owes an answer (§3 O2c)."""
+
+    try:
+        return _invite_service(app).list(params.get("invites"))
+    except ValueError as error:
+        raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+    except (OrgFsError, OrgNetworkError, ForwardingSidecarError) as error:
+        raise _translate(error) from error
+
+
+def ipc_org_invites_accept(app: Any, params: JsonObject) -> dict:
+    """``org.invites.accept``: join exactly the confirmed invite, once."""
+
+    invite_id = _required_string(params.get("inviteId"), "inviteId")
+    link = _required_string(params.get("link"), "link")
+    try:
+        return _invite_service(app).accept(invite_id=invite_id, link=link)
+    except InviteError as error:
+        raise DaemonRequestError(error.code, str(error)) from error
+    except ValueError as error:
+        raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+    except (OrgFsError, OrgNetworkError, ForwardingSidecarError) as error:
         raise _translate(error) from error
 
 
 def ipc_org_leave(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
+    actors = _org_actors(app)
     try:
-        return _access_changed(app, "org-leave", _request_service(app).leave(
-            org, confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
-            operation_id=params.get('operationId'), device_ids=params.get('deviceIds')),
-            org=org)
+        result = actors.for_org(org).org_leave(
+            confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
+            operation_id=params.get('operationId'),
+            device_ids=params.get('deviceIds'),
+        )
+        return _access_changed(app, "org-leave", result, org=org)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
+    finally:
+        actors.prune_if_unowned(org)
 
 
 def ipc_org_remove(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     user = _required_string(params.get("user"), "user")
+    actors = _org_actors(app)
     try:
-        result = _request_service(app).remove(
-            org, user, confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
-            operation_id=params.get('operationId'), device_ids=params.get('deviceIds'))
+        result = actors.for_org(org).org_remove(
+            user,
+            confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
+            operation_id=params.get('operationId'),
+            device_ids=params.get('deviceIds'),
+        )
         _membership_changed(app, org, user)
         return _access_changed(app, "org-remove", result, org=org, user=user)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
+    finally:
+        actors.prune_if_unowned(org)
 
 
 def ipc_org_delete(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
+    actors = _org_actors(app)
     try:
-        return _access_changed(
-            app, "org-delete", _request_service(app).delete(org), org=org
+        result = actors.for_org(org).org_delete(
+            confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
+            operation_id=_optional_string_param(params.get('operationId'), 'operationId'),
         )
+        return _access_changed(app, "org-delete", result, org=org)
     except OrgFsError as error:
         raise _translate(error) from error
-    except (InviteError, OrgNetworkError, ValueError) as error:
+    except (OrgNetworkError, ForwardingSidecarError) as error:
+        raise DaemonRequestError(error.code, str(error)) from error
+    except (InviteError, ValueError) as error:
         raise _translate(error) from error
+    finally:
+        actors.prune_if_unowned(org)
 
 
 def ipc_org_list(app: Any, params: JsonObject) -> dict:
     try:
-        return _request_service(app).list()
+        result = _request_service(app).list()
+        _org_actors(app).reconcile()
+        return result
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -345,12 +544,19 @@ def ipc_org_network(app: Any, params: JsonObject) -> dict:
         raise DaemonRequestError(
             ipc_errors.INVALID_ARGUMENT, "org must be a string when present"
         )
+    actors = _org_actors(app) if org is not None else None
     try:
-        result = _request_service(app).network(org)
+        if org is not None and actors is not None:
+            result = actors.for_org(org).org_network()
+        else:
+            result = _request_service(app).network(org)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
+    finally:
+        if org is not None and actors is not None:
+            actors.prune_if_unowned(org)
     sync = getattr(app, "_casdoor_membership_sync", None)
     # Owner side only (design §3): casdoorOnly, last sync time, last error.
     result["casdoorSync"] = (
@@ -371,16 +577,16 @@ def ipc_org_network(app: Any, params: JsonObject) -> dict:
 def _org_acl_entry_or_forbidden(
     app: Any, params: JsonObject, *, method: str, trusted_origin: str | None
 ) -> None:
-    """Only the owner's terminal or the owner's user-proxy manages grants."""
+    """Only the owner's terminal manages grants."""
 
     entry = app._org_acl_entry_caller(
         params, method=method, trusted_origin=trusted_origin
     )
-    if entry is not None and entry[0] in ("terminal", "user-proxy"):
+    if entry is not None and entry[0] == "terminal":
         return
     raise DaemonRequestError(
         ipc_errors.ORG_ACL_GRANT_FORBIDDEN,
-        f"{method} is available only to the owner's terminal or the owner's user-proxy",
+        f"{method} is available only to the owner's terminal",
         {"method": method} | ({"caller": entry[1]} if entry is not None else {}),
     )
 
@@ -436,6 +642,18 @@ def _org_acl_owned_agent(app: Any, value: str) -> str:
     return normalized
 
 
+def _refuse_user_agent_grantee(app: Any, agent: str, verb: str) -> None:
+    """USER_AGENT_IMMUTABLE when *agent* is the owner's user agent (UA1g).
+
+    Only a grant is refused: a revoke must still remove a grant an older
+    build wrote for the user agent, and removing one grants nothing.
+    """
+
+    from hyprial.daemon.impl.user_agent.naming import refuse_user_agent_target
+
+    refuse_user_agent_target(getattr(app, "agents", None), agent, verb)
+
+
 def ipc_org_acl_grant(
     app: Any, params: JsonObject, trusted_origin: str | None = None
 ) -> dict:
@@ -445,6 +663,7 @@ def ipc_org_acl_grant(
     )
     _org_acl_owner_space(app, org)
     agent = _org_acl_owned_agent(app, _required_string(params.get("agent"), "agent"))
+    _refuse_user_agent_grantee(app, agent, "grant org ACL entry to")
     now_ms = int(time.time() * 1000)
     until_ms = params.get("untilMs")
     if until_ms is not None:
@@ -516,7 +735,52 @@ def publish_self_for_app(app: Any) -> dict:
     """
 
     try:
-        return _build_service(app).publish_self()
+        service = _build_service(app)
+        actors = ensure_org_cell_actors(app, service_factory=lambda: service)
+        orgs = service._orgs()
+        if (
+            isinstance(service, OrgNetworkService)
+            and type(service).publish_self is OrgNetworkService.publish_self
+        ):
+            published: list[str] = []
+            skipped: list[dict[str, str]] = []
+            errors: list[dict[str, str]] = []
+            for org in orgs:
+                try:
+                    if actors.for_org(org).org_publish_self():
+                        published.append(org)
+                except OrgNetworkError as error:
+                    skipped.append({"org": org, "reason": error.code})
+                except Exception as error:  # noqa: BLE001 - per-org failure must not mask others
+                    errors.append(
+                        {
+                            "org": org,
+                            "code": getattr(error, "code", "PUBLISH_FAILED"),
+                            "errorType": type(error).__name__,
+                        }
+                    )
+                finally:
+                    actors.prune_if_unowned(org)
+            if published or skipped or errors:
+                app._log(
+                    "info",
+                    "org",
+                    "org.publish_self",
+                    published=published,
+                    skipped=skipped,
+                )
+            outcome: dict[str, Any] = {
+                "published": published,
+                "skipped": skipped,
+                "errors": errors,
+            }
+        else:
+            outcome = service.publish_self()
+        from hyprial.daemon.impl.org.network.member_agents import publish_for_app
+
+        inventory = publish_for_app(app, orgs)
+        outcome["errors"].extend(inventory["errors"])
+        return outcome
     except Exception as error:  # noqa: BLE001 - startup must not depend on it
         try:
             app._log("warn", "org", "org.publish_self.failed", detail=str(error))
@@ -532,10 +796,21 @@ def process_leave_requests_for_app(app: Any) -> dict:
     """
 
     try:
-        result = _build_service(app).process_leave_requests()
-        for item in result.get("processed", []):
-            _membership_changed(app, str(item.get("org")), str(item.get("user")))
-        return result
+        service = _build_service(app)
+        actors = ensure_org_cell_actors(app, service_factory=lambda: service)
+        actors.reconcile()
+        processed: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for org in service.leave_request_orgs():
+            result = actors.for_org(org).org_process_leave_requests()
+            processed.extend(result.get("processed", []))
+            skipped.extend(result.get("skipped", []))
+            for item in result.get("processed", []):
+                org_name = str(item.get("org") or "")
+                user_name = str(item.get("user") or "")
+                _membership_changed(app, org_name, user_name)
+            actors.prune_if_unowned(org)
+        return {"processed": processed, "skipped": skipped}
     except Exception as error:  # noqa: BLE001 - the reconcile tick must survive
         try:
             app._log("warn", "org", "org.leave_requests.failed", detail=str(error))
@@ -582,6 +857,8 @@ def start_casdoor_membership_sync(app: Any) -> None:
         confirmed=ConfirmedMembers(
             Path(app.hyprial_home) / "org-sync" / "confirmed-members.json"
         ),
+        actor_host=app._agent_session_domains.actor_hosts.host_for("org-casdoor"),
+        scheduler=app._maintenance_scheduler,
         log=log,
     )
     app._casdoor_membership_sync = sync
@@ -652,6 +929,8 @@ __all__ = [
     "ipc_org_delete",
     "ipc_org_execute",
     "ipc_org_invite",
+    "ipc_org_invites_accept",
+    "ipc_org_invites_list",
     "ipc_org_join",
     "ipc_org_leave",
     "ipc_org_list",

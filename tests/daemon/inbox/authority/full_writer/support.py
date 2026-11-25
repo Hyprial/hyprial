@@ -3,13 +3,20 @@ from __future__ import annotations
 import os
 import time
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from hyprial.kernel import (
+    ActorCell,
+    ActorEngineConfig,
+    ActorHost,
+    ActorSpec,
+    create_actor_host,
+)
 from hyprial.kernel.impl.actor_runtime import (
     STATE_AUTHORITY,
-    ActorRuntime,
     ActorState,
     AdmissionResult,
     SupervisionPolicy,
@@ -29,7 +36,7 @@ from hyprial.daemon.impl.inbox.actor import (
 from hyprial.daemon.impl.inbox.contracts.ports import (
     BoolMutationCompleted,
 )
-from tests.support.links.gate import permissive_admission_slot
+from tests.support.actor_hosts import InterceptingHost
 
 
 class _Events:
@@ -46,28 +53,18 @@ class _Events:
             return tuple(self.items)
 
 
-class _CompletionClosedRuntime(ActorRuntime):
+class _CompletionClosedHost(InterceptingHost):
     def __init__(self) -> None:
-        super().__init__(
-            policies={
-                STATE_AUTHORITY: SupervisionPolicy(
-                    max_restarts=3,
-                    restart_window=10.0,
-                    base_backoff=0.0,
-                    max_backoff=0.0,
-                    jitter_ratio=0.0,
-                )
-            },
-            random_source=lambda: 0.5,
-        )
+        super().__init__(_build_host())
         self._completion_closed = True
+        self.intercept_tell(self._admit)
 
-    def tell(self, handle: object, command: object) -> AdmissionResult:
+    def _admit(self, _cell, command: object) -> AdmissionResult | None:
         if self._completion_closed and isinstance(
             command, (DispatchIoCompleted, DispatchIoFailed)
         ):
             return AdmissionResult.CLOSED
-        return super().tell(handle, command)  # type: ignore[arg-type]
+        return None
 
     def allow_completions(self) -> None:
         self._completion_closed = False
@@ -88,66 +85,65 @@ class _BlockingProgressTransport(MemoryDeliveryTransport):
         return True
 
 
-class _DoubleRestartReassociateRuntime(ActorRuntime):
+class _DoubleRestartReassociateHost(InterceptingHost):
     def __init__(self) -> None:
-        super().__init__(
-            policies={
-                STATE_AUTHORITY: SupervisionPolicy(
-                    max_restarts=4,
-                    restart_window=10.0,
-                    base_backoff=0.0,
-                    max_backoff=0.0,
-                    jitter_ratio=0.0,
-                )
-            },
-            random_source=lambda: 0.5,
-        )
+        super().__init__(_build_host(max_restarts=4))
         self._restarted_during_takeover = False
+        self.intercept_tell(self._admit)
 
-    def tell(self, handle: object, command: object) -> AdmissionResult:
+    def _admit(self, cell, command: object) -> AdmissionResult | None:
         if (
             isinstance(command, ReassociateIoCompletion)
             and not self._restarted_during_takeover
         ):
             self._restarted_during_takeover = True
-            assert super().tell(handle, object()) is AdmissionResult.ACCEPTED  # type: ignore[arg-type]
+            assert cell.tell(object()) is AdmissionResult.ACCEPTED
             deadline = time.monotonic() + 1.0
             # The generation advances before the replacement actor starts.
             # Wait for admission to reopen so the stale command reaches its
             # generation fence instead of being rejected as CLOSED upstream.
             while True:
-                snapshot = self.snapshot(handle)  # type: ignore[arg-type]
+                snapshot = cell.snapshot()
                 if snapshot.generation == 3 and snapshot.state is ActorState.RUNNING:
                     break
                 if time.monotonic() >= deadline:
                     raise AssertionError("second actor restart did not complete")
                 time.sleep(0.005)
-        return super().tell(handle, command)  # type: ignore[arg-type]
+        return None
 
 
-class _CountingCompletionRuntime(ActorRuntime):
+class _CountingCompletionHost(InterceptingHost):
     def __init__(self) -> None:
-        super().__init__(
-            policies={
-                STATE_AUTHORITY: SupervisionPolicy(
-                    max_restarts=3,
-                    restart_window=10.0,
-                    base_backoff=0.0,
-                    max_backoff=0.0,
-                    jitter_ratio=0.0,
-                )
-            },
-            random_source=lambda: 0.5,
-        )
+        super().__init__(_build_host())
         self.completion_admissions = 0
+        self.intercept_tell(self._admit)
 
-    def tell(self, handle: object, command: object) -> AdmissionResult:
+    def _admit(self, _cell, command: object) -> AdmissionResult | None:
         if isinstance(
             command,
             (DispatchIoCompleted, DispatchIoFailed, ReassociateIoCompletion),
         ):
             self.completion_admissions += 1
-        return super().tell(handle, command)  # type: ignore[arg-type]
+        return None
+
+
+class _RestartObservedHost(InterceptingHost):
+    def __init__(self) -> None:
+        super().__init__(_build_host())
+        self._factory_calls = 0
+        self.restarted = threading.Event()
+
+    def spawn(self, spec: ActorSpec) -> ActorCell:
+        factory = spec.handler_factory
+
+        def observed_factory():
+            handler = factory()
+            self._factory_calls += 1
+            if self._factory_calls > 1:
+                self.restarted.set()
+            return handler
+
+        return super().spawn(replace(spec, handler_factory=observed_factory))
 
 
 class _BlockingFinalEvents(_Events):
@@ -171,7 +167,7 @@ class _BlockingFinalEvents(_Events):
 
 
 def _actor_state(coordinator: DeliveryCustodyCoordinator) -> ActorState:
-    return coordinator._runtime.snapshot(coordinator._handle).state
+    return coordinator._cell.snapshot().state
 
 
 # CI flake fix (2026-10-09): 1.0s wall-clock deadlines are too tight when
@@ -190,19 +186,25 @@ def _wait_until(predicate: object, timeout: float | None = None) -> None:
     raise AssertionError("condition was not satisfied before timeout")
 
 
-def _runtime() -> ActorRuntime:
-    return ActorRuntime(
-        policies={
-            STATE_AUTHORITY: SupervisionPolicy(
-                max_restarts=3,
-                restart_window=10.0,
-                base_backoff=0.0,
-                max_backoff=0.0,
-                jitter_ratio=0.0,
-            )
-        },
-        random_source=lambda: 0.5,
+def _build_host(*, max_restarts: int = 3) -> ActorHost:
+    return create_actor_host(
+        ActorEngineConfig(
+            policies={
+                STATE_AUTHORITY: SupervisionPolicy(
+                    max_restarts=max_restarts,
+                    restart_window=10.0,
+                    base_backoff=0.0,
+                    max_backoff=0.0,
+                    jitter_ratio=0.0,
+                )
+            },
+            random_source=lambda: 0.5,
+        )
     )
+
+
+def _actor_host() -> InterceptingHost:
+    return InterceptingHost(_build_host())
 
 
 def _message(message_id: str, *, intent: str = "message") -> InboxMessage:
@@ -227,11 +229,8 @@ def authority(tmp_path: Path):
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
         node_id="node-b",
-        # alice->bob is agent-to-agent; bind the explicit permissive premise
-        # so this suite exercises actor mutation threading, not the link gate.
-        service_options={"link_admission": permissive_admission_slot()},
     )
     facade = DeliveryCustodyFacade(
         coordinator,
@@ -288,13 +287,14 @@ def authority(tmp_path: Path):
 __all__ = [
     '_BlockingFinalEvents',
     '_BlockingProgressTransport',
-    '_CompletionClosedRuntime',
-    '_CountingCompletionRuntime',
-    '_DoubleRestartReassociateRuntime',
+    '_CompletionClosedHost',
+    '_CountingCompletionHost',
+    '_DoubleRestartReassociateHost',
     '_Events',
+    '_RestartObservedHost',
     '_actor_state',
     '_message',
-    '_runtime',
+    '_actor_host',
     '_wait_until',
     'authority',
 ]

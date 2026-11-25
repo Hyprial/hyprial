@@ -23,13 +23,12 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 if TYPE_CHECKING:
     from hyprial.daemon.impl.orgfs.docs import LocalOrgFs
+    from hyprial.kernel import EffectLane
 
 from pycrdt import Array, Doc, Map, Text
 from hyprial.kernel import (
-    ActorHandle,
-    ActorRuntime,
+    ActorCell,
     AdmissionResult)
-from hyprial.kernel import EffectLane
 
 from hyprial.kernel import (
     canonical_orgfs_uri,
@@ -157,6 +156,7 @@ class _InviteMember:
 @dataclass(frozen=True, slots=True)
 class _CreateSpace:
     name: str
+    space_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,8 +340,7 @@ class _SpaceStateWaiter:
 
 @dataclass(slots=True)
 class _SpaceStateOwner:
-    runtime: ActorRuntime
-    actor: ActorHandle
+    runtime: ActorCell
     effects: EffectLane[_SpaceStateCommand, _SpaceStateOutcome]
     generation: int = 1
     commands: dict[str, _SpaceStateCommand] = field(default_factory=dict)

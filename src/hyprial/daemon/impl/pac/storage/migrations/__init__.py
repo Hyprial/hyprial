@@ -1,4 +1,4 @@
-"""PAC schema migrations 14 through 19 and the :func:`migrate` entry.
+"""PAC schema migrations 14 through 20 and the :func:`migrate` entry.
 
 The v1-v13 upgrade catalogue lives in ``_upgrades``; this module owns the
 latest steps and the version walk.  Keep the transaction atomic.
@@ -35,9 +35,40 @@ from hyprial.daemon.impl.pac.storage.migrations.expansion import _upgrade_v17_to
 __all__ = [
     "SCHEMA_VERSION",
     "_upgrade_v17_to_v18",
+    "_upgrade_v19_to_v20",
     "migrate",
     "unrewritten_owners_note",
 ]
+
+
+def _upgrade_v19_to_v20(db: sqlite3.Connection) -> None:
+    """Record when a workflow graph entered ``held`` (#1803).
+
+    The held reminder needs the age of a hold, and no earlier column stored
+    it: ``state='held'`` was a bare flag.  The column is written where a hold
+    is entered; pre-existing held rows are backfilled from the journal (the
+    last recorded node failure is the transition that held the graph) and
+    keep NULL when no such fact exists -- the reminder reports an unknown age
+    rather than inventing one.
+    """
+
+    db.execute("ALTER TABLE workflow_graphs ADD COLUMN held_at_ms INTEGER")
+    db.execute(
+        """
+        UPDATE workflow_graphs SET held_at_ms = (
+            SELECT MAX(j.at) FROM journal j
+            WHERE j.graph_id = workflow_graphs.graph_id
+              AND j.type = 'workflow_changed'
+              AND json_extract(j.data_json,'$.state') = 'failed'
+        )
+        WHERE state = 'held'
+        """
+    )
+    # v19 tracks all workflow columns. Rebuild against the extended schema so
+    # fresh databases and upgrades retain the same invalidation behavior.
+    for operation in ("insert", "delete", "update"):
+        db.execute(f"DROP TRIGGER workflow_tick_workflow_graphs_{operation}")
+    _track(db, "workflow_graphs", ("graph_id",))
 
 
 def _upgrade_v14_to_v15(db: sqlite3.Connection) -> None:
@@ -484,6 +515,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 18:
             upgrade_v18_to_v19(db)
             db.execute("PRAGMA user_version = 19")
+            version = 19
+        if version == 19:
+            _upgrade_v19_to_v20(db)
+            db.execute("PRAGMA user_version = 20")
         db.commit()
     except BaseException:
         db.rollback()

@@ -26,7 +26,6 @@ def test_cli_list_find_round_trip(
             kind="user",
             platform_id="ou_lin",
             display_name="林懿伦",
-            hyprial_owner="alicesmith",
             standing="verified",
             source="manual:coordination 2026-08-14",
         )

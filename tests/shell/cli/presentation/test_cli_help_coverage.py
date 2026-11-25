@@ -11,6 +11,9 @@ holds the exact measured budget: it is the covering test for the "补 help 再�
 The count and budget must move together. The test fails if undocumented help
 grows and also if documentation improves without lowering the budget, so both
 directions are locked rather than hidden behind a tolerance window.
+
+Decision (S2b, 2026-11-20): ``squire setup`` left the CLI tree with its eight
+undocumented parameters (26 -> 18).
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from hyprial.shell.impl.cli.commands.common.root import app
 #: gained help text along with their derived defaults (58 -> 54).
 #: R11: the ``mcp`` channel servers left the CLI tree, so their undocumented
 #: parameters no longer exist (54 -> 42).
-_UNDOCUMENTED_BUDGET = 42  # R11: mcp 出 CLI 树(54 → 42)
+_UNDOCUMENTED_BUDGET = 17
 
 #: Parameters click contributes itself; they are not ours to document.
 _INHERITED = frozenset({"help", "version"})

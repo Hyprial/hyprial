@@ -1,0 +1,174 @@
+/* Hyprial theme v5 (design system v5).
+   Decisions:
+   - This is the only file in the repository allowed to contain colour, shadow and font-family literals.
+   - Variable names follow shadcn/ui conventions (unprefixed semantic names) plus a few product extensions.
+   - tokens.css maps these to the --ui-* component surface; shadcn.css maps them to Tailwind colours.
+   - Replacing the theme means providing another file that defines the same variable names and importing it
+     from tokens.css in place of this one.
+   - Light values live on :root and [data-theme="light"]; dark values live on .dark and [data-theme="dark"].
+   - Fonts: Latin = bundled Geist (OFL, no remote font request). Chinese = bundled Noto Sans SC (= Source Han Sans SC,
+     SIL OFL 1.1; Allen 2026-11-11), the variable-weight package @fontsource-variable/noto-sans-sc imported below, sliced by
+     unicode-range and fetched on demand from the local bundle, so no remote font request is made. System CJK fonts
+     (PingFang, YaHei, ...) are fallbacks only.
+   - The weight cap stays 600. The design system Latin/CJK weight pairing is pending re-measurement in the design system
+     and is not implemented. Geist Mono is not distributed.
+   - --warning-foreground is darker than the design system orange so small text keeps contrast on paper. */
+
+@import "@fontsource-variable/noto-sans-sc/wght.css";
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../../assets/fonts/geist-latin.woff2") format("woff2");
+  unicode-range: U+0000-2E7F;
+}
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --background: #fafbf6;
+  --foreground: #17131f;
+  --card: #ffffff;
+  --card-foreground: #17131f;
+  --popover: #ffffff;
+  --popover-foreground: #17131f;
+  --primary: #17131f;
+  --primary-hover: #2a2535;
+  --primary-press: #080a12;
+  --primary-foreground: #fafbf6;
+  --secondary: #f2f4ea;
+  --secondary-hover: #e9ecdf;
+  --secondary-foreground: #17131f;
+  --muted: #f2f4ea;
+  --muted-foreground: #6f6b7a;
+  --accent: #d7f279;
+  --accent-soft: #dff493;
+  --accent-wash: #e9f7bf;
+  --accent-foreground: #17131f;
+  --destructive: #d91d35;
+  --destructive-foreground: #a8142a;
+  --destructive-wash: #fbe3e7;
+  --destructive-wash-hover: #f7ced3;
+  --success: #14804a;
+  --success-foreground: #0f5c36;
+  --success-wash: #d8f0e2;
+  --warning: #d9822b;
+  --warning-foreground: #8a4a0c;
+  --warning-wash: #fdf0dc;
+  --info: #7192d8;
+  --info-foreground: #48699f;
+  --info-wash: #edf1fa;
+  --surface-periwinkle: #c9d2e7;
+  --surface-hover: #fafafb;
+  --ink-2: #4b4857;
+  --ink-3: #6f6b7a;
+  --ink-4: #a9a4b3;
+  --border: rgba(23, 19, 31, 0.12);
+  --input: #f2f4ea;
+  --ring: rgba(23, 19, 31, 0.45);
+  --overlay: rgba(23, 19, 31, 0.48);
+  --avatar-wash-blue: #9db3e4;
+  --avatar-wash-lime: #e7f5b0;
+  --avatar-wash-jade: #8fd0ae;
+  --avatar-wash-red: #f0a3ae;
+  --avatar-wash-grey: #c6c2cf;
+  --radius: 20px;
+  --edge: 0 0 0 1px rgba(15, 15, 15, 0.04);
+  --shadow-float-sm: 0 1px 2px rgba(15, 15, 15, 0.04), 0 8px 24px -12px rgba(15, 15, 15, 0.14);
+  --shadow-float: 0 20px 40px -16px rgba(15, 15, 15, 0.2);
+  --shadow-dialog: 0 60px 80px rgba(15, 15, 15, 0.07), 0 25px 33px rgba(15, 15, 15, 0.05), 0 13.4px 17.9px rgba(15, 15, 15, 0.045), 0 7.5px 10px rgba(15, 15, 15, 0.04), 0 4px 5.3px rgba(15, 15, 15, 0.03), 0 1.7px 2.2px rgba(15, 15, 15, 0.022);
+  --sidebar: #0c0b10;
+  --sidebar-foreground: #b6b4ac;
+  --sidebar-foreground-strong: #f3f2ec;
+  --sidebar-primary: #d7f279;
+  --sidebar-primary-foreground: #17131f;
+  --sidebar-accent: #d7f279;
+  --sidebar-accent-foreground: #17131f;
+  --sidebar-hover: rgba(244, 242, 236, 0.1);
+  --sidebar-border: rgba(244, 242, 236, 0.12);
+  --sidebar-ring: rgba(244, 242, 236, 0.6);
+  --chart-1: #17131f;
+  --chart-2: #14804a;
+  --chart-3: #7192d8;
+  --chart-4: #d9822b;
+  --chart-5: #d91d35;
+  --step-current: #14804a;
+  --step-track: #e9ecdf;
+  --font-sans: "Geist", "Noto Sans SC Variable", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-cn: "Noto Sans SC Variable", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.dark,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #101014;
+  --foreground: #f3f2ec;
+  --card: #1e1c26;
+  --card-foreground: #f3f2ec;
+  --popover: #1e1c26;
+  --popover-foreground: #f3f2ec;
+  --primary: #f3f2ec;
+  --primary-hover: #d9d4e3;
+  --primary-press: #bdb7c9;
+  --primary-foreground: #0e0d12;
+  --secondary: #14131a;
+  --secondary-hover: #181722;
+  --secondary-foreground: #f3f2ec;
+  --muted: #14131a;
+  --muted-foreground: #8e8c84;
+  --accent: #1c2a12;
+  --accent-soft: #dff493;
+  --accent-wash: #1c2220;
+  --accent-foreground: #f3f2ec;
+  --destructive: #ff7a86;
+  --destructive-foreground: #ff9aa4;
+  --destructive-wash: #3a1620;
+  --destructive-wash-hover: #4c2825;
+  --success: #7fd6a8;
+  --success-foreground: #a8e6c6;
+  --success-wash: #173a2e;
+  --warning: #ffb35c;
+  --warning-foreground: #ffb35c;
+  --warning-wash: #3a2a16;
+  --info: #95aee8;
+  --info-foreground: #b9c7ee;
+  --info-wash: #1b2130;
+  --surface-periwinkle: #2a3350;
+  --surface-hover: #25232e;
+  --ink-2: #b6b4ac;
+  --ink-3: #8e8c84;
+  --ink-4: #56544d;
+  --border: rgba(244, 242, 236, 0.14);
+  --input: #14131a;
+  --ring: rgba(243, 242, 236, 0.5);
+  --overlay: rgba(0, 0, 0, 0.6);
+  --avatar-wash-blue: #b9c9ee;
+  --avatar-wash-lime: #eef8c4;
+  --avatar-wash-jade: #a6dcc2;
+  --avatar-wash-red: #f7bcc4;
+  --avatar-wash-grey: #b6b4ac;
+  --edge: inset 0 0 0 1px rgba(244, 242, 236, 0.1);
+  --shadow-float-sm: inset 0 0 0 1px rgba(244, 242, 236, 0.06), 0 10px 26px -12px rgba(0, 0, 0, 0.6);
+  --shadow-float: 0 20px 40px -16px rgba(0, 0, 0, 0.6);
+  --shadow-dialog: inset 0 0 0 1px rgba(244, 242, 236, 0.07), 0 26px 60px -20px rgba(0, 0, 0, 0.72);
+  --sidebar: #0c0b10;
+  --sidebar-foreground: #b6b4ac;
+  --sidebar-foreground-strong: #f3f2ec;
+  --sidebar-primary: #d7f279;
+  --sidebar-primary-foreground: #17131f;
+  --sidebar-accent: #d7f279;
+  --sidebar-accent-foreground: #17131f;
+  --sidebar-hover: rgba(244, 242, 236, 0.1);
+  --sidebar-border: rgba(244, 242, 236, 0.12);
+  --sidebar-ring: rgba(244, 242, 236, 0.6);
+  --chart-1: #f3f2ec;
+  --chart-2: #7fd6a8;
+  --chart-3: #95aee8;
+  --chart-4: #ffb35c;
+  --chart-5: #ff7a86;
+  --step-current: #7fd6a8;
+  --step-track: #181722;
+}

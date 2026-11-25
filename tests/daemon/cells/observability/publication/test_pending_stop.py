@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from tests.daemon.cells.observability.mount.test_mount import composed as composed, settle
+from tests.daemon.cells.observability.mount.test_mount import composed as composed, registered, settle
 from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation, LifecycleState
 from hyprial.daemon.impl.cells.observability.model import RunFacts
 from hyprial.kernel import PortAdmission
@@ -23,6 +23,7 @@ def isolated(tmp_path, monkeypatch):
 
 def test_unresolved_stop_is_stopping(composed, monkeypatch):
     app, launcher, harness, *_, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create('review-start', spec))
     process = launcher.processes[-1]
     process.read_run_facts = lambda: RunFacts(source_epoch='turn', known=True, running=True)
@@ -56,6 +57,7 @@ def test_unresolved_stop_is_stopping(composed, monkeypatch):
 
 def test_unresolved_start_is_starting(composed):
     app, launcher, harness, *_, spec = composed
+    spec = registered(app, spec)
     entered, release = threading.Event(), threading.Event()
     start = launcher.start
 

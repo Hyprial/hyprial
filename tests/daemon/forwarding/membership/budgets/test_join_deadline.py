@@ -21,6 +21,8 @@ def test_two_orgfs_joins_share_remaining_budget(monkeypatch):
     service = object.__new__(OrgNetworkService)
     service._join_budget = budget
     service._join_timeout_seconds = 30
+    service._oidc_issuer = None
+    service._oidc_roster = None
     service._fs = SimpleNamespace(join=join)
     service._sleep = lambda seconds: None
     clock[0] = 60
@@ -137,7 +139,7 @@ def test_join_returns_at_shared_deadline_when_orgfs_never_answers(monkeypatch):
     clock = [0.0]
     calls = []
     monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    parsed = SimpleNamespace(space_id="directory", acl_space_id="acl", workflow_yaml="")
+    parsed = SimpleNamespace(space_id="directory", acl_space_id="acl", workflow_yaml="", parent_org=None)
     monkeypatch.setattr(module, "decode_invite", lambda link: parsed)
     monkeypatch.setattr(module, "parse_bootstrap_yaml", lambda value: [
         SimpleNamespace(kind="join-org"), SimpleNamespace(kind="register-device"),
@@ -152,6 +154,8 @@ def test_join_returns_at_shared_deadline_when_orgfs_never_answers(monkeypatch):
     service._redeem_tailnet = lambda parsed: clock.__setitem__(0, 100)
     service._announce_tailnet = lambda space: None
     service._join_timeout_seconds = 30
+    service._oidc_issuer = None
+    service._oidc_roster = None
     service._fs = SimpleNamespace(join=never_answers)
     with pytest.raises(OrgNetworkError) as caught:
         service.execute("invite")

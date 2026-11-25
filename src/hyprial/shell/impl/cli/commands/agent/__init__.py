@@ -1,21 +1,36 @@
 """Agent command family, split by command responsibility."""
 
-from . import admin, config_rebind, create, grant, home, restore, secret  # noqa: F401
+from . import (  # noqa: F401
+    admin,
+    attach,
+    cell,
+    config_rebind,
+    create,
+    grant,
+    home,
+    restore,
+    secret,
+    teleport,
+)
 
 _ORDER = {
     name: index
     for index, name in enumerate(
         (
             "create",
-            "host-invite",
+            "attach",
+            "detach",
             "list",
             "readiness",
             "ensure-home",
             "start",
+            "args",
             "stop",
             "top",
-            "move",
+            "teleport",
             "unblock",
+            "rename",
+            "cell",
             "restore",
             "grant",
             "grants",
@@ -27,10 +42,3 @@ admin.agent_app.registered_commands.sort(
     key=lambda command: _ORDER.get(command.name or "", len(_ORDER))
 )
 
-
-def order_agent_commands() -> None:
-    """Re-apply the visible order after late registrations (``agent move``)."""
-
-    admin.agent_app.registered_commands.sort(
-        key=lambda command: _ORDER.get(command.name or "", len(_ORDER))
-    )

@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "polarity": "Only the DELTA is red. Each entry grandfathers ONE known violation up to the recorded `actual`; a new violation, an `actual` worse than recorded, an expired entry, or a stale entry whose violation was repaired is RED. Entries may only LEAVE: delete an entry in the same change that repairs its violation. Adding an entry is a review decision recorded in the diff, never a silent escape. Do NOT raise a recorded `actual` to cover a regression; fix the violation or split it.",
+  "entries": []
+}

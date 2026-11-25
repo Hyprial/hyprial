@@ -1,3 +1,13 @@
+# Decision record (file header; no inline comments by repository rule):
+# - Restart fence for never-begun operations (待 HQ 追认, conservative
+#   choice). The actor engine now keeps its mailbox across a restart (ABI v1
+#   6.3.5), so an operation queued before a crash would otherwise execute in
+#   the replacement generation, for example a delayed EnqueueTurn reaching
+#   the native process after the owner crashed. The owner keeps the shipped
+#   contract instead: every operation still pending when a replacement
+#   handler is built is settled with ACTOR_RESTARTED_UNDELIVERED when it
+#   reaches that handler, and is never executed. Operations admitted after
+#   the replacement exists execute normally.
 """Per-process I/O ownership with cache-only facts for the Harness authority."""
 
 from __future__ import annotations
@@ -5,11 +15,11 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectLane, EffectRequest, EffectCompleted
+from hyprial.kernel import ActorSpec, AdmissionResult, ipc_errors
+from hyprial.kernel import EffectRequest, EffectCompleted
+
 from hyprial.daemon.impl.api  import (
     HarnessDelivery,
     StreamingHarnessProcess,
@@ -18,7 +28,10 @@ from hyprial.kernel  import (
     ProcessLivenessProbeError,
 )
 from hyprial.kernel import ProcessLiveness, ProcessLivenessState
+from hyprial.kernel import MemberLaunchKey
 from hyprial.daemon.impl.cells.observability.model import RunFacts
+
+RESTARTED_UNDELIVERED = ipc_errors.ACTOR_RESTARTED_UNDELIVERED
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +104,6 @@ class ProcessFacts:
     session_ref: str | None
     worker_channel: WorkerChannelFacts
     endpoint: str | None
-    dsh_home: Path | None
     max_in_flight: int | None
     in_flight: int | None
     queue_depth: int | None
@@ -145,8 +157,11 @@ class _ProcessOwnerClosed(RuntimeError):
 
 class ProcessOwner:
     def __init__(
-        self, process, *, capacity=32, timeout=65.0, poll_interval=0.5, observer=None
+        self, process, *, capacity=32, timeout=65.0, poll_interval=0.5, observer=None,
+        actor_host=None,
     ):
+        if actor_host is None:
+            raise ValueError("process owner requires an actor host")
         self.process_token = uuid4().hex
         self._observer = observer
         self._process = process  # private to bootstrap and the I/O executor
@@ -162,19 +177,20 @@ class ProcessOwner:
         self._detached = False
         self._poll_pending = False
         self._stop_reply = None
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._handler_starts = 0
+        self._restart_fenced: set[str] = set()
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="process-io-owner",
-                handler_factory=lambda: self._receive,
+                handler_factory=self._next_handler,
                 mailbox_capacity=capacity,
                 undelivered_sink=self._undelivered,
             )
         )
-        self._effects = EffectLane(
+        self._effects = actor_host.effect_lane(
             name="process-native-io",
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=capacity,
         )
 
@@ -195,7 +211,6 @@ class ProcessOwner:
             return str(value) if value is not None else None
 
         channel = getattr(process, "worker_channel", None)
-        home = getattr(process, "dsh_home", None)
         liveness = getattr(process, "liveness", None)
         failure = getattr(process, "last_failure", None)
         return ProcessFacts(
@@ -208,7 +223,6 @@ class ProcessOwner:
             string("session_ref"),
             WorkerChannelFacts(getattr(channel, "session_ref", None)),
             string("endpoint"),
-            home if isinstance(home, Path) else None,
             integer("max_in_flight"),
             integer("in_flight"),
             integer("queue_depth"),
@@ -217,6 +231,17 @@ class ProcessOwner:
             self._read_run_observation(),
             time.monotonic_ns() // 1_000_000,
         )
+
+    @property
+    def member_launch_key(self) -> MemberLaunchKey | None:
+        spec = getattr(self._process, "spec", None)
+        if spec is None:
+            return None
+        member = getattr(spec, "member", None) or getattr(spec, "name", None)
+        harness = getattr(spec, "harness", None)
+        if not isinstance(member, str) or not isinstance(harness, str):
+            return None
+        return MemberLaunchKey(member, harness)
 
     def _read_run_observation(self):
         read = getattr(self._process, "read_run_facts", None)
@@ -297,6 +322,23 @@ class ProcessOwner:
             value = facts
         return ProcessOutcome(value, facts)
 
+    def _next_handler(self):
+        with self._guard:
+            self._handler_starts += 1
+            if self._handler_starts > 1:
+                self._restart_fenced = set(self._pending)
+        return self._admit_envelope
+
+    def _admit_envelope(self, event):
+        if isinstance(event, ProcessOperation):
+            with self._guard:
+                fenced = event.operation_id in self._restart_fenced
+                self._restart_fenced.discard(event.operation_id)
+            if fenced:
+                self._settle(event.operation_id, None, RESTARTED_UNDELIVERED)
+                return None
+        return self._receive(event)
+
     def _receive(self, event):
         if isinstance(event, ProcessOperation):
             admission = self._effects.submit(
@@ -346,8 +388,8 @@ class ProcessOwner:
                 raise RuntimeError("process owner closed or overloaded")
             operation_id = uuid4().hex
             self._pending[operation_id] = (command, reply)
-            result = self._runtime.tell(
-                self._handle, ProcessOperation(operation_id, self._generation, command)
+            result = self._cell.tell(
+                ProcessOperation(operation_id, self._generation, command)
             )
             if result is not AdmissionResult.ACCEPTED:
                 self._pending.pop(operation_id)
@@ -462,10 +504,6 @@ class ProcessOwner:
         return self.facts().endpoint
 
     @property
-    def dsh_home(self):
-        return self.facts().dsh_home
-
-    @property
     def max_in_flight(self):
         return self.facts().max_in_flight
 
@@ -494,7 +532,7 @@ class ProcessOwner:
     def stop(self):
         reply = self._submit(StopProcess())
         self._wait(reply)
-        if not self._effects.close(1.0) or not self._runtime.stop(self._handle, 1.0):
+        if not self._effects.close(1.0) or not self._cell.stop(1.0):
             raise TimeoutError("process owner did not drain after stop")
 
     def detach(self, timeout=1.0):
@@ -517,7 +555,7 @@ class ProcessOwner:
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        return self._cell.stop(max(0.0, deadline - time.monotonic()))
 
 
 class StreamingProcessOwner(ProcessOwner):
@@ -540,7 +578,7 @@ class StreamingProcessOwner(ProcessOwner):
         return self._call(SteerTurn(delivery_id, timeout), timeout + 1.0)
 
 
-def own_process(process, *, observer=None):
+def own_process(process, *, observer=None, actor_host=None):
     if isinstance(process, ProcessOwner):
         return process
     cls = (
@@ -548,4 +586,4 @@ def own_process(process, *, observer=None):
         if isinstance(process, StreamingHarnessProcess)
         else ProcessOwner
     )
-    return cls(process, observer=observer)
+    return cls(process, observer=observer, actor_host=actor_host)

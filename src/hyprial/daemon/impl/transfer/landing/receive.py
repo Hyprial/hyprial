@@ -31,10 +31,6 @@ from hyprial.daemon.impl.transfer.archive.bundle import (
     BundleTamperError,
     sha256_file,
     validate_bundle)
-from hyprial.daemon.impl.transfer.landing.signature_gate import (
-    SignatureAttestation,
-    SignaturePolicy,
-    require_trusted_signature)
 from hyprial.daemon.impl.transfer.manifest_reading import (
     SealedManifest,
     load_sealed_manifest)
@@ -85,7 +81,6 @@ class ReceiveResult:
     bytes: int
     dry_run: bool
     manifest: BundleManifest
-    signature: SignatureAttestation | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -96,12 +91,6 @@ class ReceiveResult:
             "files": self.files,
             "bytes": self.bytes,
             "dry_run": self.dry_run,
-            # AT06 slice 2b: who signed this bundle, as this target recorded
-            # it, or ``null`` on a rehearsal path that lands unsigned bundles.
-            "signature": None if self.signature is None else self.signature.as_dict(),
-            # Card 355 item 1: a declaration with ``present=False`` is not a
-            # failure, it is a job for the target side.  The receipt repeats
-            # it so nothing is silently assumed to have come across.
             "credential_envelope": self.manifest.credential_envelope or None,
             "target_must_provide": [
                 dict(item) for item in self.manifest.target_must_provide()
@@ -123,13 +112,11 @@ def receive_bundle(
     *,
     expect_actor: str | None = None,
     dry_run: bool = False,
-    signature: SignaturePolicy,
     sealed: SealedManifest | None = None,
 ) -> ReceiveResult:
     """Validate ``bundle_dir`` and materialise it at ``destination``.
 
-    Raises ``BundleError`` when the bundle itself is bad, the ``SignatureError``
-    family when it cannot be attributed to a trusted source key, and the
+    Raises ``BundleError`` when the bundle itself is bad and the
     ``ReceiveError`` family for refusals and failed landings.
 
     ``sealed`` is the bundle's single manifest reading when the caller already
@@ -139,12 +126,6 @@ def receive_bundle(
 
     reading = sealed if sealed is not None else load_sealed_manifest(bundle_dir)
     manifest = validate_bundle(bundle_dir, manifest=reading.manifest)
-    attestation = require_trusted_signature(
-        bundle_dir,
-        policy=signature,
-        credential_envelope=manifest.credential_envelope or None,
-        sealed=reading,
-    )
 
     if expect_actor is not None and manifest.actor != expect_actor:
         raise ReceiveActorMismatch(
@@ -173,7 +154,6 @@ def receive_bundle(
             bytes=total_bytes,
             dry_run=True,
             manifest=manifest,
-            signature=attestation,
         )
 
     payload_root = Path(bundle_dir) / "payload"
@@ -256,5 +236,4 @@ def receive_bundle(
         bytes=total_bytes,
         dry_run=False,
         manifest=manifest,
-        signature=attestation,
     )

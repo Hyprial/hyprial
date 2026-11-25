@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 import pytest
 from typer.testing import CliRunner
-from hyprial.daemon.impl.autoupdate.alert import AlertOutcome
 from hyprial.daemon.impl.operations.service import (
     ServiceConfig,
     ServiceManager,
@@ -54,6 +53,7 @@ def test_upgrade_success_restarts_running_daemon_and_reports_pid_and_version(
         "prime",
         "shutdown:2",
         f"launch:{_cli_owner_1.DAEMON_START_HARD_CAP_SECONDS:g}",
+        "launchAutoinstall:false",
         "ping:2",
     ]
 
@@ -102,8 +102,8 @@ def test_upgrade_skips_restart_and_explains_when_no_daemon_is_running(
 def test_upgrade_restart_failure_is_loud_without_hiding_completed_install(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def fail_launch(*, ready_timeout: float) -> dict[str, Any]:
-        del ready_timeout
+    def fail_launch(*, ready_timeout: float, autoinstall: bool = True) -> dict[str, Any]:
+        del ready_timeout, autoinstall
         raise _cli_get_services().CliError("DAEMON_START_FAILED", "fake daemon would not start")
 
     events = _fake_upgrade(monkeypatch, tmp_path, launch=fail_launch)
@@ -144,7 +144,7 @@ def test_upgrade_refuses_unmanaged_fallback_when_manager_probe_fails(
     returncode: int,
     stderr: str,
 ) -> None:
-    import hyprial.daemon.impl.operations.service as backend_service_module
+    import hyprial.daemon.impl.operations.service.supervisor as backend_service_module
     import hyprial.shell.impl.cli.commands.daemon.service as service_module
 
     # The probe failure is the subject here. Since #2145 a failed
@@ -325,7 +325,7 @@ def test_upgrade_does_not_fall_back_when_loaded_supervisor_file_is_missing(
     assert events == ["ping:15", "prime"]
 
 
-def test_upgrade_restart_failure_alert_is_wired_to_this_launch_and_process(
+def test_upgrade_restart_failure_detail_is_wired_to_this_launch_and_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from hyprial.daemon.impl.mcp.channel import ownership as channel
@@ -337,8 +337,9 @@ def test_upgrade_restart_failure_alert_is_wired_to_this_launch_and_process(
         def poll() -> None:
             return None
 
-    def fail_launch(*, ready_timeout: float) -> None:
+    def fail_launch(*, ready_timeout: float, autoinstall: bool = True) -> None:
         assert ready_timeout == _cli_owner_1.DAEMON_START_HARD_CAP_SECONDS
+        del autoinstall
         log_path = tmp_path / "state" / "logs" / "daemon.jsonl"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(
@@ -372,20 +373,14 @@ def test_upgrade_restart_failure_alert_is_wired_to_this_launch_and_process(
         "_owner_process_status",
         lambda *_args: channel._OwnerProcessStatus.ALIVE,
     )
-    delivered: dict[str, Any] = {}
-
-    def notify(**kwargs: Any) -> AlertOutcome:
-        assert (tmp_path / "state" / "upgrade-restart-failed.json").exists()
-        delivered.update(kwargs)
-        return AlertOutcome(attempted=True, delivered=True, message_id="om_fixture")
-
-    monkeypatch.setattr(_cli_get_services(), "notify_upgrade_failure", notify)
     _fake_upgrade(monkeypatch, tmp_path, launch=fail_launch)
 
     result = CliRunner().invoke(_cli_root_app, ["daemon", "upgrade", "--json"])
 
     assert result.exit_code == 1
-    assert "phase=actor-runtime" in delivered["detail"]
-    assert "errorType=DomainCommandError" in delivered["detail"]
-    assert "error=fixture connector conflict" in delivered["detail"]
-    assert "pid 44710 仍在(可能在失败后的 shutdown 中)" in delivered["detail"]
+    assert (tmp_path / "state" / "upgrade-restart-failed.json").exists()
+    detail = json.loads(result.stdout)["data"]["detail"]
+    assert "phase=actor-runtime" in detail
+    assert "errorType=DomainCommandError" in detail
+    assert "error=fixture connector conflict" in detail
+    assert "pid 44710 仍在(可能在失败后的 shutdown 中)" in detail

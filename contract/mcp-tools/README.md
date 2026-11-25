@@ -12,10 +12,13 @@ contract does not claim a production daemon or socket.
 pending item's full body inline or one private spill-file reference. The
 executable fixture pins the fixed top-level keys, complete item shape and
 canonical `delivery` shape from `contract/wire/inbox-batch-v1.md`.
+With `conversationId` (and optionally `mode`, `cursor`, `limit`),
+`harness_read` instead calls `conversations.history` with that page and
+settles nothing; this is how an agent reads a group's history, which the
+daemon answers only to current members. Paging arguments without
+`conversationId` are a tool error.
 `harness_read_body` still returns one body and leaves the row pending for
-single-ID recovery. A first send to an agent without a link is held (`ok`,
-`queued`, `holdReason`) while the daemon mints the link, and a send is never a
-reply. The full contracts are `contract/wire/send-links.md` §3, §4 and §9 and
+single-ID recovery. A send is never a reply. The inbox batch contract is
 `contract/wire/inbox-batch-v1.md`; the tool list is also pinned by K12.
 
 `WORKER_HARNESS_TOOLS` and `_CLAUDE_HARNESS_TOOLS` include `harness_read_body`;

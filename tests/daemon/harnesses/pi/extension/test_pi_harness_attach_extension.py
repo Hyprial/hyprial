@@ -77,21 +77,6 @@ def test_unconfirmed_guarded_registration_is_retried_and_never_lists(
         rig.stop()
 
 
-def test_register_includes_tmux_session_on_detached_launch(tmp_path: Path) -> None:
-    rig = Carrier(
-        tmp_path,
-        extra_env={"HYPRIAL_WORKER_TMUX_SESSION": "hyprial-agent-op-node-1-attach-pi"},
-    )
-    try:
-        answer = rig.command({"cmd": "start"})
-        assert answer["ready"] is True
-
-        (frame,) = rig.wait_for_frames("session.register", 1)
-        assert frame["params"]["tmuxSession"] == "hyprial-agent-op-node-1-attach-pi"
-    finally:
-        rig.stop()
-
-
 def test_poll_observes_without_marking_fetched(carrier: Carrier) -> None:
     carrier.command({"cmd": "start"})
     carrier.wait_for_frames("message.pending.list", 1)

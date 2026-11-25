@@ -1,0 +1,67 @@
+{
+  "notice": "PUBLIC SYNTHETIC TEST KEYS ONLY; never use these keys or nonces in production",
+  "ownerPrivate": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "ownerPublic": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "ownerKeyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+  "recipients": [
+    {
+      "private": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+      "public": "NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ=",
+      "keyId": "x25519:a0289810032eb417274eebc4a38e6899"
+    },
+    {
+      "private": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=",
+      "public": "eaYx7t4b+cmPEgMs3q3Q56B5OY/HhriMyEbsia+FpRo=",
+      "keyId": "x25519:67ca2ffd6fe9efab3d76e37c34990a5a"
+    }
+  ],
+  "secret": "U1lOVEhFVElDLVBST1ZJREVSLVNFQ1JFVC1ORVZFUi1WQUxJRA==",
+  "randomValues": [
+    "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8=",
+    "AAECAwQFBgcICQoL",
+    "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8=",
+    "DA0ODxAREhMUFRYX",
+    "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+    "GBkaGxwdHh8gISIj"
+  ],
+  "headerAad": "eyJhbGciOiJBMjU2R0NNIiwiY3JlYXRlZEF0IjoxMDAwLCJkZWtWZXJzaW9uIjoxLCJrZXlJZCI6InBrX3Rlc3QiLCJvd25lciI6InRlc3Qtc3ViIiwicHJvdmlkZXIiOiJzeW50aGV0aWMiLCJ2IjoxLCJ3cmFwIjoiWDI1NTE5LUhLREYtU0hBMjU2LUEyNTZHQ00ifQ==",
+  "wrappingKeys": [
+    "S8XNbDMaoWBiDYhiGtSF1ZfKYbA4YZtHdFvtM/4WdKI=",
+    "vN6Pio9TzKn199WBabxVCRCGcTvA0cHBI1TrhVbtIaE="
+  ],
+  "signingInput": "aHlwcmlhbC9wcm92aWRlci1rZXkvZW52ZWxvcGUvdjEAxEbkaj0ahP595OpH41ACGlYuFBtgdEc1MLMe1HoM++g=",
+  "envelope": {
+    "header": {
+      "v": 1,
+      "alg": "A256GCM",
+      "wrap": "X25519-HKDF-SHA256-A256GCM",
+      "provider": "synthetic",
+      "keyId": "pk_test",
+      "owner": "test-sub",
+      "dekVersion": 1,
+      "createdAt": 1000
+    },
+    "recipients": [
+      {
+        "recipientKeyId": "x25519:a0289810032eb417274eebc4a38e6899",
+        "epk": "ST6C/HRGSlkmiBdiPSBTxeuOLMSpiLT+4XnsawENUx0=",
+        "nonce": "DA0ODxAREhMUFRYX",
+        "wrappedDek": "ssPY5JX4j4bFco4GwxA+0cgfvT3he5s9j/bICCumN2PjMN8rivOnb690uKmSCVO+"
+      },
+      {
+        "recipientKeyId": "x25519:67ca2ffd6fe9efab3d76e37c34990a5a",
+        "epk": "YFpyXSpK3+6xop4X7dYhwbdZPujNvESsbEq24vgF0jw=",
+        "nonce": "GBkaGxwdHh8gISIj",
+        "wrappedDek": "sBou5uOCLVrv+Ks6SK9trhcGd+pbuhXmsYXR5tJIZGvzNXUBv9nfhnDX4jTAt44d"
+      }
+    ],
+    "payload": {
+      "nonce": "AAECAwQFBgcICQoL",
+      "ciphertext": "9+rinvscEVlIfG7shC3ak/DXV4JfLrHm61VlXP2CNgu4d49Hwlkw67r5v/zXSnLu6KKxm/8="
+    },
+    "sealedBy": {
+      "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+      "sig": "L6YiMgYFhdf4mxTsWI6ugGbqZ/AKMR3JXt/SQ2UxHpTxVSP7v5Rojxo05q8fPg9Ii8fWYVNALmofS+O3aPsMBQ=="
+    }
+  }
+}

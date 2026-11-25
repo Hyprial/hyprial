@@ -431,16 +431,18 @@ def test_write_profile_rejects_a_bad_invite_base_url(tmp_path: Path) -> None:
     assert not (home / "profile.json").exists()
 
 
-# -- T9: the issuer literal exists in exactly one place -----------------------
+# -- T9: configuration issuer and fixed protocol namespace each have one owner --
 
 
 _SRC_ROOT = Path(__file__).resolve().parents[3] / 'src'
 _ISSUER_LITERAL = "auth.hyprial.com"
 
 
-def _literal_occurrences(literal: str) -> dict[Path, list[int]]:
+def _literal_occurrences(
+    literal: str, source_root: Path = _SRC_ROOT
+) -> dict[Path, list[int]]:
     found: dict[Path, list[int]] = {}
-    for path in sorted(_SRC_ROOT.rglob("*.py")):
+    for path in sorted(source_root.rglob("*.py")):
         lines = [
             number
             for number, line in enumerate(
@@ -453,26 +455,41 @@ def _literal_occurrences(literal: str) -> dict[Path, list[int]]:
     return found
 
 
-def test_t9_issuer_literal_only_in_default_profile() -> None:
-    """Spec §2: the default issuer's domain may appear **only** in
-    ``DEFAULT_PROFILE`` — U2+ code reads ``profile.issuer`` instead of
-    re-typing the constant.  Mutation: write the literal anywhere else in
-    ``src/`` and this goes red."""
+def _assert_issuer_literal_owners(
+    source_root: Path, default_profile_path: Path
+) -> None:
+    occurrences = _literal_occurrences(_ISSUER_LITERAL, source_root)
+    for relative, declaration in (
+        (_BINDING_PROFILE_RELATIVE, _BINDING_DECLARATION),
+        (_ASSOCIATION_PROFILE_RELATIVE, _ASSOCIATION_DECLARATION),
+    ):
+        protocol_path = source_root / relative
+        protocol_lines = occurrences.pop(protocol_path, [])
+        assert len(protocol_lines) == 1, "each fixed protocol namespace must have one declaration"
+        protocol_line = protocol_path.read_text(encoding="utf-8").splitlines()[protocol_lines[0] - 1]
+        assert protocol_line.strip() == declaration, (
+            "only the exact frozen assignment at its fixed path is a protocol owner"
+        )
 
-    occurrences = _literal_occurrences(_ISSUER_LITERAL)
+    signup_path = source_root / "hyprial/shell/impl/cli/commands/common/support.py"
+    if signup_path in occurrences:
+        signup_lines = occurrences.pop(signup_path)
+        assert len(signup_lines) == 1, "signup page has exactly one fixed declaration"
+        signup_line = signup_path.read_text(encoding="utf-8").splitlines()[signup_lines[0] - 1]
+        assert signup_line.strip() == 'SIGNUP_URL = "https://auth.hyprial.com/signup/app-hyprial"', (
+            "only the exact signup page declaration is a non-issuer URL"
+        )
 
-    assert set(occurrences) == {Path(network_profile.__file__)}, (
+    assert set(occurrences) == {default_profile_path}, (
         f"{_ISSUER_LITERAL} must appear only in network_profile.py; found: "
         f"{ {str(path): lines for path, lines in occurrences.items()} }"
     )
-    lines = occurrences[Path(network_profile.__file__)]
+    lines = occurrences[default_profile_path]
     assert len(lines) == 1, (
         f"expected exactly one occurrence (the DEFAULT_PROFILE issuer line), "
         f"found {lines}"
     )
-    module_text = Path(network_profile.__file__).read_text(
-        encoding="utf-8"
-    )
+    module_text = default_profile_path.read_text(encoding="utf-8")
     module_lines = module_text.splitlines()
     issuer_line = module_lines[lines[0] - 1]
     assert 'issuer="https://' in issuer_line, (
@@ -484,6 +501,71 @@ def test_t9_issuer_literal_only_in_default_profile() -> None:
         "the issuer literal must live inside the DEFAULT_PROFILE assignment, "
         f"context:\n{context}"
     )
+
+
+def test_t9_issuer_literal_only_in_default_profile() -> None:
+    """Pin the fixed protocol namespace, then retain every default-issuer check."""
+    _assert_issuer_literal_owners(_SRC_ROOT, Path(network_profile.__file__))
+
+
+_BINDING_PROFILE_RELATIVE = Path("hyprial/identity/impl/device/binding/profile.py")
+_BINDING_DECLARATION = (
+    'BINDING_URI_NAMESPACE = "https://auth.hyprial.com/transport/binding/"'
+)
+
+
+def _guard_source_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    source_root = tmp_path / "src"
+    default = source_root / "hyprial/daemon/impl/configuration/network_profile.py"
+    binding = source_root / _BINDING_PROFILE_RELATIVE
+    default.parent.mkdir(parents=True)
+    binding.parent.mkdir(parents=True)
+    default.write_text(
+        'DEFAULT_PROFILE = NetworkProfile(\n'
+        '    issuer="https://auth.hyprial.com",\n)\n',
+        encoding="utf-8",
+    )
+    binding.write_text(_BINDING_DECLARATION + "\n", encoding="utf-8")
+    association = source_root / _ASSOCIATION_PROFILE_RELATIVE
+    association.parent.mkdir(parents=True)
+    association.write_text(_ASSOCIATION_DECLARATION + "\n", encoding="utf-8")
+    return source_root, default, binding
+
+
+def test_t9_fixed_binding_namespace_has_a_separate_protocol_owner(tmp_path: Path) -> None:
+    source_root, default, _ = _guard_source_tree(tmp_path)
+    _assert_issuer_literal_owners(source_root, default)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "issuer_elsewhere", "issuer_in_binding", "wrong_namespace", "wrong_symbol",
+        "duplicate_namespace", "same_line_duplicate", "duplicate_default",
+    ],
+)
+def test_t9_rejects_unreviewed_literal_owners(tmp_path: Path, mutation: str) -> None:
+    source_root, default, binding = _guard_source_tree(tmp_path)
+    if mutation == "issuer_elsewhere":
+        (source_root / "other.py").write_text('issuer = "https://auth.hyprial.com"\n')
+    elif mutation == "issuer_in_binding":
+        binding.write_text(_BINDING_DECLARATION + '\nissuer = "https://auth.hyprial.com"\n')
+    elif mutation == "wrong_namespace":
+        binding.write_text(
+            'BINDING_URI_NAMESPACE = "https://authority.example.test/transport/binding/"\n'
+        )
+    elif mutation == "wrong_symbol":
+        binding.write_text(_BINDING_DECLARATION.replace("BINDING_URI_NAMESPACE", "OTHER_URI"))
+    elif mutation == "duplicate_namespace":
+        (source_root / "other.py").write_text(_BINDING_DECLARATION + "\n")
+    elif mutation == "same_line_duplicate":
+        binding.write_text(_BINDING_DECLARATION + "  # auth.hyprial.com\n")
+    elif mutation == "duplicate_default":
+        default.write_text(default.read_text() + 'issuer = "https://auth.hyprial.com"\n')
+    else:
+        raise AssertionError(mutation)
+    with pytest.raises(AssertionError):
+        _assert_issuer_literal_owners(source_root, default)
 
 
 def test_t9_default_profile_docstring_anchor_exists() -> None:
@@ -499,3 +581,68 @@ def test_t9_default_profile_docstring_anchor_exists() -> None:
     assert "DEFAULT_PROFILE" in doc
     # The note must not *itself* re-type the literal it declares exclusive.
     assert _ISSUER_LITERAL not in doc
+
+
+_ASSOCIATION_PROFILE_RELATIVE = Path("hyprial/identity/impl/device/tailnet/authority/profile.py")
+_ASSOCIATION_DECLARATION = (
+    'NAMESPACE = "https://auth.hyprial.com/transport/tailnet-association/v1/sha256/"'
+)
+
+
+def test_t9_fixed_tailnet_association_namespace_has_a_protocol_owner(tmp_path: Path) -> None:
+    source_root, default, _ = _guard_source_tree(tmp_path)
+    _assert_issuer_literal_owners(source_root, default)
+
+
+@pytest.mark.parametrize("mutation", [
+    "issuer_in_association", "wrong_namespace", "wrong_symbol",
+    "duplicate_namespace", "same_line_duplicate", "missing_namespace",
+])
+def test_t9_rejects_unreviewed_tailnet_namespace_literals(tmp_path: Path, mutation: str) -> None:
+    source_root, default, _ = _guard_source_tree(tmp_path)
+    association = source_root / _ASSOCIATION_PROFILE_RELATIVE
+    _assert_issuer_literal_owners(source_root, default)
+    if mutation == "issuer_in_association":
+        association.write_text(_ASSOCIATION_DECLARATION + '\nissuer = "https://auth.hyprial.com"\n')
+    elif mutation == "wrong_namespace":
+        association.write_text(_ASSOCIATION_DECLARATION.replace("tailnet-association/v1", "other/v2"))
+    elif mutation == "wrong_symbol":
+        association.write_text(_ASSOCIATION_DECLARATION.replace("NAMESPACE", "OTHER_URI"))
+    elif mutation == "duplicate_namespace":
+        (source_root / "other.py").write_text(_ASSOCIATION_DECLARATION + "\n")
+    elif mutation == "same_line_duplicate":
+        association.write_text(_ASSOCIATION_DECLARATION + "  # auth.hyprial.com\n")
+    elif mutation == "missing_namespace":
+        association.write_text("")
+    else:
+        raise AssertionError(mutation)
+    with pytest.raises(AssertionError):
+        _assert_issuer_literal_owners(source_root, default)
+
+
+def test_t9_signup_page_is_a_fixed_non_issuer_url(tmp_path: Path) -> None:
+    source_root, default, _ = _guard_source_tree(tmp_path)
+    signup = source_root / 'hyprial/shell/impl/cli/commands/common/support.py'
+    signup.parent.mkdir(parents=True)
+    signup.write_text('SIGNUP_URL = "https://auth.hyprial.com/signup/app-hyprial"\n')
+    _assert_issuer_literal_owners(source_root, default)
+
+
+@pytest.mark.parametrize('mutation', ['issuer', 'symbol', 'path', 'duplicate'])
+def test_t9_signup_exception_cannot_hide_an_issuer(tmp_path: Path, mutation: str) -> None:
+    source_root, default, _ = _guard_source_tree(tmp_path)
+    relative = 'hyprial/shell/impl/cli/commands/common/support.py'
+    if mutation == 'path':
+        relative = 'hyprial/shell/impl/cli/commands/common/other.py'
+    signup = source_root / relative
+    signup.parent.mkdir(parents=True)
+    declaration = 'SIGNUP_URL = "https://auth.hyprial.com/signup/app-hyprial"\n'
+    if mutation == 'issuer':
+        declaration = 'issuer="https://auth.hyprial.com"\n'
+    elif mutation == 'symbol':
+        declaration = declaration.replace('SIGNUP_URL', 'ISSUER')
+    elif mutation == 'duplicate':
+        declaration *= 2
+    signup.write_text(declaration)
+    with pytest.raises(AssertionError):
+        _assert_issuer_literal_owners(source_root, default)

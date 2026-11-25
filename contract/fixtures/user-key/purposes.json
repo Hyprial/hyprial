@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "status": "reserved-only",
+  "activeProductionPurposes": [],
+  "reserved": ["agent-owner.authorize", "revocation-ledger.append", "ledger-head.attest", "org.invite", "org.invite.accept", "org.join", "org.leave", "org.acl.grant", "org.acl.revoke", "orgfs.commit-as-user"],
+  "domains": ["hyprial-orgfs-decl-v1", "hyprial-user-op-v1"],
+  "deviceOnlyRefused": ["host-residency", "host-acceptance", "agent-residency", "hyprial-transfer-bundle-v1", "device-credential"],
+  "keyKind": "owner"
+}

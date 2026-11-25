@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from hyprial.kernel.impl.primitives.uri import (
+    parse_adapter_short_uri,
     is_agent_id_segment,
     is_device_id_segment,
     is_user_id_segment,
@@ -96,14 +97,12 @@ def test_daemon_identity_does_not_reexport_the_uri_surface() -> None:
         "CHANNEL_URI_PREFIX",
         "TARGET_KINDS",
         "TARGET_KIND_AGENT",
-        "TARGET_KIND_CHANNEL_ROUTE",
         "TARGET_KIND_HOST",
         "TARGET_KIND_UNKNOWN",
         "TARGET_KIND_USER",
         "agent_uri_actor",
         "canonical_agent_uri",
         "parse_agent_uri",
-        "parse_channel_uri",
         "short_actor_name",
     }
     assert moved_names.isdisjoint(vars(identity))
@@ -125,3 +124,24 @@ def test_schema_first_import_guard_rejects_the_real_application_owner() -> None:
     assert probe.returncode != 0
     assert "AssertionError" in probe.stderr
     assert "ModuleNotFoundError" not in probe.stderr
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("adapter:lark:main", ("lark", "main")),
+        ("channel:lark:main", None),
+        ("adapter:lark:", None),
+        ("adapter::main", None),
+        ("adapter:lark", None),
+        ("adapter:lark:a:b", None),
+        ("agent:lark:main", None),
+        ("route:lark:main", None),
+        ("lark:main", None),
+        ("", None),
+    ],
+)
+def test_the_three_segment_adapter_form_has_one_kernel_reader(
+    value: str, expected: tuple[str, str] | None
+) -> None:
+    assert parse_adapter_short_uri(value) == expected

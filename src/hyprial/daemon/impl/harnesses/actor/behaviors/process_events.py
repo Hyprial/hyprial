@@ -41,21 +41,18 @@ class _ProcessEventsBehavior:
         replace: tuple[ManagedHarnessProcess, ProcessIdentity | None] | None = None,
         allow_lifecycle: bool = False,
     ) -> None:
-        transfer_error = self._transfer_start_error(record.spec.name)
-        if transfer_error is None and kind == "automatic" and not self._automatic_custody_clear(record.spec.name):
-            transfer_error = ipc_errors.TRANSFER_CUSTODY_UNAVAILABLE
-        if transfer_error is None and len(self._transfer_inflight) >= self._start_admission_width * 4:
+        if len(self._start_inflight) >= self._start_admission_width * 4:
             # Same slots as ProcessIoPort. A caller timeout cannot make room
             # while its native start/late cleanup still owns a process.
-            transfer_error = "PORT_OVERLOADED"
-        if transfer_error is not None:
             batch_id = record.restore_batch
             if batch_id is not None:
                 record.restore_batch = None
                 self._settle_deferred_restore_target(key, batch_id)
             elif kind == "explicit":
                 record.explicit_correlation_id = None
-                self._reject_correlation(correlation_id, transfer_error, "starts held for transfer")
+                self._reject_correlation(
+                    correlation_id, ipc_errors.PORT_OVERLOADED, "start admission is full"
+                )
             return
         if key in self._lifecycle_effect_resources and not allow_lifecycle:
             # A lifecycle effect claimed the resource while this key sat in
@@ -98,7 +95,7 @@ class _ProcessEventsBehavior:
         # report completion; projection readers never observe a ghost gap.
         self._publish()
         assert self._io is not None
-        self._transfer_inflight[correlation_id] = record.spec.name
+        self._start_inflight[correlation_id] = record.spec.member or record.spec.name
         self._io.start(
             correlation_id,
             key,
@@ -168,6 +165,7 @@ class _ProcessEventsBehavior:
         *,
         permanent: bool = False,
         consume_budget: bool = True,
+        suppress_alarm: bool = False,
     ) -> None:
         record.last_error = detail
         was_failed = self._is_failed(record)
@@ -175,9 +173,11 @@ class _ProcessEventsBehavior:
             record.failures += 1
         if permanent:
             record.restore_failed_terminal = True
+        if suppress_alarm:
+            record.suppress_failure_alarm = True
         if self._is_failed(record):
             record.restart_after = None
-            if not was_failed and (
+            if not was_failed and not record.suppress_failure_alarm and (
                 record.restore_batch is None or self._desired_state is None
             ):
                 self._failed_events.append(key)
@@ -241,10 +241,11 @@ class _ProcessEventsBehavior:
             # terminal regardless.
             was_failed = self._is_failed(record)
             record.restart_after = None
-            record.failures = max(
-                record.failures,
-                self._failure_budget if self._failure_budget > 0 else 1,
-            )
+            if not record.restore_failed_terminal:
+                record.failures = max(
+                    record.failures,
+                    self._failure_budget if self._failure_budget > 0 else 1,
+                )
             if self._failure_budget <= 0:
                 # _is_failed refuses to terminate at budget 0 by contract;
                 # pin the verdict through the dedicated flag instead.
@@ -252,6 +253,7 @@ class _ProcessEventsBehavior:
             if (
                 not was_failed
                 and self._is_failed(record)
+                and not record.suppress_failure_alarm
                 and (record.restore_batch is None or self._desired_state is None)
             ):
                 # Same alarm as the budget trip: entering failed must be
@@ -293,7 +295,7 @@ class _ProcessEventsBehavior:
                 self._reject_correlation(
                     correlation_id,
                     (
-                        "HARNESS_START_TIMEOUT"
+                        ipc_errors.HARNESS_START_TIMEOUT
                         if isinstance(failure, TimeoutError)
                         else (
                             failure_code
@@ -462,7 +464,7 @@ class _ProcessEventsBehavior:
                 correlation_id = pending.reply_correlation_id
             self._reject_correlation(
                 correlation_id,
-                "HARNESS_COMPLETION_HANDOFF_FAILED",
+                ipc_errors.HARNESS_COMPLETION_HANDOFF_FAILED,
                 str(error),
             )
 
@@ -578,7 +580,7 @@ class _ProcessEventsBehavior:
         assert isinstance(request, LifecycleMutationRequest)
         assert isinstance(provenance, MutationProvenance)
         assert isinstance(request.payload, RemoveHarnessCommand)
-        key = f"{request.payload.harness}:{request.payload.name}"
+        key = f"{request.payload.harness}:{request.payload.member or request.payload.name}"
         active = self._lifecycle_effect_requests.get(key)
         owns_custody = active is None or active[0].attempt_token == request.attempt_token
         # Durable intent first, then memory, with no actor handoff in between.
@@ -654,7 +656,7 @@ class _ProcessEventsBehavior:
         assert isinstance(request, LifecycleMutationRequest)
         assert isinstance(provenance, MutationProvenance)
         assert isinstance(request.payload, EnsureHarnessCommand)
-        key = f"{request.payload.spec.harness}:{request.payload.spec.name}"
+        key = self._key(request.payload.spec)
         active = self._lifecycle_effect_requests.get(key)
         owns_custody = (
             active is None or active[0].attempt_token == request.attempt_token
@@ -835,9 +837,9 @@ class _ProcessEventsBehavior:
                 HarnessMutationCompleted(
                     request.correlation_id, self._handler_generation, self._version,
                     (
-                        f"{request.payload.spec.harness}:{request.payload.spec.name}"
+                        self._key(request.payload.spec)
                         if isinstance(request.payload, EnsureHarnessCommand)
-                        else f"{request.payload.harness}:{request.payload.name}"
+                        else f"{request.payload.harness}:{request.payload.member or request.payload.name}"
                     ),
                     receipt.provenance.changed,
                 ),
@@ -845,11 +847,11 @@ class _ProcessEventsBehavior:
         elif request.attempt_token in self._lifecycle_failures:
             result = self._lifecycle_failures[request.attempt_token]
         elif request.attempt_token in self._settled_lifecycle_attempts:
-            self._reject(command, "LIFECYCLE_ATTEMPT_SETTLED", "the successful receipt was already retired")
+            self._reject(command, ipc_errors.LIFECYCLE_ATTEMPT_SETTLED, "the successful receipt was already retired")
             return
         else:
             if isinstance(request.payload, EnsureHarnessCommand):
-                key = f"{request.payload.spec.harness}:{request.payload.spec.name}"
+                key = self._key(request.payload.spec)
                 active = self._lifecycle_effect_requests.get(key)
                 if (
                     active is not None

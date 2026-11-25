@@ -1,5 +1,13 @@
 # hyprial CLI 目标命令结构（expected commands）
 
+> **Work commands superseded (#2214, 2026-11-08).** For the work-related rows
+> below, the current surface is only `org work ls [--org NAME] [--json]` and
+> `org work show PATH [--org NAME] [--wait SECONDS] [--json]`, both ordinary
+> OrgFS read shortcuts. All writes, conflicts and recovery use `org fs`.
+> The task writers, filters, repair and collect/finish entries below are
+> historical, not implementation targets. The current contract is
+> [Work documents in ordinary OrgFS](../../../contract/work-items/README.md).
+
 - 日期：2026-10-04；修订：2026-10-05 回填 Allen 对 D1/D8 的裁决；2026-10-06 一级与 `agent` 二级定稿
   （Allen 与 user-exp-improver 在飞书逐条确定）；**2026-10-06 重排：本文只写目标态（改完长什么样），
   实施计划、模块化、分类、重叠排查与 PR 顺序移到 [cli-refactor-plan.md](cli-refactor-plan.md)**。
@@ -40,13 +48,13 @@ D3（`agent grants` 只留全局审计，本文按建议写入）；D7（`grant 
 | 一级 | 收进来的现有命令 | 说明 |
 |---|---|---|
 | `help` `version` `doctor` `log` `config` | — | 观察与配置 |
-| `login` | — | 只做登录/重新认证；凭据、身份和设备阶段都完整时只报告状态，设备阶段缺失时原地续跑且不重新认证，`--force` 才强制重新认证；首启不再经由 `login` |
+| `login` | — | 只做登录/重新认证；首启与同一 uid 的重新认证都由 daemon 驱动至 serving；单个 home 永久绑定单一 uid，`--switch-account` / `--dry-run` 已删除 |
 | `logout` | — | 只清除当前 home 的用户登录；保留 agent 凭据与设备 key；幂等，变更前需确认或 `--yes` |
 | `init` | `onboarding plan/apply` → `init --plan` / `init` | 首启覆盖整台机器（建 home、登录、squire、daemon）；desktop 契约 §11 的调用同 PR 更新 |
 | `profile` `gui` | — | |
 | `squire` | — | 个人助手（只管助手本身：`squire setup`） |
 | `socialware` | `install` → `socialware install` | 只保留结构和入口（恒 `COMING_SOON`） |
-| `user` | `adapter identities upsert`、`squire setup --owner-open-id` 的登记职能（A2）；`user-proxy` → `user proxy` | 本机唯一的"谁是谁"库，以及"人"的收件端 |
+| `user` | `adapter identities upsert`、`squire setup --owner-open-id` 的登记职能（A2）；`user-proxy` → `user proxy` | 本机唯一的"谁是谁"库，以及"人"的收件端；本地签名 key 在 `user key` 下 |
 | `adapter` | `lark-auth` → `adapter user-auth` | 适配器的完整生命周期；停适配器只走 `adapter stop` |
 | `agent` | `start`/`down` → `agent start/stop`；`transfer` 家族 14 个入口 → `agent move` + 隐藏 `agent transfer …`；`top` → `agent top`；`ps` 的 connector/session 段 → `agent list` 运行状态列；`grants-check/-visibility` → `agent grant <ACTOR> check/visibility`；`dispatch matrix` → `agent tiers`；`squire probe` → `agent tiers probe` | agent 的完整生命周期；connector 就是 agent 的运行态；模型档位选择 |
 | `message` | `send` `ack` `reply` `targets`；`delivery status/trajectory`、`outbox`、`query … inbox/outbox`；合并读取 `batch` | 消息的完整生命周期 |
@@ -69,7 +77,7 @@ D3（`agent grants` 只留全局审计，本文按建议写入）；D7（`grant 
 
 | 子命令 | 来源 | 说明 |
 |---|---|---|
-| `create` `host-invite` `destroy` | = | |
+| `create` `destroy` | = | |
 | `list [--inactive-since <DURATION>]` | = + 运行状态列 | 增列：在哪个 harness 上、session 是否在线（吸收 `ps` 的 connector/session 段）；`--inactive-since` 用 §3.1 的统一闲置定义 |
 | `start <NAME> [--harness claude\|codex\|pi\|… \| --tier fast\|strong\|super]` | 一级 `start <harness> --name <NAME>` | 名字在第一位；`--tier` 与 `agent tiers` 用同一个解析函数（§3.5） |
 | `stop <NAME>` / `stop --all` | 一级 `down` | `--all` 只停 agent，**不碰适配器** |
@@ -261,7 +269,7 @@ service 接管。已接管时只用 `launchctl kickstart -k` 或 `systemctl --us
 | 一级 | 形态 | 说明 |
 |---|---|---|
 | `init` | `init [--plan] [--service\|--no-service]` | `--plan` = 原 `onboarding plan`；无参 = 原 `onboarding apply` + 原 `init`；home-guard 后唯一能建 home 的入口。交互式未给服务开关时询问，非交互式不注册服务，除非显式 `--service` |
-| `login` | 叶子 | 有效登录只报告状态；`--force` 重新认证 |
+| `login` | 叶子 | 登录与同一 uid 的重新认证由 daemon 驱动至 serving；单个 home 永久绑定单一 uid |
 | `logout` | 叶子 | 当前 home 用户登录的幂等清理；交互确认或 `--yes`；不删 agent 凭据和设备 key |
 | `profile` | `list` `show` `use` `create` | 多 home 选择 |
 | `gui` | 叶子 + 位置动词 `start\|status\|stop\|upgrade` | 配套 GUI 组件随 `upgrade` 自动解包；`gui upgrade` 只留作修复手段（`--force` 重新解包） |

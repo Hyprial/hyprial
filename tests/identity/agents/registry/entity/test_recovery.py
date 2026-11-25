@@ -1,8 +1,11 @@
 """agent_entity: recovery scenarios."""
 
 from __future__ import annotations
+
+from tests.support.agent_destroy import destroy_agent
 from pathlib import Path
 import pytest
+import hyprial.identity.impl.agents.addressing as addressing
 import hyprial.identity.impl.agents.home.provisioner as agent_home_module
 from hyprial.identity.impl.agents import (
     AgentRegistry,
@@ -21,7 +24,9 @@ from .support import (
     OWNER,
     URI,
     _close_test_applications as _close_test_applications,
+    address,
     application,
+    official_uri,
     enable_routine_coordinator,
     enable_routines,
     message_for,
@@ -45,7 +50,7 @@ def test_destroy_removes_the_record_connectors_and_pending_messages(
     start_headless(app, "pi", "foo")
     assert app.agents.exists("foo")
 
-    result = app.handle("agent.destroy", {"name": "foo"})
+    result = destroy_agent(app, "foo")
 
     assert result["destroyed"] is True
     assert result["irreversible"] is True
@@ -86,25 +91,26 @@ def test_destroy_drains_canonical_and_pre_fix_legacy_bare_messages(
         app = application(tmp_path)
         app._inbox = inbox  # type: ignore[assignment]
         app.handle("agent.create", {"name": "foo"})
-        # Both accepted entry-point spellings now resolve to one stored key.
+        official = address(app, "foo")
         assert app._resolve_agent_alias(  # type: ignore[attr-defined]
             normalize_agent_recipient(URI)
         ) == URI
         assert app._resolve_agent_alias(  # type: ignore[attr-defined]
             normalize_agent_recipient("foo")
-        ) == URI
+        ) == official
         # Arrival is what fills the inbox (the zenoh endpoint calls receive);
         # a local send goes to the outbox, which is a different table.
-        inbox.receive(message_for(URI, "message-uri"))
-        # Seed one legacy row directly: this is upgrade cleanup evidence, not
-        # a spelling the post-fix send path can create.
+        inbox.receive(message_for(official, "message-uri"))
+        inbox.receive(message_for(URI, "message-name-uri"))
         inbox.receive(message_for("foo", "message-bare"))
+        assert len(inbox.pending_messages(official)) == 1
         assert len(inbox.pending_messages(URI)) == 1
         assert len(inbox.pending_messages("foo")) == 1
 
-        result = app.handle("agent.destroy", {"name": "foo"})
+        result = destroy_agent(app, "foo")
 
-        assert result["destroyedMessages"] == 2
+        assert result["destroyedMessages"] == 3
+        assert inbox.pending_messages(official) == ()
         assert inbox.pending_messages(URI) == ()
         assert inbox.pending_messages("foo") == ()
     finally:
@@ -115,14 +121,43 @@ def test_destroy_of_an_unknown_agent_fails_loudly(tmp_path: Path) -> None:
     app = application(tmp_path)
 
     with pytest.raises(DaemonRequestError) as failure:
-        app.handle("agent.destroy", {"name": "nobody"})
+        destroy_agent(app, "nobody")
 
     assert failure.value.code == "AGENT_NOT_FOUND"
 
 
+_DESTROY_PATHS = ("forward", "forward-switch-off", "compensating")
+
+
+def _force_switch(destroy: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    if destroy == "forward-switch-off":
+        monkeypatch.setattr(addressing, "ID_FORM_MINTING", False)
+
+
+def _destroy_foo(app, destroy: str, agent) -> None:  # type: ignore[no-untyped-def]
+    """Forward ``agent.destroy``, or the saga compensation that freezes nothing."""
+
+    if destroy != "compensating":
+        destroy_agent(app, "foo")
+        return
+    settled = app.agents.settle_destroy(
+        f"agent-default-compensation:{agent.entity_token}:test",
+        agent.actor,
+        expected_entity_token=agent.entity_token,
+    )
+    assert settled.disposition == "destroyed"
+
+
+@pytest.mark.parametrize("destroy", _DESTROY_PATHS)
 def test_destroyed_name_rebuilds_without_inheriting_old_home_credentials(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destroy: str
 ) -> None:
+    """A same-name rebuild reuses the home path but none of its credentials.
+
+    Every destroy path leaves the name free (owner decision 2026-11-19).
+    """
+
+    _force_switch(destroy, monkeypatch)
     app = application(tmp_path)
     start_headless(app, "pi", "foo")
     receipt = app._agent_session_domains._registry.home_receipt("foo")
@@ -139,13 +174,14 @@ def test_destroyed_name_rebuilds_without_inheriting_old_home_credentials(
         sentinel.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         sentinel.write_text("NON_PRODUCTION_SENTINEL\n", encoding="utf-8")
 
-    app.handle("agent.destroy", {"name": "foo"})
+    _destroy_foo(app, destroy, old)
     assert not root.exists()
 
     recreated = app.handle("agent.create", {"name": "foo"})
     assert recreated["created"] is True
     rebuilt = app.agents.require("foo")
     assert rebuilt.entity_token != old.entity_token
+    assert rebuilt.agent_id != old.agent_id
     rebuilt_root = Path(
         app._agent_session_domains._registry.home_receipt("foo").path
     )
@@ -153,9 +189,16 @@ def test_destroyed_name_rebuilds_without_inheriting_old_home_credentials(
     assert all(not sentinel.exists() for sentinel in sentinels)
 
 
+@pytest.mark.parametrize("destroy", _DESTROY_PATHS)
 def test_default_start_workspace_is_destroyed_and_rebuilt_with_git_skeleton(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destroy: str
 ) -> None:
+    """The same-name rebuild gets the old workspace path back as a bare skeleton.
+
+    Every destroy path leaves the name free (owner decision 2026-11-19).
+    """
+
+    _force_switch(destroy, monkeypatch)
     app = application(tmp_path)
     created = app.handle(
         "agent.create",
@@ -195,11 +238,14 @@ def test_default_start_workspace_is_destroyed_and_rebuilt_with_git_skeleton(
         "unreadableEntries": 0,
     }
 
-    destroyed = app.handle("agent.destroy", {"name": "foo"})
-    assert destroyed["workspace"] == {
-        **preview["workspace"],
-        "deleted": True,
-    }
+    if destroy == "compensating":
+        _destroy_foo(app, destroy, app.agents.require("foo"))
+    else:
+        destroyed = destroy_agent(app, "foo")
+        assert destroyed["workspace"] == {
+            **preview["workspace"],
+            "deleted": True,
+        }
     assert not root.exists()
     assert (outside / "must-survive.txt").read_text(encoding="utf-8") == "outside"
 
@@ -243,38 +289,57 @@ def test_destroy_preview_counts_only_visible_entries_in_unreadable_subtrees(
     assert preview["workspace"]["unreadableEntries"] == 1
 
 
+@pytest.mark.parametrize("destroy", _DESTROY_PATHS)
 def test_repeated_destroy_resumes_cleanup_after_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destroy: str
 ) -> None:
+    """A resumed crashed destroy cleans the home and leaves the name as destroy left it.
+
+    Every destroy path leaves the name free (owner decision 2026-11-19).
+    """
+
+    _force_switch(destroy, monkeypatch)
     app = application(tmp_path)
     app.handle("agent.create", {"name": "foo"})
     registry = app._agent_session_domains._registry
+    original = registry.require("foo")
     receipt = registry.home_receipt("foo")
     sentinel = Path(receipt.path) / "secrets" / "old-auth.json"
     sentinel.parent.mkdir(mode=0o700, exist_ok=True)
     sentinel.write_text("NON_PRODUCTION_SENTINEL\n", encoding="utf-8")
-    cleanup = registry.cleanup_home
 
-    def crash_after_revoke(_actor: str, *, expected_token: str) -> object:
-        assert expected_token == receipt.resource_token
-        raise RuntimeError("simulated crash after durable revoke")
+    if destroy == "compensating":
+        disposition, reservation = registry.prepare_destroy_settlement(
+            "foo", original.entity_token
+        )
+        assert disposition is None
+        assert reservation is not None
+    else:
+        cleanup = registry.cleanup_home
 
-    monkeypatch.setattr(registry, "cleanup_home", crash_after_revoke)
-    with pytest.raises(RuntimeError, match="simulated crash"):
-        registry.destroy("foo")
+        def crash_after_revoke(_actor: str, *, expected_token: str) -> object:
+            assert expected_token == receipt.resource_token
+            raise RuntimeError("simulated crash after durable revoke")
+
+        monkeypatch.setattr(registry, "cleanup_home", crash_after_revoke)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            registry.destroy("foo")
+        monkeypatch.setattr(registry, "cleanup_home", cleanup)
     assert sentinel.exists()
 
-    # A real crash discards the in-memory actor projection.  Reopen the
-    # production composition over the same durable database and retry the
-    # public daemon command.
-    monkeypatch.setattr(registry, "cleanup_home", cleanup)
     restarted = application(tmp_path)
     assert restarted.agents.get("foo") is None
-    resumed = restarted.handle("agent.destroy", {"name": "foo"})
+    resumed = destroy_agent(restarted, "foo")
     assert resumed["cleanupResumed"] is True
     assert resumed["destroyed"] is False
     assert not Path(receipt.path).exists()
+
     assert restarted.handle("agent.create", {"name": "foo"})["created"] is True
+    rebuilt = restarted.agents.require("foo")
+    assert rebuilt.entity_token != original.entity_token
+    rebuilt_registry = restarted._agent_session_domains._registry
+    assert rebuilt_registry.home_receipt("foo").path == receipt.path
+    assert not sentinel.exists()
 
 
 # --------------------------------------------------------------------------
@@ -295,16 +360,19 @@ def test_a_registered_agent_that_is_not_running_reports_offline(
     app.handle("agent.create", {"name": "foo"})
 
     targets = app.handle("targets", {"kind": "agent"})["targets"]
+    for row in targets:
+        assert str(row.pop("agentId", "a.")).startswith("a.")
 
     assert targets == [
         {
             "targetKind": "agent",
-            "targetUri": URI,
-            "actor": URI,
+            "targetUri": address(app, "foo"),
+            "actor": address(app, "foo"),
             "status": "offline",
             "deliverable": True,
             "hosted": False,
             "hostedBy": None,
+            "displayName": "foo",
         }
     ]
 
@@ -425,7 +493,74 @@ def test_initial_unknown_carrier_state_is_refused(
     finally:
         ownership._owner_process_status = old_status
     assert raised.value.code == "INTERACTIVE_CARRIER_STOP_FAILED"
-    binding = app._agent_liveness.binding(URI)
+    binding = app._agent_liveness.binding(official_uri(app))
     assert binding is not None and binding.runtime == "interactive"
 
 
+def test_gc_destroy_of_a_same_name_replacement_is_refused_with_the_switch_off(
+    tmp_path, monkeypatch
+):
+    """Name-form minting still lets a name be reused; the recheck refuses it."""
+    import hyprial.identity.impl.agents.addressing as addressing
+
+    monkeypatch.setattr(addressing, "ID_FORM_MINTING", False)
+    app = application(tmp_path)
+    app.handle("agent.create", {"name": "foo"})
+    selected = app.agents.require("foo")
+    reserve = app._reserve_agent_destroy
+
+    def reserve_then_replace(actor):
+        token = reserve(actor)
+        app.agents.destroy("foo", expected_entity_token=selected.entity_token)
+        app.handle("agent.create", {"name": "foo"})
+        return token
+
+    monkeypatch.setattr(app, "_reserve_agent_destroy", reserve_then_replace)
+    monkeypatch.setattr(app, "_stop_agent_runtime", lambda *_a, **_k: pytest.fail("GC stopped a changed agent"))
+    result = app._destroy_agent(
+        selected.uri, expected_entity_token=selected.entity_token,
+        require_unpinned=True, require_offline=True,
+    )
+    assert result == {"ok": True, "destroyed": False, "reason": "agent-incarnation-mismatch"}
+    current = app.agents.require("foo")
+    assert current.uri == selected.uri == URI
+    assert current.entity_token != selected.entity_token
+
+
+@pytest.mark.parametrize("minting", [False, True], ids=["switch-off", "switch-on"])
+def test_gc_destroy_of_a_vanished_incarnation_fails_and_releases_its_reservation(
+    tmp_path, monkeypatch, minting
+):
+    """An incarnation destroyed between the GC scan and the reservation is
+    AGENT_NOT_FOUND, as published; the reservation is still released once
+    (integrator decision D15)."""
+    import hyprial.identity.impl.agents.addressing as addressing
+
+    monkeypatch.setattr(addressing, "ID_FORM_MINTING", minting)
+    app = application(tmp_path)
+    app.handle("agent.create", {"name": "foo"})
+    selected = app.agents.require("foo")
+    reserve = app._reserve_agent_destroy
+    release = app._release_agent_destroy_reservation
+    released = []
+
+    def reserve_then_destroy(actor):
+        token = reserve(actor)
+        app.agents.destroy("foo", expected_entity_token=selected.entity_token)
+        return token
+
+    def record_release(token):
+        released.append(token)
+        return release(token)
+
+    monkeypatch.setattr(app, "_reserve_agent_destroy", reserve_then_destroy)
+    monkeypatch.setattr(app, "_release_agent_destroy_reservation", record_release)
+    monkeypatch.setattr(app, "_stop_agent_runtime", lambda *_a, **_k: pytest.fail("GC stopped a vanished agent"))
+    with pytest.raises(Exception) as vanished:
+        app._destroy_agent(
+            selected.uri, expected_entity_token=selected.entity_token,
+            require_unpinned=True, require_offline=True,
+        )
+    assert vanished.value.code == "AGENT_NOT_FOUND"
+    assert len(released) == 1
+    assert app.agents.get("foo") is None

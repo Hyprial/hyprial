@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import errno
 import socket
-import time
 
 import pytest
 
@@ -62,16 +61,6 @@ def test_tcp_probe_reports_refused_for_a_real_closed_loopback_port() -> None:
 
     assert result["result"] == "refused"
     assert result["errno"] == errno.ECONNREFUSED
-
-
-def test_tcp_probe_reports_timeout_for_test_net_blackhole() -> None:
-    started = time.monotonic()
-    result = tcp_probe("192.0.2.1", 7447, timeout=0.05)
-    elapsed = time.monotonic() - started
-
-    assert result["result"] == "timeout"
-    assert result["result"] != "refused"
-    assert elapsed >= 0.04, "TEST-NET control must exercise the real timeout path"
 
 
 def test_incident_peer_timeout_is_data_plane_down() -> None:

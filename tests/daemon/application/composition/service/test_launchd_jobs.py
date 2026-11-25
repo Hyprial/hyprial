@@ -10,6 +10,7 @@ exits must not be claimed. Restarting the wrong job is worse than spawning one.
 
 from __future__ import annotations
 
+import os
 import plistlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from hyprial.daemon.impl.configuration.launchd_jobs import argv_runs_daemon
+from hyprial.daemon.impl.operations.service import ServiceConfig, ServiceManager
 
 from .test_service_supervision import LaunchdSupervisor, completed, manager
 
@@ -519,3 +521,181 @@ def test_the_matcher_ignores_the_name_slot_only_when_program_is_set() -> None:
     assert argv_runs_daemon(["-lc", script], executable, "/bin/bash") is False
     # No Program: argv[0] IS the program, so the flags start there.
     assert argv_runs_daemon(["/bin/bash", "-lc", script], executable) is True
+
+
+def _module_form_manager(tmp_path: Path, runner) -> ServiceManager:
+    """A manager whose unit runs ``[sys.executable, -m, hyprial.cli, daemon, run]``."""
+
+    import sys
+
+    config = ServiceConfig(
+        executable=Path(sys.executable),
+        home=tmp_path,
+        hyprial_home=tmp_path / ".hyprial",
+        state_dir=tmp_path / "state",
+        daemon_args=("-m", "hyprial.cli", "daemon", "run"),
+    )
+    service = ServiceManager(
+        config,
+        platform="launchd",
+        service_home=tmp_path,
+        runner=runner,
+        uid=501,
+        sleep=lambda _seconds: None,
+    )
+    service.unit_path.parent.mkdir(parents=True, exist_ok=True)
+    return service
+
+
+def _home_plist(
+    directory: Path,
+    name: str,
+    *,
+    label: str,
+    argv: list[str],
+    environment: dict[str, str] | None = None,
+) -> Path:
+    payload = {
+        "Label": label,
+        "ProgramArguments": argv,
+        "KeepAlive": True,
+        "RunAtLoad": True,
+    }
+    if environment is not None:
+        payload["EnvironmentVariables"] = environment
+    path = directory / f"{name}.plist"
+    path.write_bytes(plistlib.dumps(payload))
+    return path
+
+
+def test_the_module_form_is_ours_and_near_misses_are_not(tmp_path: Path) -> None:
+    import sys
+
+    runner = LaunchdSupervisor()
+    service = _module_form_manager(tmp_path, runner)
+    interpreter = os.path.abspath(sys.executable)
+    directory = service.unit_path.parent
+
+    ours = _home_plist(
+        directory,
+        "module-form",
+        label="module-form",
+        argv=[interpreter, "-m", "hyprial.cli", "daemon", "run"],
+        environment={"HYPRIAL_HOME": str(tmp_path / ".hyprial")},
+    )
+    _home_plist(
+        directory,
+        "wrong-interpreter",
+        label="wrong-interpreter",
+        argv=["/usr/bin/other-python3", "-m", "hyprial.cli", "daemon", "run"],
+        environment={"HYPRIAL_HOME": str(tmp_path / ".hyprial")},
+    )
+    _home_plist(
+        directory,
+        "wrong-module",
+        label="wrong-module",
+        argv=[interpreter, "-m", "otherpkg.cli", "daemon", "run"],
+        environment={"HYPRIAL_HOME": str(tmp_path / ".hyprial")},
+    )
+    _home_plist(
+        directory,
+        "missing-run",
+        label="missing-run",
+        argv=[interpreter, "-m", "hyprial.cli", "daemon", "status"],
+        environment={"HYPRIAL_HOME": str(tmp_path / ".hyprial")},
+    )
+
+    assert service._launchd_jobs() == [("module-form", ours)], service._launchd_jobs()
+
+
+def test_a_job_naming_another_home_is_never_adopted(tmp_path: Path) -> None:
+    """Both directions: the derived manager must not adopt the default home's
+    job and the default manager must not adopt a derived job. Matching is
+    executable + realpath(EnvironmentVariables.HYPRIAL_HOME)."""
+
+    runner = LaunchdSupervisor()
+    derived_home = tmp_path / "other-home" / ".hyprial"
+    service = manager(tmp_path, runner)
+    service.unit_path.unlink()
+    exe = str(service.config.executable.resolve())
+    directory = service.unit_path.parent
+
+    _home_plist(
+        directory,
+        "default-home-job",
+        label="default-home-job",
+        argv=[exe, "daemon", "run"],
+        environment={"HYPRIAL_HOME": str(tmp_path / ".hyprial")},
+    )
+    derived_job = _home_plist(
+        directory,
+        "derived-home-job",
+        label="derived-home-job",
+        argv=[exe, "daemon", "run"],
+        environment={"HYPRIAL_HOME": str(derived_home)},
+    )
+
+    claimed = service._launchd_jobs()
+
+    assert [label for label, _path in claimed] == ["default-home-job"], claimed
+
+    derived_config = ServiceConfig(
+        executable=Path(exe),
+        home=tmp_path,
+        hyprial_home=derived_home,
+        state_dir=derived_home / "state",
+    )
+    derived_service = ServiceManager(
+        derived_config,
+        platform="launchd",
+        service_home=tmp_path,
+        runner=runner,
+        uid=501,
+        sleep=lambda _seconds: None,
+    )
+    derived_service.unit_path.parent.mkdir(parents=True, exist_ok=True)
+
+    derived_claimed = derived_service._launchd_jobs()
+
+    assert derived_claimed == [("derived-home-job", derived_job)], derived_claimed
+
+
+def test_a_job_without_a_home_entry_belongs_to_the_default_home_only(
+    tmp_path: Path,
+) -> None:
+    """The operator wrapper predates per-home units: its job env has no
+    HYPRIAL_HOME, so the daemon inside serves the default home. The default
+    manager keeps claiming it; a derived manager must not."""
+
+    runner = LaunchdSupervisor()
+    service = manager(tmp_path, runner)
+    service.unit_path.unlink()
+    exe = str(service.config.executable.resolve())
+    directory = service.unit_path.parent
+
+    legacy = _home_plist(
+        directory,
+        "legacy-wrapper",
+        label="com.hyprial.daemon",
+        argv=["/bin/bash", "-lc", f"ulimit -n 65536; exec {exe} daemon run --json"],
+    )
+
+    assert service._launchd_jobs() == [("com.hyprial.daemon", legacy)]
+
+    derived_config = ServiceConfig(
+        executable=Path(exe),
+        home=tmp_path,
+        hyprial_home=tmp_path / "other-home" / ".hyprial",
+        state_dir=tmp_path / "other-home" / ".hyprial" / "state",
+    )
+    derived_service = ServiceManager(
+        derived_config,
+        platform="launchd",
+        service_home=tmp_path,
+        runner=runner,
+        uid=501,
+        sleep=lambda _seconds: None,
+    )
+    derived_service.unit_path.parent.mkdir(parents=True, exist_ok=True)
+
+    assert derived_service._launchd_jobs() == [], derived_service._launchd_jobs()

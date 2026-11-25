@@ -10,15 +10,152 @@ All notable changes to hyprial (Harness Bridge) are documented here.
 > 单版本详细发布说明归档于 [docs/notes/changelog/](docs/notes/changelog/)
 > （如 [CHANGELOG-v0.4.2.dev7.md](docs/notes/changelog/CHANGELOG-v0.4.2.dev7.md)）。
 
-## [0.5.5.4] - 2026-11-03
+## [0.5.5.4] - 2026-11-08
+
+> 发布准备，尚未正式发布。internal 暂时冻结；完整候选与五平台 native wheel 验收完成后再确定正式发布日期。见 [发布准备记录](docs/guides/release-0.5.5.4-preparation.md)。
+
+### Removed
+
+- `channel` 能力退役（owner 2026-11-24）：能力从授权词表、`GRANTABLE_CAPABILITIES`、`CAPABILITY_ENTRY_POINTS` 与 `agent.grant.check` 的 `entryPoints` 中删除，identity 不再导出 `check_channel`；冻结码 `CHANNEL_NOT_AUTHORIZED` 从码表、`message.send` 声明、HTTP 状态映射与 GUI 客户端中删除。新授予 `channel` 返回 `INVALID_ARGUMENT`，`agent.grant.check` 返回 `ENFORCEMENT_SCOPE_INVALID`。台账读取改为跳过不在词表中的能力行（此前整次读取失败），这类行仍可按 grant id 撤销。无迁移代码，见[迁移说明](docs/guides/migration-channel-capability-retired.md)。
+- I4b：`route:<adapter>:<route>` 地址退役完成：删除 `message.send` 的 `route:` 入口（改发 `user:<owner>`，`route:` 以 `UNSUPPORTED_TARGET` 拒绝）、`targetKind: channel_route`（`targets`、`message targets`、MCP/Pi `harness_targets`）、kernel `ROUTE_URI_PREFIX`/`parse_route_uri`/`TARGET_KIND_CHANNEL_ROUTE` 与 `route` 地址族、结果字段 `routeDelivery`/`chatId`/`fanoutOf`、`message probe-delivery-paths --route` 与 doctor 的 route 族；退役线路错误码 `ROUTE_ADAPTER_UNCONFIGURED`、`ROUTE_SEND_FAILED`、`ROUTE_RESOURCES_UNSUPPORTED`、`ROUTE_RESOURCE_REPLY_UNSUPPORTED`（注册表与冻结表中删除），`message.send` 不再声明 `ROUTE_NOT_CONFIGURED`、`ROUTE_FANOUT_MEMBER_INVALID`、`ROUTE_APP_*`、`ROUTE_OPERATOR_NOT_IN_CHAT`；附件改随 `user:<owner>` 的 cell 推送发出（其它目标 `UNSUPPORTED_TARGET`，带 `replyTo` 为 `INVALID_ARGUMENT`）；Lark 用户授权 `notifyRoute` 改为 adapter 路由名，由参数或环境变量给出的旧 `route:` 值以 `INVALID_ARGUMENT` 拒绝，状态文件里记住的旧值不阻断检查与刷新、只不发通知并报 `notify-route-retired`，通知经新增的本机 operator 请求 `adapter.routes.send` 发出。保留 `ROUTE_NOT_FOUND` 与 session-route-lease 三码。无迁移代码，见[迁移说明](docs/guides/migration-route-uri-retired.md)。
+- I4a：`route:<adapter>:<route>` 地址退役第一步：会话键与会话对键不再把 `route:` 当作端点（旧行按已存的归属戳读取，无戳的 `route:` 对端行不再归档）；失败/无进展告警不再把 `route:` 视为面向人的请求方，Lark 告警回推只认 `adapter:lark:<name>`。其余由 I4b 完成。无迁移代码，见[迁移说明](docs/guides/migration-route-uri-retired.md)。
+- F1a：删除只走本机 IPC 的兼容孪生请求 `adapter.route-config.list|candidates|add|remove`，`hyprial adapter route` 改用 `adapter.routes.*`；`route add --force` 删除（改绑先 `route remove` 再 `add`），`--json` 输出改为 `adapter.routes.*` 结果（去掉 `channelsPath`/`credentialRef`/`daemonReload`，增加 `revision`/`configured`/`reloaded`/`nextAction`/`chatName`/`namesStatus`），未配置 adapter 的 `route candidates` 返回 `ADAPTER_NOT_FOUND`、观察库不可读返回 `DAEMON_ERROR`；`route list` 必须给出 adapter 名；路由命令要求 adapter 已被运行中的 daemon 加载；`adapter.routes.add|remove` 的 `expectedRevision` 改为可选，CLI 每个命令只发一个请求。见[迁移说明](docs/guides/migration-adapter-route-config-retired.md)。
+- T2c：明确退役 `link.*` / `threads.*` daemon 请求、`agent link` 与 `message thread` CLI 面；公开 send-link/thread 术语不再作为操作入口。持久化 `thread_id`/`threadId` 归属戳与网络 `inbox/links` 传输继续作为内部兼容边界，详见 [迁移指南](docs/guides/send-link-and-thread-removal.md)。
+- T2b：移除 `link.add`/`link.drop`/`link.list`/`link.stats` 与 `threads.get`/`threads.list` daemon 请求及 IPC `link.*` 路由、移除 `readiness` 中的 `link-service` 探针、`hyprial message conversation list --thread` 与 `THREAD` 列、`hyprial agent top` 的 `W`/`OUT`/`INJQ` 列、外显 `holdReason`/`detail`/`evicted`/`threadId`/`capacityW`/`outboundInFlight`/`inboundAwaitingInjection` 字段、六个已退役 `LINK_*` 错误码（`LINK_MINTING`、`LINK_PEER_FULL`、`LINK_RECLAIMED`、`LINK_SELF_FULL`、`LINK_UNKNOWN`、`LINK_WINDOW_FULL`）、`link.minted`/`link.reclaimed` hook 事件、`hyprial.daemon` link 门面重导出与 `contract/wire/send-links.{md,json}`；保留网络传输、持久化 `thread_id` 归属戳、`read_body`/`settle_hint`、`replyTo` 校验与 `kind`/`peer`/`legacyConversationId`。含 `threadId` 的旧列表游标以 `INVALID_ARGUMENT` 拒绝，包含 `link.minted`/`link.reclaimed` 的 hook 配置以 `ValueError` 拒绝，详见 [迁移指南](docs/guides/send-link-and-thread-removal.md)。
+- T1c：删除 `daemon/impl/links/`、`daemon/impl/threads/`、`daemon/impl/composition/links.py`、`daemon/impl/composition/link_spaces/`、`daemon/impl/composition/threads/` 与 `compose_link_service` 及其活动测试与支撑；保持 T2b 公开面不变，并保留 `link_ledger`/`LinkAdmission`（留待 T1d）、持久化 `thread_id`/`threadId` 归属戳与 `inbox/links/` 网络传输。
+- T1d：删除 `inbox/service/link_ledger.py`、`inbox/authority/rows.py`、`dispatch/admission.py` 中的 `LinkAdmission` / `LinkGate` / `link_governed`、`outbox.link_hold` 读写及账本维护接口与活动测试；不改变 `inbox`/`outbox` 事务边界与旧库既有表/列（新库不再创建），保持 T2b/T1c 公开面、网络 `inbox/links/` 传输与持久化 `thread_id`/`threadId` 归属戳不变。
+- S3b：删除 squire 协议残留与 owner-DM 死链：诊断唤醒路径 `squire.user.*` 改为 `user.*`；退役线路错误码 `TARGET_SQUIRE_UNCONFIGURED`、`TARGET_SQUIRE_ADAPTER_UNAVAILABLE`（从注册表、冻结表与 routine 告警终止集合中删除，无兼容读取）；删除 Lark `SendOwnerDm`/`send_owner_dm`/`send_owner_dm_settled` 端口与 `owner_notice_sender`。见[迁移说明](docs/guides/migration-remove-squire.md)。
+- S3a：删除 `org.receivers.get`/`org.receivers.set` daemon 请求（含全部参数与结果字段）、OrgFS `receivers.json` 受保护分区与 register 文档格式、`users.json` 的 `squireChannel`/`threadBindings` 读取与启动迁移、`user:<owner>` 会话到 owner adapter 线程的别名（相关会话 id 改变）、agents 库 `hostedBy=squire-container`（旧行需按说明手工修复后才能读取）与 org-context 成员字段 `squire`；无兼容读取、无迁移代码。见[迁移说明](docs/guides/migration-remove-squire.md)。
+- S3c：删除 `state/users.json` owner 档案（`UserProfileStore`/`UserProfileAuthority`、`deliveryAgent`、`preferredReceiver`、`notificationRules` 等全部字段与档案 actor）、`hyprial.identity`/`hyprial.daemon` 的档案门面（`UserProfile`、`UserProfileStore`、`UserProfileError`、`PreferredReceiver`、`NotificationRule`、`active_profile`、`probe_profile`）与 kernel `parse_channel_uri`；运行能力改存独立缓存 `state/runtime-capabilities.json`（`RuntimeCapabilityStore`），`hyprial agent tiers probe --json` 回执删除 `profile`/`deliveryAgentLive`、标识改为 `user-runtime-capability`、新增 `capabilities`；PAC 短名不再从档案取用户候选；跨 owner `user:` 投递只由本机 owner 且 user agent cell 有 adapter 目标的机器受理（同一 owner 多机时，该 adapter 成员也承担 I7a 的本机推送：多机都留会重复推送，只留一台则其余机器未绑定发送方没有 IM 副本，见迁移说明第 2 节第 4 步）。旧 `users.json` 不读取、不转换，需要的能力重新 probe。见[迁移说明](docs/guides/migration-remove-squire.md)。
+- F1b：删除 desired-state 的 `channel_pins` 存储（关闭 KP-116）：`channelPins` 键不再读写，新库不再建 `channel_pins` 表，删除 `SetChannelPin`/`RemoveChannelPin`/`RemoveMigratedChannelPins` 状态命令与 `adapter_registration` 读取；升级后遗留的表行保持原样、不再读取，无自动迁移。见[迁移说明 第 7 节](docs/guides/cell-authority-migration.md)。
+- F1c：退役 `channel:` 地址写法：八个通用 adapter（discord、imessage、mail、matrix、qq、slack、telegram、whatsapp）入站改写 `adapter:<kind>:<instance>:<chat>`；会话标识、IPC 生命周期默认值、来源展示、调用方分类与 Lark 回复桥不再把 `channel:` 读作 `adapter:`（仅用户档案 squire 端点仍读取，随 S3c 删除）；kernel 公共面删除 `CHANNEL_URI_PREFIX`，新增仅读 `adapter:` 的 `parse_adapter_uri`。旧 `channel:` 记录的会话 id 改变、已入记录的历史留在旧 id 下，仍用 `channel:` 端点的 owner 绑定不再生成 adapter 线程（`user:<owner>` 会话 id 改变）；对 `channel:` 发件人的待处理消息 `message.reply` 以 `MESSAGE_REPLY_UNAVAILABLE` 拒绝并保持待处理；无改写代码。见[迁移说明 第 8 节](docs/guides/cell-authority-migration.md)。
+
+### Added
+
+- `agent.cell.get` / `agent.cell.update`（I6-4 公开切线）：读取与 CAS 更新本机 agent 的
+  cell 文档（成员与 params 白名单，`expectedRevision` 必填，冲突返回
+  `INVALID_ARGUMENT` 携带 `expected`/`current`；OrgFS 断开时写失败关闭为
+  `ORG_SOURCE_UNREACHABLE`）。HTTP exposed，CLI 为
+  `hyprial agent cell show|apply <agent>`（`apply` 经
+  `--expected-revision N --file CELL.json` 提交完整成员/params 片段）。
+  adapter 绑定改由 cell 文档的 `role: "adapter"` 成员持有，`adapter.list` 的
+  `agent` 字段由 cell 路由索引解析（跨 cell 冲突 fail-closed 为 `null`），
+  Lark worker 入站路由随之改读该索引。迁移手册见
+  [cell-authority-migration](docs/guides/cell-authority-migration.md)。
+
+### Changed
+
+- cell 文档 harness 成员的 `cell.members.<ref>.allow` / `deny` 由成员 reconcile
+  生效（I6-5a）：仅策略变化时按 `cell.member.policy.apply` 停启该成员、校验
+  worker ready 帧回执的策略 digest，失败时重启上一次已验证的策略并把 cell
+  标为 degraded（文档不被改写）；`allow`/`deny` 类型错误或重叠时整个修订
+  不生效（`members-policy-type` / `members-policy-overlap`）。没有策略映射的
+  harness（当前除 `claude` 外）声明策略时该成员失败。独立 authority 应用循环
+  不再随 daemon 启动，`HYPRIAL_AUTHORITY_SUPERVISOR` /
+  `HYPRIAL_AUTHORITY_STORE` / `HYPRIAL_AUTHORITY_AUDIT` 不再起作用。代码中不再有
+  受管 worker 的默认 CLI allow/deny：`claude` 成员未声明时由 agent cell registrar
+  把 `managed-worker` 模板规则写入 cell 文档，所有启动（`hyprial agent start`、
+  恢复、崩溃重启）只读 cell 文档，文档没有策略时 worker 只带 harness-bridge
+  工具。restore 留下停机（行状态 `failed`）的 agent 不会被任何 cell 文档修订（包括模板种子）
+  启动，只有 `hyprial agent start` 会；与文档不一致的运行中 harness 对同一个期望配置
+  最多重启一次（KP-122）。详见 [cell-authority-migration](docs/guides/cell-authority-migration.md) 第 9 节。
+
+### Removed
+
+- 独立 AuthoritySet 存储、apply 循环与 JSONL 审计（`daemon/impl/authority_set/`、
+  `daemon/impl/authority_service/`，I6-5b）：成员策略只由 cell 文档与成员
+  reconcile 决定，应用结果改为 cell 可观测事件 `cell.member_policy_apply_started`
+  / `cell.member_policy_applied` / `cell.member_policy_apply_failed`（daemon 日志，
+  domain `cells`），不再写独立审计文件。此项偏离裁决 §12.1.3「审计保留」，经
+  owner 批准（Q0-e）。详见
+  [cell-authority-migration](docs/guides/cell-authority-migration.md) 第 10 节。
+- `adapter.pin` / `adapter.pins` / `adapter.unpin`（IPC、CLI
+  `hyprial adapter pin|unpin`）与 `authority.set` / `authority.get` /
+  `authority.list`（IPC、CLI `hyprial agent authority …`）：pins 表、identity
+  pin 命令、removal pin custody 与公开 AuthoritySet 写/读面一并退役
+  （独立 authority_service 仅 drain 既有任务，cell 文档的 allow/deny 到 I6-5
+  才接入应用循环）。**升级不自动迁移**：升级前请导出 pins 与 AuthoritySet，
+  升级后用 `hyprial agent cell apply` 重建；未迁移的旧 pin 不再隐式生效。
+  agent 行与 `ps` 不再有 `pinnedAdapters`；`agent.destroy.preview` 的
+  `pinnedAdapters` 改名 `adapterBindings`、`agent.destroy` 的
+  `unpinnedAdapters` 改名 `unboundAdapters`（同样来自 cell 文档）；
+  `agent.create|stop|start` 不再声明 `PIN_CONFLICT` / `PIN_STATE_CONFLICT`。
+  详见 [cell-authority-migration](docs/guides/cell-authority-migration.md)。
+
+### Added
+
+- Organization membership: personal org recovery, shared receiver records, explicit invite decisions, and home current-org selection; preserve the current HTTP org surface and cell addressing when integrated.
+- envelope：消息信封新增 `origin.platformCreatedAt`——平台侧消息创建时间，ISO-8601 UTC
+  （由 adapter 报告的毫秒 epoch，如 Lark `createTime`，归一化投影）；值缺失或不可解析时
+  省略该键，不伪造时间戳，投递不失败。动机：7 小时前的 Lark 消息曾被当作新消息回答，
+  此前该时间在入库前被丢弃，下游无法区分新旧。不可读值按进程计数并限流告警
+  （`origin.platform_created_at.unparsable`）；解析只接受 1–16 位 ASCII 数字
+  （拒绝 `²` 等非 ASCII 数字与超长串，绝不抛异常）。规格见
+  `contract/wire/message-sender-auth.md`（PR #2003）。
+- pac：owner 对处于 held 状态的 workflow graph 会收到提醒（`actor_alert`，仅提醒），其空闲 worker 保持停止；PAC schema 19→20（`workflow_graphs.held_at_ms`，含 journal backfill），**单向升级，不可回滚到 schema 19 的版本**（#2140）。
+- GUI：将 `intg/gui-v1` 合入本发布线，包含聊天与频道读取切片（#2279）；gui-v1 上已合并的测试等待预算调整（#2365）与 CI 规则清理（#2368）随同进入。
+- GUI：优化 Agent 详情的信息层级，固定“概览、凭据与授权、关联”三页签，并补强跨视口与浏览器合同测试。
+- 寻址：agent 稳定 id 寻址（UUID addressing，P2–P4，`ID_FORM_MINTING=True`）。每个 agent 有稳定的 `agentId`，官方地址改为 `agent:<owner>:<node>:a.<id>`；新增可改的显示名 `displayName` 与 `hyprial agent rename` / `agent.rename`（HTTP 暴露为 `/daemon/request/agent.rename`）；`targets`、`agent list`、`AGENT_IDENTITY_SNAPSHOT` 输出 `agentId`/`displayName`，`org.network` 输出 `deviceUid`。合约见 `contract/identity/agent-addressing.md`、`contract/identity/agent-naming.md`。
+- GUI：Org 成员页接入 `orgfs.members`，显示真实 space 成员；成员或机器读失败时保持“状态未确认”，不伪造 `isMe` 或机器关联（#2523）。
+
+- GUI：补齐身份与入门（identity/onboarding）daemon request 接线。launcher 以显式 home、state 目录和 daemon socket 准入 GUI request-http 子进程；`GuiRuntimeHost` 在 `bootstrap`（空 home）与 `serving`（已认证 owner）两阶段提供八个方法：`auth.login.begin`、`auth.operation.get`、`auth.operation.cancel`、`onboarding.status`、`auth.logout`、`auth.relogin`、`onboarding.device.ensure`、`onboarding.initialize`；GUI 账号控件改走生成的客户端，并按 operation receipt 呈现状态。
+
+- cell：引入 cell/thread/conversation 与 attach 主线，并将线程 HTTP 接口对齐到当前 GUI 的 owner-user 身份注入；剩余 Phase B 保留在 WIP #2551。
+- actor：纳入 Rust 引擎、一致性契约与已完成的 P2a/P2b Python 端口；默认运行时仍为 Pykka，后续 Python 替换留在 WIP #2541。
+- 登录与账号绑定（L3）：`settings.json` 新增不可变绑定字段 `homeAccount`（`{issuer, userId, owner}`，不受 `logout` 删除、不被 node identity 读者读取），并新增纯 `lstat`/`os.scandir` 只读遗留业务数据探测器（涵盖 8 个 `MIGRATION_DATABASES`、`cells.sqlite3` 及各自 `-wal`/`-shm`、`desired-state.json.v1`、`users.json`、`state/identity/user-keys/*` 与设备状态文件）；`auth.status`（`onboarding.status`）新增可空 `username` 字段，bootstrap `auth.operation.get` 在绑定冲突时返回 `state="failed"` 与 `error: {code: "IDENTITY_CONFLICT", data}`。
+
+### Changed
+
+- 推送（I3，关闭 KP-113）：发送方的 cell 有 adapter 角色成员时，daemon 把发给 `user:<owner>` 的副本直接推到该 cell 写明的飞书聊天（`via: "cell"`；`pushCode` 可与 `pushed: true` 同时出现，表示有聊天没推到），不再转交 user-proxy；这份副本只在发送时尝试一次，不让已入队的发送失败，也不重试。读不到发送方 cell 时答 `USER_DELIVERY_UNAVAILABLE` 且不转交。`route:` 发送改走同一个按 (adapter, route) 的推送原语，答复不变。见[迁移说明](docs/guides/migration-im-push-by-agent-binding.md#3-绑定了飞书-adapter-的-agent推到它自己的聊天i3)。
+- 推送（I7a）：daemon 不再把 owner 的副本转交 user-proxy。没有 adapter 成员的 agent 与 operator 发给 `user:<owner>` 的副本，以及其他 owner 发来的消息，由 daemon 推到本机 user agent（`hyprial-user`）cell 写明的聊天（`via: "user-agent"`，取代 `via: "user-proxy"`）；只尝试一次。`agent.cell.get` / `agent.cell.update`（`hyprial agent cell show|apply hyprial-user`）对 user agent 开放：只能改 adapter 成员、其 `adapter` 与 `user` 连接，其余改动答 `INVALID_ARGUMENT`，改模板答 `USER_AGENT_IMMUTABLE`，只有本机操作者能读。user agent cell 只往外推、不接收：`adapter.list` 的 `agent` 不会是 user agent，同一 adapter 可同时绑定一个普通 agent。`message.send` 不再声明 `PROXY_SEND_REFUSED`。user-proxy 设置命令在本版本仍能运行但不再生效，同一发布内删除。见[迁移说明](docs/guides/migration-im-push-by-agent-binding.md#4-没有-adapter-的-agent-与-operator经-user-agent-cell-推送i7a)。
+- 组织与凭据（OC4）：取消个人 org（`ORG_KIND_PERSONAL`、`personal_org_for`、`org/membership/personal.py`、`org.personal.ensure`、`AGENT_LAST_ORG`/`AGENT_PERSONAL_ORG`），仅保留 `group-*` 工作组织且 agent 所属组织列表可为空（J10）；`owner_store` 与模型凭据授权迁至本机 `<HYPRIAL_HOME>/state/` 存储（J22）；清除遗留 `binding.json` 读写面并保留 `state/tailcat/machine-binding.json`（J21）。代码零自动迁移，手工步骤见[迁移指南](docs/guides/migration-org-no-personal.md)。
+- cell：cell 种类收敛为 `agent` 与 `org`（OC1b），退役 `department`（由子 org 取代，J24）。新增 `org` cell 纯解析校验（`cells/org/`：`org.*` 参数、`members` 角色与 `u.<sub>` 去重、设备与密钥成对校验、`permissions={}`、必须显式指定 `scope.org`），参数来源仅保留 `agent`（`PARAM_SOURCE_KINDS = {"agent"}`），`agent` cell 拒绝 `org.*` 参数；旧 `department` 文档不再解码、不读取也不删除，参见 [迁移说明](docs/guides/migration-cell-authority-uid.md#8-退役-department-celloc1b)。
+- org：OC7 组织生命周期。`hyprial org delete` 改为在 tailnet authority 设备上执行的两步确认删除（预览绑定 revision、authority 与设备集合，确认时先复核再写 OrgFS 墓碑并关闭 tailnet，authority 保留已关闭名册供成员获知删除，之后由 owner `hyprial org leave` 清理）；没有 org cell 的存量 org 不再被任何入口自动补建，成员操作返回 `ORG_CELL_UNBOUND`；名单写入只在当前 tailnet authority 设备上接受（M2）。新增错误码 `ORG_CELL_UNBOUND`、`ORG_ALREADY_DELETED`，sidecar 新增 `tailnet-shutdown`/`tailnet-forget` 操作。有子 org 时按叶子优先删除：父 org 在仍有未删除的子 org 时返回 `OPERATION_CONFLICT`；删除子 org 不关闭、不遗忘它沿用的父 tailnet，只写墓碑、撤销子 org 成员并退役其 org cell；子 org 的名单写入与成员移除同样只在它沿用的 tailnet authority 设备上接受。GUI「删除组织」执行同样的两步删除：打开对话框时取预览并展示受影响设备、管理设备与不可恢复，输入组织名后带预览的 `operationId` 确认，只有确认阶段为 `complete` 才提示已删除；确认失败或阶段未完成时刷新组织列表并提示可能已部分执行、再次删除会继续完成。删除后同名 org 在本 home 不可重建，需换名重建并重新邀请成员，见[迁移说明](docs/guides/migration-oc7-org-lifecycle.md)。
+- CLI：`hyprial logout` 改为只发一次 daemon `auth.logout`（没有 daemon 时先启动），不再在进程内停 daemon、证明退出、取身份锁或删凭据；`--json` 的 `daemon` 字段改为 `{stopRequested}`。bootstrap daemon 对没有登录产物的 home 的 `auth.logout` 改为完成回执（`removed: []`），不再答 `BOOTSTRAP_IDENTITY_UNAVAILABLE`；`auth.logout` 错误闭集删除从不抛出的 `DAEMON_STOP_UNPROVEN`，logout 回执 `failure.reason` 与 `SUBMIT_OUTCOME_UNKNOWN` 数据的 `reason` 枚举删除无产出方的 `stop-unproven`；bootstrap 的 `expectedEpoch` 改与 `ping` 公布的 epoch 比较；`AUTH_OPERATION_CONFLICT`、`AUTH_OPERATION_NOT_FOUND`、`DEVICE_ENSURE_FAILED`、`REGISTRATION_UNAVAILABLE` 进入线路错误码登记（拼写不变）。脚本需人工调整，见[迁移说明](docs/guides/migration-logout-single-request.md)。
+- 群聊（group conversation）：群消息只唤醒 `mentions` 中明确 `@` 的 agent 成员，不论作者是人还是 agent；未 `@` 任何人的消息照常写入群文档供历史读取但不唤醒任何人（Allen 2026-11-21 裁定取代 R28 前两条）。经 `message.reply`（`hyprial message reply` 与 `harness_reply`）在群内回复时，daemon 默认把被回复消息的作者写入条目的 `mentions`（仅当该作者是另一个当前 `agent` 成员时；回复人类 owner、回复自己或原发件人已不是成员时不加），并支持 `--mention` / `mentions` 追加成员与 `--no-mention` / `noMention` 取消默认 `@`；注意两个 agent 之间互相回复会因此持续互相唤醒且没有跳数上限，需要收敛或中止互相唤醒时需显式传入 `--no-mention` / `noMention=true`。如需不被 `@` 也自动跟进群消息，由 agent 在运行时给自己添加定时查看群历史的 routine（以数据形式在运行中配置，不写死在代码里）。
+- internal：线路错误码常量与 `ALL_CODES` 由 `kernel` 的 `ipc_errors` 迁入根级共享包 `src/hyprial/error/codes.py`（错误词汇不属于后端逻辑，各层可直接导入）；`hyprial.kernel.ipc_errors` 重新导出全部常量，名称、取值、顺序不变，无已发布代码变化。
+- CLI：没有账号的 home 上的首次登录由 daemon 一次性完成（Z-5）。`hyprial login` 在没有 daemon 时先启动 bootstrap daemon，显示验证 URL 与用户码、打开浏览器（`--no-open` 不打开），然后只发一次 `auth.login.begin`（`until: serving`）和一次带 `waitSeconds` 的 `auth.operation.get`；授权、设备登记、用户密钥与进入 serving（同一进程）都在 daemon 里完成，Ctrl-C 只发一次 `auth.operation.cancel`（身份已提交时退出码 130，daemon 自己完成登录）。设备登记失败不使登录失败：退出 0、`device.ready:false`，daemon 在每次 serving 启动时尝试一次。同一变更修复了 bootstrap daemon 持有身份事务锁时首次登录在授权后 15 秒以 `IDENTITY_TRANSACTION_BUSY` 失败的缺陷。`login --json` 的发布键不变（`device`、`daemon` 块的内部键有差异，见 PR 的 Contract-Impact）。
+- CLI：`hyprial init` 不再登录。没有账号的 home 上它创建 home、启动 bootstrap daemon，输出 `phase: bootstrap`、`owner: null` 与 `nextSteps: ["hyprial login"]`，不再有 `identity`、`device`、`verificationUri`、`userCode`；安装脚本的提示改为 `Next: run "hyprial init", then "hyprial login".`。
+- 登录与账号模型（L3）：确立单 `HYPRIAL_HOME` 永久绑定单 uid；同一 `(issuer, userId)` 改名重新登录（含登出后再登录）保留绑定 `owner` 并只更新 `settings.username` 与 GUI 展示名（`username ?? owner`）；不同 uid 且存在遗留业务数据、或未绑定但存在遗留业务数据时在提交前以 `IDENTITY_CONFLICT` 零写入拒绝，见 [迁移说明：单 `HYPRIAL_HOME` 绑定单一账号](docs/guides/migration-account-binding.md)。
+- 升级注意（L3，KP-121）：升级前处于登录态的老 home 没有 `settings.homeAccount`，要在新版本上以同一账号重新登录一次才会写入；在此之前执行 `hyprial logout` 再登录会被 `IDENTITY_CONFLICT`（`reason=home-binding-missing`）拒绝，登出不会自动补写绑定。已发生时按迁移说明第 5 节手工补写 `homeAccount`。
+- GUI CLI：删除源码 checkout 的自动 `.worktrees/gui-dev-auto`（`hyprial gui dev` 改为直接使用该 checkout 自身的 `gui/`，不创建工作树、不 `npm ci`），并删除普通模式的 `--gui-home` / `HYPRIAL_GUI_HOME` 构建目录入口；普通 `hyprial gui` 传 `--gui-home` 返回 `INVALID_ARGUMENT`，调用环境中设置 `HYPRIAL_GUI_HOME` 返回 `GUI_CONFIG_CONFLICT`。
+- org-work：`org work ls/show` 仅作为普通 `orgfs.ls/read` 的只读快捷入口；`work/` 下的文档可用任意文件名，正文与历史保留。编辑、重命名、冲突处理和恢复统一使用 OrgFS；PAC 概览只展示当前文档及可选元数据诊断，不再依赖 work 专用历史或本机审批账本（#2214）。旧的 work 写命令、collect/finish 和全部 12 个 `work.*` IPC 已移除；自定义 agent skill/routine 中的旧调用需要同步改写，详见 [work 契约](contract/work-items/README.md)。
+- GUI：产品既有路由统一为本地 v13 视觉语言，共享按钮收敛为无蓝色胶囊与紧凑文本动作，窄屏导航改为响应式底部栏。
+- GUI：Connections 页面改由共享模块 surface 承载，保留正式 daemon/wiring，并为飞书解绑提供对账（unpin）流程。
+- GUI：首次设置入口与正式 production 失败页重做；无可信会话时以 `SESSION_REQUIRED` 提示，并移除生产包中的 demo 预览分支。
+- GUI：左下角账号菜单桌面端可见文案统一为「我的」，窄屏保持仅头像入口。
+- 寻址：短名 URI 永久冻结，不设兼容窗。发往旧名 URI 报 `AGENT_ADDRESS_RETIRED` 并在 `data.address` 给出 id 地址，无法解析的目标报 `TARGET_UNRESOLVED`，会话指向已失效的 id 报 `SESSION_SUPERSEDED`；sender 与 `onBehalfOf` 同样处理。这些错误码在严格 METHOD_REGISTRY 上按方法声明，不再被改写为 `DAEMON_ERROR`。翻转前以旧名为收件人的消息仍可经只读别名在 fetch/history/回复提醒中读到。CLI/GUI 输入的裸名、显示名、`a.<id>` 与两种 URI 在边界解析到同一 agent（`agent.start`、`routine.list/status`、`workflow.list`、`agent.home-census`）。
+- 迁移：daemon 启动时（P4）把 identity、adapters、routines、PAC 与 desired-state 中存储的 agent URI 改写为 id 形态；消息行不回填。
+- GUI：聊天目标、Agent 目录与详情、provider 选择器、发送会话、只读历史、组织 link 与 Lark 绑定（含 v13 连接页的飞书解绑卡片与切换/解绑确认框）统一按目标 agent 的 `displayName` 显示，没有 `displayName` 时显示完整 agent URI，不从 actor 或 URI 末段推导名称，也不用占位文案；URI/agentId 继续作为比较、拓扑键与回传参数，首跑无目标时显示「未选择对象」；已声明的发送拒绝码（如 `AGENT_ADDRESS_RETIRED`）按明确失败结算并清除 operation key，附带新地址提示；飞书解绑（`adapter.unpin`）的已声明拒绝码在绑定未变时同样按明确失败结算，不再显示「结果未知」。
+- 寻址：`squire` 不再是 daemon 服务 actor，按普通 agent 处理（Allen 2026-11-06）：其短名地址同样报 `AGENT_ADDRESS_RETIRED`，销毁后名字冻结；daemon 自己发的升级重启通知与 orgfs owner 通知改以 `dispatch-coordinator` 身份发出（经 user-proxy 送达时 `onBehalfOf` 可确认，不再带「发送方身份未能确认」前缀）；squire setup 在 users.json `profile.agents` 记录 agent 的官方 `a.<id>` 地址。
+- GUI：按 GUI 自己保存的 `agentId` 识别用户的 Squire（setup checkpoint 升到 schemaVersion 2；connected 模式存于浏览器 `localStorage`，key 按登录 principal 区分），改名后仍被识别，不再按名字 `squire` 拼 URI。旧（schemaVersion 1）checkpoint 在下一次 `setup-status` 或 `squire-prepare` 时按 actor、createdAtMs 和 owner/node 确认是同一实例后迁移；迁移前及没有 checkpoint 时，聊天默认对象经 `agent.list` 的短名 `squire` 找到其官方地址。Squire 被删除后首次运行显示「名称已冻结」状态（`AGENT_NAME_FROZEN`），不再反复要求核实。
+- GUI：操作者 principal 由合成的 `agent:<owner>:<node>:operator` 改为登录 daemon 的 `user:<owner>`，不再铸造可能与真实 agent 撞名的 `operator`；消息继续使用 owner-user 身份，组织页 link 读写作用于页面选中的真实 agent（读以 `from` 选择，写以 `onBehalfOf` 选择），user-proxy 保持独立投递能力且不作为 GUI 启动前提。旧 operator 分区的 Squire `agentId` 在首次读取时迁移到 owner-user 分区（#2573）。
+
+- release/v0.5.5.3.4 合入本发布线（per Allen 2026-11-07），两条线行为都保留：
+  `secrets/login.json` 的 `identityGeneration` 由 identity 凭据存储统一读写，CLI 登录与 identity worker
+  提交共用同一单调计数（高水位 `.identity-generation`）；identity 事务锁沿用 0.5.5.3.4 的 filelock
+  单持有者语义，唯一的跨进程传递是 bootstrap daemon 交给其 identity worker 子进程的 POSIX 描述符
+  （`acquire_transferable` / `adopt_inherited`，普通 `acquire` 不会接管）；
+  `docs/reference/known-problems.md` 两线的 KP-009/KP-010 撞号，0.5.5.4 的两条改为 KP-023/KP-024（原定 KP-020/KP-021；2026-11-07 intg←dev 同步时 dev 已占用 KP-020/021/022，故再顺延）。
+- `VERSION` 由 release/v0.5.5.4 遗留的 `0.5.5.3.1` 改为 `0.5.5.4`（per Allen 2026-11-07）。
+- 公网镜像内网标识闸（随 0.5.5.3.4 进入本线）对 0.5.5.4 新增内容不放宽：合成示例逐行豁免；
+  真实主机名、地址、人名与设备名在发布文档与测试夹具中换为合成占位；承载真实内部部署配置的
+  运行文件（内部更新通道、内部下载/反馈服务的 LaunchAgent 与入口、内部发布脚本）进入快照 denylist。
 
 ### Fixed
+
+- GUI：隔离环境创建本地组织时保留 daemon 的 nullable 发布状态，正确刷新创建结果；成员的 Agent 关系尚未接通时显示“状态未确认”，不误报“没有 Agent”（#2523）。
 - ci(release)：发布链不再因不影响分发的原因判红（v0.5.5.3.4 收尾，runs 51606/51622/51727）。
   wheel-release 的 registry 发布改用 `uv publish --check-url`，字节相同的同名文件幂等跳过
   （stable floor 让 nightly==stable SHA 时不再 409），sha256 不同仍响亮失败；workflow
   artifact 上传失败只在 registry 发布 success 时降级为 warning；Go/npm/uv 缓存与 CPython
   3.12 镜像持久化，构建步 30 分钟上限、job 55 分钟；github-publish 等待 registry 的时长按
   job 剩余预算计算，上游缺件时明确 NOT EVALUABLE 而非被 runner 强杀。
+- links：`LinkService` 每个 tick 只开一次 PAC store 批量读取 worker 生命周期（`PacLifecyclePort.worker_active_many`），不再按绑定逐个开库；读失败返回 unknown，解绑判定与顺序不变，未加缓存（#2420）。
+- agent-bot：发送方有多个 Lark pin 时，只有现存 owner 私聊绑定能唯一指向其中一个 pin 才直发，否则仍走 Squire 回退；属防御性处理，当前 pins 表的 UNIQUE 约束下不会出现多 pin（#2422）。
+- mcp：send 契约不再写明 `user:` 消息走哪条投递路径（由接收侧决定，实际路径见结果里的 `deliveries`），相关设计文档同步撤回该承诺（#2007）。
+- GUI：就绪探测使用剩余启动预算，避免反复放弃仍可在预算内返回的真实 readyz 响应，并保留 catalog 校验及 owned 子进程清理。
+- message history：拒绝时间戳超出 SQLite int64 范围的游标，沿用 `INVALID_ARGUMENT`，避免读取历史时出现 `OverflowError`。
 - orgfs：修复 replica 挂接窗口永久吞信封的缺陷。`OrgFsMesh.attach_replica` 先 prime 后赋值，
   prime 期间到达并已落 store 的信封被 `_store_replica_envelope` 丢弃（`replica_store` 仍为 None），
   而赋值后 serving 又优先读 replica——窗口内只落在 store 的文档对 clone/catch-up 永久不可见
@@ -29,6 +166,135 @@ All notable changes to hyprial (Harness Bridge) are documented here.
   ~0.002ms；简单换序方案实测会阻塞 ~10s）。prime 失败回滚到挂接前状态，由下次 serve 的
   reuse 分支增量检查重新接管。19 文档空间实测挂接窗口 ~52ms；replica_mesh 测试连续 50 次 +
   全文件 3 次 `-n 8` 零失败。证据：`docs/notes/replica-attach-window-2026-11-03.md`。
+
+- routine：`routine pause` 之后派发任务的 `in_flight` 行永久残留，导致 `routine set` 一直报
+  `ROUTINE_BUSY`、而 `routine remove` 又因「最后一个绑定」拒绝，两条命令互相指住（M-hq-adjutant-0012）。
+  根因：`_pause` 走 `Store.apply(clear_work_for=…)` 在同一事务里删掉 `routine_cycles` 与
+  `routine_effects`，**但留下 `in_flight`**；此后该任务任何完成事件在 `_pac_completed` 的第一步
+  `store.effect()` 取不到 effect，命中「找不到就 return」静默分支，而行内唯一清行路径就在那句 return
+  的下游 ⇒ 行再无人处理。修法两条独立保证：①`clear_work_for` 在同一事务里连带回收 `in_flight`
+  （孤儿不再被制造）；②effect 已缺失的完成事件按 `routine_name`+`task_uuid` **自愈**其 `in_flight`
+  行并写 `routine.pac.effect_missing_reclaimed` 告警（不再静默）。另补两处 `ROUTINE_LAST_BINDING`
+  拒绝文案的真实逃生门（先 `add` 短命占位 routine 即可 `remove`）。验收含「健康轮基线」格：
+  enabled 下完成必须走账本路径、不得走自愈分支（防修得过头）。证据：
+  `tests/biz/routines/actors/inflight/test_routine_paused_completion_orphan.py`。
+
+- GUI：补齐登录/登出生命周期。登出先返回 accepted receipt、再证明进程停止（pid + 出生时刻）、交接加围栏、部分失败如实上报，并保持单 journal writer；`auth.operation.get` 现在能投影刚返回的登出回执，不再以 500 作答；daemon epoch 写入 `daemon.json`，transport 替换按真实 epoch 校验，避免 GUI 启动期误判 `GUI_BACKEND_CONTRACT`。
+
+- contract：`identity/write_examples.py` 的 `non-object-params` 示例改用
+  `ipc_errors.INVALID_ARGUMENT`，清掉 release tip 上最后一处 proto 错误码字面量；
+  `message/send/specs.py` 补回 `SUBMIT_OUTCOME_UNKNOWN` 的决策注释，使声明与理由同处一文件。
+
+- org：隔离创建的严格方法契约保留 `tailnetInitialized=false` 和 `published/devicePublished=null`；联网幂等重试的发布字段表示所请求状态已满足，避免分支合并后本地创建被误报为 `DAEMON_ERROR`。
+
+### Removed
+
+- daemon：删除 `user-proxy` harness 种类（I7b-2）：其 python worker、`forward` 帧与「以 worker 身份转发」的发送路径，`message.send` 不再出现 `FORWARD_TARGET_UNKNOWN`，`contract/workers/user-proxy` 删除；desired state 里留有 `user-proxy` 启动记录的 home 读不出 desired state、daemon 起不来（无兼容代码），升级前须销毁 user-proxy，修复步骤见[迁移说明](docs/guides/migration-im-push-by-agent-binding.md#14-user-proxy-已删除i7b)。
+- CLI：删除 `hyprial user proxy setup|status` 与 `hyprial agent start user-proxy`（I7b-1），替代为 `hyprial agent cell show|apply hyprial-user`；`hyprial user-proxy` 不再提示 `moved:`。组织 ACL 空间的写入与 `org.acl.*` 不再单独放行 owner 的 user-proxy，只认 owner 的终端与显式授权的 agent（错误码不变）。已有 user-proxy 的 home 须在升级前销毁它，见[迁移说明](docs/guides/migration-im-push-by-agent-binding.md#14-user-proxy-已删除i7b)。
+- 登录与账号切换（L3）：删除 `src/hyprial/daemon/impl/owner_migration/`、startup 自动执行的 `migrate_owner_if_needed`、`ping.migration` 字段、`identity.owner_migration.applied` 启动日志事件，以及 `hyprial.daemon` 公共面的 8 个 `owner_migration` 导出；按 A7(b) 退役三个冻结错误码 `OWNER_MIGRATION_CUSTODY_CONFLICT`、`OWNER_MIGRATION_CUSTODY_UNREADABLE`、`OWNER_MIGRATION_HOSTED_CONFLICT`。
+- CLI：删除 `hyprial login --switch-account` 与 `--dry-run` 选项（`--force` 与 `--no-daemon` 均不存在）及遗留 CLI 进程内登录/切换/预览管线（`commands/login/flow.py`、`shell/impl/login/preview.py`、`shell/impl/login/user_key/`）。
+- 已销毁 agent 的名字不再冻结（owner 2026-11-19 决定，取消裁决 X 的名字账本）：`agent.create`、`agent.start`、`agent.attach`、`agent.host-invite` 与 `agent.rename` 接受曾用过的名字，用它新建的是新 agent（新 id，不继承旧 agent 的任何东西）。错误码 `AGENT_NAME_FROZEN` 与用户 agent 状态 `name-frozen` 一并删除（`AGENT_ADDRESS_RETIRED` 数据仍声明 `retired`，但不再产生）；名字形态地址不再有只读别名（任何 agent 都不读名字形态 URI 上的行）；已销毁 agent 的会话凭证按化身拒绝。旧数据库里的 `agent_name_ledger` 行不再被读取，无需迁移。见 `contract/identity/agent-naming.md`。
+- GUI startup record：删除信息性键 `m1_source`（从未列入 `required`，`record_version` 仍为 1；Rust launcher 不读取该键）；`business`/`note` 文案同步改为单一启动路径的描述。
+- CLI：删除 `hyprial login --no-daemon`（选项、`--switch-account --no-daemon` 的“只改身份、不碰 daemon”路径及其测试）和没有账号的 home 上的进程内首次登录路径。同一 owner 的重新登录与 `--switch-account` 保持进程内行为（KP-112）。
+- 客户端：删除旧原生壳（`clients/native/`）与桌面打包线（`packaging/clients/`），以及只为它们服务的独立
+  App Core host 进程、mobile 配对适配（`shell/impl/gui/adapter/mobile`）和 Go `mobilebridge`/`mobileclient`。
+  `dev` 在最小壳重建前不产出桌面包；`hyprial gui` 与 daemon/CLI 行为不变。依据见
+  `docs/design/gui-single-launch-2026-11-14.md` 第 4 节。
+
+- 登录：不再取得 Lark 绑定证明，登录与 `org join` 的流程里不再出现它。
+  - `hyprial login`（进程内）：不再发起第二次设备确认，只需一次；`login --json` 的 stdout 键不变，进度事件
+    `binding-device` 与 `binding-proof-failed`（错误码 `BINDING_PROOF_EXPIRED`、`BINDING_PROOF_INVALID`、
+    `BINDING_ACCOUNT_MISMATCH`）不再出现。
+  - `hyprial org join`：不再在加入前尽力取得绑定证明（原先可能等待两次过期），直接加入，也不再有这两个事件。
+  - daemon 侧登录（`auth.login.begin` 到 worker 提交）：原本就不发起第二次确认，只保留同账号同 union id 的旧行、
+    删除其他行；现在不再碰 `settings.identityBinding`。
+  - settings 写入器（`write_settings_owner`、`write_settings_identity`）：不再接受 `identity_binding`，也不再读、写或
+    删除该键：已有的行原样保留，登出仍会移除它。
+  - daemon 发布：属于另一账号的遗留行、或 `larkUnionId` 与账号当前已存声明不一致（或没有声明）的行被跳过
+    （`identity.org-binding.publish-skipped`），行本身不删除。
+  - 登录与 settings 写入只投影身份域持有的外部账号声明表 `EXTERNAL_ACCOUNT_CLAIM_KEYS` 中的键，存下的字节与之前一致。
+  没有命令能取得新的绑定证明。原先预告的可选显式确认步骤（`hyprial user bindings confirm`）已于 2026-11-18 取消：hyprial 用户不绑定 IM 身份，与 IM 相关的是 adapter；代码在运行时仍绑定用户，移除另行跟踪（PR #2950），见 KP-105。
+- 登录：daemon 是唯一能托管登录的进程；删除另一条经 HTTP 托管登录的旧路径及只为它服务的一切。
+  - `python -m hyprial.shell.impl.request_http bootstrap --home …`（无主 home 上的 HTTP 登录进程）与
+    `BootstrapHttpHost` 删除；`serve` 的 `--launch-nonce-stdin`（`server.json` 的 `launchNonce`）删除，
+    传入即 argparse 用法错误（退出码 2）。
+  - request-http 配置的 `nativeHost` 块与 external promotion（`serve_external`）删除；带该块的配置按未知键以
+    `CONFIG_INVALID` 拒绝。
+  - HTTP contract v1 的 `/daemon/request` 目录应答、`server.json` 与 `CatalogResponse` 模式不再含
+    `hostContractVersion`、`hostContract`（已发布的必需键，未发现读者）；`contract/native-host/` 与
+    `contract/wire/daemon-login-http-bootstrap.md` 删除。
+  - `hyprial daemon run --bootstrap` 的终端登录循环（`launch_bootstrap_daemon`）删除；该循环在此之前已无命令行调用方，
+    该选项本身仍被接受、行为与之前相同，终端登录是 `hyprial login`。
+- GUI launcher：删除没有调用方的遗留——聊天适配（`gui/adapter/{chat,host,errors}.py`）、launcher
+  侧的登出协调与后端替换（`gui/backend/onboarding/`、`replace_backend`、
+  `stop_backend_generation`、`transport/{replacement,client}.py`）、登出托管文件的写入
+  （`logout-custody.json` 已无读者；旧版本留下的该文件仍在启动时清理）、daemon 的
+  `onboarding/operations/custody.py` 及其在 `hyprial.daemon` 的导出、退役的 GUI 生命周期垫片
+  （`gui/runtime.py` 与 `hyprial.shell` 里的对应名称）。CLI 命令面、HTTP 契约与 daemon 方法不变。
+- daemon：删除 PTY 连接器启动路径——`PtyHarnessProcess`、Claude / Pi / Codex 三个 Connector、
+  Windows ConPTY 传输（`protocol/windows_pty.py`）与 kernel 的 `platform/pty` 封装；`HarnessLauncher`
+  不再接受命令覆盖。非无头的 claude / pi / codex 规格到达 daemon 启动器时得到 `HarnessStartError`。
+  交互式 TUI（由 CLI 启动、可选 tmux）与全部无头路径（Claude Agent SDK、Pi RPC、Codex app-server、
+  DSH api、python worker）不受影响；没有迁移步骤，因为该路径在生产中不可达（desired state 拒绝
+  非无头规格，生产接线不传命令覆盖）。
+- cell：删除换 owner 时的 cell 重铸（rehome）与 alias 表，以及写出时删除并重写不可采纳 cell 文档的 repair（日志 `cell.rehomed`、`cell.document_repaired` 随之删除）；代码不再自动迁移或改写 cell 数据（cell 模型 OC1a）。
+- CLI：删除 `hyprial squire` 与 `hyprial squire setup` 设置面及其管理请求。现有 user-proxy 路由配置见
+  [迁移说明](docs/guides/migration-im-push-by-agent-binding.md)。
+- CLI：`hyprial user proxy setup` 不再要求 `state/users.json` 的 owner 档案（不读、不写、不创建），默认名按本机 owner 计算为 `<identity_slug(owner)>-proxy`，不再取自档案的 `ownerKey`（默认写入的档案两者相同；用过 `squire setup --owner-key` 或 owner 改过名的 home 可能不同）；本机已有另一个名字的 user-proxy 时，不带 `--name` 以 `INVALID_ARGUMENT` 拒绝并提示用 `--name` 沿用它；`--json` 回执删除 `profile` 字段。见[迁移说明](docs/guides/migration-remove-squire.md)。
+- CLI：删除启动警告 `SQUIRE_USER_PROXY_NOT_CONFIGURED`（init、首次 login、daemon restart 不再提醒设置 user-proxy）与配置键 `hints.userProxy`；无替代、无改名。手工步骤见[迁移说明](docs/guides/migration-remove-squire.md)。
+
+### Upgrade notes
+
+- cell authority 改为 uid（`user:u.<sub>`，cell 模型 OC1a）：旧写法的 cell 文档不再解码；没有 uid（`settings.userId` 或 `HYPRIAL_USER_ID`）时不组合 cell 运行时，无头消息保持 pending；旧的 `state/cells.sqlite3` 被拒绝组合、原样保留；OrgFS 上不可采纳的 cell 文档只读阻塞、不删除不重写。新增环境变量 `HYPRIAL_USER_ID`（与 `HYPRIAL_OWNER` 成对）；组合被拒的原因写在日志 `cell.runtime_unavailable` 的 `reason` 字段。代码不做任何迁移，升级步骤见
+  [迁移说明](docs/guides/migration-cell-authority-uid.md)。
+- 发给你的消息不再按你的 IM 账号推送，daemon 的通知只写日志（PR #2970、#2989）：squire 私信与
+  agent 机器人按 open_id 私信已删除；只有没有 pin adapter 的 agent 的消息会经 user-proxy 推到飞书，
+  pin 了 adapter 的 agent 暂时什么都不推（等 cell 模型切片）；升级失败告警与重启前通知已删除；
+  `hyprial squire setup` 去掉 `--owner-open-id`、`--binding-code`、`--channel`。升级时要做的事、
+  日志里怎么查通知，以及升级前在旧版本上撤回组织绑定行的步骤，见
+  [迁移说明](docs/guides/migration-im-push-by-agent-binding.md)。
+- 身份解析器与绑定证明链已删除（R3）：`hyprial user bind|unbind|whois|bindings …` 与
+  `user list --source` 不再存在，`user list` 列出登记的人；daemon 方法 `identity.resolve`、
+  `identity.override.set|clear`、`identity.bindings.list|audit`、`identity.binding.publish|withdraw`
+  删除；`adapter.identities.list` 去掉 `hyprialOwner`；登出不再移除 `settings.identityBinding`。
+  只有名字的人员登记（`user add|show|list`）保留。撤回组织绑定行只能在升级之前、在旧版本上做；
+  可以删除的旧文件见同一份[迁移说明](docs/guides/migration-im-push-by-agent-binding.md)第 9、10 节。
+- ⚠️ **node id 不再来自主机名**（Allen 2026-11-20）：本机 node id 只读 `HYPRIAL_NODE_ID`，未设置时读
+  `<HYPRIAL_HOME>/node-id`。新 home 由 `hyprial init` 写入随机的 `d.<32 位十六进制>`；**已有安装没有转换代码**，
+  文件缺失时 daemon 拒绝启动（`NODE_ID_NOT_CONFIGURED`）。升级前把现在用的值原样写进文件一次，例如
+  `printf '%s\n' "${HYPRIAL_NODE_ID:-$(hostname)}" > "${HYPRIAL_HOME:-$HOME/.hyprial}/node-id"`；已存地址不变。见
+  [迁移说明](docs/guides/migration-im-push-by-agent-binding.md)第 13 节。
+- ⚠️ **升级到本版本是单向的；之后唯一支持的降级方式是恢复升级前的备份（Allen 2026-11-07）。**
+  本版本的 daemon 第一次启动时执行 UUID 寻址 P4 迁移，把存储里名字形态的 agent URI 改写为
+  id 形态（`agent:<owner>:<node>:a.<id>`），不设兼容窗（U1）。保留迁移后的数据直接运行旧版本
+  （clean-row rollback）不再受支持：旧版本会带着它无法路由的 id 形态地址运行。
+- `hyprial daemon upgrade`（含自动更新）**不会**在 P4 之前自动备份状态。升级前请先
+  `hyprial daemon stop`，确认没有其他写入者，再备份 P4 会改写的全部文件（state 目录默认是
+  `~/.hyprial/state`，设置了 `HARNESS_STATE_DIR` 时以它为准）：
+  `state/agents.sqlite3`、`state/lifecycle-operations.sqlite3`（desired-state 与生命周期）、
+  `state/adapters.sqlite3`、`state/routines.sqlite3`、`state/pac-graph.sqlite3`，
+  `HYPRIAL_HOME` 下的 `state/org/org-acl-grants.json`，以及 `HYPRIAL_HOME/agents/`（迁移标记
+  `org-acl-grants.agent-uri-migrated.json` 由第一次 P4 写入，升级前并不存在）。
+  daemon 停止后可直接 `cp -a` 整个 `~/.hyprial`（连同各库的 `-wal`/`-shm`）；在线库只能用
+  SQLite backup API（`sqlite3 <db> ".backup <dest>"`）。已开启 `autoUpgrade` 的机器请先备份再让它升级。
+- 降级步骤：停止新 daemon，另存当前状态（不要覆盖升级前备份）；
+  `hyprial daemon upgrade --tag <旧版本 tag> --no-restart` 装回旧版本；删掉上述库当前的
+  `-wal`/`-shm`，并删掉备份里没有、由新版本创建的文件（升级前不存在的 `adapters`/`routines`/
+  `pac-graph` 库及其 `-wal`/`-shm`，以及 `HYPRIAL_HOME/state/org/org-acl-grants.agent-uri-migrated.json`；
+  最简单的做法是清空整个 `~/.hyprial` 再还原），然后在原路径还原备份；启动旧版本之前，先把还原后
+  `settings.json` 里的 `autoUpgrade` 设为 `false`，否则自动更新会把新版本装回来并在没有新备份的情况下
+  再次执行 P4；再用旧版本 `hyprial daemon start`。还原之后不要再运行新版本，否则 P4 会再次执行；
+  确定要重新升级时，先重新备份，再打开 `autoUpgrade` 或手动升级。消息库（如 `state/inbox.sqlite3`）P4 不改写，可以保留，但其中发给升级后才
+  创建的 agent 的消息在旧版本里没有接收者。完整步骤见
+  `docs/notes/runbook-agent-transfer-mvp-2026-09-25.md`。
+
+### Docs
+
+- GUI：新增 `docs/gui/org/index.html` 组织能力全景页，按用户旅程汇总 org/OrgFS/link 的 GUI、MethodSpec、HTTP、daemon 与 mock 覆盖；附 `serve.sh` 本地 HTTP 入口。
+
+- 记录 `#2339` / `#2340` 两份 CI 调查笔记（`docs/notes/ci-status-stale-run-ids-2026-11-03.md`、
+  `docs/notes/fj-read-path-api-base-2026-11-03.md`）及其补注，正文与 issue 逐字节一致，
+  便于他人复算其中记录的 `sha256`。
 
 ## [0.5.5.3.4] - 2026-11-07
 
@@ -365,6 +631,17 @@ All notable changes to hyprial (Harness Bridge) are documented here.
 条目随下次发版归档。
 
 ### Changed
+- daemon: 受管无界面 claude worker 不再被内置规则禁止执行 `hyprial agent stop`（`WORKER_CLI_DENY_TOOLS` 去掉该项；
+  `agent destroy`、`daemon`、`init`、`org`、`daemon upgrade` 等其余禁令不变）。依据 Allen 2026-11-04 18:08 的裁定
+  （经 hq-manager 转述、hr-steward 转达；Allen 18:06 亦说明 2026-10-17 裁定的 "infra controlled window" 指的是
+  **daemon 的 stop**，不是 agent stop）。影响面是**所有**受管无界面 claude agent 都能停止任意 agent；
+  按角色或档位收窄留给权限档位方案（统一 schema 的 E 段）。需重启 daemon 生效；本机安装版的临时单行补丁
+  须在装版后回滚，否则代码与运行行为再次背离。
+- `message.status` now uses one timeout contract across the daemon, CLI, and wire schema:
+  omitted `timeoutSeconds` defaults to 2 seconds, while an explicit finite value must satisfy
+  `0 < timeoutSeconds <= 10`; all other values return `INVALID_ARGUMENT`.
+- `message.status` rejects an explicit `onBehalfOf: null`; callers without proxy authority
+  must omit the field, while `messageId: null` remains a valid independent selector.
 - daemon 状态面改为只读投影：`ps`、`hosts` 与健康状态不再触发路由清理或网络探测；
   `refresh:true` 仅排队并合并后台刷新，受理字段位于 `refresh` 对象，投影报告操作结算。
   host 行新增 `observedAtMs`、`ageMs`、`stale` 与 `lastError`，证据过期时报告
@@ -407,6 +684,21 @@ All notable changes to hyprial (Harness Bridge) are documented here.
   以 StoreError（invalid document id）明确报错，而不是把文档当作不存在。
 
 ### Removed
+- ⚠️ **破坏性变更**：整条删除 `agent host-invite`（owner 裁定 2026-11-21：不再使用；
+  teleport 只允许同一用户的 host 之间迁移）。删除 CLI 命令 `hyprial agent host-invite`、
+  请求方法 `agent.host-invite`（路由、方法清单、golden manifest 与 CLI/请求快照同步）、
+  identity 注册表写入链（`create_host_invited` 及其命令/分发/回滚结算）、grant 账本的
+  `host-invite` 动作写入；错误码 `AGENT_CREATE_COMMIT_FAILED` /
+  `AGENT_CREATE_ROLLBACK_PENDING` 保留冻结登记，但不再由现行产品产出。新建的 agent
+  的 owner 都是本机用户，也都有 cell。
+  读取侧对旧行保持容忍：`hostedBy` 枚举仍含 `host-invite` 值、已有库的 CHECK 约束原样保留，
+  仅为让升级前的旧行继续可列出（见升级说明）。
+  **升级前请先删除 host-invited 的 agent**：
+  `sqlite3 <HYPRIAL_HOME>/state/agents.sqlite3 "SELECT actor, owner FROM agents WHERE hosted_by='host-invite'"`
+  列出它们（或 `hyprial agent list --json` 后按 `hostedBy` 过滤），对每个执行
+  `hyprial agent destroy <actor> --yes`；升级后这些行无法再通过任何入口创建，
+  保留不删则仍可列出和销毁，但不能启动，也不会收到无头消息（其 owner 仍是外来 owner、无 cell）；
+  建议升级前销毁。
 - 退役 tsnet 边车（`sidecar/hyprial-tsnet`）及其发布/打包/CI 引用（sidecar.yml、
   tsnet-windows.yml、E2E-022）；网络连接改用 Tailcat，新边车
   `sidecar/hyprial-tailcat` 编译后随 wheel 分发（`hyprial/_bin/hyprial-tailcat`），

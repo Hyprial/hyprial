@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.kernel import ActorSpec, AdmissionResult
 
 
@@ -35,7 +35,10 @@ class QueryIoOwner:
     declaration, and the dispatcher retires each cell only after native drop.
     """
 
-    def __init__(self, name, handler, *, capacity=128, on_error=None, dispatcher=None):
+    def __init__(
+        self, name, handler, *, capacity=128, on_error=None, dispatcher=None,
+        actor_host=None,
+    ):
         if capacity < 1:
             raise ValueError("query owner capacity must be positive")
         self._name = name
@@ -48,18 +51,19 @@ class QueryIoOwner:
         self._closed = False
         self._accepted = self._rejected = self._failed = 0
         if dispatcher is None:
-            self._runtime = ActorRuntime(event_sink=lambda event: None)
-            self._handle = self._runtime.start(
+            self._hosts = ActorHostCustody(actor_host, owner="transport")
+            self._cell = self._hosts.host.spawn(
                 ActorSpec(
                     name=f"query-io:{name}",
                     handler_factory=lambda: self._answer,
                     mailbox_capacity=capacity,
                     supervision_profile="external_io",
+                    event_sink=lambda event: None,
                 )
             )
         else:
-            self._runtime = None
-            self._handle = None
+            self._hosts = None
+            self._cell = None
 
     def _reject_native(self, query) -> None:
         if self._dispatcher is None:
@@ -97,8 +101,8 @@ class QueryIoOwner:
             self._reject_native(query)
             return rejected
         if self._dispatcher is None:
-            assert self._runtime is not None and self._handle is not None
-            admission = self._runtime.tell(self._handle, command)
+            assert self._cell is not None
+            admission = self._cell.tell(command)
             with self._guard:
                 if admission is AdmissionResult.ACCEPTED:
                     self._accepted += 1
@@ -167,8 +171,10 @@ class QueryIoOwner:
         with self._guard:
             self._closed = True
         if self._dispatcher is None:
-            assert self._runtime is not None and self._handle is not None
-            return self._runtime.stop(self._handle, timeout)
+            assert self._cell is not None and self._hosts is not None
+            stopped = self._cell.drain(timeout).complete
+            self._hosts.shutdown(timeout)
+            return stopped
         self._dispatcher.retry_cleanup()
         deadline = time.monotonic() + max(0.0, timeout)
         with self._guard:

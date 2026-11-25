@@ -1,0 +1,10 @@
+Host code.hyprial.com git.internal.hyprial.com
+    HostName git.internal.hyprial.com
+    User git
+    IdentitiesOnly yes
+    IdentityFile P20_SENTINEL_PUBLIC_KEY_NOT_REAL
+    IdentityAgent P20_SENTINEL_SOCKET_NOT_REAL
+    UserKnownHostsFile P20_SENTINEL_KNOWN_HOSTS_NOT_REAL
+    StrictHostKeyChecking yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no

@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "about": [
+    "Frozen shape examples for the O2c invite contract (org.invites.list / org.invites.accept).",
+    "Every payload and link here is a redacted placeholder: the real ones are bearer secrets and never enter a fixture, a result or an event.",
+    "The invite identifier hashes the complete canonical payload JSON, including bearer and expiry; URL wrapping does not change it."
+  ],
+  "methods": {
+    "org.join": {
+      "params": {"link": "v2.REDACTED-ACCOUNT-INVITE-PAYLOAD"},
+      "result": {"org": "group-acme", "spaceId": "space-group-acme", "steps": []}
+    },
+    "org.invites.list": {
+      "params": {
+        "invites": [
+          {
+            "payload": "REDACTED-ACCOUNT-INVITE-PAYLOAD",
+            "acceptedAt": "2026-10-31T00:00:00Z"
+          }
+        ]
+      },
+      "result": {
+        "ok": true,
+        "pending": [
+          {
+            "inviteId": "inv-0123456789abcdef0123",
+            "org": "group-acme",
+            "inviter": "bob",
+            "spaceId": "space-group-acme",
+            "acceptedAt": "2026-10-31T00:00:00Z",
+            "status": "partial",
+            "missingStep": "acl-applied"
+          }
+        ],
+        "settled": 0,
+        "duplicates": 0,
+        "warnings": []
+      }
+    },
+    "org.invites.accept": {
+      "params": {
+        "inviteId": "inv-0123456789abcdef0123",
+        "link": "v2.REDACTED-ACCOUNT-INVITE-PAYLOAD"
+      },
+      "result": {
+        "ok": true,
+        "inviteId": "inv-0123456789abcdef0123",
+        "org": "group-acme",
+        "spaceId": "space-group-acme",
+        "joined": true,
+        "alreadyMember": false,
+        "steps": [
+          {
+            "kind": "join-org",
+            "ok": true,
+            "detail": "joined the org directory and ACL spaces"
+          }
+        ]
+      },
+      "partialError": {
+        "code": "AUTHORITY_UNREACHABLE",
+        "data": {
+          "status": "partial",
+          "missingStep": "tailnet-redeemed",
+          "inviteId": "inv-0123456789abcdef0123"
+        }
+      },
+      "alreadyMemberResult": {
+        "ok": true,
+        "inviteId": "inv-0123456789abcdef0123",
+        "org": "group-acme",
+        "spaceId": "space-group-acme",
+        "joined": false,
+        "alreadyMember": true,
+        "steps": []
+      }
+    }
+  },
+  "errors": {
+    "org.join": ["INVITE_EXPIRED", "no-holder-online", "not-a-member", "AUTHORITY_UNREACHABLE"],
+    "org.invites.list": ["INVALID_ARGUMENT", "DAEMON_NOT_READY", "ORG_NETWORK_ERROR"],
+    "org.invites.accept": [
+      "INVALID_ARGUMENT",
+      "DAEMON_NOT_READY",
+      "ORG_NETWORK_ERROR",
+      "INVITE_MALFORMED",
+      "INVITE_DIGEST_MISMATCH",
+      "INVITE_EXPIRED",
+      "INVITE_SCHEME",
+      "INVITE_VERSION_UNSUPPORTED",
+      "no-holder-online",
+      "AUTHORITY_UNREACHABLE"
+    ]
+  },
+  "selection": {
+    "settledWhen": ["directory, ACL, binding and device read-back verify completion with no unfinished accept checkpoint", "org was deliberately left here"],
+    "duplicates": "a second account row naming a space already offered is one membership",
+    "undecodable": "org/inviter/spaceId are 'unknown' and the row can only fail on its own"
+  },
+  "events": {
+    "org.invite.pending": {
+      "fields": ["count", "orgs"],
+      "never": ["payload", "token"]
+    }
+  },
+  "declinedNote": "a declined invite is declined for this device only; the invite stays on the account until it is withdrawn there"
+}

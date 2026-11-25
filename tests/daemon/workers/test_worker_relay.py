@@ -26,12 +26,13 @@ from mcp.client.session import ClientSession
 from hyprial.kernel import WorkerBinding
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel.impl.manysys.ipc import local_ipc_backend
 from hyprial.daemon.impl.harnesses.worker_relay import BoundWorkerRelay
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMessage
 from hyprial.daemon.impl.inbox.memory import MemoryDeliveryTransport
 from hyprial.daemon.impl.inbox.service import InboxService
 from hyprial.daemon.impl.mcp import create_mcp_server
-from tests.support.links.gate import PermissiveLinkGate
+from tests.kernel.ipc.local_ipc.recording_backend import RecordingBackend
 from hyprial.daemon.impl.mcp.proxy import StatelessDaemonProxy
 from hyprial.daemon.impl.mcp.unix import UnixDaemonConnectionFactory
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
@@ -89,11 +90,9 @@ def isolated(monkeypatch: pytest.MonkeyPatch):
     # The batch read runs link admission (design §3.3); this fixture's sender
     # and recipient are both canonical agent URIs, so bind the permissive gate
     # the durable batch fixtures use instead of the fail-closed default.
-    app.link_admission.bind(PermissiveLinkGate())
     app._inbox = InboxService(
         root / "inbox.sqlite",
         MemoryDeliveryTransport(),
-        link_admission=app.link_admission,
     )
     app._harnesses = SupervisorProjection()
     app._presence = Presence()
@@ -119,7 +118,7 @@ def isolated(monkeypatch: pytest.MonkeyPatch):
         target=server.serve_forever, kwargs={"poll_interval": 0.01}
     )
     thread.start()
-    binding = WorkerBinding(ACTOR, "alice-session", app.epoch)
+    binding = WorkerBinding(app.agents.get("alice").uri, "alice-session", app.epoch)
     try:
         with BoundWorkerRelay(
             directory=root / "relay",
@@ -151,6 +150,12 @@ def request(path, document):
             return json.loads(stream.readline())
 
 
+def _bob(app):
+    """Bob's official address: the URI his agent record stores."""
+
+    return app.agents.get("bob").uri
+
+
 def message(recipient, message_id):
     return InboxMessage(
         message_id=message_id,
@@ -165,11 +170,11 @@ def message(recipient, message_id):
 
 
 def test_identity_and_inbox_remain_bound(isolated):
-    _, app, relay, _ = isolated
-    app._inbox.receive(message(ACTOR, "a"))
-    app._inbox.receive(message(OTHER, "b"))
+    _, app, relay, binding = isolated
+    app._inbox.receive(message(binding.actor, "a"))
+    app._inbox.receive(message(_bob(app), "b"))
     identity = request(relay.socket_path, frame())["result"]
-    assert identity["actor"] == ACTOR
+    assert identity["actor"] == binding.actor
     assert identity["sessionRegistered"] is True
     result = request(
         relay.socket_path, frame("message.pending.list", {"fetched": True})
@@ -258,7 +263,7 @@ def test_expired_binding_never_renews(isolated, change):
 
 def test_send_retry_and_cross_worker_id_namespace(isolated):
     root, app, relay, binding = isolated
-    sent = frame("message.send", {"to": [OTHER], "summary": "hello", "message": "hello"})
+    sent = frame("message.send", {"to": [_bob(app)], "summary": "hello", "message": "hello"})
     reply = request(relay.socket_path, sent)
     assert "result" in reply, request(
         app.socket_path, frame("worker.channel.request", binding.envelope(sent))
@@ -268,11 +273,11 @@ def test_send_retry_and_cross_worker_id_namespace(isolated):
     assert first["messageId"] == second["messageId"]
     assert app._inbox.outbox_count() == 1
     row = app._inbox.outbox_item(first["messageId"])
-    assert row.message.sender == ACTOR
+    assert row.message.sender == binding.actor
     with BoundWorkerRelay(
         directory=root / "other",
         daemon_socket=app.socket_path,
-        binding=replace(binding, actor=OTHER, session_ref="bob-session"),
+        binding=replace(binding, actor=_bob(app), session_ref="bob-session"),
     ) as other:
         third = request(other.socket_path, sent)["result"]
     assert third["messageId"] != first["messageId"]
@@ -280,7 +285,7 @@ def test_send_retry_and_cross_worker_id_namespace(isolated):
     assert (
         request(
             relay.socket_path,
-            frame("message.send", {"to": [OTHER], "summary": "x", "message": "x"}, None),
+            frame("message.send", {"to": [_bob(app)], "summary": "x", "message": "x"}, None),
         )["error"]["code"]
         == "INVALID_REQUEST"
     )
@@ -294,18 +299,18 @@ def enforced_isolated(monkeypatch, request):
 
 
 def test_enforced_sender_auth_preserves_scoped_relay_identity_and_retry(enforced_isolated):
-    """The smolvm relay's fenced sender must survive the sender-auth rollout."""
+    """The worker relay's fenced sender must survive the sender-auth rollout."""
     _, app, relay, binding = enforced_isolated
     assert app._sender_auth_enforced is True
-    sent = frame("message.send", {"to": [OTHER], "summary": "relay-auth", "message": "relay-auth"})
+    sent = frame("message.send", {"to": [_bob(app)], "summary": "relay-auth", "message": "relay-auth"})
     first = request(relay.socket_path, sent)["result"]
     assert request(relay.socket_path, sent)["result"]["messageId"] == first["messageId"]
     assert app._inbox.outbox_count() == 1
     row = app._inbox.outbox_item(first["messageId"])
-    assert row.message.sender == ACTOR
+    assert row.message.sender == binding.actor
     assert json.loads(row.message.payload)["origin"] == {"via": "session"}
     assert request(relay.socket_path, frame("message.send", {
-        "to": [OTHER], "summary": "spoof", "message": "spoof", "onBehalfOf": OTHER,
+        "to": [_bob(app)], "summary": "spoof", "message": "spoof", "onBehalfOf": _bob(app),
     }))["error"]["code"] == "INVALID_ARGUMENT"
     app._harnesses.refs[("codex", "alice")] = "replacement-session"
     assert request(relay.socket_path, sent)["error"]["code"] == "STALE_SESSION"
@@ -353,14 +358,14 @@ def test_python_and_typescript_clients_use_same_socket(isolated, monkeypatch):
 
 
 def test_half_frame_deadline_and_close_revoke_connections(isolated):
-    _, _, relay, _ = isolated
+    _, _, relay, binding = isolated
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(2)
     client.connect(str(relay.socket_path))
     client.sendall(b'{"version":')
     assert json.loads(client.recv(4096))["error"]["code"] == "DAEMON_UNAVAILABLE"
     client.close()
-    assert request(relay.socket_path, frame())["result"]["actor"] == ACTOR
+    assert request(relay.socket_path, frame())["result"]["actor"] == binding.actor
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as old:
         old.connect(str(relay.socket_path))
         old.sendall(b"{")
@@ -372,7 +377,7 @@ def test_half_frame_deadline_and_close_revoke_connections(isolated):
 
 
 def test_limit_and_unknown_payloads_leave_channel_usable(isolated, monkeypatch):
-    _, _, relay, _ = isolated
+    _, _, relay, binding = isolated
     import hyprial.daemon.impl.harnesses.turn_delivery.channel.worker_relay as module
 
     monkeypatch.setattr(module, "MAX_FRAME_BYTES", 4096)
@@ -389,12 +394,12 @@ def test_limit_and_unknown_payloads_leave_channel_usable(isolated, monkeypatch):
         {**frame(), "extra": 1},
     ):
         assert "error" in request(relay.socket_path, value)
-    assert request(relay.socket_path, frame())["result"]["actor"] == ACTOR
+    assert request(relay.socket_path, frame())["result"]["actor"] == binding.actor != ACTOR
 
 
 def test_worker_mcp_read_crosses_bound_relay_and_returns_daemon_batch(isolated):
     _, app, relay, binding = isolated
-    app._inbox.receive(message(ACTOR, "batch-private"))
+    app._inbox.receive(message(binding.actor, "batch-private"))
     server = create_mcp_server(
         StatelessDaemonProxy(UnixDaemonConnectionFactory(relay.socket_path)),
         actor=binding.actor,
@@ -498,24 +503,42 @@ def test_busy_relay_bounds_admission_and_recovers(isolated):
                 excess.connect(str(relay.socket_path))
                 assert excess.recv(1) == b""
             assert "error" in json.loads(first.recv(4096))
-        assert request(relay.socket_path, frame())["result"]["actor"] == ACTOR
+        assert request(relay.socket_path, frame())["result"]["actor"] == binding.actor
 
 
-def test_darwin_real_user_temp_canary_ignores_environment_override(
-    tmp_path, monkeypatch
-):
-    import hyprial.daemon.impl.transfer.execution.smolvm as module
+def test_listen_and_forward_go_through_the_ipc_seam(isolated):
+    """The relay's listener and its daemon forward both use the seam entry points."""
 
-    actual, overridden = tmp_path / "actual", tmp_path / "overridden"
-    actual.mkdir()
-    overridden.mkdir()
-    canary = actual / "smolvm-hidden"
-    canary.write_text("before")
-    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(module.os, "confstr", lambda _: str(actual))
-    monkeypatch.setenv("TMPDIR", str(overridden))
-    first = module._host_canaries()
-    canary.write_text("after")
-    second = module._host_canaries()
-    assert str(canary) in first
-    assert first != second
+    root, app, relay, binding = isolated
+    recorder = RecordingBackend()
+    with local_ipc_backend(recorder):
+        with BoundWorkerRelay(
+            directory=root / "seam",
+            daemon_socket=app.socket_path,
+            binding=binding,
+        ) as seam_relay:
+            assert (
+                request(seam_relay.socket_path, frame())["result"]["actor"]
+                == binding.actor
+            )
+    assert recorder.listens == [(seam_relay.socket_path, 4)]
+    assert recorder.connects == [app.socket_path]
+
+
+def test_close_never_unlinks_a_socket_the_relay_did_not_bind(isolated):
+    """The recorded (st_dev, st_ino) gates the close-time unlink."""
+
+    _, _, relay, _ = isolated
+    info = relay.socket_path.lstat()
+    assert relay._socket_identity == (info.st_dev, info.st_ino)
+    relay._server.close()
+    relay.socket_path.unlink()
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    replacement.bind(str(relay.socket_path))
+    replacement.listen(1)
+    try:
+        relay.close()
+        assert relay.socket_path.exists()
+    finally:
+        replacement.close()
+        relay.socket_path.unlink(missing_ok=True)

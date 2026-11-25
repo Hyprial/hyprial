@@ -58,10 +58,12 @@ class FacadeSpaces:
     """
 
     @_facade_locked
-    def create_space(self, name: str) -> SpaceInfo:
+    def create_space(self, name: str, *, space_id: str | None = None) -> SpaceInfo:
         if not isinstance(name, str) or not name.strip():
             raise OrgFsError("invalid-argument", {"message": "space name is required"})
-        space_id = str(uuid.uuid4())
+        space_id = str(uuid.uuid4()) if space_id is None else str(uuid.UUID(space_id))
+        if self._existing_space(space_id) is not None:
+            raise OrgFsError("already-exists", {"spaceId": space_id})
         tree_doc_id = f"tree-{uuid.uuid4()}"
         info = SpaceInfo(space_id, name, self.author, _now())
         root = _Node("root", None, "", "dir", version="", modified_by=self.author)

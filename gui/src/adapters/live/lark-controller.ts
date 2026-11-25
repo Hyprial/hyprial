@@ -1,4 +1,5 @@
 import type { OperationStatus } from '../../state/operation-lifecycle';
+import { reconcileLarkUnbind } from '../lark-unbind-state';
 import { array, object, string, LiveError, type LivePort } from './client';
 export interface Authorization {
   readonly adapter: string;
@@ -32,6 +33,12 @@ export interface SwitchIntent {
   readonly status: OperationStatus;
   readonly error?: string;
 }
+export interface UnbindIntent {
+  readonly adapter: string;
+  readonly expectedActor: string;
+  readonly status: OperationStatus;
+  readonly error?: string;
+}
 export interface LarkSnapshot {
   readonly status: 'loading' | 'ready' | 'error';
   readonly error?: string;
@@ -40,7 +47,9 @@ export interface LarkSnapshot {
   readonly selectedAgent: string | null;
   readonly authorizationOperations: Readonly<Record<string, AuthorizationOperation>>;
   readonly switchOperations: Readonly<Record<string, SwitchIntent>>;
+  readonly unbindOperations: Readonly<Record<string, UnbindIntent>>;
   readonly confirmation?: Omit<SwitchIntent, 'status'>;
+  readonly unbindConfirmation?: Pick<UnbindIntent, 'adapter' | 'expectedActor'>;
 }
 function authorization(raw: unknown): Authorization {
   const value = object(raw), adapter = string(value.adapter);
@@ -83,7 +92,8 @@ function authOperation(raw: unknown, expectedAdapter: string, expectedId?: strin
 }
 
 export class LarkController {
-  private snapshot: LarkSnapshot = { status: 'loading', adapters: [], selectedAdapter: null, selectedAgent: null, authorizationOperations: {}, switchOperations: {} };
+  private snapshot: LarkSnapshot = { status: 'loading', adapters: [], selectedAdapter: null, selectedAgent: null,
+    authorizationOperations: {}, switchOperations: {}, unbindOperations: {} };
   private listeners = new Set<() => void>();
   private reading = false;
   private revision = 0;
@@ -92,6 +102,22 @@ export class LarkController {
   getSnapshot = () => this.snapshot;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(change: Partial<LarkSnapshot>) { this.snapshot = { ...this.snapshot, ...change }; this.listeners.forEach((listener) => listener()); }
+  async authorizationStatus(name: string): Promise<Authorization> {
+    return authorization(await this.port.call('lark.authorization.status', { adapter: name }));
+  }
+  async beginAuthorizationFor(name: string): Promise<AuthorizationOperation> {
+    return authOperation(await this.port.call('lark.authorization.start', { adapter: name }), name);
+  }
+  async authorizationOperationFor(operationId: string): Promise<AuthorizationOperation> {
+    const raw = await this.port.call('lark.authorization.operation', { operationId });
+    const adapter = string(object(raw).adapter);
+    return authOperation(raw, adapter, operationId);
+  }
+  async cancelAuthorizationFor(operationId: string): Promise<AuthorizationOperation> {
+    const raw = await this.port.call('lark.authorization.cancel', { operationId });
+    const adapter = string(object(raw).adapter);
+    return authOperation(raw, adapter, operationId);
+  }
   private operation(name: string, op: AuthorizationOperation, expectedId?: string) {
     const existing = this.snapshot.authorizationOperations[name];
     if (expectedId && existing?.operationId !== expectedId) return;
@@ -103,10 +129,13 @@ export class LarkController {
         op.authorization!.checkedAt >= row.authorization.checkedAt ? { ...row, authorization: op.authorization! } : row) : this.snapshot.adapters });
   }
   chooseAdapter(name: string) {
-    if (this.snapshot.adapters.some((row) => row.adapter === name)) this.update({ selectedAdapter: name, confirmation: undefined });
+    if (this.snapshot.adapters.some((row) => row.adapter === name)) {
+      this.update({ selectedAdapter: name, confirmation: undefined, unbindConfirmation: undefined });
+    }
   }
-  chooseAgent(agentId: string) { this.update({ selectedAgent: agentId, confirmation: undefined }); }
+  chooseAgent(agentId: string) { this.update({ selectedAgent: agentId, confirmation: undefined, unbindConfirmation: undefined }); }
   dismissConfirmation() { this.update({ confirmation: undefined }); }
+  dismissUnbind() { this.update({ unbindConfirmation: undefined }); }
   async refresh() {
     if (this.reading) return;
     this.reading = true;
@@ -121,6 +150,7 @@ export class LarkController {
       });
       if (new Set(adapters.map((row) => row.adapter)).size !== adapters.length) throw new LiveError('invalid-response', '飞书列表无法确认。');
       const switches = { ...this.snapshot.switchOperations };
+      const unbinds = { ...this.snapshot.unbindOperations };
       const operations = { ...this.snapshot.authorizationOperations };
       for (const row of adapters) {
         if (row.operation) {
@@ -131,10 +161,20 @@ export class LarkController {
         if (retained?.authorization && retained.authorization.appId !== row.authorization.appId && !active(retained)) delete operations[row.adapter];
         const op = switches[row.adapter];
         if (op?.status === 'unknown' && row.binding.actor === op.agentId) switches[row.adapter] = { ...op, status: 'success', error: undefined };
+        const unbind = unbinds[row.adapter];
+        if (unbind?.status === 'unknown') {
+          const reconciliation = reconcileLarkUnbind(unbind.expectedActor, row.binding.actor);
+          if (reconciliation === 'success') {
+            unbinds[row.adapter] = { ...unbind, status: 'success', error: undefined };
+          } else if (reconciliation === 'changed') {
+            unbinds[row.adapter] = { ...unbind, status: 'definitive-failure', error: '绑定已变化，请刷新后重新确认。' };
+          }
+        }
       }
-      this.update({ status: 'ready', error: undefined, adapters, switchOperations: switches, authorizationOperations: operations,
+      this.update({ status: 'ready', error: undefined, adapters, switchOperations: switches, unbindOperations: unbinds,
+        authorizationOperations: operations,
         selectedAdapter: adapters.some((row) => row.adapter === this.snapshot.selectedAdapter) ? this.snapshot.selectedAdapter : adapters[0]?.adapter ?? null });
-    } catch (error) { if (revision === this.revision) this.update({ status: 'error', error: error instanceof LiveError ? error.message : '飞书连接状态尚未确认。' }); }
+    } catch (error) { if (revision === this.revision) this.update({ status: 'error', error: error instanceof LiveError ? error.message : '飞书渠道状态尚未确认。' }); }
     finally { this.reading = false; }
   }
   async authorize() {
@@ -170,7 +210,9 @@ export class LarkController {
     const name = this.snapshot.selectedAdapter, agentId = this.snapshot.selectedAgent;
     const row = this.snapshot.adapters.find((value) => value.adapter === name);
     if (!name || !agentId || !row || !row.bindingAvailable || this.snapshot.status !== 'ready' || row.authorization.authorization !== 'authorized' ||
-      ['unknown', 'in-flight'].includes(this.snapshot.switchOperations[name]?.status)) return;
+      this.snapshot.unbindConfirmation !== undefined ||
+      ['unknown', 'in-flight'].includes(this.snapshot.switchOperations[name]?.status) ||
+      ['unknown', 'in-flight'].includes(this.snapshot.unbindOperations[name]?.status)) return;
     this.update({ confirmation: { adapter: name, agentId, expectedActor: row.binding.actor } });
   }
   async confirmSwitch() {
@@ -189,6 +231,46 @@ export class LarkController {
       this.update({ switchOperations: { ...this.snapshot.switchOperations, [intent.adapter]: { ...intent,
         status: error instanceof LiveError && error.definitive ? 'definitive-failure' : 'unknown',
         error: error instanceof LiveError ? error.message : '切换结果尚未确认，请刷新状态。' } } });
+    }
+  }
+  prepareUnbind() {
+    const name = this.snapshot.selectedAdapter;
+    const row = this.snapshot.adapters.find((value) => value.adapter === name);
+    if (!name || !row?.bindingAvailable || !row.binding.actor || this.snapshot.status !== 'ready' || this.snapshot.confirmation !== undefined ||
+      ['unknown', 'in-flight'].includes(this.snapshot.unbindOperations[name]?.status) ||
+      ['unknown', 'in-flight'].includes(this.snapshot.switchOperations[name]?.status)) return;
+    this.update({ unbindConfirmation: { adapter: name, expectedActor: row.binding.actor } });
+  }
+  retryUnbind() {
+    const name = this.snapshot.selectedAdapter;
+    const row = this.snapshot.adapters.find((value) => value.adapter === name);
+    const previous = name ? this.snapshot.unbindOperations[name] : undefined;
+    if (!name || !row || previous?.status !== 'unknown' || row.binding.actor !== previous.expectedActor || this.snapshot.confirmation !== undefined ||
+      ['unknown', 'in-flight'].includes(this.snapshot.switchOperations[name]?.status)) return;
+    this.update({ unbindConfirmation: { adapter: name, expectedActor: previous.expectedActor } });
+  }
+  async confirmUnbind() {
+    const intent = this.snapshot.unbindConfirmation;
+    if (!intent) return;
+    this.revision++;
+    this.update({ unbindConfirmation: undefined, unbindOperations: {
+      ...this.snapshot.unbindOperations, [intent.adapter]: { ...intent, status: 'in-flight' },
+    } });
+    try {
+      const result = adapter(await this.port.call('lark.binding.clear', intent));
+      if (result.adapter !== intent.adapter || result.binding.actor !== null) {
+        throw new LiveError('invalid-response', '解绑结果尚未确认。');
+      }
+      this.revision++;
+      this.update({ adapters: this.snapshot.adapters.map((row) => row.adapter === result.adapter ? result : row),
+        unbindOperations: { ...this.snapshot.unbindOperations, [intent.adapter]: { ...intent, status: 'success' } } });
+    } catch (error) {
+      const definitive = error instanceof LiveError && error.definitive;
+      this.revision++;
+      this.update({ unbindOperations: { ...this.snapshot.unbindOperations, [intent.adapter]: { ...intent,
+        status: definitive ? 'definitive-failure' : 'unknown',
+        error: error instanceof LiveError ? error.message : '解绑结果尚未确认，请刷新状态。' } } });
+      if (!definitive) await this.refresh();
     }
   }
   async poll() {

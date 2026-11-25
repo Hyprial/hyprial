@@ -8,11 +8,12 @@ from hyprial.kernel import HarnessLaunchSpec
 
 from hyprial.daemon.impl.cells.observability.model import RunFacts
 from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation
-from tests.daemon.cells.observability.mount.test_mount import composed as composed, settle, Process
+from tests.daemon.cells.observability.mount.test_mount import composed as composed, registered, settle, Process
 
 
 def test_composed_projection_refreshes_owner_facts_without_hooks(composed):
     app, launcher, harness, transport, delivery, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create("create", spec))
     process = launcher.processes[-1]
     facts = RunFacts(source_epoch="turn-1", known=True, running=True, open_count=1,
@@ -56,6 +57,7 @@ def test_verified_exit_is_published_without_a_concurrent_recovery_actor():
 
 def test_agent_status_uses_shared_run_projection_and_keeps_existing_fields(composed, monkeypatch):
     app, launcher, harness, transport, delivery, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create("create", spec))
     launcher.processes[-1].read_run_facts = lambda: RunFacts(source_epoch="turn", known=True, running=True)
     harness._records["pi:worker"].process.observe_facts()

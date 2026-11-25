@@ -7,6 +7,7 @@ full principal URIs needs no local identity at all -- the write boundary
 validates shape, never local knowledge.
 """
 
+from tests.support.runtime.environment import home_with_node_id
 import json
 
 import pytest
@@ -39,6 +40,7 @@ def test_owner_activate_and_close_use_the_selected_home(monkeypatch, tmp_path, s
     (home / "state").mkdir(exist_ok=True)
     (default / "settings.json").write_text(json.dumps({"owner": "wrong-default"}))
     (home / "settings.json").write_text(json.dumps({"owner": "home-owner"}))
+    home_with_node_id(home)
     # Drafting with full principal URIs needs no local identity; the owner is
     # a stored address, not a claim about who is typing.
     monkeypatch.setenv("HYPRIAL_OWNER", "home-owner")

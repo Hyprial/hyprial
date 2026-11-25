@@ -1,0 +1,31 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "request_methods",
+ "scenario": "workflow-history-list",
+ "steps": [
+  {
+   "step": 1,
+   "method": "workflow.history.list",
+   "label": "populated",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "runs": [
+     {
+      "run_id": "old",
+      "name": null,
+      "state": "done",
+      "sender": "user:op",
+      "created_at_ms": "legacy-time",
+      "finished_at_ms": null,
+      "runId": "old",
+      "backend": "legacy-archive",
+      "readOnly": true
+     }
+    ]
+   }
+  }
+ ]
+}

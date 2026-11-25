@@ -1,13 +1,51 @@
+# Decision record (W1E-2, 2026-11-21):
+# - DaemonStateOwnershipFence.acquire enforces private directory ownership and
+#   full non-system ancestry on state_dir (including an explicit HARNESS_STATE_DIR
+#   outside HYPRIAL_HOME) via manysys.secure_private_directory as a hard gate:
+#   newly created state directories are hardened with mode 0o700 / protected DACL,
+#   existing owned directories preserve their POSIX mode while refusing wrong
+#   owners, symlinks, reparse points, and unprivate Windows DACLs.
 """Exclusive ownership fence for daemon-managed state registries."""
 
 from __future__ import annotations
 
 import os
+import stat
 import time
 from pathlib import Path
 from collections.abc import Callable
 
-from hyprial.kernel import FileLockBusy, ProcessFileLock
+from hyprial.kernel import (
+    FileLockBusy,
+    PrivateAccessUnsupported,
+    ProcessFileLock,
+    manysys,
+    secure_private_directory,
+)
+
+
+def _validate_non_system_ancestry(target: Path) -> None:
+    lexical = Path(os.path.abspath(os.fspath(target)))
+    current = Path(lexical.anchor)
+    for part in lexical.parts[1:-1]:
+        current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        if manysys.path_is_reparse(info):
+            raise PrivateAccessUnsupported("unsafe-ancestry")
+        if stat.S_ISLNK(info.st_mode):
+            allowed = (
+                current.anchor == "/"
+                and current.parts in {("/", "tmp"), ("/", "var"), ("/", "etc")}
+                and current.is_dir()
+            )
+            if not allowed:
+                raise PrivateAccessUnsupported("unsafe-ancestry")
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise PrivateAccessUnsupported("unsafe-ancestry")
 
 
 class DaemonOwnershipBusy(RuntimeError):
@@ -34,7 +72,19 @@ class DaemonStateOwnershipFence:
         poll_interval: float = 0.05,
     ) -> DaemonStateOwnershipFence:
         state_dir = Path(state_dir)
-        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _validate_non_system_ancestry(state_dir)
+        try:
+            observed = state_dir.lstat()
+        except FileNotFoundError:
+            secure_private_directory(state_dir, create=True, mode=0o700)
+        else:
+            if (
+                stat.S_ISLNK(observed.st_mode)
+                or manysys.path_is_reparse(observed)
+                or not stat.S_ISDIR(observed.st_mode)
+            ):
+                raise PrivateAccessUnsupported("unsafe-directory")
+            secure_private_directory(state_dir, create=False, mode=None)
         path = state_dir / "daemon.lock"
         lock = ProcessFileLock(path)
         try:
@@ -44,11 +94,6 @@ class DaemonStateOwnershipFence:
                 "daemon state ownership is held by a running or "
                 "starting daemon"
             ) from error
-        try:
-            os.chmod(path, 0o600)
-        except BaseException:
-            lock.release()
-            raise
         return cls(path, lock)
 
     def detach(self) -> ProcessFileLock:

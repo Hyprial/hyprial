@@ -38,7 +38,7 @@ CATALOG_ENTRY_PAYLOAD = _CatalogEntryModel.from_json(
 )
 
 
-def _manager(tmp_path, *, controller=None, state=None):
+def _manager(tmp_path, *, actor_host, controller=None, state=None):
     access = tmp_path / "state" / "tailcat" / "service-access.json"
     write_access(access)
     controller = controller or FakeController()
@@ -51,12 +51,13 @@ def _manager(tmp_path, *, controller=None, state=None):
         access_path=access,
         scheduler=ManualScheduler(),
         service_discovery=lambda: (CATALOG_ENTRY_PAYLOAD,),
+        actor_host=actor_host,
     )
     return manager, controller, state
 
 
-def test_connect_persists_intent_maps_then_persists_actual_port(tmp_path) -> None:
-    manager, controller, state = _manager(tmp_path)
+def test_connect_persists_intent_maps_then_persists_actual_port(actor_host, tmp_path) -> None:
+    manager, controller, state = _manager(tmp_path, actor_host=actor_host)
     try:
         result = manager.handle("service.connect", {"name": "subapi"})
         assert [call[0] for call in state.calls] == ["set", "set"]
@@ -74,8 +75,8 @@ def test_connect_persists_intent_maps_then_persists_actual_port(tmp_path) -> Non
         manager.close(1.0)
 
 
-def test_unknown_unsupported_and_denied_connect_have_zero_mutations_or_maps(tmp_path) -> None:
-    manager, controller, state = _manager(tmp_path)
+def test_unknown_unsupported_and_denied_connect_have_zero_mutations_or_maps(actor_host, tmp_path) -> None:
+    manager, controller, state = _manager(tmp_path, actor_host=actor_host)
     try:
         with pytest.raises(ServiceConnectError) as unknown:
             manager.handle("service.connect", {"name": "missing"})
@@ -86,7 +87,7 @@ def test_unknown_unsupported_and_denied_connect_have_zero_mutations_or_maps(tmp_
     assert controller.calls == []
 
     unsupported = FakeController(supported=False)
-    manager, controller, state = _manager(tmp_path, controller=unsupported)
+    manager, controller, state = _manager(tmp_path, controller=unsupported, actor_host=actor_host)
     try:
         with pytest.raises(ServiceConnectError) as raised:
             manager.handle("service.connect", {"name": "subapi"})
@@ -97,10 +98,10 @@ def test_unknown_unsupported_and_denied_connect_have_zero_mutations_or_maps(tmp_
     assert controller.calls == []
 
 
-def test_failed_bind_remains_visible_and_disconnect_removes_before_unmap(tmp_path) -> None:
+def test_failed_bind_remains_visible_and_disconnect_removes_before_unmap(actor_host, tmp_path) -> None:
     controller = FakeController()
     controller.fail_map = RuntimeError("raw private failure tcDoNotLeak")
-    manager, controller, state = _manager(tmp_path, controller=controller)
+    manager, controller, state = _manager(tmp_path, controller=controller, actor_host=actor_host)
     try:
         with pytest.raises(ServiceConnectError) as raised:
             manager.handle("service.connect", {"name": "subapi"})
@@ -120,10 +121,10 @@ def test_failed_bind_remains_visible_and_disconnect_removes_before_unmap(tmp_pat
         manager.close(1.0)
 
 
-def test_actual_port_persistence_failure_compensates_mapping(tmp_path) -> None:
+def test_actual_port_persistence_failure_compensates_mapping(actor_host, tmp_path) -> None:
     state = FakeStatePort()
     state.fail_actual_port = True
-    manager, controller, _state = _manager(tmp_path, state=state)
+    manager, controller, _state = _manager(tmp_path, state=state, actor_host=actor_host)
     try:
         with pytest.raises(ServiceConnectError) as raised:
             manager.handle("service.connect", {"name": "subapi"})
@@ -135,7 +136,7 @@ def test_actual_port_persistence_failure_compensates_mapping(tmp_path) -> None:
 
 
 def test_tcp_dial_observation_is_not_mistaken_for_private_tailcat_material(
-    tmp_path,
+    actor_host, tmp_path,
 ) -> None:
     controller = FakeController()
     original = controller.map_service
@@ -147,7 +148,7 @@ def test_tcp_dial_observation_is_not_mistaken_for_private_tailcat_material(
         return value
 
     controller.map_service = map_with_tcp_diagnostic  # type: ignore[method-assign]
-    manager, _controller, _state = _manager(tmp_path, controller=controller)
+    manager, _controller, _state = _manager(tmp_path, controller=controller, actor_host=actor_host)
     try:
         connected = manager.handle("service.connect", {"name": "subapi"})
         assert connected["service"]["lastError"] == (
@@ -157,9 +158,9 @@ def test_tcp_dial_observation_is_not_mistaken_for_private_tailcat_material(
         manager.close(1.0)
 
 
-def test_guide_and_list_work_without_data_plane_and_reject_unknown_fields(tmp_path) -> None:
+def test_guide_and_list_work_without_data_plane_and_reject_unknown_fields(actor_host, tmp_path) -> None:
     manager, controller, state = _manager(
-        tmp_path, controller=FakeController(supported=False)
+        tmp_path, controller=FakeController(supported=False), actor_host=actor_host
     )
     try:
         guide = manager.handle("service.guide", {"name": "subapi"})
@@ -174,7 +175,7 @@ def test_guide_and_list_work_without_data_plane_and_reject_unknown_fields(tmp_pa
     assert state.calls == []
 
 
-def test_identical_orgfs_catalog_does_not_persist_on_reconcile_ticks(tmp_path) -> None:
+def test_identical_orgfs_catalog_does_not_persist_on_reconcile_ticks(actor_host, tmp_path) -> None:
     runtime = OrgFsRuntime(tmp_path / "orgfs", node_id="node-a", author="user:owner")
     manager = None
     try:
@@ -198,6 +199,7 @@ def test_identical_orgfs_catalog_does_not_persist_on_reconcile_ticks(tmp_path) -
             controller_factory=lambda: FakeController(),
             access_path=access,
             scheduler=ManualScheduler(),
+            actor_host=actor_host,
         )
 
         for _ in range(4):
@@ -211,7 +213,7 @@ def test_identical_orgfs_catalog_does_not_persist_on_reconcile_ticks(tmp_path) -
 
 
 def test_late_persistence_completion_reloads_desired_on_next_reconcile(
-    tmp_path, monkeypatch: pytest.MonkeyPatch,
+    actor_host, tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entered = threading.Event()
     release = threading.Event()
@@ -224,7 +226,7 @@ def test_late_persistence_completion_reloads_desired_on_next_reconcile(
 
     monkeypatch.setattr(manager_module, "SERVICE_CONTROL_TIMEOUT_SECONDS", 0.01)
     state = BlockingState()
-    manager, controller, _state = _manager(tmp_path, state=state)
+    manager, controller, _state = _manager(tmp_path, state=state, actor_host=actor_host)
     try:
         with pytest.raises(ServiceConnectError, match="remains unsettled"):
             manager.handle("service.connect", {"name": "subapi"})
@@ -244,7 +246,7 @@ def test_late_persistence_completion_reloads_desired_on_next_reconcile(
         manager.close(1.0)
 
 
-def test_missing_access_diagnostics_emit_once_per_transition(tmp_path, caplog) -> None:
+def test_missing_access_diagnostics_emit_once_per_transition(actor_host, tmp_path, caplog) -> None:
     access = tmp_path / "state" / "tailcat" / "service-access.json"
     manager = ServiceManager(
         orgfs=None,
@@ -253,6 +255,7 @@ def test_missing_access_diagnostics_emit_once_per_transition(tmp_path, caplog) -
         controller_factory=lambda: FakeController(),
         access_path=access,
         scheduler=ManualScheduler(),
+        actor_host=actor_host,
     )
     try:
         with caplog.at_level(logging.DEBUG):

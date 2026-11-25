@@ -1,0 +1,183 @@
+.org-topology {
+  display: grid;
+  gap: var(--ui-space-3);
+  min-width: 0;
+}
+
+.org-topology .topology-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+}
+
+.org-topology .topology-views {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-1);
+  padding: var(--ui-space-1);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-ground-2);
+}
+
+.org-topology .topology-views .ui-button {
+  background: transparent;
+  color: var(--ui-ink-3);
+}
+
+.org-topology .topology-views .ui-button[aria-pressed='true'] {
+  background: var(--ui-surface);
+  color: var(--ui-ink-1);
+  font-weight: var(--ui-weight-semibold);
+}
+
+.org-topology .topology-state {
+  margin: 0;
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-sm);
+  line-height: var(--ui-leading-normal);
+}
+
+.org-topology .topology-diagram-scroll {
+  display: grid;
+  gap: var(--ui-space-3);
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: var(--ui-space-1);
+}
+
+.org-topology .topology-diagram {
+  display: grid;
+  gap: var(--ui-space-3);
+  min-width: 0;
+}
+
+.org-topology .topology-nodes,
+.org-topology .topology-edges,
+.org-topology .topology-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.org-topology .topology-node,
+.org-topology .topology-edge {
+  display: grid;
+  gap: var(--ui-space-1);
+  padding: var(--ui-space-2) var(--ui-space-3);
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-ground-2);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.org-topology .topology-node--member {
+  border-radius: var(--ui-radius-pill);
+}
+
+.org-topology .topology-node--machine {
+  border-radius: var(--ui-radius-sm);
+}
+
+.org-topology .topology-node[aria-pressed='true'],
+.org-topology .topology-edge[aria-pressed='true'] {
+  background: var(--ui-neutral-fill);
+  font-weight: var(--ui-weight-semibold);
+}
+
+.org-topology .topology-node-label {
+  font-weight: var(--ui-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.org-topology .topology-node-meta {
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-xs);
+}
+
+.org-topology .topology-edge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  color: var(--ui-ink-2);
+  font-size: var(--ui-text-sm);
+}
+
+.org-topology .topology-legend {
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-xs);
+}
+
+.org-topology .topology-node:focus-visible,
+.org-topology .topology-edge:focus-visible,
+.org-topology .topology-views .ui-button:focus-visible,
+.org-topology .topology-panel button:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-focus);
+  outline-offset: var(--ui-space-1);
+}
+
+.org-topology .topology-panel {
+  display: grid;
+  gap: var(--ui-space-3);
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  padding: var(--ui-space-4);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-ground-2);
+}
+
+.org-topology .topology-panel-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  padding-bottom: var(--ui-space-2);
+  background: var(--ui-ground-2);
+}
+
+.org-topology .topology-panel-head h3 {
+  margin: 0;
+  font-size: var(--ui-text-lg);
+  font-weight: 600;
+  line-height: var(--ui-leading-tight);
+}
+
+.org-topology .topology-panel-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--ui-space-2) var(--ui-space-4);
+  margin: 0;
+}
+
+.org-topology .topology-panel-fields dt {
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-sm);
+}
+
+.org-topology .topology-panel-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.org-topology .topology-panel-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+  margin: 0;
+}
+
+@media (max-width: 430px) {
+  .org-topology .topology-nodes,
+  .org-topology .topology-edges {
+    flex-direction: column;
+  }
+}

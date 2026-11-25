@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-import hyprial.kernel.impl.primitives.node_identity as node_identity_module
 
 from hyprial.daemon.impl.transfer.archive.bundle import (
     BUNDLE_SCHEMA_VERSION,
@@ -79,6 +78,41 @@ def test_export_then_validate_roundtrip(tmp_path: Path) -> None:
     assert not (bundle_dir / "payload" / "user-provider.json").exists()
     assert not (bundle_dir / "payload" / "__pycache__").exists()
     assert (source / "user-provider.json").exists()
+
+
+def test_export_never_carries_the_agent_secret_store(tmp_path: Path) -> None:
+    """The per-agent credential DB, its key and SQLite sidecars stay home.
+
+    ``agent ensure-home`` now materialises an empty ``secrets.sqlite``; a
+    bundle that carried it would ship plaintext credentials to another host
+    and plant a root-level entry the landing topology refuses.
+    """
+
+    source = _source_home(tmp_path)
+    secret_files = {
+        "secrets.sqlite": b"SQLite format 3\x00synthetic",
+        ".secret-hmac-key": b"K" * 32,
+        "secrets.sqlite-wal": b"synthetic-wal",
+        "secrets.sqlite-shm": b"synthetic-shm",
+        "secret-metrics.jsonl": b"{}\n",
+    }
+    for name, body in secret_files.items():
+        (source / name).write_bytes(body)
+    (source / "workspace").mkdir()
+    (source / "workspace" / "secrets.sqlite").write_bytes(b"workspace user file")
+
+    _, bundle_dir, manifest = _export(tmp_path, source=source)
+
+    assert sorted(entry.path for entry in manifest.entries) == [
+        "config/agent.json",
+        "notes.md",
+        "secrets/private.json",
+        "workspace/secrets.sqlite",
+    ]
+    for name in secret_files:
+        assert not (bundle_dir / "payload" / name).exists()
+        assert (source / name).exists()
+    assert (bundle_dir / "payload" / "workspace" / "secrets.sqlite").is_file()
 
 
 def test_manifest_json_is_sorted_and_stable(tmp_path: Path) -> None:
@@ -229,124 +263,6 @@ def test_export_refuses_unknown_protocol(tmp_path: Path) -> None:
 # -- production entry points -------------------------------------------------
 
 
-def test_cli_export_and_validate_roundtrip(tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    source = _source_home(tmp_path)
-    bundle_dir = tmp_path / "cli-bundle"
-    runner = CliRunner()
-
-    exported = runner.invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-export",
-            "--from",
-            str(source),
-            "--to",
-            str(bundle_dir),
-            "--owner",
-            "owner@example.com",
-            "--actor",
-            "codex-sw",
-            "--machine",
-            "devusr-dev",
-            "--json",
-        ],
-    )
-    assert exported.exit_code == 0, exported.output
-    payload = json.loads(exported.stdout)
-    assert payload["entries"] == 3
-    assert payload["protocol_version"] == 1
-    assert payload["source_machine"] == "devusr-dev"
-
-    validated = runner.invoke(
-        cli.app, ["agent", "transfer", "bundle-validate", str(bundle_dir), "--json"]
-    )
-    assert validated.exit_code == 0, validated.output
-    assert json.loads(validated.stdout)["ok"] is True
-
-
-def test_cli_validate_refuses_tampered_bundle(tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    source = _source_home(tmp_path)
-    bundle_dir = tmp_path / "cli-bundle"
-    runner = CliRunner()
-    assert (
-        runner.invoke(
-            cli.app,
-            [
-                "agent", "transfer", "bundle-export",
-                "--from",
-                str(source),
-                "--to",
-                str(bundle_dir),
-                "--owner",
-                "owner@example.com",
-                "--actor",
-                "codex-sw",
-                "--json",
-            ],
-        ).exit_code
-        == 0
-    )
-
-    (bundle_dir / "payload" / "notes.md").write_text("tampered\n")
-    refused = runner.invoke(
-        cli.app, ["agent", "transfer", "bundle-validate", str(bundle_dir), "--json"]
-    )
-    assert refused.exit_code != 0
-    body = json.loads(refused.stdout)
-    assert body["ok"] is False
-    assert body["code"] == "bundle_tampered"
-
-
-def test_cli_export_records_session_refs_and_grants(tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    source = _source_home(tmp_path)
-    bundle_dir = tmp_path / "cli-bundle"
-    runner = CliRunner()
-
-    exported = runner.invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-export",
-            "--from",
-            str(source),
-            "--to",
-            str(bundle_dir),
-            "--owner",
-            "owner@example.com",
-            "--actor",
-            "codex-sw",
-            "--session-ref",
-            "session-1",
-            "--session-ref",
-            "session-2",
-            "--grant",
-            "tool-surface",
-            "--json",
-        ],
-    )
-    assert exported.exit_code == 0, exported.output
-    payload = json.loads(exported.stdout)
-    assert payload["session_refs"] == ["session-1", "session-2"]
-    assert payload["grants"] == ["tool-surface"]
-
-    validated = runner.invoke(
-        cli.app, ["agent", "transfer", "bundle-validate", str(bundle_dir), "--json"]
-    )
-    assert validated.exit_code == 0, validated.output
-    assert json.loads(validated.stdout)["ok"] is True
-
-
 def test_export_refuses_a_live_source_home(tmp_path: Path) -> None:
     import socket
 
@@ -419,58 +335,6 @@ def test_export_detects_a_source_change_during_the_copy(
 
     assert caught.value.code == "bundle_source_changed"
     assert not bundle_dir.exists()
-
-
-def test_cli_export_passes_allow_live(tmp_path: Path) -> None:
-    import socket
-
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    short_root = Path(tempfile.mkdtemp(prefix="at06-live-"))
-    source = _source_home(short_root)
-    (source / "state").mkdir()
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    runner = CliRunner()
-    try:
-        server.bind(str(source / "state" / "daemon.sock"))
-        blocked = runner.invoke(
-            cli.app,
-            [
-                "agent", "transfer", "bundle-export",
-                "--from",
-                str(source),
-                "--to",
-                str(tmp_path / "blocked"),
-                "--owner",
-                "owner@example.com",
-                "--actor",
-                "codex-sw",
-            ],
-        )
-        assert blocked.exit_code != 0
-
-        allowed = runner.invoke(
-            cli.app,
-            [
-                "agent", "transfer", "bundle-export",
-                "--from",
-                str(source),
-                "--to",
-                str(tmp_path / "allowed"),
-                "--owner",
-                "owner@example.com",
-                "--actor",
-                "codex-sw",
-                "--allow-live",
-                "--json",
-            ],
-        )
-        assert allowed.exit_code == 0, allowed.output
-        assert json.loads(allowed.stdout)["allow_live"] is True
-    finally:
-        server.close()
 
 
 def test_export_refuses_identical_source_and_destination(tmp_path: Path) -> None:
@@ -577,69 +441,3 @@ def test_export_accepts_an_empty_destination_directory(tmp_path: Path) -> None:
 
     assert len(manifest.entries) == 3
     assert (dest / "manifest.json").exists()
-
-
-def test_cli_export_refuses_to_clobber_a_destination(tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    home = _source_home(tmp_path)
-    dest = tmp_path / "unrelated"
-    dest.mkdir()
-    (dest / "precious.txt").write_text("keep\n")
-    runner = CliRunner()
-
-    refused = runner.invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-export",
-            "--from",
-            str(home),
-            "--to",
-            str(dest),
-            "--owner",
-            "owner@example.com",
-            "--actor",
-            "codex-sw",
-            "--json",
-        ],
-    )
-
-    assert refused.exit_code != 0
-    assert json.loads(refused.stdout)["code"] == "bundle_destination_not_empty"
-    assert (dest / "precious.txt").read_text() == "keep\n"
-
-
-def test_cli_export_strips_whitespace_node_id_before_fallback(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    home = _source_home(tmp_path)
-    dest = tmp_path / "bundle"
-    monkeypatch.setenv("HYPRIAL_NODE_ID", " \t ")
-    monkeypatch.setattr(
-        node_identity_module.socket, "gethostname", lambda: " transfer-host "
-    )
-
-    result = CliRunner().invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-export",
-            "--from",
-            str(home),
-            "--to",
-            str(dest),
-            "--owner",
-            "owner@example.com",
-            "--actor",
-            "codex-sw",
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 0, result.stdout
-    assert load_manifest(dest).source_machine == "transfer-host"

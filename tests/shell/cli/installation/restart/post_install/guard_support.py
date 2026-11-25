@@ -328,226 +328,6 @@ print(json.dumps({"findings": findings, "primed": sorted(primed)}))
 '''
 
 
-_PROFILE_TAIL = r'''
-import contextlib
-import io
-import json
-import os
-from pathlib import Path
-import shutil
-import sys
-from types import SimpleNamespace
-
-package_root, mode, scenario = map(str, sys.argv[1:])
-sys.path.insert(0, package_root)
-import hyprial.shell.impl.cli.runtime.entry  # installs the explicit CLI composition
-from hyprial.shell.impl.cli.commands.common import support as _support
-from hyprial.shell.impl.cli.commands.common.services import get_services as _get_services
-_services = _get_services()
-
-prime_result = _services._prime_post_install_restart_imports()
-primed = prime_result if isinstance(prime_result, frozenset) else frozenset(
-    name for name in sys.modules if name == "hyprial" or name.startswith("hyprial.")
-)
-if mode == "stale":
-    shutil.copytree(
-        Path(os.environ["NEW_PACKAGE_ROOT"]) / "hyprial",
-        Path(package_root) / "hyprial",
-        dirs_exist_ok=True,
-    )
-else:
-    assert "hyprial.daemon.impl.configuration.home_guard" not in primed
-    class RejectUnprimedHyprialModules:
-        def find_spec(self, fullname, path=None, target=None):
-            del path, target
-            if fullname.startswith("hyprial.") and fullname not in primed:
-                raise ImportError("post-install import fence refused: " + fullname)
-            return None
-    sys.meta_path.insert(0, RejectUnprimedHyprialModules())
-
-pending = sys.modules["hyprial.shell.impl.cli.commands.common.pending_restart"]
-service = sys.modules["hyprial.shell.impl.cli.commands.daemon.service"]
-alert = sys.modules["hyprial.daemon.impl.autoupdate.alert"]
-emit = sys.modules["hyprial.shell.impl.cli.output.emit"]
-root = Path(package_root).parent
-home = root / "home"
-state_dir = root / "state"
-(home / "secrets").mkdir(parents=True, exist_ok=True)
-state_dir.mkdir(parents=True, exist_ok=True)
-(home / "channels.json").write_text(json.dumps({
-    "version": 1,
-    "gateways": [{"provider": "lark", "name": "owner", "appId": "app",
-        "credentialRef": "lark-owner",
-        "routes": [{"name": "dm", "type": "direct", "nativeId": "ou_owner"}]}],
-}), encoding="utf-8")
-(home / "secrets" / "lark-owner.json").write_text(
-    json.dumps({"appSecret": "secret"}), encoding="utf-8"
-)
-(state_dir / "users.json").write_text(json.dumps({
-    "version": 1,
-    "users": [{"owner": "owner", "ownerKey": "owner", "loginName": "owner@example.test",
-        "agents": [], "preferredReceiver": {"machine": "m", "machineKey": "m"},
-        "notificationRules": [],
-        "ownerOpenId": {"channel": "owner", "openId": "ou_owner", "boundAt": "2026-01-01T00:00:00Z"}}],
-}), encoding="utf-8")
-
-before = SimpleNamespace(
-    platform="launchd", unit="com.hyprial.hyprial.daemon", unit_path=root / "service.plist",
-    installed=scenario != "unsupervised", loaded=scenario != "unsupervised",
-    running=True, pid=4101, boot_persistent=True, changed=None, attributed=True,
-    template_matches=True, serving_pid=4101, supervision="supervised", relaunch_count=1,
-    last_exit_code=0, ownership_busy=False, ownership_reason=None, backup_path=None,
-)
-after = SimpleNamespace(**{**vars(before), "pid": 4202, "serving_pid": 4202})
-exited = SimpleNamespace(**{
-    **vars(after), "running": False, "serving_pid": None,
-    "supervision": "lost", "last_exit_code": 17,
-})
-manager_failure = {"enabled": scenario == "child-exited"}
-class Manager:
-    def inspect(self, serving_pid=None):
-        del serving_pid
-        return before
-    def restart(self, serving_pid, *, timeout_seconds=None):
-        del serving_pid
-        assert timeout_seconds == _support.DAEMON_START_HARD_CAP_SECONDS
-        return exited if manager_failure["enabled"] else after
-service._service_manager = lambda: Manager()
-
-correct = {"running": True, "pid": 4202, "epoch": "new", "version": "0.4.0.dev2",
-    "phase": "serving" if scenario == "not-reconciled" else "reconciled"}
-def probe(timeout=0.5):
-    del timeout
-    if scenario == "hard-cap":
-        raise OSError("still unavailable at hard cap")
-    if scenario == "old-daemon":
-        return {**correct, "pid": 4101, "epoch": "old"}
-    if scenario == "wrong-version":
-        return {**correct, "version": "0.4.0.dev1"}
-    return correct
-_services._daemon_probe = probe
-
-def daemon_request(method, *args, **kwargs):
-    del args, kwargs
-    if method == "ping":
-        return correct
-    if method == "ps":
-        return {"connectors": [{"running": False}, {"running": True}]}
-    raise AssertionError(method)
-_support._daemon_request = daemon_request
-_services._stop_daemon_gracefully = lambda: None
-
-def launch(*, ready_timeout):
-    assert ready_timeout == _support.DAEMON_START_HARD_CAP_SECONDS
-    if scenario == "child-exited":
-        error = _support.CliError("DAEMON_START_FAILED", "daemon child exited during startup")
-        error._daemon_process_pid = 4202
-        error._daemon_process_exited = True
-        raise error
-    if scenario == "hard-cap":
-        error = _support.CliError("DAEMON_START_TIMEOUT", "hard cap passed")
-        error._daemon_process_pid = 4202
-        error._daemon_process_identity = "birth"
-        raise error
-    return pending.DaemonLaunchResult.existing(probe())
-_services._launch_daemon_process = launch
-
-sent = []
-class Sender:
-    def send_owner_dm(self, open_id, text, *, idempotency_key):
-        sent.append([open_id, text, idempotency_key])
-        return "om_guard"
-if mode == "stale":
-    sdk = sys.modules.get("hyprial.daemon.impl.adapters.lark.outbound.sdk")
-    if sdk is not None:
-        class Gateway:
-            @classmethod
-            def from_credentials(cls, app_id, secret, **kwargs):
-                del app_id, secret, kwargs
-                return Sender()
-        sdk.LarkSdkGateway = Gateway
-else:
-    def notify_failure(**kwargs):
-        return alert.notify_upgrade_failure(**kwargs, sender_factory=lambda _app_id, _secret: Sender())
-    _services.notify_upgrade_failure = notify_failure
-_services._hyprial_home = lambda: home
-_services._state_dir = lambda: state_dir
-
-package_path = (Path(package_root) / "hyprial").resolve()
-traced = set()
-def profile(frame, event, arg):
-    del arg
-    if event != "call":
-        return
-    try:
-        filename = Path(frame.f_code.co_filename).resolve()
-        filename.relative_to(package_path)
-    except (OSError, ValueError):
-        return
-    qualname = frame.f_code.co_qualname
-    if "<" not in qualname:
-        traced.add(f"{frame.f_globals.get('__name__')}:{qualname}")
-
-sys.setprofile(profile)
-resolution = SimpleNamespace(tag="v0.4.0.dev2", commit="d" * 40)
-result = {"ok": True, "resolvedTag": resolution.tag, "resolvedCommit": resolution.commit}
-failure = None
-try:
-    outcome = pending._restart_daemon_onto_install(
-        result,
-        before={"pid": 4101, "epoch": "old", "version": "0.4.0.dev1"},
-        installed_version="0.4.0.dev2", resolution=resolution,
-        resolved={"resolvedTag": resolution.tag, "resolvedCommit": resolution.commit},
-    )
-except _support.CliError as error:
-    failure = error
-    outcome = error.data
-
-rendered = io.StringIO()
-with contextlib.redirect_stdout(rendered):
-    emit.emit_result(outcome, json_output=False)
-
-# The non-reconciled profile also traverses the failure/alert observation branch.
-# This makes both reviewer mutations executable under the same fenced drill.
-if scenario == "not-reconciled" or mode == "stale":
-    manager_failure["enabled"] = True
-    try:
-        pending._restart_daemon_onto_install(
-            {"ok": True},
-            before={"pid": 4101, "epoch": "old", "version": "0.4.0.dev1"},
-            installed_version="0.4.0.dev2", resolution=resolution,
-            resolved={"resolvedTag": resolution.tag, "resolvedCommit": resolution.commit},
-        )
-    except _support.CliError as error:
-        failure = error
-sys.setprofile(None)
-
-if failure is not None:
-    alert_result = failure.data.get("alert", {}) if isinstance(failure.data, dict) else {}
-    alert_reason = str(alert_result.get("reason", ""))
-    if not sent and ((mode == "stale" and "ImportError" in alert_reason)
-        or "post-install import fence refused" in alert_reason):
-        raise ImportError(alert_reason)
-if scenario in {"reconciled", "supervised", "unsupervised", "not-reconciled"}:
-    assert result["restart"]["restarted"] is True
-    assert result["restart"]["after"]["pid"] == 4202
-    assert result["restart"]["after"]["epoch"] == "new"
-    assert result["restart"]["after"]["version"] == "0.4.0.dev2"
-if scenario == "not-reconciled":
-    assert result["restart"]["confirmed"] is False
-    assert "1 connectors pending" in result["restart"]["reason"]
-if scenario in {"child-exited", "hard-cap", "old-daemon", "wrong-version"}:
-    assert failure is not None and failure.code == "UPGRADE_RESTART_FAILED"
-    assert sent
-if mode == "stale":
-    assert sent and "resolvedTag:" in rendered.getvalue()
-print(json.dumps({
-    "primed": sorted(primed), "trace": sorted(traced), "rendered": rendered.getvalue(),
-    "alertCount": len(sent), "failed": failure is not None,
-}))
-'''
-
-
 _TRUE_ROOT_PROFILE = r'''
 import contextlib
 import hashlib
@@ -605,8 +385,6 @@ service = old_module("hyprial.shell.impl.cli.commands.daemon.service")
 alert = old_module("hyprial.daemon.impl.autoupdate.alert")
 updates = old_module("hyprial.daemon.impl.updates")
 old_module("hyprial.shell.impl.gui.apps")
-upgrade_runner = old_module("hyprial.daemon.impl.upgrade.runner")
-upgrade_steps = old_module("hyprial.daemon.impl.upgrade.steps")
 
 # Record every replacement of a loaded product function. M2 may replace only
 # true process/socket/service/transport boundaries, never a function in the M1
@@ -628,24 +406,8 @@ original_product_callables = product_callable_bindings()
 root = Path(package_root).parent
 home = root / "home"
 state_dir = root / "state"
-(home / "secrets").mkdir(parents=True, exist_ok=True)
+home.mkdir(parents=True, exist_ok=True)
 state_dir.mkdir(parents=True, exist_ok=True)
-(home / "channels.json").write_text(json.dumps({
-    "version": 1,
-    "gateways": [{"provider": "lark", "name": "owner", "appId": "app",
-        "credentialRef": "lark-owner",
-        "routes": [{"name": "dm", "type": "direct", "nativeId": "ou_owner"}]}],
-}), encoding="utf-8")
-(home / "secrets" / "lark-owner.json").write_text(
-    json.dumps({"appSecret": "secret"}), encoding="utf-8"
-)
-(state_dir / "users.json").write_text(json.dumps({
-    "version": 1,
-    "users": [{"owner": "owner", "ownerKey": "owner", "loginName": "owner@example.test",
-        "agents": [], "preferredReceiver": {"machine": "m", "machineKey": "m"},
-        "notificationRules": [],
-        "ownerOpenId": {"channel": "owner", "openId": "ou_owner", "boundAt": "2026-01-01T00:00:00Z"}}],
-}), encoding="utf-8")
 
 # Pre-install resolution and uv are below the guarded boundary. The fake
 # install is the only place that activates profiling and the import fence.
@@ -757,7 +519,8 @@ def daemon_request(method, *args, **kwargs):
 _support._daemon_request = daemon_request
 _services._stop_daemon_gracefully = lambda: None
 
-def launch(*, ready_timeout):
+def launch(*, ready_timeout, autoinstall=True):
+    del autoinstall
     assert ready_timeout == _support.DAEMON_START_HARD_CAP_SECONDS
     if scenario == "child-exited":
         error = _support.CliError("DAEMON_START_FAILED", "daemon child exited during startup")
@@ -772,19 +535,6 @@ def launch(*, ready_timeout):
     return pending.DaemonLaunchResult.existing(probe())
 _services._launch_daemon_process = launch
 
-sent = []
-class Sender:
-    def send_owner_dm(self, open_id, text, *, idempotency_key):
-        sent.append([open_id, text, idempotency_key])
-        return "om_guard"
-class Gateway:
-    @classmethod
-    def from_credentials(cls, app_id, secret, **kwargs):
-        del app_id, secret, kwargs
-        return Sender()
-sdk = sys.modules.get("hyprial.daemon.impl.adapters.lark.outbound.sdk")
-if sdk is not None:
-    sdk.LarkSdkGateway = Gateway
 alert.subprocess.run = lambda *args, **kwargs: subprocess.CompletedProcess(
     args[0] if args else [], 0,
     stdout=json.dumps({"ok": True, "packageVersion": "0.4.0.dev2"}), stderr="",
@@ -816,18 +566,18 @@ if scenario == "gui-present":
         "manifest": "hyprial-install.json",
     }), encoding="utf-8")
 
-# The real locked runner sees no steps, one successful pending step, or one
-# failing pending step. The step callable is data supplied to that runner.
-def successful_step(_context):
-    return {"migrated": True}
-def failing_step(_context):
-    raise RuntimeError("synthetic step failure")
-if scenario == "steps-pending":
-    upgrade_runner.STEPS = (upgrade_steps.UpgradeStep("guard-success", successful_step),)
-elif scenario == "steps-failing":
-    upgrade_runner.STEPS = (upgrade_steps.UpgradeStep("guard-failure", failing_step),)
-else:
-    upgrade_runner.STEPS = ()
+restart_request = daemon_request
+def daemon_request(method, *args, **kwargs):
+    if method != "upgrade.steps.run":
+        return restart_request(method, *args, **kwargs)
+    assert args == ({"apply": True},)
+    assert kwargs == {"timeout": 120.0}
+    if scenario == "steps-failing":
+        return {"steps": [{"id": "guard-failure", "state": "failed"}], "pending": ["guard-failure"]}
+    if scenario == "steps-pending":
+        return {"steps": [{"id": "guard-success", "state": "done"}], "pending": []}
+    return {"steps": [], "pending": []}
+_support._daemon_request = daemon_request
 
 current_product_callables = product_callable_bindings()
 stubbed_product_functions = sorted({
@@ -851,16 +601,6 @@ with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
         caught = error
         exit_code = int(getattr(error, "exit_code", getattr(error, "code", 1)) or 1)
 
-# A5 always executes the real failure-alert body after the swap. The OLD base
-# discovers the NEW SDK here and records its stale-kernel ImportError; the fixed
-# primer keeps the old SDK module resident, so only its transport is replaced.
-stale_alert = None
-if mode == "stale":
-    stale_alert = alert.notify_upgrade_failure(
-        hyprial_home=home, state_dir=state_dir, host="guard-host",
-        summary="synthetic restart failure", detail="synthetic failure detail",
-        idempotency_key="guard-stale-alert",
-    )
 sys.setprofile(None)
 if fence in sys.meta_path:
     sys.meta_path.remove(fence)
@@ -875,10 +615,6 @@ if blocked_imports:
     )
 
 rendered = captured.getvalue()
-if mode == "stale" and stale_alert is not None:
-    stale_reason = str(stale_alert.reason or "")
-    if "ImportError" in stale_reason:
-        raise ImportError(stale_reason)
 if isinstance(caught, ImportError) and "post-install import fence refused" in str(caught):
     raise caught
 if "post-install import fence refused" in rendered:
@@ -915,7 +651,8 @@ if mode == "stale" and "ImportError" in rendered:
     raise ImportError(rendered)
 print(json.dumps({
     "primed": sorted(primed), "trace": sorted(traced), "rendered": rendered,
-    "alertCount": len(sent), "failed": failed, "blockedImports": blocked_imports,
+    "markerWritten": (state_dir / alert.MARKER_FILENAME).exists(),
+    "failed": failed, "blockedImports": blocked_imports,
     "stubbedProductFunctions": stubbed_product_functions,
 }))
 '''

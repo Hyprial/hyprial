@@ -58,7 +58,6 @@ export function AccountCredentialForm({
       <Field
         label="账号"
         htmlFor={`${baseId}-account`}
-        hint="非敏感输入会在本次页面内保留。"
         required
       >
         <input
@@ -73,7 +72,7 @@ export function AccountCredentialForm({
         label="访问令牌"
         value={token}
         required
-        hint="提交后立即从表单清除；仅在本次页面内存中用于重试，取消或离开页面即丢弃。"
+        hint="仅保存在本页内存中，不写入浏览器存储、URL 或日志。"
         showLabel="显示访问令牌"
         hideLabel="隐藏访问令牌"
         onChange={setToken}
@@ -93,9 +92,6 @@ export function AccountCredentialForm({
           </Button>
         )}
       </div>
-      <p className="settings-footnote">
-        访问令牌不写入 localStorage、sessionStorage、URL 或日志。
-      </p>
     </form>
   );
 }

@@ -527,6 +527,7 @@ def test_start_failure_alarm_retries_only_transient_delivery_failures(
         clock.now_ms = 100_000
         assert service.submit_timer().value == "accepted"
         wait_for(lambda: len(alarm.calls) == 1)
+        assert alarm.calls[0]["sender"] == "agent:o:n:duty"
 
         def alarm_completion_settled() -> bool:
             rows = [
@@ -561,16 +562,20 @@ def test_completion_overload_retries_until_actor_accepts(
         source_query=lambda _filter: [],
     )
     service.add(yaml_text=VALID, owner="agent:o:n:duty")
-    original = service._runtime.tell
+    cell = service._handle
     overloads = {"remaining": 3}
 
-    def flaky_tell(handle, command):
-        if isinstance(command, RoutineSourceQueryCompleted) and overloads["remaining"]:
-            overloads["remaining"] -= 1
-            return AdmissionResult.OVERLOADED
-        return original(handle, command)
+    class FlakyCell:
+        def __getattr__(self, name: str) -> object:
+            return getattr(cell, name)
 
-    monkeypatch.setattr(service._runtime, "tell", flaky_tell)
+        def tell(self, command: object) -> AdmissionResult:
+            if isinstance(command, RoutineSourceQueryCompleted) and overloads["remaining"]:
+                overloads["remaining"] -= 1
+                return AdmissionResult.OVERLOADED
+            return cell.tell(command)
+
+    monkeypatch.setattr(service, "_handle", FlakyCell())
     clock.now_ms = 100_000
     service.submit_timer()
     wait_for(lambda: overloads["remaining"] == 0)
@@ -661,12 +666,46 @@ def test_actor_restart_closes_old_writer_and_recovers(
     original_writer = id(service._writer_store)
     assert service.submit(object()).value == "accepted"
     wait_for(
-        lambda: service._runtime.snapshot(service._handle).state is ActorState.RUNNING
-        and service._runtime.snapshot(service._handle).generation > 1
+        lambda: service._handle.snapshot().state is ActorState.RUNNING
+        and service._handle.snapshot().generation > 1
     )
     assert original_writer in closed
     assert service.add(yaml_text=VALID, owner="agent:o:n:duty")["name"] == "actor-routine"
     service.close()
+
+
+def test_failed_restart_factory_keeps_routine_generation_equal_to_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = RoutineService(
+        pac=IdempotentPac(),
+        alarm=Alarm(),
+        state_dir=tmp_path,
+        source_query=lambda _filter: [],
+    )
+    original_init = RoutineStore.__init__
+    opened = 0
+
+    def fail_first_reopen(store: RoutineStore, *args: object, **kwargs: object) -> None:
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            raise sqlite3.OperationalError("injected transient reopen failure")
+        original_init(store, *args, **kwargs)
+
+    monkeypatch.setattr(RoutineStore, "__init__", fail_first_reopen)
+    try:
+        assert service.submit(object()).value == "accepted"
+        wait_for(lambda: opened >= 2)
+        wait_for(
+            lambda: service._handle.snapshot().state is ActorState.RUNNING
+        )
+        snapshot = service._handle.snapshot()
+        assert snapshot.generation == 2
+        assert service._generation == snapshot.generation
+    finally:
+        monkeypatch.setattr(RoutineStore, "__init__", original_init)
+        service.close()
 
 
 def test_timer_sequence_is_generation_fenced_not_store_version_fenced(
@@ -685,7 +724,7 @@ def test_timer_sequence_is_generation_fenced_not_store_version_fenced(
     # Mutations advance the Store epoch independently of timer sequence.
     service.pause(name="actor-routine")
     service.resume(name="actor-routine")
-    generation = service._runtime.snapshot(service._handle).generation
+    generation = service._handle.snapshot().generation
     assert service.submit(RoutineTimerElapsedCommand("timer-1", generation, 1, 0)).value == "accepted"
     wait_for(lambda: any(getattr(item, "correlation_id", None) == "timer-1" for item in events))
     assert not any(
@@ -774,4 +813,47 @@ def test_busy_tick_does_not_orphan_the_in_flight_cycle(tmp_path: Path) -> None:
         ]
     finally:
         pac.release.set()
+        service.close()
+
+
+DUTY_ID_URI = "agent:o:n:a.bl5ksbh3pghtmvnfo5peihbyke"
+
+
+@pytest.mark.parametrize(
+    ("binding_key", "accepted"),
+    [
+        (None, False),
+        (lambda value: "agent:o:n:duty" if value == DUTY_ID_URI else value, True),
+    ],
+)
+def test_set_compares_the_binding_through_the_injected_key(
+    tmp_path: Path, binding_key, accepted: bool,
+) -> None:
+    """UUID addressing: an id-URI binding and its name URI are one binding."""
+
+    service = RoutineService(
+        pac=IdempotentPac(), alarm=Alarm(), state_dir=tmp_path,
+        clock_ms=lambda: 0, source_query=lambda _query: [],
+        binding_key=binding_key,
+    )
+    try:
+        service.add(
+            yaml_text=SCHEDULED.replace("agent:o:n:duty", DUTY_ID_URI),
+            owner="agent:o:n:duty",
+        )
+        replacement = SCHEDULED.replace("Check progress", "Check status")
+        if accepted:
+            service.set(name="actor-routine", yaml_text=replacement)
+            assert "Check status" in service._projection.get_routine("actor-routine").yaml_text
+        else:
+            with pytest.raises(RoutineServiceError) as refused:
+                service.set(name="actor-routine", yaml_text=replacement)
+            assert refused.value.code == "ROUTINE_BINDING_IMMUTABLE"
+        with pytest.raises(RoutineServiceError) as other:
+            service.set(
+                name="actor-routine",
+                yaml_text=SCHEDULED.replace("agent:o:n:duty", "agent:o:n:other"),
+            )
+        assert other.value.code == "ROUTINE_BINDING_IMMUTABLE"
+    finally:
         service.close()

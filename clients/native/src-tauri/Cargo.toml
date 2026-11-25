@@ -1,0 +1,17 @@
+[package]
+name = "hyprial-desktop"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.93"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+hyprial-shell-launcher = { path = "../launcher" }
+open = "5.3.2"
+tauri = { version = "=2.12.3", features = [] }
+tauri-plugin-single-instance = { version = "=2.5.2" }

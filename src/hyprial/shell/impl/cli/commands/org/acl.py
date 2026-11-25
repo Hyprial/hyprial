@@ -1,8 +1,8 @@
 """``hyprial org acl``: owner-node ACL-space entry authorizations.
 
 The ACL space (``group-NAME-acl``) admits writes only through the owner
-node's entry gate: the owner's terminal, the owner's user-proxy, and agents
-the owner explicitly granted here.  Grants are local owner-node state —
+node's entry gate: the owner's terminal and agents the owner explicitly
+granted here.  Grants are local owner-node state —
 they never enter orgfs and never synchronize.
 """
 
@@ -17,7 +17,7 @@ import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.identity import org_space_name
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import (
     JsonObject,
@@ -30,7 +30,7 @@ from hyprial.shell.impl.cli.output.tables import render_table
 acl_app = group(
     help=(
         "Authorize agents to write an org's ACL space. The entry gate "
-        "defaults to the owner's terminal and user-proxy; these commands "
+        "defaults to the owner's terminal; these commands "
         "manage the explicit exceptions, stored only on the owner node."
     )
 )
@@ -48,7 +48,7 @@ def _validated_org(value: str) -> str:
     try:
         org_space_name(value)
     except ValueError as error:
-        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
     return value
 
 
@@ -58,7 +58,7 @@ def _until_ms(value: str) -> int:
         parsed = datetime.fromisoformat(value)
     except ValueError as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"--until must be an ISO 8601 time, got {value!r}",
         ) from error
     if parsed.tzinfo is None:

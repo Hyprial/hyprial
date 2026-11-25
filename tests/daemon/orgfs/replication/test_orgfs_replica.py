@@ -12,6 +12,7 @@ from hyprial.daemon.impl.orgfs.storage.replica import (
     ReplicaStore,
     decode_snapshot_frontier,
     encode_snapshot_frontier)
+from hyprial.identity import protected_directory_doc_id
 
 
 class _View:
@@ -78,6 +79,53 @@ def test_replica_serves_stored_bytes_verbatim() -> None:
     assert (
         tuple(value for _key, value in replica.serve_sync_page(["doc-a"])) == envelopes
     )
+
+
+def test_replica_sync_page_accepts_protected_directory_document_id() -> None:
+    space_id = "a2b5fb64-de25-4897-aaf1-0e25e2d83e93"
+    doc_id = protected_directory_doc_id(
+        space_id,
+        "directory/invites/" + "0" * 64 + ".json",
+        space_owner="user:bob.smith@example.com",
+    )
+    assert doc_id is not None and len(doc_id) > 240
+    replica = ReplicaStore(space_id, MemoryReplicaBackend(), _View())
+    key = f"log/{space_id}/{doc_id}/writer-a/0"
+    replica.store_envelope(key, b"protected update")
+
+    assert replica.serve_sync_page([doc_id]) == ((key, b"protected update"),)
+
+
+def test_replica_log_range_accepts_protected_directory_document_id() -> None:
+    space_id = "a2b5fb64-de25-4897-aaf1-0e25e2d83e93"
+    doc_id = protected_directory_doc_id(
+        space_id,
+        "directory/invites/" + "0" * 64 + ".json",
+        space_owner="user:bob.smith@example.com",
+    )
+    assert doc_id is not None and len(doc_id) > 240
+    replica = ReplicaStore(space_id, MemoryReplicaBackend(), _View())
+    key = f"log/{space_id}/{doc_id}/writer-a/0"
+    replica.store_envelope(key, b"protected update")
+
+    assert replica.serve_log_range(doc_id, "writer-a") == ((key, b"protected update"),)
+
+
+def test_replica_retention_accepts_protected_directory_document_id() -> None:
+    space_id = "a2b5fb64-de25-4897-aaf1-0e25e2d83e93"
+    doc_id = protected_directory_doc_id(
+        space_id,
+        "directory/invites/" + "0" * 64 + ".json",
+        space_owner="user:bob.smith@example.com",
+    )
+    assert doc_id is not None and len(doc_id) > 240
+    view = _View()
+    replica = ReplicaStore(space_id, MemoryReplicaBackend(), view)
+    key = f"log/{space_id}/{doc_id}/writer-a/0"
+    replica.store_envelope(key, b"protected update")
+    view.points[doc_id] = encode_snapshot_frontier({"writer-a": 0})
+
+    assert replica.apply_retention(doc_id) == (key,)
 
 
 def test_retired_doc_residue_only_blocks_that_doc_not_whole_sync_page() -> None:

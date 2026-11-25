@@ -11,12 +11,22 @@ without a sidecar is deliberately not set: a lost switch fails the build.
 Arms:
 
 * static (runs everywhere): ``build-worker-image.sh`` goes straight from
-  ``uv build``/``uv version`` to ``docker build`` -- the retired GUI provenance
-  stamp and its ``git`` probes are gone -- and the Dockerfile builds the thin
-  wheel and verifies the builder sidecar.
+  ``uv run`` (the version) to ``docker build`` -- the retired GUI provenance
+  stamp and its ``git`` probes are gone, and so is the host-side ``uv build
+  --wheel`` whose output the image never used (it needed Rust on the source
+  host) -- and the Dockerfile builds the thin wheel and verifies the builder
+  sidecar.
 * real (skipped when uv is unavailable): a copy of the package with no
   ``.git`` and no ``src/gui`` builds a thin wheel containing no ``_gui`` or
   ``_bin`` payload.  This is the heavy arm; run it only with a build slot.
+  The copy carries a planted developer-staged ``hyprial/_core`` module and
+  stamp (what ``scripts/build/build_native_engine.sh`` leaves in an editable
+  tree); a context without ``.gitignore`` must still not ship them.
+* static: the Dockerfile's installer opts out of the native stage only with
+  the explicit ``HYPRIAL_BUILD_SKIP_NATIVE=1`` (the image has no Rust yet).  The
+  build sets ``HYPRIAL_BUILD_SKIP_NATIVE=1`` exactly as the Dockerfile does:
+  the worker image has no Rust toolchain yet, and the hook's native stage is
+  covered without one by ``tests/shell/packaging/native_engine/test_stage.py``.
 """
 
 from __future__ import annotations
@@ -68,6 +78,7 @@ def _forbidden_payload(names: list[str]) -> list[str]:
         if name.startswith("hyprial/_bin/")
         or name.startswith("hyprial/_gui/")
         or name == "hyprial/gui-source.json"
+        or name.startswith("hyprial/_core/")
     )
 
 
@@ -89,7 +100,7 @@ def test_the_script_has_no_gui_provenance_stamp() -> None:
     assert "gui-source.json" not in text
     assert "shell/impl/gui/bundle.py" not in text
     assert "git status" not in text
-    assert "uv build --wheel" in text
+    assert not [line for line in lines if "uv build" in line and not line.startswith("#")]
     assert "uv run python -c 'from hyprial import __version__; print(__version__)'" in text
     # No temporary stamp file is created before the context is sent.
     assert not any(line.startswith("stamp=") for line in lines)
@@ -108,6 +119,7 @@ def test_the_dockerfile_builds_a_thin_wheel_and_pins_the_builder_sidecar() -> No
     # The thin worker wheel stages neither payload, so this step needs neither
     # a GUI tree nor a Go toolchain ...
     assert "export HYPRIAL_BUILD_WORKER_WHEEL=1" in installer[0]
+    assert "export HYPRIAL_BUILD_SKIP_NATIVE=1" in installer[0]
     # ... and it may not fall back to the escape hatch that ships a wheel
     # without a sidecar: a lost switch has to fail the build, not pass it.
     assert "HYPRIAL_TAILCAT_ALLOW_MISSING" not in installer[0]
@@ -147,7 +159,15 @@ def test_a_gitless_context_builds_a_thin_wheel_without_gui_or_sidecar(tmp_path: 
     _context_copy(context)
     assert not (context / ".git").exists()
     assert not (context / "src/gui").exists()
-    env = {**os.environ, "HYPRIAL_BUILD_WORKER_WHEEL": "1"}
+    staged = context / "src/hyprial/_core"
+    staged.mkdir(parents=True, exist_ok=True)
+    (staged / "actors.abi3.so").write_bytes(b"developer-staged module")
+    (staged / "actors.stamp.json").write_text("{}\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "HYPRIAL_BUILD_WORKER_WHEEL": "1",
+        "HYPRIAL_BUILD_SKIP_NATIVE": "1",
+    }
 
     built = subprocess.run(
         ["uv", "build", "--wheel"],
@@ -188,6 +208,8 @@ def test_a_gitless_context_builds_a_thin_wheel_without_gui_or_sidecar(tmp_path: 
         "hyprial/_gui/scripts/start-gui.sh",
         "hyprial/_gui/",
         "hyprial/gui-source.json",
+        "hyprial/_core/actors.abi3.so",
+        "hyprial/_core/actors.stamp.json",
     ],
 )
 def test_the_thin_wheel_payload_predicate_rejects_real_payload_paths(payload: str) -> None:

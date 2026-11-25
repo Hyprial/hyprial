@@ -22,6 +22,8 @@ from hyprial.daemon.impl.composition import (
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
+from tests.support.actor_hosts import new_actor_host
+from tests.support.runtime.environment import UNIT_USER_ID
 
 
 _OPEN_REGISTRIES: list[AgentRegistry] = []
@@ -88,7 +90,7 @@ def _application(tmp_path: Path) -> DaemonApplication:
         state_dir=tmp_path / "state",
         socket_path=tmp_path / "daemon.sock",
         node_id="node",
-        owner="owner",
+        owner="owner", user_id=UNIT_USER_ID,
         hyprial_home=home,
     **_deep_module_daemon_dependencies())
     application._inbox = EmptyInbox()  # type: ignore[assignment]
@@ -196,7 +198,7 @@ def _configured_launch_actor(
     actor = AgentActor(
         registry,
         event_sink=events,
-        home_runtime_preparers={"codex": prepare_codex_runtime_context},
+        home_runtime_preparers={"codex": prepare_codex_runtime_context}, actor_host=new_actor_host(),
     )
     context = actor.prepare_runtime_context(
         "worker", "codex", str(tmp_path / "work"), TEST_TOOL_PROFILE

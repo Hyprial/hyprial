@@ -13,9 +13,11 @@ def test_daemon_ipc_client_is_public_on_kernel_interface() -> None:
     assert callable(interface.daemon_request)
     assert callable(interface.daemon_request_once)
     assert callable(interface.daemon_socket_path)
+    assert callable(interface.daemon_socket_absent)
     assert {
         "daemon_request",
         "daemon_request_once",
+        "daemon_socket_absent",
         "daemon_socket_path",
     }.issubset(interface.__all__)
 
@@ -24,6 +26,7 @@ def test_kernel_package_re_exports_the_same_objects() -> None:
     assert kernel_module.daemon_request is interface.daemon_request
     assert kernel_module.daemon_request_once is interface.daemon_request_once
     assert kernel_module.daemon_socket_path is interface.daemon_socket_path
+    assert kernel_module.daemon_socket_absent is interface.daemon_socket_absent
 
 
 def test_no_temporary_connector_name_is_published() -> None:
@@ -40,7 +43,7 @@ def test_windows_pipe_implementation_is_not_imported_eagerly() -> None:
         "import sys\n"
         "import hyprial.kernel.impl.ipc.client\n"
         "import hyprial.kernel\n"
-        "assert 'hyprial.kernel.impl.platform.windows_pipe' not in sys.modules, "
+        "assert 'hyprial.kernel.impl.manysys.ipc.windows_pipe' not in sys.modules, "
         "'windows_pipe imported eagerly'\n"
     )
     completed = subprocess.run(

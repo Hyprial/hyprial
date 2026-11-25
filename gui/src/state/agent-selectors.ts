@@ -1,5 +1,4 @@
-import type { ConnectionSummary } from './gui-view-model';
-import type { FixtureAgent } from '../fixtures/demo';
+import type { ConnectionSummary, SessionAgent } from './gui-view-model';
 import type { AgentFilter, AppState } from './types';
 
 /**
@@ -57,10 +56,24 @@ export interface AgentConnectionView {
   readonly sourceLabel: string;
 }
 
-export type AgentAvailability = 'available' | 'needs-connection' | 'disabled';
+export type AgentAvailability =
+  | 'available'
+  | 'needs-connection'
+  | 'disabled'
+  | 'unknown';
+
+/** agent.list 已给出的 home / 活动事实（无字段时为 null，不推测）。 */
+export interface AgentActivityFacts {
+  readonly homePath: string | null;
+  readonly homeMtimeMs: number | null;
+  readonly lastActiveAtMs: number | null;
+}
 
 export interface ManagedAgentView {
   readonly id: string;
+  readonly remote?: boolean;
+  /** Stable daemon membership key; id remains the actor used by routes and actions. */
+  readonly agentId?: string;
   readonly displayName: string;
   readonly role: string;
   readonly avatarTone: 'green' | 'lilac' | 'peach' | 'grey';
@@ -75,6 +88,8 @@ export interface ManagedAgentView {
   readonly availability: AgentAvailability;
   readonly model: AgentConnectionView;
   readonly channel: AgentConnectionView;
+  /** 目录读取侧携带的 home / 活动事实；种子路径不提供（undefined）。 */
+  readonly activity?: AgentActivityFacts;
 }
 
 export const AGENT_STATUS_LABELS = {
@@ -91,7 +106,7 @@ export const AGENT_NOT_FOUND = '找不到该 Agent';
 const UI_BASE = 10;
 
 export function formatAgentCount(visible: number, total: number): string {
-  return `显示 ${visible} / ${total} 个 Agent`;
+  return `找到 ${visible} 个，共 ${total} 个`;
 }
 
 function pick(
@@ -227,7 +242,7 @@ export function buildManagedAgent(
   };
 }
 
-function recordFromFixture(agent: FixtureAgent): AgentSeedRecord {
+function recordFromTarget(agent: SessionAgent): AgentSeedRecord {
   return {
     id: agent.id,
     displayName: agent.displayName,
@@ -240,7 +255,7 @@ function recordFromFixture(agent: FixtureAgent): AgentSeedRecord {
   };
 }
 
-/** Baseline agents come from the product fixtures; a seed replaces them. */
+/** Baseline agents come from the composed state; a seed replaces them. */
 export function selectManagedAgents(
   state: AppState,
   seed?: AgentSeed,
@@ -249,7 +264,7 @@ export function selectManagedAgents(
   const organizations = seed?.organizations ?? [];
   const records: readonly AgentSeedRecord[] = seed
     ? seed.agents
-    : state.targets.map(recordFromFixture);
+    : state.targets.map(recordFromTarget);
   return records.map((record) =>
     buildManagedAgent(record, connections, organizations),
   );

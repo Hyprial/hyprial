@@ -28,10 +28,10 @@ from pathlib import Path
 
 import pytest
 
-from hyprial.daemon import HOLD_REASONS
 from hyprial.daemon.impl.harnesses.pi.rpc_client import PI_HARNESS_BRIDGE_EXTENSION
 
 PI_DAEMON_IPC = PI_HARNESS_BRIDGE_EXTENSION.with_name("pi_daemon_ipc.ts")
+PI_LOCAL_IPC = PI_HARNESS_BRIDGE_EXTENSION.with_name("pi_local_ipc.ts")
 BATCH_TEXT = "[Harness Network inbox batch cursor=pi-bridge]\nBYTE-EXACT-秘密"
 
 NODE = shutil.which("node")
@@ -167,6 +167,8 @@ class FakeDaemon:
             }
         elif method == "targets":
             result = {"targets": []}
+        elif method == "conversations.history":
+            result = {"ok": True, "conversationId": params.get("conversationId"), "entries": []}
         else:
             return {
                 "version": 1,
@@ -221,6 +223,7 @@ def rig(tmp_path: Path):
     shutil.copy(PI_HARNESS_BRIDGE_EXTENSION, tmp_path / "pi_harness_bridge.ts")
     # The bridge imports the shared daemon IPC wire by relative path.
     shutil.copy(PI_DAEMON_IPC, tmp_path / "pi_daemon_ipc.ts")
+    shutil.copy(PI_LOCAL_IPC, tmp_path / "pi_local_ipc.ts")
     (tmp_path / "driver.ts").write_text(DRIVER, encoding="utf-8")
 
     def invoke(
@@ -350,6 +353,25 @@ def test_read_returns_daemon_batch_without_rendering(rig) -> None:  # type: igno
     assert "fetched" not in daemon.frames[0]["params"]
 
 
+def test_read_with_a_conversation_reads_one_history_page(rig) -> None:  # type: ignore[no-untyped-def]
+    daemon, invoke = rig
+    group = "g.groupexampleaaaaaaaaaaaaaa"
+    result = invoke(
+        "harness_read", {"conversationId": group, "mode": "older", "cursor": "c-1", "limit": 2}
+    )
+    paged_alone = invoke("harness_read", {"limit": 2})
+
+    assert "isError" not in result
+    (frame,) = daemon.frames
+    assert frame["method"] == "conversations.history"
+    params = frame["params"]
+    assert (params["conversationId"], params["mode"], params["cursor"], params["limit"]) == (
+        group, "older", "c-1", 2,
+    )
+    assert params["sessionRef"] == "sess-pi-1"
+    assert paged_alone.get("isError") is True
+
+
 def test_progress_lists_events_without_fetching_terminal_messages(rig) -> None:  # type: ignore[no-untyped-def]
     daemon, invoke = rig
     result = invoke("harness_progress", {"deliveryId": "d-1", "sinceSeq": 2})
@@ -386,7 +408,19 @@ def test_targets_rejects_an_invalid_kind_without_calling_the_daemon(
     result = invoke("harness_targets", {"kind": "bogus"})
 
     assert result.get("isError") is True
-    assert "must be agent, user, or channel_route" in _result_text(result)
+    assert "must be agent or user" in _result_text(result)
+    assert "channel_route" not in _result_text(result)
+    assert daemon.frames == []
+
+
+def test_targets_refuses_the_retired_channel_route_kind_without_calling_the_daemon(
+    rig,  # type: ignore[no-untyped-def]
+) -> None:
+    daemon, invoke = rig
+    result = invoke("harness_targets", {"kind": "channel_route"})
+
+    assert result.get("isError") is True
+    assert "must be agent or user" in _result_text(result)
     assert daemon.frames == []
 
 
@@ -447,16 +481,15 @@ def test_send_keeps_the_daemon_verdict_for_every_target_kind(
     assert [frame["method"] for frame in daemon.frames] == ["message.send"]
 
 
-@pytest.mark.parametrize("reason", sorted(HOLD_REASONS))
-def test_a_hold_is_a_successful_single_call_result(rig, monkeypatch, reason) -> None:
+def test_a_queued_send_is_a_successful_single_call_result(rig, monkeypatch) -> None:
     daemon, invoke = rig
     payload = {
         "ok": True,
         "queued": True,
-        "holdReason": reason,
+        "reason": "target-not-visible",
         "deliveries": [{
             "target": "agent:op:node-1:bob", "accepted": True,
-            "queued": True, "holdReason": reason,
+            "queued": True, "reason": "target-not-visible",
         }],
     }
     monkeypatch.setattr(daemon, "_respond", lambda frame: {
@@ -537,3 +570,23 @@ def test_negative_application_receipt_is_a_tool_error(
     assert result["details"] == receipt
     assert json.loads(_result_text(result)) == receipt
     assert len(daemon.frames) == 1
+
+
+def test_reply_forwards_mentions_and_no_mention(rig) -> None:  # type: ignore[no-untyped-def]
+    daemon, invoke = rig
+    result = invoke(
+        "harness_reply",
+        {
+            "messageId": "m-group-1",
+            "summary": "s",
+            "message": "done",
+            "mentions": ["a.alphaaaaaaaaaaaaaaaaaaaa"],
+            "noMention": True,
+        },
+    )
+
+    assert "isError" not in result
+    (frame,) = daemon.frames
+    assert frame["method"] == "message.reply"
+    assert frame["params"]["mentions"] == ["a.alphaaaaaaaaaaaaaaaaaaaa"]
+    assert frame["params"]["noMention"] is True

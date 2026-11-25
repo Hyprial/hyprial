@@ -26,15 +26,12 @@ from hyprial.daemon.impl.inbox.contracts.api import (
 
 from .support import (
     HUMAN_FACING,
-    PROXY,
     WORKER,
     FakeHarnessFarm,
     LoudInbox,
     _fail_once,
     _human_request,
     _in_channel_runtime,
-    _proxy_in_channel_runtime,
-    _proxy_request,
     _wait_for,
 )
 
@@ -50,19 +47,19 @@ def _recording_deliverer(sink: list[tuple[str, str | None, str]]):
     return deliverer
 
 
-def test_a_failure_notice_is_replied_into_the_original_chat(tmp_path: Path) -> None:
+def test_a_failure_notice_is_replied_into_the_original_chat(
+    tmp_path: Path, *, actor_host
+) -> None:
     """The main case: the person's own chat hears the failure, the owner does not."""
 
     sink: list[tuple[str, str | None, str]] = []
-    owner_calls: list[str] = []
     sender = HUMAN_FACING[0]
     inbox = LoudInbox()
     inbox.add(_human_request("req-c1", sender))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
     runtime, events = _in_channel_runtime(
-        tmp_path, inbox, farm, now, _recording_deliverer(sink),
-        notifier=lambda text, *, idempotency_key: owner_calls.append(text),
+        tmp_path, inbox, farm, now, _recording_deliverer(sink), actor_host=actor_host,
     )
     try:
         _fail_once(runtime, farm, now, "req-c1")
@@ -76,13 +73,14 @@ def test_a_failure_notice_is_replied_into_the_original_chat(tmp_path: Path) -> N
     # Never a machine leg into the inbox addressed to the person's chat.
     assert [m for m in inbox.sent if m.recipient == sender] == []
     # Owner diversion is retired for human-originated conversations.
-    assert owner_calls == []
     assert not [f for e, f in events if e == "availability_loud.diverted"]
     sent = [f for e, f in events if e == "availability_loud.in_channel_sent"]
     assert len(sent) == 1 and sent[0]["recipient"] == sender
 
 
-def test_no_progress_reaches_the_chat_once_per_conversation(tmp_path: Path) -> None:
+def test_no_progress_reaches_the_chat_once_per_conversation(
+    tmp_path: Path, *, actor_host
+) -> None:
     """First occurrence only: a second stalled request in the same chat is
     suppressed, and the log says so instead of the chat."""
 
@@ -117,7 +115,7 @@ def test_no_progress_reaches_the_chat_once_per_conversation(tmp_path: Path) -> N
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
     runtime, events = _in_channel_runtime(
-        tmp_path, inbox, farm, now, _recording_deliverer(sink)
+        tmp_path, inbox, farm, now, _recording_deliverer(sink), actor_host=actor_host
     )
     try:
         runtime.on_timer()  # dispatch both
@@ -137,7 +135,9 @@ def test_no_progress_reaches_the_chat_once_per_conversation(tmp_path: Path) -> N
     assert suppressed[0]["conversationId"] == conversation
 
 
-def test_the_terminal_outcome_always_reaches_the_chat(tmp_path: Path) -> None:
+def test_the_terminal_outcome_always_reaches_the_chat(
+    tmp_path: Path, *, actor_host
+) -> None:
     """First occurrence, suppressed intermediates, and the terminal outcome.
 
     PROVIDER_CONNECTION is retryable (non-terminal notices); an
@@ -167,7 +167,7 @@ def test_the_terminal_outcome_always_reaches_the_chat(tmp_path: Path) -> None:
         runtime.on_timer()
 
     runtime, events = _in_channel_runtime(
-        tmp_path, inbox, farm, now, _recording_deliverer(sink)
+        tmp_path, inbox, farm, now, _recording_deliverer(sink), actor_host=actor_host
     )
     try:
         runtime.on_timer()  # dispatch
@@ -187,12 +187,11 @@ def test_the_terminal_outcome_always_reaches_the_chat(tmp_path: Path) -> None:
 
 
 def test_an_undeliverable_in_channel_notice_is_held_not_diverted(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """The adapter refusing is a retry, never a return to owner diversion."""
 
     sink: list[tuple[str, str | None, str]] = []
-    owner_calls: list[str] = []
     attempts: list[bool] = [False, True]
     sender = HUMAN_FACING[0]
 
@@ -208,8 +207,7 @@ def test_an_undeliverable_in_channel_notice_is_held_not_diverted(
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
     runtime, events = _in_channel_runtime(
-        tmp_path, inbox, farm, now, deliverer,
-        notifier=lambda text, *, idempotency_key: owner_calls.append(text),
+        tmp_path, inbox, farm, now, deliverer, actor_host=actor_host,
     )
     try:
         _fail_once(runtime, farm, now, "req-c4")
@@ -219,36 +217,91 @@ def test_an_undeliverable_in_channel_notice_is_held_not_diverted(
         runtime.stop()
 
     assert [(s[0], s[1]) for s in sink] == [(sender, "req-c4")]
-    assert owner_calls == []
     held = [f for e, f in events if e == "availability_loud.delivery_failed"]
     assert len(held) == 1 and held[0]["recipient"] == sender
 
 
-def test_a_user_proxy_requester_hears_it_in_the_relay_once(tmp_path: Path) -> None:
-    """The proxy's relay into the person's DM is the original channel, and the
-    (conversation x kind) rate limit bounds it -- the 252-notice chain shape."""
+def _default_conversation_request(message_id: str, sender: str) -> InboxMessage:
+    from hyprial.daemon.impl.conversations.ids import default_conversation_id
 
-    owner_calls: list[str] = []
+    return InboxMessage(
+        message_id=message_id,
+        conversation_id=default_conversation_id(sender, WORKER),
+        sender=sender,
+        recipient=WORKER,
+        payload=b'{"message":"a question with no conversation id"}',
+        intent="request",
+        lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
+        created_at_ms=1_000,
+    )
+
+
+def test_two_stalled_requests_in_a_default_conversation_each_reach_the_chat(
+    tmp_path: Path, *, actor_host
+) -> None:
+    """A default conversation (C1) holds every no-id send of the pair for the
+    life of the pair, so the once-key is the request there: a second stalled
+    request is reported, not suppressed until the daemon restarts."""
+
+    sink: list[tuple[str, str | None, str]] = []
+    sender = HUMAN_FACING[1]
     inbox = LoudInbox()
-    inbox.add(_proxy_request("req-c5"))
+    inbox.add(_default_conversation_request("req-d1a", sender))
+    inbox.add(_default_conversation_request("req-d1b", sender))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime, events = _proxy_in_channel_runtime(
-        tmp_path, inbox, farm, now,
-        lambda text, *, idempotency_key: owner_calls.append(text),
+    runtime, events = _in_channel_runtime(
+        tmp_path, inbox, farm, now, _recording_deliverer(sink), actor_host=actor_host
     )
     try:
-        _fail_once(runtime, farm, now, "req-c5")
-        runtime.on_timer()  # a retry tick must not submit twice
+        runtime.on_timer()
+        now["v"] += 500_000
+        runtime.on_timer()
+        runtime.on_timer()
     finally:
         runtime.stop()
 
-    notices = [
-        json.loads(m.payload)
-        for m in inbox.sent
-        if m.recipient == PROXY and "notification" in json.loads(m.payload)
+    assert sorted(s[1] for s in sink) == ["req-d1a", "req-d1b"]
+    assert all("没有可核进展" in s[2] for s in sink)
+    assert not [f for e, f in events if e == "availability_loud.in_channel_suppressed"]
+
+
+def test_a_retried_request_in_a_default_conversation_reports_its_intermediate_once(
+    tmp_path: Path, *, actor_host
+) -> None:
+    sink: list[tuple[str, str | None, str]] = []
+    sender = HUMAN_FACING[1]
+    inbox = LoudInbox()
+    inbox.add(_default_conversation_request("req-d2", sender))
+    farm = FakeHarnessFarm()
+    now = {"v": 1_000}
+
+    def fail(code: str) -> None:
+        farm.results.append(
+            HarnessResult(
+                delivery_id="req-d2",
+                recipient=WORKER,
+                status=HarnessResultStatus.FAILED,
+                error=code,
+                failure_code=code,
+            )
+        )
+        farm.enqueued.discard("req-d2")
+        runtime.on_timer()
+
+    runtime, events = _in_channel_runtime(
+        tmp_path, inbox, farm, now, _recording_deliverer(sink), actor_host=actor_host
+    )
+    try:
+        runtime.on_timer()
+        fail("PROVIDER_CONNECTION")
+        fail("PROVIDER_CONNECTION")
+    finally:
+        runtime.stop()
+
+    assert [s[1] for s in sink] == ["req-d2"]
+    assert "将重试" in sink[0][2]
+    suppressed = [
+        f for e, f in events if e == "availability_loud.in_channel_suppressed"
     ]
-    assert len(notices) == 1  # the relay leg, exactly once
-    assert notices[0]["deliveryId"] == "req-c5"
-    assert owner_calls == []  # diversion retired for the person's requests
-    assert not [f for e, f in events if e == "availability_loud.diverted"]
+    assert len(suppressed) == 1

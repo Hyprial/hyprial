@@ -33,7 +33,6 @@ from hyprial.daemon.impl.mcp.channel.notifier import (
 )
 from hyprial.daemon.impl.mcp.channel.ownership import (
     _DAEMON_CONTACT_ERRORS,
-    _resolve_tmux_pane_owner,
 )
 from hyprial.daemon.impl.mcp.channel.notifier import ClaudeChannelDriver
 
@@ -94,7 +93,6 @@ async def run_channel_session(
     owner_identity: str | None = None,
     parent_poll_interval: float = 1.0,
     on_parent_death: Callable[[], None] | None = None,
-    tmux_session: str | None = None,
 ) -> None:
     """Run the channel MCP server, its resilient poll loop, and a parent watch.
 
@@ -123,14 +121,6 @@ async def run_channel_session(
         raise ValueError("poll_interval must be positive")
     if parent_poll_interval <= 0:
         raise ValueError("parent_poll_interval must be positive")
-    if owner_pid is None and tmux_session is not None:
-        # Detached-tmux launches outlive their launcher, so the launcher PID
-        # can never be the owner fence here. The pane's top process lives
-        # exactly as long as the tmux session does; when the lookup fails the
-        # getppid compatibility watch below still applies.
-        resolved_owner = _resolve_tmux_pane_owner(tmux_session)
-        if resolved_owner is not None:
-            owner_pid, owner_identity = resolved_owner
     resolved_getppid = os.getppid if getppid is None else getppid
     resolved_on_parent_death = (
         (lambda: os._exit(0)) if on_parent_death is None else on_parent_death
@@ -157,7 +147,6 @@ async def run_channel_session(
         cwd=cwd,
         command=command,
         owner_fence=owner_pid is not None and owner_identity is not None,
-        tmux_session=tmux_session,
         turn_signal_dir=turn_signal_dir,
     )
     # Import lazily to keep the server's TYPE_CHECKING-only adapter edge and
@@ -249,7 +238,6 @@ async def serve_channel_stdio(
     turn_signal_dir: Path | None = None,
     owner_pid: int | None = None,
     owner_identity: str | None = None,
-    tmux_session: str | None = None,
 ) -> None:
     """Run one CC-owned stdio MCP child and poll daemon-authoritative pending work.
 
@@ -276,5 +264,4 @@ async def serve_channel_stdio(
             turn_signal_dir=turn_signal_dir,
             owner_pid=owner_pid,
             owner_identity=owner_identity,
-            tmux_session=tmux_session,
         )

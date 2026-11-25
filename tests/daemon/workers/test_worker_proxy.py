@@ -253,7 +253,6 @@ def test_every_matrix_candidate_classifies() -> None:
         # models.  The caller keeps the ambient behaviour for these.
         ("pi", None, None),
         ("jev", None, None),
-        ("dsh", None, None),
     ],
 )
 def test_classification_rules(harness, vendor, family) -> None:
@@ -594,7 +593,7 @@ def test_the_ps_payload_carries_the_worker_proxy_block(tmp_path) -> None:
         )
         payload = app.handle("ps", {})
     finally:
-        app._agent_session_domains.close()
+        app._agent_session_domains.close(shutdown_hosts=False)
         app._inbox.close()
 
     assert payload["workerProxy"]["configured"] is True

@@ -1,3 +1,7 @@
+# Decision record (W2B-2, 2026-11-21):
+# - Receipt-root, revision-parent, and receipt-file hardening delegate to
+#   hyprial.kernel.harden_private_path, and _fsync_directory delegates to
+#   hyprial.kernel.fsync_directory.
 """Durable, incarnation-fenced agent configuration rebind saga."""
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from hyprial.identity.impl.agents.home.config import AgentConfig
 from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
 from hyprial.identity.impl.agents.registry._base import Agent
 from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import fsync_directory, harden_private_path, ipc_errors
 
 from .projection_diff import projection_changes
 from .tree import (
@@ -452,7 +456,7 @@ def _validate_receipt_root(root: Path, *, create: bool) -> None:
         if not create:
             return
         root.mkdir(mode=0o700, parents=False)
-        os.chmod(root, 0o700)
+        harden_private_path(root, mode=0o700)
         info = root.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ConfigRebindError(
@@ -527,7 +531,7 @@ def _validate_revision_parent(parent: Path, *, create: bool) -> bool:
         if not create:
             return
         parent.mkdir(mode=0o700, parents=False)
-        os.chmod(parent, 0o700)
+        harden_private_path(parent, mode=0o700)
         info = parent.lstat()
         created = True
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
@@ -542,7 +546,7 @@ def _validate_revision_parent(parent: Path, *, create: bool) -> bool:
         )
     if stat.S_IMODE(info.st_mode) != 0o700:
         if created:
-            os.chmod(parent, 0o700)
+            harden_private_path(parent, mode=0o700)
         else:
             raise ConfigRebindError(
                 ipc_errors.AGENT_CONFIG_REBIND_TARGET_DRIFT,
@@ -811,11 +815,11 @@ def _write_receipt(path: Path, receipt: dict[str, object]) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        harden_private_path(temporary, mode=0o600)
+        os.replace(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)
     _fsync_directory(path.parent)
 
 
@@ -830,11 +834,7 @@ def _required_receipt_text(receipt: dict[str, object], key: str) -> str:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    fsync_directory(path)
 
 
 def _crash_point(_label: str) -> None:

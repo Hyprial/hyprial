@@ -1,10 +1,4 @@
-"""WP6: ``hyprial message outbox list`` renders the wait reason and wait duration.
-
-The renderer reads the daemon's ``holdReason`` (falling back to the legacy
-free-text ``reason``) and either the daemon-supplied wait or ``now -
-createdAtMs``. An expired entry keeps its terminal state; observing the queue
-never triggers a resend, mint, add or prune.
-"""
+"""``hyprial message outbox list`` renders the queue reason and wait duration (T2b)."""
 
 from __future__ import annotations
 
@@ -14,7 +8,6 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.message import outbox as outbox_module
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
@@ -54,22 +47,16 @@ def test_outbox_list_renders_reason_and_wait_duration(
 ) -> None:
     entries = [
         {
-            "messageId": "m-minting",
+            "messageId": "m-1",
             "recipient": TARGET,
             "createdAtMs": FROZEN - 180_000,
-            "holdReason": ipc_errors.LINK_MINTING,
+            "reason": "target-not-visible",
         },
         {
-            "messageId": "m-window",
+            "messageId": "m-2",
             "recipient": TARGET,
             "createdAtMs": FROZEN - 60_000,
-            "holdReason": ipc_errors.LINK_WINDOW_FULL,
-        },
-        {
-            "messageId": "m-legacy",
-            "recipient": TARGET,
-            "createdAtMs": FROZEN - 1_000,
-            "reason": "target-not-visible",
+            "reason": "delivery-deferred",
         },
         {"messageId": "m-bare", "recipient": TARGET},
     ]
@@ -81,9 +68,8 @@ def test_outbox_list_renders_reason_and_wait_duration(
     assert result.exit_code == 0, result.stdout
     assert calls == [("outbox.list", {})]
     out = result.stdout
-    assert ipc_errors.LINK_MINTING in out
-    assert ipc_errors.LINK_WINDOW_FULL in out
     assert "target-not-visible" in out
+    assert "delivery-deferred" in out
     assert "3m" in out
     assert "1m" in out
     assert DASH in out
@@ -98,7 +84,7 @@ def test_outbox_wait_prefers_the_daemon_supplied_duration(
             "recipient": TARGET,
             "createdAtMs": 0,
             "waitMs": 42_000,
-            "holdReason": ipc_errors.LINK_WINDOW_FULL,
+            "reason": "target-not-visible",
         }
     ]
     _record(monkeypatch, answer={"ok": True, "entries": entries})
@@ -119,7 +105,7 @@ def test_outbox_marks_an_expired_entry_terminal(
             "recipient": TARGET,
             "createdAtMs": FROZEN - 10_000,
             "expiresAtMs": FROZEN - 1,
-            "holdReason": ipc_errors.LINK_PEER_FULL,
+            "reason": "target-not-visible",
         }
     ]
     _record(monkeypatch, answer={"ok": True, "entries": entries})
@@ -130,7 +116,6 @@ def test_outbox_marks_an_expired_entry_terminal(
     assert result.exit_code == 0, result.stdout
     row = next(line for line in result.stdout.splitlines() if "m-expired" in line)
     assert "expired" in row
-    # An expired entry is not advertised as still re-evaluable.
     assert "do not resend" not in result.stdout
 
 
@@ -159,7 +144,7 @@ def test_outbox_json_is_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
             "messageId": "m-1",
             "recipient": TARGET,
             "createdAtMs": FROZEN - 60_000,
-            "holdReason": ipc_errors.LINK_MINTING,
+            "reason": "target-not-visible",
         }
     ]
     _record(monkeypatch, answer={"ok": True, "entries": entries})
@@ -173,7 +158,7 @@ def test_outbox_json_is_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all("waitMs" not in entry for entry in payload["entries"])
 
 
-def test_observing_the_outbox_never_resends_a_held_request(
+def test_observing_the_outbox_never_resends_a_queued_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
@@ -191,7 +176,7 @@ def test_observing_the_outbox_never_resends_a_held_request(
                         "messageId": "m-1",
                         "accepted": True,
                         "queued": True,
-                        "holdReason": ipc_errors.LINK_PEER_FULL,
+                        "reason": "target-not-visible",
                     }
                 ],
             }
@@ -202,7 +187,7 @@ def test_observing_the_outbox_never_resends_a_held_request(
                     "messageId": "m-1",
                     "recipient": TARGET,
                     "createdAtMs": FROZEN - 1_000,
-                    "holdReason": ipc_errors.LINK_PEER_FULL,
+                    "reason": "target-not-visible",
                 }
             ],
         }

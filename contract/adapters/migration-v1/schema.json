@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyprial.com/contracts/adapters/migration-v1/schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "caseId", "phase", "expected"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "caseId": {"type": "string", "pattern": "^UA-[0-9]{3}:"},
+    "phase": {"enum": ["M0", "M1", "M2", "M3", "M4", "M5", "M6"]},
+    "expected": {"type": "object"}
+  },
+  "additionalProperties": false
+}

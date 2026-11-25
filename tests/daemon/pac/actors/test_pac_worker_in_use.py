@@ -116,8 +116,22 @@ class _Spec:
     harness = "pi"
 
 
-def _observe_application(*, pinned: tuple[str, ...], sessions, online: bool):
-    agent = SimpleNamespace(entity_token="entity", pinned_adapters=pinned)
+def _observe_application(*, bound: tuple[str, ...], sessions, online: bool):
+    from hyprial.kernel import subject_cell_id
+
+    agent_id = "a." + "a" * 26
+    agent = SimpleNamespace(
+        entity_token="entity",
+        cell_id=subject_cell_id("agent", agent_id),
+        agent_id=agent_id,
+        uri="agent:o:n:wf-a",
+        actor="wf-a",
+        owner="o",
+        machine="n",
+    )
+    from tests.support.identity.cell_runtime import bound_cell, cell_runtime_stub
+
+    runtime = cell_runtime_stub((bound_cell(agent, bound),))
     return SimpleNamespace(
         desired_state=SimpleNamespace(
             harness_spec=lambda name, excluding=None: _Spec()
@@ -127,28 +141,29 @@ def _observe_application(*, pinned: tuple[str, ...], sessions, online: bool):
         _managed_worker_running=lambda actor: True,
         _registered_interactive_actors=lambda: frozenset(sessions),
         _presence=SimpleNamespace(actor_online=lambda actor: online),
+        _cell_runtime=runtime,
     )
 
 
-def test_runtime_observe_reports_pins_and_online_interactive_sessions() -> None:
+def test_runtime_observe_reports_bindings_and_online_interactive_sessions() -> None:
     uri = "agent:o:n:wf-a"
     idle = DaemonActorRuntime(
-        _observe_application(pinned=(), sessions=(), online=True)
+        _observe_application(bound=(), sessions=(), online=True)
     ).observe("wf-a")
     assert (idle.pinned, idle.interactive_online) == (False, False)
 
-    pinned = DaemonActorRuntime(
-        _observe_application(pinned=("lark-main",), sessions=(), online=True)
+    bound = DaemonActorRuntime(
+        _observe_application(bound=("lark-main",), sessions=(), online=True)
     ).observe("wf-a")
-    assert (pinned.pinned, pinned.interactive_online) == (True, False)
+    assert (bound.pinned, bound.interactive_online) == (True, False)
 
     attached = DaemonActorRuntime(
-        _observe_application(pinned=(), sessions=(uri,), online=True)
+        _observe_application(bound=(), sessions=(uri,), online=True)
     ).observe("wf-a")
     assert attached.interactive_online is True
 
     stale = DaemonActorRuntime(
-        _observe_application(pinned=(), sessions=(uri,), online=False)
+        _observe_application(bound=(), sessions=(uri,), online=False)
     ).observe("wf-a")
     assert stale.interactive_online is False
 
@@ -196,3 +211,15 @@ def test_an_in_use_hold_never_counts_an_attempt(tmp_path: Path) -> None:
     finally:
         assert service.close()
         assert authority.close(3.0)
+
+
+def test_runtime_observe_treats_unknown_bindings_as_pinned() -> None:
+    from tests.support.identity.cell_runtime import cell_runtime_stub
+
+    unavailable = _observe_application(bound=(), sessions=(), online=True)
+    unavailable._cell_runtime = None
+    assert DaemonActorRuntime(unavailable).observe("wf-a").pinned is True
+
+    unloaded = _observe_application(bound=(), sessions=(), online=True)
+    unloaded._cell_runtime = cell_runtime_stub(())
+    assert DaemonActorRuntime(unloaded).observe("wf-a").pinned is True

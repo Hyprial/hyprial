@@ -51,8 +51,8 @@ def test_adapter_inbound_emits_correlated_trajectory_event_with_required_fields(
         }
         assert inbound["nativeMessageId"] == "om-trajectory"
         assert inbound["nativeEventId"] == "evt-trajectory"
-        assert inbound["actorId"] == "channel:lark:tenant:bot"
-        assert inbound["sender"] == "channel:lark:tenant:bot"
+        assert inbound["actorId"] == "adapter:lark:tenant:bot"
+        assert inbound["sender"] == "adapter:lark:tenant:bot"
         assert inbound["target"] == actor.actor_id
         assert inbound["platform"] == "lark"
         assert isinstance(inbound["ts"], str)
@@ -130,7 +130,7 @@ def test_no_actor_human_failure_is_native_and_throttled(
     adapter, lark, harness, routes, _events = make_adapter(
         tmp_path, actor, logger=Logger.adapter(tmp_path, name="test")
     )
-    routes.pins.clear()
+    routes.bindings.clear()
 
     for suffix in ("one", "two"):
         sdk_event(
@@ -152,7 +152,7 @@ def test_alarm_send_failure_does_not_bounce_again(
     adapter, lark, _harness, routes, _events = make_adapter(
         tmp_path, actor, logger=Logger.adapter(tmp_path, name="test")
     )
-    routes.pins.clear()
+    routes.bindings.clear()
     lark.fail_reply = True
 
     sdk_event(
@@ -194,21 +194,16 @@ def test_official_sdk_event_converts_then_adds_onit_ack(
         "messageId": "om_inbound",
         "chatId": "oc_dm",
         "chatType": "p2p",
+        "chatKind": "dm",
         "rootId": "om_root",
         "threadId": None,
         "replyTo": None,
         "senderId": "ou_sender",
         "senderType": "user",
-        # Nothing on record names this sender, so the block says so
-        # explicitly instead of being absent or guessing a name.
         "sender": {
             "kind": "user",
             "platformId": "ou_sender",
-            "unionId": "on_sender",
             "displayName": None,
-            "owner": None,
-            "standing": "unresolved",
-            "source": None,
         },
         "createTime": "1720000000000",
         "messageType": "text",
@@ -507,11 +502,11 @@ def test_group_mention_of_somebody_else_stays_ignored(
     assert lark.last_reply_text is None
 
 
-def test_group_mention_of_this_bot_without_a_pin_is_a_loud_no_target(
+def test_group_mention_of_this_bot_without_a_binding_is_a_loud_no_target(
     tmp_path: Path, actor: ActorTarget
 ) -> None:
     adapter, lark, harness, routes, _events = make_adapter(tmp_path, actor)
-    routes.pins.clear()
+    routes.bindings.clear()
 
     sdk_event(
         adapter.handle_sdk_event,
@@ -524,9 +519,8 @@ def test_group_mention_of_this_bot_without_a_pin_is_a_loud_no_target(
     )
 
     assert harness.requests == []
-    # The user addressed us; the guidance names the exact operator command.
     assert lark.last_reply_text is not None
-    assert "hyprial adapter pin bot <agent>" in lark.last_reply_text
+    assert "hyprial agent cell" in lark.last_reply_text
     # And the body is preserved as a dead letter, not silently gone.
     assert any(
         letter.message_id == "om_group_unpinned"

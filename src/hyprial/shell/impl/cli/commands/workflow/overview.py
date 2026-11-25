@@ -12,10 +12,6 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.output import CliResult
 
 
-from hyprial.shell.impl.cli.commands.work.commands import (
-    _association_request,
-    _org_space,
-)
 from hyprial.shell.impl.cli.commands.workflow.run import _identity, overview_app
 
 
@@ -54,26 +50,33 @@ def _overview_model(
         request, now_ms=int(_time.time() * 1000), window_days=window_days
     )
     loaded: list[dict[str, Any]] = []
-    invalid_work_items: list[dict[str, str]] = []
+    document_diagnostics: list[dict[str, str]] = []
     problem = None
     from hyprial.daemon import views_missions as missions
 
+    def fs_request(method: str, params: Any) -> Any:
+        result = services.runtime.request(method, dict(params))
+        if not isinstance(result, dict):
+            raise services.CliError("INVALID_RESPONSE", f"{method} returned a non-object")
+        return result
+
     try:
-        found = missions.load_missions(
-            _association_request(json_output), _org_space(org)
-        )
-        loaded = found["missions"]
-        invalid_work_items = found["unparseable"]
-        if found["unparseable"] or found["conflicts"]:
-            problem = "needs repair: " + ", ".join(
-                [u["path"] for u in found["unparseable"]] + found["conflicts"]
-            )
+        resolved = fs_request("org.resolve", {} if org is None else {"org": org})
+        space_id = resolved.get("spaceId")
+        if not isinstance(space_id, str) or not space_id:
+            raise services.CliError("INVALID_RESPONSE", "org.resolve must return a spaceId")
+        found = missions.load_missions(fs_request, space_id)
+        loaded = found["documents"]
+        document_diagnostics = [
+            {"path": overview.redact(item["path"]), "reason": overview.redact(item["reason"])}
+            for item in found["unparseable"]
+        ]
     except services.CliError as error:
         problem = str(error)
     model = overview.build_model(
         snapshot, node=node, missions=loaded, window_days=window_days
     )
-    model["invalidWorkItems"] = invalid_work_items
+    model["workDocumentDiagnostics"] = document_diagnostics
     return ({**model, "missionsError": problem} if problem else model), overview
 
 @overview_app.command("show")
@@ -127,10 +130,11 @@ def overview_publish(
     Open <checkout>/<path>/index.html from `hyprial org fs space checkout <space>` to view
     every publishing node together; the page reloads itself every minute.
     Graphs are only those the caller can see, with node output redacted and
-    truncated.  The page also carries every work item of the org (status,
-    owner/assignee, checklist, acceptance, depends, the last 20 log lines,
-    opened/closed; log/acceptance/checklist text redacted and truncated), so
-    publishing into a space shows them to that space's readers.
+    truncated. The page also carries the org's current work/ documents as
+    redacted previews capped at 8,000 characters, with optional task fields
+    and parse diagnostics. The complete original remains in OrgFS; old
+    approval fields are ordinary text, not proof. Publishing into a space
+    shows these previews to that space's readers.
     Publishing enables this node's read-only checkout of the space and leaves
     it on (`hyprial org fs space checkout <space> --disable` turns it off).  Every member
     who can write the space can put scripts on the page: publish only into a

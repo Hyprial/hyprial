@@ -171,7 +171,7 @@ def test_state_roundtrip_is_0600(tmp_path: Path) -> None:
         device_code="dc-secret",
         verification_url="https://example.com/activate",
         expires_at=NOW + 600,
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         domains=("all",),
     )
@@ -209,7 +209,7 @@ def test_check_ok_never_notifies_never_initiates(tmp_path: Path) -> None:
     result = check(
         runner,
         state_path=tmp_path / "state.json",
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         send=send,
         now=NOW,
@@ -233,7 +233,7 @@ def test_check_needs_refresh_recovered_stays_silent(tmp_path: Path) -> None:
     result = check(
         runner,
         state_path=tmp_path / "state.json",
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         send=send,
         now=NOW,
@@ -257,7 +257,7 @@ def test_check_permanent_needs_refresh_escalates(tmp_path: Path) -> None:
     result = check(
         runner,
         state_path=tmp_path / "state.json",
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         send=send,
         now=NOW,
@@ -282,18 +282,18 @@ def test_check_missing_initiates_and_notifies_once(tmp_path: Path) -> None:
     result = check(
         runner,
         state_path=state_path,
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         send=send,
         now=NOW,
     )
     assert result.status == "awaiting_user"
     assert result.notified is True
-    assert result.notify_route == "route:app:dm"
+    assert result.notify_route == "dm"
     assert result.verification_url == "https://ex.com/a"
     assert len(sent) == 1
     sender, route, text = sent[0]
-    assert (sender, route) == ("agent:o:m:w", "route:app:dm")
+    assert (sender, route) == ("agent:o:m:w", "dm")
     assert "https://ex.com/a" in text
     # the device_code never reaches the pushed message or the result payload
     issued = issued_device_code(state_path)
@@ -315,7 +315,7 @@ def test_check_pending_within_cooldown_does_not_renotify(tmp_path: Path) -> None
             verification_url="https://ex.com/a",
             expires_at=NOW + 600,
             notified_at=NOW - 60,  # notified a minute ago
-            notify_route="route:app:dm",
+            notify_route="dm",
             sender="agent:o:m:w",
         ),
     )
@@ -344,7 +344,7 @@ def test_check_pending_past_cooldown_renotifies_same_link(tmp_path: Path) -> Non
             verification_url="https://ex.com/a",
             expires_at=NOW + 600,
             notified_at=NOW - 7200,
-            notify_route="route:app:dm",
+            notify_route="dm",
             sender="agent:o:m:w",
         ),
     )
@@ -401,7 +401,7 @@ def test_check_notify_failure_still_saves_state(tmp_path: Path) -> None:
     result = check(
         runner,
         state_path=state_path,
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         send=failing_send,
         now=NOW,
@@ -445,7 +445,7 @@ def test_check_remembers_route_and_sender_from_first_run(tmp_path: Path) -> None
     check(
         runner,
         state_path=state_path,
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         send=send,
         env={},
@@ -453,7 +453,7 @@ def test_check_remembers_route_and_sender_from_first_run(tmp_path: Path) -> None
     )
     state = load_state(state_path)
     assert state is not None
-    assert state.notify_route == "route:app:dm"
+    assert state.notify_route == "dm"
     assert state.sender == "agent:o:m:w"
 
 
@@ -468,13 +468,13 @@ def test_check_env_var_route(tmp_path: Path) -> None:
         state_path=tmp_path / "state.json",
         send=send,
         env={
-            reauth.ENV_NOTIFY_ROUTE: "route:env:dm",
+            reauth.ENV_NOTIFY_ROUTE: "env-dm",
             reauth.ENV_SENDER: "agent:o:m:env",
         },
         now=NOW,
     )
     assert result.notified is True
-    assert sent[0][:2] == ("agent:o:m:env", "route:env:dm")
+    assert sent[0][:2] == ("agent:o:m:env", "env-dm")
     assert_outbound_messages_clean(sent, issued_device_code(tmp_path / "state.json"))
 
 
@@ -512,7 +512,7 @@ def test_complete_success_clears_and_notifies_recovery(tmp_path: Path) -> None:
             device_code=issued,
             verification_url="https://ex.com/a",
             expires_at=NOW + 600,
-            notify_route="route:app:dm",
+            notify_route="dm",
             sender="agent:o:m:w",
         ),
     )
@@ -552,7 +552,7 @@ def test_guard_allows_canonical_anchor(tmp_path: Path) -> None:
     reauth.ensure_notify_anchor_canonical(
         state_path=tmp_path / "state.json",
         canonical_path=tmp_path / "state.json",
-        route="route:app:dm",
+        route="dm",
         sender="agent:o:m:w",
     )
 
@@ -580,7 +580,7 @@ def test_guard_raises_loudly_and_names_the_fix(tmp_path: Path) -> None:
         reauth.ensure_notify_anchor_canonical(
             state_path=isolated,
             canonical_path=canonical,
-            route="route:app:dm",
+            route="dm",
             sender="agent:o:m:w",
         )
     assert caught.value.code == "REAUTH_ANCHOR_ISOLATED"
@@ -594,18 +594,18 @@ def test_effective_notification_config_precedence(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     save_state(
         state_path,
-        ReauthState(notify_route="route:remembered:dm", sender="agent:o:m:old"),
+        ReauthState(notify_route="remembered-dm", sender="agent:o:m:old"),
     )
     # flag > env > remembered
     assert reauth.effective_notification_config(
         state_path,
-        notify_route="route:flag:dm",
+        notify_route="flag-dm",
         sender=None,
-        env={reauth.ENV_NOTIFY_ROUTE: "route:env:dm", reauth.ENV_SENDER: "agent:o:m:env"},
-    ) == ("route:flag:dm", "agent:o:m:env")
+        env={reauth.ENV_NOTIFY_ROUTE: "env-dm", reauth.ENV_SENDER: "agent:o:m:env"},
+    ) == ("flag-dm", "agent:o:m:env")
     assert reauth.effective_notification_config(
         state_path, notify_route=None, sender=None, env={}
-    ) == ("route:remembered:dm", "agent:o:m:old")
+    ) == ("remembered-dm", "agent:o:m:old")
 
 
 def test_cli_check_refuses_notify_from_isolated_anchor(
@@ -618,7 +618,7 @@ def test_cli_check_refuses_notify_from_isolated_anchor(
     (tmp_path / "isolated-home").mkdir(mode=0o700)
     monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "isolated-home"))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "isolated-state"))
-    monkeypatch.setenv(reauth.ENV_NOTIFY_ROUTE, "route:app:dm")
+    monkeypatch.setenv(reauth.ENV_NOTIFY_ROUTE, "dm")
     monkeypatch.setenv(reauth.ENV_SENDER, "agent:o:m:w")
     monkeypatch.setattr(reauth, "find_lark_cli", lambda: "/nonexistent/lark-cli")
 
@@ -650,7 +650,7 @@ def test_result_json_never_contains_device_code(tmp_path: Path) -> None:
     result = check(
         runner,
         state_path=state_path,
-        notify_route="route:app:dm",
+        notify_route="dm",
         sender="agent:o:m:w",
         send=send,
         now=NOW,
@@ -662,3 +662,177 @@ def test_result_json_never_contains_device_code(tmp_path: Path) -> None:
     assert_outbound_messages_clean(sent, issued)
     for forbidden in ("app_secret", "appSecret", "access_token", "refresh_token"):
         assert forbidden not in blob
+
+
+@pytest.mark.parametrize(
+    "where", ["flag", "env"],
+)
+def test_a_retired_route_uri_notify_route_is_refused_loudly(
+    tmp_path: Path, where: str
+) -> None:
+    """I4a: notifyRoute is the adapter's own route name, never a route: URI."""
+
+    state_path = tmp_path / "state.json"
+    legacy = "route:app:dm"
+    with pytest.raises(ReauthError) as raised:
+        reauth.effective_notification_config(
+            state_path,
+            notify_route=legacy if where == "flag" else None,
+            sender="agent:o:m:w",
+            env={reauth.ENV_NOTIFY_ROUTE: legacy} if where == "env" else {},
+        )
+    assert raised.value.code == "INVALID_ARGUMENT"
+    assert "migration-route-uri-retired" in str(raised.value)
+
+
+def test_check_refuses_a_retired_route_uri_before_any_lark_cli_call(tmp_path: Path) -> None:
+    runner, calls = _runner([])
+    send, sent = _sends()
+    with pytest.raises(ReauthError) as raised:
+        check(
+            runner,
+            state_path=tmp_path / "state.json",
+            notify_route="route:app:dm",
+            sender="agent:o:m:w",
+            send=send,
+            env={},
+            now=NOW,
+        )
+    assert raised.value.code == "INVALID_ARGUMENT"
+    assert calls == []
+    assert sent == []
+
+
+def test_the_cli_posts_the_notice_through_one_adapter_routes_send_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hyprial.shell.impl.cli.commands.adapter import lark_auth
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    class _Runtime:
+        def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            seen.append((method, params))
+            return {"ok": True}
+
+    class _Services:
+        runtime = _Runtime()
+
+    monkeypatch.setattr(lark_auth, "get_services", lambda: _Services())
+    lark_auth._lark_auth_send("agent:o:m:w", "dm", "link text")
+    assert seen == [(
+        "adapter.routes.send",
+        {"route": "dm", "message": "link text", "sender": "agent:o:m:w"},
+    )]
+
+
+def test_the_timer_check_still_runs_under_a_remembered_retired_notify_route(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from hyprial.shell.impl.cli.commands.adapter import lark_auth
+
+    state_path = tmp_path / "state.json"
+    save_state(state_path, ReauthState(notify_route="route:app:dm", sender="agent:o:m:w"))
+    monkeypatch.setattr(reauth, "find_lark_cli", lambda: "/nonexistent/lark-cli")
+    monkeypatch.setattr(lark_auth, "_lark_auth_state_path", lambda: state_path)
+    monkeypatch.setattr(lark_auth, "_canonical_lark_auth_state_path", lambda: state_path)
+    monkeypatch.delenv(reauth.ENV_NOTIFY_ROUTE, raising=False)
+    monkeypatch.delenv(reauth.ENV_SENDER, raising=False)
+    runner, calls = _runner([
+        _payload(token_status="needs_refresh"),
+        {"ok": True},
+        _payload(),
+    ])
+    monkeypatch.setattr(reauth, "make_cli_runner", lambda executable: runner)
+
+    record = lark_auth._lark_auth_timer_check()
+
+    assert len(calls) == 3
+    assert record == {"status": "recovered", "notifyError": "notify-route-retired"}
+
+
+def test_a_remembered_retired_notify_route_reads_as_no_route(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    save_state(state_path, ReauthState(notify_route="route:app:dm", sender="agent:o:m:w"))
+    route, sender = reauth.effective_notification_config(
+        state_path, notify_route=None, sender=None, env={}
+    )
+    assert (route, sender) == (None, "agent:o:m:w")
+
+
+def test_check_healthy_token_under_a_remembered_retired_route_reports_it(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    save_state(state_path, ReauthState(notify_route="route:app:dm", sender="agent:o:m:w"))
+    runner, calls = _runner([_payload()])
+    send, sent = _sends()
+    result = check(runner, state_path=state_path, send=send, env={}, now=NOW)
+    assert result.status == "ok"
+    assert result.error == "notify-route-retired"
+    assert result.to_json()["error"] == "notify-route-retired"
+    assert calls == [("auth", "status", "--json", "--verify")]
+    assert sent == []
+    remembered = load_state(state_path)
+    assert remembered is not None and remembered.notify_route == "route:app:dm"
+
+
+def test_check_needs_human_under_a_remembered_retired_route_mints_without_notice(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    save_state(state_path, ReauthState(notify_route="route:app:dm", sender="agent:o:m:w"))
+    runner, _ = _runner([
+        _payload(status="missing", token_status=None),
+        {"device_code": "dc-r", "verification_url": "https://ex.com/v", "expire_in": 600},
+    ])
+    send, sent = _sends()
+    result = check(runner, state_path=state_path, send=send, env={}, now=NOW)
+    assert result.status == "awaiting_user"
+    assert result.verification_url == "https://ex.com/v"
+    assert result.notified is False
+    assert result.error == "notify-route-retired"
+    assert sent == []
+    remembered = load_state(state_path)
+    assert remembered is not None
+    assert remembered.device_code == "dc-r"
+    assert remembered.notify_route == "route:app:dm"
+
+
+def test_a_new_notify_route_replaces_a_remembered_retired_one_while_healthy(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    save_state(state_path, ReauthState(notify_route="route:app:dm", sender="agent:o:m:w"))
+    runner, _ = _runner([_payload()])
+    result = check(runner, state_path=state_path, notify_route="dm", env={}, now=NOW)
+    assert result.status == "ok"
+    assert result.error is None
+    remembered = load_state(state_path)
+    assert remembered is not None
+    assert (remembered.notify_route, remembered.sender) == ("dm", "agent:o:m:w")
+    runner, _ = _runner([_payload()])
+    again = check(runner, state_path=state_path, env={}, now=NOW)
+    assert (again.status, again.error) == ("ok", None)
+
+
+def test_complete_does_not_post_to_a_remembered_retired_route_uri(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    issued = "dc-retired"
+    save_state(
+        state_path,
+        ReauthState(
+            app_id="cli_x",
+            device_code=issued,
+            verification_url="https://ex.com/a",
+            expires_at=NOW + 600,
+            notify_route="route:app:dm",
+            sender="agent:o:m:w",
+        ),
+    )
+    runner, _ = _runner([{"ok": True}, _payload()])
+    send, sent = _sends()
+    result = complete(runner, state_path=state_path, send=send, now=NOW)
+    assert result.status == "authorized"
+    assert result.error == "notify-route-retired"
+    assert sent == []

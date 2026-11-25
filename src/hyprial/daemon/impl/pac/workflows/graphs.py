@@ -1,4 +1,14 @@
-"""Compile a validated workflow into one atomically published PAC graph."""
+# Decision record (W2B-2, 2026-11-21):
+# - _artifact writes via tempfile.mkstemp, closes the temporary descriptor
+#   before hardening/replacing (avoiding Windows WinError 32 sharing violations),
+#   and delegates hardening to hyprial.kernel.harden_private_path.
+"""Compile a validated workflow into one atomically published PAC graph.
+
+Decision note (phase A, S7c): after ``compile_workflow`` commits a new graph
+it calls ``notify_definition_published``, which is a no-op unless the
+default-off graph mirror registered a sink for this database; the mirror is
+fenced there, so it can never fail the compile.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +20,10 @@ import tempfile
 from typing import Any
 from uuid import uuid4
 
-from hyprial.kernel import canonical_agent_uri
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import canonical_agent_uri, harden_private_path, ipc_errors
 
 from hyprial.identity import PacError
+from hyprial.daemon.impl.pac.storage.definitions import notify_definition_published
 from hyprial.daemon.impl.pac.storage.journal  import append_event
 from hyprial.identity import parse_principal
 from hyprial.daemon.impl.pac.storage.store  import PacGraphStore
@@ -30,16 +40,19 @@ def _artifact(directory: Path, filename: str, data: bytes) -> Path:
                 "WORKFLOW_ARTIFACT_CHANGED", f"immutable artifact changed: {target}"
             )
         return target
-    with tempfile.NamedTemporaryFile(dir=directory, delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{filename}.", suffix=".tmp", dir=directory
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
+        harden_private_path(temporary, mode=0o600)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
     return target
 
 
@@ -401,10 +414,11 @@ def compile_workflow(
             task_key=task_key,
         )
         db.commit()
-        return graph_id
     except BaseException:
         db.rollback()
         raise
+    notify_definition_published(store.path)
+    return graph_id
 
 
 def managed_graph(store: PacGraphStore, graph_id: str) -> bool:

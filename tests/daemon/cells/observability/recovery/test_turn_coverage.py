@@ -13,17 +13,23 @@ import pytest
 from hyprial.kernel import DaemonRequestError, ipc_errors
 from tests.daemon.cells.observability.mount.test_mount import composed as composed
 
-ACTOR = "agent:owner:node:codex-terminal"
+NAME = "codex-terminal"
 SESSION = "codex-session"
 SOURCE = "codex-app-server"
 
 
+def _actor(app) -> str:
+    """The registered terminal agent's official address (its stored URI)."""
+
+    agent = app.agents.get(NAME) or app.agents.create(NAME)
+    return agent.uri
+
+
 def _register(app, *, source: str = SOURCE) -> None:
-    if app.agents.get("codex-terminal") is None:
-        app.agents.create("codex-terminal")
+    actor = _actor(app)
     app._ipc_session_register(
         {
-            "actor": ACTOR,
+            "actor": actor,
             "sessionRef": SESSION,
             "cwd": "/tmp/codex",
             "command": ["codex", "--remote"],
@@ -32,15 +38,15 @@ def _register(app, *, source: str = SOURCE) -> None:
         }
     )
     domains = app._agent_session_domains
-    domains.liveness.release(ACTOR)
+    domains.liveness.release(actor)
     domains.liveness.bind(
-        ACTOR, harness="codex", runtime="interactive", session_id=SESSION
+        actor, harness="codex", runtime="interactive", session_id=SESSION
     )
 
 
 def _declare(app, coverage: str) -> None:
     app._ipc_session_refresh(
-        {"actor": ACTOR, "sessionRef": SESSION, "turnCoverage": coverage}
+        {"actor": _actor(app), "sessionRef": SESSION, "turnCoverage": coverage}
     )
 
 
@@ -60,10 +66,10 @@ def _states(app):
 def test_an_undeclared_codex_session_reports_carrier_only_coverage(composed):
     app, *_ = composed
     _register(app)
-    app._record_carrier_turn_started(ACTOR, SESSION, "turn-1")
+    app._record_carrier_turn_started(_actor(app), SESSION, "turn-1")
     facts = _facts(app)
     assert facts.scope == "carrier-deliveries"
-    row = _states(app)[ACTOR]
+    row = _states(app)[_actor(app)]
     assert row["state"] == "unknown"
     assert row["reason"] == "partial-turn-coverage"
     assert row["observationHealth"] == "partial"
@@ -74,14 +80,14 @@ def test_a_declared_whole_session_producer_reports_in_turn_then_idle(composed):
     app, *_ = composed
     _register(app)
     _declare(app, "whole-session")
-    app._record_carrier_turn_started(ACTOR, SESSION, "turn-typed")
-    row = _states(app)[ACTOR]
+    app._record_carrier_turn_started(_actor(app), SESSION, "turn-typed")
+    row = _states(app)[_actor(app)]
     assert row["scope"] == "whole-session"
     assert row["state"] == "in-turn"
     assert row["reason"] == "turn-open"
 
-    app._record_carrier_turn_ended(ACTOR, SESSION, "turn-typed", int(time.time() * 1000))
-    row = _states(app)[ACTOR]
+    app._record_carrier_turn_ended(_actor(app), SESSION, "turn-typed", int(time.time() * 1000))
+    row = _states(app)[_actor(app)]
     assert row["state"] == "idle"
     assert row["reason"] == "no-open-turn"
     assert row["observationHealth"] == "current"
@@ -91,9 +97,9 @@ def test_a_carrier_only_session_never_claims_whole_session_idle(composed):
     app, *_ = composed
     _register(app)
     _declare(app, "carrier-deliveries")
-    app._record_carrier_turn_started(ACTOR, SESSION, "delivery-turn")
-    app._record_carrier_turn_ended(ACTOR, SESSION, "delivery-turn", int(time.time() * 1000))
-    row = _states(app)[ACTOR]
+    app._record_carrier_turn_started(_actor(app), SESSION, "delivery-turn")
+    app._record_carrier_turn_ended(_actor(app), SESSION, "delivery-turn", int(time.time() * 1000))
+    row = _states(app)[_actor(app)]
     assert row["scope"] == "carrier-deliveries"
     assert row["state"] != "idle"
     assert row["reason"] == "partial-turn-coverage"
@@ -102,7 +108,7 @@ def test_a_carrier_only_session_never_claims_whole_session_idle(composed):
 def test_legacy_channel_sources_keep_whole_session_coverage(composed):
     app, *_ = composed
     _register(app, source="claude-channel")
-    app._record_carrier_turn_started(ACTOR, SESSION, "turn-1")
+    app._record_carrier_turn_started(_actor(app), SESSION, "turn-1")
     assert _facts(app).scope == "whole-session"
 
 

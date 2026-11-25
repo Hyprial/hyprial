@@ -24,8 +24,8 @@ import pytest
 
 
 SUITE = Path(__file__).resolve().parents[4] / 'contract/e2e/run-hosted-suite.py'
-INVITE = Path(__file__).resolve().parents[4] / 'contract/e2e/run-host-invite.py'
-BOOTSTRAP_MODULES = ("shell.impl.cli.runtime.entry", "daemon.impl.application", "daemon.impl.owner_migration", "identity.impl.agents.registry")
+INVITE = Path(__file__).resolve().parents[4] / 'contract/e2e/run-hosted-registry.py'
+BOOTSTRAP_MODULES = ("shell.impl.cli.runtime.entry", "daemon.impl.application", "identity.impl.agents.registry")
 # The fake venv's site-packages, named after the interpreter that runs the tests.
 SITE = f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
 
@@ -47,7 +47,7 @@ def _fake_tree(root: Path) -> Path:
     src = root / "src" / "hyprial"
     for rel in ("__init__.py", "cli.py", "identity/__init__.py", "identity/impl/__init__.py",
                 "identity/impl/agents/__init__.py", "identity/impl/agents/registry.py",
-                "daemon/__init__.py", "daemon/impl/__init__.py", "daemon/impl/application.py", "daemon/impl/owner_migration.py",
+                "daemon/__init__.py", "daemon/impl/__init__.py", "daemon/impl/application.py",
                 "shell/__init__.py", "shell/impl/__init__.py", "shell/impl/cli/runtime/__init__.py", "shell/impl/cli/runtime/entry.py"):
         path = src / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +169,7 @@ def test_runtime_compile_of_a_module_file_is_not_a_source_fallback(tmp_path: Pat
 # ---------- environments ----------
 
 def test_probe_env_is_the_isolated_daemons_env(tmp_path: Path) -> None:
-    """Same keys and isolation as run-host-invite's Scenario + use_build, in a scratch root."""
+    """Same keys and isolation as run-hosted-registry's Scenario + use_build, in a scratch root."""
     suite = _load_suite()
     invite = _load(INVITE, "hosted_suite_invite_ref")
     tree = _fake_tree(tmp_path / "tree")
@@ -306,7 +306,7 @@ def test_main_warms_both_trees_before_first_scenario(tmp_path: Path, monkeypatch
     monkeypatch.setattr(suite, "warm_trees", fake_warm)
     evidence = _run_main(suite, tmp_path, monkeypatch, events)
     assert events[0] == ("warm", {"new": str(suite.ROOT), "old": str(tmp_path / "old")})
-    assert events[1] == ("scenario", "run-host-invite.py")
+    assert events[1] == ("scenario", "run-hosted-registry.py")
     manifest = json.loads((evidence / "manifest.json").read_text())
     assert "precompile.json" in manifest
 
@@ -321,7 +321,7 @@ def test_main_continues_when_warm_up_raises(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(suite, "pyc_census", broken_census)
     evidence = _run_main(suite, tmp_path, monkeypatch, events)
-    assert events == [("scenario", "run-host-invite.py")]
+    assert events == [("scenario", "run-hosted-registry.py")]
     record = json.loads((evidence / "precompile.json").read_text())
     assert "disk gone" in record["new"]["note"] and "disk gone" in record["old"]["note"]
     assert record["verdict"]["effective"] is False
@@ -359,7 +359,7 @@ def test_modules_imported_before_the_audit_hook_are_not_counted_as_bytecode(tmp_
     site = tree / ".venv" / SITE
     (site / "preload.pth").write_text(
         "import importlib; [importlib.import_module('hyprial.' + n) for n in "
-        "('shell.impl.cli.runtime.entry', 'daemon.impl.application', 'daemon.impl.owner_migration', 'identity.impl.agents.registry')]\n")
+        "('shell.impl.cli.runtime.entry', 'daemon.impl.application', 'identity.impl.agents.registry')]\n")
     probe = suite.import_probe(tree)
     assert probe["status"] == "ok"
     assert probe["cachePresent"] == 0
@@ -396,7 +396,7 @@ def test_main_runs_scenarios_when_the_probe_returns_garbage(tmp_path: Path, monk
     monkeypatch.setattr(suite, "warm_tree", lambda tree: {"tree": str(tree), "compile": {"status": "ok"},
                                                           "import": {"status": "ok"}})
     evidence = _run_main(suite, tmp_path, monkeypatch, events)
-    assert events == [("scenario", "run-host-invite.py")]
+    assert events == [("scenario", "run-hosted-registry.py")]
     assert json.loads((evidence / "precompile.json").read_text())["verdict"]["effective"] is False
 
 
@@ -557,7 +557,7 @@ def test_confirmed_reap_with_bad_probe_output_is_best_effort(
     assert probe["status"] == "ok" and probe["measurement"] == "invalid" and probe["stdoutTail"] == stdout[-500:]
     events: list[Any] = []
     evidence = _run_main(suite, tmp_path, monkeypatch, events)
-    assert events == [("scenario", "run-host-invite.py")]
+    assert events == [("scenario", "run-hosted-registry.py")]
     record = json.loads((evidence / "precompile.json").read_text())
     assert record["verdict"]["effective"] is False and "infraAbort" not in record["new"]
 

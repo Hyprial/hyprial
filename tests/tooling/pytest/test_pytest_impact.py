@@ -41,6 +41,13 @@ def event(base, head):
     return {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
 
 
+GUARD_FILES = (
+    "tests/tooling/isolation/test_teardown_guarantee.py",
+    "tests/kernel/addressing/test_address_parsing_guard.py",
+    "tests/identity/provider_keys/structure/test_public_seams.py",
+    "tests/scripts/test_actor_rustify_inventory.py",
+)
+
 LAYER_FILES = (
     "src/hyprial/kernel/core.py", "src/hyprial/identity/ids.py", "src/hyprial/daemon/run.py",
     "src/hyprial/biz/flow.py", "src/hyprial/shell/cli.py", "src/hyprial/cli.py",
@@ -49,7 +56,7 @@ LAYER_FILES = (
     "tests/tooling/test_t.py", "tests/scripts/test_sc.py", "tests/support/helper.py",
     "tests/conftest.py", "scripts/ci/gate.py", "scripts/tool.py",
     ".forgejo/workflows/gate-python.yml", "pyproject.toml", "README.md", "docs/guides/g.md",
-    "gui/src/app.ts",
+    "gui/src/app.ts", *GUARD_FILES,
 )
 
 
@@ -80,7 +87,7 @@ def assert_full(result):
 
 def dirs(result):
     assert result["mode"] == "selected", result
-    return sorted({"/".join(path.split("/")[:2]) for path in result["tests"]})
+    return sorted({"/".join(path.split("/")[:2]) for path in result["tests"] if path not in GUARD_FILES})
 
 
 @pytest.mark.parametrize("source,expected", [
@@ -95,6 +102,34 @@ def dirs(result):
 def test_a_layer_change_runs_that_layer_every_layer_above_and_integration(impact, repo, source, expected):
     root, payload = changed(repo, source)
     assert dirs(impact.plan(root, payload, "pull_request")) == expected
+
+
+def test_cross_cutting_guard_list_matches_the_selector(impact, repo):
+    root, _ = repo
+    assert set(impact.CROSS_CUTTING_GUARDS) == set(GUARD_FILES)
+    assert all((root / path).is_file() for path in GUARD_FILES)
+
+
+@pytest.mark.parametrize("source", ["src/hyprial/kernel/core.py", "src/hyprial/shell/cli.py"])
+def test_product_change_runs_every_cross_cutting_guard(impact, repo, source):
+    root, payload = changed(repo, source)
+    selected = set(impact.plan(root, payload, "pull_request")["tests"])
+    assert set(GUARD_FILES) <= selected
+
+
+@pytest.mark.parametrize("path", ["tests/shell/test_s.py", "tests/daemon/test_d.py"])
+def test_test_only_change_does_not_union_cross_cutting_guards(impact, repo, path):
+    root, payload = changed(repo, path)
+    selected = set(impact.plan(root, payload, "pull_request")["tests"])
+    assert set(GUARD_FILES).isdisjoint(selected)
+
+
+def test_missing_cross_cutting_guard_fails_closed(impact, repo):
+    root, payload = changed(repo, "src/hyprial/shell/cli.py")
+    (root / "tests/scripts/test_actor_rustify_inventory.py").unlink()
+    result = impact.plan(root, payload, "pull_request")
+    assert_full(result)
+    assert any("cross-cutting guard missing" in reason for reason in result["reasons"])
 
 
 @pytest.mark.parametrize("path,expected", [

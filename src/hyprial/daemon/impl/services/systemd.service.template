@@ -5,15 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{EXECUTABLE_ARG}} daemon run
+ExecStart={{EXECUTABLE_ARGS}}
 Environment={{HOME_ENV}}
 Environment={{PATH_ENV}}
 Environment={{HYPRIAL_HOME_ENV}}
 Environment={{STATE_DIR_ENV}}
 Environment="HYPRIAL_SERVICE_MANAGED=1"
 Environment="HYPRIAL_SERVICE_MANAGER=systemd"
-Environment="HYPRIAL_SERVICE_UNIT=hyprial.service"
-Restart=always
+Environment="HYPRIAL_SERVICE_UNIT={{SERVICE_UNIT}}"
+{{PROXY_ENV}}Restart=always
 RestartSec=5
 KillMode=control-group
 TimeoutStopSec=120

@@ -34,7 +34,6 @@ def test_missing_approve_keeps_code_and_gives_a_full_command(tmp_path: Path) -> 
     assert caught.value.code == "PI_P2_LAUNCH_UNTRUSTED"
     message = str(caught.value)
     assert "Pi P2 headless launch requires explicit --approve trust" in message
-    assert "--headless and --tmux" in message
     assert (
         "hyprial agent start pi --name 'worker one' --headless --cwd " in message
     )
@@ -54,7 +53,6 @@ def test_non_git_cwd_keeps_code_and_names_qualification_and_command(
             **{
                 **_COMMAND,
                 "command_headless": False,
-                "command_tmux": True,
             },
         )
 
@@ -62,7 +60,7 @@ def test_non_git_cwd_keeps_code_and_names_qualification_and_command(
     message = str(caught.value)
     assert "Pi P2 cwd is not inside an approved Git repository" in message
     assert "directory inside a Git working tree" in message
-    assert "hyprial agent start pi --name 'worker one' --tmux" in message
+    assert "hyprial agent start pi --name 'worker one' --cwd" in message
     assert "--cwd /absolute/path/to/git-working-tree" in message
     assert message.endswith("-- --approve`.")
     assert not (cwd / ".git").exists()

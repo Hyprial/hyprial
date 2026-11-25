@@ -11,14 +11,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from hyprial.daemon.impl.org.network.binding import INVITE_SPACE_MODES
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.kernel import canonical_user_uri
 from hyprial.daemon.impl.org.network.casdoor.client import (
     CasdoorGroupError,
     CasdoorGroups,
     HttpCasdoorGroups,
-    casdoor_group,
-    casdoor_user,
     load_casdoor_credentials,
 )
 
@@ -36,7 +35,7 @@ def _org_error(code: str, message: str) -> Exception:
 
 
 class CasdoorMembershipMixin:
-    """Casdoor steps the org service runs before touching OrgFS."""
+    """Compatibility reads for Casdoor, with cell/tailnet as authority."""
 
     _casdoor: CasdoorGroups | None
     _owner: str
@@ -70,47 +69,7 @@ class CasdoorMembershipMixin:
         credential and genuine refusal, and those still raise here.
         """
 
-        if self._casdoor is None:
-            return "not-configured"
-        group = casdoor_group(org)
-        user = casdoor_user(self._owner)
-        try:
-            if self._casdoor.member_state(group, user) == "member":
-                return "verified"
-        except CasdoorGroupError as error:
-            # A group that does not exist yet, or a user Casdoor does not know,
-            # is exactly the state ``ensure_group`` exists to fix; any other
-            # failure (transport, credential, refusal) is not ours to paper over.
-            if error.code not in (
-                "CASDOOR_NOT_A_MEMBER",
-                "CASDOOR_USER_NOT_FOUND",
-                "CASDOOR_GROUP_ABSENT",
-            ):
-                raise _org_error(
-                    "CASDOOR_GROUP_UNAVAILABLE", f"{group}: {error}; {_GROUP_SETUP_HINT}"
-                ) from error
-
-        try:
-            self._casdoor.ensure_group(group, user)
-        except CasdoorGroupError as error:
-            if error.code == "CASDOOR_ORG_QUOTA_EXCEEDED":
-                # Its own code: "out of quota" and "the group is broken" need
-                # different answers from the person reading the error.
-                raise _org_error(
-                    "CASDOOR_ORG_QUOTA_EXCEEDED",
-                    f"{user} cannot create another organisation: {error}",
-                ) from error
-            raise _org_error(
-                "CASDOOR_GROUP_UNAVAILABLE", f"{group}: {error}; {_GROUP_SETUP_HINT}"
-            ) from error
-
-        try:
-            self._casdoor.require_member(group, user)
-        except CasdoorGroupError as error:
-            raise _org_error(
-                "CASDOOR_GROUP_UNAVAILABLE", f"{group}: {error}; {_GROUP_SETUP_HINT}"
-            ) from error
-        return "verified"
+        return "not-configured"
 
     def _casdoor_add(self, org: str, member: str) -> bool:
         """``org invite``: add to the Casdoor group before any OrgFS write.
@@ -119,21 +78,7 @@ class CasdoorMembershipMixin:
         already in it, or Casdoor is not configured).
         """
 
-        if self._casdoor is None:
-            return False
-        try:
-            return self._casdoor.add_member(casdoor_group(org), casdoor_user(member))
-        except CasdoorGroupError as error:
-            if error.code == "CASDOOR_USER_NOT_FOUND":
-                raise _org_error(
-                    "CASDOOR_USER_NOT_FOUND",
-                    f"Casdoor has no user {casdoor_user(member)}; the name must be "
-                    "the user's login identity, e.g. name@example.com",
-                ) from error
-            raise _org_error(
-                "CASDOOR_GROUP_WRITE_FAILED",
-                f"adding {member} to the Casdoor group of {org} failed: {error}",
-            ) from error
+        return False
 
     def _invite_casdoor_first(self, org: str, space_id: str, acl_space_id: str, member: str) -> tuple[Any, Any]:
         """Add to the group, then to both OrgFS spaces; undo the add on failure.
@@ -142,22 +87,10 @@ class CasdoorMembershipMixin:
         through every other application that trusts the group.
         """
 
-        added = self._casdoor_add(org, member)
-        try:
-            return (
-                self._fs.invite(space_id, member, "rw"),
-                self._fs.invite(acl_space_id, member, "ro"),
-            )
-        except Exception:
-            if added and self._casdoor is not None:
-                try:
-                    self._casdoor.remove_member(casdoor_group(org), casdoor_user(member))
-                except CasdoorGroupError as undo:
-                    self._log(
-                        "error", "org", "org.invite.casdoor-undo-failed",
-                        org=org, user=member, code=undo.code,
-                    )
-            raise
+        return (
+            self._fs.invite(space_id, member, INVITE_SPACE_MODES["directory"]),
+            self._fs.invite(acl_space_id, member, INVITE_SPACE_MODES["acl"]),
+        )
 
     def _casdoor_remove(self, org: str, member: str) -> None:
         """``org remove`` / an admitted leave: remove from Casdoor first.
@@ -167,21 +100,7 @@ class CasdoorMembershipMixin:
         invited under a name Casdoor never had can still be removed.
         """
 
-        if self._casdoor is None:
-            return
-        try:
-            self._casdoor.remove_member(casdoor_group(org), casdoor_user(member))
-        except CasdoorGroupError as error:
-            if error.code in ("CASDOOR_USER_NOT_FOUND", "CASDOOR_NOT_A_MEMBER"):
-                self._log(
-                    "info", "org", "org.remove.casdoor-absent",
-                    org=org, user=member, code=error.code,
-                )
-                return
-            raise _org_error(
-                "CASDOOR_GROUP_WRITE_FAILED",
-                f"removing {member} from the Casdoor group of {org} failed: {error}",
-            ) from error
+        return
 
 
     def _casdoor_removal_note(self, org: str) -> str:
@@ -191,9 +110,7 @@ class CasdoorMembershipMixin:
         group, which other applications may also use (org-improver).
         """
 
-        if self._casdoor is None:
-            return "not-configured"
-        return f"removed from {casdoor_group(org)}"
+        return "not-configured"
 
     # -- OrgFS primitives the membership actor uses (design §3) -------------
 

@@ -1,0 +1,420 @@
+{
+  "fixtureVersion": 1,
+  "kind": "decisions",
+  "base": {
+    "subject": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+    "subjectState": "verified",
+    "resource": "example:resource-1",
+    "resourceState": "verified",
+    "action": "write",
+    "rulesCase": "valid-owner-rule",
+    "rulesState": "active",
+    "authorizedWriter": true,
+    "authoritativeVersion": "v1",
+    "requestedVersion": null,
+    "observedAt": 100.0,
+    "now": 100.0,
+    "maxObservationAge": 30.0,
+    "watchContinuous": true,
+    "epochCurrent": true,
+    "observedVersion": null,
+    "observedScope": null,
+    "observedDeclarationId": null,
+    "observedDigest": null,
+    "observedProfile": null
+  },
+  "cases": [
+    {
+      "id": "P0",
+      "set": {
+        "action": ""
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "REQUEST_INVALID"
+      }
+    },
+    {
+      "id": "P1",
+      "set": {
+        "subjectState": "rejected"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "SUBJECT_REJECTED"
+      }
+    },
+    {
+      "id": "P2",
+      "set": {
+        "resourceState": "rejected"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "RESOURCE_REJECTED"
+      }
+    },
+    {
+      "id": "P3-multiple-faults",
+      "set": {
+        "subjectState": "unavailable",
+        "rulesState": "invalid"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "SUBJECT_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "P4",
+      "set": {
+        "resourceState": "unavailable"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RESOURCE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "P5",
+      "set": {
+        "requestedVersion": "v0"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "REF_MISMATCH"
+      }
+    },
+    {
+      "id": "P6",
+      "set": {
+        "rulesState": "invalid"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "RULESET_INVALID"
+      }
+    },
+    {
+      "id": "P7",
+      "set": {
+        "rulesState": "unavailable"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "P8-age-equal",
+      "set": {
+        "now": 130.0
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    },
+    {
+      "id": "P8-watch-gap",
+      "set": {
+        "watchContinuous": false
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    },
+    {
+      "id": "P9",
+      "set": {
+        "rulesState": "absent"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_AUTHORIZATION"
+      }
+    },
+    {
+      "id": "P10",
+      "set": {},
+      "expected": {
+        "outcome": "allow",
+        "reason": "MATCH"
+      }
+    },
+    {
+      "id": "P10-before-age-limit",
+      "set": {
+        "now": 129.999
+      },
+      "expected": {
+        "outcome": "allow",
+        "reason": "MATCH"
+      }
+    },
+    {
+      "id": "P10-matching-pin",
+      "set": {
+        "requestedVersion": "v1"
+      },
+      "expected": {
+        "outcome": "allow",
+        "reason": "MATCH"
+      }
+    },
+    {
+      "id": "P11",
+      "set": {
+        "action": "read"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_MATCH"
+      }
+    },
+    {
+      "id": "wildcard-does-not-cross-resource",
+      "set": {
+        "rulesCase": "global-subject-rule",
+        "resource": "example:resource-2"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_MATCH"
+      }
+    },
+    {
+      "id": "wildcard-does-not-cross-action",
+      "set": {
+        "rulesCase": "global-subject-rule",
+        "action": "read"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_MATCH"
+      }
+    },
+    {
+      "id": "resource-case-sensitive",
+      "set": {
+        "resource": "Example:resource-1"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_MATCH"
+      }
+    },
+    {
+      "id": "action-case-sensitive",
+      "set": {
+        "action": "Write"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_MATCH"
+      }
+    },
+    {
+      "id": "multi-rule-no-cross-product",
+      "set": {
+        "rulesCase": "multi-resource-rules",
+        "resource": "example:resource-2",
+        "action": "read"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_MATCH"
+      }
+    },
+    {
+      "id": "second-owner-second-rule",
+      "set": {
+        "rulesCase": "multi-resource-rules",
+        "resource": "example:resource-2",
+        "action": "read",
+        "subject": "u.ou_22222222222222222222222222222222:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz"
+      },
+      "expected": {
+        "outcome": "allow",
+        "reason": "MATCH"
+      }
+    },
+    {
+      "id": "empty-rules-deny",
+      "set": {
+        "rulesCase": "empty-rules"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_AUTHORIZATION"
+      }
+    },
+    {
+      "id": "empty-allow-deny",
+      "set": {
+        "rulesCase": "empty-allow"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "NO_AUTHORIZATION"
+      }
+    },
+    {
+      "id": "duplicate-rules-no-extra-authority",
+      "set": {
+        "rulesCase": "duplicate-rules"
+      },
+      "expected": {
+        "outcome": "allow",
+        "reason": "MATCH"
+      }
+    },
+    {
+      "id": "duplicate-patterns-no-extra-authority",
+      "set": {
+        "rulesCase": "duplicate-patterns"
+      },
+      "expected": {
+        "outcome": "allow",
+        "reason": "MATCH"
+      }
+    },
+    {
+      "id": "future-observation-not-fresh",
+      "set": {
+        "now": 99.0
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    },
+    {
+      "id": "old-epoch-not-fresh",
+      "set": {
+        "epochCurrent": false
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    },
+    {
+      "id": "action-invalid-precedes-subject-rejection",
+      "set": {
+        "action": "",
+        "subjectState": "rejected"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "REQUEST_INVALID"
+      }
+    },
+    {
+      "id": "subject-rejection-precedes-resource-unavailable",
+      "set": {
+        "subjectState": "rejected",
+        "resourceState": "unavailable"
+      },
+      "expected": {
+        "outcome": "deny",
+        "reason": "SUBJECT_REJECTED"
+      }
+    },
+    {
+      "id": "observation-ref-cannot-choose-authority",
+      "set": {
+        "observedVersion": "other-opaque-version"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "REF_MISMATCH"
+      }
+    },
+    {
+      "id": "observation-ref-mismatch-observedScope",
+      "set": {
+        "observedScope": "other-space/same-content"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "REF_MISMATCH"
+      }
+    },
+    {
+      "id": "observation-ref-mismatch-observedDeclarationId",
+      "set": {
+        "observedDeclarationId": "other-statement/same-content"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "REF_MISMATCH"
+      }
+    },
+    {
+      "id": "observation-ref-mismatch-observedDigest",
+      "set": {
+        "observedDigest": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "REF_MISMATCH"
+      }
+    },
+    {
+      "id": "observation-ref-mismatch-observedProfile",
+      "set": {
+        "observedProfile": "future-v2"
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "REF_MISMATCH"
+      }
+    },
+    {
+      "id": "invalid-observation-age-equal-max",
+      "set": {
+        "rulesState": "invalid",
+        "now": 130.0
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    },
+    {
+      "id": "invalid-observation-watch-gap",
+      "set": {
+        "rulesState": "invalid",
+        "watchContinuous": false
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    },
+    {
+      "id": "absent-observation-age-equal-max",
+      "set": {
+        "rulesState": "absent",
+        "now": 130.0
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    },
+    {
+      "id": "absent-observation-watch-gap",
+      "set": {
+        "rulesState": "absent",
+        "watchContinuous": false
+      },
+      "expected": {
+        "outcome": "unknown",
+        "reason": "RULESET_STALE"
+      }
+    }
+  ]
+}

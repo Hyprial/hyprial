@@ -5,6 +5,10 @@ from hyprial.daemon import (
     AlarmResult,
     audience_for_sender,
 )
+from hyprial.daemon.impl.correlation.alarm import (
+    alarm_throttle_scope,
+    failure_dedup_scope,
+)
 from hyprial.daemon.impl.inbox.contracts.api  import (
     InboxMessage,
 )
@@ -33,7 +37,7 @@ class DeliveryCustodyNoticesMixin:
         ) * ALARM_THROTTLE_WINDOW_MS
         if command.throttle:
             claimed = self._service._claim_alarm(
-                alarm.conversation_id,
+                alarm_throttle_scope(alarm),
                 alarm.reason,
                 window_start_ms,
                 now_ms,
@@ -81,7 +85,7 @@ class DeliveryCustodyNoticesMixin:
             now_ms // ALARM_THROTTLE_WINDOW_MS
         ) * ALARM_THROTTLE_WINDOW_MS
         if not self._service._claim_alarm(
-            message.conversation_id,
+            failure_dedup_scope(message.conversation_id, message.message_id),
             reason,
             window_start_ms,
             now_ms,

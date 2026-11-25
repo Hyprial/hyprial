@@ -17,7 +17,6 @@ class DaemonStartupPhase(StrEnum):
     ACTOR_RUNTIME_AGENTS_STORE = "actor-runtime-agents-store"
     ACTOR_RUNTIME_TRANSPORT = "actor-runtime-transport"
     ACTOR_RUNTIME_ORGFS_TRANSPORT = "actor-runtime-orgfs-transport"
-    ACTOR_RUNTIME_IDENTITY_BINDINGS = "actor-runtime-identity-bindings"
     ACTOR_RUNTIME_CASDOOR_SYNC = "actor-runtime-casdoor-sync"
     ACTOR_RUNTIME_FORWARDING_RECONFIGURE = "actor-runtime-forwarding-reconfigure"
     ACTOR_RUNTIME_INBOX_STORE = "actor-runtime-inbox-store"

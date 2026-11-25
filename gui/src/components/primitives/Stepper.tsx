@@ -1,3 +1,4 @@
+import { Icon, type IconName } from './Icon';
 import { cx } from './types';
 
 export type StepStatus =
@@ -28,12 +29,11 @@ const STATUS_LABELS: Readonly<Record<StepStatus, string>> = {
   blocked: '已阻塞',
 };
 
-const STATUS_MARKS: Readonly<Record<StepStatus, string>> = {
-  pending: '·',
-  active: '›',
-  completed: '✓',
-  failed: '×',
-  blocked: '!',
+const STATUS_ICONS: Readonly<Partial<Record<StepStatus, IconName>>> = {
+  active: 'caret-right',
+  completed: 'check',
+  failed: 'x',
+  blocked: 'warning',
 };
 
 /** Display-only progress. Callers own step transitions and the current step. */
@@ -56,7 +56,7 @@ export function Stepper({
               aria-current={isCurrent ? 'step' : undefined}
             >
               <span className="ui-step__marker" aria-hidden="true">
-                {STATUS_MARKS[step.status]}
+                {STATUS_ICONS[step.status] && <Icon name={STATUS_ICONS[step.status]!} size="sm" />}
               </span>
               <span className="ui-step__label">{step.label}</span>
               <span className="ui-visually-hidden">

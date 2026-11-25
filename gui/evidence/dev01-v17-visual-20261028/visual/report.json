@@ -1,0 +1,1119 @@
+{
+  "prototype": {
+    "path": "/home/huangjiajia/HyprialOS/gui-fix-records/2026-10-25-prototype-v17/vendor/Hyprial-mvp-desktop-v17.html",
+    "sha256": "c7e5ae80067c29dfe773f394bb95fa3fb9f2883c11504c012c28201013017348"
+  },
+  "browser": {
+    "executablePath": "/home/huangjiajia/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+    "version": "153.0.8010.12"
+  },
+  "font": {
+    "isolated": true,
+    "fontPath": "/mnt/d/hyprial-preview-v11-20261019/win-cfc1b2748-20261026/src-cfc1b2748-v18/app/src-tauri/ui/fonts/NotoSansSC-VF.ttf",
+    "fontConfigPath": "/tmp/dev01-visual-font-cayCLk/fonts.conf"
+  },
+  "screenshots": {
+    "implementation": "component scope: .dev01-v17-onboarding",
+    "prototype": "component scope: .setup"
+  },
+  "viewports": [
+    {
+      "width": 375,
+      "implementation": {
+        "screenshot": "/home/huangjiajia/HyprialOS/.worktrees/gui-dev01-v17-visual-20261028/gui/evidence/dev01-v17-visual-20261028/visual/375-implementation.png",
+        "metrics": {
+          "root": {
+            "rect": {
+              "left": 15,
+              "top": 133.3125,
+              "width": 345,
+              "height": 1341.546875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "12px 0px 40px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "logo": {
+            "rect": {
+              "left": 57.5,
+              "top": 149.3125,
+              "width": 260,
+              "height": 49.9375
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "steps": {
+            "rect": {
+              "left": 15,
+              "top": 350.671875,
+              "width": 345,
+              "height": 51.09375
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "currentStep": {
+            "rect": {
+              "left": 15,
+              "top": 350.671875,
+              "width": 78.75,
+              "height": 51.09375
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "6px solid rgb(0, 72, 168)",
+            "borderRadius": "0px",
+            "padding": "10px 0px 0px",
+            "gap": "normal",
+            "fontSize": "13px",
+            "fontWeight": "700",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "stepLabels": [
+            "1 · 账号",
+            "2 · 模型服务",
+            "3 · 创建 Squire",
+            "4 · 首次对话"
+          ],
+          "card": {
+            "rect": {
+              "left": 15,
+              "top": 486.640625,
+              "width": 345,
+              "height": 806.03125
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "32px",
+            "gap": "16px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "heading": {
+            "rect": {
+              "left": 15,
+              "top": 423.765625,
+              "width": 345,
+              "height": 38.875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "36px",
+            "fontWeight": "900",
+            "fontFamily": "NoomoMachina, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
+          },
+          "primaryButton": {
+            "rect": {
+              "left": 47,
+              "top": 792.421875,
+              "width": 126,
+              "height": 44
+            },
+            "color": "rgb(255, 255, 255)",
+            "background": "rgb(0, 72, 168)",
+            "borderTop": "1px solid rgb(0, 72, 168)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "secondaryButton": {
+            "rect": {
+              "left": 183,
+              "top": 792.421875,
+              "width": 112,
+              "height": 44
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(236, 236, 239)",
+            "borderTop": "1px solid rgba(0, 0, 0, 0)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "debug": {
+            "rect": {
+              "left": 15,
+              "top": 1318.671875,
+              "width": 345,
+              "height": 116.1875
+            },
+            "color": "rgb(112, 114, 122)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "1px solid rgb(233, 234, 231)",
+            "borderRadius": "0px",
+            "padding": "16px 0px 0px",
+            "gap": "8px 12px",
+            "fontSize": "12px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          }
+        }
+      },
+      "prototype": {
+        "screenshot": "/home/huangjiajia/HyprialOS/.worktrees/gui-dev01-v17-visual-20261028/gui/evidence/dev01-v17-visual-20261028/visual/375-prototype.png",
+        "metrics": {
+          "setup": {
+            "rect": {
+              "left": 56,
+              "top": 80,
+              "width": 248,
+              "height": 487.640625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "36px 0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "logo": {
+            "rect": {
+              "left": 56,
+              "top": 120,
+              "width": 248,
+              "height": 47.640625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "steps": {
+            "rect": {
+              "left": 56,
+              "top": 197.640625,
+              "width": 248,
+              "height": 48
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "currentStep": {
+            "rect": {
+              "left": 56,
+              "top": 197.640625,
+              "width": 41.59375,
+              "height": 48
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "6px solid rgb(0, 72, 168)",
+            "borderRadius": "0px",
+            "padding": "10px 0px 0px",
+            "gap": "normal",
+            "fontSize": "13px",
+            "fontWeight": "700",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "stepLabels": [
+            "1 · 登录",
+            "2 · 设备",
+            "3 · 模型",
+            "4 · Squire",
+            "5 · 聊天"
+          ],
+          "heading": {
+            "rect": {
+              "left": 56,
+              "top": 267.640625,
+              "width": 134.484375,
+              "height": 86
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "36px",
+            "fontWeight": "900",
+            "fontFamily": "\"Noto Sans SC\", \"PingFang SC\", sans-serif"
+          },
+          "copy": {
+            "rect": {
+              "left": 210.484375,
+              "top": 270.046875,
+              "width": 93.515625,
+              "height": 99.1875
+            },
+            "color": "rgb(110, 110, 118)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(110, 110, 118)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "card": {
+            "rect": {
+              "left": 56,
+              "top": 403.640625,
+              "width": 248,
+              "height": 128
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "32px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "primaryButton": {
+            "rect": {
+              "left": 88,
+              "top": 455.640625,
+              "width": 68,
+              "height": 44
+            },
+            "color": "rgb(255, 255, 255)",
+            "background": "rgb(0, 72, 168)",
+            "borderTop": "0px none rgb(255, 255, 255)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "secondaryButton": {
+            "rect": {
+              "left": 166,
+              "top": 455.640625,
+              "width": 68,
+              "height": 44
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(236, 236, 239)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "window": {
+            "rect": {
+              "left": 10,
+              "top": 10,
+              "width": 340,
+              "height": 1580
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "0px 10px 10px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "body": {
+            "rect": {
+              "left": 20,
+              "top": 80,
+              "width": 320,
+              "height": 1461
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(245, 245, 247)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "22px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          }
+        }
+      }
+    },
+    {
+      "width": 760,
+      "implementation": {
+        "screenshot": "/home/huangjiajia/HyprialOS/.worktrees/gui-dev01-v17-visual-20261028/gui/evidence/dev01-v17-visual-20261028/visual/760-implementation.png",
+        "metrics": {
+          "root": {
+            "rect": {
+              "left": 20,
+              "top": 111.875,
+              "width": 720,
+              "height": 1118.171875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "36px 0px 40px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "logo": {
+            "rect": {
+              "left": 200,
+              "top": 151.875,
+              "width": 360,
+              "height": 69.15625
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "steps": {
+            "rect": {
+              "left": 20,
+              "top": 340.171875,
+              "width": 720,
+              "height": 33.546875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "currentStep": {
+            "rect": {
+              "left": 20,
+              "top": 340.171875,
+              "width": 172.5,
+              "height": 33.546875
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "6px solid rgb(0, 72, 168)",
+            "borderRadius": "0px",
+            "padding": "10px 0px 0px",
+            "gap": "normal",
+            "fontSize": "13px",
+            "fontWeight": "700",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "stepLabels": [
+            "1 · 账号",
+            "2 · 模型服务",
+            "3 · 创建 Squire",
+            "4 · 首次对话"
+          ],
+          "card": {
+            "rect": {
+              "left": 20,
+              "top": 466.59375,
+              "width": 720,
+              "height": 643.265625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "32px",
+            "gap": "16px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "heading": {
+            "rect": {
+              "left": 20,
+              "top": 395.71875,
+              "width": 720,
+              "height": 38.875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "36px",
+            "fontWeight": "900",
+            "fontFamily": "NoomoMachina, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
+          },
+          "primaryButton": {
+            "rect": {
+              "left": 52,
+              "top": 648.484375,
+              "width": 126,
+              "height": 44
+            },
+            "color": "rgb(255, 255, 255)",
+            "background": "rgb(0, 72, 168)",
+            "borderTop": "1px solid rgb(0, 72, 168)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "secondaryButton": {
+            "rect": {
+              "left": 188,
+              "top": 648.484375,
+              "width": 112,
+              "height": 44
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(236, 236, 239)",
+            "borderTop": "1px solid rgba(0, 0, 0, 0)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "debug": {
+            "rect": {
+              "left": 20,
+              "top": 1135.859375,
+              "width": 720,
+              "height": 54.1875
+            },
+            "color": "rgb(112, 114, 122)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "1px solid rgb(233, 234, 231)",
+            "borderRadius": "0px",
+            "padding": "16px 0px 0px",
+            "gap": "8px 12px",
+            "fontSize": "12px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          }
+        }
+      },
+      "prototype": {
+        "screenshot": "/home/huangjiajia/HyprialOS/.worktrees/gui-dev01-v17-visual-20261028/gui/evidence/dev01-v17-visual-20261028/visual/760-prototype.png",
+        "metrics": {
+          "setup": {
+            "rect": {
+              "left": 56,
+              "top": 80,
+              "width": 633,
+              "height": 450.15625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "36px 0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "logo": {
+            "rect": {
+              "left": 192.5,
+              "top": 120,
+              "width": 360,
+              "height": 69.15625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "steps": {
+            "rect": {
+              "left": 56,
+              "top": 219.15625,
+              "width": 633,
+              "height": 32
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "currentStep": {
+            "rect": {
+              "left": 56,
+              "top": 219.15625,
+              "width": 118.59375,
+              "height": 32
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "6px solid rgb(0, 72, 168)",
+            "borderRadius": "0px",
+            "padding": "10px 0px 0px",
+            "gap": "normal",
+            "fontSize": "13px",
+            "fontWeight": "700",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "stepLabels": [
+            "1 · 登录",
+            "2 · 设备",
+            "3 · 模型",
+            "4 · Squire",
+            "5 · 聊天"
+          ],
+          "heading": {
+            "rect": {
+              "left": 56,
+              "top": 273.15625,
+              "width": 213.40625,
+              "height": 43
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "36px",
+            "fontWeight": "900",
+            "fontFamily": "\"Noto Sans SC\", \"PingFang SC\", sans-serif"
+          },
+          "copy": {
+            "rect": {
+              "left": 401,
+              "top": 291.25,
+              "width": 288,
+              "height": 24.796875
+            },
+            "color": "rgb(110, 110, 118)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(110, 110, 118)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "card": {
+            "rect": {
+              "left": 56,
+              "top": 366.15625,
+              "width": 633,
+              "height": 128
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "32px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "primaryButton": {
+            "rect": {
+              "left": 88,
+              "top": 418.15625,
+              "width": 68,
+              "height": 44
+            },
+            "color": "rgb(255, 255, 255)",
+            "background": "rgb(0, 72, 168)",
+            "borderTop": "0px none rgb(255, 255, 255)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "secondaryButton": {
+            "rect": {
+              "left": 166,
+              "top": 418.15625,
+              "width": 68,
+              "height": 44
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(236, 236, 239)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "window": {
+            "rect": {
+              "left": 10,
+              "top": 10,
+              "width": 725,
+              "height": 1580
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "0px 10px 10px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "body": {
+            "rect": {
+              "left": 20,
+              "top": 80,
+              "width": 705,
+              "height": 1461
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(245, 245, 247)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "22px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          }
+        }
+      }
+    },
+    {
+      "width": 1440,
+      "implementation": {
+        "screenshot": "/home/huangjiajia/HyprialOS/.worktrees/gui-dev01-v17-visual-20261028/gui/evidence/dev01-v17-visual-20261028/visual/1440-implementation.png",
+        "metrics": {
+          "root": {
+            "rect": {
+              "left": 360,
+              "top": 112.4375,
+              "width": 720,
+              "height": 1118.171875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "36px 0px 40px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "logo": {
+            "rect": {
+              "left": 540,
+              "top": 152.4375,
+              "width": 360,
+              "height": 69.15625
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "steps": {
+            "rect": {
+              "left": 360,
+              "top": 340.734375,
+              "width": 720,
+              "height": 33.546875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "currentStep": {
+            "rect": {
+              "left": 360,
+              "top": 340.734375,
+              "width": 172.5,
+              "height": 33.546875
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "6px solid rgb(0, 72, 168)",
+            "borderRadius": "0px",
+            "padding": "10px 0px 0px",
+            "gap": "normal",
+            "fontSize": "13px",
+            "fontWeight": "700",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "stepLabels": [
+            "1 · 账号",
+            "2 · 模型服务",
+            "3 · 创建 Squire",
+            "4 · 首次对话"
+          ],
+          "card": {
+            "rect": {
+              "left": 360,
+              "top": 467.15625,
+              "width": 720,
+              "height": 643.265625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "32px",
+            "gap": "16px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "heading": {
+            "rect": {
+              "left": 360,
+              "top": 396.28125,
+              "width": 720,
+              "height": 38.875
+            },
+            "color": "rgb(23, 19, 31)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 19, 31)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "36px",
+            "fontWeight": "900",
+            "fontFamily": "NoomoMachina, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
+          },
+          "primaryButton": {
+            "rect": {
+              "left": 392,
+              "top": 649.046875,
+              "width": 126,
+              "height": 44
+            },
+            "color": "rgb(255, 255, 255)",
+            "background": "rgb(0, 72, 168)",
+            "borderTop": "1px solid rgb(0, 72, 168)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "secondaryButton": {
+            "rect": {
+              "left": 528,
+              "top": 649.046875,
+              "width": 112,
+              "height": 44
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(236, 236, 239)",
+            "borderTop": "1px solid rgba(0, 0, 0, 0)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          },
+          "debug": {
+            "rect": {
+              "left": 360,
+              "top": 1136.421875,
+              "width": 720,
+              "height": 54.1875
+            },
+            "color": "rgb(112, 114, 122)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "1px solid rgb(233, 234, 231)",
+            "borderRadius": "0px",
+            "padding": "16px 0px 0px",
+            "gap": "8px 12px",
+            "fontSize": "12px",
+            "fontWeight": "400",
+            "fontFamily": "NoomoRoman, \"Noto Sans SC\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
+          }
+        }
+      },
+      "prototype": {
+        "screenshot": "/home/huangjiajia/HyprialOS/.worktrees/gui-dev01-v17-visual-20261028/gui/evidence/dev01-v17-visual-20261028/visual/1440-prototype.png",
+        "metrics": {
+          "setup": {
+            "rect": {
+              "left": 352.5,
+              "top": 86,
+              "width": 720,
+              "height": 450.15625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "36px 0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "logo": {
+            "rect": {
+              "left": 532.5,
+              "top": 126,
+              "width": 360,
+              "height": 69.15625
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "steps": {
+            "rect": {
+              "left": 352.5,
+              "top": 225.15625,
+              "width": 720,
+              "height": 32
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "currentStep": {
+            "rect": {
+              "left": 352.5,
+              "top": 225.15625,
+              "width": 136,
+              "height": 32
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "6px solid rgb(0, 72, 168)",
+            "borderRadius": "0px",
+            "padding": "10px 0px 0px",
+            "gap": "normal",
+            "fontSize": "13px",
+            "fontWeight": "700",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "stepLabels": [
+            "1 · 登录",
+            "2 · 设备",
+            "3 · 模型",
+            "4 · Squire",
+            "5 · 聊天"
+          ],
+          "heading": {
+            "rect": {
+              "left": 352.5,
+              "top": 279.15625,
+              "width": 213.40625,
+              "height": 43
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "36px",
+            "fontWeight": "900",
+            "fontFamily": "\"Noto Sans SC\", \"PingFang SC\", sans-serif"
+          },
+          "copy": {
+            "rect": {
+              "left": 784.5,
+              "top": 297.25,
+              "width": 288,
+              "height": 24.796875
+            },
+            "color": "rgb(110, 110, 118)",
+            "background": "rgba(0, 0, 0, 0)",
+            "borderTop": "0px none rgb(110, 110, 118)",
+            "borderRadius": "0px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "card": {
+            "rect": {
+              "left": 352.5,
+              "top": 372.15625,
+              "width": 720,
+              "height": 128
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "32px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "primaryButton": {
+            "rect": {
+              "left": 384.5,
+              "top": 424.15625,
+              "width": 68,
+              "height": 44
+            },
+            "color": "rgb(255, 255, 255)",
+            "background": "rgb(0, 72, 168)",
+            "borderTop": "0px none rgb(255, 255, 255)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "secondaryButton": {
+            "rect": {
+              "left": 462.5,
+              "top": 424.15625,
+              "width": 68,
+              "height": 44
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(236, 236, 239)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "999px",
+            "padding": "0px 20px",
+            "gap": "8px",
+            "fontSize": "14px",
+            "fontWeight": "600",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "window": {
+            "rect": {
+              "left": 22,
+              "top": 16,
+              "width": 1381,
+              "height": 1568
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(255, 255, 255)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "28px",
+            "padding": "0px 10px 10px",
+            "gap": "10px",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          },
+          "body": {
+            "rect": {
+              "left": 32,
+              "top": 86,
+              "width": 1361,
+              "height": 1449
+            },
+            "color": "rgb(23, 23, 27)",
+            "background": "rgb(245, 245, 247)",
+            "borderTop": "0px none rgb(23, 23, 27)",
+            "borderRadius": "22px",
+            "padding": "0px",
+            "gap": "normal",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontFamily": "Inter, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+"""Facade projection and committed state."""
 from __future__ import annotations
 
 

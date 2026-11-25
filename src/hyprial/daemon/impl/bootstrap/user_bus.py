@@ -1,3 +1,6 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Delegates '/run/user/<uid>' resolution to hyprial.kernel.posix_runtime_bus_dir
+#   so Windows returns None without constructing POSIX runtime paths.
 """Reach the per-user systemd bus from a headless process.
 
 ``systemctl --user`` needs a reachable *user* bus. A login session exports
@@ -20,7 +23,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from hyprial.kernel import current_uid
+from hyprial.kernel import posix_runtime_bus_dir
 
 USER_BUS_UNAVAILABLE_REASON = "user-bus-unavailable"
 USER_BUS_ADDRESS_UNREACHABLE_REASON = "user-bus-address-unreachable"
@@ -44,8 +47,8 @@ def session_bus_environment(
         return environment
     runtime_dir = environment.get("XDG_RUNTIME_DIR")
     if not runtime_dir:
-        candidate = Path(f"/run/user/{current_uid() if uid is None else uid}")
-        if (candidate / "bus").exists():
+        candidate = posix_runtime_bus_dir(uid)
+        if candidate is not None and (candidate / "bus").exists():
             runtime_dir = str(candidate)
             environment["XDG_RUNTIME_DIR"] = runtime_dir
     if runtime_dir and (Path(runtime_dir) / "bus").exists():
@@ -79,8 +82,8 @@ def user_bus_state(
     runtime_dir = environment.get("XDG_RUNTIME_DIR")
     if runtime_dir and (Path(runtime_dir) / "bus").exists():
         return "ready"
-    candidate = Path(f"/run/user/{current_uid() if uid is None else uid}") / "bus"
-    return "ready" if candidate.exists() else "no-session"
+    candidate = posix_runtime_bus_dir(uid)
+    return "ready" if candidate is not None and (candidate / "bus").exists() else "no-session"
 
 
 def _unix_socket_path(address: str) -> Path | None:

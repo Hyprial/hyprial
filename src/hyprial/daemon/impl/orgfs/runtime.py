@@ -15,16 +15,19 @@ import threading
 
 import time
 
-from typing import Any
-
+from typing import TYPE_CHECKING, Any
 
 
 from hyprial.kernel import (
-    ActorHandle,
-    ActorRuntime,
+    ActorCell,
     ipc_errors)
 
-from hyprial.kernel import EffectLane, EffectRequest
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
+
+from hyprial.kernel import EffectRequest
+
+from hyprial.daemon.impl.orgfs.composition.vocabulary import OrgFsActorHostCustody
 
 from hyprial.daemon.impl.transport import KeySpace, Registration, TransportSession
 
@@ -99,6 +102,7 @@ class OrgFsRuntime(
         space_binding_state: Callable[[str], Mapping[str, object] | None] | None = None,
         announce_instrumentation_enabled: bool = False,
         trust_tailnet_members: bool = False,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.node_id = node_id
@@ -110,7 +114,8 @@ class OrgFsRuntime(
         self._trust_tailnet_members = trust_tailnet_members
         self._excluded_orgs = excluded_orgs or (lambda: frozenset())
         self._space_binding_state = space_binding_state or (lambda _space_id: None)
-        self.blobs = BlobAuthority(self.state_dir)
+        self._actor_hosts = OrgFsActorHostCustody(actor_host)
+        self.blobs = BlobAuthority(self.state_dir, actor_host=self._actor_hosts.host)
         self.stores = _StoreRegistry(self)
         self.facade = LocalOrgFs(
             self.stores,
@@ -119,6 +124,7 @@ class OrgFsRuntime(
             author=author,
             actor=actor,
             node_id=node_id,
+            actor_host=self._actor_hosts.host,
         )
         self._resource_lock = RLock()
         self._closing = False
@@ -180,8 +186,7 @@ class OrgFsRuntime(
         self._announce_buffer_dropped = 0
         self._announce_buffer_log_bucket = -1
         self._directory_generation = 1
-        self._directory_runtime: ActorRuntime | None = None
-        self._directory_actor: ActorHandle | None = None
+        self._directory_cell: ActorCell | None = None
         self._directory_effects: EffectLane[
             _DirectoryEffectBatch, None
         ] | None = None
@@ -297,6 +302,8 @@ class OrgFsRuntime(
             self._session = None
         if not self.blobs.close(timeout=5.0):
             raise TimeoutError("orgfs blob authority did not drain")
+        if not self._actor_hosts.shutdown(5.0):
+            raise TimeoutError("orgfs actor host did not drain")
         for store in self.stores.snapshot():
             store.close()
         self.stores.clear()

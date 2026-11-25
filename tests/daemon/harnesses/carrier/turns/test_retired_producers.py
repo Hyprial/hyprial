@@ -4,7 +4,6 @@ import pytest
 
 from hyprial.daemon.impl.cells.observability.projection import RunLedger
 from tests.daemon.harnesses.carrier.turns.test_turn_refresh import (
-    A_URI,
     CAPABILITIES,
     SESSION,
     _app,
@@ -49,7 +48,7 @@ def test_epoch_history_saturation_fails_closed_until_mount_changes(tmp_path):
     try:
         _register(app)
         _refresh(app, producer_epoch="boot-A", seq=5)
-        ledger = app.app._carrier_turn_ledgers[(A_URI, SESSION)].observation
+        ledger = app.app._carrier_turn_ledgers[(app.a_uri, SESSION)].observation
         ledger.producer_capacity = 2
         for boot in ("boot-B", "boot-C"):
             assert _refresh(app, producer_epoch=boot)["applied"] is True

@@ -13,3 +13,19 @@ dist/
 
 # Sanitized local E2E failure evidence (never source).
 /e2e-artifacts/
+
+# Native actor engine build artifacts (crates/) — staged copies are produced
+# by scripts/build/build_native_engine.sh, never committed.
+crates/target*/
+src/hyprial/_core/*.so
+src/hyprial/_core/*.dylib
+src/hyprial/_core/*.pyd
+src/hyprial/_core/*.stamp.json
+
+# dist-parity is the parity TEST artifact; never committed.
+dist-parity/
+
+clients/native/target/
+clients/native/src-tauri/target/
+clients/native/src-tauri/gen/
+clients/native/src-tauri/runtime/

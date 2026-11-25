@@ -11,11 +11,6 @@ import traceback
 
 import pytest
 
-from hyprial.daemon.impl.application.messaging.identity_binding import (
-    _IdentityBindingMixin,
-)
-from hyprial.daemon.impl.composition import links as links_composition
-from hyprial.daemon.impl.composition.links import OrgLinkSpaces, SPACE_REFRESH_MS
 from hyprial.daemon.impl.org.network import directory as directory_module
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
@@ -28,7 +23,7 @@ from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.identity import DirectoryDevice
 from hyprial.kernel import ORGFS_CONTENT_PENDING
-from tests.support.links.org import FakeClock, LogRecorder
+from tests.support.orgfs_fakes.org import LogRecorder
 
 
 @pytest.fixture
@@ -61,64 +56,6 @@ def _invalid_device(runtime: OrgFsRuntime) -> None:
         "directory/devices/owner@example/broken.json",
         "not json",
     )
-
-
-def test_org_link_spaces_threads_one_quarantine_across_resolutions(
-    runtime: OrgFsRuntime,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _invalid_device(runtime)
-    quarantine = InvalidDeviceQuarantine()
-    logs = LogRecorder()
-    real_store = OrgFsDirectoryStore
-
-    class ScanningStore:
-        def __init__(self, fs, **kwargs):  # type: ignore[no-untyped-def]
-            self._store = real_store(fs, **kwargs)
-
-        def orgs(self) -> list[str]:
-            self._store.list_devices("group-acme")
-            return self._store.orgs()
-
-        def org_state(self, org: str) -> str:
-            return self._store.org_state(org)
-
-    monkeypatch.setattr(links_composition, "OrgFsDirectoryStore", ScanningStore)
-    clock = FakeClock()
-    spaces = OrgLinkSpaces(
-        runtime.facade,
-        home=tmp_path,
-        clock_ms=clock,
-        logger=logs,
-        invalid_devices=quarantine,
-    )
-
-    spaces()
-    clock.advance(SPACE_REFRESH_MS)
-    spaces()
-
-    assert logs.count("directory.device_invalid") == 1
-
-
-def test_identity_binding_directory_reuses_application_quarantine(
-    runtime: OrgFsRuntime,
-) -> None:
-    _invalid_device(runtime)
-    logs = LogRecorder()
-
-    class App(_IdentityBindingMixin):
-        pass
-
-    app = App()
-    app._org_directory_quarantine = InvalidDeviceQuarantine()
-    app._require_orgfs_runtime = lambda: SimpleNamespace(facade=runtime.facade)
-    app._log = logs
-
-    app._org_binding_directory().list_devices("group-acme")
-    app._org_binding_directory().list_devices("group-acme")
-
-    assert logs.count("directory.device_invalid") == 1
 
 
 def test_network_service_default_store_reuses_injected_quarantine(

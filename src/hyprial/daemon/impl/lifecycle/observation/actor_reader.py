@@ -3,7 +3,7 @@
 from typing import Protocol
 
 from hyprial.kernel import (
-    ActorHandle, ActorState, LifecycleSnapshot, LifecycleTarget,
+    ActorState, LifecycleSnapshot, LifecycleTarget,
     ObservationBatch, ObservationSubscription,
 )
 from .ports import LifecycleObservationOwner, LifecycleObservationReader
@@ -14,24 +14,23 @@ class _StateSnapshot(Protocol):
     def state(self) -> ActorState: ...
 
 
-class _RuntimeReadPort(Protocol):
-    def snapshot(self, handle: ActorHandle) -> _StateSnapshot: ...
+class _CellReadPort(Protocol):
+    def snapshot(self) -> _StateSnapshot: ...
 
 
 class ActorLifecycleObservationReader(LifecycleObservationReader):
-    """Read existing runtime state; never install a callback or send a command."""
+    """Read existing actor state; never install a callback or send a command."""
 
-    def __init__(self, owner: LifecycleObservationOwner, runtime: _RuntimeReadPort,
-                 handle: ActorHandle, source_key: str, source_epoch: str) -> None:
+    def __init__(self, owner: LifecycleObservationOwner, cell: _CellReadPort,
+                 source_key: str, source_epoch: str) -> None:
         super().__init__(owner._projection)
         self._owner = owner
-        self._runtime = runtime
-        self._handle = handle
+        self._cell = cell
         self._source_key = source_key
         self._source_epoch = source_epoch
 
     def _refresh(self) -> None:
-        if self._runtime.snapshot(self._handle).state is ActorState.QUARANTINED:
+        if self._cell.snapshot().state is ActorState.QUARANTINED:
             self._owner.publish(self._source_key, self._source_epoch,
                                 state="down", cause="coordinator-failed", available=False)
 

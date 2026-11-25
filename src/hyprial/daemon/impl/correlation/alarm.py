@@ -1,3 +1,23 @@
+# Decision notes (2026-11-17, fail-loud review of conversation plan slice C1):
+# - The throttle claim used to be keyed by the alarm's conversation id, which
+#   for a send without a conversationId was a fresh uuid per send.  Since C1
+#   such a send joins the default conversation of its pair (a derived "dc."
+#   id from conversations.ids) that lasts as long as the pair, so keyed by it
+#   a second failing send inside the window would be throttled.
+# - failure_dedup_scope is the unit one failure report is deduplicated in:
+#   the request id when the conversation is a derived default, the
+#   conversation id otherwise.  Explicit ids, adapter chats and the synthetic
+#   aggregate keys ("" for route-missing, daemon-harness:<node>, per-routine
+#   workflow ids) keep their conversation-wide limit unchanged.  A retry of
+#   one message keeps its message id and so stays one report.
+# - The request scope is spelled "request:<id>" so it cannot meet a
+#   conversation id in the same throttle table; the table column keeps its
+#   historic name conversation_id.
+# - The shape test lives here, not in conversations.ids, because the inbox
+#   and network layers must not load the conversations package
+#   (check_module_boundaries); tests pin that every derived default id
+#   matches it.  An explicit id of that exact shape is deduplicated per
+#   request, which only errs towards louder.
 """Synchronous message-plane alarms for terminal delivery failures.
 
 The emitter records the trajectory events through :class:`hyprial.log.Logger`,
@@ -7,6 +27,7 @@ still a pure sink: writing an error log can never cause a bounce.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +36,7 @@ from typing import Literal
 from hyprial.kernel import Logger
 
 ALARM_THROTTLE_WINDOW_MS = 60_000
+_DEFAULT_CONVERSATION_SHAPE = re.compile(r"dc\.[a-z2-7]{26}")
 
 AlarmAudience = Literal["human", "agent", "operator"]
 AlarmDelivery = Callable[["Alarm", str], bool]
@@ -116,7 +138,7 @@ class AlarmEmitter:
         claimed = False
         if throttle and self._claim is not None:
             if not self._claim(
-                alarm.conversation_id, alarm.reason, window_start_ms, now_ms
+                alarm_throttle_scope(alarm), alarm.reason, window_start_ms, now_ms
             ):
                 self._safe_log("info", "alarm.raised", **fields, throttled=True)
                 return AlarmResult("throttled", alarm.audience)
@@ -193,15 +215,37 @@ class AlarmEmitter:
             pass
 
 
+def is_default_conversation_id(conversation_id: str) -> bool:
+    """Whether *conversation_id* has the shape of a derived default conversation."""
+
+    return isinstance(conversation_id, str) and (
+        _DEFAULT_CONVERSATION_SHAPE.fullmatch(conversation_id) is not None
+    )
+
+
+def failure_dedup_scope(conversation_id: str, request_id: str | None) -> str:
+    """The unit one failure report is deduplicated in: request or conversation."""
+
+    if request_id and is_default_conversation_id(conversation_id):
+        return f"request:{request_id}"
+    return conversation_id
+
+
+def alarm_throttle_scope(alarm: Alarm) -> str:
+    """The first component of *alarm*'s throttle claim."""
+
+    return failure_dedup_scope(alarm.conversation_id, alarm.message_id)
+
+
 def audience_for_sender(sender: str) -> Literal["human", "agent"]:
     """A Lark reply-bridge sender is a forwarded human message; else agent.
 
-    Recognizes both the legacy ``channel:lark:`` spelling (historical data)
-    and the current ``adapter:lark:`` spelling (every new mint) via the
-    single reply-bridge parser -- deferred import because ``hyprial.adapters.
-    lark``'s package ``__init__`` pulls in ``adapter.py``, which imports
-    ``hyprial.alarm``; importing at module level here would cycle back through
-    that package init while this module is still loading.
+    Recognizes ``adapter:lark:`` via the single reply-bridge parser (the
+    retired ``channel:lark:`` spelling is an agent sender) -- deferred
+    import because ``hyprial.adapters.lark``'s package ``__init__`` pulls
+    in ``adapter.py``, which imports ``hyprial.alarm``; importing at module
+    level here would cycle back through that package init while this module
+    is still loading.
     """
 
     from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import lark_reply_adapter
@@ -214,5 +258,8 @@ __all__ = [
     "Alarm",
     "AlarmEmitter",
     "AlarmResult",
+    "alarm_throttle_scope",
     "audience_for_sender",
+    "failure_dedup_scope",
+    "is_default_conversation_id",
 ]

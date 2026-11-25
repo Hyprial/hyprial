@@ -825,6 +825,7 @@ class _Generation:
             if isinstance(command, (SetFlag, ResetFlag)):
                 reactor = PacReactor(
                     store,
+                    agent_reader=self.owner.agent_reader,
                     expansion_context=(
                         command.expansion_context
                         if isinstance(command, SetFlag)

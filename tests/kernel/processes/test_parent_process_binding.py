@@ -19,7 +19,7 @@ def test_parent_binding_fails_closed_and_exits_after_cleanup(tmp_path, fault):
 import os, sys, time
 from pathlib import Path
 from hyprial.kernel import bind_current_process_to_parent
-from hyprial.kernel.impl.processes import owned_process
+from hyprial.kernel.impl.manysys.process import owned_process
 pid, identity, fault, marker = int(sys.argv[1]), sys.argv[2], sys.argv[3], Path(sys.argv[4])
 if fault == 'pid':
     pid += 1000000
@@ -48,7 +48,7 @@ time.sleep(30)
 
 
 def test_parent_binding_release_is_idempotent():
-    from hyprial.kernel.impl.processes import owned_process
+    from hyprial.kernel.impl.manysys.process import owned_process
 
     assert kernel.bind_current_process_to_parent is owned_process.bind_current_process_to_parent
     assert "bind_current_process_to_parent" in kernel.__all__
@@ -63,7 +63,7 @@ def test_parent_binding_release_is_idempotent():
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX identity probe injection")
 def test_parent_binding_release_reports_a_probe_that_has_not_stopped(monkeypatch):
-    from hyprial.kernel.impl.processes import owned_process
+    from hyprial.kernel.impl.manysys.process import owned_process
 
     entered, unblock = threading.Event(), threading.Event()
 

@@ -1,0 +1,12 @@
+{
+  "name": "hyprial-dl",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "deploy:dry": "/opt/homebrew/bin/wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "4.106.0"
+  }
+}

@@ -1,4 +1,10 @@
-"""The harness actor port client and its lifecycle submit surface."""
+"""The harness actor port client and its lifecycle submit surface.
+
+Decision record (cell model I5-2 part B): ``dispatch`` and ``steer`` accept
+exactly one cell dispatch envelope; a bare delivery or a worker name is
+rejected at this edge with ``HARNESS_DELIVERY_REQUIRES_ENVELOPE`` before the
+command is submitted.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from hyprial.daemon.impl.cells.actor.contracts import CellDispatchEnvelope
 from hyprial.kernel import (
     LifecycleMutationCompleted,
     LifecycleMutationRequest,
@@ -23,6 +30,7 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
     RetireLifecycleReceiptCommand,
 )
 from hyprial.daemon.impl.harnesses.actor.actor import HarnessRuntimeActor
+from hyprial.daemon.impl.harnesses.actor.facade import HarnessRuntimeFacade
 from hyprial.daemon.impl.harnesses.runtime.observation import (
     RESTORE_PURPOSE,
     RuntimeFactsAuthority,
@@ -96,7 +104,9 @@ class HarnessPortClient:
         *,
         timeout: float = 65.0,
         runtime_facts_authority: RuntimeFactsAuthority | None = None,
+        actor_host=None,
     ) -> None:
+        self._actor_host = actor_host
         self.actor = actor
         self._events = events
         self._timeout = timeout
@@ -231,10 +241,11 @@ class HarnessPortClient:
             HarnessMutationCompleted,
         ).changed
 
-    def remove(self, harness: str, name: str) -> bool:
+    def remove(self, harness: str, name: str, member: str | None = None) -> bool:
         return self.call(
             RemoveHarnessCommand(
-                f"harness:remove:{uuid.uuid4().hex}", harness, name
+                f"harness:remove:{uuid.uuid4().hex}", harness, name,
+                member=member,
             ),
             HarnessMutationCompleted,
         ).changed
@@ -289,6 +300,7 @@ class HarnessPortClient:
                     "harness-orphan-collection",
                     lambda _at_ms: self.actor.collect_orphans(),
                     self._orphan_collection_completed,
+                    actor_host=self._actor_host,
                 )
                 self._orphan_collection = lane
             if self._orphan_completed_sequence != self._orphan_reported_sequence:
@@ -337,7 +349,7 @@ class HarnessPortClient:
     def streaming_generations(self) -> dict[str, int]:
         return dict(self.actor.read_streaming().process_generations)
 
-    def session_refs(self) -> dict[tuple[str, str], str]:
+    def session_refs(self) -> dict[tuple[str, str, str], str]:
         self.call(
             RefreshHarnessProjectionsCommand(
                 f"harness:refresh:{uuid.uuid4().hex}"
@@ -345,7 +357,7 @@ class HarnessPortClient:
             HarnessProjectionsRefreshed,
         )
         return {
-            (item.harness, item.name): item.session_ref
+            (item.harness, item.name, item.member or item.name): item.session_ref
             for item in self.actor.read_session_refs().refs
         }
 
@@ -366,15 +378,15 @@ class HarnessPortClient:
             HarnessProjectionsRefreshed,
         )
 
-    def projected_session_refs(self) -> dict[tuple[str, str], str]:
+    def projected_session_refs(self) -> dict[tuple[str, str, str], str]:
         """Immutable projection read; never refreshes or waits on the actor."""
 
         return {
-            (item.harness, item.name): item.session_ref
+            (item.harness, item.name, item.member or item.name): item.session_ref
             for item in self.actor.read_session_refs().refs
         }
 
-    def reconcile_session_refs(self) -> dict[tuple[str, str], str]:
+    def reconcile_session_refs(self) -> dict[tuple[str, str, str], str]:
         event = self.call(
             ReconcileHarnessSessionRefsCommand(
                 f"harness:session-refs:{uuid.uuid4().hex}"
@@ -384,7 +396,7 @@ class HarnessPortClient:
         if event.error is not None:
             raise DesiredStateError(event.error)
         return {
-            (item.harness, item.name): item.session_ref for item in event.refs
+            (item.harness, item.name, item.member or item.name): item.session_ref for item in event.refs
         }
 
     def stage_harness_desired(self, spec: HarnessLaunchSpec) -> bool:
@@ -407,8 +419,7 @@ class HarnessPortClient:
             ),
             HarnessDesiredStateManaged,
         )
-        if event.error is not None:
-            raise event.error
+        HarnessRuntimeFacade._raise_managed_error(event)
         assert event.adapter is not None
         return event.adapter
 
@@ -420,12 +431,10 @@ class HarnessPortClient:
                 f"harness:adapter-remove:{uuid.uuid4().hex}",
                 snapshot.name,
                 snapshot.spec,
-                snapshot.legacy_pin,
             ),
             HarnessDesiredStateManaged,
         )
-        if event.error is not None:
-            raise event.error
+        HarnessRuntimeFacade._raise_managed_error(event)
         return event.changed
 
     def restore_adapter_registration(
@@ -436,19 +445,17 @@ class HarnessPortClient:
                 f"harness:adapter-restore:{uuid.uuid4().hex}",
                 snapshot.name,
                 snapshot.spec,
-                snapshot.legacy_pin,
             ),
             HarnessDesiredStateManaged,
         )
-        if event.error is not None:
-            raise event.error
+        HarnessRuntimeFacade._raise_managed_error(event)
         return event.changed
 
-    def projected_worker_session_refs(self) -> dict[tuple[str, str], str]:
+    def projected_worker_session_refs(self) -> dict[tuple[str, str, str], str]:
         """Worker MCP session fences, distinct from native model sessions."""
 
         return {
-            (item.harness, item.name): item.session_ref
+            (item.harness, item.name, item.member or item.name): item.session_ref
             for item in self.actor.read_worker_session_refs().refs
         }
 
@@ -465,24 +472,31 @@ class HarnessPortClient:
             and item.identity_marker is not None
         }
 
-    def wait_ready(self, harness: str, name: str, timeout: float) -> bool:
+    def wait_ready(
+        self, harness: str, name: str, timeout: float, *, member: str | None = None
+    ) -> bool:
         return self.call(
             WaitHarnessReadyCommand(
-                f"harness:ready:{uuid.uuid4().hex}", harness, name, timeout
+                f"harness:ready:{uuid.uuid4().hex}", harness, name, timeout, member=member
             ),
             HarnessReadyObserved,
             timeout=max(timeout + 1.0, self._timeout),
         ).ready
 
-    def dispatch(self, name: str, delivery: object) -> bool:
+    def dispatch(self, envelope: CellDispatchEnvelope) -> bool:
+        if not isinstance(envelope, CellDispatchEnvelope):
+            raise DomainCommandError(
+                "HARNESS_DELIVERY_REQUIRES_ENVELOPE",
+                "harness dispatch accepts one cell dispatch envelope",
+            )
         return self.call(
             DispatchHarnessDeliveryCommand(
-                f"harness:dispatch:{uuid.uuid4().hex}", name, delivery
+                f"harness:dispatch:{uuid.uuid4().hex}", envelope
             ),
             HarnessDeliveryAdmitted,
         ).accepted
 
-    def steer(self, name: str, delivery_id: str, timeout: float = 5.0) -> bool:
+    def steer(self, envelope: CellDispatchEnvelope, timeout: float = 5.0) -> bool:
         """Fold a queued delivery into THIS harness's running turn.
 
         This is the live composition port the daemon bridge receives as
@@ -491,12 +505,18 @@ class HarnessPortClient:
         a parallel path.  Returns False when the actor has no live steerable
         turn (no process, idle, nothing queued, no native mechanism); the T1
         timeout path reads that as a failed steer and raises the notice, never
-        as silence.
+        as silence.  The steered delivery id and the target member travel
+        inside the steer envelope's stamp (cell model I5-2 B).
         """
 
+        if not isinstance(envelope, CellDispatchEnvelope):
+            raise DomainCommandError(
+                "HARNESS_DELIVERY_REQUIRES_ENVELOPE",
+                "harness steer accepts one cell dispatch envelope",
+            )
         return self.call(
             SteerHarnessDeliveryCommand(
-                f"harness:steer:{uuid.uuid4().hex}", name, delivery_id
+                f"harness:steer:{uuid.uuid4().hex}", envelope
             ),
             HarnessDeliverySteered,
             timeout=max(timeout + 1.0, self._timeout),

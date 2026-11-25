@@ -1,0 +1,21 @@
+{
+  "notice": "PUBLIC SYNTHETIC TEST KEYS ONLY; never use these keys or nonces in production",
+  "signingInput": "aHlwcmlhbC9wcm92aWRlci1rZXkvZ3JhbnQvdjEAl1dmqvv8K/G8QIHPVSal8zHgrOS3jcLvr6KTDTeDEC8=",
+  "grant": {
+    "payload": {
+      "v": 1,
+      "provider": "synthetic",
+      "keyId": "pk_test",
+      "owner": "test-sub",
+      "agent": "12345678-1234-4234-8234-123456789abc",
+      "dekVersion": 1,
+      "recipientKeyId": "x25519:a0289810032eb417274eebc4a38e6899",
+      "issuedAt": 1000,
+      "expiresAt": 3000
+    },
+    "sealedBy": {
+      "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+      "sig": "VvXBVLHAKMS7HY0D1OKzqfOYRmXrZNJalbL6Ex7679dKX7QfKfE+qj9BCES3eGbU9l8hM92RSX0o3qwJSvqpBA=="
+    }
+  }
+}

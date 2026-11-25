@@ -16,7 +16,6 @@ What is checked, in order:
    resource;
 3. the installed ``hyprial`` console script (help/version) and a fresh
    isolated short-path daemon driven through the real public client;
-4. the accepted link CLI bytes, including error codes, stderr and exit status.
 
 The JSON summary on stdout is the machine-readable result.  A non-zero exit
 means at least one check failed; ``--json-out`` and ``--artifacts-dir`` make
@@ -31,7 +30,6 @@ Usage example (run outside the checkout):
       --python /tmp/a05-installed-venv/bin/python \
       --hyprial /tmp/a05-installed-venv/bin/hyprial \
       --contract contract/daemon-request/openapi.json \
-      --golden tests/integration/cli/link/golden.json \
       --artifacts-dir /tmp/a05-artifacts --json-out /tmp/a05-artifacts/result.json
 """
 
@@ -52,7 +50,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-EXPECTED_METHODS = frozenset({"link.add", "link.drop", "link.list", "link.stats"})
 STAMPED_VERSION_RE = re.compile(r"\d+(?:\.\d+)*\+g[0-9a-f]{7}")
 EXPECTED_PUBLIC_IMPORTS = frozenset({
     "DaemonRequestError", "IdempotencySpec", "MethodError", "MethodSpec",
@@ -62,40 +59,6 @@ EXPECTED_PUBLIC_IMPORTS = frozenset({
 })
 OWNER = "a03-owner"
 NODE = "a03-node"
-ALICE = f"agent:{OWNER}:{NODE}:alice"
-BOB = f"agent:{OWNER}:{NODE}:bob"
-SUCCESS_CASES = (
-    "list_text",
-    "list_json",
-    "stats_text",
-    "stats_json",
-    "add_text",
-    "add_json",
-    "drop_text",
-    "drop_json",
-)
-ERROR_CASES = {
-    "invalid_from": (["agent", "link", "list", "--from", "", "--json"], "INVALID_ARGUMENT"),
-    "operator_without_agent": (
-        ["agent", "link", "add", BOB, "--from", f"user:{OWNER}", "--json"],
-        "CALLER_NOT_AUTHORIZED",
-    ),
-    "bare_agent_without_session": (
-        ["agent", "link", "add", BOB, "--from", ALICE, "--json"],
-        "SENDER_UNRESOLVED",
-    ),
-}
-EMPTY_PEER_JSON = (
-    ["agent", "link", "add", "", "--from", f"user:{OWNER}", "--on-behalf-of", ALICE, "--json"],
-    b'{"ok":false,"code":"INVALID_ARGUMENT","error":"peer must be a non-empty string"}\n',
-    b"",
-)
-EMPTY_PEER_TEXT = (
-    ["agent", "link", "add", "", "--from", f"user:{OWNER}", "--on-behalf-of", ALICE],
-    b"",
-    b"hyprial: peer must be a non-empty string\n",
-)
-
 PUBLIC_PROBE = r'''
 import hashlib
 import importlib.metadata
@@ -490,11 +453,6 @@ def probe_payload_problems(payload: dict[str, Any], source_root: Path) -> list[s
             "public import probe does not match the documented surface: "
             f"missing={sorted(missing_imports)} extra={sorted(extra_imports)}"
         )
-    declared = set(payload.get("methods", []))
-    if not EXPECTED_METHODS.issubset(declared):
-        problems.append(
-            f"declared methods {sorted(declared)} miss {sorted(EXPECTED_METHODS - declared)}"
-        )
     if payload.get("openapi") != "3.1.0":
         problems.append(f"OpenAPI version {payload.get('openapi')!r} != '3.1.0'")
     if payload.get("resourceMagic") is not True:
@@ -625,7 +583,6 @@ def _environment(root: Path) -> dict[str, str]:
             "HYPRIAL_PEER_DISCOVERY": "0",
             "HYPRIAL_OWNER": OWNER,
             "HYPRIAL_NODE_ID": NODE,
-            "HYPRIAL_LINKS_BYPASS": "0",
         }
     )
     env.pop("HARNESS_SOCKET_PATH", None)
@@ -741,97 +698,6 @@ def run_cli(
     }
 
 
-def daemon_cases(
-    hyprial: str,
-    root: Path,
-    env: dict[str, str],
-    golden: Path | None,
-) -> tuple[dict[str, Any], list[str]]:
-    problems: list[str] = []
-    results: dict[str, Any] = {}
-    cases = {
-        "list_text": ["agent", "link", "list", "--from", ALICE],
-        "list_json": ["agent", "link", "list", "--from", ALICE, "--json"],
-        "stats_text": ["agent", "link", "stats", "--from", ALICE],
-        "stats_json": ["agent", "link", "stats", "--from", ALICE, "--json"],
-        "add_text": ["agent", "link", "add", BOB, "--from", f"user:{OWNER}", "--on-behalf-of", ALICE],
-        "add_json": [
-            "agent", "link", "add", BOB, "--from", f"user:{OWNER}", "--on-behalf-of", ALICE, "--json",
-        ],
-        "drop_text": ["agent", "link", "drop", BOB, "--from", f"user:{OWNER}", "--on-behalf-of", ALICE],
-        "drop_json": [
-            "agent", "link", "drop", BOB, "--from", f"user:{OWNER}", "--on-behalf-of", ALICE, "--json",
-        ],
-    }
-    expected = json.loads(golden.read_text(encoding="utf-8")) if golden else {}
-    if golden and set(expected) != set(SUCCESS_CASES):
-        problems.append(f"golden case set {sorted(expected)} != {sorted(SUCCESS_CASES)}")
-    for name in SUCCESS_CASES:
-        actual = run_cli(hyprial, cases[name], cwd=root, env=env)
-        results[name] = {
-            "argv": actual["argv"],
-            "exitCode": actual["exitCode"],
-            "stdoutSha256": sha256_bytes(actual["stdoutBytes"]),
-            "stderrSha256": sha256_bytes(actual["stderrBytes"]),
-        }
-        if actual["exitCode"] != 0:
-            problems.append(f"{name}: exit {actual['exitCode']} != 0")
-        if golden and name in expected:
-            want = expected[name]
-            if actual["exitCode"] != want["exitCode"]:
-                problems.append(
-                    f"{name}: exit {actual['exitCode']} != {want['exitCode']}"
-                )
-            if actual["stdoutBytes"] != want["stdout"].encode("utf-8"):
-                problems.append(f"{name}: stdout bytes differ from golden")
-            if actual["stderrBytes"] != want["stderr"].encode("utf-8"):
-                problems.append(f"{name}: stderr bytes differ from golden")
-        results[name]["stdout"] = actual["stdout"]
-        results[name]["stderr"] = actual["stderr"]
-
-    for name, (argv, code) in ERROR_CASES.items():
-        actual = run_cli(hyprial, argv, cwd=root, env=env)
-        results[name] = {
-            "argv": argv,
-            "exitCode": actual["exitCode"],
-            "stdoutSha256": sha256_bytes(actual["stdoutBytes"]),
-            "stderr": actual["stderr"],
-            "stdout": actual["stdout"],
-        }
-        if actual["exitCode"] != 1:
-            problems.append(f"{name}: exit {actual['exitCode']} != 1")
-        if actual["stderr"] != "":
-            problems.append(f"{name}: stderr is not empty: {actual['stderr']!r}")
-        try:
-            payload = json.loads(actual["stdout"])
-        except json.JSONDecodeError:
-            problems.append(f"{name}: stdout is not JSON: {actual['stdout']!r}")
-            continue
-        if payload.get("ok") is not False or payload.get("code") != code:
-            problems.append(f"{name}: expected ok:false code {code}, got {payload}")
-        if not isinstance(payload.get("error"), str) or not payload["error"]:
-            problems.append(f"{name}: error is not a non-empty string")
-
-    for name, (argv, stdout, stderr) in (
-        ("empty_peer_json", EMPTY_PEER_JSON),
-        ("empty_peer_text", EMPTY_PEER_TEXT),
-    ):
-        actual = run_cli(hyprial, argv, cwd=root, env=env)
-        results[name] = {
-            "argv": argv,
-            "exitCode": actual["exitCode"],
-            "stdout": actual["stdout"],
-            "stderr": actual["stderr"],
-        }
-        if actual["exitCode"] != 1:
-            problems.append(f"{name}: exit {actual['exitCode']} != 1")
-        if actual["stdoutBytes"] != stdout:
-            problems.append(f"{name}: stdout bytes differ from the pinned baseline")
-        if actual["stderrBytes"] != stderr:
-            problems.append(f"{name}: stderr bytes differ from the pinned baseline")
-    return results, problems
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheel", required=True, type=Path)
@@ -839,7 +705,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--hyprial", default=None)
     parser.add_argument("--contract", required=True, type=Path)
-    parser.add_argument("--golden", required=True, type=Path)
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--artifacts-dir", type=Path, default=None)
     parser.add_argument("--json-out", type=Path, default=None)
@@ -850,8 +715,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--expected-commit must be 7-40 lowercase hex characters")
     if not args.contract.is_file():
         parser.error(f"--contract is not a file: {args.contract}")
-    if not args.golden.is_file():
-        parser.error(f"--golden is not a file: {args.golden}")
     hyprial = args.hyprial or str(default_console(args.python))
     if not Path(hyprial).is_file():
         parser.error(f"hyprial console script is missing: {hyprial}")
@@ -863,7 +726,6 @@ def main(argv: list[str] | None = None) -> int:
         "installed": {},
         "contract": {},
         "daemon": {},
-        "cases": {},
         "problems": problems,
     }
 
@@ -925,8 +787,6 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 if help_payload.get("ok") is not True:
                     problems.append("console help --json did not report ok:true")
-                if "  hyprial agent" not in help_payload.get("usage", "").splitlines():
-                    problems.append("console help --json omits the agent group for agent link")
 
         version_run = run_cli(hyprial, ["version"], cwd=workdir, env=env)
         expected_version = re.compile(
@@ -952,10 +812,6 @@ def main(argv: list[str] | None = None) -> int:
             "socket": str(root / "state" / "daemon.sock"),
             "logPath": str(root / "daemon.log"),
         }
-        if not ready_problems:
-            cases, case_problems = daemon_cases(hyprial, root, env, args.golden)
-            summary["cases"] = cases
-            problems.extend(case_problems)
         summary["daemon"]["returnCode"] = stop_daemon(daemon_process)
         daemon_process = None
         if daemon_log is not None:
@@ -970,11 +826,6 @@ def main(argv: list[str] | None = None) -> int:
             args.artifacts_dir.mkdir(parents=True, exist_ok=True)
             if (root / "daemon.log").is_file():
                 shutil.copyfile(root / "daemon.log", args.artifacts_dir / "daemon.log")
-            if summary["cases"]:
-                (args.artifacts_dir / "daemon-cases.json").write_text(
-                    json.dumps(summary["cases"], indent=2, sort_keys=True),
-                    encoding="utf-8",
-                )
     finally:
         if daemon_process is not None:
             stop_daemon(daemon_process)

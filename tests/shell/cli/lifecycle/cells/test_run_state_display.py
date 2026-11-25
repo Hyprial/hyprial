@@ -8,7 +8,6 @@ from typer.testing import CliRunner
 
 from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common import support as cli_support
-from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.runtime import entry as cli
 
 CORPUS = json.loads((Path(__file__).parents[5] / "contract/daemon-lifecycle/run-state-display-vectors.json").read_text())
@@ -38,11 +37,10 @@ def test_human_commands_share_golden_diagnostics(monkeypatch, case, command):
         return payload
 
     monkeypatch.setattr(cli_support, "_daemon_request", request)
-    monkeypatch.setattr(get_services(), "_sample_process_table", lambda: {})
     result = CliRunner().invoke(cli.app, ["agent", command], color=False)
     assert result.exit_code == 0, result.output
     assert case["display"] in result.output
-    assert calls == ["agent.list" if command == "list" else "top.snapshot"]
+    assert calls == ["agent.list" if command == "list" else "top.inspect"]
     assert payload == before  # renderers must not edit the response/legacy fields
     if command == "top":
         assert "RUN STATE" in result.output
@@ -58,11 +56,7 @@ def test_json_is_one_unchanged_object_without_sampling(monkeypatch, command, old
                "agents" if command == "list" else "actors": [_row(c) for c in cases],
                "priorField": {"retain": [1, 2, 3]}}
 
-    def forbidden():
-        pytest.fail("JSON diagnostics must not sample host processes")
-
     monkeypatch.setattr(cli_support, "_daemon_request", lambda *a, **k: payload)
-    monkeypatch.setattr(get_services(), "_sample_process_table", forbidden)
     result = CliRunner().invoke(cli.app, ["agent", command, "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == payload
@@ -127,3 +121,17 @@ def test_agent_list_filters_and_other_fields_are_preserved(monkeypatch):
     assert result.exit_code == 0, result.output
     assert seen == [("agent.list", {"inactiveSince": "2h", "excludeWf": True})]
     assert "agent:o:n:a" in result.stdout
+
+
+def test_agent_list_sends_the_user_agent_opt_in_only_when_asked(monkeypatch):
+    seen = []
+
+    def request(method, params):
+        seen.append((method, params))
+        return {"ok": True, "agents": [], "agentsWithoutRoutine": []}
+
+    monkeypatch.setattr(cli_support, "_daemon_request", request)
+    for args in (["agent", "list"], ["agent", "list", "--include-user-agent"]):
+        result = CliRunner().invoke(cli.app, args)
+        assert result.exit_code == 0, result.output
+    assert seen == [("agent.list", {}), ("agent.list", {"includeUserAgent": True})]

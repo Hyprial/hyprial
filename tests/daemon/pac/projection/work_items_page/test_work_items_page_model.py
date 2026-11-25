@@ -12,11 +12,9 @@ from typing import Any
 
 from hyprial.daemon.impl.pac.views import missions as mission_views
 from hyprial.daemon.impl.pac.views import overview
-from hyprial.daemon.impl.pac.views.work_items import (
-    new_work_item,
-    replace_head,
-    replace_log,
-)
+import yaml
+
+from hyprial.daemon.impl.pac.views.missions import parse_mission
 
 NODE = "hq-node"
 OWNER = "user:owner@example.test"
@@ -44,34 +42,14 @@ def _item(
 ) -> dict[str, Any]:
     """One loaded work item in the exact form ``load_missions`` hands over."""
 
-    item = new_work_item(
-        item_id=item_id,
-        title=title,
-        owner=owner,
-        assignee=assignee,
-        checklist=[text for text, _ in checklist],
-        depends=list(depends),
-        acceptance=acceptance,
-        opened=opened,
-    )
-    for index, (_, done) in enumerate(checklist):
-        if done:
-            entries = [dict(entry) for entry in item.head["checklist"]]
-            entries[index]["done"] = True
-            item = replace_head(item, checklist=entries)
-    if status != "todo":
-        item = replace_head(item, status=status)
-    if closed is not None:
-        item = replace_head(item, closed=closed)
-    if pacs:
-        item = replace_head(item, pacs=list(pacs))
-    if log:
-        item = replace_log(item, list(log))
-    projected = item.to_dict()
-    return {
-        **projected,
-        "pacs": [str(graph).strip() for graph in projected["pacs"] if str(graph).strip()],
+    fields = {
+        "id": item_id, "status": status, "owner": owner, "assignee": assignee,
+        "checklist": [{"text": text, "done": done} for text, done in checklist],
+        "depends": list(depends), "acceptance": acceptance, "pacs": list(pacs),
+        "opened": opened, "closed": closed,
     }
+    text = f"## {item_id} {title}\n\n```yaml\n{yaml.safe_dump(fields)}```\n\n## Log\n" + "\n".join(log)
+    return parse_mission(text)
 
 
 def _snapshot(*runs: dict[str, Any], observed_at: int = NOW) -> dict[str, Any]:
@@ -137,8 +115,10 @@ def test_entry_shape_is_exactly_the_page_contract() -> None:
             "log": ["- 2026-10-07T12:00:00+00:00 user:owner: started"],
             "opened": 50 * DAY_MS,
             "closed": None,
-            # acceptance text no verified owner action covers yet
-            "unverifiedOperator": True,
+            "documentText": item["documentText"],
+            "documentTruncated": False,
+            "diagnostics": [],
+            "path": "",
         }
     ]
     assert model["workItemsArchiveCutoffMs"] == NOW - 7 * DAY_MS
@@ -284,8 +264,10 @@ def test_body_text_is_capped_and_secrets_are_redacted() -> None:
     )
 
 
-def test_unverified_operator_passes_through() -> None:
+def test_old_approval_flags_are_not_projected_as_authority() -> None:
     flagged = _item("M-owner-0001", acceptance="must be accepted", status="doing")
+    flagged["unverifiedOperator"] = True
+    flagged["ownerActions"] = [{"action": "done", "verified": True}]
     clean = _item("M-owner-0002")
 
     model = overview.build_model(
@@ -293,9 +275,7 @@ def test_unverified_operator_passes_through() -> None:
     )
 
     by_id = {entry["id"]: entry for entry in model["workItems"]}
-    assert flagged["unverifiedOperator"] is True  # the input carries the flag
-    assert by_id["M-owner-0001"]["unverifiedOperator"] is True
-    assert by_id["M-owner-0002"]["unverifiedOperator"] is False
+    assert all("unverifiedOperator" not in entry and "ownerActions" not in entry for entry in by_id.values())
 
 
 def test_missions_and_lines_keep_their_window_linked_behaviour() -> None:
@@ -399,8 +379,36 @@ def test_loaded_work_items_reach_the_model_in_full_projection_form() -> None:
     assert parsed["opened"] == 500
     assert parsed["closed"] == 600
     assert parsed["log"] == ["- 2026-10-07T12:00:00+00:00 user:owner: started"]
-    assert parsed["unverifiedOperator"] is True  # acceptance never owner-verified
+    assert "unverifiedOperator" not in parsed
 
     model = overview.build_model(_snapshot(), node=NODE, missions=[parsed])
     assert model["workItems"][0]["checklist"] == {"done": 1, "total": 1}
     assert model["workItems"][0]["closed"] == 600
+
+
+def test_plain_document_and_diagnostics_reach_the_page_without_graph_grouping() -> None:
+    document = {
+        "id": "orgfs:space:node", "title": "Notes", "associationEligible": False,
+        "documentText": "unparsed body <script>bad()</script>",
+        "path": "work/notes.md", "diagnostics": ["optional YAML unavailable"],
+        "pacs": ["wf-a"], "checklist": 42, "depends": 42, "log": 42,
+    }
+    model = overview.build_model(_snapshot(_run("wf-a")), node=NODE, missions=[document])
+    assert model["missions"] == []
+    entry = model["workItems"][0]
+    assert entry["documentText"] == document["documentText"]
+    assert entry["path"] == "work/notes.md"
+    assert entry["diagnostics"] == document["diagnostics"]
+    assert entry["checklist"] == {"done": 0, "total": 0}
+    assert entry["depends"] == entry["log"] == []
+
+
+def test_document_preview_is_explicitly_bounded_and_redacted_without_mutating_source() -> None:
+    document = {"id": "doc", "documentText": SECRET + " x" * 20_000, "diagnostics": [SECRET]}
+    original = document["documentText"]
+    entry = overview.build_model(_snapshot(), node=NODE, missions=[document])["workItems"][0]
+    assert SECRET not in entry["documentText"]
+    assert len(entry["documentText"]) == overview.WORK_ITEM_DOCUMENT_LIMIT
+    assert entry["documentTruncated"] is True
+    assert entry["diagnostics"] == ["[已隐去]"]
+    assert document["documentText"] == original

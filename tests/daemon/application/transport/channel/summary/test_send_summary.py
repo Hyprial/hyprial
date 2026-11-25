@@ -17,6 +17,7 @@ from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage
 
 from ..support import (
     CANONICAL,
+    official_address,
     FakeInbox,
     _close_application_domains as _close_application_domains,
     application,
@@ -137,7 +138,7 @@ def test_a_send_with_reply_to_saves_the_original_id_and_is_not_acked(
     # A reply-shaped send is still delivered explicitly: the daemon does not
     # ack the original on the sender's behalf.
     assert inbox.acks == []
-    assert [item.message_id for item in inbox.pending_messages(CANONICAL)] == [
+    assert [item.message_id for item in inbox.pending_messages(official_address(app))] == [
         "message-1"
     ]
 
@@ -154,7 +155,7 @@ def test_a_refused_reply_send_does_not_ack_the_original(tmp_path: Path) -> None:
     assert error.value.data == {"summaryBytes": 513, "maxBytes": 512}
     assert inbox.submitted == []
     assert inbox.acks == []
-    assert [item.message_id for item in inbox.pending_messages(CANONICAL)] == [
+    assert [item.message_id for item in inbox.pending_messages(official_address(app))] == [
         "message-1"
     ]
 
@@ -177,7 +178,7 @@ def test_a_plain_send_in_the_same_conversation_is_not_a_reply(
     assert sent.intent == "request"
     assert "replyTo" not in json.loads(sent.payload)
     # The original request stays open: reusing its conversation is not a reply.
-    assert [item.message_id for item in inbox.pending_messages(CANONICAL)] == [
+    assert [item.message_id for item in inbox.pending_messages(official_address(app))] == [
         "message-1"
     ]
 
@@ -262,6 +263,6 @@ def test_a_reply_without_a_summary_is_refused_and_leaves_the_request_pending(
     assert error.value.data["reason"] == "missing"
     assert inbox.submitted == []
     assert inbox.acks == []
-    assert [item.message_id for item in inbox.pending_messages(CANONICAL)] == [
+    assert [item.message_id for item in inbox.pending_messages(official_address(app))] == [
         "message-1"
     ]

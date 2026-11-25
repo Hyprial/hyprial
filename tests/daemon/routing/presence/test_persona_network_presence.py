@@ -11,6 +11,8 @@ backer: daemon down, token gone.
 """
 
 from __future__ import annotations
+
+from tests.support.agent_destroy import destroy_agent
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
 
 import json
@@ -121,6 +123,14 @@ def _application(tmp_path: Path) -> tuple[DaemonApplication, _FakeTransport, Inb
     return app, transport, inbox
 
 
+def _official(app: DaemonApplication, name: str) -> str:
+    """The id-form address the daemon declares a registered agent under."""
+
+    agent = app.agents.require(name)
+    assert agent.uri == f"agent:{OWNER}:{NODE}:{agent.agent_id}"
+    return agent.uri
+
+
 def _close_application(app: DaemonApplication, inbox: InboxService) -> None:
     routes = app._route_registration
     if routes is not None:
@@ -128,7 +138,7 @@ def _close_application(app: DaemonApplication, inbox: InboxService) -> None:
         assert routes.drain(1)
     if app._lifecycle_router is not None:
         app._lifecycle_router.close()
-    assert app._agent_session_domains.close()
+    assert app._agent_session_domains.close(shutdown_hosts=False)
     inbox.close()
 
 
@@ -138,11 +148,13 @@ def test_agent_create_declares_daemon_backed_presence(tmp_path: Path) -> None:
     app, transport, inbox = _application(tmp_path)
     try:
         app.handle("agent.create", {"name": "persona"})
+        persona = _official(app, "persona")
 
-        assert any(key.endswith(f"/{URI}") for key in transport.liveliness_keys)
+        assert any(key.endswith(f"/{persona}") for key in transport.liveliness_keys)
+        assert not any(key.endswith(f"/{URI}") for key in transport.liveliness_keys)
         # The inbox endpoint is subscribed, so a delivery to the persona URI
         # is actually taken — presence without a receiver would be a lie.
-        assert any(URI in key for key in transport.subscriptions)
+        assert any(persona in key for key in transport.subscriptions)
     finally:
         _close_application(app, inbox)
 
@@ -155,12 +167,13 @@ def test_persona_endpoint_takes_delivery_into_the_durable_inbox(
     app, transport, inbox = _application(tmp_path)
     try:
         app.handle("agent.create", {"name": "persona"})
+        persona = app.agents.require("persona").uri
         (callback,) = transport.subscriptions.values()
         message = InboxMessage(
             message_id="m-persona",
             conversation_id="c-1",
             sender="agent:op:node-2:sender",
-            recipient=URI,
+            recipient=persona,
             payload=json.dumps({"message": "hi"}).encode(),
             intent="request",
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -172,7 +185,7 @@ def test_persona_endpoint_takes_delivery_into_the_durable_inbox(
 
         callback(_Sample())
 
-        assert [m.message_id for m in inbox.pending_messages(URI)] == ["m-persona"]
+        assert [m.message_id for m in inbox.pending_messages(persona)] == ["m-persona"]
     finally:
         _close_application(app, inbox)
 
@@ -185,7 +198,7 @@ def test_agent_destroy_withdraws_the_presence(tmp_path: Path) -> None:
         app.handle("agent.create", {"name": "persona"})
         declared = list(transport.registrations)
 
-        app.handle("agent.destroy", {"name": "persona"})
+        destroy_agent(app, "persona")
 
         assert declared and all(registration.closed for registration in declared)
     finally:
@@ -208,8 +221,9 @@ def test_restart_sweep_reddeclares_every_registered_agent(tmp_path: Path) -> Non
         app2._restore_persona_routes()  # type: ignore[attr-defined]
 
         declared = set(transport2.liveliness_keys)
-        assert any(key.endswith(f"/{URI}") for key in declared)
-        assert any(key.endswith(f"/agent:{OWNER}:{NODE}:other") for key in declared)
+        assert any(key.endswith(f"/{_official(app2, 'persona')}") for key in declared)
+        assert any(key.endswith(f"/{_official(app2, 'other')}") for key in declared)
+        assert not any(key.endswith(f"/{URI}") for key in declared)
         # Idempotent: a second sweep does not double-declare.
         transport2.liveliness_keys.clear()
         app2._restore_persona_routes()  # type: ignore[attr-defined]
@@ -236,7 +250,7 @@ def test_create_without_transport_is_a_noop_not_a_crash(tmp_path: Path) -> None:
         assert result["created"] is True
         assert app._routes is None
     finally:
-        assert app._agent_session_domains.close()
+        assert app._agent_session_domains.close(shutdown_hosts=False)
         inbox.close()
 
 

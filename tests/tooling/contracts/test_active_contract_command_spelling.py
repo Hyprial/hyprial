@@ -209,11 +209,11 @@ def _assertions(scenario: dict[str, object]) -> list[str]:
 def test_the_declared_surface_is_contract_not_a_convenient_subset() -> None:
     scanned = {_relative(path) for path in _scanned_files()}
 
-    assert "contract/e2e/_send_links/phases.py" in scanned
-    assert "contract/wire/send-links.md" in scanned
+    assert "contract/e2e/_group_conversation/phases.py" in scanned
+    assert "contract/wire/message-sender-auth.md" in scanned
     # scenarios.json is scanned structurally, one scenario entry at a time.
     scenario_ids = {scenario.get("id") for scenario in _scenario_entries()}
-    assert "E2E-026" in scenario_ids - set(EXCLUDED_SCENARIOS)
+    assert "E2E-031" in scenario_ids - set(EXCLUDED_SCENARIOS)
     assert "E2E-010" in scenario_ids & set(EXCLUDED_SCENARIOS)
     for excluded in (*EXCLUDED_FILES, *EXCLUDED_DIRECTORIES):
         assert (ROOT / excluded).exists(), f"stale exclusion: {excluded}"
@@ -255,18 +255,6 @@ def test_active_contract_surfaces_name_only_registered_commands() -> None:
         "registered grouped spelling (for example `hyprial message read`):\n"
         + "\n".join(offenders)
     )
-
-
-def test_e2e_026_names_the_registered_body_reader() -> None:
-    """The corrected surface is really checked, not dropped from the scan."""
-
-    entry = next(item for item in _scenario_entries() if item.get("id") == "E2E-026")
-    joined = "\n".join(_assertions(entry))
-    assert "hyprial message read" in joined
-    assert "hyprial read" not in joined
-
-    runner = (CONTRACT / "e2e" / "_send_links" / "phases.py").read_text("utf-8")
-    assert "hyprial message read did not return the body" in runner
 
 
 def test_declared_exclusions_are_still_necessary() -> None:

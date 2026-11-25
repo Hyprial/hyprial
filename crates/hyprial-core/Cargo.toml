@@ -1,0 +1,9 @@
+[package]
+name = "hyprial-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust policy core of the native engine: supervision budget, backoff, custody tokens, fire-time classification. No Python bindings, no async runtime."
+
+[dependencies]

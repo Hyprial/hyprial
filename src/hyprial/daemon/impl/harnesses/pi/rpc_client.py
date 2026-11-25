@@ -39,6 +39,7 @@ from hyprial.identity import AgentRuntimeContext
 from hyprial.daemon.impl.harnesses.model_provider  import pi_model_args
 from hyprial.daemon.impl.harnesses.pi.loader  import (
     PiProjectTrustReceipt,
+    PiStartPreconditionError,
     find_pi_package_root,
     pi_sdk_launch_from_runtime_context,
     resolve_approved_pi_project,
@@ -56,11 +57,6 @@ from hyprial.daemon.impl.harnesses.pi.messages import (
 )
 
 
-# Pi has no MCP support by design (its README defers MCP to extensions), so a
-# managed pi worker cannot receive the harness-bridge MCP server a Claude
-# worker gets.  The pi carrier for the same WorkerChannel identity is this
-# bundled extension: it registers the harness_* toolset and signs daemon IPC
-# with the worker's own canonical actor, read from the injected environment.
 PI_HARNESS_BRIDGE_EXTENSION = Path(__file__).parent / "resources" / "pi_harness_bridge.ts"
 
 class PiRpcClient:
@@ -321,10 +317,17 @@ class PiRpcClient:
                 self.reached_ready = True
                 self._write_log("worker.ready", pid=self._process.pid)
                 return self
-            except BaseException:
+            except BaseException as error:
                 # ``async with`` does not invoke __aexit__ when __aenter__ fails.
                 # The ready probe is therefore an explicit resource boundary.
                 await self._close()
+                if isinstance(error, ConnectionError) and (
+                    b"HYPRIAL_PI_START_FAILURE:MODEL_UNAVAILABLE"
+                    in bytes(self._stderr_tail).splitlines()
+                ):
+                    raise PiStartPreconditionError(
+                        "configured Pi model is unavailable; check the selected provider and model"
+                    ) from error
                 raise
 
         async def __aexit__(self, *args: object) -> bool:
@@ -860,11 +863,7 @@ class PiRpcClient:
             except ValueError as error:
                 raise ConnectionError("pi RPC emitted an oversized line") from error
             if not line:
-                detail = self._stderr_tail.decode("utf-8", errors="replace")[-4096:]
-                raise ConnectionError(
-                    "pi RPC session exited unexpectedly"
-                    + (f": {detail}" if detail else "")
-                )
+                raise self._exited_error()
             # Strict JSONL framing: LF terminates a record and an optional
             # trailing CR is stripped; no other separator splits records.
             try:

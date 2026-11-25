@@ -21,6 +21,8 @@ class UpgradeContext:
     process_runner: Callable[..., Any] | None = None
     platform: str | None = None
     uid: int | None = None
+    hyprial_home: Path | None = None
+    membership_migration: Callable[[], dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -35,8 +37,9 @@ class UpgradeStep:
 def _registry() -> tuple[UpgradeStep, ...]:
     from .autoupdate_timer import STEP as autoupdate_timer
     from .mcp_entry import STEP as mcp_entry
+    from .org_membership import STEP as org_membership
 
-    return (mcp_entry, autoupdate_timer)
+    return (mcp_entry, autoupdate_timer, org_membership)
 
 
 STEPS = _registry()

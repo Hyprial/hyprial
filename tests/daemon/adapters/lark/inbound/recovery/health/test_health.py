@@ -35,7 +35,7 @@ def test_reconcile_retires_permanently_gone_chat_and_stays_healthy(
 
     logger = Logger.adapter(tmp_path, name="test")
     adapter, lark, harness, routes = make_adapter(tmp_path, actor, logger=logger)
-    routes.pins["lark:oc_two:oc_two"] = actor
+    routes.bindings["lark:oc_two:oc_two"] = actor
     # Two chats with prior activity; oc_dm is the disbanded one.
     sdk_event(adapter.handle_sdk_event, event_id="evt_1", message_id="om_one")
     sdk_event(
@@ -106,7 +106,7 @@ def test_permanently_gone_chat_keeps_cross_layer_probe_healthy(
     live chat must report healthy, with no rebuild."""
 
     adapter, lark, harness, routes = make_adapter(tmp_path, actor)
-    routes.pins["lark:oc_two:oc_two"] = actor
+    routes.bindings["lark:oc_two:oc_two"] = actor
     sdk_event(adapter.handle_sdk_event, event_id="evt_1", message_id="om_one")
     sdk_event(
         adapter.handle_sdk_event,
@@ -191,7 +191,7 @@ def test_reconcile_errors_make_history_probe_fail_closed_and_sanitized(
         "https://tenant.example.invalid/history?tenant_access_token=secret-token"
     )
     if partial:
-        routes.pins["lark:oc_two:oc_two"] = actor
+        routes.bindings["lark:oc_two:oc_two"] = actor
         sdk_event(
             adapter.handle_sdk_event,
             event_id="evt_2",
@@ -259,7 +259,7 @@ def test_a_blocked_chat_does_not_rebuild_the_stream(
     """
 
     adapter, lark, harness, routes = make_adapter(tmp_path, actor)
-    routes.pins["lark:oc_two:oc_two"] = actor
+    routes.bindings["lark:oc_two:oc_two"] = actor
     sdk_event(adapter.handle_sdk_event, event_id="evt_1", message_id="om_one")
     sdk_event(
         adapter.handle_sdk_event,
@@ -324,7 +324,7 @@ def test_a_missed_message_still_rebuilds_even_with_a_blocked_chat(
     """
 
     adapter, lark, harness, routes = make_adapter(tmp_path, actor)
-    routes.pins["lark:oc_two:oc_two"] = actor
+    routes.bindings["lark:oc_two:oc_two"] = actor
     sdk_event(adapter.handle_sdk_event, event_id="evt_1", message_id="om_one")
     sdk_event(
         adapter.handle_sdk_event,

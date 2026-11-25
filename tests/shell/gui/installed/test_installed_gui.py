@@ -11,8 +11,6 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
-import time
 from types import SimpleNamespace
 import urllib.error
 import urllib.request
@@ -21,11 +19,11 @@ import pytest
 
 from hyprial.shell.impl.gui import launcher
 from hyprial.shell.impl.gui import worktree as auto_worktree
+from hyprial.shell.impl.gui.backend.admission import SourceAdmission
 from hyprial.shell.impl.gui.errors import GuiError
 from hyprial.shell.impl.gui.install import dev_source
 from hyprial.shell.impl.gui.install import launch as target_launch
 from hyprial.shell.impl.gui.install import resources
-from hyprial.shell.impl.gui.install import server as static_server
 from hyprial.shell.impl.gui.project import GuiProject
 
 
@@ -49,6 +47,18 @@ def _assets(
     )
     resources.write_manifest(root, manifest)
     return root
+
+
+def _admission(tmp_path: Path, driver: str = "daemon") -> SourceAdmission:
+    return SourceAdmission(
+        driver=driver,
+        owner="source-owner",
+        node="source-node",
+        principal="user:source-owner",
+        home=tmp_path / "home",
+        state_dir=tmp_path / "state",
+        socket_path=tmp_path / "state" / "daemon.sock",
+    )
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -80,7 +90,9 @@ def _source_repo(tmp_path: Path) -> tuple[Path, Path, str]:
     return source, remote, commit
 
 
-def _fake_project(home: Path) -> GuiProject:
+def _fake_project(home: Path, *, deps: bool = True) -> GuiProject:
+    if deps:
+        (home / "node_modules").mkdir(parents=True, exist_ok=True)
     return GuiProject(
         home=home,
         worktree=home.parent,
@@ -117,12 +129,13 @@ def _which(name: str):
 def _env(tmp_path: Path) -> dict[str, str]:
     return {
         "HYPRIAL_HOME": str(tmp_path / "home"),
+        "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(tmp_path / "user-home"),
     }
 
 
-def test_normal_installed_assets_use_python_server_without_node(
+def test_normal_installed_assets_use_the_python_host_without_node(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _assets(tmp_path)
@@ -136,6 +149,7 @@ def test_normal_installed_assets_use_python_server_without_node(
         environ={"HYPRIAL_DEV_GUI_HOME": str(tmp_path / "unused-dev-home")},
         cwd=tmp_path,
         inspect=lambda *a, **k: pytest.fail("installed normal mode must not inspect npm"),
+        admit=lambda **k: _admission(tmp_path),
     )
 
     assert plan.project.installed is True
@@ -143,83 +157,78 @@ def test_normal_installed_assets_use_python_server_without_node(
     assert plan.installed_assets is not None
     assert plan.build_argv is None
     assert plan.backend_owned is False
-    assert plan.frontend_argv == (
+    assert plan.frontend_argv[:5] == (
         sys.executable,
+        "-P",
         "-m",
-        "hyprial.shell.impl.gui.install.server",
-        "--root",
-        str(root.resolve()),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "4173",
+        "hyprial.shell.impl.gui.host",
+        "serve",
     )
+    assert plan.project.node == ""
 
 
-def test_explicit_normal_home_serves_verified_build_without_inspection(
+@pytest.mark.parametrize("installed", [True, False])
+def test_normal_mode_rejects_gui_home_option(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed: bool
+) -> None:
+    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
+    if installed:
+        monkeypatch.setattr(
+            target_launch, "installed_asset_root", lambda: _assets(tmp_path).resolve()
+        )
+
+    with pytest.raises(GuiError) as caught:
+        launcher.build_plan(
+            "",
+            gui_home=tmp_path,
+            environ={},
+            cwd=tmp_path,
+            inspect=lambda *a, **k: pytest.fail("rejected option reached inspect"),
+        )
+
+    assert caught.value.code == "INVALID_ARGUMENT"
+    assert caught.value.data == {"option": "--gui-home"}
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_normal_mode_rejects_inherited_hyprial_gui_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed: bool
+) -> None:
+    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
+    if installed:
+        monkeypatch.setattr(
+            target_launch, "installed_asset_root", lambda: _assets(tmp_path).resolve()
+        )
+
+    with pytest.raises(GuiError) as caught:
+        launcher.build_plan(
+            "",
+            environ={"HYPRIAL_GUI_HOME": str(tmp_path)},
+            cwd=tmp_path,
+            inspect=lambda *a, **k: pytest.fail("rejected variable reached inspect"),
+        )
+
+    assert caught.value.code == "GUI_CONFIG_CONFLICT"
+    assert caught.value.data["variables"] == ["HYPRIAL_GUI_HOME"]
+
+
+def test_normal_mode_treats_blank_hyprial_gui_home_as_unset_and_still_hands_it_to_the_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _assets(tmp_path)
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
+    monkeypatch.setattr(target_launch, "installed_asset_root", lambda: root.resolve())
 
     plan = launcher.build_plan(
         "",
-        gui_home=root,
-        environ={},
+        environ={"HYPRIAL_GUI_HOME": "  "},
         cwd=tmp_path,
-        inspect=lambda *a, **k: pytest.fail("built normal home must not inspect npm"),
+        inspect=lambda *a, **k: pytest.fail("installed assets must not inspect npm"),
+        admit=lambda **k: _admission(tmp_path),
     )
 
     assert plan.project.installed is True
-    assert plan.project.home == root.resolve()
-    assert plan.installed_assets is not None
-    assert plan.frontend_argv[0] == sys.executable
-    assert plan.backend_argv is None
-
-
-def test_invalid_explicit_normal_home_does_not_fall_back_to_dev(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
-
-    with pytest.raises(GuiError) as caught:
-        launcher.build_plan(
-            "",
-            environ={"HYPRIAL_GUI_HOME": str(empty)},
-            cwd=tmp_path,
-            inspect=lambda *a, **k: pytest.fail("invalid home reached inspect"),
-        )
-
-    assert caught.value.code == "GUI_HOME_INVALID"
-    assert str(empty) in str(caught.value)
-
-
-def test_explicit_normal_home_with_only_source_package_is_not_built(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "package.json").write_text(
-        json.dumps({"name": "@hyprial/gui-app", "scripts": {"start": "vite"}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
-
-    with pytest.raises(GuiError) as caught:
-        launcher.build_plan(
-            "",
-            gui_home=source,
-            environ={},
-            cwd=tmp_path,
-            inspect=lambda *a, **k: pytest.fail(
-                "explicit normal mode must require built assets, not source"
-            ),
-        )
-
-    assert caught.value.code == "GUI_HOME_INVALID"
-    assert "no built GUI" in str(caught.value)
+    assert plan.env["HYPRIAL_GUI_HOME"] == str(root.resolve())
 
 
 def test_built_in_assets_are_verified_and_tampering_is_refused(
@@ -243,7 +252,7 @@ def test_built_in_assets_are_verified_and_tampering_is_refused(
     assert caught.value.code == "GUI_ASSETS_INVALID"
 
 
-def test_dual_home_variables_are_independent_and_same_path_is_rejected(
+def test_dev_ignores_hyprial_gui_home_even_when_equal_to_the_dev_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
@@ -255,6 +264,7 @@ def test_dual_home_variables_are_independent_and_same_path_is_rejected(
     plan = launcher.build_plan(
         "dev",
         environ={
+            "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
             "HYPRIAL_GUI_HOME": str(normal),
             "HYPRIAL_DEV_GUI_HOME": str(dev),
         },
@@ -265,17 +275,17 @@ def test_dual_home_variables_are_independent_and_same_path_is_rejected(
     assert plan.auto_worktree is None
     assert plan.env["HYPRIAL_GUI_HOME"] == str(dev.resolve())
 
-    with pytest.raises(GuiError) as caught:
-        launcher.build_plan(
-            "dev",
-            environ={
-                "HYPRIAL_GUI_HOME": str(normal),
-                "HYPRIAL_DEV_GUI_HOME": str(normal),
-            },
-            cwd=tmp_path,
-            inspect=lambda home, **k: _fake_project(home),
-        )
-    assert caught.value.code == "GUI_DEV_HOME_INVALID"
+    same = launcher.build_plan(
+        "dev",
+        environ={
+            "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+            "HYPRIAL_GUI_HOME": str(dev),
+            "HYPRIAL_DEV_GUI_HOME": str(dev),
+        },
+        cwd=tmp_path,
+        inspect=lambda home, **k: _fake_project(home),
+    )
+    assert same.project.home == dev.resolve()
 
 
 def test_built_in_asset_directory_is_not_a_dev_worktree(
@@ -329,21 +339,26 @@ def test_dev_ignores_hyprial_gui_home_and_uses_installed_exact_source(
         "ensure_installed_dev_worktree",
         lambda *a, **k: auto,
     )
-    monkeypatch.setattr(launcher, "ensure_dev_worktree", _no_source)
+    monkeypatch.setattr(launcher, "discover_source_repo", _no_source)
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
     work = tmp_path / "empty-cwd"
     work.mkdir()
 
     plan = launcher.build_plan(
         "dev",
-        environ={"HYPRIAL_GUI_HOME": str(normal)},
+        environ={
+            "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+            "HARNESS_STATE_DIR": str(tmp_path / "state"),
+            "HYPRIAL_GUI_HOME": str(normal),
+        },
         cwd=work,
-        inspect=lambda home, **k: _fake_project(home),
+        inspect=lambda home, **k: _fake_project(home, deps=False),
         which=_which,
     )
 
     assert plan.auto_worktree is auto
     assert plan.project.home == auto_home
+    assert not (auto_home / "node_modules").exists()
     assert plan.env["HYPRIAL_GUI_HOME"] == str(auto_home)
 
 
@@ -354,7 +369,7 @@ def test_installed_dev_missing_git_has_actionable_error(
     monkeypatch.setattr(
         target_launch, "installed_asset_root", lambda: assets.resolve()
     )
-    monkeypatch.setattr(launcher, "ensure_dev_worktree", _no_source)
+    monkeypatch.setattr(launcher, "discover_source_repo", _no_source)
     work = tmp_path / "empty-cwd"
     work.mkdir()
 
@@ -378,7 +393,7 @@ def test_installed_dev_bootstraps_exact_sha_and_preserves_dirty_state(
     monkeypatch.setattr(
         target_launch, "installed_asset_root", lambda: assets.resolve()
     )
-    monkeypatch.setattr(launcher, "ensure_dev_worktree", _no_source)
+    monkeypatch.setattr(launcher, "discover_source_repo", _no_source)
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
     runner = _Runner()
     env = _env(tmp_path)
@@ -436,7 +451,7 @@ def test_installed_dev_refuses_a_worktree_at_a_different_head(
     monkeypatch.setattr(
         target_launch, "installed_asset_root", lambda: assets.resolve()
     )
-    monkeypatch.setattr(launcher, "ensure_dev_worktree", _no_source)
+    monkeypatch.setattr(launcher, "discover_source_repo", _no_source)
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
     runner = _Runner()
     env = _env(tmp_path)
@@ -482,7 +497,7 @@ def test_installed_dev_offline_missing_object_is_a_clear_failure(
     monkeypatch.setattr(
         target_launch, "installed_asset_root", lambda: assets.resolve()
     )
-    monkeypatch.setattr(launcher, "ensure_dev_worktree", _no_source)
+    monkeypatch.setattr(launcher, "discover_source_repo", _no_source)
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
     env = _env(tmp_path)
     work = tmp_path / "empty-cwd"
@@ -598,7 +613,6 @@ def test_startup_payload_redacts_source_and_auto_remote_credentials(
         url="http://127.0.0.1:4173",
         backend_endpoint=None,
         backend_owned=False,
-        backend_argv=None,
         frontend_argv=("npm", "run", "dev"),
         env={},
         open_browser=False,
@@ -650,55 +664,56 @@ def test_dev_source_rejects_credentials_without_echoing_them(
     assert "s3cr3t" not in caught.value.data["sourceRemote"]
 
 
-def test_static_server_health_business_boundary_and_port_release(
-    tmp_path: Path,
+def test_installed_startup_payload_describes_the_hosted_backend_not_a_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _assets(tmp_path)
-    server = static_server.create_server(root, "127.0.0.1", 0)
-    port = int(server.server_address[1])
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/__gui/healthz", timeout=2
-        ) as response:
-            health = json.loads(response.read())
-        assert health["ok"] is True
-        assert health["assets"] == "installed"
-        assert health["assetsVerified"] is True
+    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
+    monkeypatch.setattr(target_launch, "installed_asset_root", lambda: root.resolve())
+    plan = launcher.build_plan(
+        "",
+        environ={},
+        cwd=tmp_path,
+        admit=lambda **k: _admission(tmp_path),
+    )
 
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/gui/v1/messages",
-            method="POST",
-            data=b"{}",
-        )
-        with pytest.raises(urllib.error.HTTPError) as caught:
-            urllib.request.urlopen(request, timeout=2)
-        assert caught.value.code == 501
-        assert caught.value.headers["X-Hyprial-Backend"] == "not-wired"
-        body = json.loads(caught.value.read())
-        assert body["code"] == "BACKEND_NOT_WIRED"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-    with socket.socket() as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", port))
+    payload = launcher.startup_payload(_dev_session(plan))
+    text = launcher.render_startup(payload)
+
+    assert payload["backend_driver"] == "daemon"
+    assert payload["backend_principal"] == "user:source-owner"
+    assert payload["backend_owned"] is False
+    assert payload["installed"] is True
+    assert "Python session host" in payload["business"]
+    assert "request-http" in payload["business"]
+    for rendered in (json.dumps(payload), text):
+        assert "not implemented" not in rendered
+        assert "not wired" not in rendered
+        assert "unwired" not in rendered
 
 
-def test_static_server_subprocess_sigint_exits_130_and_releases_port(
+def test_installed_host_serves_verified_assets_and_answers_unserved_api_paths_with_its_envelope(
     tmp_path: Path,
 ) -> None:
     root = _assets(tmp_path)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = int(probe.getsockname()[1])
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "HYPRIAL_GUI_BACKEND_DRIVER": "daemon",
+        "HYPRIAL_BACKEND_ENDPOINT": "http://127.0.0.1:9",
+        "HYPRIAL_GUI_UPSTREAM_TOKEN": "installed-upstream-bearer",
+        "HYPRIAL_GUI_LAUNCH_GRANT": "installed-launch-grant-" + "g" * 32,
+        "HYPRIAL_GUI_PRINCIPAL": "user:installed-owner",
+        "HYPRIAL_NODE_ID": "installed-node",
+    }
     process = subprocess.Popen(
         [
             sys.executable,
             "-m",
-            "hyprial.shell.impl.gui.install.server",
+            "hyprial.shell.impl.gui.host",
+            "serve",
             "--root",
             str(root),
             "--host",
@@ -706,35 +721,53 @@ def test_static_server_subprocess_sigint_exits_130_and_releases_port(
             "--port",
             str(port),
         ],
+        env=environment,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     try:
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/__gui/healthz", timeout=1
-                ) as response:
-                    assert json.loads(response.read())["ok"] is True
-                break
-            except (OSError, urllib.error.URLError):
-                if process.poll() is not None or time.monotonic() > deadline:
-                    if process.poll() is None:
-                        process.terminate()
-                    _stdout, stderr = process.communicate(timeout=2)
-                    pytest.fail(
-                        f"static server did not become ready (exit "
-                        f"{process.returncode}): {stderr[-1000:]}"
-                    )
-                time.sleep(0.05)
-        process.send_signal(signal.SIGINT)
-        assert process.wait(timeout=5) == 130
+        assert process.stdout is not None
+        line = process.stdout.readline()
+        assert line.startswith("HYPRIAL_GUI_READY "), line
+        assert json.loads(line[len("HYPRIAL_GUI_READY ") :])["dataMode"] == "hosted"
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/__gui/healthz", timeout=5
+        ) as response:
+            health = json.loads(response.read())
+        assert health["ok"] is True
+        assert health["dataMode"] == "hosted"
+        assert health["assets"] == "installed"
+        assert health["assetsVerified"] is True
+
+        for method, target, status, code in (
+            ("POST", "/api/gui/v1/x", 405, "HTTP_METHOD_NOT_ALLOWED"),
+            ("GET", "/api/gui/v1/x.json", 404, "NOT_FOUND"),
+        ):
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}{target}",
+                method=method,
+                data=b"{}" if method == "POST" else None,
+            )
+            with pytest.raises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            assert caught.value.code == status
+            envelope = json.loads(caught.value.read())
+            assert envelope["ok"] is False
+            assert envelope["code"] == code
+            assert "X-Hyprial-Backend" not in caught.value.headers
+            assert "not implemented" not in json.dumps(envelope)
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10) == 0
     finally:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
     with socket.socket() as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", port))
@@ -934,52 +967,17 @@ def test_wheel_manifest_requires_full_sha_and_complete_files(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("via_env", [False, True])
-def test_explicit_build_without_manifest_is_unverified(tmp_path, monkeypatch, via_env):
-    root = _assets(tmp_path)
-    (root / resources.MANIFEST_NAME).unlink()
-    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
-    plan = launcher.build_plan(
-        "", gui_home=None if via_env else root,
-        environ={"HYPRIAL_GUI_HOME": str(root)} if via_env else {}, cwd=tmp_path,
-        inspect=lambda *a, **k: pytest.fail("static build must not inspect npm"),
-    )
-    payload = launcher.startup_payload(_dev_session(plan))
-    assert payload["installed"] is False
-    assert payload["assets"] == "explicit-unverified"
-    assert "verified built GUI" not in launcher.render_startup(payload)
-    assert "unverified" in launcher.render_startup(payload)
-    assert payload["source_commit"] == ""
-    server = static_server.create_server(root, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{server.server_port}/__gui/healthz", timeout=2
-        ) as response:
-            health = json.loads(response.read())
-        assert health["assets"] == "explicit-unverified"
-        assert health["assetsVerified"] is False
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def test_static_server_rejects_manifest_hash_mismatch(tmp_path):
-    root = _assets(tmp_path)
-    (root / "app.js").write_text("tampered", encoding="utf-8")
-    with pytest.raises(static_server.GuiStaticServerError):
-        static_server.create_server(root, "127.0.0.1", 0)
-
-
-@pytest.mark.parametrize("via_env", [False, True])
 def test_explicit_dev_prompt_does_not_claim_source_verified(tmp_path, monkeypatch, via_env):
     home = tmp_path / "gui"
     home.mkdir()
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
     plan = launcher.build_plan(
         "dev", gui_home=None if via_env else home,
-        environ={"HYPRIAL_DEV_GUI_HOME": str(home)} if via_env else {},
+        environ={
+            "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+            "HARNESS_STATE_DIR": str(tmp_path / "state"),
+            **({"HYPRIAL_DEV_GUI_HOME": str(home)} if via_env else {}),
+        },
         cwd=tmp_path, inspect=lambda root, **k: _fake_project(root), which=_which,
     )
     assert plan.auto_worktree is None

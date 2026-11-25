@@ -1,5 +1,12 @@
 # GUI 退场与恢复台账（2026-10-27）
 
+> **2026-11-14 补记：** 按本台账恢复到 `clients/native/` 与 `packaging/clients/` 的原生壳和打包线已整体删除；
+> 最小壳的重建范围见 `docs/design/gui-single-launch-2026-11-14.md` 第 4 节。下文的“新位置”条目保留为历史记录。
+
+> **2026-11-19 补记：** 2026-11-14 的删除之后，最小原生壳与打包线已自 2026-11-15 起在
+> `clients/native/` 与 `packaging/clients/` 重建（PR 6b #2840、6c #2889），运行 `hyprial gui --no-open --json --port 0 --stdin-stop`；
+> 旧 `src/gui` 与 `app` 仍不恢复。
+
 状态：实施台账，随实际清理 PR 入库；本文件不是恢复完成声明。
 目标架构：新共享 UI 落 `gui/`，原生壳落 `clients/native/`，构建分发落
 `packaging/clients/`；业务 CLI/daemon/agent/消息/Tailcat 保留在 `src/hyprial/`。
@@ -115,6 +122,10 @@ skip 不冒充通过。
   `test_upgrade_gui_unpack.py`（GUI 不可用不阻挡 daemon upgrade）、CLI import/help 焦点
   测试；见 V1/V2。旧生命周期/真实 GUI NOT_RUN。
 - 状态：`已清理并轻量验证`。
+- 状态变化（2026-11-19，Z-7 A2）：`runtime.py` 整个删除；`apps.py` 只保留升级路径仍调用的
+  `upgrade`（仍返回 `GUI_UNAVAILABLE`）；`shell/interface.py` 里对应的 GUI 生命周期名称与
+  `start_gui_background` 删除。`hyprial gui start|status|stop|upgrade` 由
+  `backend/config.py` 以 `INVALID_ARGUMENT` 拒绝，不再经过这些占位。
 ## R05 — 旧 `src/gui/**` UI、exports、启动脚本
 
 - 旧入口：`src/gui/**` 全部跟踪文件（`client/`、`core/`、`host/`、`plugins/`、
@@ -332,6 +343,9 @@ skip 不冒充通过。
   owner 待 coordinator 指定。
 - 验证：`tests/shell/gui/adapter/**` 焦点测试 PASS（见 V4）；真实授权/收发 `NOT_RUN`。
 - 状态：`保留待恢复`（本批保留）。
+- 状态变化（2026-11-19，Z-7 A2）：`adapter/chat.py`、`adapter/host.py`、`adapter/errors.py`
+  及其测试删除，没有产品调用方（GUI 的聊天经 daemon request）；`adapter/operations/client.py`
+  保留。此前批次已移走的 mobile pairing、auth envelope、host exposure 不在本次范围内。
 
 ## 补充入口索引（相对 R01–R15）
 
@@ -340,7 +354,7 @@ skip 不冒充通过。
 | R01 | `scripts/ci/check_module_boundaries.py` `OUTER_ENTRIES` | 保留；CI owner 后续改根时同步 |
 | R02 | `build-worker-image.sh` GUI stamp；`Dockerfile.hyprial-worker` 注释；`tailcat_wheel.py` 注释 | 已清除/更新；worker wheel 与 Tailcat 语义保留 |
 | R03 | `shell/interface.py` `product_gui_bundle`；`hyprial/_gui` | 已删除注册与旧载荷生产；用户数据不动 |
-| R04 | `entry.py`/`services.py` 的 `start_gui_background`；`supervision_exemptions.json` GUI 常量 | 公共名称保留并 fail-closed；监督豁免删除并更新摘要 |
+| R04 | `entry.py`/`services.py` 的 `start_gui_background`；`supervision_exemptions.json` GUI 常量 | 公共名称保留并 fail-closed；监督豁免删除并更新摘要；Z-7 A2（2026-11-19）删除这些名称，只留 `apps.upgrade` |
 | R05/R06 | `src/gui` 开发预览/启动脚本 | PR A #1999 已删除 78 文件；新 dev-mode 另案 |
 | R07 | `app/components/dsh`、旧 app 预检、`tests/integration/desktop/test_tauri_handoff.py` | PR A #1999 已删除；其他 desktop network/SDK 测试保留 |
 | R08 | `app` 构建/stage/运行时载荷 | PR A #1999 已删除；新 packaging 另案 |

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from hyprial.kernel import DaemonRequestError, canonical_agent_uri
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.inbox import (
     DEFAULT_HOLD_TTL_MS,
@@ -38,7 +39,7 @@ _OPEN_APPLICATIONS: list[DaemonApplication] = []
 def _close_resources() -> None:
     yield
     while _OPEN_APPLICATIONS:
-        _OPEN_APPLICATIONS.pop()._agent_session_domains.close()
+        _OPEN_APPLICATIONS.pop()._agent_session_domains.close(shutdown_hosts=False)
     while _OPEN_SERVICES:
         _OPEN_SERVICES.pop().close()
 
@@ -197,6 +198,116 @@ def test_recipient_reply_with_commit_still_reports_fetched(tmp_path: Path) -> No
     assert result["state"] == "fetched"
     assert result["records"][0]["reason"] == "RECIPIENT_COMMIT"
     assert "observedState" not in result["records"][0]
+
+
+def test_explicit_null_on_behalf_of_is_rejected_before_historical_lookup(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path / "inbox.sqlite3")
+    with service._db:
+        service.delivery_status.record(
+            message_id="alias-era-message",
+            sender="alice",
+            recipient=RECIPIENT,
+            state=TerminalState.FETCHED,
+            holder="node-bob",
+            reason="RECIPIENT_COMMIT",
+            now_ms=2,
+            conversation_id="conversation-1",
+        )
+    app = _application(tmp_path, service, _ScriptedStatusTransport())
+    app.agents.create("alice")
+
+    omitted = app.handle(
+        "message.status", {"from": "alice", "messageId": "alias-era-message"}
+    )
+    assert [record["messageId"] for record in omitted["records"]] == [
+        "alias-era-message"
+    ]
+    with pytest.raises(DaemonRequestError, match="onBehalfOf") as raised:
+        app.handle(
+            "message.status",
+            {
+                "from": "alice",
+                "messageId": "alias-era-message",
+                "onBehalfOf": None,
+            },
+        )
+    assert raised.value.code == "INVALID_ARGUMENT"
+
+
+def test_alias_and_canonical_forms_keep_operator_and_session_boundaries(
+    tmp_path: Path,
+) -> None:
+    """The bare name and the id address both read alice's own records.
+
+    A record keyed by the URI minted from alice's name is not alice's: an
+    id-minted agent reads only its id address, so that record stays out of
+    both the operator view and the session view.
+    """
+
+    service = _service(tmp_path / "inbox.sqlite3")
+    app = _application(tmp_path, service, _ScriptedStatusTransport())
+    agent = app.agents.create("alice")
+    # The canonical form is the agent's official address: its ``a.`` id URI
+    # under id-form minting, never the URI minted from the name.
+    canonical = agent.uri
+    name_uri = canonical_agent_uri(app.owner, app.node_id, "alice")
+    assert canonical != name_uri
+    app.agents.create("bob")
+    with service._db:
+        for message_id, sender in (
+            ("bare-history-message", "alice"),
+            ("canonical-history-message", canonical),
+            ("name-uri-history-message", name_uri),
+            (
+                "other-name-history-message",
+                canonical_agent_uri(app.owner, app.node_id, "bob"),
+            ),
+        ):
+            service.delivery_status.record(
+                message_id=message_id,
+                sender=sender,
+                recipient=RECIPIENT,
+                state=TerminalState.FETCHED,
+                holder="node-bob",
+                reason="RECIPIENT_COMMIT",
+                now_ms=2,
+                conversation_id="conversation-1",
+            )
+
+    for on_behalf in ("alice", canonical):
+        result = app.handle(
+            "message.status",
+            {
+                "from": f"user:{app.owner}",
+                "onBehalfOf": on_behalf,
+                "messageId": None,
+            },
+        )
+        assert sorted(record["messageId"] for record in result["records"]) == [
+            "canonical-history-message",
+        ]
+
+    app.handle(
+        "session.register",
+        {
+            "actor": "alice",
+            "sessionRef": "session-alice",
+            "cwd": str(tmp_path),
+            "command": ["test"],
+            "source": "codex-app-server",
+            "runtime": "codex_interactive",
+        },
+    )
+    for actor in ("alice", canonical):
+        result = app.handle(
+            "message.status",
+            {"from": actor, "sessionRef": "session-alice", "messageId": None},
+        )
+        assert sorted(record["messageId"] for record in result["records"]) == [
+            "canonical-history-message",
+        ]
 
 
 def test_recipient_timeout_preserves_expired_and_names_missing_holder(

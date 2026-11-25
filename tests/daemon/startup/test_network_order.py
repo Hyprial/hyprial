@@ -29,14 +29,13 @@ def test_delivery_plane_slow_operations_are_individually_named_startup_phases():
                     wrapped[nested.func.id] = phase.attr
     expected = {
         'bind_transport': 'ACTOR_RUNTIME_ORGFS_TRANSPORT',
-        '_start_org_identity_bindings_safely': 'ACTOR_RUNTIME_IDENTITY_BINDINGS',
         'start_casdoor_membership_sync': 'ACTOR_RUNTIME_CASDOOR_SYNC',
         'start_before_transport': 'ACTOR_RUNTIME_FORWARDING_RECONFIGURE',
         '_open_transport': 'ACTOR_RUNTIME_TRANSPORT',
     }
     assert {name: wrapped.get(name) for name in expected} == expected
     assert {DaemonStartupPhase(value).name for value in (
-        'actor-runtime-orgfs-transport', 'actor-runtime-identity-bindings',
+        'actor-runtime-orgfs-transport',
         'actor-runtime-casdoor-sync', 'actor-runtime-forwarding-reconfigure',
         'actor-runtime-transport')} == set(expected.values())
     calls = {node.func.id: node.lineno for node in ast.walk(tree)

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 import stat
 from pathlib import Path
 
 import pytest
 
-from hyprial.kernel import resolve_node_id
 
 from hyprial.daemon.impl.transfer.archive.bundle import BundleTamperError, export_bundle
 from hyprial.daemon.impl.transfer.landing.receive import (
@@ -17,8 +15,6 @@ from hyprial.daemon.impl.transfer.landing.receive import (
     ReceiveDestinationNotEmpty,
     ReceiveFailed,
     receive_bundle)
-from tests.support.transfer.rehearsal import UNSIGNED_REHEARSAL
-from tests.support.transfer.signed import enroll_machine_key
 
 CREATED_AT = "2026-09-30T22:05:00+08:00"
 
@@ -59,7 +55,6 @@ def test_receive_roundtrip_into_empty_destination(tmp_path: Path) -> None:
         bundle_dir,
         destination,
         expect_actor="codex-sw",
-        signature=UNSIGNED_REHEARSAL,
     )
 
     assert result.dry_run is False
@@ -88,7 +83,6 @@ def test_receive_into_existing_empty_directory_keeps_the_directory(
     receive_bundle(
         bundle_dir,
         destination,
-        signature=UNSIGNED_REHEARSAL,
     )
 
     assert destination.is_dir()
@@ -103,7 +97,6 @@ def test_receive_dry_run_writes_nothing(tmp_path: Path) -> None:
         bundle_dir,
         destination,
         dry_run=True,
-        signature=UNSIGNED_REHEARSAL,
     )
 
     assert result.dry_run is True
@@ -121,7 +114,6 @@ def test_receive_refuses_non_empty_destination(tmp_path: Path) -> None:
         receive_bundle(
             bundle_dir,
             destination,
-            signature=UNSIGNED_REHEARSAL,
         )
 
     assert caught.value.code == "receive_destination_not_empty"
@@ -138,7 +130,6 @@ def test_receive_refuses_destination_that_is_a_file(tmp_path: Path) -> None:
         receive_bundle(
             bundle_dir,
             destination,
-            signature=UNSIGNED_REHEARSAL,
         )
 
     assert destination.read_text() == "not a directory\n"
@@ -153,7 +144,6 @@ def test_receive_refuses_actor_mismatch(tmp_path: Path) -> None:
             bundle_dir,
             destination,
             expect_actor="codex-other",
-            signature=UNSIGNED_REHEARSAL,
         )
 
     assert caught.value.code == "receive_actor_mismatch"
@@ -169,7 +159,6 @@ def test_receive_refuses_tampered_bundle_before_writing(tmp_path: Path) -> None:
         receive_bundle(
             bundle_dir,
             destination,
-            signature=UNSIGNED_REHEARSAL,
         )
 
     assert not destination.exists()
@@ -198,7 +187,6 @@ def test_receive_failure_undoes_the_created_tree(
         receive_bundle(
             bundle_dir,
             destination,
-            signature=UNSIGNED_REHEARSAL,
         )
 
     assert caught.value.code == "receive_failed"
@@ -223,7 +211,6 @@ def test_receive_failure_keeps_a_prepared_empty_directory(
         receive_bundle(
             bundle_dir,
             destination,
-            signature=UNSIGNED_REHEARSAL,
         )
 
     assert destination.is_dir()
@@ -231,114 +218,3 @@ def test_receive_failure_keeps_a_prepared_empty_directory(
 
 
 # -- production entry points -------------------------------------------------
-
-
-def test_cli_receive_roundtrip(tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    source = _source_home(tmp_path)
-    bundle_dir = tmp_path / "cli-bundle"
-    destination = tmp_path / "cli-target"
-    runner = CliRunner()
-
-    exported = runner.invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-export",
-            "--from",
-            str(source),
-            "--to",
-            str(bundle_dir),
-            "--owner",
-            "owner@example.com",
-            "--actor",
-            "codex-sw",
-            "--machine",
-            "devusr-dev",
-        ],
-    )
-    assert exported.exit_code == 0, exported.output
-    # The CLI export stamps the bundle with this machine's own key; the same
-    # home receives, so it has to know that key -- exactly the enrollment an
-    # operator does on the target before a real transfer.
-    enroll_machine_key(actor="codex-sw", source_machine="devusr-dev")
-
-    received = runner.invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-receive",
-            str(bundle_dir),
-            "--to",
-            str(destination),
-            "--expect-actor",
-            "codex-sw",
-            "--json",
-        ],
-    )
-    assert received.exit_code == 0, received.output
-    payload = json.loads(received.stdout)
-    assert payload["ok"] is True
-    assert payload["files"] == 3
-    assert payload["dry_run"] is False
-    assert (destination / "notes.md").exists()
-
-
-def test_cli_receive_dry_run_and_refusal(tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from hyprial.shell.impl.cli.runtime import entry as cli
-
-    source = _source_home(tmp_path)
-    bundle_dir = tmp_path / "cli-bundle"
-    destination = tmp_path / "cli-target"
-    runner = CliRunner()
-    assert (
-        runner.invoke(
-            cli.app,
-            [
-                "agent", "transfer", "bundle-export",
-                "--from",
-                str(source),
-                "--to",
-                str(bundle_dir),
-                "--owner",
-                "owner@example.com",
-                "--actor",
-                "codex-sw",
-            ],
-        ).exit_code
-        == 0
-    )
-    enroll_machine_key(actor="codex-sw", source_machine=resolve_node_id())
-
-    dry = runner.invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-receive",
-            str(bundle_dir),
-            "--to",
-            str(destination),
-            "--dry-run",
-            "--json",
-        ],
-    )
-    assert dry.exit_code == 0, dry.output
-    assert json.loads(dry.stdout)["dry_run"] is True
-    assert not destination.exists()
-
-    mismatch = runner.invoke(
-        cli.app,
-        [
-            "agent", "transfer", "bundle-receive",
-            str(bundle_dir),
-            "--to",
-            str(destination),
-            "--expect-actor",
-            "someone-else",
-        ],
-    )
-    assert mismatch.exit_code != 0
-    assert "someone-else" in mismatch.output
-    assert not destination.exists()

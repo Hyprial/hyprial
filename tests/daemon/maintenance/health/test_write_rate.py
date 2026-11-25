@@ -22,7 +22,7 @@ def test_counter_reset_and_one_spike_cannot_page():
     assert window.status()["aboveSince"] is None
 
 
-def test_real_custody_writer_counters_feed_health_and_increase(tmp_path):
+def test_real_custody_writer_counters_feed_health_and_increase(tmp_path, actor_host):
     import sqlite3
     from hyprial.daemon.impl.processes.orphan_processes import OrphanProcessAuthority
     from hyprial.daemon.impl.lifecycle.health.database import DatabaseHealth
@@ -30,7 +30,7 @@ def test_real_custody_writer_counters_feed_health_and_increase(tmp_path):
     connection = sqlite3.connect(tmp_path / "inbox.sqlite3")
     connection.execute("CREATE TABLE marker(value TEXT)")
     connection.close()
-    writer = OrphanProcessAuthority(tmp_path / "orphans.json", identity_reader=lambda _: None)
+    writer = OrphanProcessAuthority(tmp_path / "orphans.json", identity_reader=lambda _: None, actor_host=actor_host)
     process = object()
 
     def diagnostics():

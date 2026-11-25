@@ -1,24 +1,20 @@
 from __future__ import annotations
 
-import sys
-import time
-from pathlib import Path
-
 import pytest
 
 from hyprial.daemon.impl.api import HarnessLauncher as HarnessLauncherProtocol
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.harnesses import (
-    OperationStatus,
     HarnessLauncher,
     HarnessStartError,
-    PtyHarnessProcess,
 )
+from hyprial.daemon.impl.harnesses.protocol.common import summarize_stderr
 
 
 def managed_spec(
     harness: str,
     *,
+    headless: bool = True,
     args: tuple[str, ...] = (),
     cwd: str | None = None,
     session_ref: str | None = None,
@@ -26,66 +22,15 @@ def managed_spec(
     return HarnessLaunchSpec(
         harness=harness,
         name=f"{harness}-worker",
-        headless=True,
+        headless=headless,
         args=args,
         cwd=cwd,
         session_ref=session_ref,
     )
 
 
-def wait_for_completion(
-    process: PtyHarnessProcess, lookup_ref: str, timeout: float = 2.0
-):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snapshot = process.retrieve(lookup_ref)
-        if snapshot.status is not OperationStatus.IN_PROGRESS:
-            return snapshot
-        time.sleep(0.01)
-    pytest.fail(f"harness operation {lookup_ref} did not complete")
-
-
-@pytest.mark.parametrize("harness", ["claude", "pi", "codex"])
-def test_real_pty_cat_supports_lifecycle_inject_and_retrieve(harness: str) -> None:
-    process = PtyHarnessProcess.spawn(harness, ("/bin/cat",))
-    try:
-        assert process.running
-
-        lookup_ref = process.inject("hello from harness")
-        snapshot = wait_for_completion(process, lookup_ref)
-
-        assert snapshot.harness == harness
-        assert snapshot.lookup_ref == lookup_ref
-        assert snapshot.status is OperationStatus.COMPLETED
-        assert snapshot.output == "hello from harness\n"
-    finally:
-        process.stop()
-
-    assert not process.running
-    process.stop()  # lifecycle shutdown is idempotent
-
-
-def test_real_sleep_process_remains_in_progress_until_stopped() -> None:
-    process = PtyHarnessProcess.spawn("pi", ("/bin/sleep", "30"))
-    try:
-        lookup_ref = process.inject("queued input")
-        assert process.retrieve(lookup_ref).status is OperationStatus.IN_PROGRESS
-    finally:
-        process.stop()
-
-    snapshot = process.retrieve(lookup_ref)
-    assert snapshot.status is OperationStatus.FAILED
-    assert snapshot.error == "harness process stopped before producing a result"
-
-
 def test_launcher_implements_daemon_protocol_without_concrete_dependency() -> None:
-    launcher = HarnessLauncher(
-        commands={
-            "claude": (sys.executable, "-c", "import time; time.sleep(30)"),
-            "pi": (sys.executable, "-c", "import time; time.sleep(30)"),
-            "codex": (sys.executable, "-c", "import time; time.sleep(30)"),
-        }
-    )
+    launcher = HarnessLauncher()
 
     assert isinstance(launcher, HarnessLauncherProtocol)
 
@@ -112,53 +57,66 @@ def test_default_managed_claude_launch_uses_agent_sdk_streaming_process() -> Non
     assert launched == [spec]
 
 
-def test_claude_retries_use_fresh_sessions_without_losing_model_passthrough() -> None:
+def test_default_managed_agy_launch_uses_acp_streaming_process() -> None:
+    launched = []
+
+    class FakeAcpProcess:
+        running = True
+
+        def wait_ready(self, *, timeout: float) -> bool:
+            return True
+
+        def stop(self) -> None:
+            self.running = False
+
+    process = FakeAcpProcess()
     launcher = HarnessLauncher(
-        commands={
-            "claude": (sys.executable, "-c", "import time; time.sleep(30)"),
-        }
+        acp_factory=lambda spec: launched.append(spec) or process
     )
-    spec = managed_spec(
-        "claude",
-        args=("--model", "opus", "--session-id", "caller-must-not-win"),
-        session_ref="stable-control-plane-ref",
+    spec = managed_spec("agy", args=("--model", "gemini-3.8-flash"))
+
+    assert launcher.start(spec) is process
+    assert launched == [spec]
+
+
+@pytest.mark.parametrize("harness", ["claude", "pi", "codex", "agy"])
+def test_interactive_specs_are_refused_without_spawning(harness: str) -> None:
+    def _must_not_spawn(spec: HarnessLaunchSpec):
+        raise AssertionError(f"no process may be spawned for {spec.harness}")
+
+    launcher = HarnessLauncher(
+        agent_sdk_factory=_must_not_spawn,
+        pi_rpc_factory=_must_not_spawn,
+        codex_app_server_factory=_must_not_spawn,
+        python_worker_factory=_must_not_spawn,
+        acp_factory=_must_not_spawn,
     )
-
-    first = launcher.start(spec)
-    second = launcher.start(spec)  # daemon retry uses the same public seam
-    try:
-        first_session = first.argv[first.argv.index("--session-id") + 1]
-        second_session = second.argv[second.argv.index("--session-id") + 1]
-
-        assert first_session != second_session
-        assert first_session not in {"caller-must-not-win", spec.session_ref}
-        assert second_session not in {"caller-must-not-win", spec.session_ref}
-        assert first.argv.count("--session-id") == 1
-        assert second.argv.count("--session-id") == 1
-        assert first.argv[first.argv.index("--model") + 1] == "opus"
-        assert second.argv[second.argv.index("--model") + 1] == "opus"
-    finally:
-        first.stop()
-        second.stop()
-
-
-@pytest.mark.parametrize("harness", ["claude", "pi", "codex"])
-def test_start_error_surfaces_bounded_last_eight_stderr_lines(harness: str) -> None:
-    code = (
-        "import sys; "
-        "[print(f'discard-{i}', file=sys.stderr) for i in range(3)]; "
-        "print('x' * 8192 + 'fatal-tail', file=sys.stderr); "
-        "[print(f'recent-{i}', file=sys.stderr) for i in range(7)]; "
-        "raise SystemExit(7)"
-    )
-    launcher = HarnessLauncher(commands={harness: (sys.executable, "-c", code)})
 
     with pytest.raises(HarnessStartError) as raised:
-        launcher.start(managed_spec(harness))
+        launcher.start(managed_spec(harness, headless=False))
 
-    error = raised.value
+    assert "headless" in str(raised.value)
+    assert "CLI" in str(raised.value)
+
+
+def test_unknown_harness_is_refused() -> None:
+    launcher = HarnessLauncher()
+
+    with pytest.raises(HarnessStartError):
+        launcher.start(managed_spec("smoke-signals"))
+
+
+def test_start_error_surfaces_bounded_last_eight_stderr_lines() -> None:
+    stderr = "\n".join(
+        [f"discard-{i}" for i in range(3)]
+        + ["x" * 8192 + "fatal-tail"]
+        + [f"recent-{i}" for i in range(7)]
+    )
+
+    tail = summarize_stderr(stderr.encode("utf-8"))
+    error = HarnessStartError("claude", (), "process exited", stderr_tail=tail)
+
     lines = error.stderr_tail.splitlines()
-    assert error.returncode == 7
     assert len(lines) <= 8
     assert len(error.stderr_tail.encode("utf-8")) <= 4 * 1024
     assert lines[0].startswith("… [truncated] ")
@@ -176,17 +134,10 @@ def test_start_error_redacts_six_credential_shapes() -> None:
         "credential": "credential=credential-value",
         "authorization": "Authorization: Bearer authorization-value",
     }
-    code = (
-        "import sys; "
-        + "; ".join(f"print({line!r}, file=sys.stderr)" for line in leaked.values())
-        + "; raise SystemExit(9)"
-    )
-    launcher = HarnessLauncher(commands={"pi": (sys.executable, "-c", code)})
+    stderr = ("\n".join(leaked.values()) + "\n").encode("utf-8")
 
-    with pytest.raises(HarnessStartError) as raised:
-        launcher.start(managed_spec("pi"))
+    surfaced = summarize_stderr(stderr)
 
-    surfaced = raised.value.stderr_tail
     assert surfaced.count("[REDACTED]") == 6
     for secret in (
         "api-value",
@@ -205,17 +156,10 @@ def test_start_error_redacts_authorization_schemes_and_payloads() -> None:
         "Authorization: Digest digest-response-value",
         "authorization: basic lowercase-payload",
     )
-    code = (
-        "import sys; "
-        + "; ".join(f"print({line!r}, file=sys.stderr)" for line in leaked)
-        + "; raise SystemExit(9)"
-    )
-    launcher = HarnessLauncher(commands={"claude": (sys.executable, "-c", code)})
+    stderr = ("\n".join(leaked) + "\n").encode("utf-8")
 
-    with pytest.raises(HarnessStartError) as raised:
-        launcher.start(managed_spec("claude"))
+    surfaced = summarize_stderr(stderr)
 
-    surfaced = raised.value.stderr_tail
     assert surfaced.lower().count("authorization: [redacted]") == 3
     for secret in (
         "dXNlcjpwYXNz",
@@ -223,14 +167,3 @@ def test_start_error_redacts_authorization_schemes_and_payloads() -> None:
         "lowercase-payload",
     ):
         assert secret not in surfaced
-
-
-def test_invalid_cwd_start_error_preserves_original_os_error(tmp_path: Path) -> None:
-    missing = tmp_path / "deleted-worktree"
-    launcher = HarnessLauncher(commands={"codex": ("/bin/cat",)})
-
-    with pytest.raises(HarnessStartError) as raised:
-        launcher.start(managed_spec("codex", cwd=str(missing)))
-
-    assert "No such file or directory" in str(raised.value)
-    assert str(missing) in str(raised.value)

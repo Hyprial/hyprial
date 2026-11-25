@@ -31,7 +31,6 @@ from hyprial.daemon.impl.mcp.channel.loops import _forward_turn_signals
 from hyprial.kernel import DaemonRequestError
 from tests.daemon.harnesses.carrier.turns.test_turn_reports import (
     A_NAME,
-    A_URI,
     X_URI,
     _TurnApp,
     _wall_clock,
@@ -108,7 +107,7 @@ def _seed(app: _TurnApp, message_id: str, intent: str) -> None:
             message_id=message_id,
             conversation_id="conv-turns",
             sender=X_URI,
-            recipient=A_URI,
+            recipient=app.a_uri,
             payload=json.dumps({"message": "body"}).encode(),
             intent=intent,
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -160,8 +159,8 @@ async def test_first_turn_of_a_new_session_gets_a_reminder(tmp_path: Path) -> No
         _stop(turns)
         await _forward_turn_signals(adapter, turns)
 
-        assert app.recorder.wait_for(lambda: len(app.inbox.system_notices(A_URI)) == 1)
-        assert "r1" in app.inbox.system_notices(A_URI)[0].summary
+        assert app.recorder.wait_for(lambda: len(app.inbox.system_notices(app.a_uri)) == 1)
+        assert "r1" in app.inbox.system_notices(app.a_uri)[0].summary
         started = factory.of("session.turn.started")
         ended = factory.of("session.turn.ended")
         assert len(started) == 1 and ended[0]["reportIds"] == [started[0]["reportId"]]
@@ -227,8 +226,8 @@ async def test_late_start_signal_is_backfilled_by_read(tmp_path: Path) -> None:
         clock["now"] += 60_000
         _stop(turns)
         await _forward_turn_signals(adapter, turns)
-        assert app.recorder.wait_for(lambda: len(app.inbox.system_notices(A_URI)) == 1)
-        assert "r1" in app.inbox.system_notices(A_URI)[0].summary
+        assert app.recorder.wait_for(lambda: len(app.inbox.system_notices(app.a_uri)) == 1)
+        assert "r1" in app.inbox.system_notices(app.a_uri)[0].summary
     finally:
         app.close()
 

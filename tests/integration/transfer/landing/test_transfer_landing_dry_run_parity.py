@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hyprial.daemon.impl.transfer.landing.owner import LandingError, LandingFailed
+from hyprial.daemon.impl.transfer.landing.registry import LandingError, LandingFailed
 from tests.integration.transfer.landing.test_transfer_registry_landing import (
     ACTOR,
     _bundle,

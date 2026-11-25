@@ -67,13 +67,21 @@ def _app(tmp_path: Path):
 
 
 def _ambiguous_resolver() -> AliasResolver:
+    """Two agents answer to ``bar`` and no local record does.
+
+    A local registered agent's name is no longer ambiguous input: a bare
+    name resolves through the local registry to the id address, and its
+    name URI is retired (ruling U1), so ambiguity is probed with a name
+    this node does not register.
+    """
+
     return AliasResolver(
         StaticAliasSource(
             (
                 AliasRecord(AliasKind.USER, "op", USER_ID),
                 AliasRecord(AliasKind.DEVICE, "node-1", DEVICE_ID),
-                AliasRecord(AliasKind.AGENT, "foo", "a.first"),
-                AliasRecord(AliasKind.AGENT, "foo", "a.second"),
+                AliasRecord(AliasKind.AGENT, "bar", "a.first"),
+                AliasRecord(AliasKind.AGENT, "bar", "a.second"),
             ),
             local={
                 AliasKind.USER: AliasRecord(AliasKind.USER, "op", USER_ID),
@@ -121,26 +129,27 @@ def test_a_cli_and_mcp_message_path_refuses_ambiguous_but_queues_unknown_local(
         with pytest.raises(DaemonRequestError) as ambiguous:
             app.handle(
                 "message.send",
-                {"from": _registered(app, "driver"), "to": ["foo"], "summary": "hi", "message": "hi"},
+                {"from": _registered(app, "driver"), "to": ["bar"], "summary": "hi", "message": "hi"},
             )
         assert ambiguous.value.code == "AMBIGUOUS_TARGET"
         assert ambiguous.value.data == {
-            "alias": "foo",
+            "alias": "bar",
             "candidates": ["a.first", "a.second"],
             "kind": "agent",
         }
 
-        unknown = app.handle(
-            "message.send",
-            {
-                "from": _registered(app, "driver"),
-                "to": ["agent:op:node-1:ghost"],
-                "summary": "hi",
-                "message": "hi",
-            },
-        )
-        assert unknown["deliveries"][0]["queued"] is True
-        assert unknown["deliveries"][0]["code"] == "TARGET_UNRESOLVED"
+        with pytest.raises(DaemonRequestError) as unknown:
+            app.handle(
+                "message.send",
+                {
+                    "from": _registered(app, "driver"),
+                    "to": ["agent:op:node-1:ghost"],
+                    "summary": "hi",
+                    "message": "hi",
+                },
+            )
+        assert unknown.value.code == "TARGET_UNRESOLVED"
+        assert unknown.value.data == {"target": "agent:op:node-1:ghost"}
     finally:
         close_application(app)
 
@@ -171,7 +180,7 @@ def test_a_pac_plan_and_run_admission_refuses_ambiguous_owner(tmp_path: Path) ->
     )
     try:
         app._alias_resolver = _ambiguous_resolver()  # type: ignore[attr-defined]
-        raw = _workflow("agent:op:node-1:foo")
+        raw = _workflow("agent:op:node-1:bar")
         with pytest.raises(DaemonRequestError) as plan_failure:
             app.handle("workflow.plan", {"yaml": raw, "actor": "user:op"})
         assert plan_failure.value.code == "AMBIGUOUS_TARGET"
@@ -229,7 +238,7 @@ def test_a_routine_yaml_load_refuses_ambiguous_actor(tmp_path: Path) -> None:
         app._alias_resolver = _ambiguous_resolver()  # type: ignore[attr-defined]
         app._routine_service = object()  # type: ignore[attr-defined]
         with pytest.raises(DaemonRequestError) as failure:
-            app.handle("routine.add", {"yaml": _routine("agent:op:node-1:foo"), "actor": "user:op"})
+            app.handle("routine.add", {"yaml": _routine("agent:op:node-1:bar"), "actor": "user:op"})
         assert failure.value.code == "AMBIGUOUS_TARGET"
     finally:
         app._routine_service = original  # type: ignore[attr-defined]
@@ -312,7 +321,12 @@ def test_b_real_settings_device_and_registry_sources_follow_agent_incarnations(t
         first = app.agents.require("foo").agent_id
         assert resolver.resolve(AliasKind.AGENT, "foo", within_domain=True).identifier == first
 
-        app.handle("agent.destroy", {"name": "foo"})
+        incarnation = app.agents.require("foo")
+        app.agents.settle_destroy(
+            "alias-incarnation-compensation",
+            "foo",
+            expected_entity_token=incarnation.entity_token,
+        )
         app.handle("agent.create", {"name": "foo"})
         second = app.agents.require("foo").agent_id
 
@@ -342,17 +356,17 @@ def test_round_4_display_names_never_define_the_local_uri_domain(tmp_path: Path)
             )
             assert result["deliveries"][0]["target"] == outside
 
-        local = app.handle(
-            "message.send",
-            {
-                "from": _registered(app, "driver"),
-                "to": ["agent:op:node-1:ghost"],
-                "summary": "hi",
-                "message": "hi",
-            },
-        )
-        assert local["deliveries"][0]["queued"] is True
-        assert local["deliveries"][0]["code"] == "TARGET_UNRESOLVED"
+        with pytest.raises(DaemonRequestError) as local:
+            app.handle(
+                "message.send",
+                {
+                    "from": _registered(app, "driver"),
+                    "to": ["agent:op:node-1:ghost"],
+                    "summary": "hi",
+                    "message": "hi",
+                },
+            )
+        assert local.value.code == "TARGET_UNRESOLVED"
     finally:
         close_application(app)
 
@@ -361,17 +375,17 @@ def test_round_4_owner_and_node_id_enforce_domain_without_p1_profile(tmp_path: P
     app = application(tmp_path)
     app.handle("agent.create", {"name": "driver"})
     try:
-        local = app.handle(
-            "message.send",
-            {
-                "from": _registered(app, "driver"),
-                "to": ["agent:op:node-1:ghost"],
-                "summary": "hi",
-                "message": "hi",
-            },
-        )
-        assert local["deliveries"][0]["queued"] is True
-        assert local["deliveries"][0]["code"] == "TARGET_UNRESOLVED"
+        with pytest.raises(DaemonRequestError) as local:
+            app.handle(
+                "message.send",
+                {
+                    "from": _registered(app, "driver"),
+                    "to": ["agent:op:node-1:ghost"],
+                    "summary": "hi",
+                    "message": "hi",
+                },
+            )
+        assert local.value.code == "TARGET_UNRESOLVED"
     finally:
         close_application(app)
 
@@ -402,13 +416,13 @@ def test_round_5_presence_only_escalation_target_is_accepted_by_pac_and_routine(
     app._presence = _OnlinePresence(actor)  # type: ignore[assignment]
     try:
         workflow = load_workflow_text(
-            _workflow("agent:op:node-1:foo", escalate_to=actor)
+            _workflow(app.agents.require("foo").uri, escalate_to=actor)
         )
         admitted = app._workflow_admit(workflow, "user:op")  # type: ignore[attr-defined]
         assert admitted.escalate_to == actor
 
         routine = app._routine_text_loader(  # type: ignore[attr-defined]
-            _routine("agent:op:node-1:foo", escalate_to=actor)
+            _routine(app.agents.require("foo").uri, escalate_to=actor)
         )
         app._routine_admit(routine)  # type: ignore[attr-defined]
         assert routine.escalate_to == actor
@@ -450,7 +464,7 @@ def test_round_4_pac_escalate_to_uses_alias_admission(tmp_path: Path) -> None:
                 {
                     "yaml": _workflow(
                         "user:op",
-                        escalate_to="agent:op:node-1:foo",
+                        escalate_to="agent:op:node-1:bar",
                     ),
                     "actor": "user:op",
                 },
@@ -486,16 +500,17 @@ def test_round_4_source_failure_warns_and_never_breaks_a_send(tmp_path: Path) ->
         )
     )
     try:
+        foo = app.agents.require("foo").uri
         result = app.handle(
             "message.send",
             {
                 "from": _registered(app, "driver"),
-                "to": ["agent:op:node-1:foo"],
+                "to": [foo],
                 "summary": "hi",
                 "message": "hi",
             },
         )
-        assert result["deliveries"][0]["target"] == "agent:op:node-1:foo"
+        assert result["deliveries"][0]["target"] == foo
         assert (
             "warn",
             "daemon",
@@ -524,7 +539,7 @@ def test_source_unavailable_warns_once_per_error_type_and_surface(
         for _ in range(3):
             app.handle(
                 "message.send",
-                {"from": sender, "to": ["agent:op:node-1:foo"], "summary": "hi", "message": "hi"},
+                {"from": sender, "to": [app.agents.require("foo").uri], "summary": "hi", "message": "hi"},
             )
         warns = [entry for entry in events if entry[2] == "alias.source-unavailable"]
         assert warns == [
@@ -575,7 +590,8 @@ def test_round_4_message_entry_point_surface_is_not_mislabeled_cli(tmp_path: Pat
 
 def test_e_validation_does_not_rewrite_message_pac_or_routine_storage_forms(tmp_path: Path) -> None:
     app = _app(tmp_path)
-    actor = "agent:op:node-1:foo"
+    actor = app.agents.require("foo").uri
+    assert actor == f"agent:op:node-1:{app.agents.require('foo').agent_id}"
     try:
         sent = app.handle(
             "message.send",

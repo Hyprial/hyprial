@@ -197,7 +197,7 @@ async def test_every_mcp_tool_method_resolves_against_the_real_daemon(
         whoami = await client.call_tool("harness_whoami", {})
         assert whoami.is_error is not True
         identity = structured(whoami)
-        assert identity["actor"] == "agent:op:node-1:alice"
+        assert identity["actor"] == app_daemon.agents.get("alice").uri
         assert identity["sessionRef"] == "session-1"
         assert identity["nodeId"] == "node-1"
         assert identity["sessionRegistered"] is True
@@ -228,7 +228,7 @@ async def test_every_mcp_tool_method_resolves_against_the_real_daemon(
         listed = structured(targets)["targets"]
         assert len(listed) == 1
         assert listed[0]["targetKind"] == "agent"
-        assert listed[0]["targetUri"].endswith(":node-1:alice")
+        assert listed[0]["targetUri"] == app_daemon.agents.get("alice").uri
         assert listed[0]["status"] == "online"
 
 
@@ -303,7 +303,7 @@ def test_identity_whoami_is_a_registered_daemon_method(tmp_path: Path, own_daemo
 
     assert result == {
         "ok": True,
-        "actor": "agent:op:node-1:alice",
+        "actor": app_daemon.agents.get("alice").uri,
         "sessionRef": "session-1",
         "nodeId": "node-1",
         "sessionRegistered": True,
@@ -391,3 +391,38 @@ async def test_mcp_orgfs_export_refuses_existing_by_default_and_overwrites_expli
 
     assert replaced.is_error is not True
     assert destination.read_text(encoding="utf-8") == "from orgfs"
+
+
+@pytest.mark.anyio
+async def test_harness_targets_refuses_the_retired_channel_route_kind(
+    tmp_path: Path, own_daemon_application,
+) -> None:
+    """I4b (D4): ``channel_route`` is no target kind, here or at the daemon."""
+
+    app_daemon = daemon(tmp_path, FakeInbox(), own_daemon_application)
+    server = create_mcp_server(
+        StatelessDaemonProxy(DaemonBridgeFactory(app_daemon)),
+        actor="alice",
+        session_ref="session-1",
+    )
+
+    async with (
+        InMemoryTransport(server) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as client,
+    ):
+        await client.initialize()
+        refused = await client.call_tool("harness_targets", {"kind": "channel_route"})
+
+    assert refused.is_error is True
+    assert "agent or user" in refused.content[0].text
+
+
+def test_the_daemon_refuses_the_retired_channel_route_kind(
+    tmp_path: Path, own_daemon_application,
+) -> None:
+    app_daemon = daemon(tmp_path, FakeInbox(), own_daemon_application)
+
+    with pytest.raises(DaemonRequestError) as refused:
+        app_daemon.handle("targets", {"kind": "channel_route"})
+
+    assert refused.value.code == "INVALID_ARGUMENT"

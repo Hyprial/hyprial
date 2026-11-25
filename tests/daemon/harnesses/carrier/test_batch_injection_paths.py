@@ -9,12 +9,10 @@ from typing import Any
 import pytest
 
 from hyprial.daemon.impl import DesiredState, InteractiveSession
-from hyprial.daemon.impl.harnesses.dsh_tui.carrier import DshPluginWakeDriver
 from hyprial.daemon.impl.mcp import (
     ClaudeChannelAdapter,
     ClaudeChannelDriver,
     StatelessDaemonProxy,
-    WakeCommand,
     WakeCoordinator,
 )
 from hyprial.kernel.impl.contracts.channels.worker_channel import (
@@ -203,39 +201,6 @@ def test_worker_channel_forwards_successor_cursor_without_item_exclusions() -> N
         "afterCursor": "cursor-previous",
     }
     assert "excludeMessageIds" not in params
-
-
-@pytest.mark.anyio
-async def test_dsh_plugin_injects_daemon_delivery_text_byte_exactly(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
-    captured: list[dict[str, object]] = []
-    driver = DshPluginWakeDriver(tmp_path / "dsh.sock")
-
-    def roundtrip(frame, _timeout=None):  # type: ignore[no-untyped-def]
-        captured.append(frame)
-        return {"ok": True, "state": "accepted"}
-
-    monkeypatch.setattr(driver, "_roundtrip", roundtrip)
-    outcome = await driver.wake(
-        WakeCommand(
-            kind="formal",
-            actor="alice",
-            delivery_id="cursor-sentinel",
-            cwd="/work/alice",
-            command=("dsh",),
-            prompt=BATCH_TEXT,
-        )
-    )
-
-    assert outcome.status.value == "accepted"
-    assert captured == [
-        {
-            "type": "wake",
-            "prompt": BATCH_TEXT,
-            "outcomeTimeoutMs": 8000,
-        }
-    ]
 
 
 def test_shared_renderer_belongs_to_inbox_batch_module() -> None:

@@ -1,6 +1,17 @@
-"""Remove only the derived v19 objects when constructing older DB fixtures."""
+"""Remove later schema objects when constructing older DB fixtures."""
 
 import sqlite3
+
+
+def strip_held_v20(db: sqlite3.Connection) -> None:
+    """Reconstruct dev's v19 workflow table and its original column triggers."""
+    from hyprial.daemon.impl.pac.storage.migrations import _track
+
+    for operation in ("insert", "delete", "update"):
+        db.execute(f"DROP TRIGGER workflow_tick_workflow_graphs_{operation}")
+    db.execute("ALTER TABLE workflow_graphs DROP COLUMN held_at_ms")
+    _track(db, "workflow_graphs", ("graph_id",))
+    db.execute("PRAGMA user_version = 19")
 
 
 def strip_tick_v19(db: sqlite3.Connection) -> None:

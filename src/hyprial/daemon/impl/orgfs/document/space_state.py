@@ -26,11 +26,10 @@ from typing import Any, Callable, Mapping
 from hyprial.kernel import (
     ActorEvent,
     ActorEventKind,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
 
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 
 
@@ -65,7 +64,7 @@ class FacadeSpaceState:
         values = bound.arguments
         name = method.__name__
         if name == "create_space":
-            return _CreateSpace(values["name"])
+            return _CreateSpace(values["name"], values["space_id"])
         if name == "load_space":
             return _LoadSpace(values["space_id"])
         if name == "invite":
@@ -167,6 +166,8 @@ class FacadeSpaceState:
 
     def _ensure_space_state_owner(self, space_id: str) -> _SpaceStateOwner:
         with self._lock:
+            if self._space_state_closing:
+                raise OrgFsError("unavailable", {"message": "orgfs is closing"})
             if space_id in self._detached_spaces:
                 raise OrgFsError("unknown-space", {"spaceId": space_id})
             existing = self._space_state_owners.get(space_id)
@@ -194,13 +195,14 @@ class FacadeSpaceState:
                     )
                 return owner._execute_space_state(space_id, command)
 
-            runtime = ActorRuntime(event_sink=actor_event)
-            actor = runtime.start(
+            host = self._actor_hosts.host
+            cell = host.spawn(
                 ActorSpec(
                     f"orgfs-space-{space_id[:12]}-state",
                     lambda: handle,
                     mailbox_capacity=_SPACE_STATE_CAPACITY,
                     supervision_profile="state_authority",
+                    event_sink=actor_event,
                 )
             )
 
@@ -210,23 +212,23 @@ class FacadeSpaceState:
                 owner = owner_ref()
                 if owner is None:
                     return AdmissionResult.CLOSED
-                return runtime.tell(actor, completion)
+                return cell.tell(completion)
 
-            effects = EffectLane(
+            effects = host.effect_lane(
                 name=f"orgfs-space-{space_id[:12]}-state-work",
                 execute=execute,
                 complete=complete,
                 capacity=_SPACE_STATE_CAPACITY,
                 workers=1,
             )
-            created = _SpaceStateOwner(runtime, actor, effects)
+            created = _SpaceStateOwner(cell, effects)
             self._space_state_owners[space_id] = created
             return created
 
 
     def _execute_space_operation(self, operation: _SpaceStateOperation) -> object:
         if isinstance(operation, _CreateSpace):
-            return type(self).create_space.__wrapped__(self, operation.name)
+            return type(self).create_space.__wrapped__(self, operation.name, space_id=operation.space_id)
         if isinstance(operation, _LoadSpace):
             return type(self).load_space.__wrapped__(self, operation.space_id)
         if isinstance(operation, _InviteMember):
@@ -434,7 +436,7 @@ class FacadeSpaceState:
         for command in replay:
             if command.operation_id in deferred_ids:
                 continue
-            admission = owner.runtime.tell(owner.actor, command)
+            admission = owner.runtime.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 with self._lock:
                     if all(
@@ -489,7 +491,7 @@ class FacadeSpaceState:
             owner.commands[operation_id] = command
             owner.waiters[operation_id] = waiter
         while True:
-            admission = owner.runtime.tell(owner.actor, command)
+            admission = owner.runtime.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 break
             with self._lock:

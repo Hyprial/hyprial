@@ -1,5 +1,13 @@
 # OrgFS: Yjs-default state model (0.5.5.3 design)
 
+> **Work-item section superseded (#2214, 2026-11-08).** Work text no longer
+> depends on work-specific admission, repair, journal replay, or a local approval
+> ledger; see [the current contract](../../contract/work-items/README.md).
+> This simplification does not implement this document's state-only Yjs storage
+> cutover or folding migration. Existing text, history, unknown CRDT roots and
+> ledger files stay in place. The design and old work-repair proposal below are
+> retained as historical planning, not current operational instructions.
+
 Status: design approved (see Decisions, 2026-10-29); **not implemented**.
 Target release: TBD (originally drafted for 0.5.5.3, which shipped without it).
 

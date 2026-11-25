@@ -18,12 +18,9 @@ import pytest
 
 from hyprial.daemon.impl.application import DaemonRequestError
 from tests.daemon.delivery.message.test_message_history import (  # noqa: F401 - fixtures/helpers
-    ACTOR,
     CONVERSATION,
-    OTHER,
     OTHER_CONVERSATION,
     OWNER,
-    READER,
     SESSION,
     _HistoryHarness,
     _deliver,
@@ -39,11 +36,11 @@ def _decode(cursor: str) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-def _forge_v2(**overrides: object) -> str:
+def _forge_v2(participant: str, **overrides: object) -> str:
     payload: dict[str, object] = {
         "v": 2,
         "conversationId": CONVERSATION,
-        "participant": ACTOR,
+        "participant": participant,
         "createdAtMs": 2000,
         "messageId": "m-2",
         "kind": "before",
@@ -175,7 +172,7 @@ def test_v2_cursor_is_bound_to_conversation_and_participant(
             "message.history",
             {
                 "from": f"user:{OWNER}",
-                "onBehalfOf": READER,
+                "onBehalfOf": harness.reader,
                 "conversationId": CONVERSATION,
                 "mode": "older",
                 "cursor": cursor,
@@ -185,14 +182,14 @@ def test_v2_cursor_is_bound_to_conversation_and_participant(
     assert wrong_participant.value.code == "INVALID_ARGUMENT"
 
     for forged in (
-        _forge_v2(kind="after"),
-        _forge_v2(kind="sideways"),
-        _forge_v2(v=3),
-        _forge_v2(conversationId=OTHER_CONVERSATION),
-        _forge_v2(participant=READER),
-        _forge_v2(createdAtMs=0),
-        _forge_v2(messageId=""),
-        _forge_v2(extra="field"),
+        _forge_v2(harness.actor, kind="after"),
+        _forge_v2(harness.actor, kind="sideways"),
+        _forge_v2(harness.actor, v=3),
+        _forge_v2(harness.actor, conversationId=OTHER_CONVERSATION),
+        _forge_v2(harness.reader),
+        _forge_v2(harness.actor, createdAtMs=0),
+        _forge_v2(harness.actor, messageId=""),
+        _forge_v2(harness.actor, extra="field"),
     ):
         with pytest.raises(DaemonRequestError) as refused:
             _history(harness, mode="older", cursor=forged)
@@ -259,7 +256,7 @@ def test_default_read_keeps_the_v1_shape_and_cursor(
         "createdAtMs",
         "messageId",
     }
-    assert decoded["participant"] == ACTOR
+    assert decoded["participant"] == harness.actor
 
     rest = _history(harness, cursor=page["nextCursor"], limit=2)
     assert _ids(rest) == ["m-3"]
@@ -273,8 +270,8 @@ def test_all_modes_are_scoped_to_the_authenticated_participant(
     _deliver(
         harness,
         "m-unrelated",
-        sender=OTHER,
-        recipient=ACTOR,
+        sender=harness.other,
+        recipient=harness.actor,
         created_at_ms=4000,
     )
 
@@ -282,12 +279,12 @@ def test_all_modes_are_scoped_to_the_authenticated_participant(
     assert "m-unrelated" in _ids(actor_page)
 
     reader_tail = _history(
-        harness, actor=READER, session="session-reader", mode="tail", limit=2
+        harness, actor=harness.reader, session="session-reader", mode="tail", limit=2
     )
     assert _ids(reader_tail) == ["m-2", "m-3"]
     reader_older = _history(
         harness,
-        actor=READER,
+        actor=harness.reader,
         session="session-reader",
         mode="older",
         cursor=reader_tail["nextOlderCursor"],
@@ -296,11 +293,11 @@ def test_all_modes_are_scoped_to_the_authenticated_participant(
     assert _ids(reader_older) == ["m-1"]
 
     reader_v1 = _history(
-        harness, actor=READER, session="session-reader", limit=1
+        harness, actor=harness.reader, session="session-reader", limit=1
     )
     reader_after = _history(
         harness,
-        actor=READER,
+        actor=harness.reader,
         session="session-reader",
         mode="after",
         cursor=reader_v1["nextCursor"],
@@ -310,3 +307,12 @@ def test_all_modes_are_scoped_to_the_authenticated_participant(
     assert _ids(reader_after) == ["m-2", "m-3"]
     for page in (reader_tail, reader_older, reader_after):
         assert "m-unrelated" not in _ids(page)
+
+
+def test_system_class_comes_from_daemon_envelope_not_message_text(harness):
+    _deliver(harness, 'workflow-generated', created_at_ms=1000)
+    _deliver(harness, 'ordinary-user', created_at_ms=2000)
+    page = _history(harness, mode='tail')
+    assert [row['messageClass'] for row in page['entries']] == ['system', 'interaction']
+    legacy = _history(harness)
+    assert all('messageClass' not in row for row in legacy['entries'])

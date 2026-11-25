@@ -63,6 +63,8 @@ class FakeMembershipSidecar:
         "invite-create": {"operationId", "tailnetId", "owner", "expiresAtMs"},
         "invite-redeem": {"operationId", "invite"},
         "authority-repin": {"operationId", "tailnetId", "authority", "expectedRevision", "confirmed"},
+        "tailnet-shutdown": {"operationId", "tailnetId", "expectedRevision", "confirmed", "reason"},
+        "tailnet-forget": {"operationId", "tailnetId", "orgDeleted"},
     }
 
     def __init__(self, *, owner="owner@example", device_id="node-a", local=None,
@@ -71,6 +73,7 @@ class FakeMembershipSidecar:
         self.now_ms = now_ms
         self.tailnets: dict[str, dict] = {}
         self.receipts: dict[str, tuple[str, dict]] = {}
+        self.receipt_tailnets: dict[str, str] = {}
         self.leases: dict[str, int] = {}
         self.calls: list[tuple[str, dict]] = []
         self.backups: list[dict] = []
@@ -119,8 +122,15 @@ class FakeMembershipSidecar:
         return row
 
     def _roster(self, table):
-        return {"tailnetId": table["tailnetId"], "authority": table["authority"],
-                "revision": table["revision"], "members": self._rows(table), "leaseSeconds": 300}
+        roster = {"tailnetId": table["tailnetId"], "authority": table["authority"],
+                  "revision": table["revision"], "members": self._rows(table), "leaseSeconds": 300}
+        if table.get("closed"):
+            roster.update(closed=True, closedAtMs=table.get("closedAtMs"))
+        return roster
+
+    @staticmethod
+    def _closed(table):
+        return bool(table.get("closed"))
 
     @staticmethod
     def _rows(table):
@@ -151,8 +161,9 @@ class FakeMembershipSidecar:
         if op in self.failures:
             self._error(self.failures[op])
         result = getattr(self, "_" + op.replace("-", "_"))(params)
-        if operation_id:
+        if operation_id and op != "tailnet-forget":
             self.receipts[operation_id] = (normalized, deepcopy(result))
+            self.receipt_tailnets[operation_id] = str(params.get("tailnetId") or "")
         return deepcopy(result)
 
     def _membership_status(self, params):
@@ -165,18 +176,21 @@ class FakeMembershipSidecar:
             authority = self._authority(table)
             lease = None if authority else self.leases.get(tailnet_id, 0)
             local = table["members"].get(self.local["deviceId"])
-            active = local is not None and local["state"] == "active"
+            active = local is not None and local["state"] == "active" and not self._closed(table)
             ready = active and (authority or lease > 0)
             code = None if ready else ("MEMBER_REVOKED" if local and not active
                                       else "MEMBERSHIP_LEASE_EXPIRED")
-            statuses.append({
+            row = {
                 "tailnetId": tailnet_id, "role": "authority" if authority else "member",
                 "revision": table["revision"], "authorityDeviceId": table["authority"]["deviceId"],
                 "memberReady": ready, "leaseRemainingSeconds": lease,
                 "activeCount": sum(row["state"] == "active" for row in self._rows(table)),
                 "tombstoneCount": sum(row["state"] == "tombstone" for row in self._rows(table)),
                 "code": code, "members": self._rows(table),
-            })
+            }
+            if self._closed(table):
+                row.update(closed=True, memberReady=False)
+            statuses.append(row)
         return {"readiness": {"sidecar": True, "control": True,
                               "member": any(row["memberReady"] for row in statuses)},
                 "tailnets": statuses}
@@ -201,12 +215,16 @@ class FakeMembershipSidecar:
 
     def _roster_fetch(self, params):
         table = self._table(params["tailnetId"])
+        if self._closed(table):
+            return self._roster(table)
         self._active_local(table)
         self.leases[params["tailnetId"]] = 300
         return self._roster(table)
 
     def _member_announce(self, params):
         table = self._table(params["tailnetId"])
+        if self._closed(table):
+            self._error("MEMBER_REVOKED")
         row = self._active_local(table)
         derived = {peer["serverPublic"]: key(row["masterPublic"] + peer["serverPublic"])
                    for peer in self._rows(table) if peer["state"] == "active"}
@@ -220,6 +238,8 @@ class FakeMembershipSidecar:
 
     def _member_revoke(self, params):
         table = self._table(params["tailnetId"])
+        if self._closed(table):
+            self._error("MEMBER_REVOKED")
         targets = params["deviceIds"]
         if not targets:
             self._error('BAD_REQUEST')
@@ -244,6 +264,8 @@ class FakeMembershipSidecar:
 
     def _invite_create(self, params):
         table = self._table(params["tailnetId"])
+        if self._closed(table):
+            self._error("MEMBER_REVOKED")
         if not self._authority(table):
             self._error("AUTHORITY_REQUIRED")
         now = self.now_ms if self.now_ms is not None else int(time.time() * 1000)
@@ -265,6 +287,8 @@ class FakeMembershipSidecar:
         if invite["expiresAtMs"] <= now:
             self._error("INVITE_EXPIRED")
         table = self._table(invite["tailnetId"])
+        if self._closed(table):
+            self._error("MEMBER_REVOKED")
         stored = table["invites"].get(invite["inviteId"])
         if stored is None or stored["invite"] != invite:
             self._error("INVITE_INVALID")
@@ -289,6 +313,8 @@ class FakeMembershipSidecar:
 
     def _authority_repin(self, params):
         table = self._table(params["tailnetId"])
+        if self._closed(table):
+            self._error("MEMBER_REVOKED")
         if params["confirmed"] is not True:
             self._error("CONFIRMATION_REQUIRED")
         if self.business_running:
@@ -303,3 +329,45 @@ class FakeMembershipSidecar:
         self.leases[params["tailnetId"]] = 0
         return {"tailnetId": params["tailnetId"], "revision": table["revision"],
                 "backupPath": f"/fake/backups/{params['operationId']}.json", "restartRequired": True}
+
+    def _tailnet_shutdown(self, params):
+        table = self._table(params["tailnetId"])
+        if not self._authority(table):
+            self._error("AUTHORITY_REQUIRED")
+        if params["confirmed"] is not True:
+            self._error("CONFIRMATION_REQUIRED")
+        if params["expectedRevision"] != table["revision"]:
+            self._error("REVISION_CONFLICT")
+        if not isinstance(params["reason"], str) or not params["reason"].strip():
+            self._error("BAD_REQUEST")
+        self.backups.append(deepcopy(table))
+        table["revision"] += 1
+        table["closed"] = True
+        table["closedAtMs"] = self.now_ms if self.now_ms is not None else int(time.time() * 1000)
+        for device, row in table["members"].items():
+            row.update(state="tombstone", address="", clientPublicByServer={},
+                       revision=table["revision"])
+            table["members"][device] = row
+        for stored in table["invites"].values():
+            stored["invite"]["state"] = "revoked"
+        self.leases[params["tailnetId"]] = 0
+        return {"tailnetId": params["tailnetId"], "revision": table["revision"],
+                "closed": True, "closedAtMs": table["closedAtMs"],
+                "backupPath": f"/fake/backups/{params['operationId']}.json",
+                "propagation": "lease-bounded"}
+
+    def _tailnet_forget(self, params):
+        table = self._table(params["tailnetId"])
+        if not self._closed(table):
+            if self._authority(table):
+                self._error("LAST_AUTHORITY_REFUSED")
+            if params.get("orgDeleted") is not True:
+                self._error("CONFIRMATION_REQUIRED")
+        tailnet_id = params["tailnetId"]
+        del self.tailnets[tailnet_id]
+        self.leases.pop(tailnet_id, None)
+        for operation_id, owner in list(self.receipt_tailnets.items()):
+            if owner == tailnet_id:
+                self.receipts.pop(operation_id, None)
+                del self.receipt_tailnets[operation_id]
+        return {"tailnetId": tailnet_id, "forgotten": True}

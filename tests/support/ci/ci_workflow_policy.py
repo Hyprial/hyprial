@@ -306,6 +306,12 @@ TAIL_EXEMPT_JOBS: dict[str, str] = {
         "instrumenting it is a follow-up, not a verdict that its readings are "
         "unneeded"
     ),
+    "native-conformance.yml::native-summary": (
+        "class: routing-only aggregate of already instrumented jobs, one bash step "
+        "with per-job outcomes in the job summary, no checkout and no suite. "
+        "deferred: a second bootstrap and artifact would duplicate the plan and "
+        "five suite-job records without adding evidence"
+    ),
 }
 
 
@@ -470,6 +476,7 @@ def gate_step_counts() -> dict[str, int]:
 # Allen 2026-10-28: publication is authorized only by a green dev push.
 INTERNAL_MOVE_CONDITION = (
     "success() && github.event_name == 'push' && github.ref == 'refs/heads/dev'"
+    " && env.INTERNAL_PUBLICATION_ENABLED == 'true'"
 )
 
 
@@ -503,25 +510,23 @@ def internal_tag_movers() -> list[tuple[str, int, dict[str, Any]]]:
 
 
 def main_release_policy_errors(document: dict[str, Any]) -> list[str]:
-    """The main listener only requests an anchor; it never moves track tags."""
+    """The retired main entrypoint is a dispatch-only, read-only diagnostic."""
 
     errors = []
     triggers = document.get("on", document.get(True))
-    if triggers != {"push": {"branches": ["main"]}}:
-        errors.append("main push must be the only trigger")
-    if document.get("concurrency", {}).get("cancel-in-progress") is not False:
-        errors.append("publication must not cancel in progress")
+    if triggers != {"workflow_dispatch": None}:
+        errors.append("retired main listener must be dispatch-only")
     jobs = document.get("jobs", {})
-    if len(jobs) != 1:
-        errors.append("expected one dispatch job")
+    if set(jobs) != {"dispatch"}:
+        errors.append("expected one diagnostic dispatch job")
     for job in jobs.values():
-        if job.get("if") != "github.event_name == 'push' && github.ref == 'refs/heads/main'":
-            errors.append("job must require main push")
+        if job.get("if") != "github.event_name == 'workflow_dispatch'":
+            errors.append("diagnostic job must require workflow_dispatch")
         runs = "\n".join(step.get("run", "") for step in job.get("steps", []))
-        if "release-tag.yml/dispatches" not in runs:
-            errors.append("must dispatch the independent release-tag workflow")
-        if "git push" in runs or "release_tracks.py" in runs:
-            errors.append("listener must not write tags")
+        if "main-release is retired" not in runs:
+            errors.append("diagnostic must explain the retired listener")
+        if any(marker in runs for marker in ("git push", "release_tracks.py", "/dispatches", "-X POST")):
+            errors.append("retired listener must not publish or dispatch")
     return errors
 
 

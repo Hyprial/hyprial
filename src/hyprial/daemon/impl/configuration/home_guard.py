@@ -1,3 +1,10 @@
+# Decision record (W1E-2, 2026-11-21):
+# - ActiveDaemonHeartbeat._claim_record enforces the outer HYPRIAL_HOME privacy
+#   gate via manysys.secure_private_directory (hard refusal on symlinks, reparse
+#   points, wrong owner, unsafe ancestry, or unprivate Windows DACL) without
+#   creating a missing home.
+# - Directory durability uses manysys.fsync_directory and lock files rely on the
+#   root boundary plus process umask instead of per-call chmod.
 """Race-safe, process-identity-fenced ownership of one HYPRIAL home."""
 
 from __future__ import annotations
@@ -6,6 +13,7 @@ import errno
 import json
 import math
 import os
+import stat
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -15,13 +23,44 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from hyprial.kernel import ipc_errors
-from hyprial.kernel import TEARDOWN_BUDGETED_SECONDS
-from hyprial.kernel import HYPRIALHomeNotInitialized
-from hyprial.kernel import lock_exclusive
+from hyprial.kernel import (
+    HYPRIALHomeNotInitialized,
+    PrivateAccessUnsupported,
+    TEARDOWN_BUDGETED_SECONDS,
+    fsync_directory,
+    ipc_errors,
+    lock_exclusive,
+    manysys,
+    secure_private_directory,
+)
 
 if TYPE_CHECKING:
     from hyprial.daemon.impl.mcp.channel.ownership import _OwnerProcessStatus
+
+
+def _validate_non_system_ancestry(target: Path) -> None:
+    lexical = Path(os.path.abspath(os.fspath(target)))
+    current = Path(lexical.anchor)
+    for part in lexical.parts[1:-1]:
+        current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        if manysys.path_is_reparse(info):
+            raise PrivateAccessUnsupported("unsafe-ancestry")
+        if stat.S_ISLNK(info.st_mode):
+            allowed = (
+                current.anchor == "/"
+                and current.parts in {("/", "tmp"), ("/", "var"), ("/", "etc")}
+                and current.is_dir()
+            )
+            if not allowed:
+                raise PrivateAccessUnsupported("unsafe-ancestry")
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise PrivateAccessUnsupported("unsafe-ancestry")
+
 
 def _describe_failure(error: BaseException) -> str:
     """Return only the exception type and errno, never private error values."""
@@ -82,9 +121,9 @@ def live_daemon_pid(home: Path) -> int | None:
     Read-only counterpart to :class:`ActiveDaemonHeartbeat` — the same
     ``.active_daemon`` record, the same freshness window (twice the keepalive
     the writer itself advertised in the record), and the same fail-safe
-    process verdicts.  It exists for callers that must *refuse* while a
-    daemon owns the home (``hyprial login --switch-account``, login U5) and
-    therefore may not claim anything: claiming is what a daemon does.
+    process verdicts.  It exists for callers that must observe whether a
+    daemon currently owns the home without claiming anything: claiming is what
+    a daemon does.
 
     Fail-safe direction: a heartbeat that is fresh but whose owner process
     cannot be positively reaped (``UNKNOWN`` — permission denied, unreadable
@@ -260,13 +299,21 @@ class ActiveDaemonHeartbeat:
             self._duplicate_thread.start()
 
     def _claim_record(self) -> dict[str, Any] | None:
-        if not self.home.is_dir():
-            source = (
-                "HYPRIAL_HOME environment variable"
-                if "HYPRIAL_HOME" in os.environ
-                else "default value (~/.hyprial)"
-            )
+        source = (
+            "HYPRIAL_HOME environment variable"
+            if "HYPRIAL_HOME" in os.environ
+            else "default value (~/.hyprial)"
+        )
+        _validate_non_system_ancestry(self.home)
+        try:
+            observed = self.home.lstat()
+        except FileNotFoundError:
+            raise HYPRIALHomeNotInitialized(self.home.resolve(), source) from None
+        if stat.S_ISLNK(observed.st_mode) or manysys.path_is_reparse(observed):
+            raise PrivateAccessUnsupported("unsafe-directory")
+        if not stat.S_ISDIR(observed.st_mode):
             raise HYPRIALHomeNotInitialized(self.home.resolve(), source)
+        secure_private_directory(self.home, create=True, mode=0o700)
         identity = self._identity_reader(self.pid)
         if identity is None:
             raise RuntimeError(
@@ -582,23 +629,15 @@ class ActiveDaemonHeartbeat:
             temporary.unlink(missing_ok=True)
 
     def _fsync_home(self) -> None:
-        descriptor: int | None = None
         try:
-            descriptor = os.open(self.home, os.O_RDONLY)
-            os.fsync(descriptor)
+            fsync_directory(self.home)
         except OSError:
-            # Atomic rename is the correctness boundary. Directory fsync is a
-            # durability improvement that some filesystems do not implement.
             pass
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
         stream = self.lock_path.open("a+b")
         try:
-            os.chmod(self.lock_path, 0o600)
             lock_exclusive(stream.fileno())
             yield
         finally:

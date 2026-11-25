@@ -2,18 +2,27 @@ import { useEffect } from 'react';
 import type { Dispatch } from 'react';
 import type { AppAction } from '../state/types';
 import type { NoticeItem } from '../state/types';
+import { Icon, type IconName } from './primitives/Icon';
 
 /**
  * Unified transient notification surface.
  *
  * Every action result flows through here as a stacked toast. Info/success
- * auto-dismiss; warning/error stay until dismissed and are mirrored into the
- * notification-center history by the reducer. Container is a polite live
- * region; each toast also carries role=status so existing queries keep
- * working.
+ * auto-dismiss; warning/error stay until dismissed unless the notice sets
+ * autoDismiss, and are mirrored into the notification-center history by the
+ * reducer. The container is the polite
+ * live region (role=status); individual toasts carry no role. The host sits
+ * above modal dialogs (--ui-z-toast) so a toast raised from a dialog is seen.
  */
 
 const AUTO_DISMISS_MS = 4000;
+
+const TONE_ICONS: Readonly<Record<NoticeItem['tone'], IconName>> = {
+  info: 'info',
+  success: 'check-circle',
+  warning: 'warning',
+  error: 'warning-circle',
+};
 
 const TONE_LABELS: Readonly<Record<NoticeItem['tone'], string>> = {
   info: '提示',
@@ -29,7 +38,7 @@ function Toast({
   readonly notice: NoticeItem;
   readonly onDismiss: () => void;
 }) {
-  const auto = notice.tone === 'info' || notice.tone === 'success';
+  const auto = notice.autoDismiss ?? (notice.tone === 'info' || notice.tone === 'success');
 
   useEffect(() => {
     if (!auto) {
@@ -42,6 +51,7 @@ function Toast({
   return (
     <div className={`toast toast-${notice.tone}`}>
       <span className="toast-tone" aria-hidden="true">
+        <Icon name={TONE_ICONS[notice.tone]} size="sm" />
         {TONE_LABELS[notice.tone]}
       </span>
       <span className="toast-text">{notice.text}</span>
@@ -51,7 +61,7 @@ function Toast({
         aria-label="关闭提示"
         onClick={onDismiss}
       >
-        ×
+        <Icon name="x" size="sm" />
       </button>
     </div>
   );

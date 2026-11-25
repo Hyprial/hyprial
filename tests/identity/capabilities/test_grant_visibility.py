@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+from tests.daemon.ipc.contracts.agent.grant_simulation.test_grant_simulation import online as online, server as server, app as app
+
 from hyprial.identity.impl.agents.runtime.visibility import (
     CallerIdentity,
     GrantRecord,
@@ -131,14 +133,6 @@ def test_visible_targets_requires_a_uri_key() -> None:
         visible_targets([{"actor": SELF}])
 
 
-def test_channel_routes_are_filtered_the_same_way() -> None:
-    caller = CallerIdentity(VISITOR, hosted=True)
-    rows = [
-        {"targetUri": "route:lark:ops", "targetKind": "channel_route"},
-        {"targetUri": SELF, "targetKind": "agent"},
-    ]
-    visible = visible_targets(rows, caller=caller)
-    assert [row["targetUri"] for row in visible] == [SELF]
 
 
 def test_decision_serialises_for_audit() -> None:
@@ -153,7 +147,7 @@ def test_decision_serialises_for_audit() -> None:
 # -- production entry points -------------------------------------------------
 
 
-def test_cli_visibility_audit() -> None:
+def test_cli_visibility_audit(online) -> None:
     import json as _json
 
     from typer.testing import CliRunner
@@ -188,7 +182,7 @@ def test_cli_visibility_audit() -> None:
     assert decisions[SELF]["seeActors"]["allowed"] is True
 
 
-def test_cli_visibility_audit_applies_grants_and_the_operator_exemption() -> None:
+def test_cli_visibility_audit_applies_grants_and_the_operator_exemption(online) -> None:
     import json as _json
 
     from typer.testing import CliRunner

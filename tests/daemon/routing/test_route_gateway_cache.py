@@ -17,7 +17,9 @@ from hyprial.daemon.impl.adapters.lark.outbound.gateway import GatewayIoAuthorit
 
 
 def _owner(tmp_path: Path, built: list[str]) -> SimpleNamespace:
-    def build(config: object, secret: str, state_dir: Path) -> object:
+    def build(
+        config: object, secret: str, state_dir: Path, *, actor_host: object = None
+    ) -> object:
         built.append(secret)
         return SimpleNamespace(secret=secret)
 
@@ -26,6 +28,7 @@ def _owner(tmp_path: Path, built: list[str]) -> SimpleNamespace:
         state_dir=tmp_path,
         _route_gateway_cache=application._RouteGatewayCache(),
         _lark_gateway_with_scope_recovery=build,
+        _actor_hosts=SimpleNamespace(host_for=lambda _owner: None),
     )
 
 
@@ -71,6 +74,7 @@ def test_an_unchanged_secret_file_reuses_the_cached_gateway(tmp_path: Path) -> N
 def test_production_gateway_factory_owns_primary_and_notification_io(
     monkeypatch,
     tmp_path: Path,
+    actor_host,
 ) -> None:  # type: ignore[no-untyped-def]
     gateways = []
 
@@ -122,6 +126,7 @@ def test_production_gateway_factory_owns_primary_and_notification_io(
         "secret",
         tmp_path,
         owned=True,
+        actor_host=actor_host,
     )
     assert isinstance(owner, GatewayIoAuthority)
     assert len(gateways) == 2
@@ -178,7 +183,7 @@ def test_route_cache_close_uses_one_total_budget():
 
 
 def test_owned_gateway_factory_failure_closes_its_private_log_writer(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, actor_host
 ):
     import pytest
 
@@ -201,6 +206,7 @@ def test_owned_gateway_factory_failure_closes_its_private_log_writer(
             "fake",
             tmp_path,
             owned=True,
+            actor_host=actor_host,
         )
     loggers[0].info("after-failed-construction")
     assert loggers[0].writer_status().accepted == 0

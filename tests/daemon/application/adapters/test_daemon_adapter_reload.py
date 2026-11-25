@@ -16,6 +16,7 @@ from hyprial.daemon.impl.adapters.lark.worker.process import LarkWorkerLauncher
 from hyprial.daemon.impl.application import DaemonApplication, DaemonRequestError
 from hyprial.daemon.impl.composition import CorrelatedDomainEvents, LarkPortClient
 from hyprial.kernel import PersistentConfigStore
+from tests.support.identity.cell_runtime import registry_cell_runtime
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -95,6 +96,7 @@ def _application(tmp_path: Path, *configured: str) -> DaemonApplication:
     app._inbox = object()  # type: ignore[assignment]
     app._harnesses = object()  # type: ignore[assignment]
     app._presence = object()  # type: ignore[assignment]
+    registry_cell_runtime(app)
     return app
 
 

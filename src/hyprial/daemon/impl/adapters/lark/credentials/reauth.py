@@ -14,7 +14,11 @@ split form:
 3. only a dead/missing refresh path escalates to
    ``auth login --no-wait --json``, which mints a ``verification_url`` +
    ``device_code`` without blocking -- the "就差你点一下" handoff.  The URL is
-   pushed to a human over an existing hyprial route; ``auth login
+   pushed to a human over one of the adapter's configured routes, named by
+   the route name alone (I4b, 2026-11-24: a retired ``route:<adapter>:<route>``
+   value given by flag or environment is refused, and one remembered in the
+   state file reads as no route with ``notify-route-retired`` reported, see
+   docs/guides/migration-route-uri-retired.md); ``auth login
    --device-code`` completes after the human clicks.
 
 Red lines encoded here:
@@ -51,6 +55,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
+
+from hyprial.error import codes
 
 STATE_FILENAME = "lark-reauth.json"
 ENV_NOTIFY_ROUTE = "HYPRIAL_LARK_REAUTH_NOTIFY_ROUTE"
@@ -421,7 +427,7 @@ def effective_notification_config(
     """Resolve the (route, sender) a check run would notify with."""
 
     state = load_state(state_path) or ReauthState()
-    route = _resolve_config(notify_route, env, ENV_NOTIFY_ROUTE, state.notify_route)
+    route = _resolve_notify_route(notify_route, env, state.notify_route)
     from_identity = _resolve_config(sender, env, ENV_SENDER, state.sender)
     return route, from_identity
 
@@ -532,6 +538,72 @@ def _resolve_config(
     return persisted
 
 
+RETIRED_NOTIFY_ROUTE = "notify-route-retired"
+
+
+def _is_retired_route(route: str | None) -> bool:
+    """True for a remembered or supplied ``route:<adapter>:<route>`` address."""
+
+    return route is not None and route.startswith("route:")
+
+
+def _resolve_notify_route(
+    value: str | None, env: Mapping[str, str], persisted: str | None
+) -> str | None:
+    """The notify route name (flag > environment > remembered).
+
+    A retired ``route:`` value given by flag or environment is refused, since
+    the person or unit file supplying it can fix it.  A retired value only
+    remembered in the state file reads as no route, so detection and refresh
+    keep running; :func:`check` reports it as ``notify-route-retired``.
+    """
+
+    supplied = _resolve_config(value, env, ENV_NOTIFY_ROUTE, None)
+    if supplied is None:
+        return None if _is_retired_route(persisted) else persisted
+    route = supplied
+    if _is_retired_route(route):
+        raise ReauthError(
+            codes.INVALID_ARGUMENT,
+            f"notify route {route!r} is not an adapter route name: the "
+            "route:<adapter>:<route> address is retired. Pass the route name "
+            "alone (for example dm), as configured with `hyprial adapter route "
+            "add`, through --notify-route or $" + ENV_NOTIFY_ROUTE + "; a "
+            "remembered value is replaced by passing a new one. See "
+            "docs/guides/migration-route-uri-retired.md.",
+        )
+    return route
+
+
+def _retired_notice(remembered_route: str | None) -> str | None:
+    return RETIRED_NOTIFY_ROUTE if _is_retired_route(remembered_route) else None
+
+
+def _remember_supplied_config(
+    state_path: Path,
+    remembered: ReauthState | None,
+    route: str | None,
+    sender: str | None,
+) -> None:
+    """Let a healthy check replace a remembered route or sender with a new one.
+
+    Only an existing state file is updated: a healthy check on a machine that
+    never escalated writes nothing.
+    """
+
+    if remembered is None:
+        return
+    changed = False
+    if route and route != remembered.notify_route:
+        remembered.notify_route = route
+        changed = True
+    if sender and sender != remembered.sender:
+        remembered.sender = sender
+        changed = True
+    if changed:
+        save_state(state_path, remembered)
+
+
 def check(
     runner: CliRunner,
     *,
@@ -558,24 +630,27 @@ def check(
     import time as _time
 
     current = _time.time() if now is None else now
+    remembered = load_state(state_path)
+    state = remembered or ReauthState()
+    route = _resolve_notify_route(notify_route, environment, state.notify_route)
+    from_identity = _resolve_config(sender, environment, ENV_SENDER, state.sender)
+    retired = None if route else _retired_notice(state.notify_route)
 
     payload = read_auth_status(runner)
     app_id = payload.get("appId") if isinstance(payload.get("appId"), str) else None
     classification = classify_user_identity(payload, now=current)
     if classification == "ok":
-        return CheckResult("ok", app_id=app_id)
+        _remember_supplied_config(state_path, remembered, route, from_identity)
+        return CheckResult("ok", app_id=app_id, error=retired)
     if classification == "refreshable":
         trigger_lazy_refresh(runner)
         second = read_auth_status(runner)
         if classify_user_identity(second, now=current) == "ok":
-            return CheckResult("recovered", app_id=app_id)
+            _remember_supplied_config(state_path, remembered, route, from_identity)
+            return CheckResult("recovered", app_id=app_id, error=retired)
         # A permanently needs_refresh token (run 977's successor case) means
         # the unattended path is exhausted; escalate honestly.
         classification = "needs_human"
-
-    state = load_state(state_path) or ReauthState()
-    route = _resolve_config(notify_route, environment, ENV_NOTIFY_ROUTE, state.notify_route)
-    from_identity = _resolve_config(sender, environment, ENV_SENDER, state.sender)
 
     if state.pending_valid(current):
         # A live link is already out there.  Re-notify only past cooldown;
@@ -605,7 +680,7 @@ def check(
             notify_route=route,
             verification_url=state.verification_url,
             expires_at=state.expires_at,
-            error=notify_error,
+            error=notify_error or retired,
             extra={"pending": True},
         )
 
@@ -615,7 +690,7 @@ def check(
         device_code=device_code,
         verification_url=url,
         expires_at=current + expire_in if expire_in > 0 else None,
-        notify_route=route,
+        notify_route=route or state.notify_route,
         sender=from_identity,
         domains=tuple(domains),
     )
@@ -639,7 +714,7 @@ def check(
         notify_route=route,
         verification_url=url,
         expires_at=state.expires_at,
-        error=notify_error,
+        error=notify_error or retired,
     )
 
 
@@ -677,6 +752,8 @@ def complete(
     route, from_identity = state.notify_route, state.sender
     app_id = state.app_id
     clear_state(state_path)
+    if _is_retired_route(route):
+        return CheckResult("authorized", app_id=app_id, error=RETIRED_NOTIFY_ROUTE)
     if route and from_identity and send:
         try:
             send(from_identity, route, recovered_text(app_id))

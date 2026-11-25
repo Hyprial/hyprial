@@ -1,7 +1,6 @@
-"""Production daemon port shared by the adapter host's named operations."""
+"""Production daemon port behind the public shell face."""
 
 import os
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +34,3 @@ def daemon_request_once(method: str, params: dict) -> Any:
     """Public shell port for a single admission attempt without replay."""
     return _request(method, params, once=True)
 
-
-def daemon_request_callable() -> Callable[[str, dict], Any]:
-    """Compatibility port for the existing GUI adapter host."""
-    return daemon_request

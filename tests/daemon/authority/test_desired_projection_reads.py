@@ -7,14 +7,16 @@ from hyprial.daemon.impl.state_persistence import StatePersistenceAuthority
 from hyprial.kernel import HarnessLaunchSpec
 
 
-def _authority(tmp_path: Path) -> StatePersistenceAuthority:
-    return StatePersistenceAuthority(DesiredStateStore(tmp_path / "desired.json"))
+def _authority(tmp_path: Path, actor_host) -> StatePersistenceAuthority:
+    return StatePersistenceAuthority(
+        DesiredStateStore(tmp_path / "desired.json"), actor_host=actor_host
+    )
 
 
 def test_desired_load_has_one_full_copy_and_keeps_mutation_isolated(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, actor_host, monkeypatch
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     try:
         authority.desired.upsert_harness(
             HarnessLaunchSpec(
@@ -41,8 +43,8 @@ def test_desired_load_has_one_full_copy_and_keeps_mutation_isolated(
         authority.close()
 
 
-def test_single_harness_read_isolated_from_caller_mutation(tmp_path: Path) -> None:
-    authority = _authority(tmp_path)
+def test_single_harness_read_isolated_from_caller_mutation(tmp_path: Path, actor_host) -> None:
+    authority = _authority(tmp_path, actor_host)
     try:
         authority.desired.upsert_harness(
             HarnessLaunchSpec(
@@ -62,14 +64,14 @@ def test_single_harness_read_isolated_from_caller_mutation(tmp_path: Path) -> No
         authority.close()
 
 
-def test_actor_spec_skips_a_same_named_lark_row_while_searching(tmp_path: Path) -> None:
+def test_actor_spec_skips_a_same_named_lark_row_while_searching(tmp_path: Path, actor_host) -> None:
     """Review 930: (lark, foo) sorts before (pi, foo); the worker must win."""
 
     from types import SimpleNamespace
 
     from hyprial.daemon.impl.pac.actors.daemon import DaemonActorRuntime
 
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     try:
         authority.desired.set_adapter("foo", True)
         authority.desired.upsert_harness(

@@ -27,7 +27,6 @@ from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMess
 from hyprial.daemon.impl.inbox.service import InboxService
 from hyprial.kernel import canonical_agent_uri
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate
 
 NODE = "wp7-node"
 OWNER = "wp7-owner"
@@ -87,10 +86,17 @@ def _app(tmp_path: Path, inbox: InboxService) -> DaemonApplication:
     # Explicit premise (wp2.md §4.9 option a): the link mechanism is live and
     # this scenario is not about links, so a permissive gate keeps
     # agent-to-agent sends delivering instead of holding (ruling 54).
-    app.link_admission.bind(PermissiveLinkGate())
     if app.agents.get(A_NAME) is None:
         app.handle("agent.create", {"name": A_NAME})
     return app
+
+
+def _official(app: DaemonApplication) -> str:
+    """The id-form address the registered sender ``worker-a`` reads at."""
+
+    agent = app.agents.require(A_NAME)
+    assert agent.uri == canonical_agent_uri(OWNER, NODE, agent.agent_id) != A_URI
+    return agent.uri
 
 
 def _receive(
@@ -138,7 +144,8 @@ def _send(
 def test_d1_send_reports_pending_requests_from_the_target(tmp_path: Path) -> None:
     inbox = _inbox(tmp_path)
     app = _app(tmp_path, inbox)
-    _receive(inbox, message_id="r1")
+    a_uri = _official(app)
+    _receive(inbox, recipient=a_uri, message_id="r1")
 
     result = _send(app, to=(X_URI,))
 
@@ -147,7 +154,7 @@ def test_d1_send_reports_pending_requests_from_the_target(tmp_path: Path) -> Non
     assert result["deliveries"][0]["openRequestsFrom"] == ["r1"]
     assert result["openRequestsFrom"] == ["r1"]
     # The original request is untouched and the new send is an ordinary request.
-    pending_a = inbox.pending_messages(A_URI)
+    pending_a = inbox.pending_messages(a_uri)
     assert [message.message_id for message in pending_a] == ["r1"]
     delivered = inbox.pending_messages(X_URI)
     assert len(delivered) == 1
@@ -164,7 +171,8 @@ def test_d1_send_never_acks_replies_or_settles_the_original_request(
 
     inbox = _inbox(tmp_path)
     app = _app(tmp_path, inbox)
-    _receive(inbox, message_id="r1")
+    a_uri = _official(app)
+    _receive(inbox, recipient=a_uri, message_id="r1")
     mutations: list[tuple[str, tuple[Any, ...]]] = []
     for name in ("ack", "settle_harness_failure", "fetch_pending", "retry_due"):
         original = getattr(inbox, name)
@@ -178,10 +186,10 @@ def test_d1_send_never_acks_replies_or_settles_the_original_request(
     result = _send(app, to=(X_URI,))
 
     assert result["openRequestsFrom"] == ["r1"]
-    assert not [call for call in mutations if A_URI in call[1] and "r1" in call[1]]
-    assert [m.message_id for m in inbox.pending_messages(A_URI)] == ["r1"]
+    assert not [call for call in mutations if a_uri in call[1] and "r1" in call[1]]
+    assert [m.message_id for m in inbox.pending_messages(a_uri)] == ["r1"]
 
-    inbox.ack(A_URI, "r1")  # the explicit close, not the send
+    inbox.ack(a_uri, "r1")
     again = _send(app, to=(X_URI,))
     assert "openRequestsFrom" not in again
 
@@ -192,17 +200,18 @@ def test_d2_no_field_when_there_is_nothing_open(
 ) -> None:
     inbox = _inbox(tmp_path)
     app = _app(tmp_path, inbox)
+    a_uri = _official(app)
     if variant == "no-row":
         pass
     elif variant == "replied":
-        _receive(inbox, message_id="r1")
-        inbox.ack(A_URI, "r1")
+        _receive(inbox, recipient=a_uri, message_id="r1")
+        inbox.ack(a_uri, "r1")
     elif variant == "reply-intent":
-        _receive(inbox, message_id="r1", intent="reply")
+        _receive(inbox, recipient=a_uri, message_id="r1", intent="reply")
     elif variant == "reply-to":
-        _receive(inbox, message_id="r1")
+        _receive(inbox, recipient=a_uri, message_id="r1")
 
-    result = _send(app, to=(X_URI,), reply_to="some-request" if variant == "reply-to" else None)
+    result = _send(app, to=(X_URI,), reply_to="r1" if variant == "reply-to" else None)
 
     assert result["ok"] is True
     assert "openRequestsFrom" not in result
@@ -212,8 +221,9 @@ def test_d2_no_field_when_there_is_nothing_open(
 def test_d3_multiple_targets_merge_in_target_order(tmp_path: Path) -> None:
     inbox = _inbox(tmp_path)
     app = _app(tmp_path, inbox)
-    _receive(inbox, message_id="r1")
-    _receive(inbox, message_id="r2")
+    a_uri = _official(app)
+    _receive(inbox, recipient=a_uri, message_id="r1")
+    _receive(inbox, recipient=a_uri, message_id="r2")
 
     result = _send(app, to=(X_URI, Y_URI))
 
@@ -228,7 +238,8 @@ def test_d4_optional_lookup_failure_never_blocks_the_send(
 ) -> None:
     inbox = _inbox(tmp_path)
     app = _app(tmp_path, inbox)
-    _receive(inbox, message_id="r1")
+    a_uri = _official(app)
+    _receive(inbox, recipient=a_uri, message_id="r1")
 
     error: BaseException
     if failure == "unavailable":
@@ -241,7 +252,7 @@ def test_d4_optional_lookup_failure_never_blocks_the_send(
     real_pending = inbox.pending_messages
 
     def _boom(recipient: str, *, now_ms: int | None = None):  # type: ignore[no-untyped-def]
-        if recipient == A_URI:
+        if recipient == a_uri:
             raise error
         return real_pending(recipient, now_ms=now_ms)
 

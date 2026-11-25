@@ -86,6 +86,10 @@ for label, frame in [("request", success["request"]), *[(f"response[{i}]", item)
     if errors:
         raise SystemExit(f"{label}: {errors[0].message}")
 
+for label, frame in negative["schemaRejects"].items():
+    if not list(validator.iter_errors(frame)):
+        raise SystemExit(f"schema negative accepted: {label}")
+
 for label, raw in negative["rawRejects"].items():
     if label == "boolAsInteger":
         if not list(validator.iter_errors(raw)):
@@ -107,5 +111,5 @@ for label, frames in negative["stateRejects"].items():
 
 print(
     f"PASS python-worker protocol v1 frames={1 + len(success['responses'])} "
-    f"negative={len(negative['rawRejects']) + len(negative['stateRejects'])}"
+    f"negative={len(negative['schemaRejects']) + len(negative['rawRejects']) + len(negative['stateRejects'])}"
 )

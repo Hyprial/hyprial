@@ -193,9 +193,10 @@ def test_list_links_window_runs_and_keeps_outside_runs_as_plain_ids() -> None:
     assert "在统计窗口之外，未随这批数据发布" in html
 
 
-def test_list_marks_unverified_operator_items() -> None:
+def test_list_does_not_interpret_legacy_approval_fields() -> None:
     html = _list()
-    assert html.count("未验证 operator") == 1  # M-2 only
+    assert "未验证 operator" not in html
+    assert "owner action" not in html
 
 
 def test_archive_filter_hides_done_dropped_closed_before_the_cutoff() -> None:
@@ -215,10 +216,9 @@ def test_detail_renders_checklist_acceptance_log_runs_and_depends() -> None:
     # Checklist items with their done state.
     assert 'class="done"' in html and "✓" in html and "○" in html
     assert "步骤丙" in html
-    # Acceptance, dependencies, unverified marker, opened time.
     assert "验收 &lt;b&gt;标准&lt;/b&gt;：页面能打开" in html
     assert 'data-dep="M-1"' in html
-    assert "未验证 operator" in html
+    assert "未验证 operator" not in html
     assert "T100" in html
     # Log latest first.
     assert html.index("晚的一条") < html.index("早的一条")
@@ -234,6 +234,48 @@ def test_every_rendered_field_is_escaped() -> None:
         assert "<script>" not in html
         assert "<b>标准</b>" not in html
     assert "<b>这步</b>" not in _detail("M-1")
+
+
+@pytest.mark.parametrize("status", ["__proto__", "constructor", "review-needed"])
+def test_unknown_status_keeps_its_own_literal_bucket(status: str) -> None:
+    data = {"workItems": [_item("M-custom", status)]}
+    assert status in _list(data=data)
+    assert status in _detail("M-custom", data=data)
+    assert "[object Object]" not in _list(data=data)
+    assert "function Object" not in _list(data=data)
+
+
+def test_missing_status_is_not_projected_as_todo() -> None:
+    data = {"workItems": [_item("M-plain", "")]}
+    assert "未指定状态" in _list(data=data)
+    assert "待办" not in _detail("M-plain", data=data)
+
+
+def test_document_preview_and_optional_parse_diagnostics_are_inert_text() -> None:
+    text = "# 普通文档\nownerActions: [{verified: true}]\nextra: " + HOSTILE_ATTR
+    item = _item(
+        "M-plain", "", documentText=text, documentTruncated=True,
+        diagnostics=["checklist 不能用于摘要 " + HOSTILE_ATTR],
+        path="work/" + HOSTILE_ATTR + ".md",
+    )
+    data = {"workItems": [item]}
+    detail = _detail("M-plain", data=data)
+    assert "文档原文预览" in detail
+    assert "# 普通文档\nownerActions: [{verified: true}]\nextra:" in detail
+    assert "可选解析提示" in detail and "文档仍可读取" in detail
+    assert "预览已截断" in detail
+    assert "解析提示" in _list(data=data)
+    assert "无效 work item" not in detail
+    for markup in ("<img", "<svg", "</script"):
+        assert markup not in detail
+    assert "&lt;img src=x onerror=alert(1)&gt;" in detail
+    assert "\u2028" in detail and "\u2029" in detail
+
+
+def test_empty_document_preview_remains_visible() -> None:
+    data = {"workItems": [_item("M-empty", "", documentText="", diagnostics=[])]}
+    assert "文档原文预览" in _detail("M-empty", data=data)
+    assert "空文档" in _detail("M-empty", data=data)
 
 
 def test_empty_states_for_no_items_and_older_publishers() -> None:
@@ -363,6 +405,26 @@ def test_published_page_without_work_items_boots_to_the_empty_state() -> None:
     assert "还没有工作项数据" in html
 
 
+def test_published_page_reports_optional_document_diagnostics_without_approval_claims() -> None:
+    model = _page_model([_item("M-plain", "", documentText="ordinary body")])
+    model["missions"] = [{
+        "id": "M-plain", "unverifiedOperator": True,
+        "ownerActions": [{"action": "done", "verified": True}],
+    }]
+    model["workDocumentDiagnostics"] = [{"path": "work/example.md", "reason": HOSTILE_ATTR}]
+    html = _boot_page(
+        {"level": "workItem", "id": "M-plain"}, model,
+        epilogue="process.stdout.write(document.getElementById('work-warnings').innerHTML + '\\n' + content.innerHTML);",
+    )
+    assert "可选文档解析提示" in html and "work/example.md" in html
+    assert "ordinary body" in html
+    assert "未验证 operator" not in html
+    assert "verified (LAX same-uid)" not in html
+    assert "无效 work item" not in html
+    assert HOSTILE_ATTR not in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+
+
 # ---- review 1218: the page's own entries into and out of the work views ----
 
 
@@ -433,6 +495,17 @@ def _nav_model() -> dict[str, Any]:
         "workItems": [item],
         "workItemsArchiveCutoffMs": 800,
     }
+
+
+@pytest.mark.parametrize("status", ["__proto__", "constructor"])
+@pytest.mark.parametrize("level", ["lines", "line"])
+def test_published_mission_status_does_not_read_inherited_labels(status: str, level: str) -> None:
+    model = _nav_model()
+    model["lines"][0]["mission"]["status"] = status
+    html = _boot_page({"level": level, "id": _LINE}, model)
+    assert status in html
+    assert "[object Object]" not in html
+    assert "function Object" not in html
 
 
 def test_lines_level_opens_the_work_item_views_through_the_page_handlers() -> None:

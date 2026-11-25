@@ -355,6 +355,23 @@ def test_sdk_worker_command_finds_standard_user_uv_outside_path(
     assert sdk_worker_command()[0] == str(user_uv)
 
 
+def test_sdk_worker_command_selects_uv_exe_when_file_modes_are_insignificant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hyprial.kernel.impl.manysys.interface.file_modes_are_significant",
+        lambda: False,
+    )
+    user_uv = tmp_path / ".local" / "bin" / "uv.exe"
+    user_uv.parent.mkdir(parents=True)
+    user_uv.write_text("", encoding="utf-8")
+    user_uv.chmod(0o644)
+
+    assert sdk_worker_command()[0] == str(user_uv)
+
+
 def test_worker_without_agent_sdk_fails_with_a_clear_error() -> None:
     """Missing package => one actionable stderr line, not a traceback. The
     test-suite interpreter deliberately has no claude_agent_sdk installed."""

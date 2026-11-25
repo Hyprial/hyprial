@@ -11,8 +11,13 @@ from threading import RLock
 from typing import Any
 
 from hyprial.daemon.impl.org.network.binding import resolve_org_acl_space
+from hyprial.daemon.impl.org.network.create.sub_org import (
+    extract_meta_sub_org_binding,
+    validate_repair_sub_org_binding,
+)
 from hyprial.daemon.impl.org.network.state import (
     begin_org_create,
+    inspect_org_create_intent,
     org_create_intent,
     update_org_create,
 )
@@ -67,6 +72,9 @@ def prepare_create(
     binding_reason: str | None,
     now: Callable[[], datetime],
     log: Callable[..., None],
+    parent: str | None = None,
+    parent_space_id: str | None = None,
+    tailnet_id: str | None = None,
 ) -> dict[str, str | None]:
     """Create or validate the local intent and bind its directory ID."""
 
@@ -74,6 +82,24 @@ def prepare_create(
     intent = org_create_intent(home, org)
     if intent is not None:
         _require_matching_intent(org, intent, node_id=node_id, owner=principal)
+        if intent.get("parent") != parent:
+            raise OrgCreateResumeDenied(
+                f"interrupted creation of org {org!r} names another parent"
+            )
+        if parent is not None:
+            if (
+                not parent_space_id
+                or not tailnet_id
+                or intent.get("parentSpaceId") != parent_space_id
+                or intent.get("tailnetId") != tailnet_id
+            ):
+                raise OrgCreateResumeDenied(
+                    f"interrupted creation of org {org!r} has mismatched parentSpaceId or tailnetId"
+                )
+        elif intent.get("parentSpaceId") is not None or intent.get("tailnetId") is not None:
+            raise OrgCreateResumeDenied(
+                f"interrupted creation of top-level org {org!r} carries sub-org binding"
+            )
     elif existing is not None:
         if (
             existing.owner != principal
@@ -81,6 +107,28 @@ def prepare_create(
         ):
             raise OrgCreateResumeDenied(
                 f"interrupted creation of org {org!r} belongs to another creator"
+            )
+        try:
+            recorded = extract_meta_sub_org_binding(fs, org, existing.space_id)
+        except (RuntimeError, ValueError) as error:
+            raise OrgCreateResumeDenied(str(error)) from error
+        if parent is not None:
+            if (
+                not parent_space_id
+                or not tailnet_id
+                or recorded is None
+                or recorded != (org_space_name(parent), parent_space_id, tailnet_id)
+            ):
+                raise OrgCreateResumeDenied(
+                    f"existing top-level org {org!r} cannot be reparented to {parent!r} without matching sub-org metadata"
+                )
+        elif (
+            recorded is not None
+            or parent_space_id is not None
+            or tailnet_id is not None
+        ):
+            raise OrgCreateResumeDenied(
+                f"interrupted creation of org {org!r} has conflicting top-level and sub-org metadata"
             )
         log(
             "warn",
@@ -90,9 +138,27 @@ def prepare_create(
             spaceId=existing.space_id,
             reason=binding_reason,
         )
-        intent = _new_intent(home, org, node_id, principal, now)
+        intent = _new_intent(
+            home,
+            org,
+            node_id,
+            principal,
+            now,
+            parent=parent,
+            parent_space_id=parent_space_id,
+            tailnet_id=tailnet_id,
+        )
     else:
-        intent = _new_intent(home, org, node_id, principal, now)
+        intent = _new_intent(
+            home,
+            org,
+            node_id,
+            principal,
+            now,
+            parent=parent,
+            parent_space_id=parent_space_id,
+            tailnet_id=tailnet_id,
+        )
     if acl_space is not None and intent.get("aclSpaceId") not in (
         None,
         acl_space.space_id,
@@ -192,7 +258,13 @@ def unfinished_create_reason(
 
 
 def repair_candidates(
-    fs: OrgFs, *, home: Path, node_id: str, owner: str, org: str | None
+    fs: OrgFs,
+    *,
+    home: Path,
+    node_id: str,
+    owner: str,
+    org: str | None,
+    service: Any | None = None,
 ) -> list[dict[str, Any]]:
     """List uniquely named directory spaces with incomplete create artifacts."""
 
@@ -211,29 +283,50 @@ def repair_candidates(
             reason = unfinished_create_reason(fs, space, acl_space)
         if reason not in _RECOVERABLE_BINDING_REASONS:
             continue
-        intent = org_create_intent(home, candidate_org)
+        intent, intent_error = inspect_org_create_intent(home, candidate_org)
         intended_acl = None if intent is None else intent.get("aclSpaceId")
-        repairable = space.owner == canonical_user_uri(owner) and (
-            intent is None
-            or (
-                intent.get("nodeId") == node_id
-                and intent.get("owner") == canonical_user_uri(owner)
-                and intent.get("directorySpaceId") in (None, space.space_id)
-                and (
-                    intended_acl is None
-                    or acl_space is not None
-                    and intended_acl == acl_space.space_id
+        repairable = (
+            intent_error is None
+            and space.owner == canonical_user_uri(owner)
+            and (
+                intent is None
+                or (
+                    intent.get("nodeId") == node_id
+                    and intent.get("owner") == canonical_user_uri(owner)
+                    and intent.get("directorySpaceId") in (None, space.space_id)
+                    and (
+                        intended_acl is None
+                        or acl_space is not None
+                        and intended_acl == acl_space.space_id
+                    )
                 )
             )
         )
-        candidates.append(
-            {
-                "org": candidate_org,
-                "spaceId": space.space_id,
-                "reason": reason,
-                "repairable": repairable,
-            }
-        )
+        candidate: dict[str, Any] = {
+            "org": candidate_org,
+            "spaceId": space.space_id,
+            "reason": reason,
+            "repairable": repairable,
+        }
+        if intent_error is not None:
+            candidate["error"] = intent_error
+        else:
+            sub_check = validate_repair_sub_org_binding(
+                fs,
+                home=home,
+                owner=owner,
+                org=candidate_org,
+                space_id=space.space_id,
+                intent=intent,
+                service=service,
+            )
+            if sub_check is not None:
+                sub_fields, sub_error = sub_check
+                candidate.update(sub_fields)
+                if sub_error is not None:
+                    candidate["repairable"] = False
+                    candidate["error"] = sub_error
+        candidates.append(candidate)
     return candidates
 
 
@@ -243,6 +336,10 @@ def _new_intent(
     node_id: str,
     owner: str,
     now: Callable[[], datetime],
+    *,
+    parent: str | None = None,
+    parent_space_id: str | None = None,
+    tailnet_id: str | None = None,
 ) -> dict[str, str | None]:
     return begin_org_create(
         home,
@@ -250,6 +347,9 @@ def _new_intent(
         node_id=node_id,
         owner=owner,
         started_at=now().isoformat(),
+        parent=parent,
+        parent_space_id=parent_space_id,
+        tailnet_id=tailnet_id,
     )
 
 

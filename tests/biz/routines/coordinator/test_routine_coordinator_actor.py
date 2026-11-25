@@ -862,3 +862,89 @@ def test_legacy_migration_does_not_publish_before_commit(
     with pytest.raises(sqlite3.IntegrityError):
         _Generation(Owner(), 1)  # type: ignore[arg-type]
     assert published == []
+
+
+COORDINATOR_URI = "agent:test:node:coordinator"
+COORDINATOR_ID_URI = "agent:test:node:a.bl5ksbh3pghtmvnfo5peihbyke"
+
+
+def _coordinator_key(value: str) -> str:
+    return COORDINATOR_URI if value == COORDINATOR_ID_URI else value
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_add_conflict_compares_produces_through_the_injected_key(
+    tmp_path: Path, resolved: bool,
+) -> None:
+    """UUID addressing: a coordinator owned under its id URI is still owned."""
+
+    routines = Routines()
+    routines.rows["migrated"] = {
+        "name": "migrated", "owner": "agent:test:node:duty", "enabled": True,
+        "registrationId": "r-0", "produces": COORDINATOR_ID_URI, "inFlight": [],
+    }
+    coordinator = RoutineCoordinator(
+        state_dir=tmp_path, routines=routines,
+        ensure_coordinator=lambda routine: {"actor": routine["produces"]},
+        retire_coordinator=lambda _routine: None,
+        close_graph=lambda _graph, _actor: None,
+        binding_key=_coordinator_key if resolved else None,
+    )
+    try:
+        add = add_command(
+            operation_id="add-1", name="first", yaml_text=_yaml("first"),
+            owner="agent:test:node:duty", produces=COORDINATOR_URI,
+        )
+        assert coordinator.begin(add) is PortAdmission.ACCEPTED
+        if resolved:
+            with pytest.raises(RoutineCoordinatorError) as caught:
+                coordinator.wait("add-1", 3.0)
+            assert caught.value.code == "ROUTINE_COORDINATOR_CONFLICT"
+            assert "first" not in routines.rows
+        else:
+            assert coordinator.wait("add-1", 3.0)["enabled"] is True
+    finally:
+        assert coordinator.close(3.0)
+
+
+def test_failed_restart_factory_keeps_coordinator_generation_equal_to_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hyprial.biz.impl.routine.execution.coordinator import generation as module
+    from hyprial.kernel import ActorState, AdmissionResult
+
+    coordinator = RoutineCoordinator(
+        state_dir=tmp_path, routines=Routines(),
+        ensure_coordinator=lambda routine: {"actor": routine["produces"], "changed": False},
+        retire_coordinator=lambda _routine: None,
+        close_graph=lambda _graph, _actor: None,
+    )
+    original_call = module._Generation.__call__
+    original_load = module._Generation._load_all
+    loads = 0
+
+    def crash(generation, command):
+        if command == "crash":
+            raise RuntimeError("synthetic coordinator crash")
+        return original_call(generation, command)
+
+    def fail_first_reload(generation):
+        nonlocal loads
+        loads += 1
+        if loads == 1:
+            raise sqlite3.OperationalError("injected transient reload failure")
+        return original_load(generation)
+
+    monkeypatch.setattr(module._Generation, "__call__", crash)
+    monkeypatch.setattr(module._Generation, "_load_all", fail_first_reload)
+    try:
+        cell = coordinator._handle
+        assert cell.tell("crash") is AdmissionResult.ACCEPTED
+        deadline = time.monotonic() + 4.0
+        while not (loads >= 2 and cell.snapshot().state is ActorState.RUNNING):
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+        assert cell.snapshot().generation == 2
+        assert coordinator._generation == 2
+    finally:
+        assert coordinator.close(3.0)

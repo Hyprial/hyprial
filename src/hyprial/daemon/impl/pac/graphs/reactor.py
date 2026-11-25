@@ -20,8 +20,9 @@ Concept §3, slice-1 spec ②③④ + the two headline acceptances:
   the same event against the same edge a no-op.
 
 The reactor reads the graph structure + ``flag_events`` and writes
-``flag_events``/``notifications``.  It reads nothing else — in particular
-never an inbox body or reply text.  :mod:`tests.test_pac_tripwire` keeps
+``flag_events``/``notifications``. Managed ownership additionally reads its
+receipt and official identity through a read port, never an inbox body or
+reply text. :mod:`tests.test_pac_tripwire` keeps
 that a gate.
 
 Delivery (the actual ``hyprial message send``) is a port: :class:`NotificationSender`
@@ -39,6 +40,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 from time import time_ns
 from typing import Any, Protocol
+from hyprial.daemon.impl.pac.storage.agent_uris import AgentReader, node_owner_matches
 
 from hyprial.identity import (
     PAC_EXPANSION_INVALID,
@@ -207,6 +209,7 @@ class PacReactor:
         logger: Any = None,
         expansion_context: PreparedExpansion | None = None,
         publisher: HookEventPublisher | None = None,
+        agent_reader: AgentReader | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -214,6 +217,7 @@ class PacReactor:
         self._logger = logger
         self._expansion_context = expansion_context
         self._publisher = publisher
+        self._agent_reader = agent_reader
         if publisher is not None:
             store.hook_publisher = publisher
 
@@ -665,7 +669,7 @@ class PacReactor:
                     "use `hyprial workflow worker stop` for an early stop",
                     {"nodeId": node_id, "owner": node.owner, "actor": actor},
                 )
-            if actor != node.owner:
+            if not node_owner_matches(self._store, node, actor, self._agent_reader):
                 note = unrewritten_owners_note(self._store._db, graph_id)
                 raise PacError(
                     PAC_FLAG_NOT_OWNER,

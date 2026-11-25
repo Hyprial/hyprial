@@ -15,9 +15,12 @@ JSON output and exit semantics. It has no Node or Python package dependencies.
   read-only observations of the currently installed TS daemon and network.
 - The suite never calls `init`, `start`, `attach`, `down`, `upgrade`, track
   mutation, channel mutation, agent mutation, or inbox pruning. Its logout
-  contract creates only synthetic user-login, device-key, and agent-credential
-  sentinels in the temporary home, then proves logout removes only the login
-  state. It never copies production credentials or daemon state into its fixture.
+  contract creates only synthetic user-login, device-key, agent-credential and
+  node-id sentinels in the temporary home, then proves logout removes only the
+  login state. Logout is one daemon `auth.logout`, so that check starts the
+  isolated daemon (without `HYPRIAL_OWNER`, as a logged-in home runs), stops it
+  with `daemon stop` and removes the node-id sentinel before the next check. It
+  never copies production credentials or daemon state into its fixture.
 - Output reports only check names, never connector records, target records,
   doctor details, log bodies, or credential paths.
 
@@ -33,7 +36,9 @@ standalone dependency-free corpus requires Python >=3.12 but does not require
 the hyprial project dependencies, so it remains usable against the TS reference.
 If the `cli-blackbox/` directory is copied without the repository resolver, its
 wrapper retains the portable `HYPRIAL_PYTHON`-or-`python3` fallback and performs
-the same strict file, executable, identity, and version validation.
+the same strict file, executable, identity, and version validation. Copy the
+whole directory, not `run.py` alone: `run.py` imports its sibling modules
+(`logout_check.py`), which `run.sh` finds next to it.
 
 Select another implementation without changing the suite:
 

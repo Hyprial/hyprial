@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
 
 from tests.support.runtime._tmp import hyprial_test_tmp_root
@@ -32,6 +34,7 @@ from hyprial.daemon.impl.inbox import (
     MemoryDeliveryTransport,
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.actor_hosts import new_actor_host
 
 ACTOR = "agent:op:provider-failure-node:worker"
 SENDER = "agent:op:sender-node:dispatcher"
@@ -67,8 +70,8 @@ class _Harnesses:
     def streaming_actors(self) -> tuple[str, ...]:
         return ("worker",)
 
-    def dispatch(self, _name: str, delivery: HarnessDelivery) -> bool:
-        self.dispatched.append(delivery)
+    def dispatch(self, envelope: object) -> bool:
+        self.dispatched.append(envelope.input)  # type: ignore[attr-defined]
         return True
 
     def drain_progress(self) -> tuple[()]:
@@ -140,7 +143,6 @@ def _message(message_id: str) -> InboxMessage:
 def _inbox(
     database: Path, *, max_inbox_items: int = 10_000
 ) -> DeliveryCustodyFacade:
-    from tests.support.links.gate import permissive_admission_slot
 
     coordinator = DeliveryCustodyCoordinator(
         database,
@@ -148,9 +150,7 @@ def _inbox(
         _Events(),
         node_id="provider-failure-node",
         max_inbox_items=max_inbox_items,
-        # ACTOR->ACTOR dispatch is gated; keep this suite about provider
-        # failure settlement with an explicit permissive premise (wp4 T13).
-        service_options={"link_admission": permissive_admission_slot()},
+        actor_host=new_actor_host(),
     )
     return DeliveryCustodyFacade(coordinator, database)
 
@@ -163,6 +163,8 @@ def _bridge(
     logs: list[tuple[str, str, str, dict[str, object]]] | None = None,
     blocking_failure_observer: Any = None,
     blocked_actor: Any = None,
+    *,
+    actor_host,
 ) -> DaemonEventBridge:
     return DaemonEventBridge(
         state_dir=state,
@@ -181,7 +183,8 @@ def _bridge(
             )
         ),
         blocking_failure_observer=blocking_failure_observer,
-        blocked_actor=blocked_actor,
+        blocked_actor=blocked_actor, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
 
 
@@ -316,12 +319,12 @@ def test_context_exhaustion_is_terminal_on_the_first_delivery_attempt(
 
 
 def test_context_exhaustion_raises_the_existing_fail_loud_notice(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = _Harnesses()
     clock = {"now": 1_000}
-    runtime = _bridge(tmp_path, inbox, harnesses, clock)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     message = _message("context-exhausted-loud-1")
     assert inbox.receive(message, now_ms=1).acknowledged
     runtime.start()
@@ -360,14 +363,14 @@ def test_context_exhaustion_raises_the_existing_fail_loud_notice(
 
 
 def test_permanent_failure_mints_terminal_tombstone_without_reply_ack_or_redispatch(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database, max_inbox_items=1)
     harnesses = _Harnesses()
     clock = {"now": 1_000}
     logs: list[tuple[str, str, str, dict[str, object]]] = []
-    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs, actor_host=actor_host)
     message = _message("permanent-1")
     assert inbox.receive(message, now_ms=1).acknowledged
     runtime.start()
@@ -487,13 +490,13 @@ def test_permanent_failure_mints_terminal_tombstone_without_reply_ack_or_redispa
 
 
 def test_transient_backoff_and_budget_survive_actor_and_daemon_rebuild(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _Harnesses()
     clock = {"now": 1_000}
-    runtime = _bridge(tmp_path, inbox, harnesses, clock)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     message = _message("transient-restart-1")
     assert inbox.receive(message, now_ms=1).acknowledged
     runtime.start()
@@ -537,7 +540,7 @@ def test_transient_backoff_and_budget_survive_actor_and_daemon_rebuild(
     inbox = _inbox(database)
     harnesses = _Harnesses()
     clock["now"] = 6_999
-    runtime = _bridge(tmp_path, inbox, harnesses, clock)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     runtime.start()
     try:
         assert runtime.on_timer().harness_deliveries == 0
@@ -736,7 +739,7 @@ def _fail(harnesses: _Harnesses, message: InboxMessage, code: str) -> None:
 
 
 def test_blocking_failures_are_classified_and_gate_automatic_retry(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = _Harnesses()
@@ -754,7 +757,7 @@ def test_blocking_failures_are_classified_and_gate_automatic_retry(
         harnesses,
         clock,
         blocking_failure_observer=observe,
-        blocked_actor=lambda actor: actor in blocked,
+        blocked_actor=lambda actor: actor in blocked, actor_host=actor_host,
     )
     message = _message("limited-block-1")
     assert inbox.receive(message, now_ms=1).acknowledged

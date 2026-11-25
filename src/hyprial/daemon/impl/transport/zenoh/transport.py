@@ -8,7 +8,10 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 import zenoh
 
@@ -132,12 +135,12 @@ class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
         config: ZenohConfig | None = None,
         *,
         event_sink: Callable[[str, dict[str, object]], None] | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self._config = config or ZenohConfig()
         self._event_sink = event_sink
-        self._lock_wait = _environment_float(
-            "HYPRIAL_ZENOH_LOCK_WAIT_SECONDS", DEFAULT_LOCK_WAIT_SECONDS
-        )
+        self._actor_host = actor_host
+        self._lock_wait = _environment_float("HYPRIAL_ZENOH_LOCK_WAIT_SECONDS", DEFAULT_LOCK_WAIT_SECONDS)
         self._put_slow = _environment_float(
             "HYPRIAL_ZENOH_PUT_SLOW_SECONDS", DEFAULT_PUT_SLOW_SECONDS
         )
@@ -857,6 +860,7 @@ class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
                 on_error=lambda code: logger.error(
                     "orgfs query handler failed for %s (%s)", key_expr, code
                 ),
+                actor_host=self._actor_host,
             )
             callback = zenoh.handlers.Callback(owner.admit, indirect=False)
             try:

@@ -361,17 +361,18 @@ message. One custody record holds `cursor`, ordered `messageIds`, and the existi
 Rules:
 
 1. An observation edge only marks the actor dirty. If that injection point already has
-   a `SIGNALLED` batch not yet consumed, an unread-count change and the old short
-   `SIGNALLED` resignal cadence both cause zero driver calls; neither may replace its
-   text or enqueue a second prompt.
+   a `SIGNALLED` batch not yet consumed, an unread-count change may not replace its text
+   or enqueue a different cursor. The same cursor and byte-identical text are resignalled
+   on the bounded `SIGNALLED` cadence. A successor gated behind it emits `wake.gated`
+   with the actor, blocking cursor, and elapsed wait.
 2. A due first injection calls `message.pending.batch` with neither cursor. After an
    earlier cursor is consumed, a due new-work injection calls it with `afterCursor`
    equal to the custody chain head. Transport refusal keeps `QUEUED` and retries the
    returned cursor and byte-identical text after the bounded refusal delay. Acceptance
    moves that record to `SIGNALLED` and retains the exact cursor/text.
 3. The connector's existing proof that a real model turn consumed the injected text
-   moves that cursor to `AWAITING_ACK`: Claude channel `harness_read`/turn-start
-   custody, pi's matching `message_start`, Codex native turn-start, or managed runtime
+   moves that cursor to `AWAITING_ACK`: Claude channel `harness_read` custody, pi's
+   matching `message_start`, Codex native turn-start, or managed runtime
    enqueue/turn-start. This proof may release one successor containing only the
    predecessor's newly admitted deferred members and arrivals after its capture bound.
 4. The existing long `AWAITING_ACK` recovery nudge remains and uses `cursor` replay of
@@ -382,7 +383,7 @@ Rules:
    `AWAITING_ACK` and successor `c2` is `SIGNALLED`, a due `c1` recovery timer is held:
    it makes zero driver calls until `c2` consumption is proven. Then the oldest overdue
    recovery wins before another successor. This cross-cursor gate applies to every
-   timer, dirty observation, and restart rearm, not only the current chain head.
+   dirty observation and older recovery, not to `c2`'s own bounded resignal.
 6. Per-ID reply/ack removes members from their custody record. A record closes when all
    members settle. Recovery may replay only its still-live subset with the same cursor.
 7. A connector-generation change explicitly calls `rearm_batch` once for the retained
@@ -396,10 +397,10 @@ Rules:
 This preserves truthful retry and `AWAITING_ACK` semantics: an accepted transport edge
 is not settlement, a fetched snapshot is not ack, and a failed edge is never silently
 dropped. The debounce invariant is: **while one cursor is signalled and unconsumed at
-an injection point, count changes and timers cause zero additional injections there**.
-The only pre-consumption accepted-edge replay is an explicit, new connector-generation
-rearm; refusal retry occurs before acceptance, and `AWAITING_ACK` replay occurs only
-after consumption proof.
+an injection point, count changes cannot replace or expand it, and only that same cursor
+and text may be resignalled on the bounded cadence**. A new connector-generation rearm
+may also replay that cursor; refusal retry occurs before acceptance, and `AWAITING_ACK`
+replay occurs only after consumption proof.
 
 ## 8. Current injection-path inventory
 
@@ -493,9 +494,10 @@ RED tests must prove:
    pointer;
 5. an over-budget response publishes one 0600 file below a 0700 actor state directory,
    returns no inline bodies, preserves full bytes, and enforces 24-hour/32-file cleanup;
-6. count changes and short cadence do not reinject a signalled/unconsumed batch;
-   refusal retries byte-identically, and a due `c1` `AWAITING_ACK` timer cannot inject
-   while successor `c2` is `SIGNALLED` and unconsumed;
+6. count changes do not replace a signalled/unconsumed batch; the short cadence
+   resignals only its exact cursor/text, refusal retries byte-identically, and a due
+   `c1` `AWAITING_ACK` timer cannot inject while successor `c2` is `SIGNALLED` and
+   unconsumed;
 7. behavioral fake-daemon/fake-model-edge tests prove Claude Channel, DSH, pi attach,
    pi bridge, the worker MCP `harness_read` path, direct runtime, and Codex inject or
    return the sentinel `delivery.text` byte-for-byte; the managed test reaches real

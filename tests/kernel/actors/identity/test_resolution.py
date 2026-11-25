@@ -357,7 +357,9 @@ def test_short_name_resolves_from_the_local_registry_row(tmp_path: Path) -> None
     app = application(tmp_path)
     app.handle("agent.create", {"name": "foo"})
     resolved = app._resolve_agent_alias("foo")  # type: ignore[attr-defined]
-    assert resolved == canonical_agent_uri("op", "node-1", "foo")
+    assert resolved == canonical_agent_uri(
+        "op", "node-1", app.agents.require("foo").agent_id
+    )
 
 
 def test_peer_actor_of_the_same_name_is_not_a_candidate(tmp_path: Path) -> None:
@@ -380,7 +382,9 @@ def test_peer_actor_of_the_same_name_is_not_a_candidate(tmp_path: Path) -> None:
     app.handle("agent.create", {"name": "foo"})
 
     resolved = app._resolve_agent_alias("foo")  # type: ignore[attr-defined]
-    assert resolved == canonical_agent_uri("op", "node-1", "foo")
+    assert resolved == canonical_agent_uri(
+        "op", "node-1", app.agents.require("foo").agent_id
+    )
     assert resolved != peer
 
 

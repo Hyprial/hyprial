@@ -13,10 +13,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from hyprial.kernel import DaemonRequestError, ipc_errors
+from hyprial.kernel import DaemonRequestError, SUMMARY_MAX_BYTES, ipc_errors
 
 from hyprial.daemon.impl.inbox.contracts.api import InboxMessage
-from hyprial.daemon.impl.links.ports import SUMMARY_MAX_BYTES
 
 __all__ = ["body_bytes", "body_text", "check_summary", "summary_from_text"]
 

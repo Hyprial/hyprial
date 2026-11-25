@@ -1,0 +1,1 @@
+{"schemaVersion":1,"platform":"mail","variant":"imap-smtp","conversation":{"kind":"mail-thread","id":"thread_fixture"},"sender":{"id":"sender@fixture.invalid"},"native":{"uidValidity":"1","uid":"2","messageId":"<fixture@invalid>"}}

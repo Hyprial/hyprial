@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "status": "test-only-not-a-production-wire-format",
+  "seedDescription": "synthetic bytes(range(32)); never use outside tests",
+  "purpose": "test.fixture.v1",
+  "domain": "hyprial-user-op-v1",
+  "kind": "test-fixture",
+  "canonicalUtf8": "{\"issuedAtMs\":1000000,\"org\":\"org-test\",\"owner\":\"alice@test.invalid\",\"target\":\"synthetic-target\"}",
+  "inputHex": "6879707269616c2d757365722d6f702d763100746573742d66697874757265007b2269737375656441744d73223a313030303030302c226f7267223a226f72672d74657374222c226f776e6572223a22616c69636540746573742e696e76616c6964222c22746172676574223a2273796e7468657469632d746172676574227d",
+  "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+  "signature": "kUhROQvU702tsegcbQ9568n3u/HLXzetVF3atYIGkIFyS1YjE/oJ0Yq2V2pltt6+/1K/eh28lvBr602LSycJDA=="
+}

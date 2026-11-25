@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,6 @@ from hyprial.daemon.impl.mcp import StatelessDaemonProxy, create_mcp_server
 from hyprial.kernel import canonical_agent_uri
 from hyprial.shell.impl.cli.commands.workflow.control import _WorkflowNotificationSender
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate, ScriptedLinkGate
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 
 
@@ -59,13 +59,9 @@ class _LoopbackTransport(MemoryDeliveryTransport):
 
 
 def _assemble_app(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gate: object
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[DaemonApplication, InboxService, Path]:
-    """A disposable application/state pair with one bound link gate.
-
-    No request reaches a live daemon; the caller chooses the gate so the same
-    assembly can prove both the permissive premise and a deny-all control.
-    """
+    """A disposable application/state pair; no request reaches a live daemon."""
 
     monkeypatch.setenv("HYPRIAL_SENDER_AUTH_MODE", "enforce")
     state = tmp_path / "state"
@@ -78,10 +74,7 @@ def _assemble_app(
         owner=OWNER,
     **_deep_module_daemon_dependencies())
     transport = _LoopbackTransport()
-    inbox = InboxService(
-        tmp_path / "inbox.sqlite3", transport, link_admission=app.link_admission
-    )
-    app.link_admission.bind(gate)
+    inbox = InboxService(tmp_path / "inbox.sqlite3", transport)
     transport.service = inbox
     app._inbox = inbox
     app._presence = _Presence()  # type: ignore[assignment]
@@ -103,6 +96,22 @@ def _assemble_app(
     return app, inbox, workspace
 
 
+def _address(app: DaemonApplication, name: str) -> str:
+    """A registered agent's official address: the URI its record stores."""
+
+    agent = app.agents.get(name)
+    assert agent is not None, name
+    return agent.uri
+
+
+def _actor(app: DaemonApplication) -> str:
+    return _address(app, ACTOR_NAME)
+
+
+def _reader(app: DaemonApplication) -> str:
+    return _address(app, "reader")
+
+
 def _close_app(app: DaemonApplication) -> None:
     app._harnesses = None
     try:
@@ -115,17 +124,13 @@ def _close_app(app: DaemonApplication) -> None:
 def isolated_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A disposable application/state pair; no request reaches a live daemon."""
 
-    # Explicit permissive premise: agent→agent rows flow through a slot with
-    # no real gate yet (review item 3).
-    app, inbox, _workspace = _assemble_app(
-        tmp_path, monkeypatch, PermissiveLinkGate()
-    )
+    app, inbox, _workspace = _assemble_app(tmp_path, monkeypatch)
     try:
         pending = InboxMessage(
             message_id="pending-for-worker-b",
             conversation_id="conversation-auth",
-            sender="channel:lark:test",
-            recipient=ACTOR,
+            sender="adapter:lark:test",
+            recipient=_actor(app),
             payload=b'{"message":"please respond"}',
             intent="request",
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -137,48 +142,57 @@ def isolated_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         _close_app(app)
 
 
-@pytest.fixture
-def deny_gate_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The same assembly with a gate that knows no sender (review item 1)."""
-
-    app, _inbox, _workspace = _assemble_app(
-        tmp_path, monkeypatch, ScriptedLinkGate(known=set(), default_admit=False)
-    )
-    try:
-        yield app
-    finally:
-        _close_app(app)
-
-
 @pytest.mark.parametrize(
     ("method", "params"),
     [
         (
             "message.send",
-            {"from": ACTOR, "to": [f"agent:{OWNER}:{NODE}:reader"], "message": "hi"},
+            lambda app: {"from": _actor(app), "to": [_reader(app)], "message": "hi"},
         ),
         (
             "message.reply",
-            {"from": ACTOR, "messageId": "pending-for-worker-b", "message": "done"},
+            lambda app: {"from": _actor(app), "messageId": "pending-for-worker-b", "message": "done"},
         ),
-        ("message.ack", {"from": ACTOR, "messageId": "pending-for-worker-b"}),
-        ("message.pending.list", {"from": ACTOR}),
-        ("progress.list", {"from": ACTOR}),
-        ("message.status", {"from": ACTOR}),
+        ("message.ack", lambda app: {"from": _actor(app), "messageId": "pending-for-worker-b"}),
+        ("message.pending.list", lambda app: {"from": _actor(app)}),
+        ("message.pending.batch", lambda app: {"from": _actor(app)}),
+        ("progress.list", lambda app: {"from": _actor(app)}),
+        ("message.status", lambda app: {"from": _actor(app)}),
+    ],
+    ids=[
+        f"{method}-params{index}"
+        for index, method in enumerate((
+            "message.send", "message.reply", "message.ack",
+            "message.pending.list", "message.pending.batch", "progress.list",
+            "message.status",
+        ))
     ],
 )
 def test_registered_agent_claim_without_session_is_rejected(
     isolated_app: DaemonApplication,
     method: str,
-    params: dict[str, object],
+    params: Callable[[DaemonApplication], dict[str, object]],
 ) -> None:
     with pytest.raises(DaemonRequestError) as refused:
-        isolated_app.handle(method, params, _trusted_message_origin="ipc")
+        isolated_app.handle(method, params(isolated_app), _trusted_message_origin="ipc")
 
     assert refused.value.code == "SENDER_NOT_AUTHENTICATED"
-    assert ACTOR in str(refused.value)
+    assert _actor(isolated_app) in str(refused.value)
     assert "no matching session was presented" in str(refused.value)
     assert "--on-behalf-of" in str(refused.value)
+
+
+def test_pending_batch_user_params_cannot_forge_trusted_origin(
+    isolated_app: DaemonApplication,
+) -> None:
+    with pytest.raises(DaemonRequestError) as refused:
+        isolated_app.handle(
+            "message.pending.batch",
+            {"from": ACTOR, "_trusted_message_origin": "daemon"},
+            _trusted_message_origin="ipc",
+        )
+
+    assert refused.value.code == "INVALID_ARGUMENT"
 
 
 def test_every_message_path_refreshes_activity_as_on_dev(
@@ -197,8 +211,8 @@ def test_every_message_path_refreshes_activity_as_on_dev(
         "message.send",
         {
             "from": f"user:{OWNER}",
-            "onBehalfOf": ACTOR,
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
+            "onBehalfOf": _actor(isolated_app),
+            "to": [_reader(isolated_app)],
             "summary": "operator relay",
             "message": "operator relay",
         },
@@ -207,16 +221,16 @@ def test_every_message_path_refreshes_activity_as_on_dev(
     isolated_app.handle(
         "message.send",
         {
-            "from": ACTOR,
+            "from": _actor(isolated_app),
             "sessionRef": SESSION,
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
+            "to": [_reader(isolated_app)],
             "summary": "session send",
             "message": "session send",
         },
         _trusted_message_origin="ipc",
     )
 
-    assert refreshed == [ACTOR, ACTOR]
+    assert refreshed == [_actor(isolated_app), _actor(isolated_app)]
 
 
 def test_operator_send_is_never_delivered_as_the_claimed_actor(
@@ -226,8 +240,8 @@ def test_operator_send_is_never_delivered_as_the_claimed_actor(
         "message.send",
         {
             "from": f"user:{OWNER}",
-            "onBehalfOf": ACTOR,
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
+            "onBehalfOf": _actor(isolated_app),
+            "to": [_reader(isolated_app)],
             "summary": "operator relay",
             "message": "operator relay",
         },
@@ -238,38 +252,39 @@ def test_operator_send_is_never_delivered_as_the_claimed_actor(
     pending = isolated_app.handle(
         "message.pending.list",
         {
-            "from": f"agent:{OWNER}:{NODE}:reader",
+            "from": _reader(isolated_app),
             "sessionRef": "session-reader",
         },
     )
     row = next(item for item in pending["messages"] if item["messageId"] == message_id)
     assert row["from"] == f"user:{OWNER}"
-    assert row["origin"] == {"via": "operator", "onBehalfOf": ACTOR}
+    assert row["origin"] == {"via": "operator", "onBehalfOf": _actor(isolated_app)}
 
     query = isolated_app.handle(
-        "message.query", {"from": f"agent:{OWNER}:{NODE}:reader", "view": "inbox"}
+        "message.query", {"from": _reader(isolated_app), "view": "inbox"}
     )
     queried = next(item for item in query["entries"] if item["messageId"] == message_id)
     assert queried["origin"] == row["origin"]
 
 
-def test_verified_lark_adapter_origin_keeps_the_adapter_path(
+def test_lark_adapter_origin_keeps_the_adapter_path(
     isolated_app: DaemonApplication,
 ) -> None:
     result = isolated_app.handle(
         "message.send",
         {
-            "from": "channel:lark:test",
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
+            "from": "adapter:lark:test",
+            "to": [_reader(isolated_app)],
             "summary": "adapter inbound",
             "message": "adapter inbound",
             "providerMetadata": {
                 "provider": "lark",
                 "chatType": "p2p",
+                "chatKind": "dm",
                 "sender": {
-                    "standing": "verified",
+                    "kind": "user",
+                    "platformId": "ou_operator",
                     "displayName": "Operator",
-                    "owner": OWNER,
                 },
             },
         },
@@ -278,7 +293,7 @@ def test_verified_lark_adapter_origin_keeps_the_adapter_path(
     pending = isolated_app.handle(
         "message.pending.list",
         {
-            "from": f"agent:{OWNER}:{NODE}:reader",
+            "from": _reader(isolated_app),
             "sessionRef": "session-reader",
         },
     )
@@ -286,7 +301,10 @@ def test_verified_lark_adapter_origin_keeps_the_adapter_path(
         item for item in pending["messages"] if item["messageId"] == result["messageId"]
     )
     assert row["origin"]["via"] == "adapter"
-    assert row["origin"]["sender"]["owner"] == OWNER
+    assert row["origin"]["chatKind"] == "dm"
+    assert row["origin"]["sender"] == {
+        "kind": "user", "platformId": "ou_operator", "displayName": "Operator",
+    }
 
 
 class _Connection:
@@ -323,7 +341,7 @@ async def test_mcp_harness_send_carries_the_registered_session(
 ) -> None:
     server = create_mcp_server(
         StatelessDaemonProxy(_ConnectionFactory(isolated_app)),
-        actor=ACTOR,
+        actor=_actor(isolated_app),
         session_ref=SESSION,
     )
     async with (
@@ -333,7 +351,7 @@ async def test_mcp_harness_send_carries_the_registered_session(
         await client.initialize()
         result = await client.call_tool(
             "harness_send",
-            {"to": f"agent:{OWNER}:{NODE}:reader", "summary": "from MCP", "message": "from MCP"},
+            {"to": _reader(isolated_app), "summary": "from MCP", "message": "from MCP"},
         )
 
     assert result.is_error is not True
@@ -343,7 +361,7 @@ def test_worker_workflow_notification_stays_from_the_worker_session(
     isolated_app: DaemonApplication,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("HYPRIAL_WORKER_ACTOR", ACTOR)
+    monkeypatch.setenv("HYPRIAL_WORKER_ACTOR", _actor(isolated_app))
     monkeypatch.setenv("HYPRIAL_WORKER_SESSION_REF", SESSION)
     monkeypatch.setattr(
         _cli_support,
@@ -354,9 +372,9 @@ def test_worker_workflow_notification_stays_from_the_worker_session(
     )
 
     message_id = _WorkflowNotificationSender().send(
-        recipient=f"agent:{OWNER}:{NODE}:reader",
+        recipient=_reader(isolated_app),
         text="workflow complete notification",
-        sender=ACTOR,
+        sender=_actor(isolated_app),
         conversation_id="workflow-test",
         idempotency_key="workflow-notification-test",
         summary="workflow complete notification",
@@ -365,12 +383,12 @@ def test_worker_workflow_notification_stays_from_the_worker_session(
     pending = isolated_app.handle(
         "message.pending.list",
         {
-            "from": f"agent:{OWNER}:{NODE}:reader",
+            "from": _reader(isolated_app),
             "sessionRef": "session-reader",
         },
     )
     row = next(item for item in pending["messages"] if item["messageId"] == message_id)
-    assert row["from"] == ACTOR
+    assert row["from"] == _actor(isolated_app)
     assert row["origin"] == {"via": "session"}
 
 
@@ -387,8 +405,8 @@ def test_real_ipc_dispatch_rejects_and_counts_the_unauthenticated_claim(
             "id": "ipc-auth-red",
             "method": "message.send",
             "params": {
-                "from": ACTOR,
-                "to": [f"agent:{OWNER}:{NODE}:reader"],
+                "from": _actor(isolated_app),
+                "to": [_reader(isolated_app)],
                 "message": "forged",
             },
         }
@@ -400,7 +418,7 @@ def test_real_ipc_dispatch_rejects_and_counts_the_unauthenticated_claim(
     event, fields = records[-1]
     assert event == "send.sender_unauthenticated"
     assert fields["method"] == "message.send"
-    assert fields["claimedActor"] == ACTOR
+    assert fields["claimedActor"] == _actor(isolated_app)
     assert fields["count"] == 1
 
 
@@ -432,8 +450,8 @@ def test_observe_rollout_mode_logs_but_does_not_reject(
                 "id": "ipc-auth-observe",
                 "method": "message.send",
                 "params": {
-                    "from": ACTOR,
-                    "to": [f"agent:{OWNER}:{NODE}:reader"],
+                    "from": _actor(isolated_app),
+                    "to": [_reader(isolated_app)],
                     "summary": "observed",
                     "message": "observed",
                 },
@@ -459,8 +477,8 @@ def test_observe_preserves_sessionless_dev_semantics_with_one_log_per_call(
             InboxMessage(
                 message_id=message_id,
                 conversation_id="conversation-observe",
-                sender=f"agent:{OWNER}:{NODE}:reader",
-                recipient=ACTOR,
+                sender=_reader(isolated_app),
+                recipient=_actor(isolated_app),
                 payload=b'{"message":"observe compatibility"}',
                 intent="request",
                 lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -494,8 +512,8 @@ def test_observe_preserves_sessionless_dev_semantics_with_one_log_per_call(
     sent = ipc(
         "message.send",
         {
-            "from": ACTOR,
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
+            "from": _actor(isolated_app),
+            "to": [_reader(isolated_app)],
             "summary": "observe send",
             "message": "observe send",
         },
@@ -503,7 +521,7 @@ def test_observe_preserves_sessionless_dev_semantics_with_one_log_per_call(
     )
     assert sent["ok"] is True
 
-    pending = ipc("message.pending.list", {"from": ACTOR}, "observe-pending")
+    pending = ipc("message.pending.list", {"from": _actor(isolated_app)}, "observe-pending")
     assert {item["messageId"] for item in pending["messages"]} >= {
         "pending-for-worker-b",
         "observe-reply",
@@ -513,7 +531,7 @@ def test_observe_preserves_sessionless_dev_semantics_with_one_log_per_call(
     replied = ipc(
         "message.reply",
         {
-            "from": ACTOR,
+            "from": _actor(isolated_app),
             "messageId": "observe-reply",
             "summary": "observe reply",
             "message": "observe reply",
@@ -525,7 +543,7 @@ def test_observe_preserves_sessionless_dev_semantics_with_one_log_per_call(
 
     acknowledged = ipc(
         "message.ack",
-        {"from": ACTOR, "messageId": "observe-ack"},
+        {"from": _actor(isolated_app), "messageId": "observe-ack"},
         "observe-ack-request",
     )
     assert acknowledged["acknowledged"] is True
@@ -568,7 +586,7 @@ def test_registered_agent_claim_with_its_session_can_send(
         {
             "from": ACTOR_NAME,
             "sessionRef": SESSION,
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
+            "to": [_reader(isolated_app)],
             "summary": "authenticated",
             "message": "authenticated",
         },
@@ -576,7 +594,7 @@ def test_registered_agent_claim_with_its_session_can_send(
     )
 
     assert result["ok"] is True
-    assert result["actingPrincipal"] == ACTOR
+    assert result["actingPrincipal"] == _actor(isolated_app)
 
 
 def test_message_rejects_registered_session_after_liveness_release(
@@ -603,8 +621,8 @@ def test_message_rejects_registered_session_after_liveness_release(
 def test_message_keeps_managed_worker_session_authority(
     isolated_app: DaemonApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    managed = f"agent:{OWNER}:{NODE}:managed"
     isolated_app.handle("agent.create", {"name": "managed"})
+    managed = _address(isolated_app, "managed")
     monkeypatch.setattr(
         isolated_app,
         "_worker_session_ref",
@@ -616,7 +634,7 @@ def test_message_keeps_managed_worker_session_authority(
         {
             "from": managed,
             "sessionRef": "managed-session",
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
+            "to": [_reader(isolated_app)],
             "summary": "managed worker",
             "message": "managed worker",
         },
@@ -660,10 +678,6 @@ def test_another_actors_session_cannot_authenticate_the_claim(
     assert SESSION not in str(refused.value)
 
 
-# README ruling 63 / rework 3: the reserved mechanism actor names must not be
-# usable as a session identity either.  ``link_governed`` exempts them as
-# sender or recipient on ANY node, so a session registered under one would
-# send with the exemption and bypass every link constraint.
 RESERVED_SESSION_ACTOR_INPUTS = (
     "_turn-hooks",
     f"agent:{OWNER}:{NODE}:_turn-hooks",
@@ -675,6 +689,7 @@ NEAR_RESERVED_SESSION_ACTOR_INPUTS = (
     "turn-hooks",
     "_turn-hooks2",
 )
+NEAR_RESERVED_UNREGISTRABLE_ACTOR_INPUTS = frozenset({"_turn-hooks2"})
 
 
 def _canonical_session_actor(actor: str) -> str:
@@ -694,9 +709,9 @@ def test_reserved_actor_names_cannot_register_a_session(
 ) -> None:
     """The registration guard must cover the session entry point too.
 
-    ``session.register`` needs no registry row, so the previous AgentRegistry
-    guard alone let ``_turn-hooks`` and any node's ``dispatch-coordinator``
-    establish a session and send with the link exemption.
+    ``session.register`` needs no registry row, so the AgentRegistry guard
+    alone cannot cover this entry point.  The session boundary rejects
+    daemon-owned actor names before an interactive session is established.
     """
 
     workspace = isolated_app.state_dir.parent / "workspace"
@@ -719,7 +734,6 @@ def test_reserved_actor_names_cannot_register_a_session(
         isolated_app
     )
 
-
 @pytest.mark.parametrize("actor", NEAR_RESERVED_SESSION_ACTOR_INPUTS)
 def test_near_reserved_actor_names_still_register_a_session(
     isolated_app: DaemonApplication, actor: str
@@ -739,68 +753,18 @@ def test_near_reserved_actor_names_still_register_a_session(
         },
     )
 
-    assert result["actor"] == _canonical_session_actor(actor)
-    assert _canonical_session_actor(actor) in _registered_session_actors(
+    agent = isolated_app.agents.get(actor)
+    if actor in NEAR_RESERVED_UNREGISTRABLE_ACTOR_INPUTS:
+        assert agent is None
+        assert result["actor"] == canonical_agent_uri(OWNER, NODE, actor)
+        assert result["actor"] in _registered_session_actors(isolated_app)
+        return
+    assert agent is not None
+    assert agent.agent_id is not None
+    address = canonical_agent_uri(OWNER, NODE, agent.agent_id)
+    assert agent.uri == address
+    assert result["actor"] == address
+    assert _registered_session_actors(isolated_app) >= {address}
+    assert _canonical_session_actor(actor) not in _registered_session_actors(
         isolated_app
     )
-
-
-@pytest.mark.parametrize(
-    "actor",
-    [
-        "_turn-hooks",
-        "agent:x:y:_turn-hooks",
-        "agent:x:y:dispatch-coordinator",
-    ],
-)
-def test_reserved_actor_names_cannot_send_with_a_session(
-    deny_gate_app: DaemonApplication, actor: str
-) -> None:
-    """A pre-existing session must not let the reserved name past the guard.
-
-    The guard runs before the session fence, so a stale or replayed
-    ``sessionRef`` cannot resurrect the identity.  The deny-all gate proves the
-    message never even reached an admission decision.
-    """
-
-    with pytest.raises(DaemonRequestError) as refused:
-        deny_gate_app.handle(
-            "message.send",
-            {
-                "from": actor,
-                "sessionRef": "legacy-reserved-session",
-                "to": [f"agent:{OWNER}:{NODE}:reader"],
-                "message": "bypass",
-            },
-            _trusted_message_origin="ipc",
-        )
-
-    assert refused.value.code == "INVALID_AGENT_NAME"
-    gate = deny_gate_app.link_admission.gate
-    assert isinstance(gate, ScriptedLinkGate)
-    assert gate.sender_known_calls() == []
-    assert deny_gate_app._inbox.pending_messages(
-        f"agent:{OWNER}:{NODE}:reader"
-    ) == ()
-
-
-def test_deny_gate_still_governs_an_ordinary_agent_session(
-    deny_gate_app: DaemonApplication,
-) -> None:
-    """Control: an ordinary agent still reaches ``sender_known`` and is refused."""
-
-    deny_gate_app.handle(
-        "message.send",
-        {
-            "from": ACTOR,
-            "sessionRef": SESSION,
-            "to": [f"agent:{OWNER}:{NODE}:reader"],
-            "summary": "ordinary",
-            "message": "ordinary",
-        },
-        _trusted_message_origin="ipc",
-    )
-
-    gate = deny_gate_app.link_admission.gate
-    assert isinstance(gate, ScriptedLinkGate)
-    assert gate.sender_known_calls() == [(f"agent:{OWNER}:{NODE}:reader", ACTOR)]

@@ -10,7 +10,9 @@ from hyprial.daemon.impl.harnesses.runtime.ports import HarnessReadyObserved, Wa
 from hyprial.daemon.impl.processes.supervisor import ManagedHarnessRuntime
 
 from ..support import (
+    WAIT_TIMEOUT_SECONDS,
     _Process,
+    _envelope,
     _spec,
     _wait_for,
 )
@@ -77,7 +79,7 @@ def test_dispatch_completion_lost_with_generation_is_replayed_without_reenqueue(
     projection._lock.acquire()
     try:
         caller = threading.Thread(
-            target=lambda: outcomes.append(supervisor.dispatch("worker", delivery)),
+            target=lambda: outcomes.append(supervisor.dispatch(_envelope(delivery))),
             daemon=True,
         )
         caller.start()
@@ -145,7 +147,7 @@ def test_held_completion_beyond_old_deadline_keeps_single_claim_and_custody() ->
     caller = threading.Thread(
         target=lambda: outcomes.append(
             supervisor.dispatch(
-                "worker", HarnessDelivery("held", "c", "a", "worker", "hello")
+                _envelope(HarnessDelivery("held", "c", "a", "worker", "hello"))
             )
         ),
         daemon=True,
@@ -153,7 +155,7 @@ def test_held_completion_beyond_old_deadline_keeps_single_claim_and_custody() ->
     actor.projection._lock.acquire()
     try:
         caller.start()
-        assert completion_admitted.wait(1.0)
+        assert completion_admitted.wait(WAIT_TIMEOUT_SECONDS)
         time.sleep(2.1)
         assert admissions == 1
         assert launcher.process.enqueues == 1
@@ -162,7 +164,7 @@ def test_held_completion_beyond_old_deadline_keeps_single_claim_and_custody() ->
     finally:
         actor.projection._lock.release()
 
-    caller.join(1.0)
+    caller.join(WAIT_TIMEOUT_SECONDS)
     assert outcomes == [True]
     assert admissions == 1
     assert launcher.process.enqueues == 1

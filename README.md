@@ -98,7 +98,8 @@ The installer downloads a prebuilt wheel, checks its SHA-256 against the publish
 `SHA256SUMS`, and installs it with [uv](https://docs.astral.sh/uv/). If uv is missing, it installs
 uv first into `~/.local/bin` without editing your shell profile. When you see
 `Installed hyprial <version>`, open a new terminal so that `hyprial` is on your `PATH`
-(run `uv tool update-shell` if it is not).
+(run `uv tool update-shell` if it is not). The installer ends by printing
+`Next: run "hyprial init", then "hyprial login".`; it never runs either itself.
 
 ### Release tracks
 
@@ -139,6 +140,10 @@ The second command reinstalls with the dependency pins from that commit's `uv.lo
 This path builds from source, so it also needs Node.js 24+ with npm (for the web GUI) and
 Go 1.27 (for the Tailcat sidecar). The one-line installer needs neither.
 
+A source install builds the wheel on your machine. Once a commit carries the native actor engine
+(`crates/`), that build also needs Rust 1.93.1 (`rustup toolchain install 1.93.1`) besides Go
+and Node.js; see the toolchain table under Contributing.
+
 </details>
 
 <details>
@@ -156,10 +161,13 @@ remove it and archive its state directory before a fresh install. The steps are 
 
 ## ⚡ Quickstart
 
-1. **Sign in and prepare this machine.** A browser opens for login; then the daemon starts.
+1. **Prepare this machine, then sign in.** `init` creates the home and starts the daemon; it never
+   signs in. `login` shows a verification URL and code and opens a browser; the daemon finishes the
+   sign-in on its own.
 
    ```bash
    hyprial init
+   hyprial login
    ```
 
    Add `--service` to register the daemon as a user service (launchd on macOS, systemd on
@@ -172,17 +180,25 @@ remove it and archive its state directory before a fresh install. The steps are 
    hyprial doctor
    ```
 
-3. **Create your personal assistant, Squire, on a harness you already use** — for example Codex
-   (run `codex login` first):
+3. **Create your first agent.** Nothing is created for you on first run: choose the
+   name, provider, model and harness yourself.
 
    ```bash
-   hyprial squire setup --provider openai --model gpt-6.1-sol --preferred-harness codex
-   hyprial agent provider login codex --actor squire
-   hyprial agent start codex --name squire --provider openai --model gpt-6.1-sol --headless
+   hyprial agent create --name <name> --provider <provider> --model <model> --preferred-harness <harness>
+   hyprial agent start <harness> --name <name> --headless
    hyprial agent list
    ```
 
-   `squire` shows `online` when it is ready.
+   `agent create --json` prints the agent's canonical
+   `agent:<owner>:<machine>:<actor>` URI, which the Lark pin below needs.
+
+Connecting a Lark App is a separate explicit sequence — add the adapter, authorize the
+tenant scopes, observe the inbound chat, add the outbound route, pin the adapter to the
+agent's canonical URI, then verify a real round trip. The
+[quickstart section](docs/guides/onboarding-checklist.md)
+lists the commands and the steps that still need a person; the
+[Lark App onboarding guide](docs/guides/lark-app-onboarding.md) covers App creation and
+permissions.
 
 The [full quickstart](https://www.hyprial.com/quickstart/) also covers the Pi + DeepSeek route,
 connecting Lark, and sending your first message. To join an existing network, follow the
@@ -228,8 +244,8 @@ in [ROADMAP.md](ROADMAP.md).
 Work in progress includes:
 
 - 🖥️ **Web GUI** — `hyprial gui` serves a bundled, checksum-verified build of the shared web GUI
-  in [`gui/`](gui/). It is a preview: most screens still return `BACKEND_NOT_WIRED` while the
-  settings, chat and first-run screens are being wired to the daemon's request API.
+  in [`gui/`](gui/). It is a preview: it talks to the daemon through the same-origin session host (`hyprial gui` starts the daemon if it is not running and leaves it running when the GUI closes), while
+  the settings, chat and first-run screens are still being wired to the daemon's request API.
 - 🪟 **Windows** — the installer works; native daemon start-up and services are being fixed.
 - 💬 **More channels** — Lark is the only adapter today; more IM adapters are planned.
 - 🧬 **Agent model** — cells, threads and conversations are being designed to replace the
@@ -266,6 +282,7 @@ through a coding agent.
 | Python + [uv](https://docs.astral.sh/uv/) | 3.12+ | Everything |
 | Node.js + npm | 24+ / 11+ | The web GUI and wheel builds |
 | Go | 1.27 | The Tailcat sidecar |
+| Rust (rustup) | 1.93.1 | The native actor engine (`crates/`) in wheel and source installs |
 
 ## 🔒 Security
 

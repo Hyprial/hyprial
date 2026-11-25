@@ -9,10 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime
 from hyprial.kernel import ActorSpec, AdmissionResult
-from hyprial.kernel import EffectLane, EffectRequest, EffectCompleted
-from hyprial.kernel import GenerationScheduler
+from hyprial.kernel import EffectRequest, EffectCompleted
 from hyprial.daemon.impl.autoupdate  import InProcessAutoUpdateScheduler, next_scheduled_run, read_last_run, updates
 
 
@@ -54,7 +52,9 @@ class UpdateCompleted:
 
 
 class AutoUpdateAuthority:
-    def __init__(self, **options):
+    def __init__(self, *, actor_host=None, scheduler=None, **options):
+        if actor_host is None or scheduler is None:
+            raise ValueError("auto-update requires an actor host and scheduler")
         self._policy = InProcessAutoUpdateScheduler(**options)
         # Immutable composition fact; policy file reads remain on the effect
         # worker even when a caller asks for a fresh observation.
@@ -80,28 +80,27 @@ class AutoUpdateAuthority:
         self._policy_operation = None
         self._queued_trigger = None
         self.stop_incomplete_stage: str | None = None
-        self._runtime = ActorRuntime()
-        self._scheduler = GenerationScheduler()
-        handle = None
+        self._scheduler = scheduler
+        cell = None
         try:
-            handle = self._runtime.start(
+            cell = actor_host.spawn(
                 ActorSpec(
                     name="auto-update",
                     handler_factory=lambda: self._receive,
                     mailbox_capacity=8,
                 )
             )
-            self._handle = handle
-            self._effects = EffectLane(
+            self._effects = actor_host.effect_lane(
                 name="hyprial-autoupdate",
                 execute=self._execute,
-                complete=lambda event: self._runtime.tell(self._handle, event),
+                complete=cell.tell,
                 capacity=2,
             )
+            self._cell = cell
         except BaseException as error:
-            if handle is not None:
+            if cell is not None:
                 try:
-                    if not self._runtime.stop(handle, 5.0):
+                    if not cell.stop(5.0):
                         error.add_note(
                             "auto-update actor did not stop during construction rollback"
                         )
@@ -110,16 +109,6 @@ class AutoUpdateAuthority:
                         "auto-update actor rollback raised "
                         f"{type(cleanup_error).__name__}: {cleanup_error}"
                     )
-            try:
-                if not self._scheduler.shutdown(5.0):
-                    error.add_note(
-                        "auto-update scheduler did not drain during construction rollback"
-                    )
-            except BaseException as cleanup_error:
-                error.add_note(
-                    "auto-update scheduler rollback raised "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
             raise
 
     def start(self):
@@ -127,15 +116,15 @@ class AutoUpdateAuthority:
             if self._started or self._closed:
                 return
             self._started = True
-        self._runtime.tell(self._handle, CalendarObserved(self._policy.now()))
+        self._cell.tell(CalendarObserved(self._policy.now()))
 
     def trigger(self, reason="manual"):
         with self._guard:
             if self._closed or self._reserved:
                 return False
             self._reserved = True
-            admission = self._runtime.tell(
-                self._handle, TriggerUpdate(reason, self._policy.now())
+            admission = self._cell.tell(
+                TriggerUpdate(reason, self._policy.now())
             )
             if admission is not AdmissionResult.ACCEPTED:
                 self._reserved = False
@@ -150,7 +139,7 @@ class AutoUpdateAuthority:
             if self._closed or len(self._policy_reads) >= self._policy_read_capacity:
                 raise RuntimeError("auto-update policy read is closed or overloaded")
             self._policy_reads[operation_id] = reply
-        admission = self._runtime.tell(self._handle, ObservePolicy(operation_id))
+        admission = self._cell.tell(ObservePolicy(operation_id))
         if admission is not AdmissionResult.ACCEPTED:
             with self._guard:
                 self._policy_reads.pop(operation_id, None)
@@ -331,8 +320,8 @@ class AutoUpdateAuthority:
                 "calendar",
                 1,
                 self._policy.calendar_recheck_seconds,
-                lambda generation: self._runtime.tell(
-                    self._handle, CalendarObserved(self._policy.now())
+                lambda generation: self._cell.tell(
+                    CalendarObserved(self._policy.now())
                 ),
             )
 
@@ -362,11 +351,9 @@ class AutoUpdateAuthority:
             if not self._started:
                 self._queued_trigger = None
                 self._reserved = False
-        if not self._scheduler.shutdown(max(0.0, deadline - time.monotonic())):
-            self.stop_incomplete_stage = "scheduler"
-            return False
+        self._scheduler.cancel("calendar")
         while True:
-            snapshot = self._runtime.snapshot(self._handle)
+            snapshot = self._cell.snapshot()
             with self._guard:
                 active = self._reserved or self._refreshing
             if not active and snapshot.queued == snapshot.in_flight == 0:
@@ -378,9 +365,7 @@ class AutoUpdateAuthority:
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             self.stop_incomplete_stage = "effects"
             return False
-        if not self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
-        ):
+        if not self._cell.stop(max(0.0, deadline - time.monotonic())):
             self.stop_incomplete_stage = "runtime"
             return False
         return True

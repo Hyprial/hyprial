@@ -283,10 +283,12 @@ class StoreJournal:
                 author=author,
                 space_owner=self._owner(),
                 meta_baseline=self._docs["meta"],
-                enforce_binding_publish_time=True,
+                local=True,
             ):
                 raise StoreError(
-                    "not-a-member", "device row belongs to another member"
+                    "not-a-member",
+                    "protected row is not writable here: another member's device row"
+                    " or the retired receivers document",
                 )
             version = working.get_state()
             is_meta_genesis = (
@@ -552,10 +554,12 @@ class StoreJournal:
                     author=author,
                     space_owner=owner,
                     meta_baseline=self._docs["meta"],
-                    enforce_binding_publish_time=True,
+                    local=True,
                 ):
                     raise StoreError(
-                        "not-a-member", "device row belongs to another member"
+                        "not-a-member",
+                        "protected row is not writable here: another member's device row"
+                        " or the retired receivers document",
                     )
                 version = working.get_state()
                 envelope = self._make_envelope(

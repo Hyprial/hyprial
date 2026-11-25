@@ -85,10 +85,27 @@ def _lane(bus: HookBus, name: str):  # type: ignore[no-untyped-def]
     return next(lane for lane in bus.projection() if lane.name == name)
 
 
-def test_wedged_observer_cannot_delay_publish_and_isolates_its_lane() -> None:
+def test_unbound_bus_refuses_registration() -> None:
+    bus = HookBus()
+    with pytest.raises(RuntimeError, match="host"):
+        bus.register("unbound", _Recorder(), ["turn.completed"])
+    assert bus.close()
+
+
+def test_bus_close_leaves_borrowed_host_usable(actor_host) -> None:
+    from hyprial.kernel import ActorSpec
+
+    bus = HookBus(actor_host=actor_host)
+    bus.register("borrowed", _Recorder(), ["turn.completed"])
+    assert bus.close()
+    cell = actor_host.spawn(ActorSpec(name="after-hooks", handler_factory=lambda: lambda _: None))
+    assert cell.stop()
+
+
+def test_wedged_observer_cannot_delay_publish_and_isolates_its_lane(actor_host) -> None:
     """§9 #1 and #8: a wedged observer blocks neither publish nor other lanes."""
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     wedged, fast = _Wedged(), _Recorder()
     try:
         bus.register("wedged", wedged, ["turn.completed"], queue=4)
@@ -112,10 +129,10 @@ def test_wedged_observer_cannot_delay_publish_and_isolates_its_lane() -> None:
         assert bus.close(5.0)
 
 
-def test_raising_observer_is_counted_and_its_lane_keeps_delivering() -> None:
+def test_raising_observer_is_counted_and_its_lane_keeps_delivering(actor_host) -> None:
     """§9 #1: a raising observer fails only its own calls."""
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     raising = _Raising()
     try:
         bus.register("raising", raising, ["turn.failed"])
@@ -129,7 +146,7 @@ def test_raising_observer_is_counted_and_its_lane_keeps_delivering() -> None:
         assert bus.close(5.0)
 
 
-def test_loss_is_counted_reconciled_and_logged_on_an_interval() -> None:
+def test_loss_is_counted_reconciled_and_logged_on_an_interval(actor_host) -> None:
     """§9 #3: every published event is accounted for; drops log once per interval."""
 
     logs: list[tuple[str, str, str, dict]] = []
@@ -139,6 +156,7 @@ def test_loss_is_counted_reconciled_and_logged_on_an_interval() -> None:
             (level, component, name, fields)
         ),
         monotonic=lambda: clock[0],
+        actor_host=actor_host,
     )
     wedged = _Wedged()
     published = 200
@@ -184,7 +202,7 @@ def test_loss_is_counted_reconciled_and_logged_on_an_interval() -> None:
     assert bus.close(5.0)
 
 
-def test_events_reach_an_observer_in_publish_order() -> None:
+def test_events_reach_an_observer_in_publish_order(actor_host) -> None:
     """§9 #5: per-lane FIFO by source seq.
 
     Only per-source order is promised.  There is deliberately no global order
@@ -199,7 +217,7 @@ def test_events_reach_an_observer_in_publish_order() -> None:
                 time.sleep(0.002)
             super().observe(event)
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     recorder = _Uneven()
     try:
         bus.register("ordered", recorder, ["turn.started"], queue=512)
@@ -211,10 +229,10 @@ def test_events_reach_an_observer_in_publish_order() -> None:
         assert bus.close(5.0)
 
 
-def test_default_off_does_no_work() -> None:
+def test_default_off_does_no_work(actor_host) -> None:
     """§9 #9: no registration, or no subscriber for a name, means no work."""
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     assert bus.projection() == ()
     assert bus.publish(_event("turn.completed")) == 0
 
@@ -225,8 +243,8 @@ def test_default_off_does_no_work() -> None:
     assert bus.close(5.0)
 
 
-def test_bus_rejects_intercepts_unknown_events_and_use_after_close() -> None:
-    bus = HookBus()
+def test_bus_rejects_intercepts_unknown_events_and_use_after_close(actor_host) -> None:
+    bus = HookBus(actor_host=actor_host)
     intercept = HookEvent(
         event="delivery.prepared", kind="intercept", emitted_at_ms=1, seq=0,
         source="test",
@@ -244,7 +262,7 @@ def test_bus_rejects_intercepts_unknown_events_and_use_after_close() -> None:
     assert bus.publish(_event()) == 0
 
 
-def test_close_never_strands_accepted_events_silently() -> None:
+def test_close_never_strands_accepted_events_silently(actor_host) -> None:
     """Accepted events are either observed or visibly stranded, never dropped.
 
     A wedged observer makes close() return False, and the stranded events stay
@@ -252,7 +270,7 @@ def test_close_never_strands_accepted_events_silently() -> None:
     second close() finishes and every accepted event has been observed.
     """
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     wedged = _Wedged()
     bus.register("closing", wedged, ["actor.up"], queue=8)
     bus.publish(_event("actor.up", 0))
@@ -275,7 +293,7 @@ def test_close_never_strands_accepted_events_silently() -> None:
     assert wedged.seen == list(range(6))
 
 
-def test_settlement_happens_on_the_worker_that_ran_observe(monkeypatch) -> None:
+def test_settlement_happens_on_the_worker_that_ran_observe(actor_host, monkeypatch) -> None:
     """Behavioural guard for the drained-runtime strand (bcd78661).
 
     Settlement must happen on the same thread that ran ``observe()``.  If it
@@ -303,7 +321,7 @@ def test_settlement_happens_on_the_worker_that_ran_observe(monkeypatch) -> None:
             self.observed_on.append(threading.get_ident())
 
     recorder = _ThreadRecorder()
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     try:
         bus.register("threads", recorder, ["turn.completed"])
         for seq in range(10):
@@ -323,11 +341,11 @@ def test_bus_settlement_does_not_depend_on_any_actor() -> None:
     There, each lane's completions were settled by an owner actor.  Draining
     that actor's runtime stranded accepted events uncounted, and close() could
     never finish.  The bus now settles on its own effect worker, so no
-    ActorRuntime/ActorSpec may enter the hooks package.
+    ActorSpec/ActorHandle may enter the hooks package.
     """
 
     package = Path(__file__).resolve().parents[3] / 'src/hyprial' / "hooks"
-    forbidden = {"ActorRuntime", "ActorSpec", "ActorHandle"}
+    forbidden = {"ActorSpec", "ActorHandle"}
     for source in package.glob("*.py"):
         tree = ast.parse(source.read_text())
         names = {
@@ -480,8 +498,8 @@ def test_hooks_config_rejects_invalid_registrations(value: object, message: str)
         HooksConfig.from_json(value)
 
 
-def test_publish_after_close_reaches_no_lane() -> None:
-    bus = HookBus()
+def test_publish_after_close_reaches_no_lane(actor_host) -> None:
+    bus = HookBus(actor_host=actor_host)
     bus.register("gone", _Recorder(), ["graph.closed"])
     assert bus.close(5.0)
     assert bus.publish(_event("graph.closed")) == 0
@@ -556,10 +574,10 @@ def test_worker_cleanup_complete_payload_is_graph_scoped() -> None:
     }
 
 
-def test_hook_event_publisher_stamps_one_source_fifo() -> None:
+def test_hook_event_publisher_stamps_one_source_fifo(actor_host) -> None:
     from hyprial.kernel import HookEventPublisher
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     recorder = _Recorder()
     try:
         bus.register("graph-facts", recorder, ["graph.closed"])

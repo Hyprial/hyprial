@@ -17,6 +17,7 @@ from hyprial.kernel import HarnessLaunchSpec
 from hyprial.shell.impl.daemon_wiring import (
     daemon_dependencies as _deep_module_daemon_dependencies,
 )
+from tests.support.runtime.environment import UNIT_USER_ID
 
 
 class StubPiProcess:
@@ -70,7 +71,7 @@ def new_application(root: Path) -> DaemonApplication:
         state_dir=state,
         socket_path=state / "daemon.sock",
         node_id="node-1",
-        owner="owner",
+        owner="owner", user_id=UNIT_USER_ID,
         hyprial_home=home,
         zenoh_listen=(listen,),
         zenoh_connect=(),

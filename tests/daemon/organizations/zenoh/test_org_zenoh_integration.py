@@ -8,6 +8,7 @@ from hyprial.daemon.impl.org.document import parse_document
 from hyprial.daemon.impl.org.mesh import OrgContextMesh
 from hyprial.daemon.impl.org.store import OrgContextStore
 from hyprial.daemon.impl.transport import ZenohConfig, ZenohTransport
+from tests.support.actor_hosts import new_actor_host
 
 
 def _free_port() -> int:
@@ -45,8 +46,8 @@ def test_real_zenoh_sessions_publish_and_query_on_isolated_port(tmp_path: Path) 
     source_store = OrgContextStore(tmp_path / "source")
     receiver_store = OrgContextStore(tmp_path / "receiver")
     source_store.adopt(_document())
-    source = OrgContextMesh(source_transport, source_store, "source-node")
-    receiver = OrgContextMesh(receiver_transport, receiver_store, "receiver-node")
+    source = OrgContextMesh(source_transport, source_store, "source-node", actor_host=new_actor_host())
+    receiver = OrgContextMesh(receiver_transport, receiver_store, "receiver-node", actor_host=new_actor_host())
     try:
         time.sleep(0.5)
         assert source.publish_accepted() is True
@@ -88,9 +89,9 @@ def test_real_zenoh_broadcast_query_collects_each_concrete_node(
     receiver_store = OrgContextStore(tmp_path / "receiver")
     source_a_store.adopt(_document(7, title="Source A"))
     source_b_store.adopt(_document(8, title="Source B"))
-    source_a = OrgContextMesh(source_a_transport, source_a_store, "source-a")
-    source_b = OrgContextMesh(source_b_transport, source_b_store, "source-b")
-    receiver = OrgContextMesh(receiver_transport, receiver_store, "receiver")
+    source_a = OrgContextMesh(source_a_transport, source_a_store, "source-a", actor_host=new_actor_host())
+    source_b = OrgContextMesh(source_b_transport, source_b_store, "source-b", actor_host=new_actor_host())
+    receiver = OrgContextMesh(receiver_transport, receiver_store, "receiver", actor_host=new_actor_host())
     try:
         time.sleep(0.5)
 

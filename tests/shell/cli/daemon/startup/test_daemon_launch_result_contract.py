@@ -16,6 +16,7 @@ stub that invents its own shape cannot reproduce this, which is the point.
 
 from __future__ import annotations
 
+from tests.support.runtime.environment import home_with_node_id
 import sys
 from pathlib import Path
 from typing import Any
@@ -277,7 +278,7 @@ def test_unsupervised_legacy_probe_cannot_double_the_hard_cap(
 
 
 def _pin_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HYPRIAL_HOME", str(home_with_node_id(tmp_path / "home")))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv("HARNESS_SOCKET_PATH", raising=False)
     monkeypatch.delenv("HARNESS_CONFIG", raising=False)

@@ -39,6 +39,7 @@ from .network.test_org_lifecycle import (  # noqa: F401 - fixtures
 )
 
 from tests.support.tailnet_membership import member as roster_member
+from tests.support.actor_hosts import new_actor_host
 
 ORG = "group-acme"
 CAROL = "carol@example"
@@ -87,6 +88,7 @@ def _org_with(runtime: Any, home: Path, casdoor: FakeCasdoor, *members: str) -> 
     created = service.create(ORG)
     for member in members:
         service.invite(ORG, f"user:{member}")
+        casdoor.states[_c(member)] = "member"
         row = roster_member(member, "device-" + member)
         runtime.membership_sidecar.tailnets[created["spaceId"]]["members"][row["deviceId"]] = row
 
@@ -107,7 +109,7 @@ def _sync(runtime: Any, home: Path, casdoor: FakeCasdoor, **options: Any) -> Cas
     return CasdoorMembershipSync(
         service_factory=lambda: _service(runtime, home, casdoor=casdoor),
         confirmed=ConfirmedMembers(home / "org-sync" / "confirmed-members.json"),
-        **options,
+        **options, actor_host=new_actor_host(),
     )
 
 
@@ -391,10 +393,10 @@ def test_confirmed_remove_commits_casdoor_orgfs_and_tailnet_receipts(runtime, ho
 
     assert result["phase"] == "complete"
     assert result["upperLayerReceipt"] == "committed"
-    assert casdoor.states[_c(BOB)] == "not-member"
+    assert casdoor.states[_c(BOB)] == "member"
     assert f"user:{BOB}" not in _member_users(runtime, ORG)
     assert result["result"]["deviceIds"] == ["device-" + BOB]
-    assert result['casdoorGroup'] == f'removed from hyprial/{ORG}'
+    assert result['casdoorGroup'] == 'not-configured'
 
 
 # -- IPC wiring: local commands notify the actor; org network shows its state --

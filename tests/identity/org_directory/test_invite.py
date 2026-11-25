@@ -386,3 +386,50 @@ def test_malformed_url_forms_are_refused(text: str) -> None:
     with pytest.raises(InviteError) as caught:
         decode_invite(text)
     assert caught.value.code == INVITE_MALFORMED
+
+
+def test_sub_org_invite_round_trips_with_inherited_tailnet() -> None:
+    """Sub-org invite carries parent org and inherited parent tailnetId."""
+    base = _link(org="group-dept", space_id="sp-dept-1", acl_space_id="sp-dept-acl-1")
+    tailnet = dict(base.tailnet or {})
+    tailnet["tailnetId"] = "sp-root-1"
+    sub_link = InviteLink(
+        org=base.org,
+        space_id=base.space_id,
+        acl_space_id=base.acl_space_id,
+        inviter=base.inviter,
+        inviter_device=base.inviter_device,
+        inviter_address=base.inviter_address,
+        token=base.token,
+        workflow_yaml=base.workflow_yaml,
+        workflow_sha256=base.workflow_sha256,
+        expires_at=base.expires_at,
+        tailnet=tailnet,
+        parent_org="group-root",
+    )
+    decoded = decode_invite(encode_invite(sub_link))
+    assert decoded == sub_link
+    assert decoded.parent_org == "group-root"
+    assert decoded.tailnet is not None and decoded.tailnet["tailnetId"] == "sp-root-1"
+
+
+def test_sub_org_invite_rejects_self_parent_or_uninherited_tailnet() -> None:
+    """Sub-org invite rejects parent == org or tailnetId equal to child spaceId."""
+    base = _link(org="group-dept", space_id="sp-dept-1", acl_space_id="sp-dept-acl-1")
+    same_parent = InviteLink(
+        org=base.org,
+        space_id=base.space_id,
+        acl_space_id=base.acl_space_id,
+        inviter=base.inviter,
+        inviter_device=base.inviter_device,
+        inviter_address=base.inviter_address,
+        token=base.token,
+        workflow_yaml=base.workflow_yaml,
+        workflow_sha256=base.workflow_sha256,
+        expires_at=base.expires_at,
+        tailnet=base.tailnet,
+        parent_org="group-dept",
+    )
+    with pytest.raises(InviteError) as caught:
+        encode_invite(same_parent)
+    assert caught.value.code == INVITE_MALFORMED

@@ -18,13 +18,14 @@ from ..support import (
     _SESSION_EVENT_BUDGET,
     _register,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_block_commit_and_disposition_clear_publish_atomically(tmp_path: Path) -> None:
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     registry.create("foo")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     try:
         actor.submit(
             SetRestoreDispositionCommand(
@@ -119,8 +120,8 @@ def test_block_commit_and_disposition_clear_publish_atomically(tmp_path: Path) -
 def test_stale_block_command_does_not_mutate_recreated_agent(tmp_path: Path) -> None:
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     original = registry.create("foo")
-    assert registry.destroy("foo")
-    successor = registry.create("foo")
+    successor = registry.rotate_secret_authority("foo")
+    assert successor.actor == original.actor
     assert successor.entity_token != original.entity_token
     registry.suppress_restore(
         "foo",
@@ -130,7 +131,7 @@ def test_stale_block_command_does_not_mutate_recreated_agent(tmp_path: Path) -> 
         restore_threshold_ms=20,
     )
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     try:
         actor.submit(
             BlockAgentCommand(

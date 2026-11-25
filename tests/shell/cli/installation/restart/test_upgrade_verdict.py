@@ -15,7 +15,6 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from hyprial.daemon.impl.autoupdate.alert import AlertOutcome
 from hyprial.kernel import DaemonLaunchResult, ipc_errors
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
@@ -32,13 +31,17 @@ _REAL_PRIME_POST_INSTALL_IMPORTS = _cli_get_services()._prime_post_install_resta
 
 
 def _alert_recorder(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The failure marker details written by the upgrade (R2: nothing is sent)."""
+
     alerts: list[str] = []
+    services = _cli_get_services()
+    real = services.write_failure_marker
 
-    def notify(**kwargs: Any) -> AlertOutcome:
+    def record(**kwargs: Any) -> Path:
         alerts.append(str(kwargs["detail"]))
-        return AlertOutcome(attempted=True, delivered=True, message_id="om_verdict")
+        return real(**kwargs)
 
-    monkeypatch.setattr(_cli_get_services(), "notify_upgrade_failure", notify)
+    monkeypatch.setattr(services, "write_failure_marker", record)
     return alerts
 
 
@@ -49,7 +52,8 @@ def test_slow_live_child_gets_the_hard_cap_and_succeeds_without_failure_alert(
 
     observed: list[float] = []
 
-    def slow_launch(*, ready_timeout: float) -> DaemonLaunchResult:
+    def slow_launch(*, ready_timeout: float, autoinstall: bool = True) -> DaemonLaunchResult:
+        del autoinstall
         observed.append(ready_timeout)
         return DaemonLaunchResult.launched(
             {
@@ -343,7 +347,8 @@ def test_child_exit_is_a_real_failure_and_alerts(
 ) -> None:
     """A2: an observed child exit is terminal and names that fact."""
 
-    def exited(*, ready_timeout: float) -> None:
+    def exited(*, ready_timeout: float, autoinstall: bool = True) -> None:
+        del autoinstall
         assert ready_timeout == _cli_support.DAEMON_START_HARD_CAP_SECONDS
         raise _cli_support.CliError(
             ipc_errors.DAEMON_START_FAILED,
@@ -367,7 +372,8 @@ def test_live_child_that_never_answers_fails_at_the_named_hard_cap(
 ) -> None:
     """A3: a live child gets the whole bounded wait, then alerts."""
 
-    def hard_cap(*, ready_timeout: float) -> None:
+    def hard_cap(*, ready_timeout: float, autoinstall: bool = True) -> None:
+        del autoinstall
         assert ready_timeout == _cli_support.DAEMON_START_HARD_CAP_SECONDS
         raise _cli_support.CliError(
             ipc_errors.DAEMON_START_TIMEOUT,
@@ -392,7 +398,8 @@ def test_old_daemon_identity_cannot_be_reported_as_restart_success(
 ) -> None:
     """A4: an answering old pid/epoch is a stop failure, not success."""
 
-    def old_generation(*, ready_timeout: float) -> DaemonLaunchResult:
+    def old_generation(*, ready_timeout: float, autoinstall: bool = True) -> DaemonLaunchResult:
+        del autoinstall
         assert ready_timeout == _cli_support.DAEMON_START_HARD_CAP_SECONDS
         return DaemonLaunchResult.existing(
             {
@@ -421,7 +428,8 @@ def test_fresh_identity_with_old_version_is_a_real_failure_and_alerts(
 ) -> None:
     """A4: a fresh process that serves old code cannot prove the upgrade."""
 
-    def old_version(*, ready_timeout: float) -> DaemonLaunchResult:
+    def old_version(*, ready_timeout: float, autoinstall: bool = True) -> DaemonLaunchResult:
+        del autoinstall
         assert ready_timeout == _cli_support.DAEMON_START_HARD_CAP_SECONDS
         return DaemonLaunchResult.launched(
             {
@@ -563,9 +571,10 @@ def test_old_process_primes_the_complete_post_install_module_map() -> None:
     """A5: post-install work cannot discover a module from new files.
 
     This subprocess starts with the old CLI modules in ``sys.modules``.  The
-    primer must return the exact allowed map and include the lazy owner-alert
-    SDK before an in-place install can replace the package on disk.  A future
-    post-install lazy module therefore makes this guard fail before release.
+    primer must return the exact allowed map before an in-place install can
+    replace the package on disk.  A future post-install lazy module therefore
+    makes this guard fail before release.  R2 (owner ruling 2026-11-19): no IM
+    is sent after the install, so the Lark SDK is not part of that map.
     """
 
     script = """
@@ -581,7 +590,7 @@ sdk = 'hyprial.daemon.impl.adapters.lark.outbound.sdk'
 assert sdk not in sys.modules
 primed = _cli_get_services()._prime_post_install_restart_imports()
 assert isinstance(primed, frozenset)
-assert sdk in primed and sdk in sys.modules
+assert sdk not in primed and sdk not in sys.modules
 original = builtins.__import__
 
 def old_process_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -590,9 +599,14 @@ def old_process_import(name, globals=None, locals=None, fromlist=(), level=0):
     return original(name, globals, locals, fromlist, level)
 
 builtins.__import__ = old_process_import
-from hyprial.daemon.impl.adapters.lark.outbound.sdk import LarkSdkGateway
+try:
+    import hyprial.daemon.impl.adapters.lark.outbound.sdk
+except ImportError:
+    refused = True
+else:
+    refused = False
 from hyprial.shell.impl.cli.commands.daemon.service import restart_supervised_daemon
-print(json.dumps({'sdk': LarkSdkGateway.__name__, 'restart': callable(restart_supervised_daemon)}))
+print(json.dumps({'sdkRefused': refused, 'restart': callable(restart_supervised_daemon)}))
 """
     completed = subprocess.run(
         [sys.executable, "-c", script],
@@ -604,4 +618,37 @@ print(json.dumps({'sdk': LarkSdkGateway.__name__, 'restart': callable(restart_su
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {"sdk": "LarkSdkGateway", "restart": True}
+    assert json.loads(completed.stdout) == {"sdkRefused": True, "restart": True}
+
+
+def test_a_restart_failure_posts_no_im_alert(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """R2 (owner ruling 2026-11-19): with the daemon down nothing is posted to
+    any IM; the failure is in the result, the marker file and the exit code."""
+
+    import hyprial.daemon.impl.adapters.lark.outbound.sdk as lark_sdk
+
+    def no_post(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("the upgrade must not build an IM gateway")
+
+    monkeypatch.setattr(lark_sdk.LarkSdkGateway, "from_credentials", no_post)
+
+    def exited(*, ready_timeout: float, autoinstall: bool = True) -> None:
+        del ready_timeout, autoinstall
+        raise _cli_support.CliError(
+            ipc_errors.DAEMON_START_FAILED,
+            "daemon exited during startup with status 17",
+        )
+
+    _fake_upgrade(monkeypatch, tmp_path, launch=exited)
+
+    outcome = CliRunner().invoke(cli.app, ["daemon", "upgrade", "--json"])
+
+    assert outcome.exit_code == 1
+    payload = json.loads(outcome.stdout)
+    assert payload["code"] == "UPGRADE_RESTART_FAILED"
+    assert "alert" not in payload["data"] and "ownerAlert" not in payload["data"]
+    marker = json.loads(Path(payload["data"]["failureMarker"]["path"]).read_text("utf-8"))
+    assert "exited" in marker["detail"]
+    assert "alert" not in marker

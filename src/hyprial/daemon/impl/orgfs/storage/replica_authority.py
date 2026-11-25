@@ -8,17 +8,19 @@ import threading
 import time
 import uuid
 import weakref
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hyprial.kernel import (
     ActorEvent,
     ActorEventKind,
-    ActorHandle,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
+
+from hyprial.daemon.impl.orgfs.composition.vocabulary import OrgFsActorHostCustody
 from hyprial.daemon.impl.orgfs.api  import OrgFsError
 from hyprial.daemon.impl.orgfs.storage.replica  import PutOutcome, ReplicaStore, _digest
 from hyprial.daemon.impl.orgfs.storage.store  import LocalSpaceStore
@@ -172,7 +174,10 @@ class ReplicaAuthority:
         store: ReplicaStore,
         source_store: LocalSpaceStore,
         blob_store: object | None,
+        *,
+        actor_host: ActorHost | None = None,
     ) -> None:
+        self._actor_hosts = OrgFsActorHostCustody(actor_host)
         self._store = store
         self._source_store = source_store
         self._blob_store = blob_store
@@ -208,13 +213,14 @@ class ReplicaAuthority:
                 )
             return owner._execute(command.operation)
 
-        self._runtime = ActorRuntime(event_sink=actor_event)
-        self._actor: ActorHandle = self._runtime.start(
+        host = self._actor_hosts.host
+        self._cell = host.spawn(
             ActorSpec(
                 f"orgfs-replica-{self.space_id[:12]}",
                 lambda: handle,
                 mailbox_capacity=_REPLICA_CAPACITY,
                 supervision_profile="state_authority",
+                event_sink=actor_event,
             )
         )
 
@@ -224,9 +230,9 @@ class ReplicaAuthority:
             owner = owner_ref()
             if owner is None:
                 return AdmissionResult.CLOSED
-            return owner._runtime.tell(owner._actor, completion)
+            return owner._cell.tell(completion)
 
-        self._effects: EffectLane[_ReplicaCommand, _ReplicaOutcome] = EffectLane(
+        self._effects: EffectLane[_ReplicaCommand, _ReplicaOutcome] = host.effect_lane(
             name=f"orgfs-replica-{self.space_id[:12]}-effects",
             execute=execute,
             complete=complete,
@@ -442,7 +448,7 @@ class ReplicaAuthority:
         for call in replay:
             if call.operation_id in deferred_ids:
                 continue
-            admission = self._runtime.tell(self._actor, call)
+            admission = self._cell.tell(call)
             if admission is not AdmissionResult.ACCEPTED:
                 with self._lock:
                     if all(
@@ -467,7 +473,7 @@ class ReplicaAuthority:
             self._commands[operation_id] = command
             self._waiters[operation_id] = waiter
         while True:
-            admission = self._runtime.tell(self._actor, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 break
             with self._lock:
@@ -556,7 +562,7 @@ class ReplicaAuthority:
             self._closing = True
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            snapshot = self._runtime.snapshot(self._actor)
+            snapshot = self._cell.snapshot()
             if snapshot.queued == 0 and snapshot.in_flight == 0 and not self._deferred:
                 break
             time.sleep(0.005)
@@ -564,9 +570,12 @@ class ReplicaAuthority:
             return False
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        stopped = self._runtime.stop(
-            self._actor, timeout=max(0.0, deadline - time.monotonic())
+        stopped = self._cell.stop(
+            timeout=max(0.0, deadline - time.monotonic())
         )
         if stopped:
-            self._closed = True
+            stopped = self._actor_hosts.shutdown(
+                max(0.0, deadline - time.monotonic())
+            )
+            self._closed = stopped
         return stopped

@@ -90,6 +90,8 @@ v1 不做（Allen 2026-11-02 裁定：「先只做拉取即可，依赖 agent �
 - 在线只代表 daemon 与 cell 挂载在线，不代表 agent 在处理。界面复用 cell 状态：“已挂载 · 外部托管 · 无回合上报”，不显示为“运行中”。
 - agent 不拉取，消息就一直排队。超过 mailbox TTL（7 天）会丢，需在界面上提示。
 - 无法中断或停止 agent 的回合。
+- 0.5.5.4 不支持在 `HYPRIAL_SENDER_AUTH_MODE=enforce` 下使用 attach（默认为 `observe`）。enforce 下未登记会话的 attach harness 不能以 `--from <name>` 读写；这是已记录的限制，0.5.5.4 不改代码（R7，per Allen 2026-11-07）。
+- `agent.attach` / `agent.detach` 在 0.5.5.4 只走 IPC（`http_exposed=false`），不提供 HTTP 入口（R6，per Allen 2026-11-07）。
 
 ## 8. 交付计划（0.5.5.4）
 

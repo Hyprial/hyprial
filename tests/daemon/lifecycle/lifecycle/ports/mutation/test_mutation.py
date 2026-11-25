@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+
 from hyprial.identity.impl.agents import AgentActor, AgentRegistry
 from hyprial.identity.impl.agents.actor.ports import BindAgentCommand, CreateAgentCommand, DestroyAgentCommand
 from hyprial.kernel.impl.contracts.ports import PortAdmission
@@ -11,7 +12,7 @@ from hyprial.daemon.impl.harnesses.actor.actor import HarnessRuntimeActor
 import hyprial.daemon.impl.harnesses.actor as harness_actor_module
 from hyprial.daemon.impl.harnesses.runtime.ports import EnsureHarnessCommand, HarnessLaunchProjection, HarnessTimerCompleted, HarnessTimerElapsedCommand, RemoveHarnessCommand
 from hyprial.daemon.impl.lifecycle.lifecycle_receipts import LifecycleMutationFailed
-from hyprial.kernel import LifecycleMutationCompleted
+from hyprial.kernel import LifecycleMutationCompleted, LifecycleMutationRequest
 
 from ..support import (
     DOMAIN_EVENT_WAIT_SECONDS,
@@ -22,15 +23,41 @@ from ..support import (
     _agent_request,
     _request,
 )
+from tests.support.actor_hosts import new_actor_host
+
+
+def _compensating_destroy(operation: str) -> LifecycleMutationRequest:
+    """A saga's compensating destroy of ``foo``: it leaves the name free.
+
+    Ruling X freezes a name on every forward destroy, so once id-form
+    minting is on a new incarnation of ``foo`` only ever follows this.
+    """
+
+    correlation = f"lifecycle:{operation}:compensation:0"
+    return LifecycleMutationRequest(
+        correlation,
+        f"{operation}:compensation:0",
+        operation,
+        None,
+        DestroyAgentCommand(correlation, "foo"),
+    )
 
 
 def test_agent_token_sequence_restore_and_external_replacement_fence(
     tmp_path: Path,
 ) -> None:
+    """Destroy/restore tokens, fresh-create rotation and the stale-delete fence.
+
+    A forward destroy freezes ``foo`` for that incarnation (ruling X), after
+    which no new incarnation may take the name, so the fresh creates follow
+    compensating destroys and the forward destroy, its frozen-name refusal and
+    the token restore of the same incarnation run last (destroy-d/restore-d).
+    """
+
     database = tmp_path / "agents.sqlite3"
     registry = AgentRegistry(database, owner="owner", machine="node")
     events = _Events()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
 
     create_a = _agent_request("create-a", 0, CreateAgentCommand)
     assert actor.submit(create_a) is PortAdmission.ACCEPTED
@@ -38,7 +65,7 @@ def test_agent_token_sequence_restore_and_external_replacement_fence(
     token_a = made_a.provenance.resource_token
     assert made_a.provenance.created_by_operation
 
-    destroy_b = _agent_request("destroy-b", 0, DestroyAgentCommand)
+    destroy_b = _compensating_destroy("destroy-b")
     assert actor.submit(destroy_b) is PortAdmission.ACCEPTED
     removed_b = events.wait(destroy_b.correlation_id, DOMAIN_EVENT_WAIT_SECONDS)
     assert removed_b.provenance.resource_token == token_a
@@ -52,7 +79,7 @@ def test_agent_token_sequence_restore_and_external_replacement_fence(
     assert restored.provenance.resource_token == token_a
     assert registry.get("foo") is not None
 
-    destroy_c = _agent_request("destroy-c", 0, DestroyAgentCommand)
+    destroy_c = _compensating_destroy("destroy-c")
     assert actor.submit(destroy_c) is PortAdmission.ACCEPTED
     token_before_c = events.wait(destroy_c.correlation_id, DOMAIN_EVENT_WAIT_SECONDS).provenance.resource_token
     create_c = _agent_request("create-c", 0, CreateAgentCommand)
@@ -60,7 +87,10 @@ def test_agent_token_sequence_restore_and_external_replacement_fence(
     token_c = events.wait(create_c.correlation_id, DOMAIN_EVENT_WAIT_SECONDS).provenance.resource_token
     assert token_c != token_before_c
 
-    registry.destroy("foo")
+    external = registry.require("foo")
+    assert registry.prepare_destroy_settlement("foo", external.entity_token) == (
+        "destroyed", None,
+    )
     registry.create("foo", model="external-replacement")
     stale = _agent_request(
         "stale-delete", 0, DestroyAgentCommand, expected=token_c
@@ -68,7 +98,27 @@ def test_agent_token_sequence_restore_and_external_replacement_fence(
     assert actor.submit(stale) is PortAdmission.ACCEPTED
     stale_event = events.wait(stale.correlation_id, DOMAIN_EVENT_WAIT_SECONDS)
     assert not stale_event.provenance.changed
-    assert registry.require("foo").model == "external-replacement"
+    replacement = registry.require("foo")
+    assert replacement.model == "external-replacement"
+
+    destroy_d = _agent_request("destroy-d", 0, DestroyAgentCommand)
+    assert actor.submit(destroy_d) is PortAdmission.ACCEPTED
+    removed_d = events.wait(destroy_d.correlation_id, DOMAIN_EVENT_WAIT_SECONDS)
+    assert removed_d.provenance.changed
+    token_d = removed_d.provenance.resource_token
+    assert registry.get("foo") is None
+
+    restore_d = _agent_request(
+        "restore-d", 0, CreateAgentCommand, expected=token_d
+    )
+    assert actor.submit(restore_d) is PortAdmission.ACCEPTED
+    restored_d = events.wait(restore_d.correlation_id, DOMAIN_EVENT_WAIT_SECONDS)
+    assert restored_d.provenance.resource_token == token_d
+    back = registry.require("foo")
+    assert (back.agent_id, back.entity_token, back.uri, back.model) == (
+        replacement.agent_id, replacement.entity_token, replacement.uri,
+        "external-replacement",
+    )
 
     assert actor.drain(TERMINAL_WAIT_SECONDS).complete
     registry.close()
@@ -79,7 +129,7 @@ def test_dead_connector_rebind_rotates_durable_binding_generation(tmp_path: Path
     registry = AgentRegistry(database, owner="owner", machine="node")
     registry.create("foo")
     events = _Events()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     actor_uri = registry.require("foo").uri
 
     first_correlation = "lifecycle:bind-pi:forward:0"
@@ -97,7 +147,7 @@ def test_dead_connector_rebind_rotates_durable_binding_generation(tmp_path: Path
     # durable lifecycle resource survives.  A later explicit bind must replace
     # that stale resource instead of returning changed=false.
     events = _Events()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     second_correlation = "lifecycle:bind-claude:forward:1"
     second = _request(
         "bind-claude",
@@ -318,7 +368,7 @@ def test_delayed_persistence_completion_has_one_harness_handoff_and_launch(
         while persistence._effects.snapshot().completion_retries < 3:
             assert time.monotonic() < deadline
             time.sleep(0.001)
-        assert actor._runtime.snapshot(actor._handle).queued == 0
+        assert actor._cell.snapshot().queued == 0
 
         release.set()
         events.wait(ensure.correlation_id)

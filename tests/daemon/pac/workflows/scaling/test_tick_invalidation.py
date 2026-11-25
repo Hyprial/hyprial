@@ -12,13 +12,17 @@ from hyprial.daemon.impl.pac.storage.store import PacGraphStore
 from hyprial.daemon.impl.pac.workflows.runtime import GraphWorkflowService
 from tests.daemon.pac.expansion.engine.support import AGENT
 from tests.daemon.pac.expansion.engine.test_transactions import _prepared_parent_and_child
-from tests.support.pac.migrations import strip_tick_v19
+from tests.support.pac.migrations import strip_held_v20, strip_tick_v19
 
 from .support import USER, Sender, build_scale, measured_tick
 
 
 def _facts(db):
-    return {name: [tuple(row) for row in db.execute(f'SELECT * FROM {name} ORDER BY rowid')]
+    def columns(name):
+        return ','.join(row[1] for row in db.execute(f'PRAGMA table_info({name})')
+                        if row[1] != 'held_at_ms')
+
+    return {name: [tuple(row) for row in db.execute(f'SELECT {columns(name)} FROM {name} ORDER BY rowid')]
             for name in ('graphs', 'nodes', 'edges', 'workflow_graphs', 'workflow_nodes',
                          'notifications', 'flag_events', 'journal', 'workflow_deliveries',
                          'workflow_worker_receipts', 'workflow_expansions', 'workflow_worktrees')}
@@ -29,6 +33,7 @@ def _v18(path):
     database = service.database
     assert service.close()
     with closing(sqlite3.connect(database)) as db, db:
+        strip_held_v20(db)
         strip_tick_v19(db)
         facts = _facts(db)
     return database, graphs[0], facts
@@ -38,7 +43,7 @@ def test_v18_upgrade_preserves_facts_and_requires_initial_projection(tmp_path):
     database, graph, facts = _v18(tmp_path / 'old')
     store = PacGraphStore(database)
     try:
-        assert store._db.execute('PRAGMA user_version').fetchone()[0] == 19
+        assert store._db.execute('PRAGMA user_version').fetchone()[0] == 20
         assert _facts(store._db) == facts
         row = store._db.execute('SELECT * FROM workflow_tick_projection WHERE graph_id=?', (graph,)).fetchone()
         assert row['revision'] > row['projected_revision'] and row['next_due_ms'] is None

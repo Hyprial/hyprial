@@ -285,7 +285,10 @@ nodes:
     for table, columns in (
         ("workflow_outcome_receipts", ("expansion_digest", "node_id", "graph_id")),
         ("remote_workflow_outbox", ("attempt_no", "expansion_digest", "expansion_text")),
-        ("workflow_graphs", ("expansion_deadline_ms", "parent_node_id", "parent_graph_id")),
+        ("workflow_graphs", (
+            "held_at_ms",  # v20 (#1803): newer than any fixture below
+            "expansion_deadline_ms", "parent_node_id", "parent_graph_id",
+        )),
     ):
         for column in columns:
             db.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
@@ -307,7 +310,7 @@ nodes:
 
     migrated = PacGraphStore(database)
     try:
-        assert migrated._db.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert migrated._db.execute("PRAGMA user_version").fetchone()[0] == 20
         assert [node.to_json() for node in migrated.nodes(graph_id)]
         receipts = migrated.workflow_worker_receipts(graph_id)
         assert len(receipts) == 1

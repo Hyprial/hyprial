@@ -117,6 +117,7 @@ class BatchSelection:
     rows: tuple[BatchRow, ...]
     deferred: tuple[BatchMember, ...] = ()
     predecessor_digest: str | None = None
+    origin_claim_seq: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

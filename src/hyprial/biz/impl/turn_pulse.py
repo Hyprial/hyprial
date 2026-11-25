@@ -1,7 +1,11 @@
+# Decision record (W2B-2, 2026-11-21):
+# - signal_turn_ended hardens the pulse directory via
+#   hyprial.kernel.harden_private_path instead of direct os.chmod(0o700), while
+#   avoiding CLI, MCP, and daemon imports on the hook hot path.
 """Claude Code ``Stop`` hook: record one turn-ended pulse for the channel child.
 
-This module is the hook's entry point, so it imports only the standard library:
-the hook runs once per turn under a Claude Code timeout, and importing
+This module is the hook's entry point, so it avoids CLI, MCP, and daemon
+imports: the hook runs once per turn under a Claude Code timeout, and importing
 ``hyprial.mcp`` or ``hyprial.cli`` costs about a second on a loaded host,
 enough to be cancelled and silently lose the pulse.  The channel child owns the
 directory and forwards pulses through its session fence
@@ -15,12 +19,14 @@ import secrets
 import sys
 from pathlib import Path
 
+from hyprial.kernel import harden_private_path
+
 
 def signal_turn_ended(path: Path) -> None:
     """Create one durable, per-launch Stop pulse without daemon I/O."""
 
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path, 0o700)
+    harden_private_path(path, mode=0o700)
     for _attempt in range(3):
         pulse = path / secrets.token_hex(16)
         try:

@@ -101,6 +101,7 @@ def _run_gate(
         "BASE_SHA": base_sha,
         "HEAD_SHA": head_sha,
         "GITHUB_SERVER_URL": remote.parents[1].as_uri(),
+        "GITHUB_REPOSITORY": "HyprialOS/harness-bridge",
         "GITHUB_TOKEN": "test-only-token",
         "EVENT_ACTION": "synchronize",
     }

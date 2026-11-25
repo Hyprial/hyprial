@@ -40,10 +40,10 @@ only ``time.thread_time()`` of its own thread:
 * **State-persistence side** (``statePersistence``): the
   ``state-persistence-authority`` actor around one typed command, keyed by
   ``<CommandType>/<origin>`` propagated from the immutable I/O request.
-* **Runtime side** (``runtime``): every other generic ``ActorRuntime``
-  dispatch, every other ``EffectLane`` execution, and each maintenance phase,
-  keyed by normalized declared owner and work type.  A trailing numeric worker
-  suffix is removed from the declared owner; Pykka's private thread name is
+* **Runtime side** (``runtime``): every other generic actor dispatch, every
+  other ``EffectLane`` execution, and each maintenance phase, keyed by
+  normalized declared owner and work type.  A trailing numeric worker suffix
+  is removed from the declared owner; the engine's private thread name is
   never an identity.  ``kind:<instance>`` names keep only the kind and orgfs
   lanes drop their embedded space id.  The map is capped with one reserved
   row: once full, every new key folds into ``_overflow/_other`` (never another

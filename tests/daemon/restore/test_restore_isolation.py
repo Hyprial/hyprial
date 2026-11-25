@@ -19,6 +19,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -57,12 +58,34 @@ def _persistent_rows(state: Path) -> dict[str, list[tuple[Any, ...]]]:
         }
 
 
+def _official(harness: IsolatedHarness, name: str) -> str:
+    """The address agent ``name`` is reached at: its record's URI."""
+
+    return str(harness.ipc("agent.get", {"name": name})["agent"]["uri"])
+
+
+def _addressed(
+    rows: list[tuple[Any, ...]], addresses: dict[str, str]
+) -> list[tuple[Any, ...]]:
+    """Rows with their actor column moved to the official address.
+
+    The daemon start migrates each persisted session actor from its
+    pre-flip name URI to the record's id URI (decision D6); nothing else in
+    the row changes.
+    """
+
+    return sorted(
+        (addresses.get(row[0], row[0]), *row[1:]) for row in rows
+    )
+
+
 def _seed_desired_state(
     harness: IsolatedHarness,
     *,
     conflict: bool,
     dead_fence: tuple[int, str] | None = None,
     live_fence: tuple[int, str] | None = None,
+    failed: frozenset[str] = frozenset(),
 ) -> None:
     fake_pi = Path(__file__).resolve().parents[3] / 'tests/fixtures/harnesses/fake_pi_rpc.py'
     command = (sys.executable, str(fake_pi))
@@ -122,6 +145,7 @@ def _seed_desired_state(
                     cwd=str(harness.root),
                     session_ref="fake",
                     command=command,
+                    status="failed" if CONFLICT in failed else "running",
                 ),
                 HarnessLaunchSpec(
                     harness="pi",
@@ -130,6 +154,7 @@ def _seed_desired_state(
                     cwd=str(harness.root),
                     session_ref="fake",
                     command=command,
+                    status="failed" if HEALTHY in failed else "running",
                 ),
             ),
             interactive_sessions=interactive_sessions,
@@ -143,7 +168,10 @@ def _daemon_events(harness: IsolatedHarness) -> list[dict[str, Any]]:
 
 
 def _start_fixture(
-    *, conflict: bool, fenced_conflict: bool = True
+    *,
+    conflict: bool,
+    fenced_conflict: bool = True,
+    failed: frozenset[str] = frozenset(),
 ) -> tuple[IsolatedHarness, Path, tuple[subprocess.Popen[bytes], ...]]:
     root = Path(tempfile.mkdtemp(dir=hyprial_test_tmp_root(), prefix="hyprial-restore-isolation-"))
     harness = IsolatedHarness(root)
@@ -186,6 +214,7 @@ def _start_fixture(
         conflict=conflict,
         dead_fence=dead_fence,
         live_fence=live_fence,
+        failed=failed,
     )
     return harness, root, owners
 
@@ -233,6 +262,15 @@ def test_conflicting_interactive_recovery_is_isolated_and_reported() -> None:
         ]
         agents = {item["actor"]: item for item in status["agents"]}
         connectors = {item["name"]: item for item in status["connectors"]}
+        addresses = {
+            uri: _official(harness, name)
+            for uri, name in (
+                (CONFLICT_URI, CONFLICT),
+                (LIVE_URI, LIVE),
+                (UNKNOWN_URI, UNKNOWN),
+            )
+        }
+        assert all(uri != address for uri, address in addresses.items())
 
         assert "daemon.ready" in event_names
         assert failures == []
@@ -248,7 +286,7 @@ def test_conflicting_interactive_recovery_is_isolated_and_reported() -> None:
                 "processPid",
             )
         } == {
-            "actor": CONFLICT_URI,
+            "actor": addresses[CONFLICT_URI],
             "source": "codex-app-server",
             "harness": "codex",
             "runtime": "codex_interactive",
@@ -269,9 +307,12 @@ def test_conflicting_interactive_recovery_is_isolated_and_reported() -> None:
         sessions = {
             item["actor"]: item for item in status["interactiveSessions"]
         }
+        assert addresses[CONFLICT_URI] not in sessions
         assert CONFLICT_URI not in sessions
-        assert sessions[LIVE_URI]["sessionRef"] == "live-codex-session"
-        assert sessions[UNKNOWN_URI]["sessionRef"] == "unknown-codex-session"
+        assert sessions[addresses[LIVE_URI]]["sessionRef"] == "live-codex-session"
+        assert (
+            sessions[addresses[UNKNOWN_URI]]["sessionRef"] == "unknown-codex-session"
+        )
         endpoint_event = next(
             item for item in events if item.get("event") == "zenoh.endpoints.resolved"
         )
@@ -285,17 +326,18 @@ def test_conflicting_interactive_recovery_is_isolated_and_reported() -> None:
             UNKNOWN_URI,
         }
         assert {row[0] for row in after["interactive_sessions"]} == {
-            LIVE_URI,
-            UNKNOWN_URI,
+            addresses[LIVE_URI],
+            addresses[UNKNOWN_URI],
         }
         before_by_actor = {
-            row[0]: row for row in before["interactive_sessions"]
+            row[0]: row
+            for row in _addressed(before["interactive_sessions"], addresses)
         }
         after_by_actor = {
             row[0]: row for row in after["interactive_sessions"]
         }
-        assert after_by_actor[LIVE_URI] == before_by_actor[LIVE_URI]
-        assert after_by_actor[UNKNOWN_URI] == before_by_actor[UNKNOWN_URI]
+        for uri in (LIVE_URI, UNKNOWN_URI):
+            assert after_by_actor[addresses[uri]] == before_by_actor[addresses[uri]]
     finally:
         _stop_fixture(harness, root, owners)
 
@@ -319,13 +361,19 @@ def test_unfenced_conflicting_session_remains_for_operator_resolution() -> None:
         assert all(
             item.get("event") != "agent.recovery.cleaned" for item in events
         )
+        address = _official(harness, CONFLICT)
+        assert address != CONFLICT_URI
         assert len(failures) == 1
-        assert failures[0]["actor"] == CONFLICT_URI
+        assert failures[0]["actor"] == address
         assert failures[0]["errorCode"] == "AGENT_ALREADY_RUNNING"
         assert connectors[CONFLICT]["running"] is True
         assert connectors[HEALTHY]["running"] is True
         assert agents[CONFLICT]["recoveryStatus"] == "failed"
-        assert _persistent_rows(harness.state) == before
+        after = _persistent_rows(harness.state)
+        assert after["harnesses"] == before["harnesses"]
+        assert sorted(after["interactive_sessions"]) == _addressed(
+            before["interactive_sessions"], {CONFLICT_URI: address}
+        )
     finally:
         _stop_fixture(harness, root, owners)
 
@@ -343,5 +391,33 @@ def test_recovery_without_a_conflict_is_a_clean_noop() -> None:
         assert {CONFLICT, HEALTHY}.issubset(agents)
         assert all(agents[name]["status"] == "online" for name in (CONFLICT, HEALTHY))
         assert all("recoveryStatus" not in agents[name] for name in (CONFLICT, HEALTHY))
+    finally:
+        _stop_fixture(harness, root, owners)
+
+
+def test_failed_row_stays_offline_after_the_reconcile_barrier_opens() -> None:
+    """A ``failed`` row is shown, never auto-retried, even once reconcile runs (I6-2)."""
+
+    harness, root, owners = _start_fixture(conflict=False, failed=frozenset({HEALTHY}))
+    try:
+        harness.start_daemon()
+        deadline = time.monotonic() + 15.0
+        while not any(
+            item.get("event") == "daemon.ready" for item in _daemon_events(harness)
+        ):
+            assert time.monotonic() < deadline, "daemon never reported ready"
+            time.sleep(0.1)
+        settle = time.monotonic() + 8.0
+        while time.monotonic() < settle:
+            connectors = {
+                item["name"]: item for item in harness.ipc("ps", {})["connectors"]
+            }
+            assert HEALTHY not in connectors
+            time.sleep(0.25)
+
+        agents = {item["actor"]: item for item in harness.ipc("ps", {})["agents"]}
+        assert connectors[CONFLICT]["running"] is True
+        assert agents[CONFLICT]["status"] == "online"
+        assert agents[HEALTHY]["status"] == "offline"
     finally:
         _stop_fixture(harness, root, owners)

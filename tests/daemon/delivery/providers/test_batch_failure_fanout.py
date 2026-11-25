@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -18,17 +20,16 @@ from tests.identity.providers.lifecycle.availability.support import (
     _NullTransport,
     _request,
 )
-from tests.support.links.gate import permissive_admission_slot
 
 class _BatchHarnesses(FakeHarnessFarm):
     def __init__(self) -> None:
         super().__init__()
         self.batch_deliveries: list[object] = []
 
-    def dispatch(self, name: str, delivery: object) -> bool:
-        accepted = super().dispatch(name, delivery)
+    def dispatch(self, envelope: object) -> bool:
+        accepted = super().dispatch(envelope)
         if accepted:
-            self.batch_deliveries.append(delivery)
+            self.batch_deliveries.append(envelope)
         return accepted
 
     def drain_results(self):
@@ -37,14 +38,13 @@ class _BatchHarnesses(FakeHarnessFarm):
         return super().drain_results()
 
 
-def _arrange(tmp_path: Path):
+def _arrange(tmp_path: Path, *, actor_host):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     inbox = InboxService(
         state_dir / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         node_id="node-reg",
-        link_admission=permissive_admission_slot(),
     )
     desired = DesiredStateStore(state_dir / "desired-state.json")
     desired.upsert_harness(
@@ -60,7 +60,8 @@ def _arrange(tmp_path: Path):
         inbox=inbox,
         harnesses=harnesses,
         harness_actor_uri=lambda _name: WORKER,
-        clock_ms=lambda: clock["now"],
+        clock_ms=lambda: clock["now"], actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     return inbox, harnesses, clock, runtime
 
@@ -87,8 +88,10 @@ def _notices(inbox: InboxService) -> list[dict[str, object]]:
     ]
 
 
-def test_batch_failure_notifies_each_original_requester(tmp_path: Path) -> None:
-    inbox, harnesses, _clock, runtime = _arrange(tmp_path)
+def test_batch_failure_notifies_each_original_requester(
+    tmp_path: Path, *, actor_host
+) -> None:
+    inbox, harnesses, _clock, runtime = _arrange(tmp_path, actor_host=actor_host)
     first = replace(
         _request("batch-two-requesters-1"),
         sender=canonical_agent_uri("op", "first-node", "requester"),
@@ -137,9 +140,9 @@ def test_batch_failure_notifies_each_original_requester(tmp_path: Path) -> None:
 
 
 def test_claimed_batch_failure_classifies_each_member_before_retiring(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
-    inbox, harnesses, _clock, runtime = _arrange(tmp_path)
+    inbox, harnesses, _clock, runtime = _arrange(tmp_path, actor_host=actor_host)
     members = (_request("batch-claimed-1"), _request("batch-claimed-2"))
     for message in members:
         assert inbox.receive(message).accepted
@@ -167,9 +170,9 @@ def test_claimed_batch_failure_classifies_each_member_before_retiring(
 
 
 def test_batch_failure_uses_tombstone_route_for_an_acked_member(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
-    inbox, harnesses, clock, runtime = _arrange(tmp_path)
+    inbox, harnesses, clock, runtime = _arrange(tmp_path, actor_host=actor_host)
     pending = replace(
         _request("batch-mixed-pending"),
         sender=canonical_agent_uri("op", "pending-node", "requester"),
@@ -206,9 +209,9 @@ def test_batch_failure_uses_tombstone_route_for_an_acked_member(
 
 
 def test_transient_batch_retry_advances_each_members_attempt(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
-    inbox, harnesses, clock, runtime = _arrange(tmp_path)
+    inbox, harnesses, clock, runtime = _arrange(tmp_path, actor_host=actor_host)
     members = (_request("batch-retry-1"), _request("batch-retry-2"))
     for message in members:
         assert inbox.receive(message).accepted

@@ -47,19 +47,16 @@ class _FakeWindowsProcessGroup:
 
 
 def _fake_windows_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = types.ModuleType("hyprial.kernel.impl.platform.windows_owned_process")
+    module = types.ModuleType("hyprial.kernel.impl.manysys.process.windows_owned_process")
     module.WindowsOwnedProcessGroup = _FakeWindowsProcessGroup
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    # Do not mutate the process-global os.name: pathlib.Path would become
-    # WindowsPath on a POSIX host and break unrelated product code.  Give the
-    # codex process module a local os facade instead.
     process_module = importlib.import_module("hyprial.daemon.impl.harnesses.codex.process")
     class _WindowsOs:
         name = "nt"
         def __getattr__(self, name: str):
             return getattr(os, name)
     monkeypatch.setattr(process_module, "os", _WindowsOs())
-    monkeypatch.setattr("hyprial.kernel.impl.platform.ports.sys.platform", "win32")
+    monkeypatch.setattr("hyprial.kernel.impl.manysys.process.ports.sys.platform", "win32")
 
 
 

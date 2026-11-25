@@ -96,6 +96,28 @@ hyprial 目前有三个**互相独立、版本空间互不重叠**的协议面�
 
 **稳定性**:基础帧 2026-08-07(`5e349bbc`);`origin_node` additive 扩展 2026-08-19(`43fc4d75`)。**标签:STABLE**——已经扛过一次真实的 additive 扩展且没有破坏旧解码器。
 
+**payload 内层 envelope(cell model 阶段 B,wire 方案 B,Allen 2026-11-03)**:①的帧逐字节不变;发送方把自己的 thread、conversation cell 与 class 写进**消息内层 schema**,即 payload JSON 对象的顶层键 `envelope`。定义/编解码:`src/hyprial/daemon/impl/inbox/envelope/payload.py`;发送方写入点:`inbox/envelope/transport.py` 的 `EnvelopeStampingTransport`(包在 `ZenohDeliveryTransport` 外,只作用于 `deliver` 与 `transfer_custody`;daemon 经 `inbox/network.py` 的 `stamped_network_transport` 组装);接收方读取点:`InboxService.receive` 与 `accept_custody` 入口。
+
+| 键 | 类型 | 必选? | 语义 |
+|---|---|---|---|
+| `v` | integer | 必选 | 固定 `1`;其它值(含 `true`)仍按发送方形态剥离,但整体忽略、回落本地推断,并以 INFO 记录 message id 与版本 |
+| `class` | string | 必选 | `interaction` / `system`;发送方的显式 stamp,否则其本地推断值 |
+| `threadId` | string | 可选,整键缺省 | `t.` 稳定 id;发送方消息带 thread 时才写 |
+| `conversationCellId` | string | 可选,整键缺省 | `c.` 稳定 id;发送方消息带 cell stamp 时才写 |
+
+- 只写入内层 schema 的 payload:JSON 对象、`message` 为字符串、没有 `envelope` 键、字节以 `{` 开头以 `}` 结尾、intent 为 `request`/`reply`/`system`。其余(进度事件、notice、任意字节)原样不动。
+- 对象用 §2.3 canonical JSON 追加为最后一个键:`<原 payload 去掉末尾 }>,"envelope":<canonical>}`。接收方去掉该后缀即得发送方原始字节;其它形态的 `envelope` 键(不在末尾、不是对象、非 canonical、重复)视为正文,不剥离。
+- 接收方在落库前剥离,逐字段采纳:格式正确的 `t.`/`c.` id、已知 class;格式错误的字段丢弃并回落本地推断,绝不因 envelope 让投递失败。与本地推断相同的 class 不存成 stamp(列保持 NULL)。新节点上存储的 payload、`message.read_body`、`message.history` 与不带 envelope 的消息逐字节相同;发送方 outbox、sender copy 与提交 digest 从不包含它。
+- 0.5.5.3.3 节点:按名读取 `message`/`origin`/`replyTo`,忽略未知键,`read_body` 结果与未带 envelope 时相同;它把 payload 原样落库(含该对象)。0.5.5.3.3 发来的帧没有该对象,新节点走本地推断。双向由 `tests/daemon/inbox/envelope/payload/test_payload_cross_version.py` 对照已安装的 0.5.5.3.3 wheel 实测。
+- 信任边界(已知问题,Allen 2026-11-07 决定不加限制,见下方裁决):接收方不校验 `threadId` 是否属于 (sender, recipient) 这一对。thread id 按对确定性生成,诚实发送方的值总等于本地推断;对端可以写入另一对的 thread,该值会进入 conversation 记录,并经 `inherit_envelope` 进入接收方的回复再发回。现状由 `tests/daemon/inbox/envelope/payload/test_payload_trust.py` 钉住。
+- **标签:EXPERIMENTAL**(additive,符合 §5.1 全部五条)。
+
+**Allen 2026-11-07 裁决(per Allen 2026-11-07,最终)**:
+
+- R4 批准:范围只含 `threadId` 与 `class`;`conversationCellId` 为保留键(键名与格式已定义,本范围不对其作语义承诺)。
+- R5 批准:在网络边缘(`EnvelopeStampingTransport`)写入;class 采纳规则(与本地推断相同则不存 stamp);只作用于 `request`/`reply`/`system`;键名 `envelope` / `conversationCellId`;逐字段回落本地推断。
+- R3 信任边界记为**已知问题**:接收方不校验发送方给出的 `threadId` 是否属于该 (sender, recipient) 对;目前 thread 都按对派生,诚实发送方不受影响;恶意对端可让 `conversation_groups` 显示一个伪造的分组。按决定**不加** pair-check,也不新增任何安全限制;出现问题时由 Allen 另行规划。
+
 #### ② `hyprial-progress-event/v1` —— 进度事件
 
 - 定义:`src/hyprial/inbox/progress.py`,`PROGRESS_SCHEMA = "hyprial-progress-event/v1"`(具名常量,`:34`)。
@@ -191,7 +213,7 @@ hyprial 目前有三个**互相独立、版本空间互不重叠**的协议面�
 | `accepted` | bool | **解码宽松**:缺失 key 视为 `False`,不报错 | `.get("accepted") is True` |
 | `native_message_id` | string 或 null | **可选** | 成功时对端(如飞书)自己的原生 message id |
 | `duplicate` | bool | 同 `accepted`,缺失视为 `False` | — |
-| `code` | string 或 null | **可选** | 机器可读失败码,如 `TARGET_SQUIRE_UNCONFIGURED`/`TARGET_SQUIRE_ADAPTER_UNAVAILABLE`(`addressing.py:238,248,265,280,422`) |
+| `code` | string 或 null | **可选** | 机器可读失败码。0.5.5.4 起接收端铸通用码(Allen 2026-11-03 S10「squire 是普通 agent」):`user:<owner>` 解析不到主人 adapter thread 为 `TARGET_UNRESOLVED`,端点 adapter 未注册为 `USER_DELIVERY_UNAVAILABLE`(确定未发),adapter 发送抛错为 `USER_DELIVERY_FAILED`(可能已发,账本记录)。0.5.5.3.3 接收端曾发的 `TARGET_SQUIRE_UNCONFIGURED`/`TARGET_SQUIRE_ADAPTER_UNAVAILABLE` 已于 S3b(2026-11-23,裁决 §12.1.4)从注册表删除,新节点不再识别,按普通未知失败处理 |
 | `message` | string 或 null | **可选** | 人类可读失败文案(中文 UX 字符串,`:19-27`) |
 | `definitely_not_sent` | bool | **可选**,缺失视为 `False` | 只有确认请求未到原生发送边界时为 `True`; `accepted=False` 或回执超时本身不能证明未发送 |
 
@@ -282,11 +304,7 @@ frame as opaque bytes. The full encoded request remains capped at 256 KiB.
 
 ### 3.7 错误码分类
 
-`OWNER_MIGRATION_HOSTED_CONFLICT`：别名迁移的 old/new 与托管 agent owner
-碰撞时写前拒绝。daemon 启动日志、启动器及 login preview 保留同一码；具名数据
-限于 `old`、`new`、`actor`、`hostedOwner`，恢复方式见运维指南的宿主改名说明。
-
-**集中注册表:`src/hyprial/contracts/ipc_errors.py`**(本节初版记录的"没有注册表"现状已按 §9 第 4 条修复)。proto 面错误码——daemon 在 IPC error 响应里发出的 code、CLI/MCP 客户端在同一 `.code` 通道上铸的传输层 code(`DAEMON_UNAVAILABLE`/`IPC_TIMEOUT`/`DAEMON_START_FAILED`/`DAEMON_START_TIMEOUT`)、以及经 `DaemonRequestError` 透传上线的内层 code——每个一条具名常量(引入时 46 个),值一经发布即冻结:旧节点继续发同样的字符串,新接收端拿常量比较天然识别所有历史对端;改值是协议破坏,只能加新码并继续识别旧码。发送端与接收端 import 同一常量(`SESSION_SUPERSEDED_CODE` 惯例的全面化;该名字保留在 `mcp/api.py`,值指向注册表)。**入表判定线**:code 字符串离开铸造进程、进入另一进程的**机器可读判定面**才入表 —— daemon IPC `error.code`(铸或透传)、zenoh 跨节点载荷(如 `TARGET_SQUIRE_*`)、或被另一进程解析并分支的持久化 JSON 字段(如启动日志里的 `HYPRIAL_HOME_IN_USE`,CLI 对它做分支)。**client-side-only 码不入表**:仅在本进程渲染给人 / 落 `--json` 输出、无任何他进程分支的 `CliError` 码(`INVALID_RESPONSE` 之类)是展示不是协议;Lark 平台码与纯进程内异常码同理。边界裁定:`UPGRADE_RESTART_FAILED`/`UPGRADE_NOTIFICATION_FAILED` 落 autoupdate last-run JSON 并被 daemon `autoupdate.status` 原样投影展示,但无进程对字符串分支 —— 展示性透传,暂不入表;一旦出现跨进程分支即按判定线入表。**防再生守卫**:`tests/test_ipc_error_code_registry.py` 冻结注册表成员,并用 AST 扫描保证 `src/hyprial` 下任何文件都不得把注册码写成字符串字面量——绕过注册表直接敲字面量会当场红。历史背景(修复前):`application.py` 108 处构造点、92 处字面量、40 种 code,仅 `SESSION_SUPERSEDED_CODE` 一个具名常量;约 18 处透传内层 `.code` 维持原状。
+**集中注册表:`src/hyprial/error/codes.py`**(本节初版记录的"没有注册表"现状已按 §9 第 4 条修复)。proto 面错误码——daemon 在 IPC error 响应里发出的 code、CLI/MCP 客户端在同一 `.code` 通道上铸的传输层 code(`DAEMON_UNAVAILABLE`/`IPC_TIMEOUT`/`DAEMON_START_FAILED`/`DAEMON_START_TIMEOUT`)、以及经 `DaemonRequestError` 透传上线的内层 code——每个一条具名常量(引入时 46 个),值一经发布即冻结:旧节点继续发同样的字符串,新接收端拿常量比较天然识别所有历史对端;改值是协议破坏,只能加新码并继续识别旧码。发送端与接收端 import 同一常量(`SESSION_SUPERSEDED_CODE` 惯例的全面化;该名字保留在 `mcp/api.py`,值指向注册表)。**入表判定线**:code 字符串离开铸造进程、进入另一进程的**机器可读判定面**才入表 —— daemon IPC `error.code`(铸或透传)、zenoh 跨节点载荷(如 `TARGET_SQUIRE_*`)、或被另一进程解析并分支的持久化 JSON 字段(如启动日志里的 `HYPRIAL_HOME_IN_USE`,CLI 对它做分支)。**client-side-only 码不入表**:仅在本进程渲染给人 / 落 `--json` 输出、无任何他进程分支的 `CliError` 码(`INVALID_RESPONSE` 之类)是展示不是协议;Lark 平台码与纯进程内异常码同理。边界裁定:`UPGRADE_RESTART_FAILED`/`UPGRADE_NOTIFICATION_FAILED` 落 autoupdate last-run JSON 并被 daemon `autoupdate.status` 原样投影展示,但无进程对字符串分支 —— 展示性透传,暂不入表;一旦出现跨进程分支即按判定线入表。**防再生守卫**:`tests/daemon/ipc/error/test_ipc_error_code_registry.py` 冻结注册表成员,并用 AST 扫描保证 `src/hyprial` 下任何文件都不得把注册码写成字符串字面量——绕过注册表直接敲字面量会当场红。历史背景(修复前):`application.py` 108 处构造点、92 处字面量、40 种 code,仅 `SESSION_SUPERSEDED_CODE` 一个具名常量;约 18 处透传内层 `.code` 维持原状。
 
 `CODEX_CREDENTIAL_MISSING` 是 interactive Codex 的启动前拒绝：Agent-home P2 的原生 OpenAI credential 缺失，或不是非空、0600 的普通文件时，CLI 在 app-server / TUI 启动前返回该码。机器可读 `data` 包含 `reason`、`path` 与 `remediation`；`reason` 按现场为 `missing`、`empty`、`permissions`、`not-regular`、`shared-target`（检查路径本身失败时为 `inaccessible`）。`remediation.kind=command` 时 `command` 可直接执行；`kind=manual` 时只给 `instruction`，明确说明没有可安全修复该现场的 hyprial CLI 命令。普通缺失用 provider login，空文件须加 `--force`，权限错误只需 `chmod 600`；非普通文件与配置的外部 shared target 不再推荐会被拒绝或写错目标的 provider login。输出只含路径与诊断，不读取或输出 credential 内容。
 
@@ -299,6 +317,19 @@ frame as opaque bytes. The full encoded request remains capped at 256 KiB.
 `claimedIdentity` 是被拒绝的身份。`user:<owner>` 本机 operator、adapter/channel
 入口和 daemon 内部入口不使用这个错误形状，完整规则见
 `contract/wire/message-sender-auth.md`。
+
+`ACCOUNT_REQUIRED` 是 daemon 本地错误码（owner 决定 OD-Z5，2026-11-15；
+设计见 `docs/design/daemon-first-init-login-decoupling-2026-11-15.md`），
+不进 kernel 冻结注册表。它与 onboarding 方法已声明的错误码不同：后者是
+MethodSpec 错误并发布在 OpenAPI 中，而 `ACCOUNT_REQUIRED` 目前只是 daemon
+本地常量，尚未进入任何 MethodSpec 错误列表或 HTTP 契约（推迟到 Z-6c）。daemon 尚无 owner
+（bootstrap 阶段）时，socket 上 serving daemon 会应答的每个业务方法都返回它：
+已声明的方法，以及仍只由 router 自身分支应答、没有声明的方法名
+（`ROUTER_ONLY_METHODS`，如 `ps`、`agent.grants`、`workflow.*`、`message.ack`、`session.*`）；
+`data` 为 `phase`（`bootstrap`）、`method` 与同名的 `reason`
+（`ACCOUNT_REQUIRED`，同时是 catalog 对这些方法的 `not-ready` 原因）。
+任何 daemon 都不应答的方法名仍返回 `METHOD_NOT_FOUND`，与 serving daemon 一致（GUI 托管的
+bootstrap 及其 `CALLER_NOT_AUTHORIZED` 已随 Z-6b 删除）。CLI 在开启确保范围的命令里（业务命令）原样转交该错误，只在 `data` 增加 `nextSteps: ["hyprial login"]`；CLI 不改写任何错误码，也不为此多发 `ping`。HTTP：`ACCOUNT_REQUIRED` 不进 HTTP 状态表；GUI 入口（`local-gui`）把 catalog 中当前阶段不可调用的已暴露方法投影为 `not-ready`（原因 `ACCOUNT_REQUIRED`，serving 阶段的 `onboarding.device.ensure`/`onboarding.initialize` 为 `BOOTSTRAP_ONLY`），方法集与两个 digest 不随阶段变化；经 HTTP 调用这类方法是 503 `HTTP_NOT_READY`，`data.reason` 为该原因，`dispatch: not-dispatched`；daemon 对转发调用答 `ACCOUNT_REQUIRED` 时映射为同一拒绝（见 `contract/daemon-request/README.md` “Phase-gated methods”）。
 
 ---
 
@@ -373,9 +404,7 @@ ACL space 的外部变更一律在共享 `orgfs.*` IPC bridge 以
 内容写方法（`orgfs.write` / `orgfs.import` / `orgfs.mkdir` / `orgfs.move` /
 `orgfs.remove` / `orgfs.restore`）改为经入口闸判定，复用 #1166 的已认证调用方：
 
-- 放行：本机 operator（`user:<owner>`，无 `onBehalfOf`）；owner 的 user-proxy
-  —— 按 daemon 自己在 worker 启动时登记的 harness 种类（launch spec）认定，
-  session 自报的 `runtime` 字符串（如 `user-proxy_interactive`）不参与判定；
+- 放行：本机 operator（`user:<owner>`，无 `onBehalfOf`）；
   以及 `org.acl.grant` 显式授权且未过期的 agent。
 - 其余已认证 agent 会话、adapter 入口与未认证调用一律
   `ORG_ACL_WRITE_DENIED`（`data` 含 `method`、`org`、`reason`，被拒 agent 另含
@@ -385,7 +414,7 @@ ACL space 的外部变更一律在共享 `orgfs.*` IPC bridge 以
 **`org.acl.*`（owner 节点本地授权）**：`org.acl.grant {org, agent, untilMs?}`、
 `org.acl.revoke {org, agent}`、`org.acl.ls {org}`，CLI 为
 `hyprial org acl grant <org> <agent> [--until <ISO 8601>]` / `revoke` / `ls
-[--json]`。三者都只接受 owner 终端或 owner 的 user-proxy 调用，否则
+[--json]`。三者都只接受 owner 终端调用，否则
 `ORG_ACL_GRANT_FORBIDDEN`；在非 owner 节点调用同码拒绝（`reason:
 "not-owner-node"`）。`grant` 的 agent 只能是本节点 owner 名下、daemon 登记在册
 的 agent（短名经本地 alias 表解析，或本节点的 canonical agent URI），否则
@@ -552,7 +581,7 @@ owner：`runtime` 块加上原六组计量各自归到其 owner 名下（`sessio
 | method | 成功结果字段 | 语义 |
 |---|---|---|
 | `routine.list` | `routines: object[]` | 当前 Routine 投影；每项至少含 `name`, `owner`, `enabled`, `actor`, `actorOwnership`, `inFlight`。 |
-| `agent.create`, `agent.host-invite` | 可选 `routineWarning: {code, message}` | Agent 已创建，但默认 Routine 无法建立。当前成功警告码仅为 `AGENT_DEFAULT_ROUTINE_UNAVAILABLE`；这不是 `error.code`。正常绑定成功时字段缺失。 |
+| `agent.create` | 可选 `routineWarning: {code, message}` | Agent 已创建，但默认 Routine 无法建立。当前成功警告码仅为 `AGENT_DEFAULT_ROUTINE_UNAVAILABLE`；这不是 `error.code`。正常绑定成功时字段缺失。 |
 | `agent.list` | `agentsWithoutRoutine: string[]` | 当前可见 resident Agent 中没有任何绑定 Routine 的 canonical URI；正常无缺口时为空数组。 |
 | `agent.destroy` | `removedRoutines: string[]` | 在同一销毁流程中已结算并删除的 Routine 名称；无绑定时为空数组。 |
 
@@ -563,22 +592,19 @@ owner：`runtime` 块加上原六组计量各自归到其 owner 名下（`sessio
 `AGENT_DEFAULT_ROUTINE_FAILED`，`error.data` 含 `actor` 与 `routineError`。Routine 修改/删除的
 机器码为 `ROUTINE_NAME_IMMUTABLE`、`ROUTINE_BINDING_IMMUTABLE`、
 `ROUTINE_LAST_BINDING`；这些与前述两个 Agent 错误码均由
-`hyprial.contracts.ipc_errors` 注册并冻结。
+`hyprial.error.codes` 注册并冻结。
 
 ### 3.11 Agent migration admission
 
-`AGENT_CREATE_COMMIT_FAILED` 表示 Agent home 文件效果已完成，但创建记录的
-SQLite 提交失败。Host invite 边界只在同一 `entityToken` 的 typed destroy settlement
-完成后返回此错误；若回收仍未结算，调用方不得把失败当作 home 已清理。
-`AGENT_CREATE_ROLLBACK_PENDING` 表示同一创建 correlation 的回收仍未结算；
-`error.message` 保留创建与回收阶段的错误摘要，下一次必须按原 incarnation
-继续结算，不能按名字删除一个后继 Agent。
+`AGENT_CREATE_COMMIT_FAILED` 与 `AGENT_CREATE_ROLLBACK_PENDING` 保留冻结登记，
+但不再由现行产品产出（2026-11-21 随 host-invite 删除）。历史 peer 仍可能携带这两个
+字符串，新 receiver 必须继续识别它们。
 
 `AGENT_MIGRATION_BUSY` 表示迁移容量已满，或目标 Agent 的迁移租约仍持有冲突操作。
 此拒绝发生在新操作的变更准入之前；不代表已经接受的迁移被取消。其他 Agent 的
 不相关操作与只读投影继续可用。已接受迁移的调用方超时不撤销文件效果或 owner 提交；
 清理必须等同一操作的结算，不能用新请求失败推断旧请求未执行。该错误码由
-`hyprial.contracts.ipc_errors` 注册并冻结。
+`hyprial.error.codes` 注册并冻结。
 
 ## 4. Channel protocol(交互式会话)
 
@@ -734,6 +760,8 @@ Allen 点名的两种漂移,给出代码里已经发生过的真实案例做反�
 2. 如果用过且语义不同,**必须**显式换一个新词,或者在这份文档(或它未来的分节)里显式写一条消歧记录——不能假设"反正上下文能看出来是哪个意思"。
 3. 不要因为"英语里这个词听起来贴切"就直接用——`channel` 在英语里对交互式会话、对 IRC 群组、对飞书网关都"听起来贴切",这正是问题所在。
 
+**消歧记录(`envelope`)**:①在本文中也被称为"投递信封",IPC 也有 "IPC envelope"。payload 顶层键 `envelope`(§2.2 ① "payload 内层 envelope")是**消息内层**的 envelope,对应 `InboxMessage.with_envelope` 的本地字段(thread、conversation cell、class),不是①的帧字段,也不是 IPC 信封;①的帧本身不增加任何键。
+
 **层级错配**的具体样子:`daemon/identity.py` 的 `TARGET_KIND_CHANNEL_ROUTE = "channel_route"` 把"投递路径/route 层"的常量取名用了"channel"这个属于"adapter 入站身份层"的词根,与同一份注释里紧挨着的、真正表示入站身份的 `CHANNEL_URI_PREFIX` 语义完全不同却共享词根——读代码的人必须靠专门的一段消歧注释(`identity.py:172-175`)才能分清两者,而不是靠命名本身。
 
 **MUST**(新增常量/字段名时):
@@ -771,6 +799,8 @@ Allen 点名的两种漂移,给出代码里已经发生过的真实案例做反�
 **裁定(风险评估后确定,倾向已在 PAC 里给出,这里是执行落地):`channel:lark:`/`channel:<owner>:<machine>:<name>` 的入站解析双收永久保留,不设版本周期终止;出站(新写)自 PR #280 起已经彻底改为 `adapter:` 形态,本轮没有新增出站切换工作(已在上一轮完成)。**
 
 理由:生产环境的 `desired-state`/`channels.json`/inbox 历史记录里已知存有 `channel:lark:*` 字面量(PAC 52128299015a 给出的生产 `targets` 实测证据);这些记录**零迁移零改写**是硬约束(§ 验收判据 4)——唯一让旧记录继续可用的办法就是解析层继续认得这个前缀。摘除入站解析不会让旧记录"自然消亡",只会让它们从"能解析但没有新实例"变成"直接读不出来",这是主动破坏,不是自然淘汰。**旧形态的消亡路径是:没有任何代码再写出它(§6.2 第 5 点的守卫保证),历史记录随正常的数据生命周期(TTL、手动清理、迁移脚本)逐渐减少,解析代码本身不必也不应该主动清场。**
+
+> **2026-11-24 F1c 更新(Allen 2026-11-23 Q0-b 裁定,取代上面的"永久保留"):** 八个通用 adapter 的 `channel:` 写入改为 `adapter:`,随后删除 `channel:` 的读取兼容(用户档案 squire 端点除外,随 S3c 删除)。旧记录不改写,其会话 id 改变,见 `docs/guides/cell-authority-migration.md` 第 8 节。
 
 ---
 
@@ -826,7 +856,7 @@ Allen 点名的两种漂移,给出代码里已经发生过的真实案例做反�
 1. **Canonical JSON 编码约定五个家族不完全一致**(§2.3):②`progress-event` 不设 `sort_keys`,且是五者中唯一一个;`ensure_ascii` 在①③(默认 `True`)和②④⑤(显式 `False`)之间也不统一。目前没有可观测后果(没有消费者做跨副本字节比较),但只要未来有人给②加基于哈希的去重,这会变成隐性 bug。
 2. **daemon IPC 请求/响应两个方向的 `ensure_ascii` 也不一致**(§3.2):请求侧默认 `True`,响应侧显式 `False`。
 3. **`mcp/unix.py` 客户端读循环没有 8 MiB 上限**,是三套 IPC 客户端实现里唯一的一处(§3.2)。目前无实际风险(服务端强制上限),但不对称本身是维护负担。
-4. ~~**daemon IPC 没有集中的错误码注册表**(§3.7):108 处构造点,39+ 种字面量 code,只有一个(`SESSION_SUPERSEDED_CODE`)被提升成跨模块共享常量。没有机制防止两处不小心拼错同一个 code 字符串导致客户端分支失效。~~ **已修复**:`hyprial/contracts/ipc_errors.py` 注册表 + 冻结/AST 双守卫,见 §3.7 更新。
+4. ~~**daemon IPC 没有集中的错误码注册表**(§3.7):108 处构造点,39+ 种字面量 code,只有一个(`SESSION_SUPERSEDED_CODE`)被提升成跨模块共享常量。没有机制防止两处不小心拼错同一个 code 字符串导致客户端分支失效。~~ **已修复**:`hyprial/error/codes.py` 注册表 + 冻结/AST 双守卫,见 §3.7 更新。
 5. **daemon IPC 的 `version` 字段目前不具备真实的协商能力**(§3.6):双端硬编码同一个字面量,新旧构建之间的方法名/参数不匹配不会被这个字段拦下,只会在调用时报 `METHOD_NOT_FOUND`/`INVALID_ARGUMENT`。
 6. **`hyprial-user-delivery-result/v1`(wire schema)与 `UserDeliveryLedger` 的本地落盘格式共用"schema"这个词,但版本语义不同**(§2.2 ⑤):前者是 `"hyprial-.../v1"` 字符串族成员,后者是纯整数 `schemaVersion`。命名巧合容易造成误读,建议未来有人碰这块代码时留意,不建议现在专门为此发起改名。
 7. **wire-golden 27 例对五个 tagged schema 的覆盖率为零**(§7.2),且没有自动化机制能发现这个缺口(`validate.py` 只查行为标签,不查 schema 覆盖)。IRC codec 剔除后依然如此,不是本轮改动引入的新缺口。

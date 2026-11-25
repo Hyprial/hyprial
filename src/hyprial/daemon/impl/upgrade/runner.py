@@ -1,3 +1,6 @@
+# Decision record (W2B-2, 2026-11-21):
+# - _write_marker and run_upgrade_steps delegate file hardening to
+#   hyprial.kernel.harden_private_path instead of direct os.chmod(0o600).
 """Locked, retryable execution of the versioned upgrade-step registry."""
 
 from __future__ import annotations
@@ -8,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from hyprial.kernel import fsync_directory, lock_exclusive, unlock
+from hyprial.kernel import fsync_directory, harden_private_path, lock_exclusive, unlock
 
 from .steps import STEPS, UpgradeContext, UpgradeStep
 
@@ -50,7 +53,7 @@ def _write_marker(state_dir: Path, step_id: str, value: dict[str, Any]) -> None:
             )
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
+        harden_private_path(temporary, mode=0o600)
         os.replace(temporary, path)
         # Capability-based (no-op where a directory cannot be opened, e.g.
         # Windows); doctor --fix hit PermissionError here (#1902).
@@ -106,6 +109,8 @@ def run_upgrade_steps(
     process_runner: Callable[..., Any] | None = None,
     platform: str | None = None,
     uid: int | None = None,
+    hyprial_home: Path | None = None,
+    membership_migration: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run pending/failed steps under one lock; failures stay retryable."""
 
@@ -120,10 +125,12 @@ def run_upgrade_steps(
         process_runner=process_runner,
         platform=platform,
         uid=uid,
+        hyprial_home=Path(hyprial_home) if hyprial_home is not None else None,
+        membership_migration=membership_migration,
     )
     lock_path = directory / LOCK_NAME
     with lock_path.open("a+b") as lock:
-        os.chmod(lock_path, 0o600)
+        harden_private_path(lock_path, mode=0o600)
         lock_exclusive(lock.fileno())
         try:
             rows: list[dict[str, Any]] = []
@@ -141,13 +148,17 @@ def run_upgrade_steps(
                 try:
                     data = step.run(context)
                     failed = data.get("failed") if isinstance(data, dict) else None
+                    pending = data.get("pending") if isinstance(data, dict) else None
+                    conflicts = data.get("conflicts") if isinstance(data, dict) else None
+                    unconfirmed = data.get("unconfirmed") if isinstance(data, dict) else None
                     marker = {
                         "id": step.id,
-                        "state": "failed" if failed else "done",
+                        "state": ("conflict" if conflicts else "failed" if failed
+                                  else "applied_unconfirmed" if unconfirmed else "pending" if pending else "done"),
                         "attempts": attempts,
                         "updatedAt": _now(),
                         "detail": (
-                            str(failed[0].get("error", "file migration failed"))
+                            str(failed[0].get("error", failed[0].get("reason", "file migration failed")))
                             if failed
                             else None
                         ),

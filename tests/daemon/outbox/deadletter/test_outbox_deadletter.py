@@ -48,7 +48,7 @@ def test_host_rows_are_dead_under_the_current_send_gate() -> None:
     assert _undeliverable_outbox_recipient("peer-node")
     assert not _undeliverable_outbox_recipient("agent:o:node-a:w1")
     assert not _undeliverable_outbox_recipient("user:allen")
-    assert not _undeliverable_outbox_recipient("route:lark:main")
+    assert _undeliverable_outbox_recipient("route:lark:main")
 
 
 # ── C2: offline holds are event-driven ─────────────────────────────────────

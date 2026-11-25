@@ -14,6 +14,7 @@ from hyprial.daemon.impl.application.wiring import graph as graph_module
 from hyprial.daemon.impl.transport import ZenohConfig
 from hyprial.kernel import DaemonRequestError, DaemonStartupPhase, ipc_errors
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies
+from tests.support.runtime.environment import UNIT_USER_ID
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def application(tmp_path, own_daemon_application):
     state.mkdir(parents=True)
     return own_daemon_application(DaemonApplication(
         state_dir=state, socket_path=state / "daemon.sock",
-        node_id="wiring-ownership", owner="wiring-owner", hyprial_home=home,
+        node_id="wiring-ownership", owner="wiring-owner", user_id=UNIT_USER_ID, hyprial_home=home,
         **daemon_dependencies(),
     ))
 
@@ -72,7 +73,6 @@ def test_native_startup_keeps_actor_checkpoint_order_without_late_forwarding(app
         DaemonStartupPhase.ACTOR_RUNTIME_AGENTS_STORE,
         DaemonStartupPhase.ACTOR_RUNTIME_TRANSPORT,
         DaemonStartupPhase.ACTOR_RUNTIME_ORGFS_TRANSPORT,
-        DaemonStartupPhase.ACTOR_RUNTIME_IDENTITY_BINDINGS,
         DaemonStartupPhase.ACTOR_RUNTIME_CASDOOR_SYNC,
         DaemonStartupPhase.ACTOR_RUNTIME_INBOX_STORE,
         DaemonStartupPhase.ACTOR_RUNTIME_LIFECYCLE_STORE,
@@ -135,6 +135,7 @@ def test_live_bridge_harnesses_expose_the_steer_port(application, monkeypatch):
     passes, and that it is the same one the lifecycle manager owns.
     """
     from hyprial.daemon.impl.composition import HarnessPortClient
+    from tests.daemon.harnesses.actors.authority.support import _steer_envelope
 
     _start_native_runtime(application, monkeypatch)
     try:
@@ -144,7 +145,9 @@ def test_live_bridge_harnesses_expose_the_steer_port(application, monkeypatch):
         assert harnesses is application._harnesses
         # Live actor answer, not a stub: an unknown harness is an explicit
         # not-accepted, so the bridge reads a failed steer and notices.
-        assert harnesses.steer("no-such-harness", "no-such-delivery") is False
+        assert harnesses.steer(
+            _steer_envelope("no-such-harness", "no-such-delivery")
+        ) is False
     finally:
         application._close()
 
@@ -208,3 +211,53 @@ def test_real_routine_probe_read_failure_remains_unknown(application, monkeypatc
         application._assign_routine_probe("missing")
 
     assert failure.value is error
+
+
+def test_the_production_cell_port_admits_a_registered_agent(application, monkeypatch):
+    """The real port composition: agent → cell world → admitted envelope.
+
+    Exercises the same ``compose_headless_cell_delivery`` the runtime bridge
+    wiring injects, over the app's real cell runtime, registrar and cell
+    actor registry: an unknown worker defers, and a created agent's cell
+    admits with the agent's own URI as the entry member once its actor has
+    published an active snapshot.
+    """
+    import time as _time
+
+    from hyprial.daemon.impl.api import HarnessDelivery
+    from hyprial.daemon.impl.composition.cell_delivery import (
+        compose_headless_cell_delivery,
+    )
+    from hyprial.kernel import HarnessLaunchSpec
+
+    _start_native_runtime(application, monkeypatch)
+    try:
+        port = compose_headless_cell_delivery(application)
+        delivery = HarnessDelivery("m-1", "c", "s", "agent:x", "work")
+        assert port.headless_envelope("ghost-worker", delivery) is None
+        application.agents.create("cell-worker")
+        application.desired_state.upsert_harness(
+            HarnessLaunchSpec("claude", "cell-worker", headless=True)
+        )
+        deadline = _time.monotonic() + 10
+        envelope = None
+        while envelope is None and _time.monotonic() < deadline:
+            envelope = port.headless_envelope("cell-worker", delivery)
+            if envelope is None:
+                _time.sleep(0.05)
+        assert envelope is not None, "the agent cell never admitted headless work"
+        agents = {
+            str(agent.actor): agent for agent in application.agents.list()
+        }
+        assert "cell-worker" in agents
+        assert envelope.stamp.member == str(agents["cell-worker"].uri)
+        assert envelope.stamp.origin_message_ids == ("m-1",)
+        registry = getattr(application, "_cell_actor_registry", None)
+        assert registry is not None
+        published = registry.snapshot(agents["cell-worker"].cell_id)
+        assert published is not None
+        assert published.active_work is None
+        assert published.queued_work == 0
+        assert published.completed_work == 0
+    finally:
+        application._close()

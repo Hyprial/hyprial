@@ -1,10 +1,13 @@
 """The worker-wheel switch: thin builds for the containerized-transfer image.
 
-With ``HYPRIAL_BUILD_WORKER_WHEEL=1`` the custom build hook returns before
-staging the tailcat sidecar -- the worker image's builder stage compiles the
-sidecar once and COPY --from=builder's it into /opt/hyprial/_bin, so the wheel
-build needs neither a .git context nor a Go toolchain.  The retired GUI bundle
-has no stage at all in this hook.
+With ``HYPRIAL_BUILD_WORKER_WHEEL=1`` the custom build hook skips the tailcat
+sidecar and the GUI -- the worker image's builder stage compiles the sidecar
+once and COPY --from=builder's it into /opt/hyprial/_bin, so the wheel build
+needs neither a .git context nor a Go toolchain.  The worker wheel keeps the
+native engine stage; these sidecar/GUI-focused tests set the explicit
+``HYPRIAL_BUILD_SKIP_NATIVE=1`` opt-out (as the worker Dockerfile does until
+its image carries Rust), and ``test_native_engine_stage.py`` covers the
+worker wheel's native stage itself.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ def _import_build_hook():
 
 _build_hook = _import_build_hook()
 WORKER_WHEEL_ENV = _build_hook.WORKER_WHEEL_ENV
+SKIP_NATIVE_ENV = _build_hook.SKIP_NATIVE_ENV
 CustomBuildHook = _build_hook.CustomBuildHook
 
 
@@ -76,11 +80,13 @@ def test_the_hook_stages_the_installed_gui_but_not_the_retired_tree() -> None:
 def test_worker_switch_skips_the_sidecar_in_a_gitless_context(tmp_path: Path) -> None:
     """No .git, no Go: the worker wheel still builds without the sidecar."""
     os.environ[WORKER_WHEEL_ENV] = "1"
+    os.environ[SKIP_NATIVE_ENV] = "1"
     try:
         build_data: dict = {}
         _hook(tmp_path).initialize("wheel", build_data)
     finally:
         os.environ.pop(WORKER_WHEEL_ENV, None)
+        os.environ.pop(SKIP_NATIVE_ENV, None)
     assert build_data.get("force_include") is None
     assert build_data.get("pure_python") is not True
     assert build_data.get("tag") is None
@@ -91,6 +97,7 @@ def test_worker_switch_wheel_contents_are_thin(tmp_path: Path) -> None:
     import zipfile
 
     os.environ[WORKER_WHEEL_ENV] = "1"
+    os.environ[SKIP_NATIVE_ENV] = "1"
     try:
         build_data: dict = {"force_include": {}, "pure_python": False, "tag": "x"}
         _hook(tmp_path).initialize("wheel", build_data)
@@ -102,6 +109,7 @@ def test_worker_switch_wheel_contents_are_thin(tmp_path: Path) -> None:
         names = zipfile.ZipFile(wheel).namelist()
     finally:
         os.environ.pop(WORKER_WHEEL_ENV, None)
+        os.environ.pop(SKIP_NATIVE_ENV, None)
     assert not any(
         name.startswith("hyprial/_bin/")
         or name.startswith("hyprial/_gui/")

@@ -348,7 +348,7 @@ def test_remove_of_an_already_gone_member_keeps_inert_device_history(
 # -- delete ---------------------------------------------------------------------
 
 
-def test_delete_refuses_authority_shutdown_without_mutating_members(
+def test_delete_preview_binds_an_operation_without_mutating_members(
     runtime: OrgFsRuntime, home: Path
 ) -> None:
     service = _service(runtime, home)
@@ -358,9 +358,9 @@ def test_delete_refuses_authority_shutdown_without_mutating_members(
     space_id = _space_id(runtime, "group-acme")
     before_meta = runtime.facade.space_meta(space_id)
     before_lifecycle = runtime.facade.read_text(space_id, ORG_META_DOC)
-    with pytest.raises(OrgNetworkError) as refused:
-        service.delete("group-acme")
-    assert refused.value.code == "LAST_AUTHORITY_REFUSED"
+    preview = service.delete("group-acme")
+    assert preview["phase"] == "pending-confirmation"
+    assert preview["operationId"]
     assert _member_users(runtime, "group-acme") == {f"user:{OWNER}", f"user:{BOB}"}
     text, _version = runtime.facade.read_text(_space_id(runtime, "group-acme"), ORG_META_DOC)
     assert json.loads(text)["state"] == "active"
@@ -401,8 +401,70 @@ def test_list_reports_role_device_count_and_state(
             "role": "owner",
             "devices": 2,
             "state": "active",
+            "authorityDevice": True,
         }
     ]
+
+
+def test_list_tracks_authority_transfer_without_claiming_the_old_device(
+    runtime: OrgFsRuntime, home: Path
+) -> None:
+    service = _service(runtime, home)
+    service.create("group-acme")
+    space_id = _space_id(runtime, "group-acme")
+    sidecar = runtime.membership_sidecar
+    table = sidecar.tailnets[space_id]
+    bob = member(BOB, "node-b", address="tcp://10.0.0.9:7447#bob")
+    table["members"]["node-b"] = bob
+
+    sidecar.membership_request(
+        "authority-repin",
+        {
+            "operationId": "repin-list-authority",
+            "tailnetId": space_id,
+            "authority": {
+                key: bob[key]
+                for key in (
+                    "owner",
+                    "deviceId",
+                    "masterPublic",
+                    "serverPublic",
+                    "address",
+                )
+            }
+            | {"controlPort": 7448},
+            "expectedRevision": table["revision"],
+            "confirmed": True,
+        },
+    )
+
+    assert service.list()["orgs"][0]["authorityDevice"] is False
+
+
+def test_list_reports_unknown_authority_without_failing(
+    runtime: OrgFsRuntime, home: Path
+) -> None:
+    _service(runtime, home).create("group-acme")
+    unavailable = _service(runtime, home, membership_request=None)
+
+    assert unavailable.list()["orgs"][0]["authorityDevice"] is None
+
+
+def test_list_reports_missing_authority_metadata_as_unknown(
+    runtime: OrgFsRuntime, home: Path
+) -> None:
+    _service(runtime, home).create("group-acme")
+    sidecar = runtime.membership_sidecar
+
+    def membership_request(op: str, params: dict[str, Any]) -> dict[str, Any]:
+        status = sidecar.membership_request(op, params)
+        for row in status["tailnets"]:
+            row.pop("authorityDeviceId", None)
+        return status
+
+    missing = _service(runtime, home, membership_request=membership_request)
+
+    assert missing.list()["orgs"][0]["authorityDevice"] is None
 
 
 def test_list_reports_member_roles(runtime: OrgFsRuntime, home: Path) -> None:
@@ -442,7 +504,7 @@ def test_process_leave_requests_retains_members_until_confirmation(
 
     result = service.process_leave_requests()
 
-    assert result == {"processed": [], "skipped": ["group-acme"]}
+    assert result == {"processed": [], "skipped": ["group-acme"], "unbound": []}
     assert f"user:{BOB}" in _member_users(runtime, "group-acme")
     assert f"user:{BOB}" in _acl_member_users(runtime, "group-acme")
     assert BOB in store.list_leave_requests("group-acme")
@@ -479,7 +541,7 @@ def test_process_leave_requests_skips_invalid_member_written_names(
 
     result = service.process_leave_requests()
 
-    assert result == {"processed": [], "skipped": ["group-acme"]}
+    assert result == {"processed": [], "skipped": ["group-acme"], "unbound": []}
     assert f"user:{BOB}" in _member_users(runtime, "group-acme")
     # The valid request awaits confirmation; invalid names still never enter the store.
     assert list(store.list_leave_requests("group-acme")) == [BOB]
@@ -497,7 +559,7 @@ def test_process_leave_requests_is_owner_admin_business_only(
     )
     # bob is a member: no remove grant, so nothing is processed.
     as_bob = _service(runtime, home, owner=BOB, node_id="node-b")
-    assert as_bob.process_leave_requests() == {"processed": [], "skipped": []}
+    assert as_bob.process_leave_requests() == {"processed": [], "skipped": [], "unbound": []}
     assert OrgFsDirectoryStore(runtime.facade).list_leave_requests("group-acme") != {}
 
 
@@ -570,7 +632,7 @@ def test_r11_stale_leave_does_not_remove_a_rejoined_member_with_skewed_clocks(
     )
     runtime.facade.invite(space_id, f"user:{BOB}", "rw")
 
-    assert service.process_leave_requests() == {"processed": [], "skipped": []}
+    assert service.process_leave_requests() == {"processed": [], "skipped": [], "unbound": []}
     assert f"user:{BOB}" in _member_users(runtime, "group-acme")
     assert BOB in store.list_leave_requests("group-acme")
 
@@ -602,7 +664,7 @@ def test_r11_fresh_leave_records_pending_removal_with_skewed_clocks(
 
     result = service.process_leave_requests()
 
-    assert result == {"processed": [], "skipped": ["group-acme"]}
+    assert result == {"processed": [], "skipped": ["group-acme"], "unbound": []}
     journals = [json.loads(path.read_text()) for path in (home / "tailnet/removals").glob("*.json")]
     assert len(journals) == 1
     assert journals[0]["owner"] == BOB

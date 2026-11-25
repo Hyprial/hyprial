@@ -28,6 +28,32 @@ def manifest(root: Path, entries: list[dict[str, str]], *, supervision: bool = F
 
 
 def test_all_132_records_keep_exact_nonpath_bytes_types_and_metadata() -> None:
+    """Pin reviewed manifest counts and portable non-path digests.
+
+    The M1 source-entry card removes three stale stub-readiness records and
+    adds ``READY_POLL_INTERVAL_SECONDS`` plus
+    ``lifecycle._wait_for_node_ready``, returning the launcher count to 75.
+    The Python GUI session host (2b) adds one scanner false-positive record,
+    ``BoundedHttpProtocol._start_timer`` (a connection deadline, not a start): 85 + 1 = 86.
+    One launch path (PR 3, 2026-11-16) renames ``lifecycle._wait_for_node_ready`` to
+    ``_wait_for_host_ready`` (it now also reads the Vite dev server's line) and rewords
+    the reasons of three records that named the Node host; the count stays 86 and the
+    digest is re-pinned for exactly those reviewed edits.
+    Host serves the daemon driver in process (2822 B3, 2026-11-19) rewords the reasons of
+    ``BACKEND_READY_TIMEOUT_SECONDS`` and ``FRONTEND_READY_TIMEOUT_SECONDS`` (the host
+    ready wait of the daemon driver uses the former); the count stays 86 and the digest is
+    re-pinned for exactly those two reason edits.
+    PTY connector removal (2026-11-19) drops the two ``startup_probe_seconds`` records that
+    left with the deleted launch path (shrink-only manifest): 86 - 2 = 84, digest re-pinned.
+    T1b (send without the link gate, 2026-11-21) retires the WG-037 wire-contract case with the
+    gate it exercised and drops its inbox exemption (shrink-only manifest): 69 - 1 = 68, digest
+    re-pinned for exactly that removed record.
+    DSH/dsh-tui and tmux removal (W1D-2, 2026-11-21) drops six supervision records
+    (84 - 6 = 78) and two dsh_tui carrier inbox records (69 - 2 = 67), digests re-pinned.
+    I5-3拆包重定位 moves typed fetch_pending identities from removed DaemonEventBridge
+    result sites to the live results and batch-claims mixins, while retiring two reconcile sites.
+    """
+
     expected = {
         # PR #1577 (dsh-tui interactive carrier): +3 supervision sites, and
         # #1571 (Pi P2 launch trust): +1 startup readiness bound. The
@@ -41,7 +67,12 @@ def test_all_132_records_keep_exact_nonpath_bytes_types_and_metadata() -> None:
         # 2b7f21e7b/8898eb3e9's Lark request-budget false-positive classification
         # and parent-process custody rationale: 73 + 1 + 1 = 75. Preserve both
         # reviewed entries byte-for-byte; this merge adds no exemption.
-        'supervision_exemptions.json': (75, 'a4f7474389ab192bf8fe1adf218cc5753601f21ff60d73ede99e70759ec7ee68'),
+        # Merge of release/v0.5.5.3.4 into release/v0.5.5.4 (per Allen
+        # 2026-11-07): 0.5.5.4's entries plus 0.5.5.3.4's public-mirror owner
+        # scrub (allenwoods -> alicesmith); count unchanged at 75.
+        # Ten reviewed adapter owner sites were added to the manifest by this
+        # CI repair; the count and non-path digest pin their exact metadata.
+        'supervision_exemptions.json': (78, 'ea5224eb9953a0ccdddab605bef4b446532cb720fd4b22ff77d03c6ece3ffb7d'),
         'actor_boundary_exemptions.json': (3, '4c426d223750ef7ee1469e896222d5544a782e98169130c0baa6c85df017ab24'),
         # WP8 (send links): +3 wire-contract evaluator cases WG-032/033/037 that seed an
         # isolated InboxService like WG-001..029; the only growth, flagged in #1457.
@@ -50,7 +81,7 @@ def test_all_132_records_keep_exact_nonpath_bytes_types_and_metadata() -> None:
         # #2088 (release 0.5.5.2) inventories two existing typed fetch_pending
         # calls in runtime/reconcile.py through DeliveryCustodyFacade, each with
         # its own reason; no raw InboxService use is added. 68 + 2 = 70.
-        'inbox_authority_exemptions.json': (70, 'fe92290ab0f93dc618850df97d732ed7793e6ec94cfd56818a861803a93c87db'),
+        'inbox_authority_exemptions.json': (64, '8f1a04c2c709253d872db0c5c6bae325e8dfbf69abf2a2e11e181c99fd27ff21'),
     }
     for name, (count, digest) in expected.items():
         data = (Path(__file__).resolve().parents[4] / 'tests' / name).read_bytes()
@@ -75,17 +106,17 @@ def test_inbox_inverse_targets_only_existing_frozen_records() -> None:
 
 
 QUERY = 'src/hyprial/daemon/impl/application/messaging/inbox_surface/queries.py'
-SEND = 'src/hyprial/daemon/impl/application/messaging/inbox_surface/send.py'
+REPLY = 'src/hyprial/daemon/impl/application/messaging/inbox_surface/reply/__init__.py'
 HOST = 'src/hyprial/daemon/impl/application/__init__.py'
 
 
 def legal_fixture(root: Path) -> tuple[Path, Path]:
     write(root, QUERY, 'class _MessageQueriesMixin:\n    def _ipc_message_ack(self):\n        self._inbox.ack()\n')
-    write(root, SEND, 'class _MessageSendMixin:\n    def _ipc_message_reply(self):\n        self._inbox.ack()\n')
+    write(root, REPLY, 'class _MessageReplyMixin:\n    def _ipc_message_reply(self):\n        self._inbox.ack()\n')
     write(root, HOST,
         'from hyprial.daemon.impl.application.messaging.inbox_surface.queries import _MessageQueriesMixin\n'
-        'from hyprial.daemon.impl.application.messaging.inbox_surface.send import _MessageSendMixin\n'
-        'class DaemonApplication(_MessageQueriesMixin, _MessageSendMixin):\n    pass\n')
+        'from hyprial.daemon.impl.application.messaging.inbox_surface.reply import _MessageReplyMixin\n'
+        'class DaemonApplication(_MessageQueriesMixin, _MessageReplyMixin):\n    pass\n')
     return root / 'src/hyprial', manifest(root, [{'path': QUERY, 'owner': 'DaemonApplication.handle', 'operation': 'ack'}])
 
 
@@ -128,15 +159,15 @@ def test_inbox_mapping_rejects_every_nonidentical_actual_definition(tmp_path: Pa
         write(tmp_path, HOST, 'class DaemonApplication:\n    pass\n')
     elif mutation == 'fake_import':
         write(tmp_path, HOST, 'class _MessageQueriesMixin:\n    pass\n'
-            'class _MessageSendMixin:\n    pass\n'
-            'class DaemonApplication(_MessageQueriesMixin, _MessageSendMixin):\n    pass\n')
+            'class _MessageReplyMixin:\n    pass\n'
+            'class DaemonApplication(_MessageQueriesMixin, _MessageReplyMixin):\n    pass\n')
     elif mutation in ('fake_assignment', 'shadowed_module_import'):
         original = (tmp_path / HOST).read_text()
         shadow = ('_MessageQueriesMixin = object\n' if mutation == 'fake_assignment'
                   else 'import fake as _MessageQueriesMixin\n')
         write(tmp_path, HOST, original.replace('class DaemonApplication(', shadow + 'class DaemonApplication('))
     else:
-        write(tmp_path, SEND, 'class _MessageSendMixin:\n    pass\n')
+        write(tmp_path, REPLY, 'class _MessageReplyMixin:\n    pass\n')
     query.write_text(source)
     assert validate_manifest(src, exemptions), mutation
 

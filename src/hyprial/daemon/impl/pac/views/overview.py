@@ -40,6 +40,7 @@ WORK_ITEM_LOG_LINE_LIMIT = 240
 WORK_ITEM_LAST_LOG_TEXT_LIMIT = 200
 WORK_ITEM_ACCEPTANCE_LIMIT = 500
 WORK_ITEM_CHECKLIST_TEXT_LIMIT = 200
+WORK_ITEM_DOCUMENT_LIMIT = 8_000
 
 Request = Callable[[str, Mapping[str, Any]], Any]
 
@@ -182,14 +183,13 @@ def build_model(
 ) -> dict[str, Any]:
     """Turn a :func:`collect` snapshot into the page's data model.
 
-    ``missions`` are parsed work-item files (``hyprial.daemon.impl.pac.missions``): a graph
-    a work item lists sits on that work item's line, under the work item's owner,
-    instead of an inferred one.  Only five fields of a work item reach
-    ``model["missions"]``; its background and goal stay in the missions space.
-    ``model["workItems"]`` instead carries every loaded work item, whatever its
-    status or age (design-work-items-replace-kanban §4), so the page can show
-    the whole backlog, not only items with graphs inside the run window
-    (``window_days`` also fixes the archive cutoff for done/dropped items).
+    ``missions`` are optional current-document views. Usable explicit graph
+    references group existing graphs under the document's stated owner;
+    nothing here starts a task or grants execution authority. Five display
+    fields reach ``model["missions"]`` for the linked graph lines.
+    ``model["workItems"]`` carries every loaded document, including those
+    without usable metadata, with bounded redacted source and diagnostics.
+    Status and age only affect presentation and the optional archive filter.
     """
 
     routines = {
@@ -310,8 +310,10 @@ def build_model(
 
     mission_of: dict[str, Mapping[str, Any]] = {}
     for mission in sorted(missions, key=lambda item: str(item.get("id"))):
-        for graph in mission.get("pacs") or []:
-            mission_of.setdefault(str(graph), mission)
+        if mission.get("associationEligible") is False:
+            continue
+        for graph in _string_list(mission.get("pacs")):
+            mission_of.setdefault(graph, mission)
     local = {item["id"] for item in runs if not item["routine"]}
     mission_of = {graph: m for graph, m in mission_of.items() if graph in local}
     lines = _task_lines(node, runs, links, routines, signatures, mission_of)
@@ -337,11 +339,6 @@ def build_model(
                 "status": mission.get("status"),
                 "owner": short_actor(mission.get("owner")),
                 "pacs": sorted(g for g, m in mission_of.items() if m is mission),
-                **(
-                    {"unverifiedOperator": True}
-                    if mission.get("unverifiedOperator")
-                    else {}
-                ),
             }
             for mission in {id(m): m for m in mission_of.values()}.values()
         ],
@@ -353,11 +350,19 @@ def build_model(
 
 
 def _epoch_ms(value: object) -> int | None:
-    """An epoch-millisecond int as the work-item head normalizes it, else None."""
+    """A projected epoch-millisecond integer, never a document rewrite."""
 
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     return None
+
+
+def _list(value: object) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _string_list(value: object) -> list[str]:
+    return [item for item in _list(value) if isinstance(item, str)]
 
 
 def _work_item_entry(
@@ -368,12 +373,12 @@ def _work_item_entry(
     checklist = [
         {
             "text": redact(item.get("text"))[:WORK_ITEM_CHECKLIST_TEXT_LIMIT],
-            "done": bool(item.get("done")),
+            "done": item.get("done") is True,
         }
-        for item in mission.get("checklist") or []
-        if isinstance(item, dict)
+        for item in _list(mission.get("checklist"))
+        if isinstance(item, dict) and isinstance(item.get("text"), str) and isinstance(item.get("done"), bool)
     ]
-    raw_log = [str(line) for line in mission.get("log") or []]
+    raw_log = _string_list(mission.get("log"))
     log = [redact(line)[:WORK_ITEM_LOG_LINE_LIMIT] for line in raw_log[-WORK_ITEM_LOG_LINES:]]
     last_log = None
     if log:
@@ -383,7 +388,8 @@ def _work_item_entry(
             "text": redact(text)[:WORK_ITEM_LAST_LOG_TEXT_LIMIT],
             "line": log[-1],
         }
-    pacs = sorted({str(graph) for graph in mission.get("pacs") or []})
+    pacs = sorted(set(_string_list(mission.get("pacs"))))
+    document = redact(mission.get("documentText"))
     return {
         "id": str(mission.get("id")),
         "title": str(mission.get("title") or ""),
@@ -396,7 +402,7 @@ def _work_item_entry(
             "done": sum(1 for item in checklist if item["done"]),
             "total": len(checklist),
         },
-        "depends": [str(dep) for dep in mission.get("depends") or []],
+        "depends": _string_list(mission.get("depends")),
         "lastLog": last_log,
         "pacs": pacs,
         "pacsInWindow": [graph for graph in pacs if graph in run_ids],
@@ -405,7 +411,10 @@ def _work_item_entry(
         "log": log,
         "opened": _epoch_ms(mission.get("opened")),
         "closed": _epoch_ms(mission.get("closed")),
-        "unverifiedOperator": bool(mission.get("unverifiedOperator")),
+        "documentText": document[:WORK_ITEM_DOCUMENT_LIMIT],
+        "documentTruncated": len(document) > WORK_ITEM_DOCUMENT_LIMIT,
+        "diagnostics": [redact(message)[:500] for message in _string_list(mission.get("diagnostics"))],
+        "path": redact(mission.get("path")),
     }
 
 

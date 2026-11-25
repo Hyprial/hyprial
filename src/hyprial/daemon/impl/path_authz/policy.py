@@ -1,3 +1,12 @@
+# Decision record (W1E-2, 2026-11-21):
+# - Preserves 100% of PathPolicy component containment and denial rules (T2
+#   confused-deputy boundary: sessions may only access their own workspace and
+#   registered cwd; hyprial home, other agent homes, secrets/, and daemon
+#   state_dir are always refused).
+# - Removes _descriptor_path (/proc/self/fd, F_GETPATH) and platform/O_NOFOLLOW/
+#   O_BINARY flags in favor of realpath + _decide + os.lstat & manysys.path_is_reparse
+#   ancestor/target checks + unbuffered binary open + os.fstat regular-file,
+#   hardlink, (st_dev, st_ino), and size/mtime consistency verification.
 """Who may make the daemon read which local file, and how it is read.
 
 Rule (Allen, 2026-09-30): a caller may name a file only inside its own
@@ -13,22 +22,22 @@ working area, and the hyprial home is never readable this way.
   The daemon state dir is refused too; it may live outside the home
   (``HARNESS_STATE_DIR``).
 
-Mechanics (hq, 2026-10-06): resolve with ``realpath`` first and compare whole
-path components (``/a/ws2`` is not inside ``/a/ws``); open with
-``O_NOFOLLOW``; ``fstat`` the descriptor to confirm a regular file; re-check
-the descriptor's own path where the platform reports it; compare the size
-before and after the read; and copy the bytes from that one descriptor.
-The path is never opened twice, so a symlink swapped in after the decision
-cannot redirect the read.
+Mechanics: resolve with ``realpath`` first and compare whole path components
+(``/a/ws2`` is not inside ``/a/ws``); verify ancestors and target with
+``lstat`` and ``path_is_reparse``; open the regular file once in unbuffered
+binary mode; ``fstat`` the descriptor to confirm a regular file and matching
+``(st_dev, st_ino)``; compare the size and mtime before and after the read;
+and copy the bytes from that one descriptor.
 """
 
 from __future__ import annotations
 
 import os
 import stat
-import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from hyprial.kernel import path_is_reparse
 
 REASON_OUTSIDE_ALLOWED_ROOTS = "outside-allowed-roots"
 REASON_HYPRIAL_HOME = "hyprial-home"
@@ -43,14 +52,6 @@ REASON_EMPTY = "empty"
 REASON_TOO_LARGE = "too-large"
 REASON_HARDLINK = "hardlinked"
 
-_OPEN_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_NONBLOCK", 0)
-    | getattr(os, "O_NOCTTY", 0)
-    | getattr(os, "O_BINARY", 0)
-)
 _READ_CHUNK = 1024 * 1024
 
 
@@ -121,7 +122,7 @@ def _within(path: Path, root: Path) -> bool:
         root_stat = os.lstat(root)
     except OSError:
         return False
-    if stat.S_ISLNK(root_stat.st_mode):
+    if stat.S_ISLNK(root_stat.st_mode) or path_is_reparse(root_stat):
         return False
     for ancestor in (path, *path.parents):
         try:
@@ -241,7 +242,16 @@ def _own_app_reports(
     if _real(given) != expected:
         return None
     reports = home / "apps" / app / "reports"
-    if reports.is_symlink() or _real(reports) != reports or not reports.is_dir():
+    try:
+        reports_stat = os.lstat(reports)
+    except OSError:
+        return None
+    if (
+        stat.S_ISLNK(reports_stat.st_mode)
+        or path_is_reparse(reports_stat)
+        or _real(reports) != reports
+        or not stat.S_ISDIR(reports_stat.st_mode)
+    ):
         return None
     return reports
 
@@ -312,56 +322,45 @@ def _decide(path: Path, policy: PathPolicy) -> None:
         )
 
 
-def _descriptor_path(fd: int) -> Path | None:
-    """Where the open descriptor really points.
-
-    ``None`` only on a platform that cannot report it (the inode comparison
-    is then the last check).  On Darwin and Linux a failure to read it is a
-    refusal: aliases such as ``/.vol/<dev>/<ino>`` and a parent directory
-    swapped after the decision are caught only here.
-    """
-
+def _is_link_or_reparse(path: Path) -> bool:
     try:
-        if sys.platform == "darwin":
-            import fcntl
-
-            raw = fcntl.fcntl(fd, fcntl.F_GETPATH, b"\0" * 1024)
-            return _real(raw.rstrip(b"\0").decode())
-        if sys.platform.startswith("linux"):
-            return _real(os.readlink(f"/proc/self/fd/{fd}"))
-    except (OSError, AttributeError, UnicodeDecodeError, ValueError) as error:
-        raise PathRefused(
-            REASON_UNVERIFIED,
-            "the opened file's real location could not be verified",
-            path=None,
-        ) from error
-    return None
+        observed = os.lstat(path)
+    except OSError:
+        return False
+    return bool(stat.S_ISLNK(observed.st_mode) or path_is_reparse(observed))
 
 
-def _open(path: Path) -> int:
-    try:
-        return os.open(path, _OPEN_FLAGS)
-    except FileNotFoundError as error:
-        raise PathRefused(
-            REASON_NOT_FOUND, f"{path} does not exist", path=str(path)
-        ) from error
-    except OSError as error:
-        if os.path.islink(path):
-            # O_NOFOLLOW refused a final component that became a symlink
-            # after realpath resolved it: the path changed under us.
+def _verify_ancestors(path: Path, policy: PathPolicy) -> None:
+    for ancestor in reversed(path.parents):
+        try:
+            observed = os.lstat(ancestor)
+        except FileNotFoundError as error:
             raise PathRefused(
-                REASON_SYMLINK,
-                f"{path} was replaced by a symlink while being read",
+                REASON_NOT_FOUND, f"{path} does not exist", path=str(path)
+            ) from error
+        except OSError as error:
+            raise PathRefused(
+                REASON_UNREADABLE,
+                f"{path} cannot be inspected: {error}",
                 path=str(path),
             ) from error
-        raise PathRefused(
-            REASON_UNREADABLE, f"{path} cannot be opened: {error}", path=str(path)
-        ) from error
+        if stat.S_ISLNK(observed.st_mode) or path_is_reparse(observed):
+            _decide(_real(path.parent) / path.name, policy)
+            raise PathRefused(
+                REASON_SYMLINK,
+                f"{path} has a symlink or reparse ancestor",
+                path=str(path),
+            )
+        if not stat.S_ISDIR(observed.st_mode):
+            raise PathRefused(
+                REASON_NOT_FOUND, f"{path} does not exist", path=str(path)
+            )
+    _decide(_real(path.parent) / path.name, policy)
 
 
 def _read_exact(fd: int, size: int) -> bytes:
     chunks: list[bytes] = []
-    remaining = size + 1  # one extra byte reveals growth during the read
+    remaining = size + 1
     while remaining > 0:
         chunk = os.read(fd, min(_READ_CHUNK, remaining))
         if not chunk:
@@ -392,8 +391,9 @@ def read_authorized_file(
         )
     resolved = _real(raw_path)
     _decide(resolved, policy)
+    _verify_ancestors(resolved, policy)
     try:
-        before_open = os.stat(resolved)
+        before_open = os.lstat(resolved)
     except FileNotFoundError as error:
         raise PathRefused(
             REASON_NOT_FOUND, f"{resolved} does not exist", path=str(resolved)
@@ -404,13 +404,41 @@ def read_authorized_file(
             f"{resolved} cannot be inspected: {error}",
             path=str(resolved),
         ) from error
+    if stat.S_ISLNK(before_open.st_mode) or path_is_reparse(before_open):
+        raise PathRefused(
+            REASON_SYMLINK,
+            f"{resolved} was replaced by a symlink while being read",
+            path=str(resolved),
+        )
     if not stat.S_ISREG(before_open.st_mode):
         raise PathRefused(
             REASON_NOT_REGULAR, f"{resolved} is not a regular file", path=str(resolved)
         )
-    fd = _open(resolved)
     try:
+        handle = open(resolved, "rb", buffering=0)
+    except FileNotFoundError as error:
+        raise PathRefused(
+            REASON_NOT_FOUND, f"{resolved} does not exist", path=str(resolved)
+        ) from error
+    except OSError as error:
+        if _is_link_or_reparse(resolved):
+            raise PathRefused(
+                REASON_SYMLINK,
+                f"{resolved} was replaced by a symlink while being read",
+                path=str(resolved),
+            ) from error
+        raise PathRefused(
+            REASON_UNREADABLE, f"{resolved} cannot be opened: {error}", path=str(resolved)
+        ) from error
+    with handle:
+        fd = handle.fileno()
         opened = os.fstat(fd)
+        if path_is_reparse(opened):
+            raise PathRefused(
+                REASON_SYMLINK,
+                f"{resolved} was replaced by a symlink while being read",
+                path=str(resolved),
+            )
         if not stat.S_ISREG(opened.st_mode):
             raise PathRefused(
                 REASON_NOT_REGULAR,
@@ -418,23 +446,17 @@ def read_authorized_file(
                 path=str(resolved),
             )
         if policy.allowed_roots is not None and opened.st_nlink > 1:
-            # A hard link has its own path, so realpath, containment and the
-            # descriptor re-judge all see the allowed root even when the same
-            # inode also lives in secrets/ or another agent's home.  Sessions
-            # may not read a multiply-linked file; the operator is unchanged.
-            # The refusal never echoes the path (the link may name a secret).
-            # Limit: a link count cannot see a link made to a secret that was
-            # later rotated by atomic replace (the old inode keeps one link),
-            # so rotation must treat the old secret as revoked.
             raise PathRefused(
                 REASON_HARDLINK, "a multiply-linked file was refused", path=None
             )
-        actual = _descriptor_path(fd)
-        if actual is not None:
-            # An intermediate directory swapped after realpath would land
-            # the open somewhere else: judge where it really landed.
-            _decide(actual, policy)
+        _verify_ancestors(resolved, policy)
         if (opened.st_dev, opened.st_ino) != (before_open.st_dev, before_open.st_ino):
+            if _is_link_or_reparse(resolved):
+                raise PathRefused(
+                    REASON_SYMLINK,
+                    f"{resolved} was replaced by a symlink while being read",
+                    path=str(resolved),
+                )
             raise PathRefused(
                 REASON_CHANGED,
                 f"{resolved} changed while being read",
@@ -469,6 +491,4 @@ def read_authorized_file(
                 f"{resolved} changed while being read",
                 path=str(resolved),
             )
-    finally:
-        os.close(fd)
     return AuthorizedFile(path=resolved, name=resolved.name, data=data)

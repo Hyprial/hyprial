@@ -62,3 +62,14 @@ class RoutineServiceAdapter:
 
     def address_migrations(self):
         return self._call(self.service.address_migrations)
+
+    def export(self, *, name):
+        return self._call(self.service.export, name=name)
+
+    def list_executed_by(self, *, agent):
+        return self._call(self.service.list_executed_by, agent=agent)
+
+    def wait_in_flight_drained(self, *, names, timeout_seconds):
+        return self._call(
+            self.service.wait_in_flight_drained, names=names, timeout_seconds=timeout_seconds
+        )

@@ -1,15 +1,27 @@
+# Decision record (W2B-2, 2026-11-21):
+# - ProtectedResolver._read_protected delegates private directory and file
+#   verification/reading to secure_private_directory and read_private_file
+#   instead of POSIX-only dir_fd traversal, while preserving ancestor link/
+#   reparse rejection, expected_uid checks, and ServiceConnectError mapping.
 """Descriptor-checked loading for daemon-private service access records."""
 
 from __future__ import annotations
 
 import json
-import os
 import stat
 import threading
 from pathlib import Path
 from typing import Mapping
 
-from hyprial.kernel import current_uid, ipc_errors, posix_metadata_enforced
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    current_uid,
+    ipc_errors,
+    path_is_reparse,
+    posix_metadata_enforced,
+    read_private_file,
+    secure_private_directory,
+)
 
 from .models import (
     AccessSnapshot,
@@ -71,75 +83,35 @@ class ProtectedResolver:
         return self.load().resolve_device(device_id, remote_port)
 
     def _read_protected(self) -> str:
-        directory_fd = file_fd = None
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
         try:
             if not self.path.is_absolute():
                 raise OSError("protected service path must be absolute")
-            directory_fd = os.open(
-                "/", flags | getattr(os, "O_DIRECTORY", 0) | nofollow
-            )
+            current = Path(self.path.anchor)
             for part in self.path.parent.parts[1:]:
-                next_fd = os.open(
-                    part,
-                    flags | getattr(os, "O_DIRECTORY", 0) | nofollow,
-                    dir_fd=directory_fd,
-                )
-                os.close(directory_fd)
-                directory_fd = next_fd
-            directory = os.fstat(directory_fd)
-            if (
-                not stat.S_ISDIR(directory.st_mode)
-                or (
-                    posix_metadata_enforced()
-                    and (
-                        stat.S_IMODE(directory.st_mode) != 0o700
-                        or directory.st_uid != self._expected_uid
-                    )
-                )
-            ):
-                raise OSError("unsafe protected service directory")
-            file_fd = os.open(
-                self.path.name,
-                flags | nofollow,
-                dir_fd=directory_fd,
+                current = current / part
+                directory = current.lstat()
+                if (
+                    stat.S_ISLNK(directory.st_mode)
+                    or path_is_reparse(directory)
+                    or not stat.S_ISDIR(directory.st_mode)
+                ):
+                    raise OSError("unsafe protected service directory")
+            secure_private_directory(self.path.parent, create=False, mode=0o700)
+            parent_info = self.path.parent.lstat()
+            payload, info = read_private_file(
+                self.path, mode=0o600, max_bytes=_MAX_RECORD_BYTES
             )
-            info = os.fstat(file_fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or (
-                    posix_metadata_enforced()
-                    and (
-                        stat.S_IMODE(info.st_mode) != 0o600
-                        or info.st_uid != self._expected_uid
-                    )
-                )
-                or info.st_size > _MAX_RECORD_BYTES
+            if posix_metadata_enforced() and (
+                parent_info.st_uid != self._expected_uid
+                or info.st_uid != self._expected_uid
             ):
                 raise OSError("unsafe protected service file")
-            chunks: list[bytes] = []
-            remaining = _MAX_RECORD_BYTES + 1
-            while remaining:
-                chunk = os.read(file_fd, min(65536, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            payload = b"".join(chunks)
-            if len(payload) > _MAX_RECORD_BYTES:
-                raise OSError("protected service file is too large")
             return payload.decode("utf-8")
-        except (OSError, UnicodeError) as error:
+        except (OSError, PrivateAccessUnsupported, UnicodeError) as error:
             raise ServiceConnectError(
                 ipc_errors.SERVICE_DEVICE_UNAVAILABLE,
                 "protected service access unavailable",
             ) from error
-        finally:
-            if file_fd is not None:
-                os.close(file_fd)
-            if directory_fd is not None:
-                os.close(directory_fd)
 
     def _parse_trust(self, value: object) -> CatalogTrust | None:
         if value is None:

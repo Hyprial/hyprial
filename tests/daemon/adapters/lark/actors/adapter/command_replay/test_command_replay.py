@@ -61,7 +61,7 @@ def test_local_command_reply_replay_uses_persisted_immutable_response(
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:tenant:bot",
+        channel_actor_id="adapter:lark:tenant:bot",
     )
     monkeypatch.setattr(restarted._state, "complete_command_response", original)
     sdk_event(
@@ -116,7 +116,7 @@ def test_local_command_pending_response_freezes_clock_and_timezone(
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:tenant:bot",
+        channel_actor_id="adapter:lark:tenant:bot",
     )
     monkeypatch.setattr(restarted._state, "complete_command_response", original)
 
@@ -289,7 +289,7 @@ def test_saturated_restart_replays_original_body_with_same_provider_uuid_once(
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:tenant:bot",
+        channel_actor_id="adapter:lark:tenant:bot",
     )
     lark.fail_reply = False
     sdk_event(
@@ -340,7 +340,7 @@ def test_exact_aggregate_byte_limit_replays_existing_body_immutably(
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:tenant:bot",
+        channel_actor_id="adapter:lark:tenant:bot",
     )
     assert restarted._state.pending_command_capacity().status == "full"
     lark.fail_reply = False

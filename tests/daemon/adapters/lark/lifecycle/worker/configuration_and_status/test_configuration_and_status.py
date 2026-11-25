@@ -403,9 +403,8 @@ def test_worker_main_mints_the_current_adapter_lark_spelling(
     tmp_path: Path,
 ) -> None:
     """PAC NAMB efeeaf0a01ba: every new channel-actor mint uses adapter:lark:,
-    never the legacy channel:lark: spelling — historical channel:lark:
-    identities already on the wire keep parsing (dual-read), but nothing
-    should mint that spelling anymore."""
+    never the retired channel:lark: spelling, which no reader accepts
+    since F1c."""
 
     seam = _worker_main_callback_seam(
         monkeypatch,

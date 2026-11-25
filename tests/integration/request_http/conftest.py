@@ -21,10 +21,11 @@ import urllib.request
 import pytest
 
 from hyprial.kernel import daemon_request_once
+from tests.support.runtime.environment import UNIT_USER_ID
 
 OWNER = "h01-owner"
 NODE = "h01-node"
-ACTOR = f"agent:{OWNER}:{NODE}:operator"
+ACTOR = f"user:{OWNER}"
 
 
 class HeaderMap(dict[str, str]):
@@ -88,6 +89,7 @@ def isolation(request: pytest.FixtureRequest) -> Isolation:
             "HYPRIAL_ZENOH_CONNECT": "",
             "HYPRIAL_PEER_DISCOVERY": "0",
             "HYPRIAL_OWNER": OWNER,
+            "HYPRIAL_USER_ID": UNIT_USER_ID,
             "HYPRIAL_NODE_ID": NODE,
             "NO_PROXY": "127.0.0.1,localhost,::1",
             "no_proxy": "127.0.0.1,localhost,::1",
@@ -99,10 +101,15 @@ def isolation(request: pytest.FixtureRequest) -> Isolation:
 
 class DaemonProcess:
     def __init__(
-        self, isolation: Isolation, *, pythonpath: Path | None = None
+        self,
+        isolation: Isolation,
+        *,
+        pythonpath: Path | None = None,
+        module: str = "hyprial.cli",
     ) -> None:
         self.isolation = isolation
         self.pythonpath = pythonpath
+        self.module = module
         self.process: subprocess.Popen[str] | None = None
         self.log_path = isolation.root / "daemon.log"
 
@@ -116,7 +123,7 @@ class DaemonProcess:
                 parts.append(inherited)
             env["PYTHONPATH"] = os.pathsep.join(parts)
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "hyprial.cli", "daemon", "run"],
+            [sys.executable, "-m", self.module, "daemon", "run"],
             cwd=self.isolation.root,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -247,8 +254,14 @@ class HttpProcess:
         return int(status_line.split()[1]), body
 
 
-def _config(isolation: Isolation, *, actor: str = ACTOR, kind: str = "local-daemon") -> dict[str, Any]:
-    return {
+def _config(
+    isolation: Isolation,
+    *,
+    actor: str = ACTOR,
+    kind: str = "local-daemon",
+    request_timeout: float | None = None,
+) -> dict[str, Any]:
+    config: dict[str, Any] = {
         "schemaVersion": 1,
         "backend": {"kind": kind, "socket": str(isolation.socket_path)},
         "principal": {"kind": "local-operator", "owner": OWNER, "actor": actor},
@@ -259,6 +272,17 @@ def _config(isolation: Isolation, *, actor: str = ACTOR, kind: str = "local-daem
         },
         "runtime": {"dir": str(isolation.runtime)},
     }
+    if request_timeout is not None:
+        config["budgets"] = {
+            "requestTimeoutSeconds": int(request_timeout),
+            "headerTimeoutSeconds": 5,
+            "idleTimeoutSeconds": 30,
+            "maxRequestBytes": 262144,
+            "maxResponseBytes": 8388608,
+            "maxConcurrentRequests": 8,
+            "shutdownDrainSeconds": 5,
+        }
+    return config
 
 
 def write_config(isolation: Isolation, payload: dict[str, Any] | None = None) -> Path:
@@ -278,13 +302,7 @@ def daemon(isolation: Isolation) -> DaemonProcess:
         process.stop()
 
 
-@contextmanager
-def running_http(
-    isolation: Isolation, *, pythonpath: Path | None = None
-) -> Any:
-    config = write_config(isolation)
-    log_path = isolation.root / "request-http.log"
-    log = log_path.open("w", encoding="utf-8")
+def _pythonpath_env(isolation: Isolation, pythonpath: Path | None) -> dict[str, str]:
     env = dict(isolation.env)
     if pythonpath is not None:
         inherited = env.get("PYTHONPATH")
@@ -292,6 +310,21 @@ def running_http(
         if inherited:
             parts.append(inherited)
         env["PYTHONPATH"] = os.pathsep.join(parts)
+    return env
+
+
+@contextmanager
+def _spawn_request_http(
+    isolation: Isolation,
+    config: Path,
+    *,
+    pythonpath: Path | None = None,
+) -> Any:
+    """Spawn one already-configured request-http child and wait until ready."""
+
+    log_path = isolation.root / "request-http.log"
+    log = log_path.open("w", encoding="utf-8")
+    env = _pythonpath_env(isolation, pythonpath)
     process = subprocess.Popen(
         [sys.executable, "-m", "hyprial.shell.impl.request_http", "serve", "--config", str(config)],
         cwd=isolation.root,
@@ -303,7 +336,7 @@ def running_http(
         start_new_session=True,
     )
     server_json_path = isolation.runtime / "server.json"
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if process.poll() is not None:
             log.close()
@@ -315,20 +348,32 @@ def running_http(
             break
         time.sleep(0.05)
     else:
-        process.kill()
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        process.wait(timeout=10)
+        log.close()
         raise AssertionError(
             "request-http did not publish server.json:\n"
             + log_path.read_text(encoding="utf-8", errors="replace")
         )
     document = json.loads(server_json_path.read_text(encoding="utf-8"))
     http = HttpProcess(isolation, process, document["endpoint"], document["token"], document, log_path)
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        status, _, _ = http.request("GET", "/readyz", timeout=5)
-        if status == 200:
-            break
-        time.sleep(0.1)
     try:
+        deadline = time.monotonic() + 60
+        last_ready: object = None
+        while time.monotonic() < deadline:
+            try:
+                status, _, last_ready = http.request("GET", "/readyz", timeout=15)
+            except (TimeoutError, urllib.error.URLError) as error:
+                status = 0
+                last_ready = f"{type(error).__name__}: {error}"
+            if status == 200:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError(
+                f"request-http did not become ready (last={last_ready!r}):\n"
+                + log_path.read_text(encoding="utf-8", errors="replace")
+            )
         yield http
     finally:
         if process.poll() is None:
@@ -339,6 +384,23 @@ def running_http(
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 process.wait(timeout=10)
         log.close()
+
+
+@contextmanager
+def running_http(
+    isolation: Isolation,
+    *,
+    pythonpath: Path | None = None,
+    request_timeout: float | None = None,
+) -> Any:
+    config = write_config(
+        isolation,
+        _config(isolation, request_timeout=request_timeout),
+    )
+    with _spawn_request_http(
+        isolation, config, pythonpath=pythonpath
+    ) as http:
+        yield http
 
 
 @pytest.fixture

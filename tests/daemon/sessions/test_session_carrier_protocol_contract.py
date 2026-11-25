@@ -25,6 +25,7 @@ from hyprial.daemon.impl.inbox import (
     SubmissionResult,
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 
 OWNER = "op"
 NODE = "node-1"
@@ -228,6 +229,7 @@ class CarrierRig:
         **_deep_module_daemon_dependencies())
         app._inbox = self.inbox  # type: ignore[assignment]
         app._harnesses = _NoWorkers()  # type: ignore[assignment]
+        app._cell_delivery = AdmittingCellDelivery()
         app._presence = _LocalPresence(  # type: ignore[assignment]
             self.directory,
             app.node_id,
@@ -278,6 +280,13 @@ class CarrierRig:
         # the daemon's own transport session (never exercised at this seam).
         self.directory.add(self.app._canonical_interactive_actor(actor))
 
+    def address(self, actor: str = "alice") -> str:
+        """The official address of registered agent ``actor``: its record's URI."""
+
+        agent = self.app.agents.get(actor)
+        assert agent is not None
+        return agent.uri
+
     def ps_sessions(self) -> list[dict[str, Any]]:
         sessions = self.app.handle("ps", {})["interactiveSessions"]
         assert isinstance(sessions, list)
@@ -297,8 +306,10 @@ def rig(tmp_path: Path) -> CarrierRig:
 def test_register_makes_exactly_one_session_visible(rig: CarrierRig) -> None:
     carrier = rig.carrier("session-1")
     result = carrier.register()
+    address = rig.address()
+    assert address != CANONICAL
     assert result["ok"] is True
-    assert result["actor"] == CANONICAL
+    assert result["actor"] == address
     assert result["channelCurrentThisGeneration"] is True
     assert result["daemonEpoch"] == rig.app.epoch
 
@@ -306,7 +317,7 @@ def test_register_makes_exactly_one_session_visible(rig: CarrierRig) -> None:
     sessions = rig.ps_sessions()
     assert len(sessions) == 1
     session = sessions[0]
-    assert session["actor"] == CANONICAL
+    assert session["actor"] == address
     assert session["sessionRef"] == "session-1"
     assert session["source"] == "claude-channel"
     assert session["channelConfirmed"] is True
@@ -476,7 +487,7 @@ def test_carrier_heartbeat_is_the_contact_that_keeps_liveness_alive(
     carrier = rig.carrier("session-1")
     carrier.register()
     rig.declare_route()
-    rig.inbox.add("message-1")
+    rig.inbox.add("message-1", recipient=rig.address())
 
     # Poll just under the TTL forever: liveness must never flap.
     for _ in range(5):
@@ -502,7 +513,7 @@ def test_live_headless_worker_refuses_interactive_takeover(
 
     rig.app.handle("agent.create", {"name": "alice"})
     rig.app._agent_liveness.bind(
-        CANONICAL,
+        rig.address(),
         harness="claude",
         runtime=RUNTIME_HEADLESS,
         session_id="worker-session-1",
@@ -512,7 +523,7 @@ def test_live_headless_worker_refuses_interactive_takeover(
 
     # Once the worker is really gone (binding released, as `hyprial agent stop` does),
     # the same register succeeds — the remedy named in the error always works.
-    rig.app._agent_liveness.release(CANONICAL)
+    rig.app._agent_liveness.release(rig.address())
     assert carrier.register()["ok"] is True
 
 

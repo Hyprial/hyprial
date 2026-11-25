@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "eligibleState": "active",
+  "precedence": ["explicit", "current", "unique-active"],
+  "cases": [
+    {"active": ["group-a", "group-b"], "current": "group-b", "explicit": null, "org": "group-b"},
+    {"active": ["group-a", "group-b"], "current": "group-b", "explicit": "group-a", "org": "group-a"},
+    {"active": ["group-a", "group-b"], "current": null, "explicit": null, "error": "ORG_REQUIRED", "candidates": ["group-a", "group-b"]},
+    {"active": ["personal-alice"], "current": null, "explicit": null, "org": "personal-alice"},
+    {"active": ["group-a"], "current": "group-b", "explicit": null, "org": "group-a", "clearCurrent": true, "notice": true},
+    {"active": [], "current": "group-b", "explicit": null, "error": "ORG_REQUIRED", "candidates": [], "clearCurrent": true, "notice": true}
+  ]
+}

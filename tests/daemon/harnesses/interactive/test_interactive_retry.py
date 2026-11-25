@@ -21,7 +21,7 @@ def message(message_id: str) -> InboxMessage:
     return InboxMessage(
         message_id=message_id,
         conversation_id="lark:chat:test",
-        sender="channel:lark:test-app",
+        sender="adapter:lark:test-app",
         recipient=INTERACTIVE_ACTOR,
         payload=b"opaque-frame",
         intent="request",
@@ -126,7 +126,7 @@ def test_schema_upgrade_adds_fetch_marker_without_claiming_old_rows(
             (
                 "msg-legacy-pending",
                 "conversation",
-                "channel:lark:test-app",
+                "adapter:lark:test-app",
                 INTERACTIVE_ACTOR,
                 b"opaque",
                 "request",

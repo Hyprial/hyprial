@@ -1,8 +1,7 @@
 import type {
   ConversationMessage,
-  MessageDeliveryState,
+  SessionAgent,
 } from './gui-view-model';
-import type { FixtureAgent } from '../fixtures/demo';
 import { mergeMessagesById } from './messages';
 import type { AgentFilter, AppState, ChatFocusIntent } from './types';
 import { isChatTarget } from './types';
@@ -12,27 +11,18 @@ export const FILTER_LABELS: Readonly<Record<AgentFilter, string>> = {
   available: '可用',
   'needs-connection': '需要连接',
   disabled: '已停用',
+  unknown: '状态未确认',
 };
 
 export const AVAILABILITY_LABELS: Readonly<
-  Record<FixtureAgent['availability'], string>
+  Record<SessionAgent['availability'], string>
 > = {
   available: '可用',
   'needs-connection': '需要连接',
   disabled: '已停用',
 };
 
-export const DELIVERY_LABELS: Readonly<
-  Record<MessageDeliveryState, string>
-> = {
-  'not-sent': '未发出',
-  pending: '处理中',
-  sent: '已发送',
-  failed: '发送失败',
-  unknown: '结果未知 · 先核对原请求',
-};
-
-export function getActiveTarget(state: AppState): FixtureAgent {
+export function getActiveTarget(state: AppState): SessionAgent {
   return (
     state.targets.find((target) => target.id === state.activeTargetId) ??
     state.targets[0]
@@ -90,7 +80,7 @@ export function getLastMessageText(
  * Returns null before any conversation was opened, so the start page never
  * shows an empty shell entry.
  */
-export function getRecentChatTarget(state: AppState): FixtureAgent | null {
+export function getRecentChatTarget(state: AppState): SessionAgent | null {
   if (!state.lastChatTargetId) {
     return null;
   }
@@ -120,7 +110,7 @@ export function getFailedMessage(
   return last?.delivery === 'failed' ? last : undefined;
 }
 
-export function getVisibleAgents(state: AppState): readonly FixtureAgent[] {
+export function getVisibleAgents(state: AppState): readonly SessionAgent[] {
   const query = state.agentQuery.trim().toLowerCase();
   return state.targets.filter((target) => {
     if (state.agentFilter !== 'all' && target.availability !== state.agentFilter) {
@@ -152,6 +142,6 @@ export function getDefaultModel(state: AppState) {
   );
 }
 
-export function canSendToTarget(target: FixtureAgent): boolean {
+export function canSendToTarget(target: SessionAgent): boolean {
   return isChatTarget(target);
 }

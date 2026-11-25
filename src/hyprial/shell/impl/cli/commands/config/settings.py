@@ -6,7 +6,7 @@ import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
-from hyprial.shell.impl.cli.commands.common.support import JsonObject, _SETUP_HINTS, _write_setup_hint
+from hyprial.shell.impl.cli.commands.common.support import JsonObject
 
 config_app = group(
     help="Read and write operator switches in settings.json."
@@ -19,8 +19,7 @@ def config_set(
         help=(
             "Config key (supported: autoUpgrade, lsRemoteTimeoutSeconds, "
             "forwarding.mode, org.fetchSource, workerProxy.url, "
-            "workerProxy.vendors, workerProxy.noProxy, dispatch.reminder, "
-            "hints.userProxy)."
+            "workerProxy.vendors, workerProxy.noProxy, dispatch.reminder)."
         ),
     ),
     value: str = typer.Argument(
@@ -31,7 +30,7 @@ def config_set(
             "mesh|orgfs; "
             "workerProxy.url: http(s) URL, empty clears; workerProxy.vendors: "
             "comma list; workerProxy.noProxy: NO_PROXY list, empty = ambient; "
-            "dispatch.reminder: text, empty disables; hints.userProxy: on|off)."
+            "dispatch.reminder: text, empty disables)."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -81,19 +80,6 @@ def config_set(
             f"{WORKER_PROXY_SETTINGS_KEY}.{field}": field
             for field in WORKER_PROXY_FIELDS
         }
-        hint_keys = {f"hints.{name}": name for name in _SETUP_HINTS}
-        if key in hint_keys:
-            try:
-                path = _write_setup_hint(hint_keys[key], value, services._hyprial_home())
-            except ValueError as error:
-                raise services.CliError("INVALID_CONFIGURATION", str(error)) from error
-            return {
-                "ok": True,
-                "key": key,
-                "value": value.strip().lower(),
-                "path": str(path),
-                "appliesOn": "next daemon start",
-            }
         if key == "dispatch.reminder":
             from hyprial.daemon import write_workflow_reminder
 
@@ -176,7 +162,6 @@ def config_set(
                         forwarding_key,
                         org_fetch_source_key,
                         "dispatch.reminder",
-                        *hint_keys,
                         *worker_proxy_keys,
                     )
                 ),

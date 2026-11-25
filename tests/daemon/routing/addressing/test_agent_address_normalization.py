@@ -19,7 +19,6 @@ from hyprial.daemon.impl.application import DaemonApplication,DaemonRequestError
 from hyprial.daemon.impl.configuration.identity import normalize_agent_recipient
 from hyprial.daemon.impl.inbox import InboxMessage, InboxService, MemoryDeliveryTransport
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate
 
 
 class _AutoConfirmTransport(MemoryDeliveryTransport):
@@ -65,7 +64,6 @@ def application(
     app._presence = _Presence(actors)
     # Explicit premise (wp2.md §4.9 option a): this test is about address
     # normalization, not links, so a permissive gate keeps A→B delivering.
-    app.link_admission.bind(PermissiveLinkGate())
     return app
 
 

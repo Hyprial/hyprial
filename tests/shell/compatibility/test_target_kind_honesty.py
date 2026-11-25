@@ -17,7 +17,7 @@ Pinned behaviors, each in both directions so a mutation cannot pass silently:
   shapes never appear; node visibility lives in the ``hosts`` method;
 * the send-time gate rejects node-shaped and formless targets outright
   (Allen: development phase, break old scripts, facts-only errors), while
-  canonical agents, registered aliases, user: and route: forms pass;
+  canonical agents, registered aliases and user: forms pass;
 * the ``_ensure_interactive_route`` admission gate: canonical actors are
   advertised, non-canonical ones receive-but-are-not-advertised.
 """
@@ -81,9 +81,9 @@ def _registered(app: DaemonApplication, name: str) -> str:
         ("devusr-dev", "host"),
         ("agent:LAPTOP-EXAMPLE1", "host"),
         ("agent:devusr-dev", "host"),
-        # Humans and adapter-mediated route addresses.
         ("user:bobadmin", "user"),
-        ("route:hq-adjutant-feishu:allen-dm", "channel_route"),
+        ("route:hq-adjutant-feishu:allen-dm", "unknown"),
+        ("route:a:b", "unknown"),
         # Unknown is a deliberate verdict for shapes no rule claims: wrong
         # segment counts, empty segments, empty names, alien schemes — and
         # channel: reply-bridge addresses, which are not delivery targets.
@@ -144,8 +144,10 @@ def test_every_classifier_verdict_is_a_known_kind() -> None:
         assert target_deliverable(kind) is (kind in DELIVERABLE_TARGET_KINDS)
 
 
-def test_only_agent_user_and_channel_route_are_deliverable() -> None:
-    assert DELIVERABLE_TARGET_KINDS == {"agent", "user", "channel_route"}
+def test_only_agent_and_user_are_deliverable() -> None:
+    assert DELIVERABLE_TARGET_KINDS == {"agent", "user"}
+    assert "channel_route" not in TARGET_KINDS
+    assert not target_deliverable("channel_route")
     assert not target_deliverable("host")
     assert not target_deliverable("unknown")
 
@@ -234,7 +236,7 @@ def test_targets_kind_filter_admits_only_listable_kinds(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     """The filter vocabulary is exactly the kinds targets can list:
-    agent/user/channel_route (delivery promises).  host/unknown are not
+    agent/user (delivery promises).  host/unknown are not
     delivery targets, and anything else is rejected with facts."""
 
     app = _application(
@@ -245,10 +247,9 @@ def test_targets_kind_filter_admits_only_listable_kinds(
     assert [row["targetUri"] for row in agents] == ["agent:bobadmin:hq:pi-dev"]
 
     # Listable kinds with no rows answer honestly with an empty list.
-    for kind in ("user", "channel_route"):
-        assert app.handle("targets", {"kind": kind})["targets"] == []
+    assert app.handle("targets", {"kind": "user"})["targets"] == []
 
-    for kind in ("host", "unknown", "router"):
+    for kind in ("channel_route", "host", "unknown", "router"):
         with pytest.raises(DaemonRequestError) as failure:
             app.handle("targets", {"kind": kind})
         assert failure.value.code == "INVALID_ARGUMENT"
@@ -264,7 +265,8 @@ def test_a_registered_agent_row_stays_an_agent(
 
     (row,) = app.handle("targets", {})["targets"]
     assert row["targetKind"] == "agent"
-    assert row["targetUri"] == URI
+    official = app.agents.require("foo")
+    assert row["targetUri"] == official.uri == f"agent:{OWNER}:{NODE}:{official.agent_id}"
     assert row["deliverable"] is True
     assert row["status"] == "offline"
 
@@ -387,17 +389,22 @@ def test_send_to_a_registered_alias_is_admitted(
 
     (delivery,) = result["deliveries"]
     assert result["ok"] is True
-    assert delivery["target"] == URI
+    official = app.agents.require("foo")
+    assert delivery["target"] == official.uri == f"agent:{OWNER}:{NODE}:{official.agent_id}"
 
 
 def test_reply_to_a_node_sender_is_rejected_and_stays_pending(
     request: pytest.FixtureRequest,
     tmp_path: Path,
 ) -> None:
-    """The reply path shares the gate; failure is loud, nothing is acked."""
+    """The reply path shares the gate; failure is loud, nothing is acked.
+
+    The legacy row is queued at foo's id address, the only one foo reads.
+    """
 
     app = _application(request, tmp_path, ())
     app.handle("agent.create", {"name": "foo"})
+    foo = app.agents.require("foo").uri
     inbox = app._inbox
     assert inbox is not None
     # A legacy bare-sender row, seeded directly as if it predated the
@@ -412,7 +419,7 @@ def test_reply_to_a_node_sender_is_rejected_and_stays_pending(
                 "m-from-node",
                 "c-1",
                 "peer-node",
-                URI,
+                foo,
                 json.dumps({"message": "question"}).encode(),
                 "request",
                 DeliveryLifecycle.DURABLE_SERVICE.value,
@@ -430,7 +437,7 @@ def test_reply_to_a_node_sender_is_rejected_and_stays_pending(
 
     assert failure.value.code == "TARGET_IS_NODE"
     # The pending message survives the refusal: no silent ack.
-    assert [m.message_id for m in inbox.pending_messages(URI)] == ["m-from-node"]
+    assert [m.message_id for m in inbox.pending_messages(foo)] == ["m-from-node"]
 
 
 # -- the _ensure_interactive_route admission gate ----------------------------
@@ -504,7 +511,7 @@ def _close_routable(app: DaemonApplication) -> None:
     assert app._route_registration.drain(1)
     assert app._lifecycle_router is not None
     app._lifecycle_router.close()
-    assert app._agent_session_domains.close()
+    assert app._agent_session_domains.close(shutdown_hosts=False)
     assert app._inbox is not None
     app._inbox.close()
 
@@ -614,8 +621,6 @@ def test_targets_cli_rejects_non_listable_kinds(monkeypatch: Any) -> None:
     )
     runner = CliRunner()
 
-    # B9: the CLI filter vocabulary is agent/user only.  channel_route rows may
-    # still appear unfiltered, but the filter entry moved to `adapter route list`.
     for kind in ("agent", "user"):
         assert runner.invoke(_cli_root_app, ["message", "targets", "--kind", kind]).exit_code == 0
     for kind in ("channel_route", "host", "unknown"):

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.error import codes
 
 
 def _route_session_doctor_check(home: Path | None = None) -> JsonObject | None:
@@ -57,7 +58,7 @@ def _route_session_doctor_check(home: Path | None = None) -> JsonObject | None:
             continue
         saw_rows = True
         event = str(item.get("event") or "")
-        if event.endswith("operation.failed") and item.get("errorCode") == "ROUTE_IO_FAILED":
+        if event.endswith("operation.failed") and item.get("errorCode") == codes.ROUTE_IO_FAILED:
             fails.append((when, str(item.get("ts"))))
         elif event == "inbox.fetch_receipt.publish_failed" and "session closed" in str(
             item.get("detail") or ""

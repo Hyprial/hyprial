@@ -1,5 +1,7 @@
 """Durable inbox protocol and SQLite state machine."""
 
+from hyprial.daemon.impl.inbox.correlation import CorrelatedReply, CorrelatedRequest
+
 from hyprial.daemon.impl.inbox.contracts.api import (
     AckResult,
     DeliveryLifecycle,
@@ -74,8 +76,11 @@ from hyprial.daemon.impl.inbox.links.zenoh_link import (
     encode_delivery_frame,
     publish_fetch_receipt,
 )
+from hyprial.daemon.impl.inbox.network import stamped_network_transport
 
 __all__ = [
+    "CorrelatedReply",
+    "CorrelatedRequest",
     "DEFAULT_HOLD_MAX_ITEMS",
     "DEFAULT_HOLD_TTL_MS",
     "AckResult",
@@ -128,4 +133,5 @@ __all__ = [
     "merge_delivery_status",
     "publish_fetch_receipt",
     "query_delivery_status",
+    "stamped_network_transport",
 ]

@@ -1,5 +1,7 @@
 # 首次设置固定 Pi + DeepSeek
 
+> **S2d 状态说明（2026-11-22）**：GUI 首启的 `SquireStep`、`prepareSquire`/`cancelPreparation`、`SquireIdentityStore`（`hyprial.gui.squireAgentId`）、`squire setup` 与 `squireState=name-frozen` 死引用已于 S2d 删除；现行共享 preview/live/native 首启统一走 `account → device → 普通 Agent 运行配置（DeepSeek Key 保存或 configureAgent）→ conversation`。下文保留 2026-10-29 原始设计决策记录。
+
 决策 GUI-PI-FIRST-RUN-20261029。用户确认：当前首次设置只输入 DeepSeek API Key，默认 Pi，不提供账号授权/运行工具/服务商/模型/端点选择；高级配置留待配置页。
 
 ## 产品与瑞华交接

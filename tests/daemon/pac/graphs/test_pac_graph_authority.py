@@ -337,6 +337,7 @@ def test_timed_out_graph_command_retires_capacity_and_keeps_bounded_receipt(
         assert completion.result is not None and completion.result["ok"] is True
         assert authority._pending == {}
         # The abandoned completion no longer consumes the sole active slot.
+        authority._call_timeout = 3.0
         assert authority.close_graph(graph_id, actor=OWNER)["ok"] is True
     finally:
         release.set()
@@ -738,7 +739,7 @@ def test_stale_cleanup_stop_completion_cannot_complete_replaced_operation(
             ] == "pending"
         finally:
             before_completion.close()
-        generation = authority._runtime.snapshot(authority._handle).generation
+        generation = authority._handle.snapshot().generation
         effect = _ActorEffect(
             generation,
             graph_id,
@@ -762,7 +763,7 @@ def test_stale_cleanup_stop_completion_cannot_complete_replaced_operation(
         monkeypatch.setattr(
             authority_module._Generation, "_actor_effect_completed", observed_completed
         )
-        assert authority._runtime.tell(authority._handle, completion).value == "accepted"
+        assert authority._handle.tell(completion).value == "accepted"
         _wait_for(processed.is_set)
         read = PacGraphStore(authority.database, read_only=True)
         try:

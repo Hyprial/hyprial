@@ -17,9 +17,14 @@ from typing import TYPE_CHECKING, Any
 
 import weakref
 
-from hyprial.kernel import ActorHandle, ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
+
+from hyprial.daemon.impl.orgfs.composition.vocabulary import OrgFsActorHostCustody
 
 from hyprial.daemon.impl.transport.session_actor import TransportSessionAuthority
 
@@ -113,11 +118,13 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         projection_clock: Callable[[], float] = time.monotonic,
         announce_instrumentation_enabled: bool = False,
         supplier_sync_health: SupplierSyncHealth | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         if not node_id:
             raise ValueError("node_id must not be empty")
         self.session = session
         self.store = store
+        self._actor_hosts = OrgFsActorHostCustody(actor_host)
         self.node_id = node_id
         self.author = author
         self.blob_store = blob_store
@@ -197,7 +204,7 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
             owner = owner_ref()
             if owner is None:
                 return AdmissionResult.CLOSED
-            return owner._ingress_runtime.tell(owner._ingress_actor, completion)
+            return owner._ingress_cell.tell(completion)
 
         self._ingress_generation = 1
         self._ingress_dropped = 0
@@ -207,8 +214,8 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         self._ingress_closing = False
         self._ingress_closed = False
         self._ingress_deferred: list[EffectRequest[_LogIngress]] = []
-        self._ingress_runtime = ActorRuntime()
-        self._ingress_actor: ActorHandle = self._ingress_runtime.start(
+        host = self._actor_hosts.host
+        self._ingress_cell = host.spawn(
             ActorSpec(
                 f"orgfs-space-{store.space_id[:12]}-ingress",
                 lambda: handle_ingress,
@@ -216,7 +223,7 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
                 supervision_profile="state_authority",
             )
         )
-        self._ingress_effects: EffectLane[_LogIngress, None] = EffectLane(
+        self._ingress_effects: EffectLane[_LogIngress, None] = host.effect_lane(
             name=f"orgfs-space-{store.space_id[:12]}-effects",
             execute=execute_ingress,
             complete=complete_ingress,
@@ -340,7 +347,7 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         with self._ingress_guard:
             self._ingress_closing = True
         while time.monotonic() < deadline:
-            snapshot = self._ingress_runtime.snapshot(self._ingress_actor)
+            snapshot = self._ingress_cell.snapshot()
             if (
                 snapshot.queued == 0
                 and snapshot.in_flight == 0
@@ -354,8 +361,8 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         if not self._ingress_effects.close(max(0.0, deadline - time.monotonic())):
             raise TimeoutError("orgfs log effects did not drain")
         self._ingress_generation += 1
-        if not self._ingress_runtime.stop(
-            self._ingress_actor, timeout=max(0.0, deadline - time.monotonic())
+        if not self._ingress_cell.stop(
+            timeout=max(0.0, deadline - time.monotonic())
         ):
             raise TimeoutError("orgfs log ingress actor did not stop")
         # Accepted sync/blob jobs keep custody after a caller's close deadline.
@@ -379,6 +386,8 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
             self._blob_fetch_waiters.clear()
             self._sync_pending.clear()
             self._sync_rerun.clear()
+        if not self._actor_hosts.shutdown(max(0.0, deadline - time.monotonic())):
+            raise TimeoutError("orgfs ingress actor host did not drain")
         self._ingress_closed = True
         for waiter in waiters:
             waiter.set()

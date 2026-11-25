@@ -21,7 +21,6 @@ from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage
 
 from tests.daemon.harnesses.carrier.turns.test_turn_reports import (
     A_NAME,
-    A_URI,
     X_URI,
     _TurnApp,
     _wall_clock,
@@ -30,13 +29,13 @@ from tests.daemon.harnesses.carrier.turns.test_turn_reports import (
 EVENTS = ("turn.started", "turn.completed", "turn.failed")
 
 
-def _request(inbox: Any, message_id: str = "r1") -> None:
-    inbox.receive(
+def _request(turn_app: _TurnApp, message_id: str = "r1") -> None:
+    turn_app.inbox.receive(
         InboxMessage(
             message_id=message_id,
             conversation_id="conv-seq",
             sender=X_URI,
-            recipient=A_URI,
+            recipient=turn_app.a_uri,
             payload=json.dumps({"message": "please answer"}).encode(),
             intent="request",
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -49,17 +48,17 @@ def _observed_seq(events: list[dict[str, Any]]) -> list[int]:
     return [item["seq"] for item in events]
 
 
-def test_seq_survives_full_restart(tmp_path: Path) -> None:
+def test_seq_survives_full_restart(actor_host, tmp_path: Path) -> None:
     """(a) one counter for both emitters; (b) a restart clears the high water."""
 
     # (a) headless and interactive turns interleave on one strict counter.
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path / "a", clock, inbox_path=tmp_path / "inbox.sqlite3")
+    app = _TurnApp(tmp_path / "a", clock, inbox_path=tmp_path / "inbox.sqlite3", actor_host=actor_host)
     try:
         app.register()
-        projection = HarnessDelivery("d1", "conv", X_URI, A_URI, "req")
+        projection = HarnessDelivery("d1", "conv", X_URI, app.a_uri, "req")
         result = HarnessResult(
-            "d1", A_URI, HarnessResultStatus.COMPLETED, output="ok"
+            "d1", app.a_uri, HarnessResultStatus.COMPLETED, output="ok"
         )
         for index in range(4):
             if index % 2 == 0:
@@ -85,7 +84,7 @@ def test_seq_survives_full_restart(tmp_path: Path) -> None:
     stale: list[tuple[str, dict[str, object]]] = []
     clock = _wall_clock()
     first = _TurnApp(
-        tmp_path / "b1", clock, inbox_path=tmp_path / "restart.sqlite3"
+        tmp_path / "b1", clock, inbox_path=tmp_path / "restart.sqlite3", actor_host=actor_host
     )
     try:
         for _ in range(55):
@@ -105,11 +104,11 @@ def test_seq_survives_full_restart(tmp_path: Path) -> None:
         tmp_path / "b2",
         clock,
         inbox_path=tmp_path / "restart.sqlite3",
-        reminder_factory=factory,
+        reminder_factory=factory, actor_host=actor_host,
     )
     try:
         second.register()
-        _request(second.inbox)
+        _request(second)
         second.started("w1")
         second.app.handle(
             "message.pending.list",
@@ -125,9 +124,9 @@ def test_seq_survives_full_restart(tmp_path: Path) -> None:
         # the reminder is written and no stale replay is logged.
         assert second.recorder.of("turn.completed")[0]["seq"] < 5
         deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and len(second.inbox.system_notices(A_URI)) < 1:
+        while time.monotonic() < deadline and len(second.inbox.system_notices(second.a_uri)) < 1:
             time.sleep(0.01)
-        notices = second.inbox.system_notices(A_URI)
+        notices = second.inbox.system_notices(second.a_uri)
         assert len(notices) == 1
         assert "r1" in notices[0].summary
         assert [name for name, _fields in stale if name == "reply_reminder.stale_replay"] == []
@@ -136,7 +135,7 @@ def test_seq_survives_full_restart(tmp_path: Path) -> None:
 
 
 def test_concurrent_publishes_keep_seq_order_per_lane(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    actor_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two racing publishers cannot hand the lane a lower seq after a higher."""
 
@@ -149,10 +148,10 @@ def test_concurrent_publishes_keep_seq_order_per_lane(
 
         return ReplyReminderConsumer(port=port, logger=capture)
 
-    app = _TurnApp(tmp_path, clock, reminder_factory=factory)
+    app = _TurnApp(tmp_path, clock, reminder_factory=factory, actor_host=actor_host)
     try:
         app.register()
-        _request(app.inbox, "r1")
+        _request(app, "r1")
         app.started("w1")
         app.app.handle(
             "message.pending.list",
@@ -181,7 +180,7 @@ def test_concurrent_publishes_keep_seq_order_per_lane(
         def publish(delivery_id: str) -> None:
             started.wait(2.0)
             app.hooks.observe_carrier_turn(
-                actor=A_URI,
+                actor=app.a_uri,
                 phase="completed",
                 at_ms=clock["now"] + 60_000,
                 started_at_ms=clock["now"],
@@ -208,22 +207,22 @@ def test_concurrent_publishes_keep_seq_order_per_lane(
         # Both deliveries entered the WP7 consumer's judgment (no stale
         # rejection): one reminder for r1, no stale_replay log line.
         deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and not app.inbox.system_notices(A_URI):
+        while time.monotonic() < deadline and not app.inbox.system_notices(app.a_uri):
             time.sleep(0.01)
-        assert len(app.inbox.system_notices(A_URI)) == 1
+        assert len(app.inbox.system_notices(app.a_uri)) == 1
         assert "reply_reminder.stale_replay" not in logged
     finally:
         app.close()
 
 
-def test_mixed_emitters_under_threads_stay_monotonic(tmp_path: Path) -> None:
+def test_mixed_emitters_under_threads_stay_monotonic(actor_host, tmp_path: Path) -> None:
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
-        projection = HarnessDelivery("d-mix", "conv", X_URI, A_URI, "req")
+        projection = HarnessDelivery("d-mix", "conv", X_URI, app.a_uri, "req")
         result = HarnessResult(
-            "d-mix", A_URI, HarnessResultStatus.COMPLETED, output="ok"
+            "d-mix", app.a_uri, HarnessResultStatus.COMPLETED, output="ok"
         )
         errors: list[BaseException] = []
 
@@ -243,7 +242,7 @@ def test_mixed_emitters_under_threads_stay_monotonic(tmp_path: Path) -> None:
             for index in range(100):
                 try:
                     app.hooks.observe_carrier_turn(
-                        actor=A_URI,
+                        actor=app.a_uri,
                         phase="completed",
                         at_ms=clock["now"] + 2,
                         started_at_ms=clock["now"],

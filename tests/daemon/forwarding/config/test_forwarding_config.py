@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from hyprial.identity.impl.device import DeviceRecord, address_path, device_key_
 from hyprial.shell.impl.cli.commands.common import daemon_start
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies, usage_factory
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
+from tests.support.runtime.environment import isolated_environment
 
 
 def _device_ready(home: Path) -> None:
@@ -72,8 +75,134 @@ def test_managed_tcp_inbound_is_refused(tmp_path, target):
     assert caught.value.code == 'FORWARDING_TARGET_INVALID'
 
 
+def test_managed_loopback_tcp_inbound_is_accepted_on_windows(tmp_path, monkeypatch):
+    import hyprial.daemon.impl.forwarding.policy as policy
+    gate_calls = []
+    monkeypatch.setattr(
+        policy, 'loopback_inbound_supported', lambda: gate_calls.append(True) or True
+    )
+    home = tmp_path / 'home'
+    _device_ready(home)
+    inputs = {
+        'HYPRIAL_TAILCAT_BINARY': str(_candidate(tmp_path)),
+        'HYPRIAL_FORWARDING_INBOUND_TARGET': 'tcp:127.0.0.1:39111',
+        'HYPRIAL_ZENOH_LISTEN': 'tcp/127.0.0.1:39111',
+    }
+    up = _up(home, inputs)
+    assert up['inboundTarget'] == 'tcp:127.0.0.1:39111'
+    assert gate_calls
+
+
+@pytest.mark.parametrize('target', [
+    '127.0.0.1:39111', 'tcp:0.0.0.0:39111', 'tcp:192.168.1.2:39111',
+    'tcp:127.0.0.2:39111', 'tcp:[::1]:39111', 'tcp:localhost:39111',
+    'tcp:127.0.0.1:0', 'tcp:127.0.0.1:70000', 'tcp:127.0.0.1',
+    'unix:relative.sock',
+])
+def test_unsafe_or_malformed_inbound_target_is_refused(tmp_path, target):
+    with pytest.raises(ForwardingConfigurationError) as caught:
+        daemon_forwarding_environment(tmp_path, {'HYPRIAL_FORWARDING_INBOUND_TARGET': target}, node_id='node-a')
+    assert caught.value.code == 'FORWARDING_TARGET_INVALID'
+
+
 def test_no_forwarding_configuration_keeps_existing_daemon_path(tmp_path):
     assert daemon_forwarding_environment(tmp_path, {}, node_id='node-a') == {}
+
+
+def test_listener_helper_derives_the_managed_target_on_windows(tmp_path, monkeypatch):
+    import hyprial.daemon.impl.forwarding.policy as policy
+    from hyprial.daemon import managed_inbound_target_from_listener
+    gate_calls = []
+    monkeypatch.setattr(
+        policy, 'loopback_inbound_supported', lambda: gate_calls.append(True) or True
+    )
+    assert managed_inbound_target_from_listener(
+        'tcp/127.0.0.1:39111'
+    ) == 'tcp:127.0.0.1:39111'
+    assert gate_calls
+
+
+def test_listener_helper_refuses_loopback_tcp_off_windows(tmp_path, monkeypatch):
+    import hyprial.daemon.impl.forwarding.policy as policy
+    from hyprial.daemon import managed_inbound_target_from_listener
+    gate_calls = []
+    monkeypatch.setattr(
+        policy, 'loopback_inbound_supported', lambda: gate_calls.append(True) or False
+    )
+    with pytest.raises(ForwardingConfigurationError) as caught:
+        managed_inbound_target_from_listener('tcp/127.0.0.1:39111')
+    assert caught.value.code == 'FORWARDING_TARGET_INVALID'
+    assert gate_calls
+
+
+def test_listener_helper_keeps_unix_targets_platform_neutral(tmp_path, monkeypatch):
+    import hyprial.daemon.impl.forwarding.policy as policy
+    from hyprial.daemon import managed_inbound_target_from_listener
+    directory = tmp_path / 'tailnet'
+    directory.mkdir(mode=0o700)
+    gate_calls = []
+    monkeypatch.setattr(
+        policy, 'loopback_inbound_supported', lambda: gate_calls.append(True) or False
+    )
+    target = 'unix:' + str(directory / 'zenoh.sock')
+    assert managed_inbound_target_from_listener(
+        'unixsock-stream/' + str(directory / 'zenoh.sock')
+    ) == target
+    assert gate_calls == []
+
+
+@pytest.mark.parametrize('listener', [
+    'tcp:127.0.0.1:39111', 'tcp/0.0.0.0:39111', 'tcp/127.0.0.1:0',
+    'unixsock-stream/relative.sock',
+])
+def test_listener_helper_refuses_malformed_listeners(listener):
+    from hyprial.daemon import managed_inbound_target_from_listener
+    with pytest.raises(ForwardingConfigurationError) as caught:
+        managed_inbound_target_from_listener(listener)
+    assert caught.value.code == 'FORWARDING_TARGET_INVALID'
+
+
+@pytest.mark.parametrize('configured', [False, True])
+@pytest.mark.parametrize('missing', ['kernel-budget', 'machine-binding'])
+def test_cold_config_import_keeps_unconfigured_path_independent_of_forwarding_policy(
+    tmp_path: Path, configured: bool, missing: str,
+) -> None:
+    environment = isolated_environment(tmp_path / 'child')
+    environment['PYTHONPATH'] = str(Path(__file__).resolve().parents[4] / 'src')
+    script = f'''
+from pathlib import Path
+import sys
+import hyprial.kernel as kernel
+import hyprial.kernel.interface as kernel_interface
+import hyprial.identity as identity
+import hyprial.identity.interface as identity_interface
+assert 'hyprial.daemon.impl.forwarding' not in sys.modules
+if {missing!r} == 'kernel-budget':
+    del kernel.MEMBERSHIP_BUDGETS
+    del kernel_interface.MEMBERSHIP_BUDGETS
+    missing_name = 'MEMBERSHIP_BUDGETS'
+else:
+    identity_interface._FACADE_EXPORTS.pop('MachineBinding')
+    vars(identity_interface).pop('MachineBinding', None)
+    vars(identity).pop('MachineBinding', None)
+    missing_name = 'MachineBinding'
+from hyprial.daemon.impl.forwarding_config import daemon_forwarding_environment
+if {configured!r}:
+    try:
+        daemon_forwarding_environment(Path(sys.argv[1]), {{'HYPRIAL_FORWARDING_INBOUND_TARGET': 'unix:/not-used.sock'}}, node_id='e2e')
+    except ImportError as error:
+        assert missing_name in str(error)
+    else:
+        raise AssertionError('configured forwarding hid its missing policy dependency')
+else:
+    assert daemon_forwarding_environment(Path(sys.argv[1]), {{}}, node_id='e2e') == {{}}
+    assert 'hyprial.daemon.impl.forwarding' not in sys.modules
+'''
+    child = subprocess.run(
+        [sys.executable, '-c', script, str(tmp_path / 'home')], env=environment,
+        text=True, capture_output=True, timeout=30, check=False,
+    )
+    assert child.returncode == 0, child.stderr
 
 
 @pytest.mark.parametrize('missing', ['sidecar', 'device'])

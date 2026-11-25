@@ -349,6 +349,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
   const GRAPH_STATES = new Set(["running", "completed", "failed", "cancelled"]);
   const NODE_STATES = new Set(["done", "failed", "pending", "requested", "running", "cancelled", "waiting"]);
   const MISSION_ZH = { todo: "待办", doing: "进行中", blocked: "受阻", done: "已完成", dropped: "已放弃" };
+  const missionStatusLabel = status => Object.hasOwn(MISSION_ZH, status) ? MISSION_ZH[status] : status || "未指定状态";
   const LINE_KINDS = new Set(["mission", "task", "misc", "routine"]);
   for (const p of PARTS) for (const l of p.lines || []) if (!LINE_KINDS.has(l.kind)) l.kind = "task";
   for (const p of PARTS) for (const r of p.runs) {
@@ -367,7 +368,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     missions: PARTS.flatMap(p => p.missions || []),
     workItems: PARTS.flatMap(p => p.workItems || []),
     workItemsArchiveCutoffMs: PARTS.map(p => p.workItemsArchiveCutoffMs).filter(Number.isFinite).reduce((a, b) => (a == null || b > a ? b : a), null),
-    invalidWorkItems: PARTS.flatMap(p => p.invalidWorkItems || []),
+    workDocumentDiagnostics: PARTS.flatMap(p => p.workDocumentDiagnostics || []),
     visibleNodeGraphs: PARTS.reduce((n, p) => n + (p.visibleNodeGraphs || 0), 0),
   };
   const MULTI = PARTS.length > 1;
@@ -407,16 +408,10 @@ svg.arrows .arrowhead { fill: var(--accent); }
   const tipBody = (key, html) => `<div class="note" id="tip-${esc(key)}" data-tip-body="${esc(key)}"${openTips.has(key) ? "" : " hidden"}>${html}</div>`;
   // ---- work item warnings: pure renderer exercised by projection tests ----
   function workItemWarnings(data) {
-    const unverified = (data.missions || []).filter(m => m.unverifiedOperator);
-    const verified = (data.missions || []).flatMap(m =>
-      (m.ownerActions || []).filter(a => a.verified).map(a => ({ mission: m, action: a }))
-    );
-    const invalid = data.invalidWorkItems || [];
-    return [
-      ...unverified.map(m => `未验证 operator owner action：${esc(m.id)}`),
-      ...verified.map(x => `verified (LAX same-uid) owner action：${esc(x.mission.id)} / ${esc(x.action.action)}`),
-      ...invalid.map(m => `无效 work item：${esc(m.path)} — ${esc(m.reason)}`),
-    ].join("<br>");
+    const diagnostics = Array.isArray(data.workDocumentDiagnostics) ? data.workDocumentDiagnostics : [];
+    return diagnostics.filter(item => item && typeof item === "object").map(item =>
+      `可选文档解析提示：${esc(item.path)} — ${esc(item.reason)}`
+    ).join("<br>");
   }
   // ---- end work item warnings ----
   function setTip(key, open) {
@@ -784,7 +779,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     return `<div class="lane lane-${line.kind}${quiet ? " quiet" : ""}">
       <button class="lane-head" data-line="${esc(line.id)}">
         <b>${line.mission ? `<span class="mid">${esc(line.mission.id)}</span>` : ""}${esc(line.title)}</b>
-        <span class="lane-meta">${line.mission && line.mission.status !== "doing" ? `<span class="tag">${esc(MISSION_ZH[line.mission.status] || line.mission.status)}</span> ` : ""}${MULTI ? esc(line.node) + " · " : ""}${counts || (beatRuns.length ? "" : "窗口内没有活动")}${line.routines.length ? `<span class="${failing ? "bad" : ""}">${line.kind === "routine" ? "" : `↻${line.routines.length} 个例行 · `}${beatRuns.length} 次${failing ? " · 最近一次失败" : ""}</span>` : ""}</span>
+        <span class="lane-meta">${line.mission && line.mission.status !== "doing" ? `<span class="tag">${esc(missionStatusLabel(line.mission.status))}</span> ` : ""}${MULTI ? esc(line.node) + " · " : ""}${counts || (beatRuns.length ? "" : "窗口内没有活动")}${line.routines.length ? `<span class="${failing ? "bad" : ""}">${line.kind === "routine" ? "" : `↻${line.routines.length} 个例行 · `}${beatRuns.length} 次${failing ? " · 最近一次失败" : ""}</span>` : ""}</span>
       </button>
       <div class="track">${beats}${dots}</div>
     </div>`;
@@ -859,7 +854,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     const shown = showOlder ? runs : runs.filter(inWindow);
     const cross = DATA.links.filter(k => { const a = RUNS.get(k.from), b = RUNS.get(k.to); return (a.line === id) !== (b.line === id) && b.created <= T; });
     el.innerHTML = `<div class="linehead">
-        <div><div class="who" style="margin-bottom:6px">${line.mission ? `<span class="tag">Mission</span><span class="tag">${esc(MISSION_ZH[line.mission.status] || line.mission.status || "")}</span><span class="mono">${esc(line.mission.id)}</span>` : `<span class="tag">任务线</span><span class="tag">推断</span>`}<span>${esc(line.owner)}</span></div>
+        <div><div class="who" style="margin-bottom:6px">${line.mission ? `<span class="tag">Mission</span><span class="tag">${esc(missionStatusLabel(line.mission.status))}</span><span class="mono">${esc(line.mission.id)}</span>` : `<span class="tag">任务线</span><span class="tag">推断</span>`}<span>${esc(line.owner)}</span></div>
           <h2>${esc(line.title)}</h2><p>${esc(line.background)}</p></div>
         <div class="box"><dl class="kv"><dt>目标</dt><dd>${esc(line.goal)}</dd><dt>进度</dt><dd>${(() => { const w = windowCounts(runs); const parts = ["running", "completed", "failed", "cancelled"].filter(k => w[k]).map(k => `${STATE_ZH[k]} ${w[k]}`); return `${winLabel()}：${parts.join("，") || "没有活动"}`; })()}</dd>
           ${line.routines.length ? `<dt>例行</dt><dd>${line.routines.length} 个，见下方心跳条</dd>` : ""}

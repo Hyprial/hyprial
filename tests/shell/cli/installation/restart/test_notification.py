@@ -22,42 +22,23 @@ import subprocess as _cli_subprocess
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 
-def test_autoupdate_notification_is_confirmed_before_bus_cutting_restart(
+def test_the_restart_waits_for_no_owner_notification(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Mutation: moving notification below shutdown fails immediately."""
+    """R2 (owner ruling 2026-11-19): the daemon sends no restart notice, so
+    the upgrade neither asks for one nor gates the restart on it."""
 
     events = _fake_upgrade(monkeypatch, tmp_path)
 
-    def notify(
-        before: dict[str, Any],
-        new_version: str,
-        resolved_tag: str,
-        resolved_commit: str,
-    ) -> dict[str, Any]:
-        assert not any(event.startswith("shutdown:") for event in events), (
-            "restart cut the notification bus before delivery confirmation"
-        )
-        events.append("notify:confirmed")
-        assert before == {
-            "pid": 4101,
-            "epoch": "old",
-            "version": "0.4.0.dev1",
-        }
-        assert new_version == "0.4.0.dev2"
-        assert resolved_tag == "v0.4.0.dev2"
-        assert resolved_commit == "d" * 40
-        return {"delivered": True, "deliveryConfirmed": True}
+    result = _cli_get_services()._perform_upgrade(force=False)
 
-    result = _cli_get_services()._perform_upgrade(force=False, before_restart=notify)
-
-    assert result["notification"]["deliveryConfirmed"] is True
+    assert "notification" not in result
     assert events == [
         "ping:15",
         "prime",
-        "notify:confirmed",
         "shutdown:2",
         f"launch:{_cli_owner_1.DAEMON_START_HARD_CAP_SECONDS:g}",
+        "launchAutoinstall:false",
         "ping:2",
     ]
 
@@ -73,7 +54,8 @@ def test_a_stub_that_invents_its_own_shape_cannot_pass_the_restart_path(
     paper over the reader again.
     """
 
-    def nested_dict_launch(*, ready_timeout: float) -> dict[str, Any]:
+    def nested_dict_launch(*, ready_timeout: float, autoinstall: bool = True) -> dict[str, Any]:
+        del autoinstall
         del ready_timeout
         return {
             "ok": True,
@@ -122,6 +104,9 @@ def test_upgrade_reads_the_real_launcher_answer_not_a_stub_shape(
         timeout: float = 15.0,
         restore_wait: float | None = None,
     ) -> dict[str, Any]:
+        if method == "upgrade.steps.run":
+            assert params == {"apply": True}
+            return {"steps": [], "pending": ["org-membership-v1"]}
         del params, restore_wait
         events.append(f"{method}:{timeout:g}")
         if method == "ps":
@@ -220,22 +205,3 @@ def test_upgrade_reads_the_real_launcher_answer_not_a_stub_shape(
         "ping:2",
         "ps:2",
     ]
-
-
-def test_unconfirmed_notification_prevents_restart(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    events = _fake_upgrade(monkeypatch, tmp_path)
-
-    def reject(*_args: Any) -> dict[str, Any]:
-        raise _cli_get_services().CliError(
-            "AUTOUPDATE_NOTIFICATION_UNDELIVERED", "fixture bus rejected delivery"
-        )
-
-    with pytest.raises(_cli_get_services().CliError) as caught:
-        _cli_get_services()._perform_upgrade(force=False, before_restart=reject)
-
-    assert caught.value.code == "UPGRADE_NOTIFICATION_FAILED"
-    assert caught.value.data["upgradeCompleted"] is True
-    assert caught.value.data["restart"]["attempted"] is False
-    assert events == ["ping:15", "prime"]

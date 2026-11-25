@@ -118,11 +118,14 @@ that is wired but not yet ready (after a daemon restart or presence rebuild,
 before the carrier heartbeats again) reports the session offline, so such a
 worker may be stopped in that window; it is not deleted, because GC
 re-checks under the destroy reservation. Cleanup does not stop such an agent,
-`lastObservation.inUse` lists the signals (`pinned`, `interactive_online`),
+`lastObservation.inUse` lists the signals (`pinned`, `interactive_online`;
+`pinned` means the agent's cell binds an adapter, or that its bindings are
+unknown because the cell runtime is unavailable or the cell is not loaded),
 and it resumes once released. PAC GC skips it as `worker-in-use`, and the
 destroy recheck refuses it with reason `worker-in-use`; the GC pass report's
 `skipped` histogram carries the reason any destroy recheck returned
-(`worker-in-use`, `online`, `pinned`, `agent-incarnation-mismatch`), with
+(`worker-in-use`, `online`, `adapter-bound`, `adapter-bindings-unknown`,
+`agent-incarnation-mismatch`), with
 `destroy-noop` only when none is given. A closed graph whose receipt has no cleanup
 intent gets one on its next reconcile. This field never grants the execution
 daemon authority over a borrowed actor.

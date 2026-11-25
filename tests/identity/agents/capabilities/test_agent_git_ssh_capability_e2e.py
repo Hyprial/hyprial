@@ -432,7 +432,12 @@ async def test_t17_git_ssh_capability_commit_push_e2e(
     # The granted secret flowed through the resolver into the worker env
     # (presence only — its value is asserted absent from every artifact).
     assert dump["DEEPSEEK_API_KEY_PRESENT"] is True
-    assert dump["HYPRIAL_WORKER_ACTOR"] == f"agent:{OWNER}:{NODE}:{WORKER}"
+    # The worker runs as the agent's official address (UUID addressing: the
+    # id form agent:<owner>:<node>:a.<id>), read back from the registry.
+    listed = positive.harness.ipc("agent.list", {})["agents"]
+    official = next(row["uri"] for row in listed if row["actor"] == WORKER)
+    assert official.startswith(f"agent:{OWNER}:{NODE}:")
+    assert dump["HYPRIAL_WORKER_ACTOR"] == official
 
     # Real commit + real push through the rewritten URL.
     assert results["commit_rc"] == 0

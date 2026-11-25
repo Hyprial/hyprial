@@ -18,12 +18,11 @@ import uuid
 import weakref
 
 from hyprial.kernel import (
-    ActorHandle,
-    ActorRuntime,
+    ActorCell,
     ActorSpec,
     AdmissionResult)
 
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 from hyprial.daemon.impl.transport import KeySpace, TransportSample, TransportSession
 
@@ -119,8 +118,8 @@ class RuntimeDirectory:
             if owner is not None:
                 owner._execute_directory_effect(effect)
 
-        runtime = ActorRuntime()
-        handle = runtime.start(
+        host = self._actor_hosts.host
+        cell = host.spawn(
             ActorSpec(
                 "orgfs-directory-ingress",
                 lambda: handle_command,
@@ -131,12 +130,11 @@ class RuntimeDirectory:
                 supervision_profile="state_authority",
             )
         )
-        self._directory_runtime = runtime
-        self._directory_actor = handle
-        self._directory_effects = EffectLane(
+        self._directory_cell = cell
+        self._directory_effects = host.effect_lane(
             name="orgfs-directory-effects",
             execute=execute_effect,
-            complete=lambda completion: runtime.tell(handle, completion),
+            complete=lambda completion: cell.tell(completion),
             capacity=ORGFS_ANNOUNCE_BUFFER_LIMIT,
             workers=1,
         )
@@ -149,15 +147,13 @@ class RuntimeDirectory:
 
 
     def _release_directory_credit(self, operation_id: str, generation: int) -> None:
-        pending: tuple[ActorRuntime, ActorHandle, _DirectoryCommand] | None = None
+        pending: tuple[ActorCell, _DirectoryCommand] | None = None
         with self._directory_custody_lock:
             self._directory_pending.discard((operation_id, generation))
-            runtime = self._directory_runtime
-            actor = self._directory_actor
+            cell = self._directory_cell
             if (
                 self._directory_rebuild_pending
-                and runtime is not None
-                and actor is not None
+                and cell is not None
                 and len(self._directory_pending) < self._directory_capacity
             ):
                 command = _DirectoryCommand(
@@ -170,11 +166,11 @@ class RuntimeDirectory:
                     (command.operation_id, command.generation)
                 )
                 self._directory_rebuild_pending = False
-                pending = (runtime, actor, command)
+                pending = (cell, command)
         if pending is None:
             return
-        runtime, actor, command = pending
-        if runtime.tell(actor, command) is AdmissionResult.ACCEPTED:
+        cell, command = pending
+        if cell.tell(command) is AdmissionResult.ACCEPTED:
             return
         with self._directory_custody_lock:
             self._directory_pending.discard(
@@ -187,15 +183,13 @@ class RuntimeDirectory:
 
 
     def _admit_directory_sample(self, action: str, sample: TransportSample) -> None:
-        runtime = self._directory_runtime
-        actor = self._directory_actor
+        cell = self._directory_cell
         with self._directory_custody_lock:
-            if (runtime is None or actor is None or self._directory_closing
+            if (cell is None or self._directory_closing
                 or len(self._directory_pending) >= self._directory_capacity):
                 if (
                     action == "rebuild-complete"
-                    and runtime is not None
-                    and actor is not None
+                    and cell is not None
                     and not self._directory_closing
                 ):
                     self._directory_rebuild_pending = True
@@ -207,7 +201,7 @@ class RuntimeDirectory:
             )
             token = (command.operation_id, command.generation)
             self._directory_pending.add(token)
-            if runtime.tell(actor, command) is not AdmissionResult.ACCEPTED:
+            if cell.tell(command) is not AdmissionResult.ACCEPTED:
                 self._directory_pending.discard(token)
                 if action == "rebuild-complete":
                     self._directory_rebuild_pending = True
@@ -553,14 +547,13 @@ class RuntimeDirectory:
     def _close_directory_ingress(self, timeout: float = 5.0) -> bool:
         with self._directory_custody_lock:
             self._directory_closing = True
-        runtime = self._directory_runtime
-        actor = self._directory_actor
+        cell = self._directory_cell
         effects = self._directory_effects
-        if runtime is None or actor is None or effects is None:
+        if cell is None or effects is None:
             return True
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            snapshot = runtime.snapshot(actor)
+            snapshot = cell.snapshot()
             if (
                 snapshot.queued == 0
                 and snapshot.in_flight == 0
@@ -575,10 +568,9 @@ class RuntimeDirectory:
         if not effects.close(max(0.0, deadline - time.monotonic())):
             return False
         self._directory_generation += 1
-        stopped = runtime.stop(actor, timeout=max(0.0, deadline - time.monotonic()))
+        stopped = cell.stop(timeout=max(0.0, deadline - time.monotonic()))
         if stopped:
-            self._directory_runtime = None
-            self._directory_actor = None
+            self._directory_cell = None
             self._directory_effects = None
         return stopped
 

@@ -1,3 +1,6 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Delegates open descriptor counting to hyprial.kernel.open_descriptor_count()
+#   instead of reading '/dev/fd' directly in DatabaseHealth._check.
 """Fresh SQLite opens and an independent, epoch-labelled health heartbeat.
 
 This is a read probe, never a second database writer or repair engine. A missing
@@ -13,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from hyprial.kernel import atomic_json_write
+from hyprial.kernel import atomic_json_write, open_descriptor_count
 from .write_rate import WriteRateWindow
 
 
@@ -80,10 +83,7 @@ class DatabaseHealth:
         total = diagnostics.get("orphanWriteBytes")
         rate_event = self._write_rate.observe(total, time.monotonic()) if isinstance(total, int) else None
         report["writeRate"] = {**self._write_rate.status(), "available": isinstance(total, int)}
-        try:
-            report["openFds"] = len(os.listdir("/dev/fd")) - 1
-        except OSError:
-            report["openFds"] = None
+        report["openFds"] = open_descriptor_count()
         with self._guard:
             self._report = report
         # This single writer has its own file. Never race daemon.json's owner.

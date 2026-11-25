@@ -1,0 +1,130 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "request_methods",
+ "scenario": "grant-simulations",
+ "steps": [
+  {
+   "step": 1,
+   "method": "agent.grant.check",
+   "label": "operator-check",
+   "origin": "ipc",
+   "params": {
+    "scenario": {
+     "caller": null,
+     "hosted": false,
+     "unverified": false,
+     "capability": "tool-surface",
+     "resource": "shell",
+     "scope": [],
+     "revision": 1,
+     "write": false
+    }
+   },
+   "result": {
+    "allowed": true,
+    "reason": "host-local operator at harness tool broker: the agent's tool allow-list: no caller identity is imposed",
+    "capability": "tool-surface",
+    "entryPoint": "harness tool broker: the agent's tool allow-list",
+    "caller": null,
+    "resource": "shell",
+    "revision": null,
+    "entryPoints": {
+     "agent-home": "the agent's own home (inherent, never granted to a visitor)",
+     "tool-surface": "harness tool broker: the agent's tool allow-list",
+     "shared-path": "filesystem access outside the agent home",
+     "org-context": "org shared folder reads",
+     "isolation": "execution isolation mode (directory or container)"
+    }
+   }
+  },
+  {
+   "step": 2,
+   "method": "agent.grant.visibility",
+   "label": "operator-visibility",
+   "origin": "ipc",
+   "params": {
+    "scenario": {
+     "caller": null,
+     "hosted": false,
+     "unverified": false,
+     "seeActors": null,
+     "sendTo": null,
+     "targets": [
+      "user:owner"
+     ]
+    }
+   },
+   "result": {
+    "caller": null,
+    "hosted": false,
+    "verified": true,
+    "decisions": [
+     {
+      "target": "user:owner",
+      "seeActors": {
+       "allowed": true,
+       "reason": "host-local operator: no caller identity is imposed",
+       "capability": "see-actors",
+       "caller": null,
+       "target": "user:owner"
+      },
+      "sendTo": {
+       "allowed": true,
+       "reason": "host-local operator: no caller identity is imposed",
+       "capability": "send-to",
+       "caller": null,
+       "target": "user:owner"
+      }
+     }
+    ],
+    "visible": [
+     "user:owner"
+    ]
+   }
+  },
+  {
+   "step": 3,
+   "method": "agent.grant.check",
+   "label": "bad-caller-check",
+   "origin": "ipc",
+   "params": {
+    "scenario": {
+     "caller": " ",
+     "hosted": false,
+     "unverified": false,
+     "capability": "tool-surface",
+     "resource": "shell",
+     "scope": [],
+     "revision": 1,
+     "write": false
+    }
+   },
+   "error": {
+    "code": "ENFORCEMENT_ERROR",
+    "message": "principal uri must be a non-empty, unpadded string"
+   }
+  },
+  {
+   "step": 4,
+   "method": "agent.grant.visibility",
+   "label": "bad-caller-visibility",
+   "origin": "ipc",
+   "params": {
+    "scenario": {
+     "caller": " ",
+     "hosted": false,
+     "unverified": false,
+     "seeActors": null,
+     "sendTo": null,
+     "targets": [
+      "user:owner"
+     ]
+    }
+   },
+   "error": {
+    "code": "VISIBILITY_ERROR",
+    "message": "caller uri must be a non-empty, unpadded string"
+   }
+  }
+ ]
+}

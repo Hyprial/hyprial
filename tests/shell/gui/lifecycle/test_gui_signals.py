@@ -163,6 +163,7 @@ def test_cli_sigterm_reclaims_recorded_child_process_groups(tmp_path: Path) -> N
                 port=4173,
                 no_open=True,
                 gui_home=None,
+                stdin_stop=False,
                 json_output=True,
             )
         except typer.Exit as error:
@@ -244,6 +245,47 @@ def _ports_free(*ports: int, timeout: float = 5.0) -> bool:
     return False
 
 
+_STUB_NODE = """#!{python}
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({{"ok": True}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+sys.stderr.write(
+    "endpoint: http://127.0.0.1:%d/daemon/request/<method>\\n" % server.server_port
+)
+sys.stderr.write("token: Bearer stub-not-a-credential\\n")
+sys.stderr.flush()
+server.serve_forever()
+"""
+
+
+def _write_stub_node(directory: Path) -> Path:
+    """A stand-in for the project's Node that speaks the Contract Mock banner.
+
+    The signal tests prove process-group reclamation, not mock behaviour, so
+    they must not need a Node binary on the test machine.
+    """
+    path = directory / "stub-node"
+    path.write_text(_STUB_NODE.format(python=sys.executable), encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 def _port_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
@@ -288,6 +330,7 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
         import json
         import os
         from pathlib import Path
+        import re
         import socket
         import subprocess
         import sys
@@ -296,38 +339,27 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
 
         from hyprial.shell.impl.cli.commands.gui import commands
         from hyprial.shell.impl.gui import launcher
+        from hyprial.shell.impl.gui.backend.admission import SourceAdmission
 
         home = Path(sys.argv[1])
         home.mkdir(parents=True, exist_ok=True)
+        home.chmod(0o700)
         frontend_port_file = Path(sys.argv[2])
-        backend_port_file = Path(sys.argv[3])
         pids = []
-        backend_code = (
+        frontend_code = (
             "import json, socket, sys, time\\n"
             "sock = socket.socket()\\n"
             "sock.bind(('127.0.0.1', 0))\\n"
             "sock.listen()\\n"
-            "port = sock.getsockname()[1]\\n"
-            "open(sys.argv[1], 'w').write(str(port))\\n"
-            "print('HYPRIAL_STUB_READY ' + json.dumps("
-            "{'service': 'hyprial-gui-stub', 'host': '127.0.0.1', "
-            "'port': port, 'endpoint': 'http://127.0.0.1:' + str(port)}), "
-            "flush=True)\\n"
-            "time.sleep(60)\\n"
-        )
-        frontend_code = (
-            "import socket, sys, time\\n"
-            "sock = socket.socket()\\n"
-            "sock.bind(('127.0.0.1', 0))\\n"
-            "sock.listen()\\n"
             "open(sys.argv[1], 'w').write(str(sock.getsockname()[1]))\\n"
+            "print('HYPRIAL_GUI_READY ' + json.dumps({'service': 'hyprial-gui', "
+            "'mode': 'production', 'dataMode': 'hosted', 'driver': 'contract-mock', "
+            "'backendConfigured': True, 'session': 'launch-required', "
+            "'host': '127.0.0.1', 'port': 4173, 'url': 'http://127.0.0.1:4173'}), flush=True)\\n"
             "time.sleep(60)\\n"
         )
 
         def spawn(argv, **kwargs):
-            if kwargs.get("stdout") is not subprocess.PIPE:
-                kwargs["stdout"] = subprocess.DEVNULL
-            kwargs["stderr"] = subprocess.DEVNULL
             process = subprocess.Popen(argv, **kwargs)
             pids.append(process.pid)
             return process
@@ -340,13 +372,24 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
                 time.sleep(0.01)
             return int(path.read_text()) if path.exists() else None
 
+        def read_mock_port():
+            path = home / "runtime" / "mock.log"
+            if not path.exists():
+                return None
+            match = re.search(
+                r"^endpoint: http://127\\.0\\.0\\.1:(\\d+)/daemon/request/<method>$",
+                path.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            return int(match.group(1)) if match is not None else None
+
         def blocking_opener(_url):
             print(
                 json.dumps(
                     {
                         "pids": pids,
                         "frontend_port": read_port(frontend_port_file),
-                        "backend_port": read_port(backend_port_file),
+                        "backend_port": read_mock_port(),
                     }
                 ),
                 flush=True,
@@ -369,13 +412,22 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
         commands.get_services = lambda: Services()
         project = launcher.GuiProject(
             home=home,
-            worktree=home,
+            worktree=Path.cwd(),
             branch="test",
-            node="/fake/node",
+            node=sys.argv[4],
             npm="/fake/npm",
             node_version="v24",
             npm_version="11",
             scripts={},
+        )
+        admission = SourceAdmission(
+            driver="contract-mock",
+            owner="contract-mock",
+            node="local",
+            principal="user:contract-mock",
+            home=None,
+            state_dir=home / "state",
+            socket_path=None,
         )
         plan = launcher.GuiLaunchPlan(
             mode="normal",
@@ -385,12 +437,6 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
             url="http://127.0.0.1:4173/",
             backend_endpoint=None,
             backend_owned=True,
-            backend_argv=(
-                sys.executable,
-                "-c",
-                backend_code,
-                str(backend_port_file),
-            ),
             frontend_argv=(
                 sys.executable,
                 "-c",
@@ -400,6 +446,9 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
             env=dict(os.environ),
             open_browser=True,
             build_argv=None,
+            driver="contract-mock",
+            admission=admission,
+            runtime_dir=home / "runtime",
         )
         launcher.build_plan = lambda *args, **kwargs: plan
         launcher.start_session = start_session
@@ -411,6 +460,7 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
                 port=4173,
                 no_open=False,
                 gui_home=None,
+                stdin_stop=False,
                 json_output=True,
             )
         except typer.Exit as error:
@@ -425,6 +475,7 @@ def test_cli_signal_during_blocking_opener_reclaims_children(
             str(tmp_path),
             str(tmp_path / "frontend.port"),
             str(tmp_path / "backend.port"),
+            str(_write_stub_node(tmp_path)),
         ],
         cwd=str(worktree),
         stdout=subprocess.PIPE,
@@ -527,6 +578,7 @@ def test_cli_signal_before_startup_json_exits_143_or_130(
                 port=4173,
                 no_open=True,
                 gui_home=None,
+                stdin_stop=False,
                 json_output=True,
             )
         except typer.Exit as error:

@@ -6,15 +6,16 @@ from pathlib import Path
 from hyprial.daemon.impl.composition.cell_observation import CellObservationView
 from hyprial.daemon.impl.inbox import InboxService, MemoryDeliveryTransport, InboxMessage, DeliveryLifecycle
 from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation
-from tests.daemon.cells.observability.mount.test_mount import composed as composed, settle
+from tests.daemon.cells.observability.mount.test_mount import composed as composed, registered, settle
 
 
 def test_mount_reads_preserve_pending_message_sender_grants_and_home(composed, tmp_path):
     app, launcher, harness, transport, delivery, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create("create", spec))
     domains = app._agent_session_domains
-    app.agents.grant_capability("worker", grant_id="channel-1", capability="channel",
-                                scope='["test-channel"]', granted_by="user:owner", revision=1)
+    app.agents.grant_capability("worker", grant_id="tool-1", capability="tool-surface",
+                                scope='["test-tool"]', granted_by="user:owner", revision=1)
     grants = domains.agent.read_capability_grants("worker")
     agent = domains.agent.read_agent("worker")
     binding = domains.agent.read_binding(spec.actor)

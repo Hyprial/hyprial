@@ -43,6 +43,7 @@ from hyprial.daemon.impl.pac.storage.store import (
 )
 from hyprial.kernel import DaemonRequestError, ipc_errors
 from tests.support.pac.builders import build_allen_graph, principal_uri
+from tests.support.actor_hosts import new_actor_host
 
 SENDER = "agent:test:node-a:pac"
 TARGET = "agent:test:node-a:worker"
@@ -71,7 +72,7 @@ def _harness(
         transport,
         router,
         mailbox_capacity=8,
-        io_capacity=2,
+        io_capacity=2, actor_host=new_actor_host(),
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     transport.bind_receiver(facade.receive)
@@ -289,7 +290,7 @@ class _InertTransport:
         return None
 
 
-def test_routine_and_remote_paths_pass_summary(tmp_path: Path, inbox) -> None:
+def test_routine_and_remote_paths_pass_summary(tmp_path: Path, inbox, actor_host) -> None:
     _coordinator, facade, adapter = inbox()
 
     host = _RoutineHost(adapter)
@@ -314,6 +315,9 @@ def test_routine_and_remote_paths_pass_summary(tmp_path: Path, inbox) -> None:
         state_dir=state_dir,
         _dispatch_service_actor="agent:test:node-a:dispatch-coordinator",
         _pac_graph_authority=_GrantAuthority(),
+        _agent_session_domains=SimpleNamespace(
+            actor_hosts=SimpleNamespace(host_for=lambda _owner: actor_host),
+        ),
         _log=lambda *a, **k: None,
         _pac_notification_io=adapter,
         agents=SimpleNamespace(

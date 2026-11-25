@@ -16,7 +16,7 @@ from hyprial.daemon.impl.desired_state import (
     PendingSessionAgentEffect,
 )
 
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import DesiredStateError, HarnessLaunchSpec
 from hyprial.daemon.impl.desired_state.sqlite import DesiredStateSqliteShadow
 from hyprial.daemon.impl.harnesses.runtime.ports import EnsureHarnessCommand, HarnessLaunchProjection
 from hyprial.kernel import LifecycleMutationRequest
@@ -73,14 +73,13 @@ def test_legacy_interactive_rows_gain_process_columns_without_a_verdict(
 _TABLE_KEY: dict[str, tuple[str, ...]] = {
     "desired_state_meta": ("key",),
     "root_state": ("id",),
-    "harnesses": ("harness", "name"),
+    "harnesses": ("harness", "name", "member"),
     "adapters": ("name",),
     "adapter_model_backup": ("id",),
     "interactive_sessions": ("actor",),
     "pending_session_agent_effects": ("effect_id",),
     "lifecycle_resources": ("domain", "resource_key"),
     "lifecycle_receipts": ("domain", "attempt_token"),
-    "channel_pins": ("channel",),
     "deprecated_shared_channels": ("channel",),
     "zenoh_endpoints": ("direction", "ordinal"),
     "service_connections": ("name",),
@@ -132,6 +131,7 @@ def _expected_tables(state: DesiredState) -> dict[str, list[dict[str, Any]]]:
             {
                 "harness": item.harness,
                 "name": item.name,
+                "member": item.member,
                 "headless": int(item.headless),
                 "args_json": _json_text(list(item.args)),
                 "ownership": item.ownership,
@@ -145,7 +145,6 @@ def _expected_tables(state: DesiredState) -> dict[str, list[dict[str, Any]]]:
                 "containerized": int(item.containerized),
                 "pinned_owner": item.pinned_owner,
                 "container_image": item.container_image,
-                "execution_runtime_json": _json_text(item.execution_runtime.to_json()) if item.execution_runtime is not None else None,
                 "model_vendor": item.model_provider,
                 "model": item.model,
                 # U0b (design ①): the harnesses table gained a status column;
@@ -218,10 +217,6 @@ def _expected_tables(state: DesiredState) -> dict[str, list[dict[str, Any]]]:
                 "version": item.version,
             }
             for item in state.lifecycle_receipts
-        ],
-        "channel_pins": [
-            {"channel": channel, "agent": agent}
-            for channel, agent in state.channel_pins
         ],
         "deprecated_shared_channels": [
             {"channel": channel} for channel in state.deprecated_shared_channels
@@ -372,7 +367,6 @@ def _populate(store: DesiredStateStore) -> str:
     store.complete_harness_lifecycle(
         "attempt-h1", provenance.resource_token, generation=9, version=4
     )
-    store.set_channel_pin("chan-1", "agent-1")
     store.update_zenoh_endpoints(
         listen=("tcp://127.0.0.1:9001", "quic://127.0.0.1:9002"),
         connect=("tcp://peer.example:9003",),
@@ -398,7 +392,6 @@ def test_sqlite_shadow_tracks_updates_and_deletes(tmp_path: Path) -> None:
     store = DesiredStateStore(path)
     _populate(store)
 
-    store.remove_channel_pin("chan-1")
     store.unregister_interactive("actor-1")
     store.remove_harness("codex", "worker-1")
     assert store.complete_session_agent_effect("effect-1")
@@ -471,3 +464,37 @@ def test_sqlite_shadow_survives_store_reopen(tmp_path: Path) -> None:
     second = DesiredStateStore(path)
     second.set_mailbox_role(False)
     _assert_reconciled(second, tmp_path)
+
+
+def test_legacy_execution_runtime_fails_closed_in_json_and_sqlite(tmp_path: Path) -> None:
+    """Non-null executionRuntime in JSON or legacy SQLite columns refuses load cleanly."""
+    base_doc = DesiredState().to_json()
+    base_doc["providers"] = [
+        {
+            "provider": "codex",
+            "name": "worker-1",
+            "headless": True,
+            "executionRuntime": {"kind": "smolvm"},
+        }
+    ]
+    with pytest.raises(DesiredStateError, match="executionRuntime is unsupported"):
+        DesiredState.from_json(base_doc)
+
+    path = tmp_path / "desired-state.json"
+    store = DesiredStateStore(path)
+    store.upsert_harness(HarnessLaunchSpec(harness="codex", name="worker-1", headless=True))
+
+    db_path = tmp_path / "lifecycle-operations.sqlite3"
+    connection = sqlite3.connect(db_path)
+    try:
+        with connection:
+            connection.execute("ALTER TABLE harnesses ADD COLUMN execution_runtime_json TEXT")
+            connection.execute(
+                "UPDATE harnesses SET execution_runtime_json = ? WHERE name = ?",
+                ('{"kind":"smolvm"}', "worker-1"),
+            )
+    finally:
+        connection.close()
+
+    with pytest.raises(DesiredStateError, match="executionRuntime is unsupported"):
+        DesiredStateStore(path)

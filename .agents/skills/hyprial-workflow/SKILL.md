@@ -25,7 +25,7 @@ completed. Inspect until accepted/rejected; do not repeat the task. The graph
 origin remains the place for graph-wide status, creation, cancellation and history.
 
 CLI calls inside interactive sessions use the file-backed actor/session
-binding. Workflow and work-item writes reject invalid or dead claims with
+binding. Workflow writes reject invalid or dead claims with
 `PAC_PRINCIPAL_UNVERIFIED`; they never fall back to the machine owner. Pi,
 Claude and Codex interactive carriers do not use the headless direct-ref marker.
 See `docs/reference/pac-cli-principal.md` and `contract/wire/message-sender-auth.md`.
@@ -41,12 +41,23 @@ execute requires a headless actor; interactive actors may plan, dispatch or
 review. State the branch/worktree and the first verifiable output checkpoint.
 Metadata is not an executable approval gate: an approval must be a graph node.
 
-For repository work, declare the PR base in the task. Allen's 2026-10-31 ruling
-requires feature PRs to target `release/v<next>`, not `dev`. Plan integration on
-that release branch, then promote `release/v<version>` to `dev`. Only release
-promotions and `hotfix/<slug>` PRs may target `dev`; do not relabel feature work
-as a hotfix. The `pr-hygiene source-branch` gate rejects other sources for `dev`.
-Changes under `.forgejo/workflows/` need an Allen merge gate.
+For repository work, declare `dev` as the feature PR base and integrate changes
+there first. This replaces the former release-first flow. Release and stable
+tags select reviewed commit heads; a cleanup or integration task does not
+authorize publishing a version. Check the current release hold and workflow
+policy before a separately authorized release. Changes under
+`.forgejo/workflows/` need an Allen merge gate.
+
+Work tracking documents under an organization's `work/` directory are ordinary
+OrgFS text. `hyprial org work ls/show` are read shortcuts; use `org fs read`
+and `org fs write --expect-version` for edits, and ordinary OrgFS move, history,
+and trash interfaces for conflicts or recovery. See
+`contract/work-items/README.md` for exact arguments. No `work.*` IPC, dedicated
+work writer, collect/finish routine, or local approval-ledger check remains.
+Task fields, including `ownerActions` or `verified`, are content, not approval
+proof. Keep enforced workflow approvals in explicit PAC nodes. Reading or
+projecting work text does not require replaying its journal, and this change
+does not migrate or delete existing files or history.
 
 Review an exact commit, not a moving tree. An execute node completes with the
 full 40-hex commit it produced; its review node reads that SHA in its own
@@ -106,6 +117,17 @@ deadline remains absolute. Budget a human node's timeout for its prescreen, up
 to the declared number of asks, and one upstream rework. Borrowed actors are
 never stopped by graph cleanup.
 
+A held graph is not silent. Once a graph has been held longer than six hours,
+PAC reminds its creator at most once per 24 hours (`PAC held-reminder: ...`)
+naming the graph, the held duration, the blocking nodes with their `reasonRef`,
+the workers whose activation is still desired up (desired state, not proof of a
+running process) and the three choices: reset and retry, cancel to reclaim, or
+raise the threshold. It is a reminder only -- nothing is reset or cancelled --
+and a held graph with no requested work restores no workers on a daemon
+restart; those start on demand when a node is actually requested. Operators set
+`HYPRIAL_PAC_HELD_REMINDER_THRESHOLD_SECONDS` to move the threshold and
+`HYPRIAL_PAC_HELD_REMINDER=0` to turn reminders off.
+
 ## Let a planner fan out work it cannot list in advance (expansion)
 
 Use an expansion when the number or shape of the next steps is only known after
@@ -163,6 +185,24 @@ Same-name or same-coordinator registration fails without replacing state.
 File-based registration is `hyprial routine add routine.yaml`; --from may
 only echo the verified caller. Omit actor/produces to allocate a routine-owned
 agent, or declare actor explicitly to borrow one; template-only flags must not be mixed with that form.
+
+## Agent addresses and display names (UUID addressing)
+
+- Every agent has an immutable id `a.<id>`. `hyprial agent list` shows each
+  agent as `display(a.<id>)`; `--json` rows carry `agentId` and `displayName`
+  (null means the display is the actor name). Take an agent's address from
+  the `uri` field of `hyprial agent list --json` instead of composing
+  `agent:<owner>:<machine>:<actor>` by hand.
+- `hyprial agent rename <name|a.id|uri> <new-display-name>` changes only the
+  display name; the id, address, home, grants and pins stay. Anyone may
+  rename for now. `AGENT_EXISTS` means a live agent holds the name; a
+  destroyed agent's name is free, and an agent created with it is a new
+  agent with a new id.
+- Once id-form minting is switched on, the official address is
+  `agent:<owner>:<machine>:a.<id>` and sending to a short-name agent address
+  fails loudly with the id address in the error. A bare name typed into the
+  CLI still resolves to the official address. Until that switch, the stored
+  `uri` stays in name form.
 
 ## Install(pi)
 
@@ -347,9 +387,13 @@ Default to sending everything back to the delegating agent. Direct developer
 messages require an explicit target and an explicit category of message. A
 worker is automatically network-visible and may proactively message an agreed
 target when that avoids an unnecessary relay; it must not infer new recipients.
-A worker's first send to a non-owner agent mints a link and is briefly held
-(`ok`, `queued`, `holdReason`); that hold is not a failure. Wait for the daemon
-to release it rather than resending or routing around it.
+A worker's send to another agent is delivered directly through the daemon's
+internal delivery path: links no longer hold sends (2026-11-21), so there is no
+`holdReason` to wait out and no reason to resend or route around a link. The
+public `link.*` / `threads.*` daemon requests and the `agent link` / `message
+thread` CLI commands are retired. Internal send-link admission and persisted
+`thread_id`/`threadId` ownership stamps may remain in the delivery boundary,
+but they are not public operations or fields.
 
 ## Observe and handle timeouts
 

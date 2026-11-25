@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+from hyprial.kernel import apply_private_umask, posix_metadata_enforced
 from hyprial.kernel.impl.log import Logger
 
 
@@ -23,13 +25,18 @@ def _records(path: Path) -> list[dict[str, object]]:
 
 
 def test_schema_routes_permissions_and_scopes(tmp_path: Path) -> None:
-    daemon = Logger.daemon(tmp_path, name="node-1")
-    adapter = Logger.adapter(tmp_path, name="lark-one")
-    worker = Logger.worker(tmp_path, runtime="pi", name="agent/unsafe")
+    previous_umask = apply_private_umask()
+    try:
+        daemon = Logger.daemon(tmp_path, name="node-1")
+        adapter = Logger.adapter(tmp_path, name="lark-one")
+        worker = Logger.worker(tmp_path, runtime="pi", name="agent/unsafe")
 
-    daemon.bind(component="zenoh").warn("zenoh.unset", detail="isolated")
-    adapter.info("adapter.ready", pid=101)
-    worker.error("worker.exited", pid=202, returnCode=23)
+        daemon.bind(component="zenoh").warn("zenoh.unset", detail="isolated")
+        adapter.info("adapter.ready", pid=101)
+        worker.error("worker.exited", pid=202, returnCode=23)
+    finally:
+        if posix_metadata_enforced():
+            os.umask(previous_umask)
 
     assert daemon.path == tmp_path / "logs" / "daemon.jsonl"
     assert adapter.path == tmp_path / "logs" / "lark-gateway.jsonl"
@@ -49,10 +56,11 @@ def test_schema_routes_permissions_and_scopes(tmp_path: Path) -> None:
     assert daemon_record["name"] == "node-1"
     assert daemon_record["event"] == "zenoh.unset"
     assert _records(worker.path)[0]["runtime"] == "pi"
-    for path in (daemon.path, adapter.path, worker.path):
-        assert path.stat().st_mode & 0o777 == 0o600
-        assert path.parent.stat().st_mode & 0o777 == 0o700
-    assert (tmp_path / "logs").stat().st_mode & 0o777 == 0o700
+    if posix_metadata_enforced():
+        for path in (daemon.path, adapter.path, worker.path):
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert path.parent.stat().st_mode & 0o777 == 0o700
+        assert (tmp_path / "logs").stat().st_mode & 0o777 == 0o700
 
 
 def test_redact_preserves_token_diagnostic_and_strips_bare_keys() -> None:

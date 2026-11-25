@@ -247,3 +247,66 @@ def test_native_loader_rejects_missing_user_config_with_nonempty_layer(
             cwd=workspace,
             model_provider="openai",
         )
+
+
+def test_native_loader_validates_portable_system_config_layer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    native_root, workspace, initialize, config_read, account_read, skills = (
+        _native_responses(tmp_path)
+    )
+    system_layer = next(
+        layer for layer in config_read["layers"] if layer["name"]["type"] == "system"
+    )
+    win_system = tmp_path / "ProgramData" / "OpenAI" / "Codex" / "config.toml"
+    system_layer["name"]["file"] = str(win_system)
+
+    with pytest.raises(CodexAgentHomeError, match="system config layer"):
+        _validate_codex_native_load(
+            initialize=initialize,
+            config_read=config_read,
+            account_read=account_read,
+            skills_list=skills,
+            native_root=native_root,
+            cwd=workspace,
+            model_provider="openai",
+        )
+
+    from hyprial.kernel import private_metadata_violation as real_violation
+
+    monkeypatch.setattr(
+        "hyprial.daemon.impl.harnesses.codex.launch.validation.private_metadata_violation",
+        lambda path, metadata, *, mode: real_violation(path, metadata, mode=mode),
+    )
+    monkeypatch.setattr(
+        "hyprial.kernel.impl.manysys.interface.posix_metadata_enforced",
+        lambda: False,
+    )
+    evidence = _validate_codex_native_load(
+        initialize=initialize,
+        config_read=config_read,
+        account_read=account_read,
+        skills_list=skills,
+        native_root=native_root,
+        cwd=workspace,
+        model_provider="openai",
+    )
+    assert evidence.codex_home == str(native_root)
+
+    for bad_path in (
+        str(native_root / "config.toml"),
+        str(workspace / "config.toml"),
+        str(tmp_path / "ProgramData" / "other.toml"),
+        "relative/config.toml",
+    ):
+        system_layer["name"]["file"] = bad_path
+        with pytest.raises(CodexAgentHomeError, match="system config layer"):
+            _validate_codex_native_load(
+                initialize=initialize,
+                config_read=config_read,
+                account_read=account_read,
+                skills_list=skills,
+                native_root=native_root,
+                cwd=workspace,
+                model_provider="openai",
+            )

@@ -57,7 +57,7 @@ def test_adapter_row_does_not_enter_agent_stranded_sweep(kind):
         inbox=SimpleNamespace(has_fetched=lambda _: True,
                               harness_failure_settlement=lambda _: None,
                               pending_messages=pending, ack=ack),
-        _current_link_gate=lambda: None, _logger=None,
+        _logger=None,
     )
     count = _BridgeResultsMixin._settle_stranded_rows(
         bridge, (HarnessLaunchSpec(harness=kind, name="sprite", headless=True),)

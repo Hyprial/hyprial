@@ -1,3 +1,10 @@
+# Decision record (provisioner, W1E-1 2026-11-21):
+# - Replaced os.fwalk + dir_fd/O_DIRECTORY/O_NOFOLLOW/O_NONBLOCK/fchmod payload
+#   staging I/O and the unsupported-safe-payload-io refusal with portable
+#   os.walk(followlinks=False) plus per-entry lstat + path_is_reparse rejection.
+# - Retained SHA-256 payload fingerprinting before and after materialization and
+#   root (st_dev, st_ino) replacement detection across snapshot, import, and
+#   verification.
 """Agent-home provisioning with filesystem and receipt fences.
 
 The registry is the authority.  This module only performs the filesystem half
@@ -13,6 +20,7 @@ import json
 import hashlib
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 from dataclasses import dataclass, replace
@@ -25,6 +33,7 @@ from hyprial.kernel import (
     current_uid,
     git_subprocess_environment,
     harden_private_path,
+    path_is_reparse,
     posix_metadata_enforced,
     private_metadata_violation,
 )
@@ -116,44 +125,58 @@ class HomePayloadFile:
     mode: int
 
 
-def snapshot_home_payload(root: Path, *, root_fd: int | None = None) -> tuple[HomePayloadFile, ...]:
-    """Fingerprint regular files through no-follow directory descriptors."""
-    if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd or not hasattr(os, "fwalk"):
-        raise ValueError("safe stage descriptor I/O is unsupported")
-    held = os.dup(root_fd) if root_fd is not None else os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    rows = []
+def snapshot_home_payload(root: Path) -> tuple[HomePayloadFile, ...]:
+    """Fingerprint regular files under ``root`` without following links or reparse points."""
+    base = Path(root)
     try:
-        for current, dirs, files, parent_fd in os.fwalk(".", dir_fd=held, follow_symlinks=False):
-            for name in dirs:
-                if stat.S_ISLNK(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode):
-                    raise ValueError("staged payload contains a linked directory")
-            for name in files:
-                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
-                with os.fdopen(fd, "rb") as stream:
-                    metadata = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(metadata.st_mode):
-                        raise ValueError("staged payload contains a non-regular file")
-                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                rows.append(HomePayloadFile(
-                    (Path(current) / name).as_posix(), metadata.st_size,
-                    digest, stat.S_IMODE(metadata.st_mode),
-                ))
-    finally:
-        os.close(held)
+        base_metadata = base.lstat()
+    except OSError as error:
+        raise ValueError("staged payload root is unreadable") from error
+    if stat.S_ISLNK(base_metadata.st_mode) or path_is_reparse(base_metadata) or not stat.S_ISDIR(base_metadata.st_mode):
+        raise ValueError("staged payload root is not a real directory")
+    rows = []
+    for current, dirs, files in os.walk(base, followlinks=False):
+        current_path = Path(current)
+        for name in dirs:
+            dir_meta = (current_path / name).lstat()
+            if stat.S_ISLNK(dir_meta.st_mode) or path_is_reparse(dir_meta) or not stat.S_ISDIR(dir_meta.st_mode):
+                raise ValueError("staged payload contains a linked directory")
+        for name in files:
+            file_path = current_path / name
+            metadata = file_path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("staged payload contains a non-regular file")
+            with file_path.open("rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("staged payload contains a non-regular file")
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            rows.append(HomePayloadFile(
+                file_path.relative_to(base).as_posix(), metadata.st_size, digest, stat.S_IMODE(metadata.st_mode),
+            ))
     return tuple(sorted(rows, key=lambda item: item.path))
 
 
-def _open_payload_file(root_fd: int, relative: Path) -> int:
-    """Open below the held stage directory without resolving linked parents."""
-    current = os.dup(root_fd)
-    try:
-        for part in relative.parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
-            os.close(current)
-            current = child
-        return os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=current)
-    finally:
-        os.close(current)
+def _payload_file_matches(actual: HomePayloadFile | None, expected: HomePayloadFile) -> bool:
+    if actual is None:
+        return False
+    if posix_metadata_enforced():
+        return actual == expected
+    return (actual.path, actual.size, actual.sha256) == (expected.path, expected.size, expected.sha256)
+
+
+def _open_payload_file(root: Path, relative: Path):
+    """Open ``relative`` under ``root`` without resolving linked or reparse parents."""
+    current = root
+    for part in relative.parts[:-1]:
+        current = current / part
+        metadata = current.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise OSError("staged payload parent is not a real directory")
+    source_path = current / relative.name
+    metadata = source_path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+        raise OSError("staged payload file is not a regular file")
+    return source_path.open("rb")
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +379,32 @@ class AgentHomeProvisioner:
             raise AgentHomeError("receipt-mismatch", receipt.actor, "validate-receipt")
         return path
 
+    def ensure_secret_store(self, receipt: HomeReceipt) -> Path:
+        """Materialise the empty per-agent secret store for one ready home.
+
+        ``agent ensure-home`` promises a home the credential commands can use
+        immediately; the store is created here (0600, empty schema) instead
+        of waiting for the first ``secret set``, so a ready receipt and a
+        missing store cannot disagree.  Opening an existing store is
+        idempotent: it only creates the file when absent and never rewrites
+        rows or events.
+        """
+
+        home = self.validate(receipt)
+        from hyprial.identity.impl.agents.secret_store.store import AgentSecretStore
+
+        try:
+            AgentSecretStore(home)
+        except ValueError as error:
+            raise AgentHomeError(
+                "unsafe-path", receipt.actor, "ensure-secret-store"
+            ) from error
+        except (OSError, sqlite3.Error) as error:
+            raise AgentHomeError(
+                "io", receipt.actor, "ensure-secret-store"
+            ) from error
+        return home
+
     def materialise_payload(
         self, receipt: HomeReceipt, staged_root: Path,
         expected_files: tuple[HomePayloadFile, ...],
@@ -366,78 +415,103 @@ class AgentHomeProvisioner:
         cleanup. Registry-only callers hold their existing writer transaction.
         """
         home = self.validate(receipt)
-        if not staged_root.is_dir() or staged_root.is_symlink():
-            raise AgentHomeError("unsafe-payload", receipt.actor, "import-home")
-        # Capability failure is terminal: no fallback to path-based move/copy.
-        if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
-            raise AgentHomeError("unsupported-safe-payload-io", receipt.actor, "import-home")
-        root_fd = os.open(staged_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        allowed = {item.name for item in _CLEANUP_DIRECTORIES}
-        copied = False
         try:
-            origin = os.fstat(root_fd)
-            if snapshot_home_payload(staged_root, root_fd=root_fd) != tuple(sorted(expected_files, key=lambda item: item.path)):
-                raise AgentHomeError("payload-changed", receipt.actor, "import-home")
-            for item in expected_files:
-                relative = Path(item.path)
-                if relative == _RECEIPT_RELATIVE:
-                    continue  # Keep the target's own custody receipt.
-                if not relative.parts or relative.parts[0] not in allowed or ".." in relative.parts:
-                    raise ValueError(f"payload {relative.as_posix()!r} is outside the home topology")
-                source_fd = _open_payload_file(root_fd, relative)
-                with os.fdopen(source_fd, "rb") as source:
-                    metadata = os.fstat(source.fileno())
-                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != item.size or stat.S_IMODE(metadata.st_mode) != item.mode:
-                        raise AgentHomeError("payload-changed", receipt.actor, "import-home")
-                    # Destination lifecycle is serialized by this home owner;
-                    # source I/O uses the opened FD, never a re-resolved path.
-                    target = home / relative
-                    self._ensure_payload_parents(home, target.parent)
-                    target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, item.mode)
-                    with os.fdopen(target_fd, "wb") as destination:
-                        os.fchmod(destination.fileno(), item.mode)
-                        shutil.copyfileobj(source, destination)
-                copied = True
-            if not copied:
-                raise ValueError("the bundle carries no payload outside its custody receipt")
-            # Also reject namespace changes after safe FD acquisition. This is
-            # an integrity check, not the mechanism preventing escaped I/O.
-            named = os.stat(staged_root, follow_symlinks=False)
-            if (named.st_dev, named.st_ino) != (origin.st_dev, origin.st_ino):
-                raise AgentHomeError("stage-replaced", receipt.actor, "import-home-complete")
-            if snapshot_home_payload(staged_root, root_fd=root_fd) != tuple(sorted(expected_files, key=lambda item: item.path)):
-                raise AgentHomeError("payload-changed", receipt.actor, "import-home-complete")
-        finally:
-            os.close(root_fd)
+            origin = staged_root.lstat()
+        except OSError:
+            raise AgentHomeError("unsafe-payload", receipt.actor, "import-home") from None
+        if (
+            stat.S_ISLNK(origin.st_mode)
+            or path_is_reparse(origin)
+            or not stat.S_ISDIR(origin.st_mode)
+        ):
+            raise AgentHomeError("unsafe-payload", receipt.actor, "import-home")
+        allowed = {item.name for item in _CLEANUP_DIRECTORIES}
+        ordered_expected = tuple(sorted(expected_files, key=lambda item: item.path))
+        if snapshot_home_payload(staged_root) != ordered_expected:
+            raise AgentHomeError("payload-changed", receipt.actor, "import-home")
+        copied = False
+        for item in expected_files:
+            relative = Path(item.path)
+            if relative == _RECEIPT_RELATIVE:
+                continue
+            if not relative.parts or relative.parts[0] not in allowed or ".." in relative.parts:
+                raise ValueError(f"payload {relative.as_posix()!r} is outside the home topology")
+            try:
+                source_stream = _open_payload_file(staged_root, relative)
+            except OSError as error:
+                raise AgentHomeError("payload-changed", receipt.actor, "import-home") from error
+            target = home / relative
+            self._ensure_payload_parents(home, target.parent, receipt.actor)
+            try:
+                existing_target = target.lstat()
+            except FileNotFoundError:
+                existing_target = None
+            if existing_target is not None and (
+                stat.S_ISLNK(existing_target.st_mode)
+                or path_is_reparse(existing_target)
+                or not stat.S_ISREG(existing_target.st_mode)
+            ):
+                source_stream.close()
+                raise AgentHomeError("unsafe-path", receipt.actor, "import-home")
+            with source_stream as source:
+                opened = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_size != item.size
+                    or (posix_metadata_enforced() and stat.S_IMODE(opened.st_mode) != item.mode)
+                ):
+                    raise AgentHomeError("payload-changed", receipt.actor, "import-home")
+                with open(
+                    target,
+                    "wb",
+                    opener=lambda p, flags: os.open(p, flags, item.mode),
+                ) as destination:
+                    shutil.copyfileobj(source, destination)
+            if posix_metadata_enforced():
+                os.chmod(target, item.mode)
+            copied = True
+        if not copied:
+            raise ValueError("the bundle carries no payload outside its custody receipt")
+        try:
+            named = staged_root.lstat()
+        except OSError as error:
+            raise AgentHomeError("stage-replaced", receipt.actor, "import-home-complete") from error
+        if (
+            stat.S_ISLNK(named.st_mode)
+            or path_is_reparse(named)
+            or (named.st_dev, named.st_ino) != (origin.st_dev, origin.st_ino)
+        ):
+            raise AgentHomeError("stage-replaced", receipt.actor, "import-home-complete")
+        if snapshot_home_payload(staged_root) != ordered_expected:
+            raise AgentHomeError("payload-changed", receipt.actor, "import-home-complete")
         expected = {item.path: item for item in expected_files if item.path != _RECEIPT_RELATIVE.as_posix()}
         actual = {item.path: item for item in snapshot_home_payload(home)}
-        if any(actual.get(path) != item for path, item in expected.items()):
+        if any(not _payload_file_matches(actual.get(path), item) for path, item in expected.items()):
             raise AgentHomeError("payload-changed", receipt.actor, "import-home-complete")
         self.validate(receipt)
         return home
 
-    def _ensure_payload_parents(self, home: Path, parent: Path) -> None:
-        """Create every missing level between ``home`` and ``parent`` as 0700.
+    def _ensure_payload_parents(self, home: Path, parent: Path, actor: str) -> None:
+        """Create every missing level between ``home`` and ``parent`` privately."""
 
-        ``Path.mkdir(mode=0o700, parents=True)`` applies ``mode`` to the leaf
-        only: an intermediate directory under a topology root (``secrets/native``
-        for a native credential, ``state/sessions`` for a session file) came
-        out at the umbrella default.  The P2 runtime owner validates the whole
-        chain from the home to each root at 0700, so a landed claude home with
-        a native credential was refused as ``runtime directory native is not
-        private`` -- before any launch.  Only levels below a topology root are
-        created here (the roots themselves are provisioned 0700 and validated),
-        and each is explicitly private.  C3-S2-C found this live; see
-        ``docs/notes/c3-claude-run.txt``.
-        """
-
-        missing: list[Path] = []
+        chain: list[Path] = []
         current = parent
-        while current != home and not current.exists():
-            missing.append(current)
+        while current != home:
+            chain.append(current)
             current = current.parent
-        for directory in reversed(missing):
-            directory.mkdir(mode=0o700)
+        for directory in reversed(chain):
+            try:
+                metadata = directory.lstat()
+            except FileNotFoundError:
+                directory.mkdir(mode=0o700)
+                self._harden(directory, actor, "create-payload-parent")
+            else:
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or path_is_reparse(metadata)
+                    or not stat.S_ISDIR(metadata.st_mode)
+                ):
+                    raise AgentHomeError("unsafe-path", actor, "import-home")
 
     def verify_payload(
         self, receipt: HomeReceipt, expected_files: tuple[HomePayloadFile, ...],
@@ -467,22 +541,24 @@ class AgentHomeProvisioner:
             raise ValueError("landing payload manifest has no payload files")
         try:
             home = self.validate(receipt)
-            root_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                origin = os.fstat(root_fd)
-                actual = {item.path: item for item in snapshot_home_payload(home, root_fd=root_fd)}
-                self.validate(receipt)
-                named = os.stat(home, follow_symlinks=False)
-                if (origin.st_dev, origin.st_ino) != (named.st_dev, named.st_ino):
-                    return "partial"
-            finally:
-                os.close(root_fd)
+            origin = home.lstat()
+            if stat.S_ISLNK(origin.st_mode) or path_is_reparse(origin):
+                return "partial"
+            actual = {item.path: item for item in snapshot_home_payload(home)}
+            self.validate(receipt)
+            named = home.lstat()
+            if (
+                stat.S_ISLNK(named.st_mode)
+                or path_is_reparse(named)
+                or (origin.st_dev, origin.st_ino) != (named.st_dev, named.st_ino)
+            ):
+                return "partial"
         except (OSError, ValueError, AgentHomeError):
             return "partial"
         actual.pop(_RECEIPT_RELATIVE.as_posix(), None)
         if not actual:
             return "absent"
-        if all(actual.get(path) == item for path, item in expected.items()):
+        if all(_payload_file_matches(actual.get(path), item) for path, item in expected.items()):
             return "present"
         return "partial"
 
@@ -519,20 +595,9 @@ class AgentHomeProvisioner:
         def discover() -> Path | None:
             try:
                 completed = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(workspace_root),
-                        "rev-parse",
-                        "--show-toplevel",
-                    ],
-                    check=False,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=10,
-                    env=environment,
+                    ["git", "-C", str(workspace_root), "rev-parse", "--show-toplevel"],
+                    check=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, timeout=10, env=environment,
                 )
             except (OSError, subprocess.TimeoutExpired) as error:
                 raise AgentHomeError("io", actor, "workspace-git-discover") from error
@@ -562,28 +627,15 @@ class AgentHomeProvisioner:
         try:
             initialized = subprocess.run(
                 [
-                    "git",
-                    "-C",
-                    str(workspace_root),
-                    f"--git-dir={marker}",
-                    f"--work-tree={workspace_root}",
-                    "init",
-                    "--quiet",
+                    "git", "-C", str(workspace_root), f"--git-dir={marker}",
+                    f"--work-tree={workspace_root}", "init", "--quiet",
                 ],
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=10,
-                env=environment,
+                check=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=10, env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AgentHomeError("io", actor, "workspace-git-init") from error
-        if (
-            initialized.returncode != 0
-            or discover() != workspace_root
-            or not owns_git_boundary()
-        ):
+        if initialized.returncode != 0 or discover() != workspace_root or not owns_git_boundary():
             raise AgentHomeError("io", actor, "workspace-git-init")
 
     def workspace_summary(self, receipt: HomeReceipt) -> WorkspaceSummary:
@@ -593,12 +645,7 @@ class AgentHomeProvisioner:
         workspace = root / _WORKSPACE_RELATIVE
         if not workspace.exists() and not workspace.is_symlink():
             return WorkspaceSummary(str(workspace), False, 0, 0)
-        self.safe_directory(
-            workspace,
-            receipt.actor,
-            "validate-workspace",
-            mode=0o700,
-        )
+        self.safe_directory(workspace, receipt.actor, "validate-workspace", mode=0o700)
         files = 0
         total_bytes = 0
         unreadable_entries = 0
@@ -614,9 +661,6 @@ class AgentHomeProvisioner:
                 try:
                     metadata = entry.stat(follow_symlinks=False)
                 except OSError:
-                    # The directory entry itself was visible even though its
-                    # metadata was not. Count it, but do not invent a size or
-                    # descend through an object whose type is unknown.
                     files += 1
                     unreadable_entries += 1
                     continue
@@ -625,9 +669,7 @@ class AgentHomeProvisioner:
                     continue
                 files += 1
                 total_bytes += metadata.st_size
-        return WorkspaceSummary(
-            str(workspace), True, files, total_bytes, unreadable_entries
-        )
+        return WorkspaceSummary(str(workspace), True, files, total_bytes, unreadable_entries)
 
     def compensate(self, attempt: HomeProvisioningAttempt) -> bool:
         """Remove only this attempt's still-matching, otherwise-empty home."""
@@ -645,6 +687,8 @@ class AgentHomeProvisioner:
         if not self._removable(root):
             return False
         try:
+            for name in _SECRET_FILES:
+                (root / name).unlink(missing_ok=True)
             (root / _RECEIPT_RELATIVE).unlink()
             for relative in reversed(_CLEANUP_DIRECTORIES):
                 directory = root / relative
@@ -790,9 +834,13 @@ class AgentHomeProvisioner:
         try:
             root_names = {item.name for item in root.iterdir()}
             required = {item.name for item in _AGENT_SUBDIRECTORIES}
-            allowed = {item.name for item in _CLEANUP_DIRECTORIES}
+            allowed = {item.name for item in _CLEANUP_DIRECTORIES} | _SECRET_FILES
             if not required.issubset(root_names) or not root_names.issubset(allowed):
                 return False
+            for name in root_names & _SECRET_FILES:
+                metadata = (root / name).lstat()
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                    return False
             for relative in _CLEANUP_DIRECTORIES:
                 path = root / relative
                 if relative.name not in root_names:
@@ -830,21 +878,12 @@ class AgentHomeProvisioner:
             self._harden(path, actor, "reserve")
 
     def _prepare_root(self, actor: str) -> None:
-        # The symlink/traversal fence covers the subtree this module manages --
-        # H, H/agents and each agent directory are lstat-checked below and in
-        # ``validate``.  H's own prefix is the operator's trusted filesystem
-        # (e.g. macOS ``/tmp`` -> ``/private/tmp``), so it is not policed here;
-        # this mirrors ``SecretResolver._validate_ancestors``, which likewise
-        # starts at H rather than walking to the root.
         if self.hyprial_home.exists() or self.hyprial_home.is_symlink():
             self.safe_directory(self.hyprial_home, actor, "prepare-home-root")
         else:
             try:
                 self.hyprial_home.mkdir(mode=0o700, parents=True)
             except FileExistsError:
-                # Another provision created H between the test and the call;
-                # an existing H is exactly what the branch above accepts, so
-                # the same fence decides whether it may be used.
                 self.safe_directory(self.hyprial_home, actor, "prepare-home-root")
             else:
                 self._harden(self.hyprial_home, actor, "prepare-home-root")
@@ -854,13 +893,9 @@ class AgentHomeProvisioner:
             try:
                 self.agents_root.mkdir(mode=0o700)
             except FileExistsError:
-                self.safe_directory(
-                    self.agents_root, actor, "prepare-agents-root", mode=0o700
-                )
+                self.safe_directory(self.agents_root, actor, "prepare-agents-root", mode=0o700)
             else:
-                self._harden(
-                    self.agents_root, actor, "prepare-agents-root", mode=0o700
-                )
+                self._harden(self.agents_root, actor, "prepare-agents-root", mode=0o700)
 
     def _filesystem_alias(self, actor: str, candidate: Path) -> Path | None:
         try:
@@ -888,30 +923,15 @@ class AgentHomeProvisioner:
 
     @staticmethod
     def safe_directory(
-        path: Path,
-        actor: str,
-        phase: str,
-        *,
-        mode: int | None = None,
+        path: Path, actor: str, phase: str, *, mode: int | None = None,
     ) -> None:
-        """Refuse ``path`` unless it is a real directory private to this account.
-
-        Public because the user home (``hyprial.users.home``) holds its
-        directories to the same contract: no symlink, junction or other
-        reparse point, no non-directory, and private access.  On POSIX that is
-        the current uid and exactly ``mode`` when one is given.  On Windows it
-        is the owner/DACL boundary implemented by
-        :mod:`hyprial.kernel.impl.platform.privacy.private_access`; a platform that
-        cannot inspect that boundary refuses rather than skipping it.  Raises
-        :class:`AgentHomeError` naming ``phase``; nothing here is
-        agent-specific.
-        """
+        """Refuse ``path`` unless it is a real directory private to this account."""
 
         try:
             metadata = path.lstat()
         except OSError as error:
             raise AgentHomeError("io", actor, phase) from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
             raise AgentHomeError("unsafe-path", actor, phase)
         try:
             violation = private_metadata_violation(path, metadata, mode=mode)

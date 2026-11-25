@@ -38,7 +38,7 @@ def test_manager_factory_registers_real_manager_for_common_cleanup(
 
 
 def test_manager_journal_uses_shared_state_persistence_authority(
-    tmp_path: Path,
+    tmp_path: Path, actor_host
 ) -> None:
     from hyprial.daemon.impl.desired_state import DesiredStateStore
     from hyprial.daemon.impl.state_db import StateDatabase
@@ -46,7 +46,7 @@ def test_manager_journal_uses_shared_state_persistence_authority(
 
     state_db = StateDatabase(tmp_path / "saga.sqlite3")
     desired = DesiredStateStore(tmp_path / "desired.json", state_db)
-    authority = StatePersistenceAuthority(desired)
+    authority = StatePersistenceAuthority(desired, actor_host=actor_host)
     router = CorrelationEventRouter()
     manager = _manager(
         state_db.path, _CompletionPorts(router), router,

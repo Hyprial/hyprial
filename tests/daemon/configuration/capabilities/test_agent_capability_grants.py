@@ -1,21 +1,24 @@
-"""Capability ledger journeys through DaemonApplication, without workers."""
+"""Capability ledger journeys through DaemonApplication, without workers.
 
+The module explicitly re-exports the shared app_factory pytest fixture.
+"""
+
+from tests.support.agent_destroy import destroy_agent
+
+from contextlib import closing
 import sqlite3
-import threading
 
 import pytest
 
+import hyprial.identity.impl.agents.addressing as addressing
 from hyprial.daemon.impl.application import DaemonRequestError
-from hyprial.daemon.impl.composition import DomainCommandError
-from hyprial.kernel import ipc_errors
-from tests.daemon.organizations.invite import test_host_invite
+from tests.daemon.organizations.invite import support
 
-app_factory = test_host_invite.app_factory
-home_files = test_host_invite.home_files
+app_factory = support.app_factory
 
 
-def invite(app):
-    return app.handle("agent.host-invite", {"name": "guest", "owner": "visitor"})
+def resident(app):
+    return app.handle("agent.create", {"name": "guest"})
 
 
 def grant(app, **overrides):
@@ -30,27 +33,19 @@ def journal(app):
     return app.handle("agent.grants", {"actor": "guest", "audit": True})["journal"]
 
 
-def test_invitation_journal(app_factory):
-    app = app_factory()
-    # Ordinary creation does not fabricate a host invitation.
-    app.handle("agent.create", {"name": "native"})
-    assert app.handle("agent.grants", {"actor": "native", "audit": True})["journal"] == []
-    invite(app)
-    rows = journal(app)
-    assert len(rows) == 1
-    assert rows[0]["action"] == "host-invite"
-    assert rows[0]["by"] == "user:host-owner"
-    assert rows[0]["note"] == "ownerAsserted=host"
-    assert rows[0]["atMs"] > 0
-    # The frozen registry seam may be called again by an integration; it does
-    # not append another invitation. Creation/assertions above use production IPC.
-    app._agent_registry.record_host_invite("guest", by="user:host-owner", note="ownerAsserted=host")
-    assert journal(app) == rows
+@pytest.mark.parametrize("destroy", ["forward", "forward-switch-off", "compensating"])
+def test_ledger_revision_revoke_restart_destroy(app_factory, monkeypatch, destroy):
+    """Re-creating the destroyed name starts with no grants and a new token.
 
+    Every destroy path leaves the name free (owner decision 2026-11-19).  The
+    grant journal is an audit read by name: the new incarnation's journal
+    shows the earlier rows, each carrying its own entity token.
+    """
 
-def test_ledger_revision_revoke_restart_destroy(app_factory):
+    if destroy == "forward-switch-off":
+        monkeypatch.setattr(addressing, "ID_FORM_MINTING", False)
     app = app_factory()
-    invite(app)
+    resident(app)
     first = grant(app, grantedBy="user:forged")
     assert first["grantedBy"] == "user:host-owner"
     assert journal(app)[-1]["action"] == "grant"
@@ -73,13 +68,23 @@ def test_ledger_revision_revoke_restart_destroy(app_factory):
     assert app.handle("agent.grants", {})["grants"] == []
     grant(app, grantId="g2")
     before = journal(app)
-    assert app.handle("agent.destroy", {"name": "guest"})["destroyed"]
+    if destroy == "compensating":
+        guest = app.agents.require("guest")
+        settled = app.agents.settle_destroy(
+            f"agent-capability-compensation:{guest.entity_token}:test",
+            guest.actor,
+            expected_entity_token=guest.entity_token,
+        )
+        assert settled.disposition == "destroyed"
+    else:
+        assert destroy_agent(app, "guest")["destroyed"]
     assert journal(app) == before
     assert app.handle("agent.grants", {})["grants"] == []
-    invite(app)
+    resident(app)
     assert app.handle("agent.grants", {"actor": "guest"})["grants"] == []
-    assert journal(app)[:-1] == before
-    assert journal(app)[-1]["entityToken"] != first["entityToken"]
+    assert journal(app) == before
+    successor = grant(app, grantId="g3")
+    assert successor["entityToken"] != first["entityToken"]
 
 
 @pytest.mark.parametrize("capability,scope,bad", [
@@ -89,16 +94,15 @@ def test_ledger_revision_revoke_restart_destroy(app_factory):
     ("see-actors", '["agent:visitor:node:actor"]', '["actor"]'),
     ("send-to", '["user:visitor"]', '["route:outside"]'),
     ("tool-surface", '["harness_read"]', '[]'),
-    ("channel", '["support-bot"]', '[""]'),
     ("shared-path", '{"path":"/srv/shared","mode":"ro"}', '{"path":"relative","mode":"ro"}'),
 ])
 def test_scope_closed_schema(app_factory, capability, scope, bad):
     app = app_factory()
-    invite(app)
+    resident(app)
     with pytest.raises(DaemonRequestError):
         grant(app, capability=capability, scope=bad)
     assert app.handle("agent.grants", {})["grants"] == []
-    assert len(journal(app)) == 1
+    assert journal(app) == []
     assert grant(app, capability=capability, scope=scope)["scope"] == scope
     if capability == "agent-home":
         with pytest.raises(DaemonRequestError, match="intrinsic"):
@@ -108,7 +112,7 @@ def test_scope_closed_schema(app_factory, capability, scope, bad):
 
 def test_stale_incarnation_is_not_an_active_grant(app_factory):
     app = app_factory()
-    invite(app)
+    resident(app)
     original = grant(app)
     # Persist a broken FK as a fault injection, not a new rotation endpoint.
     # Read through the real daemon query: token mismatch must be fail-closed.
@@ -119,133 +123,73 @@ def test_stale_incarnation_is_not_an_active_grant(app_factory):
     assert journal(app)[-1]["entityToken"] == original["entityToken"]
 
 
-def test_invite_and_grant_roll_back_if_journal_write_fails(app_factory):
+def test_grant_leaves_no_partial_state_when_journal_write_fails(app_factory):
     app = app_factory()
     database = app._agent_registry.database
-    with sqlite3.connect(database) as db:
-        db.execute("CREATE TRIGGER reject_audit BEFORE INSERT ON agent_grant_journal "
-                   "BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END")
-    before = home_files(app.hyprial_home)
-    with pytest.raises(DaemonRequestError) as failed_invite:
-        invite(app)
-    assert failed_invite.value.code == ipc_errors.AGENT_CREATE_COMMIT_FAILED
-    assert app.agents.get("guest") is None
-    assert home_files(app.hyprial_home) == before
-    with sqlite3.connect(database) as db:
-        db.execute("DROP TRIGGER reject_audit")
-    invite(app)
+    resident(app)
     with sqlite3.connect(database) as db:
         db.execute("CREATE TRIGGER reject_audit BEFORE INSERT ON agent_grant_journal "
                    "BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END")
     with pytest.raises((DaemonRequestError, sqlite3.IntegrityError)):
         grant(app)
     assert app.handle("agent.grants", {})["grants"] == []
-    assert len(journal(app)) == 1
-
-
-def test_invite_commit_failure_waits_for_home_cleanup(app_factory, monkeypatch):
-    app = app_factory()
-    with sqlite3.connect(app._agent_registry.database) as db:
-        db.execute("CREATE TRIGGER reject_audit BEFORE INSERT ON agent_grant_journal "
-                   "BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END")
-    provisioner = app._agent_registry.home_provisioner
-    original_cleanup = provisioner.cleanup
-    entered = threading.Event()
-    release = threading.Event()
-
-    def held_cleanup(receipt, *, expected_token):
-        entered.set()
-        assert release.wait(5.0)
-        return original_cleanup(receipt, expected_token=expected_token)
-
-    monkeypatch.setattr(provisioner, "cleanup", held_cleanup)
-    outcomes: list[DaemonRequestError] = []
-
-    def run_invite():
-        try:
-            invite(app)
-        except DaemonRequestError as error:
-            outcomes.append(error)
-
-    caller = threading.Thread(target=run_invite)
-    caller.start()
-    try:
-        assert entered.wait(3.0)
-        assert caller.is_alive(), "invite returned before accepted home cleanup"
-        assert app.agents.get("guest") is None
-        assert any(
-            path.name == "home-receipt.json"
-            for path in (app.hyprial_home / "agents/guest").rglob("*")
-        )
-    finally:
-        release.set()
-        caller.join(5.0)
-    assert len(outcomes) == 1
-    assert outcomes[0].code == ipc_errors.AGENT_CREATE_COMMIT_FAILED
-    assert not (app.hyprial_home / "agents/guest").exists()
-    with sqlite3.connect(app._agent_registry.database) as db:
-        assert db.execute(
-            "SELECT 1 FROM lifecycle_resources WHERE resource_key=?",
-            ("agent-home-effect:create:guest",),
-        ).fetchone() is None
-
-
-def test_invite_rollback_pending_replays_exact_entity_after_restart(
-    app_factory, monkeypatch,
-):
-    app = app_factory()
-    database = app._agent_registry.database
-    with sqlite3.connect(database) as db:
-        db.execute("CREATE TRIGGER reject_audit BEFORE INSERT ON agent_grant_journal "
-                   "BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END")
-    def busy_settlement(*_args, **_kwargs):
-        raise DomainCommandError("PORT_OVERLOADED", "synthetic cleanup overload")
-
-    monkeypatch.setattr(app.agents, "settle_destroy", busy_settlement)
-    with pytest.raises(DaemonRequestError) as pending:
-        invite(app)
-    assert pending.value.code == ipc_errors.AGENT_CREATE_ROLLBACK_PENDING
-    assert "synthetic cleanup overload" in str(pending.value)
-    with sqlite3.connect(database) as db:
-        claim = db.execute(
-            "SELECT payload FROM lifecycle_resources WHERE resource_key=?",
-            ("agent-home-effect:create:guest",),
-        ).fetchone()
-        record = db.execute(
-            "SELECT payload FROM lifecycle_resources WHERE resource_key=?",
-            ("agent-record:guest",),
-        ).fetchone()
-        assert claim is not None and record is not None
-        import json
-        token = json.loads(record[0])["entityToken"]
-    receipt_path = app.hyprial_home / "agents/guest/state/home-receipt.json"
-    assert receipt_path.exists()
-    app._close()
-    reopened = app_factory()
-    settled = reopened.agents.settle_destroy(
-        "retry-original-guest-rollback", "guest",
-        expected_entity_token=token,
-    )
-    assert settled.disposition == "destroyed"
-    assert not receipt_path.exists()
-    with sqlite3.connect(database) as db:
-        assert db.execute(
-            "SELECT 1 FROM lifecycle_resources WHERE resource_key=?",
-            ("agent-home-effect:create:guest",),
-        ).fetchone() is None
-        db.execute("DROP TRIGGER reject_audit")
-    successor = invite(reopened)["agent"]
-    assert successor["actor"] == "guest"
-    assert reopened.agents.require("guest").entity_token != token
+    assert journal(app) == []
 
 
 def test_owner_rename_preserves_historical_attribution(app_factory):
+    """L3 retires startup owner_migration rewrites; grants and journal stay immutable."""
     app = app_factory()
     app.handle("agent.create", {"name": "native"})
-    invite(app)
+    resident(app)
     grant(app)
     before = journal(app)
     app._close()
     app = app_factory(owner="renamed-host")
     assert journal(app) == before
-    assert app.handle("agent.grants", {})["grants"][0]["grantedBy"] == "user:renamed-host"
+    assert app.handle("agent.grants", {})["grants"][0]["grantedBy"] == "user:host-owner"
+
+
+def test_the_retired_channel_capability_is_refused(app_factory):
+    app = app_factory()
+    resident(app)
+    with pytest.raises(DaemonRequestError) as failure:
+        grant(app, capability="channel", scope='["support-bot"]')
+    assert failure.value.code == "INVALID_ARGUMENT"
+    assert "unknown capability" in str(failure.value)
+    assert app.handle("agent.grants", {})["grants"] == []
+    assert journal(app) == []
+
+
+def _store_unknown_row(app, capability, grant_id="old-row"):
+    with closing(sqlite3.connect(app._agent_registry.database)) as db, db:
+        db.execute(
+            "INSERT INTO agent_capability_grants SELECT actor, entity_token, ?, "
+            "?, '[\"support-bot\"]', granted_by, 1 FROM agent_capability_grants "
+            "WHERE grant_id='g1'", (grant_id, capability),
+        )
+        db.execute(
+            'INSERT INTO agent_grant_journal (at_ms, actor, entity_token, action, grant_id, '
+            'capability, scope, "by", revision, note) SELECT 0, actor, entity_token, \'grant\', '
+            "grant_id, capability, scope, granted_by, revision, NULL "
+            "FROM agent_capability_grants WHERE grant_id=?", (grant_id,),
+        )
+
+
+@pytest.mark.parametrize("capability", ["channel", "never-a-capability"])
+def test_a_stored_unknown_capability_grant_is_ignored_and_revocable(app_factory, capability):
+    app = app_factory()
+    resident(app)
+    kept = grant(app)
+    _store_unknown_row(app, capability)
+    assert app.handle("agent.grants", {})["grants"] == [kept]
+    assert app.handle("agent.grants", {"actor": "guest"})["grants"] == [kept]
+    [found] = [row["grantId"] for row in journal(app)
+               if row["action"] == "grant" and row["capability"] == capability]
+    assert found == "old-row"
+    assert app.handle("agent.revoke", {"actor": "guest", "grantId": "old-row"})["revoked"]
+    last = journal(app)[-1]
+    assert (last["action"], last["grantId"], last["capability"]) == ("revoke", "old-row", capability)
+    assert last["scope"] == '["support-bot"]'
+    assert app.handle("agent.grants", {})["grants"] == [kept]
+    with closing(sqlite3.connect(app._agent_registry.database)) as db:
+        assert db.execute("SELECT count(*) FROM agent_capability_grants").fetchone()[0] == 1

@@ -20,10 +20,12 @@ a re-sealed envelope with different metadata fails to open.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
@@ -33,8 +35,12 @@ from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from hyprial.daemon.impl.transfer.archive.signature import ensure_private_directory
-from hyprial.kernel import atomic_json_write
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    atomic_json_write,
+    path_is_reparse,
+    secure_private_directory,
+)
 
 __all__ = [
     "ENVELOPE_SCHEMA_VERSION",
@@ -604,30 +610,6 @@ def load_envelope(path: os.PathLike[str] | str) -> dict[str, object]:
     return envelope
 
 
-# ---------------------------------------------------------------------------
-# AT07 phase 2: the target machine's credential-envelope recipient key.
-#
-# The sealed envelope carries the source owner's credentials as ciphertext for
-# one recipient: whoever holds the X25519 private key behind the
-# ``--recipient-public-key`` the source sealed to.  Phase 2 (owner ruling
-# 2026-10-14) puts that private key on the **target machine**: it lives beside
-# the transfer signing key under the same 0600/0700 discipline, so another user
-# on the target cannot read it -- a copied bundle stays worthless to them.
-#
-# Custody rules this section carries:
-#
-# * the target operator mints and publishes only the public half before a
-#   transfer (that is the key the source seals to); the private half never
-#   leaves the machine and is never written into a bundle, a receipt or a log;
-# * a record whose public half does not match its private half is refused by
-#   name -- opening with the wrong key would otherwise look like tampering;
-# * minting is explicit and idempotent (``ensure_recipient_key``); nothing here
-#   rotates a key, and nothing here mints a *new* key at landing time, because
-#   a key minted after the source sealed cannot open the envelope.
-# ---------------------------------------------------------------------------
-
-#: Same home-relative root as the signing key: the machine's own transfer
-#: secrets, never the agent home and never a bundle payload.
 RECIPIENT_KEY_RELPATH = "secrets/transfer/recipient-key.json"
 RECIPIENT_KEY_ALGORITHM = "x25519"
 RECIPIENT_KEY_SCHEMA_VERSION = 1
@@ -678,13 +660,78 @@ def recipient_key_record(
     }
 
 
+def _validate_private_ancestry(directory: Path) -> None:
+    """Reject symlink, reparse-point, or non-directory existing ancestors."""
+
+    for candidate in reversed((directory, *directory.parents)):
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata):
+            raise PrivateAccessUnsupported("unsafe-ancestry")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PrivateAccessUnsupported("unsafe-directory")
+
+
+def _inspect_existing_regular_file(target: Path) -> os.stat_result | None:
+    """Validate ancestry and return ``lstat`` metadata for a regular file, or ``None``."""
+
+    _validate_private_ancestry(target.parent)
+    try:
+        existing = target.lstat()
+    except FileNotFoundError:
+        return None
+    if (
+        stat.S_ISLNK(existing.st_mode)
+        or path_is_reparse(existing)
+        or not stat.S_ISREG(existing.st_mode)
+    ):
+        raise PrivateAccessUnsupported("unsafe-file")
+    return existing
+
+
+def _open_no_follow(file_path: str, flags: int) -> int:
+    return os.open(
+        file_path, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    )
+
+
+def _read_verified_bytes(target: Path, existing: os.stat_result) -> bytes:
+    """Read an inspected regular file with a no-follow open and inode check."""
+
+    try:
+        with open(target, "rb", opener=_open_no_follow) as stream:
+            opened = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or path_is_reparse(opened)
+                or (opened.st_dev, opened.st_ino) != (existing.st_dev, existing.st_ino)
+            ):
+                raise PrivateAccessUnsupported("unsafe-file")
+            return stream.read()
+    except OSError as error:
+        if error.errno in {errno.ELOOP, getattr(errno, "EMLINK", -1)}:
+            raise PrivateAccessUnsupported("unsafe-file") from error
+        raise
+
+
+def _prepare_private_target(path: os.PathLike[str] | str) -> Path:
+    """Validate existing ancestors, secure parent directories, and vet ``path``."""
+
+    target = Path(path).absolute()
+    _validate_private_ancestry(target.parent)
+    secure_private_directory(target.parent, create=True, mode=0o700)
+    _inspect_existing_regular_file(target)
+    return target
+
+
 def write_recipient_key(
     path: os.PathLike[str] | str, private_bytes: bytes, public_bytes: bytes
 ) -> None:
     """Persist a recipient key at mode 0600 under 0700 secret directories."""
 
-    target = Path(path)
-    ensure_private_directory(target.parent)
+    target = _prepare_private_target(path)
     atomic_json_write(target, recipient_key_record(private_bytes, public_bytes))
 
 
@@ -692,8 +739,12 @@ def read_recipient_key(path: os.PathLike[str] | str) -> tuple[bytes, bytes]:
     """Load ``(private_bytes, public_bytes)``, refusing an inconsistent file."""
 
     target = Path(path)
+    resolved = target.absolute()
+    existing = _inspect_existing_regular_file(resolved)
+    if existing is None:
+        raise RecipientKeyError(f"no recipient key at {target}")
     try:
-        raw = json.loads(target.read_text("utf-8"))
+        raw = json.loads(_read_verified_bytes(resolved, existing).decode("utf-8"))
     except FileNotFoundError:
         raise RecipientKeyError(f"no recipient key at {target}") from None
     except ValueError as error:
@@ -727,7 +778,7 @@ def ensure_recipient_key(path: os.PathLike[str] | str) -> tuple[bytes, bytes]:
     """Load the key at ``path``, minting one on first use."""
 
     target = Path(path)
-    if target.exists():
+    if _inspect_existing_regular_file(target.absolute()) is not None:
         return read_recipient_key(target)
     private_bytes, public_bytes = generate_recipient_key()
     write_recipient_key(target, private_bytes, public_bytes)
@@ -742,31 +793,6 @@ def recipient_public_key_b64(public_bytes: bytes) -> str:
     return _b64(public_bytes)
 
 
-# ---------------------------------------------------------------------------
-# AT06 credential carry: seal an agent home's credentials for one target.
-#
-# The export-side counterpart of ``landing/credentials.py``.  The owner ruling
-# of 2026-10-14 fixed the rule this section implements: an agent's own
-# credentials travel with its bundle, sealed to the target machine's X25519
-# key, and the *plaintext never rides the transport*.  Landing installs what
-# it can open with the key it holds; anything unreadable degrades there to
-# ``reauth-required``.
-#
-# Collection is deliberately narrow.  Only the files the agent-home layout
-# names as credential-bearing (``secrets/native/<harness>/<file>``) are
-# sealed -- and, at the same time, kept out of the plaintext payload through
-# ``export_bundle(exclude_paths=...)``.  Everything else in the home travels
-# as before: a directory named ``secrets/`` is not a credential by itself,
-# and excluding one wholesale would drop the agent's own state with it.
-#
-# The envelope is *declared* by the manifest (``credential_envelope``) and
-# rides the payload as a registered entry under ``secrets/transfer/`` -- an
-# existing top-level tree of a registry home, so the landing's own topology
-# gate accepts it without widening what a home may hold.
-# ---------------------------------------------------------------------------
-
-#: Where the sealed envelope travels inside the agent home the bundle carries.
-#: Bundle-relative; ``validate_bundle`` resolves a declaration exactly here.
 ENVELOPE_RELPATH = "secrets/transfer/envelope.json"
 
 #: Credential-bearing native files per harness, relative to the harness's
@@ -779,6 +805,7 @@ KNOWN_NATIVE_CREDENTIAL_PATHS: dict[str, frozenset[str]] = {
     "claude": frozenset({".credentials.json"}),
     "codex": frozenset({"auth.json"}),
     "pi": frozenset({"auth.json", "models.json", "models-store.json"}),
+    "agy": frozenset({"antigravity-oauth-token"}),
 }
 
 
@@ -842,19 +869,23 @@ def plan_credential_seal(
     """
 
     root = Path(home)
+    resolved_root = root.absolute()
+    _validate_private_ancestry(resolved_root)
     records: list[CredentialRecord] = []
     secrets: dict[str, str] = {}
     excluded: list[str] = []
     for harness in sorted(KNOWN_NATIVE_CREDENTIAL_PATHS):
         for filename in sorted(KNOWN_NATIVE_CREDENTIAL_PATHS[harness]):
             path = root / "secrets" / "native" / harness / filename
-            if path.is_symlink() or not path.is_file():
+            resolved_path = resolved_root / "secrets" / "native" / harness / filename
+            existing = _inspect_existing_regular_file(resolved_path)
+            if existing is None:
                 continue
             relative = path.relative_to(root).as_posix()
             excluded.append(relative)
             name = _record_name(harness, filename)
             try:
-                value = path.read_text(encoding="utf-8")
+                value = _read_verified_bytes(resolved_path, existing).decode("utf-8")
             except (OSError, UnicodeDecodeError) as error:
                 records.append(
                     CredentialRecord(

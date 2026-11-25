@@ -8,6 +8,8 @@ every stamp, hint and ack below is the authority's own.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import json
 import sqlite3
 from pathlib import Path
@@ -17,7 +19,6 @@ import pytest
 
 from hyprial.daemon.impl.api import HarnessResult, HarnessResultStatus
 from hyprial.daemon.impl.desired_state import DesiredStateStore
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.daemon.impl.inbox import (
     DeliveryCustodyCoordinator,
     DeliveryCustodyFacade,
@@ -27,9 +28,8 @@ from hyprial.daemon.impl.inbox import (
     InboxService,
     MemoryDeliveryTransport,
 )
-from hyprial.daemon.impl.links.ports import Allow
 from hyprial.daemon.impl.runtime import DaemonEventBridge
-from tests.support.links.gate import permissive_admission_slot
+from tests.support.actor_hosts import new_actor_host
 
 NODE = "wp5a-headless"
 AGENT = f"agent:op:{NODE}:sprite"
@@ -65,8 +65,8 @@ class _ScriptedHarnesses:
     def streaming_actors(self) -> tuple[str, ...]:
         return ("sprite",)
 
-    def dispatch(self, actor: str, delivery: Any) -> bool:
-        self.dispatched.append(delivery)
+    def dispatch(self, envelope: Any) -> bool:
+        self.dispatched.append(envelope)
         return True
 
     def drain_progress(self) -> tuple[()]:
@@ -77,27 +77,6 @@ class _ScriptedHarnesses:
 
     def status(self) -> tuple[()]:
         return ()
-
-
-class _HintGate:
-    """A gate whose settle verdict is scripted; admits everything."""
-
-    def __init__(self, hint: str = "keep") -> None:
-        self.hint = hint
-        self.hint_calls: list[str] = []
-
-    def admit_send(self, **_kwargs: object) -> Allow:
-        return Allow()
-
-    def sender_known(self, *, recipient: str, sender: str) -> bool:
-        return True
-
-    def admit_dispatch(self, **_kwargs: object) -> bool:
-        return True
-
-    def settle_hint(self, *, actor: str, message_id: str) -> str:
-        self.hint_calls.append(message_id)
-        return self.hint
 
 
 class _SubmitSpy:
@@ -164,9 +143,7 @@ def _inbox(database: Path) -> DeliveryCustodyFacade:
         MemoryDeliveryTransport(),
         type("_Events", (), {"publish": staticmethod(lambda _event: None)})(),
         node_id=NODE,
-        # Keep this suite about settlement; dispatch admission is explicitly
-        # permissive (wp4 T13 premise).
-        service_options={"link_admission": permissive_admission_slot()},
+        actor_host=new_actor_host(),
     )
     return DeliveryCustodyFacade(coordinator, database)
 
@@ -177,14 +154,10 @@ def _bridge(
     harnesses: _ScriptedHarnesses,
     clock: dict[str, int],
     *,
-    gate: object | None = None,
     harness: str = "pi",
     logs: Any = None,
+    actor_host,
 ) -> DaemonEventBridge:
-    slot = None
-    if gate is not None:
-        slot = LinkAdmission()
-        slot.bind(gate)
     value = DaemonEventBridge(
         state_dir=tmp_path,
         node_id=NODE,
@@ -195,7 +168,8 @@ def _bridge(
         harness_actor_uri=lambda name: f"agent:op:{NODE}:{name}",
         clock_ms=lambda: clock["now"],
         logger=logs,
-        link_admission=slot,
+        actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     return value
 
@@ -233,13 +207,13 @@ def _answer(message_id: str, text: str = "ANSWER") -> HarnessResult:
     return HarnessResult(message_id, AGENT, HarnessResultStatus.COMPLETED, output=text)
 
 
-def test_completed_request_submits_no_reply(tmp_path: Path) -> None:
+def test_completed_request_submits_no_reply(tmp_path: Path, *, actor_host) -> None:
     database = tmp_path / "inbox.sqlite3"
     real_inbox = _inbox(database)
     spy = _SubmitSpy(real_inbox)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, spy, harnesses, clock)
+    bridge = _bridge(tmp_path, spy, harnesses, clock, actor_host=actor_host)
     assert real_inbox.receive(_message("r1")).accepted
 
     bridge.start()
@@ -257,13 +231,13 @@ def test_completed_request_submits_no_reply(tmp_path: Path) -> None:
 
 
 def test_keep_leaves_request_pending_stamped_and_not_redispatched(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)  # no gate: hint is keep
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)  # no gate: hint is keep
     assert inbox.receive(_message("r1")).accepted
 
     bridge.start()
@@ -286,36 +260,14 @@ def test_keep_leaves_request_pending_stamped_and_not_redispatched(
         inbox.close()
 
 
-def test_ack_hint_acks_without_reply(tmp_path: Path) -> None:
-    database = tmp_path / "inbox.sqlite3"
-    inbox = _inbox(database)
-    spy = _SubmitSpy(inbox)
-    harnesses = _ScriptedHarnesses()
-    clock = {"now": 1_000}
-    gate = _HintGate(hint="ack")
-    bridge = _bridge(tmp_path, spy, harnesses, clock, gate=gate)
-    assert inbox.receive(_message("r1")).accepted
-
-    bridge.start()
-    try:
-        assert bridge.on_timer().harness_deliveries == 1
-        harnesses.results.append(_answer("r1"))
-        assert bridge.on_timer().harness_results == 1
-
-        assert inbox.pending_messages(AGENT) == ()
-        assert gate.hint_calls == ["r1"]
-        assert [item for item in spy.submitted if item.intent == "reply"] == []
-    finally:
-        bridge.stop()
-        spy._inner.close()
-
-
-def test_reply_and_event_rows_are_acked_without_a_gate(tmp_path: Path) -> None:
+def test_reply_and_event_rows_are_acked_without_a_gate(
+    tmp_path: Path, *, actor_host
+) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     assert inbox.receive(_message("rep", intent="reply")).accepted
     assert inbox.receive(_message("evt", intent="event")).accepted
 
@@ -335,19 +287,21 @@ def test_reply_and_event_rows_are_acked_without_a_gate(tmp_path: Path) -> None:
         inbox.close()
 
 
-def test_dispatched_prompt_is_the_daemon_batch_text(tmp_path: Path) -> None:
+def test_dispatched_prompt_is_the_daemon_batch_text(
+    tmp_path: Path, *, actor_host
+) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     row = _message("r1")
     assert inbox.receive(row).accepted
 
     bridge.start()
     try:
         assert bridge.on_timer().harness_deliveries == 1
-        delivered = harnesses.dispatched[0]
+        delivered = harnesses.dispatched[0].input
         # One daemon-rendered batch: the body is inline (inside the untrusted
         # data delimiters), the cursor/members are claimed, and the scalar
         # header is absent.
@@ -355,19 +309,19 @@ def test_dispatched_prompt_is_the_daemon_batch_text(tmp_path: Path) -> None:
         assert "--- BEGIN UNTRUSTED MESSAGE DATA ---" in delivered.message
         assert BODY in delivered.message
         assert delivered.batch_cursor
-        assert delivered.message_ids == ("r1",)
+        assert harnesses.dispatched[0].message_ids == ("r1",)
         assert "[Harness Network message from" not in delivered.message
     finally:
         bridge.stop()
         inbox.close()
 
 
-def test_failed_turn_is_not_settled_and_retries(tmp_path: Path) -> None:
+def test_failed_turn_is_not_settled_and_retries(tmp_path: Path, *, actor_host) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     assert inbox.receive(_message("r1")).accepted
 
     bridge.start()
@@ -398,14 +352,14 @@ def test_failed_turn_is_not_settled_and_retries(tmp_path: Path) -> None:
 
 
 def test_settle_deferral_retries_without_rerunning_the_turn(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     real_inbox = _inbox(database)
     flaky = _TimesOutFirstFetch(real_inbox)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, flaky, harnesses, clock)
+    bridge = _bridge(tmp_path, flaky, harnesses, clock, actor_host=actor_host)
     assert real_inbox.receive(_message("r1")).accepted
 
     bridge.start()
@@ -426,19 +380,19 @@ def test_settle_deferral_retries_without_rerunning_the_turn(
         real_inbox.close()
 
 
-def test_python_worker_still_receives_the_body(tmp_path: Path) -> None:
+def test_python_worker_still_receives_the_body(tmp_path: Path, *, actor_host) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, inbox, harnesses, clock, harness="user-proxy")
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, harness="jev", actor_host=actor_host)
     row = _message("r1")
     assert inbox.receive(row).accepted
 
     bridge.start()
     try:
         assert bridge.on_timer().harness_deliveries == 1
-        delivered = harnesses.dispatched[0]
+        delivered = harnesses.dispatched[0].input
         # Ruling 60: a python_worker has no model context; it gets the body.
         assert delivered.message == BODY
     finally:
@@ -448,7 +402,7 @@ def test_python_worker_still_receives_the_body(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("via_authority", [False, True])
 def test_body_read_then_transient_failure_still_retries(
-    tmp_path: Path, via_authority: bool
+    tmp_path: Path, via_authority: bool, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     harnesses = _ScriptedHarnesses()
@@ -463,10 +417,9 @@ def test_body_read_then_transient_failure_still_retries(
                 database,
                 transport,
                 node_id=NODE,
-                link_admission=permissive_admission_slot(),
             )
         return (
-            _bridge(tmp_path, inbox, harnesses, clock),
+            _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host),
             inbox,
         )
 
@@ -527,13 +480,13 @@ def test_body_read_then_transient_failure_still_retries(
 
 
 def test_permanent_failure_is_not_redispatched_after_body_read(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     assert inbox.receive(_message("r1")).accepted
 
     bridge.start()
@@ -562,7 +515,7 @@ def test_permanent_failure_is_not_redispatched_after_body_read(
 
 
 def test_late_batch_success_keeps_original_member_claims(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """A timed-out batch offer still owns every member when it later accepts.
 
@@ -577,15 +530,15 @@ def test_late_batch_success_keeps_original_member_claims(
     release = threading.Event()
 
     class Harnesses(_ScriptedHarnesses):
-        def dispatch(self, actor: str, delivery: Any) -> bool:
-            self.dispatched.append(delivery)
+        def dispatch(self, envelope: Any) -> bool:
+            self.dispatched.append(envelope)
             if len(self.dispatched) == 1:
                 release.wait(2)
             return True
 
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = Harnesses()
-    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000})
+    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000}, actor_host=actor_host)
     bridge._dispatch_agent_timeout_ms = 30
     for message_id in ("r1", "r2"):
         assert inbox.receive(_message(message_id)).accepted
@@ -611,7 +564,7 @@ def test_late_batch_success_keeps_original_member_claims(
 
 
 def test_settled_batch_result_does_not_revive_a_late_offer_claim(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """A result that settled before the late offer must not be revived.
 
@@ -626,8 +579,8 @@ def test_settled_batch_result_does_not_revive_a_late_offer_claim(
     blocked = {"value": False}
 
     class Harnesses(_ScriptedHarnesses):
-        def dispatch(self, actor: str, delivery: Any) -> bool:
-            self.dispatched.append(delivery)
+        def dispatch(self, envelope: Any) -> bool:
+            self.dispatched.append(envelope)
             if not blocked["value"]:
                 blocked["value"] = True
                 release.wait(2)
@@ -635,7 +588,7 @@ def test_settled_batch_result_does_not_revive_a_late_offer_claim(
 
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = Harnesses()
-    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000})
+    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000}, actor_host=actor_host)
     bridge._dispatch_agent_timeout_ms = 30
     for message_id in ("r1", "r2"):
         assert inbox.receive(_message(message_id)).accepted
@@ -667,15 +620,17 @@ def test_settled_batch_result_does_not_revive_a_late_offer_claim(
         inbox.close()
 
 
-def test_batch_is_not_fetched_until_the_worker_accepts(tmp_path: Path) -> None:
+def test_batch_is_not_fetched_until_the_worker_accepts(
+    tmp_path: Path, *, actor_host
+) -> None:
     import threading
 
     release = threading.Event()
     blocked = {"value": False}
 
     class Harnesses(_ScriptedHarnesses):
-        def dispatch(self, actor: str, delivery: Any) -> bool:
-            self.dispatched.append(delivery)
+        def dispatch(self, envelope: Any) -> bool:
+            self.dispatched.append(envelope)
             if not blocked["value"]:
                 blocked["value"] = True
                 release.wait(2)
@@ -684,7 +639,7 @@ def test_batch_is_not_fetched_until_the_worker_accepts(tmp_path: Path) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = Harnesses()
-    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000})
+    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000}, actor_host=actor_host)
     bridge._dispatch_agent_timeout_ms = 30
     for message_id in ("r1", "r2"):
         assert inbox.receive(_message(message_id)).accepted
@@ -704,20 +659,20 @@ def test_batch_is_not_fetched_until_the_worker_accepts(tmp_path: Path) -> None:
 
 
 def test_rejected_batch_offer_leaves_rows_unfetched_and_retryable(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     attempts = {"value": 0}
 
     class Harnesses(_ScriptedHarnesses):
-        def dispatch(self, actor: str, delivery: Any) -> bool:
+        def dispatch(self, envelope: Any) -> bool:
             attempts["value"] += 1
-            self.dispatched.append(delivery)
+            self.dispatched.append(envelope)
             return attempts["value"] > 1
 
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = Harnesses()
-    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000})
+    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000}, actor_host=actor_host)
     for message_id in ("r1", "r2"):
         assert inbox.receive(_message(message_id)).accepted
     bridge.start()
@@ -734,14 +689,14 @@ def test_rejected_batch_offer_leaves_rows_unfetched_and_retryable(
 
 
 def test_batch_workflow_flag_is_the_or_of_its_members(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, actor_host
 ) -> None:
     """Mutating the batch workflow aggregate to False must be observable."""
 
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _ScriptedHarnesses()
-    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000})
+    bridge = _bridge(tmp_path, inbox, harnesses, {"now": 1_000}, actor_host=actor_host)
     for message_id in ("r1", "r2"):
         assert inbox.receive(_message(message_id)).accepted
     monkeypatch.setattr(
@@ -753,7 +708,7 @@ def test_batch_workflow_flag_is_the_or_of_its_members(
     try:
         assert bridge._dispatch_harness_deliveries() == 1
         assert harnesses.dispatched[0].message_ids == ("r1", "r2")
-        assert harnesses.dispatched[0].workflow is True
+        assert harnesses.dispatched[0].input.workflow is True
     finally:
         bridge.stop()
         inbox.close()

@@ -213,6 +213,7 @@ class EmitterAlarmTextFidelityTests(unittest.TestCase):
                 _recipient: str,
                 _text: str,
                 _message_id: str,
+                _sender: str | None = None,
                 *,
                 _permanent: bool = permanent,
             ) -> bool:
@@ -220,7 +221,7 @@ class EmitterAlarmTextFidelityTests(unittest.TestCase):
                     "synthetic owner-DM refusal",
                     permanent=_permanent,
                     code=(
-                        "TARGET_SQUIRE_UNCONFIGURED"
+                        "TARGET_UNRESOLVED"
                         if _permanent
                         else "USER_DELIVERY_TIMEOUT"
                     ),
@@ -245,9 +246,12 @@ class EmitterAlarmTextFidelityTests(unittest.TestCase):
 
         emitter = AlarmEmitter(self.recorder)  # type: ignore[arg-type]
         cases = {
-            "TARGET_SQUIRE_UNCONFIGURED": True,
+            "TARGET_SQUIRE_UNCONFIGURED": False,
+            "TARGET_UNRESOLVED": True,
+            "USER_DELIVERY_UNAVAILABLE": False,
             "INVALID_ARGUMENT": True,
             "SENDER_UNRESOLVED": True,
+            "AGENT_ADDRESS_RETIRED": True,
             "USER_DELIVERY_OVERLOADED": False,
             "USER_DELIVERY_FAILED": False,
             "TARGET_SQUIRE_ADAPTER_UNAVAILABLE": False,
@@ -256,7 +260,8 @@ class EmitterAlarmTextFidelityTests(unittest.TestCase):
         }
         for code, retired in cases.items():
             def refuse(
-                _recipient: str, _text: str, _message_id: str, *, _code: str = code
+                _recipient: str, _text: str, _message_id: str,
+                _sender: str | None = None, *, _code: str = code,
             ) -> bool:
                 raise InboxIoError("synthetic rejection", permanent=True, code=_code)
 

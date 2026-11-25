@@ -109,12 +109,12 @@ def test_inflight_custody_survives_actor_restart_until_old_effect_completes() ->
     thread = threading.Thread(target=lambda: first.append(runtime.process(_message(1))))
     thread.start()
     assert entered.wait(1.0)
-    handle = runtime._handle
-    assert handle is not None
-    runtime._runtime.tell(handle, object())
+    cell = runtime._cell
+    assert cell is not None
+    runtime._cell.tell(object())
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
-        snapshot = runtime._runtime.snapshot(handle)
+        snapshot = runtime._cell.snapshot()
         if snapshot.generation > 1 and snapshot.state is ActorState.RUNNING:
             break
         time.sleep(0.01)

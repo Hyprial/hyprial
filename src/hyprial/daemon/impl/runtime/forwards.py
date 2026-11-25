@@ -1,29 +1,29 @@
-"""DaemonEventBridge forward/delivery cluster: forward thread, delivery tracking, loud failure notices and owner notification."""
+"""DaemonEventBridge delivery cluster: delivery tracking and loud failure notices."""
 
 from __future__ import annotations
 from hyprial.daemon.impl.runtime.settlement import (
     _NoticeRecoveryMixin,
     HARNESS_FAILURE_MAX_ATTEMPTS,
-    ForwardOutcome,
     HarnessActorRegistration,
     _InflightAttempt,
     _answer_already_committed,
+    _in_channel_notice_key,
     _notice_kind,
     _owner_facing_notice_text,
 )
 import json
-import threading
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import NAMESPACE_URL, uuid5
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMessage
+from hyprial.daemon.impl.inbox.envelope import inherit_envelope
 from hyprial.daemon.impl.inbox import (
     InboxAuthorityTimeout,
     InboxAuthorityUnavailable,
 )
 from hyprial.daemon import summary_from_text
-from hyprial.kernel import parse_agent_uri
+from hyprial.kernel import DaemonRequestError, is_agent_id_segment, parse_agent_uri
 from hyprial.daemon import (
     Alarm,
     AttemptIdentity,
@@ -37,7 +37,7 @@ from hyprial.daemon.impl.api  import (
     classify_harness_failure,
 )
 if TYPE_CHECKING:
-    pass
+    from hyprial.daemon.impl.cells.actor.contracts import CellDispatchStamp
 
 def _notice_is_terminal(message: InboxMessage) -> bool:
     """Whether a fail-loud notice reports a terminal (no-retry) outcome.
@@ -63,41 +63,6 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         if self._delivery_hooks is not None:
             self._delivery_hooks.settled(result)
 
-    def _start_forward_thread(self) -> None:
-        if self._forward_thread is not None:
-            return
-        self._forward_thread = threading.Thread(
-            target=self._run_forwards, name="hyprial-forward-pump", daemon=True
-        )
-        self._forward_thread.start()
-
-    def _run_forwards(self) -> None:
-        forwarder = self._forwarder
-        assert forwarder is not None
-        while True:
-            job = self._forward_jobs.get()
-            if job is None:
-                return
-            original, result, attempt = job
-            assert result.forward_to is not None
-            try:
-                outcome = forwarder(original, result.forward_to, result.output)
-            except Exception as error:  # noqa: BLE001 - a send fault is a failed forward, never a dead pump
-                outcome = ForwardOutcome(
-                    False,
-                    "HARNESS_TRANSIENT_FAILURE",
-                    f"forward raised {type(error).__name__}",
-                )
-            self._forward_outcomes.put((original, result, outcome, attempt))
-
-    def _halt_forward_thread(self) -> None:
-        thread = self._forward_thread
-        self._forward_thread = None
-        if thread is None:
-            return
-        self._forward_jobs.put(None)
-        thread.join(timeout=5.0)
-
     def _harness_kind(self, actor: str) -> str | None:
         """Unambiguous worker kind; adapter names never identify workers."""
         from hyprial.daemon.impl.harnesses.capabilities import worker_spec
@@ -109,24 +74,54 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         spec = worker_spec(state.harnesses, actor)
         return spec.harness if spec is not None else None
 
-    def _is_user_proxy(self, recipient: str) -> bool:
-        """True when ``recipient`` is a local user-proxy, i.e. a person's chat."""
+    def _recipient_worker_name(self, recipient: str) -> str | None:
+        """The local worker name an inbox key names, or None for a non-agent key.
+
+        A name URI's last segment is the worker name.  An ``a.`` id URI is a
+        worker's network identity, not its name: it maps to the worker whose
+        identity it is (a live worker first, then a declared one), so the
+        kind of an id-keyed row is never read from the id itself.  An id no
+        local worker owns stays as it is and names no worker.
+        """
 
         parsed = parse_agent_uri(recipient)
-        if parsed is None or parsed[1] != self.node_id:
-            return False
-        return self._harness_kind(parsed[2]) == "user-proxy"
+        if parsed is None:
+            return None
+        name = parsed[2]
+        if not is_agent_id_segment(name):
+            return name
+        for actor in self.harnesses.streaming_actors():
+            if self.harness_actor_uri(actor) == recipient:
+                return actor
+        try:
+            declared = tuple(spec.name for spec in self.desired_state.load().harnesses)
+        except Exception:  # noqa: BLE001 - a reporting path never breaks a tick
+            declared = ()
+        return next(
+            (actor for actor in declared if self.harness_actor_uri(actor) == recipient),
+            name,
+        )
 
-    def _note_delivery_seen(self, actor: str, message: InboxMessage) -> None:
+    def _note_delivery_seen(
+        self,
+        actor: str,
+        message: InboxMessage,
+        *,
+        stamp: "CellDispatchStamp | None" = None,
+    ) -> None:
         """Start the no-progress clock for a request a live worker owes.
 
         Registered when the delivery is first offered, not only when the
         worker accepts it: a connector that never gets ready is one of the
-        silent shapes this reports.  Re-seeing a delivery is a no-op so the
-        clock is not restarted tick over tick.
+        silent shapes this reports.  Re-seeing keeps the clock and adopts
+        the newest non-None stamp (M′ M6, round 3), so a later steer
+        targets the most recent submitted member.
         """
 
-        if message.message_id in self._inflight:
+        existing = self._inflight.get(message.message_id)
+        if existing is not None:
+            if stamp is not None and existing.stamp != stamp:
+                self._inflight[message.message_id] = replace(existing, stamp=stamp)
             return
         if message.intent == "reply" or _notice_kind(message) is not None:
             return  # nobody waits on a reply or notice; reporting it would chain
@@ -168,6 +163,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
             budget_ms=no_progress_budget_seconds(harness) * 1_000,
             last_progress_ms=started,
             worker_name=actor,
+            stamp=stamp,
         )
 
     def _note_delivery_progress(self, delivery_id: str, now_ms: int) -> None:
@@ -390,9 +386,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         kept (so it is not lost) and retried on a later tick.
         """
 
-        if is_human_facing_requester(message.recipient) or self._is_user_proxy(
-            message.recipient
-        ):
+        if is_human_facing_requester(message.recipient):
             # Allen 2026-10-13 (in-DM alarm ruling): the person's own
             # conversation hears about its stalled/failed request, in that
             # conversation -- owner diversion is retired for human-originated
@@ -407,11 +401,9 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         The chat handle belongs to the adapter, so the daemon hands the
         notice to the composition-root deliverer (wired to the adapter's
         native-reply path) and keeps only the timeout/custody decisions.
-        A user-proxy requester is the one human-facing shape whose original
-        channel is an inbox leg: the proxy relays what it receives into the
-        person's DM, so its notice goes through the ordinary submit.
 
-        Rate limit per (conversation x notice kind): the first occurrence and
+        Rate limit per (conversation x notice kind), where a derived default
+        conversation counts per request (``_in_channel_notice_key``): the first occurrence and
         the terminal outcome reach the chat; later intermediates are
         suppressed and logged, never re-sent per tick -- the 2026-09-26
         allen-proxy 252-notice self-feeding chain must not regress.  The
@@ -420,7 +412,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         """
 
         kind = _notice_kind(message)
-        key = (message.conversation_id, kind or "")
+        key = _in_channel_notice_key(message)
         if key in self._in_channel_notice_keys and not _notice_is_terminal(message):
             self._pending_notices.pop(message.message_id, None)
             if self._logger is not None:
@@ -434,38 +426,29 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
                     notification=kind,
                 )
             return False
-        if self._is_user_proxy(message.recipient):
-            delivered = self._submit_notice_to_inbox(message)
-        else:
-            deliverer = self._in_channel_notice_delivery
-            if deliverer is None:
-                self._remember_pending_notice(
-                    message, code="IN_CHANNEL_DELIVERY_UNWIRED"
-                )
-                return False
-            try:
-                delivered = bool(
-                    deliverer(message, _owner_facing_notice_text(message))
-                )
-            except Exception as error:  # noqa: BLE001 - the adapter boundary never breaks the tick
-                self._remember_pending_notice(message, code=type(error).__name__)
-                return False
-            if not delivered:
-                # The adapter would not take it (worker offline, correlation
-                # pruned).  Held and retried on later ticks, never diverted:
-                # owner diversion is retired for human-originated
-                # conversations (2026-10-13).
-                self._remember_pending_notice(
-                    message, code="IN_CHANNEL_DELIVERY_REFUSED"
-                )
-                return False
+        deliverer = self._in_channel_notice_delivery
+        if deliverer is None:
+            self._remember_pending_notice(
+                message, code="IN_CHANNEL_DELIVERY_UNWIRED"
+            )
+            return False
+        try:
+            delivered = bool(
+                deliverer(message, _owner_facing_notice_text(message))
+            )
+        except Exception as error:  # noqa: BLE001 - the adapter boundary never breaks the tick
+            self._remember_pending_notice(message, code=type(error).__name__)
+            return False
+        if not delivered:
+            self._remember_pending_notice(
+                message, code="IN_CHANNEL_DELIVERY_REFUSED"
+            )
+            return False
         if delivered:
             self._in_channel_notice_keys.add(key)
             self._pending_notices.pop(message.message_id, None)
             self._notice_failures_logged.discard(message.message_id)
-            if self._logger is not None and not self._is_user_proxy(
-                message.recipient
-            ):
+            if self._logger is not None:
                 self._logger(
                     "warn",
                     "daemon",
@@ -508,66 +491,6 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
             )
         return True
 
-    def _request_reaches_the_owner(self, message: InboxMessage) -> bool:
-        """True when re-handing this notice would reach the waiting sender.
-
-        Retained 2026-10-13 as the owner-diversion fallback surface for a
-        NON-human requester with no reachable channel only; the human-facing
-        path no longer calls it (owner diversion is retired for
-        human-originated conversations -- the notice is replied into the
-        original chat instead).  No current caller reaches this method; it
-        stays with its wiring so a non-human fallback lands in one place if
-        that class of requester ever appears.
-
-        The addresses come from the composition root, which is the only place
-        that knows which adapter, routes and ``user:`` address belong to this
-        owner.  Conversation ids count too: a notice for a request made inside
-        the owner's own chat reaches them whichever address proposed it.
-        """
-
-        if not self._owner_requester_addresses:
-            return False
-        return (
-            message.recipient in self._owner_requester_addresses
-            or message.conversation_id in self._owner_requester_addresses
-        )
-
-    def _notify_owner_of_diverted(self, message: InboxMessage) -> None:
-        """Hand a diverted notice to the owner channel on its own thread.
-
-        Retained 2026-10-13 as the fallback for a NON-human requester with no
-        reachable channel only; the human-facing path no longer diverts (the
-        notice is replied into the original chat instead), so no current
-        caller reaches this method.
-        """
-
-        notifier = self._owner_notifier
-        assert notifier is not None
-        text = (
-            f"一条原本要发给 {message.recipient} 的失败/无进展提醒，因对方是真人会话"
-            f"（{message.conversation_id}）而未发送，改发给你：\n"
-            f"{_owner_facing_notice_text(message)}"
-        )
-        key = f"owner-diverted:{message.idempotency_key or message.message_id}"
-
-        def deliver() -> None:
-            try:
-                notifier(text, idempotency_key=key)
-            except Exception as error:  # noqa: BLE001 -- never into the loop
-                if self._logger is not None:
-                    self._logger(
-                        "error",
-                        "daemon",
-                        "availability_loud.owner_notify_failed",
-                        messageId=message.message_id,
-                        recipient=message.recipient,
-                        detail=str(error) or type(error).__name__,
-                    )
-
-        threading.Thread(
-            target=deliver, name="hyprial-owner-diverted-notice", daemon=True
-        ).start()
-
     def _remember_pending_notice(self, message: InboxMessage, *, code: str) -> None:
         self._pending_notices.setdefault(message.message_id, message)
         if message.message_id in self._notice_failures_logged:
@@ -603,9 +526,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         QUEUED behind a busy turn is folded into that running turn instead of
         making its sender wait.  Only a failed steer (no capability, no
         running turn, rejected, transport dead) becomes the notice; a human
-        conversation's notice still goes in-channel (item A).  A user-proxy
-        relay is never steered: its turn is a person's chat leg, not a turn
-        the daemon may fold input into.
+        conversation's notice still goes in-channel (item A).
         """
 
         for attempt in tuple(self._inflight.values()):
@@ -620,7 +541,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
             waited_ms = now - attempt.last_progress_ms
             if waited_ms < attempt.budget_ms:
                 continue
-            if not attempt.steered and attempt.identity.harness != "user-proxy":
+            if not attempt.steered:
                 if self._steer_stalled_delivery(attempt):
                     # The queued message is now in the running turn.  Grant
                     # the attempt one more window before reporting; a second
@@ -643,10 +564,9 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
     def _steer_stalled_delivery(self, attempt: _InflightAttempt) -> bool:
         """One bounded steer attempt; logs the outcome either way.
 
-        Returns True only on the harness runtime's native acceptance.  A
-        missing port, a raised fault, a refusal and an unprovable outcome all
-        read as False so the caller raises the notice -- an unknown outcome
-        must never be silently treated as delivered.
+        True only on native acceptance; every failure shape reads as False
+        so the caller raises the notice (M′ M6): the target always comes
+        from the attempt's stamp and a stampless attempt steers nothing.
         """
 
         steer = getattr(self.harnesses, "steer", None)
@@ -657,9 +577,11 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
             detail = "harness runtime exposes no steer port"
         else:
             try:
-                accepted = bool(
-                    steer(attempt.worker_name, delivery_id)
-                )
+                envelope = self._cell_delivery.steer_envelope(attempt.stamp, delivery_id)
+                if envelope is None:
+                    detail = "no cell stamp on the in-flight attempt"
+                else:
+                    accepted = bool(steer(envelope))
             except Exception as error:  # noqa: BLE001 - a fault is a failed steer
                 detail = f"{type(error).__name__}: {error}"
         if accepted:
@@ -686,6 +608,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         deterministically (same id on retry), then acks the original request.
         """
 
+        speaker = self._official_recipient(original.recipient)
         reply = InboxMessage(
             message_id=str(
                 uuid5(
@@ -694,7 +617,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
                 )
             ),
             conversation_id=original.conversation_id,
-            sender=original.recipient,
+            sender=speaker,
             recipient=original.sender,
             payload=json.dumps(
                 {
@@ -703,7 +626,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
                     "origin": {
                         "via": "daemon",
                         "mechanism": "turn-hook",
-                        "onBehalfOf": original.recipient,
+                        "onBehalfOf": speaker,
                     },
                 },
                 separators=(",", ":"),
@@ -721,12 +644,13 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
     def _answer_mechanism_result(
         self, original: InboxMessage, result: HarnessResult
     ) -> bool:
-        """Ruling 59: a python_worker/user-proxy ``result`` frame answers.
+        """Ruling 59: a python_worker ``result`` frame answers.
 
         The worker has no model and no tool surface; its result is the
         mechanism's answer, with the same deterministic retry contract.
         """
 
+        speaker = self._official_recipient(original.recipient)
         reply = InboxMessage(
             message_id=str(
                 uuid5(
@@ -735,7 +659,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
                 )
             ),
             conversation_id=original.conversation_id,
-            sender=original.recipient,
+            sender=speaker,
             recipient=original.sender,
             payload=json.dumps(
                 {
@@ -744,7 +668,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
                     "origin": {
                         "via": "daemon",
                         "mechanism": "python_worker",
-                        "onBehalfOf": original.recipient,
+                        "onBehalfOf": speaker,
                     },
                 },
                 separators=(",", ":"),
@@ -759,6 +683,23 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         )
         return self._confirm_mechanism_answer(original, reply)
 
+    def _official_recipient(self, recipient: str) -> str:
+        """The official address of the agent answering a row keyed ``recipient``.
+
+        A row keyed by a name-form URI is never a send address (D8); a
+        mechanism answer speaks from the address the agent is reached at,
+        mapped by the send boundary's address resolution.  Without
+        that resolver, or for a value it refuses, the row's key is kept.
+        """
+
+        resolve = getattr(self, "_official_actor_uri", None)
+        if resolve is None:
+            return recipient
+        try:
+            return resolve(recipient)
+        except DaemonRequestError:
+            return recipient
+
     def _confirm_mechanism_answer(
         self, original: InboxMessage, reply: InboxMessage
     ) -> bool:
@@ -768,6 +709,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         deterministic id is retried, never a new answer.
         """
 
+        reply = inherit_envelope(reply, original)
         try:
             submitted = self.inbox.submit(reply)
         except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
@@ -781,7 +723,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         )
 
     @staticmethod
-    def _message_origin(message: InboxMessage) -> dict[str, Any] | None:
+    def _stored_message_origin(message: InboxMessage) -> dict[str, Any] | None:
         try:
             body = json.loads(message.payload)
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -832,10 +774,6 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
             if not self._result_settlement.close(5.0):
                 raise RuntimeError("Harness result settlements did not drain")
             self._result_settlement = None
-        if self._forward_settlement is not None:
-            if not self._forward_settlement.close(5.0):
-                raise RuntimeError("accepted Harness forwards did not drain")
-            self._forward_settlement = None
         if self._dispatch_offers is not None:
             offers = self._dispatch_offers
             if not offers.drain(5.0):
@@ -855,7 +793,7 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         # Halt the retry pump before owned resources close, so its blocking
         # facade call cannot race teardown.
         self._halt_retry_pump()
-        self._halt_forward_thread()
+        self._drain_claims_before_stop(timeout)
         if not self._drain_blocking_failures_on_stop(timeout):
             raise RuntimeError(
                 "accepted blocking failure observations did not transfer"

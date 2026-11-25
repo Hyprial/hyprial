@@ -62,6 +62,14 @@ func (m *Manager) Execute(ctx context.Context, r Request) (json.RawMessage, erro
 	}
 	id, _ := paramsIdentity(r)
 	tn := m.store.Tailnets[id]
+	if tn != nil && tn.Closed {
+		switch r.Op {
+		case "roster-fetch", "membership-status", "tailnet-forget", "tailnet-shutdown":
+		default:
+			m.mu.Unlock()
+			return nil, fail("MEMBER_REVOKED")
+		}
+	}
 	if r.Op == "membership-status" {
 		status, err := m.statusLocked(id)
 		m.mu.Unlock()
@@ -70,7 +78,7 @@ func (m *Manager) Execute(ctx context.Context, r Request) (json.RawMessage, erro
 		}
 		return bounded(status)
 	}
-	if r.Op == "membership-init" || r.Op == "authority-repin" || (tn != nil && isAuthority(tn.Authority, m.self)) {
+	if r.Op == "membership-init" || r.Op == "authority-repin" || r.Op == "tailnet-forget" || (tn != nil && isAuthority(tn.Authority, m.self)) {
 		data, err := m.localLocked(r, m.self, "", false)
 		hook := m.changed
 		rev := uint64(0)
@@ -87,7 +95,7 @@ func (m *Manager) Execute(ctx context.Context, r Request) (json.RawMessage, erro
 		}
 		return data, err
 	}
-	if r.Op == "invite-create" {
+	if r.Op == "invite-create" || (r.Op == "tailnet-shutdown" && tn != nil && !isAuthority(tn.Authority, m.self)) {
 		m.mu.Unlock()
 		return nil, fail("AUTHORITY_REQUIRED")
 	}
@@ -266,7 +274,7 @@ func (m *Manager) localLocked(r Request, s Sender, peer string, remote bool) (js
 				return receipt.Result, nil
 			}
 		}
-		if r.Op != "invite-redeem" {
+		if r.Op != "invite-redeem" && !(tn.Closed && r.Op == "roster-fetch") {
 			row, ok := tn.Members[s.DeviceID]
 			if !ok {
 				return nil, fail("MEMBER_UNKNOWN")
@@ -302,6 +310,13 @@ func (m *Manager) localLocked(r Request, s Sender, peer string, remote bool) (js
 				return nil, fail("OPERATION_CONFLICT")
 			}
 			return receipt.Result, nil
+		}
+	}
+	if tn != nil && tn.Closed {
+		switch r.Op {
+		case "roster-fetch", "tailnet-forget", "tailnet-shutdown":
+		default:
+			return nil, fail("MEMBER_REVOKED")
 		}
 	}
 	next := cloneStore(m.store)
@@ -535,6 +550,64 @@ func (m *Manager) localLocked(r Request, s Sender, peer string, remote bool) (js
 		}
 		current.Authority = p.Authority
 		result = map[string]any{"tailnetId": id, "revision": current.Revision, "backupPath": backup, "restartRequired": true}
+	case "tailnet-shutdown":
+		var p ShutdownParams
+		json.Unmarshal(r.Params, &p)
+		if current == nil {
+			return nil, fail("MEMBERSHIP_NOT_INITIALIZED")
+		}
+		if remote || !isAuthority(current.Authority, m.self) {
+			return nil, fail("AUTHORITY_REQUIRED")
+		}
+		if !p.Confirmed {
+			return nil, fail("CONFIRMATION_REQUIRED")
+		}
+		if p.ExpectedRevision != current.Revision {
+			return nil, fail("REVISION_CONFLICT")
+		}
+		if !ID(p.Reason, 1024) {
+			return nil, fail("BAD_REQUEST")
+		}
+		backup, err := m.backup()
+		if err != nil {
+			return nil, err
+		}
+		closedAt := time.Now().UnixMilli()
+		current.Revision++
+		current.Closed = true
+		current.ClosedAtMs = closedAt
+		for device, member := range current.Members {
+			member.State = "tombstone"
+			member.Revision = current.Revision
+			member.Address = ""
+			member.ClientPublicByServer = map[string]string{}
+			current.Members[device] = member
+		}
+		for inviteID, invite := range current.Invites {
+			invite.State = "revoked"
+			current.Invites[inviteID] = invite
+		}
+		result = map[string]any{"tailnetId": id, "revision": current.Revision, "closed": true,
+			"closedAtMs": closedAt, "backupPath": backup, "propagation": "lease-bounded"}
+	case "tailnet-forget":
+		var p ForgetParams
+		json.Unmarshal(r.Params, &p)
+		if current == nil {
+			return nil, fail("MEMBERSHIP_NOT_INITIALIZED")
+		}
+		if !current.Closed && isAuthority(current.Authority, m.self) {
+			return nil, fail("LAST_AUTHORITY_REFUSED")
+		}
+		if !current.Closed && !p.OrgDeleted {
+			return nil, fail("CONFIRMATION_REQUIRED")
+		}
+		delete(next.Tailnets, id)
+		for operationID, receipt := range next.Operations {
+			if receipt.TailnetID == id {
+				delete(next.Operations, operationID)
+			}
+		}
+		result = map[string]any{"tailnetId": id, "forgotten": true}
 	default:
 		return nil, fail("BAD_REQUEST")
 	}
@@ -543,18 +616,30 @@ func (m *Manager) localLocked(r Request, s Sender, peer string, remote bool) (js
 		return nil, err
 	}
 	// Every resulting roster must fit one control frame, not only this receipt.
-	if current != nil {
+	if current != nil && r.Op != "tailnet-forget" {
 		if _, err := bounded(roster(current)); err != nil {
 			return nil, err
 		}
 	}
-	next.Operations[operation] = Receipt{operation, r.Op, id, normal, data}
+	if r.Op != "tailnet-forget" {
+		next.Operations[operation] = Receipt{operation, r.Op, id, normal, data}
+	}
 	if err := m.commit(next); err != nil {
 		return nil, err
 	}
-	if r.Op == "authority-repin" {
+	if r.Op == "authority-repin" || r.Op == "tailnet-shutdown" {
 		delete(m.leases, id)
 		m.suspended[id] = true
+	}
+	if r.Op == "tailnet-forget" {
+		delete(m.leases, id)
+		delete(m.suspended, id)
+		delete(m.codes, id)
+		for operationID, announced := range m.expanded {
+			if announced.TailnetID == id {
+				delete(m.expanded, operationID)
+			}
+		}
 	}
 	return data, nil
 }

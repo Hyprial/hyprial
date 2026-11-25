@@ -187,7 +187,7 @@ def test_reply_carries_summary(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     "target",
-    ["user:op", "user:someone-else", TARGET, "route:lark:ops"],
+    ["user:op", "user:someone-else", TARGET],
 )
 def test_send_preserves_the_daemon_verdict_for_every_target_kind(
     monkeypatch: pytest.MonkeyPatch, target: str
@@ -200,7 +200,6 @@ def test_send_preserves_the_daemon_verdict_for_every_target_kind(
                 "messageId": "m-1",
                 "accepted": True,
                 "queued": True,
-                "holdReason": ipc_errors.LINK_WINDOW_FULL,
             }
         ],
     }
@@ -215,7 +214,7 @@ def test_send_preserves_the_daemon_verdict_for_every_target_kind(
     # adds a link or self-authorizes on the caller's behalf.
     assert [method for method, _ in calls] == ["message.send"]
     payload = json.loads(result.stdout)
-    assert payload["deliveries"][0]["holdReason"] == ipc_errors.LINK_WINDOW_FULL
+    assert payload["deliveries"][0]["queued"] is True
     assert payload["queued"] is True
 
 
@@ -262,7 +261,7 @@ def test_explicit_reply_to_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.parametrize(
-    "code", [ipc_errors.LINK_RECLAIMED, ipc_errors.MESSAGE_REPLY_UNAVAILABLE]
+    "code", [ipc_errors.CALLER_NOT_AUTHORIZED, ipc_errors.MESSAGE_REPLY_UNAVAILABLE]
 )
 def test_failed_reply_is_passed_through_without_a_follow_up(
     monkeypatch: pytest.MonkeyPatch, code: str
@@ -290,7 +289,6 @@ def test_a_full_window_still_submits_owner_sends_and_explicit_replies(
                 "messageId": "m-3",
                 "accepted": True,
                 "queued": True,
-                "holdReason": ipc_errors.LINK_SELF_FULL,
             }
         ],
     }

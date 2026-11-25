@@ -22,7 +22,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable
 
-from hyprial.kernel import ActorHandle, ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
+from hyprial.kernel import ActorSpec, AdmissionResult
 
 # The acknowledgment emoji this adapter applies to accepted inbound
 # messages (and clears when its own reply wins the native reply index).
@@ -687,10 +688,11 @@ class ReactionEffectsRuntime:
         effect_ttl: float = DEFAULT_EFFECT_TTL_SECONDS,
         overflow_ttl: float = DEFAULT_OVERFLOW_TTL_SECONDS,
         clock: Callable[[], float] = time.time,
+        actor_host=None,
     ) -> None:
         self.path = path
-        self._runtime = ActorRuntime()
-        self._handle: ActorHandle | None = None
+        self._hosts = ActorHostCustody(actor_host, owner="lark")
+        self._cell = None
         self._closing = False
         self._store = _ReactionEffectStore(
             path,
@@ -702,11 +704,11 @@ class ReactionEffectsRuntime:
         )
 
         def completion(value: _Completed) -> None:
-            handle = self._handle
-            if handle is None or self._closing:
+            cell = self._cell
+            if cell is None or self._closing:
                 return
             deadline = time.monotonic() + 5.0
-            while self._runtime.tell(handle, value) is not AdmissionResult.ACCEPTED:
+            while cell.tell(value) is not AdmissionResult.ACCEPTED:
                 if self._closing or time.monotonic() >= deadline:
                     return
                 time.sleep(0.01)
@@ -729,7 +731,7 @@ class ReactionEffectsRuntime:
         # so it must not vanish into the no-op default the way an overflow
         # report may.  Keep the caller's channel and whether one was given.
         self._overflow_report = overflow_report
-        self._handle = self._runtime.start(
+        self._cell = self._hosts.host.spawn(
             ActorSpec(
                 name=f"lark-reaction-effects:{path.parent.name}",
                 handler_factory=lambda: _ReactionEffectHandler(
@@ -739,7 +741,7 @@ class ReactionEffectsRuntime:
                 supervision_profile="external_io",
             )
         )
-        if self._runtime.tell(self._handle, _Recover()) is not AdmissionResult.ACCEPTED:
+        if self._cell.tell(_Recover()) is not AdmissionResult.ACCEPTED:
             raise RuntimeError("reaction effect recovery was not admitted")
 
     def ack(self, native_message_id: str) -> ReactionEffectAdmission:
@@ -798,13 +800,14 @@ class ReactionEffectsRuntime:
         return False
 
     def close(self, timeout: float = 5.0) -> None:
-        handle = self._handle
-        if handle is None:
+        cell = self._cell
+        if cell is None:
             return
         deadline = time.monotonic() + max(0.0, timeout)
         self.wait_idle(max(0.0, deadline - time.monotonic()))
         self._closing = True
-        stopped = self._runtime.stop(handle, max(0.0, deadline - time.monotonic()))
+        stopped = cell.drain(max(0.0, deadline - time.monotonic())).complete
+        self._hosts.shutdown(max(0.0, deadline - time.monotonic()))
         self._ack_lane.close()
         self._reply_lane.close()
         if not stopped:
@@ -829,11 +832,11 @@ class ReactionEffectsRuntime:
             # anyone found out.
             self._report_unstopped()
             return
-        # Keep the handle until stop succeeds. ActorRuntime deliberately keeps
-        # a timed-out endpoint reachable so a later close can finish cleanup;
-        # dropping our handle first made that retry path unreachable and left
-        # the sqlite store open for the rest of an embedding process.
-        self._handle = None
+        # Keep the cell until stop succeeds.  A timed-out endpoint stays
+        # reachable so a later close can finish cleanup; dropping it first made
+        # that retry path unreachable and left the sqlite store open for the
+        # rest of an embedding process.
+        self._cell = None
         self._store.close()
 
     def _report_unstopped(self) -> None:
@@ -870,10 +873,10 @@ class ReactionEffectsRuntime:
             return ReactionEffectAdmission.OVERLOADED
 
     def _admit(self, command: object) -> ReactionEffectAdmission:
-        handle = self._handle
-        if handle is None or self._closing:
+        cell = self._cell
+        if cell is None or self._closing:
             return ReactionEffectAdmission.CLOSED
-        admitted = self._runtime.tell(handle, command)
+        admitted = cell.tell(command)
         if admitted is AdmissionResult.ACCEPTED:
             return ReactionEffectAdmission.ACCEPTED
         if admitted is AdmissionResult.OVERLOADED:

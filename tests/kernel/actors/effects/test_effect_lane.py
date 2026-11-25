@@ -277,3 +277,123 @@ def test_effect_failure_without_provider_detail_remains_class_name_only():
 
     assert events[-1].error == "OSError"
     assert events[-1].detail is None
+
+
+def test_completion_waits_in_a_restarting_owner_mailbox_without_duplicates():
+    import time
+
+    from hyprial.kernel.impl.actor_runtime import (
+        STATE_AUTHORITY,
+        ActorSpec,
+        ActorState,
+        SupervisionPolicy,
+    )
+    from hyprial.kernel.impl.actor_runtime.effects import EffectCompleted
+    from hyprial.kernel.impl.actor_runtime.port import ActorEngineConfig, create_engine
+
+    entered, release = threading.Event(), threading.Event()
+    copies: list[tuple[int, str]] = []
+    lane = None
+    generations = 0
+
+    def factory():
+        nonlocal generations
+        generations += 1
+        generation = generations
+
+        def handle(command):
+            if command == "crash":
+                entered.set()
+                assert release.wait(2.0)
+                raise RuntimeError("owner crash")
+            if isinstance(command, EffectCompleted):
+                copies.append((generation, command.operation_id))
+                lane.acknowledge(command.operation_id, command.generation)
+
+        return handle
+
+    engine = create_engine(
+        ActorEngineConfig(
+            policies={
+                STATE_AUTHORITY: SupervisionPolicy(
+                    max_restarts=3,
+                    restart_window=10.0,
+                    base_backoff=0.3,
+                    max_backoff=0.3,
+                    jitter_ratio=0.0,
+                )
+            }
+        )
+    )
+    owner = engine.spawn(ActorSpec(name="restarting-owner", handler_factory=factory))
+    lane = EffectLane(
+        name="restarting-owner-effects",
+        execute=lambda value: value,
+        complete=lambda event: engine.tell(owner, event),
+    )
+    try:
+        assert engine.tell(owner, "crash") is AdmissionResult.ACCEPTED
+        assert entered.wait(1.0)
+        release.set()
+        deadline = time.monotonic() + 1.0
+        while engine.snapshot(owner).state is not ActorState.RESTART_PENDING:
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+        assert lane.submit(EffectRequest("op", 1, "payload")) is AdmissionResult.ACCEPTED
+        deadline = time.monotonic() + 3.0
+        while lane.snapshot().outstanding:
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+        assert copies == [(2, "op")]
+    finally:
+        assert lane.close(1.0)
+        assert engine.drain(None, 1.0).complete
+
+
+def test_owner_gone_dead_letters_once_and_settles_the_token():
+    from hyprial.kernel.impl.actor_runtime.effects import OwnerGone
+
+    offers, dead = [], []
+    lane = EffectLane(
+        name="owner-gone",
+        execute=lambda value: value * 2,
+        complete=lambda event: offers.append(event) or OwnerGone("stopped"),
+        retry_seconds=0.005,
+        dead_letter_sink=lambda event, reason: dead.append((event, reason)),
+    )
+    try:
+        assert lane.submit(EffectRequest("op", 1, 21)) is AdmissionResult.ACCEPTED
+        deadline = threading.Event()
+        for _ in range(200):
+            if dead:
+                break
+            deadline.wait(0.005)
+        deadline.wait(0.05)
+        assert len(offers) == 1
+        assert [(event.operation_id, event.result, reason) for event, reason in dead] == [
+            ("op", 42, "stopped")
+        ]
+        assert lane.snapshot().outstanding == 0
+        assert lane.acknowledge("op", 1) is False
+    finally:
+        assert lane.close(1), "a settled token lets the worker exit"
+
+
+def test_admission_only_callback_keeps_the_retry_until_acknowledged():
+    offers = []
+    lane = EffectLane(
+        name="closed-owner",
+        execute=lambda value: value,
+        complete=lambda event: offers.append(event) or AdmissionResult.CLOSED,
+        retry_seconds=0.005,
+    )
+    assert lane.submit(EffectRequest("op", 1, "x")) is AdmissionResult.ACCEPTED
+    wait = threading.Event()
+    for _ in range(200):
+        if len(offers) >= 3:
+            break
+        wait.wait(0.005)
+    assert len(offers) >= 3
+    assert lane.snapshot().outstanding == 1
+    assert lane.acknowledge("op", 1) is True
+    assert lane.close(1)

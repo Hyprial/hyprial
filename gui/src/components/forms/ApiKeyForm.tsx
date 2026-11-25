@@ -58,7 +58,7 @@ export function ApiKeyForm({
       <Field
         label="服务端点"
         htmlFor={`${baseId}-endpoint`}
-        hint="仅检查表单必填与 URL 格式；不会连接或验证该地址。"
+        hint="此处只检查 URL 格式，不会连接该地址。"
         required
       >
         <input
@@ -76,7 +76,7 @@ export function ApiKeyForm({
         label="API Key"
         value={apiKey}
         required
-        hint="提交后立即从表单清除；仅在本次页面内存中用于重试，取消或离开页面即丢弃。"
+        hint="仅保存在本页内存中，不写入浏览器存储、URL 或日志。"
         showLabel="显示 API Key"
         hideLabel="隐藏 API Key"
         onChange={setApiKey}
@@ -96,9 +96,6 @@ export function ApiKeyForm({
           </Button>
         )}
       </div>
-      <p className="settings-footnote">
-        API Key 不写入 localStorage、sessionStorage、URL 或日志。
-      </p>
     </form>
   );
 }

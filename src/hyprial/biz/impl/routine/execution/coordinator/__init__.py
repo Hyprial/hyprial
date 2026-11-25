@@ -1,3 +1,13 @@
+# Decision record (file header; no inline comments by repository rule):
+# - The coordinator generation advances only after _Generation (which loads
+#   the journal) was built, so a failed restart factory cannot leave the
+#   _Recover fence ahead of the engine generation (ABI v1 5.1 row 4b).
+# - close() shuts a privately owned host down only when its own threads and
+#   drain finished inside the budget and budget remains for the engine.  A
+#   failed close leaves the host intact for a later close(timeout): both
+#   engines cache their first failed shutdown, so attempting one with an
+#   exhausted budget would make every retry fail even though the drain later
+#   completes.
 """Durable coordinator for routine registration and retirement sagas.
 
 The routine registry keeps its existing writer actor.  This actor owns only
@@ -13,16 +23,19 @@ import queue
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from copy import deepcopy
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult, ipc_errors
 from hyprial.kernel import PortAdmission
+from hyprial.daemon import ActorHostCustody
 
 from hyprial.biz.impl.routine.execution.service  import RoutineServiceError
 from hyprial.biz.impl.routine.contracts.schema  import RoutineSchemaError, load_routine_text
+from hyprial.biz.impl.routine.execution.registry.core import same_binding
 from hyprial.biz.impl.routine.execution.coordinator.generation import (
     AgentCreationCompensation,
     BeginAdd,
@@ -37,6 +50,9 @@ from hyprial.biz.impl.routine.execution.coordinator.generation import (
     _Recover,
     _SCHEMA,
 )
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 __all__ = [
     "RoutineCoordinator",
@@ -64,7 +80,10 @@ class RoutineCoordinator:
         compensate_agent: Callable[[str, str, str], bool] | None = None,
         clock_ms: Callable[[], int] | None = None,
         effect_capacity: int = 32, effect_workers: int = 4,
+        binding_key: Callable[[str], Hashable] | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
+        self._binding_key = binding_key
         self.database = Path(state_dir) / "routine-coordinator.sqlite3"
         self.database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         db = sqlite3.connect(self.database)
@@ -88,13 +107,14 @@ class RoutineCoordinator:
         self._effects: queue.Queue[_Effect] = queue.Queue(maxsize=effect_capacity)
         self._closed = False
         self._generation = 0
-        self._runtime = ActorRuntime()
+        self._hosts = ActorHostCustody(actor_host, owner="routine-coordinator")
 
         def factory() -> _Generation:
-            self._generation += 1
-            return _Generation(self, self._generation)
+            generation = _Generation(self, self._generation + 1)
+            self._generation = generation.generation
+            return generation
 
-        self._handle = self._runtime.start(
+        self._handle = self._hosts.host.spawn(
             ActorSpec(
                 name="routine-coordinator",
                 handler_factory=factory,
@@ -117,7 +137,7 @@ class RoutineCoordinator:
             daemon=True,
         )
         self._recovery.start()
-        self._runtime.tell(self._handle, _Recover(self._generation))
+        self._handle.tell(_Recover(self._generation))
 
     def begin(self, command: BeginAdd | BeginRemove, timeout: float = 5.0) -> PortAdmission:
         if isinstance(command, BeginAdd):
@@ -125,7 +145,7 @@ class RoutineCoordinator:
                 spec = load_routine_text(command.yaml_text)
             except RoutineSchemaError as error:
                 raise RoutineCoordinatorError(
-                    "ROUTINE_SCHEMA_ERROR", str(error), command.operation_id
+                    ipc_errors.ROUTINE_SCHEMA_ERROR, str(error), command.operation_id
                 ) from error
             if spec.name != command.name or spec.produces != command.produces:
                 raise RoutineCoordinatorError(
@@ -139,7 +159,7 @@ class RoutineCoordinator:
             if self._closed:
                 return PortAdmission.CLOSING
             self._acks[command.correlation_id] = (acknowledgement, errors)
-        admission = self._runtime.tell(self._handle, command)
+        admission = self._handle.tell(command)
         if admission is not AdmissionResult.ACCEPTED:
             with self._condition:
                 self._acks.pop(command.correlation_id, None)
@@ -255,7 +275,7 @@ class RoutineCoordinator:
                     ),
                 )
             while not self._closed:
-                admission = self._runtime.tell(self._handle, completion)
+                admission = self._handle.tell(completion)
                 if admission is AdmissionResult.ACCEPTED:
                     break
                 if admission is AdmissionResult.CLOSED:
@@ -269,7 +289,8 @@ class RoutineCoordinator:
             if effect.step == "reserve":
                 produces = effect.payload.get("produces")
                 if isinstance(produces, str) and any(
-                    item.get("produces") == produces and item.get("name") != name
+                    same_binding(self._binding_key, item.get("produces"), produces)
+                    and item.get("name") != name
                     for item in self.routines.list()["routines"]
                 ):
                     raise RoutineCoordinatorError(
@@ -290,7 +311,10 @@ class RoutineCoordinator:
                     if (
                         existing.get("registrationId") != effect.payload["registrationId"]
                         or existing.get("owner") != effect.payload["owner"]
-                        or existing.get("produces") != effect.payload["produces"]
+                        or not same_binding(
+                            self._binding_key, existing.get("produces"),
+                            effect.payload["produces"],
+                        )
                     ):
                         raise
                     added = existing
@@ -398,8 +422,8 @@ class RoutineCoordinator:
             if self._closed:
                 return
             try:
-                generation = self._runtime.snapshot(self._handle).generation
-                self._runtime.tell(self._handle, _Recover(generation))
+                generation = self._handle.snapshot().generation
+                self._handle.tell(_Recover(generation))
             except Exception:
                 continue
 
@@ -411,12 +435,15 @@ class RoutineCoordinator:
         self._recovery.join(max(0.0, deadline - time.monotonic()))
         for worker in self._workers:
             worker.join(max(0.0, deadline - time.monotonic()))
-        drained = self._runtime.drain(max(0.0, deadline - time.monotonic()))
-        return (
+        drained = self._handle.drain(max(0.0, deadline - time.monotonic()))
+        finished = (
             not self._recovery.is_alive()
             and not any(worker.is_alive() for worker in self._workers)
             and drained.complete
         )
+        remaining = max(0.0, deadline - time.monotonic())
+        closed = finished and remaining > 0 and self._hosts.shutdown(remaining)
+        return finished and closed
 
 
 def add_command(

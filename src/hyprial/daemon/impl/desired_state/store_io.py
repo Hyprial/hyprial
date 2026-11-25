@@ -1,3 +1,6 @@
+# Decision record (W1E-2, 2026-11-21):
+# - _atomic_json_write relies on tempfile.mkstemp (0o600 on POSIX) plus the
+#   outer state_dir gate and process umask instead of redundant os.chmod.
 """DesiredStateStore storage IO cluster: sqlite import migration and atomic JSON document IO."""
 
 from __future__ import annotations
@@ -94,7 +97,6 @@ class _DesiredStateStoreIoMixin:
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.chmod(temporary, 0o600)
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)

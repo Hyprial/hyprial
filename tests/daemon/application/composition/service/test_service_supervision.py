@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hyprial.daemon.impl.operations import service as service_module
+from hyprial.daemon.impl.operations.service import supervisor as service_module
 from hyprial.daemon.impl.operations.service import (
     USER_BUS_ADDRESS_UNREACHABLE_REASON,
     USER_BUS_UNAVAILABLE_REASON,
@@ -682,3 +682,264 @@ def _systemd_manager(runner):
         uid=1000,
         username="hyprial",
     )
+
+
+def test_translated_not_found_stderr_is_not_a_manager_failure(tmp_path: Path) -> None:
+    """G-M2: systemctl's unit-not-found answer is classified by exit code plus
+    the show output, never by the English stderr sentence. Under a non-English
+    locale the same clean system must still report the unit as not loaded and
+    install must proceed instead of failing with manager-command-failed."""
+
+    import hashlib
+    import os
+
+    hyprial_home = tmp_path / ".hyprial-acceptance"
+    commands: list[tuple[str, ...]] = []
+
+    def runner(command, *, timeout=None):
+        del timeout
+        command = tuple(command)
+        commands.append(command)
+        if command[:3] == ("systemctl", "--user", "show"):
+            return completed(command, 4, "", "Einheit hyprial.service konnte nicht gefunden werden.")
+        if command[:2] == ("loginctl", "show-user"):
+            return completed(command, 0, "no\n", "")
+        return completed(command)
+
+    config = ServiceConfig(
+        executable=Path("/opt/hyprial/bin/hyprial"),
+        home=tmp_path,
+        hyprial_home=hyprial_home,
+        state_dir=hyprial_home / "state",
+    )
+    service = ServiceManager(
+        config,
+        platform="systemd",
+        service_home=tmp_path,
+        runner=runner,
+        username="tester",
+        sleep=lambda _seconds: None,
+    )
+
+    status = service.status()
+
+    assert status.loaded is False
+    assert status.installed is False
+    assert status.running is False
+
+    installed = service.install()
+
+    assert installed.installed is True
+    expected_id = hashlib.sha256(os.fsencode(os.path.realpath(hyprial_home))).hexdigest()[:12]
+    assert (
+        "systemctl",
+        "--user",
+        "enable",
+        "--now",
+        f"hyprial-{expected_id}.service",
+    ) in commands
+    assert service.unit_path.name == f"hyprial-{expected_id}.service"
+
+
+def test_exit_four_with_a_loaded_fragment_is_still_a_manager_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The locale-independent rule must not swallow real failures: exit 4 with
+    a real FragmentPath in the show output is not "not loaded"."""
+
+    monkeypatch.setattr(service_module, "user_bus_state", lambda *a, **k: "ready")
+    manager = _systemd_manager(
+        lambda command: completed(
+            tuple(command),
+            4,
+            "LoadState=loaded\nFragmentPath=/home/hyprial/.config/systemd/user/hyprial.service\n",
+            "Einheit konnte nicht gefunden werden.",
+        )
+    )
+
+    with pytest.raises(ServiceCommandError) as error:
+        manager.status()
+
+    assert getattr(error.value, "reason", None) == "manager-command-failed"
+
+
+def test_exit_four_without_any_fragment_output_reports_not_loaded(
+    tmp_path: Path,
+) -> None:
+    manager = _systemd_manager(
+        lambda command: completed(
+            tuple(command),
+            4,
+            "LoadState=not-found\nFragmentPath=\n",
+            "Einheit hyprial.service konnte nicht gefunden werden.",
+        )
+    )
+
+    status = manager.status()
+
+    assert status.loaded is False
+    assert status.installed is False
+
+
+def test_a_derived_home_addresses_its_own_unit_everywhere(tmp_path: Path) -> None:
+    """L3: status probes, enable/disable, restart, and bootout use the derived
+    name for a derived home; no default-label fallback leaks in."""
+
+    import hashlib
+    import os
+
+    hyprial_home = tmp_path / ".hyprial-acceptance"
+    expected_id = hashlib.sha256(os.fsencode(os.path.realpath(hyprial_home))).hexdigest()[:12]
+    label = f"com.hyprial.hyprial.daemon.{expected_id}"
+    unit = f"hyprial-{expected_id}.service"
+    commands: list[tuple[str, ...]] = []
+    state = {"job_pid": 6203}
+
+    def systemd_runner(command, *, timeout=None):
+        del timeout
+        command = tuple(command)
+        commands.append(command)
+        if command[:3] == ("systemctl", "--user", "show"):
+            assert command[3] == unit, command
+            return completed(
+                command,
+                0,
+                "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                f"MainPID={state['job_pid']}\nNRestarts=0\nExecMainStatus=0\n"
+                f"FragmentPath={tmp_path / '.config' / 'systemd' / 'user' / unit}\n",
+            )
+        if command[:2] == ("loginctl", "show-user"):
+            return completed(command, 0, "no\n", "")
+        if command[:3] == ("systemctl", "--user", "restart"):
+            state["job_pid"] = 6303
+        return completed(command)
+
+    config = ServiceConfig(
+        executable=Path("/opt/hyprial/bin/hyprial"),
+        home=tmp_path,
+        hyprial_home=hyprial_home,
+        state_dir=hyprial_home / "state",
+    )
+    systemd_service = ServiceManager(
+        config,
+        platform="systemd",
+        service_home=tmp_path,
+        runner=systemd_runner,
+        username="tester",
+        parent_pid=lambda pid: None,
+        sleep=lambda _seconds: None,
+    )
+    systemd_service.unit_path.parent.mkdir(parents=True, exist_ok=True)
+    systemd_service.unit_path.write_text(
+        systemd_service.templates.render_systemd(config), encoding="utf-8"
+    )
+
+    observed = systemd_service.restart(
+        lambda: 6303 if state["job_pid"] == 6303 else 6203
+    )
+
+    assert observed.supervision == "supervised"
+    assert observed.pid == 6303
+    assert ("systemctl", "--user", "restart", unit) in commands
+    assert any(
+        command[:3] == ("systemctl", "--user", "show") and command[3] == unit
+        for command in commands
+    )
+
+    launchd_commands: list[tuple[str, ...]] = []
+    launchd_state = {"loaded": True}
+
+    def launchd_runner(command, *, timeout=None):
+        del timeout
+        command = tuple(command)
+        launchd_commands.append(command)
+        if command[:2] == ("launchctl", "print"):
+            assert command[2] == f"gui/501/{label}", command
+            if not launchd_state["loaded"]:
+                return completed(
+                    command,
+                    113,
+                    "",
+                    f'Could not find service "{label}" in domain for user gui: 501',
+                )
+            return completed(
+                command,
+                0,
+                "state = running\n\tpid = 4242\n\truns = 1\n\tlast exit code = 0\n",
+            )
+        if command[:2] == ("launchctl", "bootout"):
+            launchd_state["loaded"] = False
+        return completed(command)
+
+    launchd_service = ServiceManager(
+        config,
+        platform="launchd",
+        service_home=tmp_path,
+        runner=launchd_runner,
+        uid=501,
+        sleep=lambda _seconds: None,
+    )
+    launchd_service.unit_path.parent.mkdir(parents=True, exist_ok=True)
+    launchd_service.unit_path.write_text(
+        launchd_service.templates.render_launchd(config), encoding="utf-8"
+    )
+
+    loaded = launchd_service.status()
+
+    assert loaded.unit == label
+    assert loaded.loaded is True
+    assert any(
+        command[:2] == ("launchctl", "print")
+        and command[2] == f"gui/501/{label}"
+        for command in launchd_commands
+    )
+
+    launchd_service.runner = launchd_runner
+    launchd_service._unload()
+    assert ("launchctl", "bootout", f"gui/501/{label}") in launchd_commands
+    assert launchd_state["loaded"] is False
+
+
+def test_status_falls_back_to_the_derived_label_when_nothing_is_loaded(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import os
+
+    hyprial_home = tmp_path / ".hyprial-acceptance"
+    expected_id = hashlib.sha256(os.fsencode(os.path.realpath(hyprial_home))).hexdigest()[:12]
+    label = f"com.hyprial.hyprial.daemon.{expected_id}"
+
+    def runner(command, *, timeout=None):
+        del timeout
+        command = tuple(command)
+        if command[:2] == ("launchctl", "print"):
+            probe_label = command[2].rsplit("/", 1)[-1]
+            return completed(
+                command,
+                113,
+                "",
+                f'Could not find service "{probe_label}" in domain for user gui: 501',
+            )
+        return completed(command)
+
+    config = ServiceConfig(
+        executable=Path("/opt/hyprial/bin/hyprial"),
+        home=tmp_path,
+        hyprial_home=hyprial_home,
+        state_dir=hyprial_home / "state",
+    )
+    service = ServiceManager(
+        config,
+        platform="launchd",
+        service_home=tmp_path,
+        runner=runner,
+        uid=501,
+        sleep=lambda _seconds: None,
+    )
+
+    status = service.status()
+
+    assert status.unit == label
+    assert status.installed is False
+    assert status.loaded is False

@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
-import base64
 import os
 import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from hyprial.shell.impl.cli.commands.org import commands as org_commands
 from hyprial.daemon import NetworkProfile
 from hyprial.daemon.impl.org.document import parse_document, serialize_document
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
+from hyprial.shell.impl.login import oidc
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
@@ -518,9 +518,7 @@ def test_org_join_reads_the_link_from_stdin_to_avoid_shell_history(
     }
 
 
-def test_org_join_retries_binding_proof_before_daemon_publishes(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_org_join_never_starts_a_device_grant(monkeypatch, tmp_path: Path) -> None:
     home = _org_ipc_env(monkeypatch, tmp_path)
     (home / "settings.json").write_text(
         json.dumps(
@@ -549,36 +547,18 @@ def test_org_join_retries_binding_proof_before_daemon_publishes(
             "profile.json",
         ),
     )
-    proof_profiles: list[object] = []
-    monkeypatch.setattr(
-        org_commands,
-        "obtain_binding_proof",
-        lambda profile, *_args, **_kwargs: proof_profiles.append(profile) or (
-            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode())
-            .rstrip(b"=")
-            .decode()
-            + "."
-            + base64.urlsafe_b64encode(
-                json.dumps(
-                    {
-                        "aud": "1be2763a29154030fbcb",
-                        "name": "alicesmith",
-                        "owner": "hyprial",
-                        "oauth_Lark_unionId": "on_allen",
-                    }
-                ).encode()
-            )
-            .rstrip(b"=")
-            .decode()
-            + ".signature"
-        ),
-    )
+    issuer_requests: list[object] = []
+
+    def refuse_issuer(*args: object, **kwargs: object) -> object:
+        issuer_requests.append(args)
+        raise AssertionError("org join must not reach the identity issuer")
+
+    monkeypatch.setattr(oidc, "url_opener", refuse_issuer)
+    monkeypatch.setattr(webbrowser, "open", refuse_issuer)
+    sent: list[str] = []
 
     def request(method, params=None, **_kwargs):
-        settings = json.loads(
-            (home / "settings.json").read_text(encoding="utf-8")
-        )
-        assert settings["identityBinding"]["proof"].endswith(".signature")
+        sent.append(method)
         return {"org": "group-acme", "spaceId": "space-1", "steps": []}
 
     monkeypatch.setattr(_cli_support, "_daemon_request", request)
@@ -586,9 +566,11 @@ def test_org_join_retries_binding_proof_before_daemon_publishes(
     result = CliRunner().invoke(_cli_root_app, ["org", "join", "v1.payload", "--json"])
 
     assert result.exit_code == 0, result.output
-    # The proof is requested from the network's own issuer (the resolved
-    # profile), not a hard-coded one.
-    assert [profile.issuer for profile in proof_profiles] == ["https://issuer.invalid"]
+    assert sent == ["org.join"]
+    assert issuer_requests == []
+    assert "binding" not in result.output
+    settings = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+    assert "identityBinding" not in settings
 
 
 def test_org_leave_and_remove_pass_their_arguments_through(
@@ -622,63 +604,6 @@ def test_org_leave_and_remove_pass_their_arguments_through(
     ]
 
 
-def test_org_delete_requires_yes_off_a_tty(monkeypatch, tmp_path: Path) -> None:
-    _org_ipc_env(monkeypatch, tmp_path)
-
-    def request(method, params=None, **_kwargs):  # pragma: no cover - refused first
-        raise AssertionError("org.delete must not be called without confirmation")
-
-    monkeypatch.setattr(_cli_support, "_daemon_request", request)
-
-    result = CliRunner().invoke(_cli_root_app, ["org", "delete", "group-acme", "--json"])
-
-    assert result.exit_code == 1
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is False
-    assert payload["code"] == "USER_ACTION_REQUIRED"
-
-
-def test_org_delete_with_yes_calls_the_daemon(monkeypatch, tmp_path: Path) -> None:
-    _org_ipc_env(monkeypatch, tmp_path)
-    observed: dict[str, object] = {}
-
-    def request(method, params=None, **_kwargs):
-        observed.update(method=method, params=params)
-        return {"org": "group-acme", "state": "deleted", "removedMembers": ["bob"]}
-
-    monkeypatch.setattr(_cli_support, "_daemon_request", request)
-
-    result = CliRunner().invoke(
-        _cli_root_app, ["org", "delete", "group-acme", "--yes", "--json"]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["state"] == "deleted"
-    assert observed == {"method": "org.delete", "params": {"org": "group-acme"}}
-
-
-def test_org_delete_on_a_tty_asks_and_honors_the_answer(
-    monkeypatch, tmp_path: Path
-) -> None:
-    _org_ipc_env(monkeypatch, tmp_path)
-    calls: list[str] = []
-
-    def request(method, params=None, **_kwargs):
-        calls.append(method)
-        return {"org": "group-acme", "state": "deleted"}
-
-    monkeypatch.setattr(_cli_support, "_daemon_request", request)
-    monkeypatch.setattr(_cli_get_services(), "_stdin_isatty", lambda: True)
-
-    declined = CliRunner().invoke(_cli_root_app, ["org", "delete", "group-acme"], input="n\n")
-    assert declined.exit_code == 1
-    assert calls == []
-
-    confirmed = CliRunner().invoke(_cli_root_app, ["org", "delete", "group-acme"], input="y\n")
-    assert confirmed.exit_code == 0, confirmed.output
-    assert calls == ["org.delete"]
-
-
 def test_org_list_asks_the_daemon_for_this_nodes_orgs(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -708,27 +633,32 @@ def test_org_pending_accept_all_runs_the_pickup_and_joins(
 
     seen: dict[str, object] = {}
 
-    def fake_run_pending(home, *, accept_all, confirm, ipc_join, now, **kwargs):
-        seen.update(
-            home=home, accept_all=accept_all, confirm=confirm, now=now
+    def fake_run_pending(home, *, accept_all, confirm, request, **kwargs):
+        seen.update(home=home, accept_all=accept_all, confirm=confirm)
+        joined = request(
+            "org.invites.accept", {"inviteId": "inv-1", "link": "v2.payload-1"}
         )
-        ipc_join("v1.payload-1")
         return {
             "ok": True,
-            "joined": [{"org": "group-acme", "inviter": "bob"}],
+            "joined": [
+                {"org": "group-acme", "inviter": "bob", "alreadyMember": False}
+            ],
+            "declined": [],
             "failed": [],
+            "unusable": [],
             "skipped": 0,
             "pending": [],
             "warnings": [],
+            "declinedNote": "local only",
+            "lastAccept": joined,
         }
 
-    joins: list[str] = []
+    calls: list[tuple[str, dict]] = []
 
     def request(method, params=None, **_kwargs):
-        assert method == "org.join"
         assert _kwargs["timeout"] == 120.0
-        joins.append(params["link"])
-        return {"org": "group-acme"}
+        calls.append((method, params))
+        return {"ok": True, "inviteId": params["inviteId"], "joined": True}
 
     monkeypatch.setattr(pending_module, "run_pending", fake_run_pending)
     monkeypatch.setattr(_cli_support, "_daemon_request", request)
@@ -738,10 +668,13 @@ def test_org_pending_accept_all_runs_the_pickup_and_joins(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
-    assert payload["joined"] == [{"org": "group-acme", "inviter": "bob"}]
+    assert payload["joined"][0]["org"] == "group-acme"
     assert seen["accept_all"] is True
     assert seen["home"] == tmp_path / "home"
-    assert joins == ["v1.payload-1"]
+    # --accept-all 走 daemon 的邀请方法，不再直接调用 org.join。
+    assert calls == [
+        ("org.invites.accept", {"inviteId": "inv-1", "link": "v2.payload-1"})
+    ]
 
 
 def test_org_pending_off_a_tty_without_accept_all_only_lists(
@@ -752,17 +685,20 @@ def test_org_pending_off_a_tty_without_accept_all_only_lists(
 
     seen: dict[str, object] = {}
 
-    def fake_run_pending(home, *, accept_all, confirm, ipc_join, now, **kwargs):
+    def fake_run_pending(home, *, accept_all, confirm, request, **kwargs):
         seen.update(accept_all=accept_all, confirm=confirm)
         return {
             "ok": True,
             "joined": [],
+            "declined": [],
             "failed": [],
+            "unusable": [],
             "skipped": 0,
             "pending": [
                 {"org": "group-acme", "inviter": "bob", "acceptedAt": "2026-10-03"}
             ],
             "warnings": [],
+            "declinedNote": "local only",
         }
 
     monkeypatch.setattr(pending_module, "run_pending", fake_run_pending)

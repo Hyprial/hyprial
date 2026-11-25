@@ -6,7 +6,7 @@ from hyprial.daemon.impl.transport.api import TransportSample
 from hyprial.daemon.impl.transport.keys import KeySpace
 
 
-def test_presence_callback_only_admits_and_owner_deduplicates():
+def test_presence_callback_only_admits_and_owner_deduplicates(actor_host):
     entered, release = threading.Event(), threading.Event()
     events = []
 
@@ -24,7 +24,9 @@ def test_presence_callback_only_admits_and_owner_deduplicates():
             return SimpleNamespace(close=lambda: None)
 
     session = Session()
-    owner = DuplicateInstanceAuthority(session, "node", "self", logger=logger)
+    owner = DuplicateInstanceAuthority(
+        session, "node", "self", actor_host=actor_host, logger=logger
+    )
     message = TransportSample(KeySpace().daemon_liveliness("node", "peer"), b"")
     try:
         session.callback(message)

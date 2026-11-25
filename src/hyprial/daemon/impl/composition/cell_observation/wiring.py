@@ -14,6 +14,7 @@ from hyprial.daemon.impl.lifecycle.observation import LifecycleObservationOwner
 from hyprial.daemon.impl.cells.observability.policy import RunPolicies
 from hyprial.daemon.impl.cells.observability.projection import RunProjection
 from .run_states import run_states, operation_fence
+from .mount import CellActorMount
 
 
 def _binding_key(binding):
@@ -27,6 +28,7 @@ class CellObservationView:
         self._agents, self._sessions = agents, sessions
         self._harnesses = None
         self._coordinator = None
+        self._cell_actors = None
         self._unknown = LifecycleObservationOwner(capacity=capacity)
         self._lock = threading.RLock()
         self._closed = False
@@ -41,6 +43,10 @@ class CellObservationView:
     def attach_coordinator(self, coordinator) -> None:
         with self._lock:
             self._coordinator = coordinator
+
+    def attach_cell_actors(self, registry) -> None:
+        with self._lock:
+            self._cell_actors = None if registry is None else CellActorMount(registry)
 
     def operation_fence(self, actor):
         return operation_fence(self, actor)
@@ -72,7 +78,7 @@ class CellObservationView:
                 return (self._harnesses.lifecycle_observations, key, source), "managed"
         return None, "managed" if binding.runtime == "headless" else "none"
 
-    def _refresh(self, actor):
+    def _refresh(self, actor, *, actor_source=False):
         if self._closed:
             return None
         for _ in range(3):
@@ -80,6 +86,19 @@ class CellObservationView:
             if entity is None:
                 self._mounts.remove(actor)
                 return None
+            if actor_source:
+                current, current_binding = self._identity(actor)
+                if (current is None or current.entity_token != entity.entity_token
+                        or _binding_key(current_binding) != _binding_key(binding)):
+                    continue
+                if binding is None:
+                    return self._refresh(actor)
+                mount = self._mounts.get(actor, entity.entity_token)
+                revision = None if binding is None else binding.revision
+                self._unknown.publish(mount.target.key, f"actor-source:{entity.entity_token}",
+                                      state="unknown", cause="source-unavailable", available=False)
+                return CellSnapshot(actor, mount.diagnostic_incarnation, revision,
+                                    mount.target, "none", None)
             source, custody = self._select(entity, binding)
             # Independent cache reads cannot define a cross-owner transaction.
             # Revalidate the incarnation and binding before and after mounting;
@@ -108,11 +127,12 @@ class CellObservationView:
         self._mounts.remove(actor)
         return None
 
-    def run_states(self, interactive, blocks, *, now_ms, monotonic_ms):
+    def run_states(self, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=None):
         with self._lock:
             if self._closed:
                 return {}
-            return run_states(self, interactive, blocks, now_ms=now_ms, monotonic_ms=monotonic_ms)
+            return run_states(self, interactive, blocks, now_ms=now_ms, monotonic_ms=monotonic_ms,
+                              cell_actors=cell_actors or self._cell_actors)
 
     def snapshot(self, actor: str) -> CellSnapshot | None:
         with self._lock:

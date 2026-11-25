@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from hyprial.kernel import ActorCell
 from hyprial.kernel.impl.actor_runtime import AdmissionResult
 from hyprial.daemon.impl.orgfs.api import ChangeEvent, OrgFsError
 from hyprial.daemon.impl.orgfs.storage.blob_authority import BlobAuthority
@@ -214,14 +215,14 @@ def test_blob_authority_does_not_repeat_an_effect_after_actor_restart(tmp_path) 
         with ThreadPoolExecutor(max_workers=1) as pool:
             accepted = pool.submit(blobs.put, "space", b"custodied", reason="test")
             assert entered.wait(2)
-            assert blobs._runtime.tell(blobs._handle, object()) is AdmissionResult.ACCEPTED
+            assert blobs._cell.tell(object()) is AdmissionResult.ACCEPTED
             deadline = time.monotonic() + 3
             while (
-                blobs._runtime.snapshot(blobs._handle).generation == 1
+                blobs._cell.snapshot().generation == 1
                 and time.monotonic() < deadline
             ):
                 time.sleep(0.005)
-            assert blobs._runtime.snapshot(blobs._handle).generation > 1
+            assert blobs._cell.snapshot().generation > 1
             release.set()
             digest = accepted.result(timeout=3)
         assert digest == hashlib.sha256(b"custodied").hexdigest()
@@ -277,20 +278,24 @@ def test_checkout_watch_burst_coalesces_while_reconcile_is_blocked(tmp_path, mon
     calls = 0
     original_scan = owner.manager._scan_tree
     coalesced_admitted = threading.Event()
-    original_tell = owner._runtime.tell
+    original_tell = ActorCell.tell
     reconcile_admissions = 0
 
-    def tracked_tell(handle, command):
+    def tracked_tell(cell, command):
         nonlocal reconcile_admissions
-        result = original_tell(handle, command)
-        if getattr(command, "action", None) == "reconcile" and result is AdmissionResult.ACCEPTED:
+        result = original_tell(cell, command)
+        if (
+            cell is owner._cell
+            and getattr(command, "action", None) == "reconcile"
+            and result is AdmissionResult.ACCEPTED
+        ):
             with count_lock:
                 reconcile_admissions += 1
                 if reconcile_admissions == 2:
                     coalesced_admitted.set()
         return result
 
-    monkeypatch.setattr(owner._runtime, "tell", tracked_tell)
+    monkeypatch.setattr(ActorCell, "tell", tracked_tell)
 
     def blocked_first_scan():
         nonlocal calls
@@ -337,7 +342,7 @@ def test_checkout_request_admitted_during_followup_scan_gets_its_own_scan(
     calls = 0
     admissions = 0
     original_scan = owner.manager._scan_tree
-    original_tell = owner._runtime.tell
+    original_tell = ActorCell.tell
 
     def scan():
         nonlocal calls
@@ -349,10 +354,14 @@ def test_checkout_request_admitted_during_followup_scan_gets_its_own_scan(
             assert release[index].wait(3)
         return original_scan()
 
-    def tell(handle, command):
+    def tell(cell, command):
         nonlocal admissions
-        result = original_tell(handle, command)
-        if getattr(command, "action", None) == "reconcile" and result is AdmissionResult.ACCEPTED:
+        result = original_tell(cell, command)
+        if (
+            cell is owner._cell
+            and getattr(command, "action", None) == "reconcile"
+            and result is AdmissionResult.ACCEPTED
+        ):
             with lock:
                 admissions += 1
                 if admissions == 2:
@@ -360,7 +369,7 @@ def test_checkout_request_admitted_during_followup_scan_gets_its_own_scan(
         return result
 
     owner.manager._scan_tree = scan
-    monkeypatch.setattr(owner._runtime, "tell", tell)
+    monkeypatch.setattr(ActorCell, "tell", tell)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(owner.reconcile)
@@ -411,16 +420,16 @@ def test_space_authority_restarts_without_repeating_an_admitted_commit(tmp_path)
             )
             assert entered.wait(2)
             assert (
-                authority._runtime.tell(authority._actor, object())
+                authority._cell.tell(object())
                 is AdmissionResult.ACCEPTED
             )
             deadline = time.monotonic() + 3
             while (
-                authority._runtime.snapshot(authority._actor).generation == 1
+                authority._cell.snapshot().generation == 1
                 and time.monotonic() < deadline
             ):
                 time.sleep(0.005)
-            assert authority._runtime.snapshot(authority._actor).generation > 1
+            assert authority._cell.snapshot().generation > 1
             release.set()
             node = accepted.result(timeout=3)
         assert runtime.facade.read_text(space.space_id, f"id:{node.node_id}")[0] == (

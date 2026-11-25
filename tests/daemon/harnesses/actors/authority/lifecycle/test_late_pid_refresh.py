@@ -80,7 +80,11 @@ def test_late_pid_backfills_record_and_orphan_registry(tmp_path) -> None:
     _wait_for(lambda: launcher.processes != [])
     [process] = launcher.processes
     assert isinstance(process, _LatePidProcess)
-    _wait_for(lambda: actor.read_harness("pi:worker") is not None)
+    _wait_for(
+        lambda: bool(
+            (status := actor.read_harness("pi:worker")) is not None and status.running
+        )
+    )
     harness = actor.read_harness("pi:worker")
     assert harness is not None and harness.running  # type: ignore[union-attr]
 
@@ -107,7 +111,7 @@ def test_late_pid_backfills_record_and_orphan_registry(tmp_path) -> None:
     assert actor.close_runtime(2.0)
 
 
-def test_late_pid_backfills_through_authority_lane(tmp_path) -> None:
+def test_late_pid_backfills_through_authority_lane(tmp_path, actor_host) -> None:
     """Same backfill, but through the production composition.
 
     The first test injects the registry itself, which bypasses
@@ -120,7 +124,7 @@ def test_late_pid_backfills_through_authority_lane(tmp_path) -> None:
     from hyprial.daemon.impl.processes.orphan_processes import OrphanProcessAuthority
 
     authority = OrphanProcessAuthority(
-        tmp_path / "orphan-processes.json", identity_reader=lambda _pid: None
+        tmp_path / "orphan-processes.json", identity_reader=lambda _pid: None, actor_host=actor_host
     )
     launcher = _LatePidLauncher()
     events: list[object] = []
@@ -139,7 +143,11 @@ def test_late_pid_backfills_through_authority_lane(tmp_path) -> None:
     _wait_for(lambda: launcher.processes != [])
     [process] = launcher.processes
     assert isinstance(process, _LatePidProcess)
-    _wait_for(lambda: actor.read_harness("pi:worker") is not None)
+    _wait_for(
+        lambda: bool(
+            (status := actor.read_harness("pi:worker")) is not None and status.running
+        )
+    )
     harness = actor.read_harness("pi:worker")
     assert harness is not None and harness.running  # type: ignore[union-attr]
 

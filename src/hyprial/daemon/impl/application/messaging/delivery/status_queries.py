@@ -16,7 +16,6 @@ from hyprial.daemon.impl.inbox import (
     merge_delivery_status,
     query_delivery_status,
 )
-from hyprial.daemon.impl.links.ports import HOLD_REASON_KEY
 from hyprial.kernel import (
     canonical_agent_uri,
     parse_agent_uri,
@@ -77,9 +76,6 @@ def _outbox_entry_json(item: OutboxItem) -> JsonObject:
             item.message.recipient
         ),
     }
-    # A row parked by the send-link gate names why (WP2 section 3.6).
-    if item.link_hold is not None:
-        entry[HOLD_REASON_KEY] = item.link_hold
     return entry
 
 def _status_query_timeout(params: JsonObject) -> float:
@@ -93,6 +89,46 @@ def _status_query_timeout(params: JsonObject) -> float:
 
 class _DeliveryStatusMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
+
+    def _project_cell_refusals(
+        self, records: tuple[DeliveryStatus, ...]
+    ) -> tuple[DeliveryStatus, ...]:
+        """Project terminal CELL_WORK_REFUSED settlements onto fetched records."""
+
+        if not records:
+            return records
+        failure_reader = getattr(self._inbox, "harness_failure_settlement", None)
+        if not callable(failure_reader):
+            return records
+        projected: list[DeliveryStatus] = []
+        for record in records:
+            if record.state is TerminalState.FETCHED:
+                settlement = failure_reader(record.message_id)
+                if (
+                    settlement is not None
+                    and settlement.terminal
+                    and settlement.terminal_reason == "CELL_WORK_REFUSED"
+                ):
+                    projected_at = max(
+                        record.recorded_at_ms,
+                        settlement.terminal_at_ms or record.recorded_at_ms,
+                    )
+                    projected.append(
+                        DeliveryStatus(
+                            message_id=record.message_id,
+                            sender=record.sender,
+                            recipient=record.recipient,
+                            state=TerminalState.REFUSED,
+                            holder=record.holder,
+                            reason="CELL_WORK_REFUSED",
+                            recorded_at_ms=projected_at,
+                            conversation_id=record.conversation_id,
+                            idempotency_key=record.idempotency_key,
+                        )
+                    )
+                    continue
+            projected.append(record)
+        return tuple(projected)
 
     def _log_status_query(self, served: StatusQueryServed) -> None:
         """Record every ``msg/status`` query this node answered, and how."""
@@ -131,7 +167,7 @@ class _DeliveryStatusMixin:
         )
         sender = caller.subject
         if "sessionRef" in params or "onBehalfOf" in params:
-            sender_keys = (sender,)
+            sender_keys = self._consumer_read_keys(sender)
         else:
             # Records are keyed by the wire sender.  The send boundary
             # resolves bare names to registered identities (Allen A(b));
@@ -178,7 +214,7 @@ class _DeliveryStatusMixin:
                 if received is not None:
                     local_by_id[received.message_id] = received
                     break
-        local = tuple(local_by_id.values())
+        local = self._project_cell_refusals(tuple(local_by_id.values()))
         received_locally = bool(local) and all(
             record.recipient in sender_keys for record in local
         )

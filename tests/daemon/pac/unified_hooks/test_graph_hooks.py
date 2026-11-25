@@ -99,8 +99,8 @@ def state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return state
 
 
-def _bus_capture(events: list[str]) -> tuple[HookBus, _Capture]:
-    bus = HookBus()
+def _bus_capture(events: list[str], *, actor_host) -> tuple[HookBus, _Capture]:
+    bus = HookBus(actor_host=actor_host)
     capture = _Capture()
     bus.register("h5-capture", capture, events)
     return bus, capture
@@ -169,9 +169,9 @@ def _start_worker(
     return coordinator
 
 
-def test_managed_end_flag_emits_graph_closed_exactly_once(tmp_path: Path) -> None:
+def test_managed_end_flag_emits_graph_closed_exactly_once(actor_host, tmp_path: Path) -> None:
     clock = [1_000]
-    bus, capture = _bus_capture(["graph.closed"])
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     service = _service(tmp_path, clock, publisher)
     store: PacGraphStore | None = None
@@ -226,8 +226,8 @@ def test_managed_end_flag_emits_graph_closed_exactly_once(tmp_path: Path) -> Non
         assert service.close()
 
 
-def test_unmanaged_end_flag_closes_with_null_end_state(state_dir: Path) -> None:
-    bus, capture = _bus_capture(["graph.closed"])
+def test_unmanaged_end_flag_closes_with_null_end_state(actor_host, state_dir: Path) -> None:
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     store = PacGraphStore(default_database_path(state_dir))
     try:
@@ -277,11 +277,11 @@ def test_unmanaged_end_flag_closes_with_null_end_state(state_dir: Path) -> None:
         assert bus.close(5.0)
 
 
-def test_deadline_expired_emits_graph_closed_exactly_once(tmp_path: Path) -> None:
+def test_deadline_expired_emits_graph_closed_exactly_once(actor_host, tmp_path: Path) -> None:
     """A node deadline that terminates the graph is a transition to closed."""
 
     clock = [1_000]
-    bus, capture = _bus_capture(["graph.closed"])
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     service = _service(tmp_path, clock, publisher)
     try:
@@ -313,12 +313,12 @@ def test_deadline_expired_emits_graph_closed_exactly_once(tmp_path: Path) -> Non
 
 
 def test_node_failed_terminate_emits_graph_closed_exactly_once(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """An explicit node failure under on_failure=terminate closes the graph."""
 
     clock = [1_000]
-    bus, capture = _bus_capture(["graph.closed"])
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     service = _service(tmp_path, clock, publisher)
     try:
@@ -360,11 +360,11 @@ def test_node_failed_terminate_emits_graph_closed_exactly_once(
 
 
 def test_unmanaged_owner_close_emits_graph_closed_exactly_once(
-    state_dir: Path,
+    actor_host, state_dir: Path,
 ) -> None:
     """edits.close_graph on an unmanaged graph is a transition to closed."""
 
-    bus, capture = _bus_capture(["graph.closed"])
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     store = PacGraphStore(default_database_path(state_dir))
     try:
@@ -495,12 +495,12 @@ def _parent_with_open_child(
     ),
 )
 def test_parent_close_cascades_one_graph_closed_per_open_child(
-    tmp_path: Path, trigger: str, cascade_reason: str
+    actor_host, tmp_path: Path, trigger: str, cascade_reason: str
 ) -> None:
     """Every managed close cascades: one graph.closed per open child graph."""
 
     clock = [1_000]
-    bus, capture = _bus_capture(["graph.closed"])
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     service = _service(tmp_path, clock, publisher)
     store = PacGraphStore(service.database)
@@ -554,9 +554,9 @@ def test_parent_close_cascades_one_graph_closed_per_open_child(
         assert service.close()
 
 
-def test_cancel_emits_graph_closed_exactly_once(tmp_path: Path) -> None:
+def test_cancel_emits_graph_closed_exactly_once(actor_host, tmp_path: Path) -> None:
     clock = [2_000]
-    bus, capture = _bus_capture(["graph.closed"])
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     service = _service(tmp_path, clock, publisher)
     try:
@@ -583,9 +583,9 @@ def test_cancel_emits_graph_closed_exactly_once(tmp_path: Path) -> None:
         assert service.close()
 
 
-def test_worker_cleanup_complete_emitted_exactly_once(tmp_path: Path) -> None:
+def test_worker_cleanup_complete_emitted_exactly_once(actor_host, tmp_path: Path) -> None:
     clock = [3_000]
-    bus, capture = _bus_capture(["worker.cleanup.complete"])
+    bus, capture = _bus_capture(["worker.cleanup.complete"], actor_host=actor_host)
     publisher = HookEventPublisher(bus, source="daemon.pac")
     service = _service(tmp_path, clock)
     store: PacGraphStore | None = None
@@ -653,10 +653,10 @@ def test_worker_cleanup_complete_emitted_exactly_once(tmp_path: Path) -> None:
         assert service.close()
 
 
-def test_absent_publisher_leaves_close_facts_unchanged(tmp_path: Path) -> None:
+def test_absent_publisher_leaves_close_facts_unchanged(actor_host, tmp_path: Path) -> None:
     """Hooks off: no publisher means no event and the same durable close."""
     clock = [4_000]
-    bus, capture = _bus_capture(["graph.closed"])
+    bus, capture = _bus_capture(["graph.closed"], actor_host=actor_host)
     service = _service(tmp_path, clock)
     store: PacGraphStore | None = None
     try:

@@ -1,0 +1,32 @@
+[package]
+name = "hyprial-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PyO3 binding crate: composes the hyprial-core policy rules onto the Ractor runtime and exposes hyprial._core.actors."
+
+[lib]
+name = "actors"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hyprial-core = { path = "../hyprial-core" }
+# py-clone: `Py<T>: Clone` while the calling thread is attached (panics
+# otherwise) — every clone site in this crate is inside a Python::attach
+# scope, audited for the GIL-01 rule.
+pyo3 = { version = "0.30", features = ["abi3-py312", "py-clone"] }
+ractor = "0.16"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
+
+[build-dependencies]
+pyo3-build-config = "0.30"
+
+[features]
+# Wheel/dev-staging builds MUST pass --features extension-module: it stops
+# the cdylib from hard-linking libpython (DT_NEEDED libpython3.12.so.1.0),
+# which would otherwise pin the extension to one interpreter build (found
+# by the CPython 3.14 import check). Default stays off so `cargo test`
+# links the test binary against libpython (PYO3_PYTHON) as before.
+extension-module = ["pyo3/extension-module"]
+conformance-handlers = []

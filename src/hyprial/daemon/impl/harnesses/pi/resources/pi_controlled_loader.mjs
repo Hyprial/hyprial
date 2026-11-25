@@ -29,8 +29,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 const RECEIPT_SCHEMA = "hyprial-pi-loader-v1";
 const CONTEXT_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
-function fail(message) {
-  throw new Error(`PI_CONTROLLED_LOADER: ${message}`);
+function fail(message, code) {
+  const error = new Error(`PI_CONTROLLED_LOADER: ${message}`);
+  error.code = code;
+  throw error;
 }
 
 function requireString(value, label) {
@@ -504,12 +506,12 @@ async function createControlledRuntime(rawOptions) {
     if (rebound) {
       model = modelRuntime.getModel(configuredProvider, configuredModel);
       if (model === undefined) {
-        fail(`configured Pi model is unavailable: ${configuredProvider}/${configuredModel}`);
+        fail(`configured Pi model is unavailable: ${configuredProvider}/${configuredModel}`, "MODEL_UNAVAILABLE");
       }
     } else if (modelProvider !== undefined) {
       model = modelRuntime.getModel(modelProvider, modelId);
       if (model === undefined) {
-        fail(`configured Pi model is unavailable: ${modelProvider}/${modelId}`);
+        fail(`configured Pi model is unavailable: ${modelProvider}/${modelId}`, "MODEL_UNAVAILABLE");
       }
     }
     const services = {
@@ -608,6 +610,9 @@ function isMainModule() {
 
 if (isMainModule()) {
   main().catch((error) => {
+    if (error.code === "MODEL_UNAVAILABLE") {
+      process.stderr.write("HYPRIAL_PI_START_FAILURE:MODEL_UNAVAILABLE\n");
+    }
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;
   });

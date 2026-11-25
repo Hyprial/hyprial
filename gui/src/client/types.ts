@@ -37,13 +37,46 @@ export interface InvocationResult<TResult> {
   readonly diagnostics: RequestDiagnostics;
 }
 
+/** Safe catalog projection used to disable actions before transport dispatch. */
+export interface MethodAvailability {
+  readonly available: boolean;
+  readonly code?: string;
+  readonly reason?: string;
+}
+
+/** Resolve one call against the pinned catalog and the composition policy. */
+export type MethodAccess = (method: string, params?: unknown) => MethodAvailability;
+
 export type TokenSource = string | (() => string | Promise<string>);
+
+/** Direct HTTP callers keep the bearer mode used by hosts and non-browser code. */
+export interface BearerHttpAuth {
+  readonly mode: 'bearer';
+  readonly token: TokenSource;
+}
+
+/**
+ * Browser callers use cookies for the session and a per-view proof from
+ * sessionStorage. The upstream bearer never enters this mode.
+ */
+export interface SameOriginSessionAuth {
+  readonly mode: 'same-origin-session';
+  readonly view: TokenSource;
+  readonly generation: TokenSource;
+  readonly csrf: TokenSource;
+  /** Unknown methods fail safe as writes and therefore require CSRF. */
+  readonly mutates: (method: string) => boolean;
+}
+
+export type HttpTransportAuth = BearerHttpAuth | SameOriginSessionAuth;
 
 export interface HttpTransportConfig {
   /** Origin plus optional path prefix, for example `http://127.0.0.1:47831`. */
   readonly baseUrl: string;
-  /** Bearer token source. The value is never placed in a URL or a component. */
-  readonly token: TokenSource;
+  /** Legacy bearer shorthand. Exactly one of `token` and `auth` is required. */
+  readonly token?: TokenSource;
+  /** Explicit auth mode; same-origin session auth never carries a bearer. */
+  readonly auth?: HttpTransportAuth;
   /** Injectable fetch for tests and non-browser hosts. */
   readonly fetch?: typeof fetch;
   readonly requestBudgetMs?: number;

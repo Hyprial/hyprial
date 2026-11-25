@@ -25,6 +25,8 @@ def _close_applications():  # type: ignore[no-untyped-def]
     while _TEST_APPLICATIONS:
         app = _TEST_APPLICATIONS.pop()
         app._status_refresh.close()
+        if app._orgfs_runtime is not None:
+            app._orgfs_runtime.close()
         app.agents.close()
 
 

@@ -329,3 +329,31 @@ def test_t15_new_binding_process_restores_durable_prior_config(tmp_path: Path) -
         assert source.exists()
     finally:
         registry.close()
+
+
+def test_phase1_migration_bindings_reject_agy_and_projection_blocks_agy_credentials(
+    tmp_path: Path,
+) -> None:
+    from hyprial.identity.impl.agents import AgentConfigError
+
+    registry = _registry(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="claude, codex, or pi"):
+            AgentRuntimeMigrationBindings(
+                registry,
+                harnesses=("agy",),
+                tool_profile=None,
+                base_environment={"PATH": "/usr/bin:/bin"},
+            )
+        source = _source(tmp_path)
+        projection = build_native_projection(AgentConfig(str(source)).freeze_manifest(), "agy")
+        assert projection.harness == "agy"
+        cred_source = tmp_path / "cred-config"
+        (cred_source / "native" / "agy").mkdir(parents=True)
+        (cred_source / "native" / "agy" / "antigravity-oauth-token").write_text(
+            "secret\n", encoding="utf-8"
+        )
+        with pytest.raises(AgentConfigError, match="credential-bearing"):
+            AgentConfig(str(cred_source)).freeze_manifest()
+    finally:
+        registry.close()

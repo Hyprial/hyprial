@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import typer
 
-from hyprial.kernel import DurationParseError, ipc_errors, parse_duration
+from hyprial.error import codes
+from hyprial.kernel import DurationParseError, parse_duration
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
@@ -40,7 +41,7 @@ def agent_restore(
     if list_:
         if name is not None or policy is not None or threshold is not None:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--list cannot be combined with a name, policy, or --threshold",
             )
         services.runtime.execute(
@@ -51,13 +52,13 @@ def agent_restore(
     if threshold is not None:
         if name is not None or policy is not None:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--threshold cannot be combined with a name or policy",
             )
         try:
             threshold_ms = int(parse_duration(threshold, "threshold") * 1_000)
         except DurationParseError as error:
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
         services.runtime.execute(
             lambda: services.runtime.request(
                 "agent.restore-threshold", {"thresholdMs": threshold_ms}
@@ -67,7 +68,7 @@ def agent_restore(
         return
     if name is None or policy is None:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "agent restore needs <NAME> <POLICY>, --threshold <DURATION>, or --list",
         )
     services.runtime.execute(

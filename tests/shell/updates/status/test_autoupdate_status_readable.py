@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from hyprial.shell.impl.cli.runtime import entry as cli
+from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
@@ -143,9 +143,11 @@ def _platform_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, daemon_pi
     (state / _cli_owner_2.PENDING_RESTART_FILE).write_text(json.dumps(_PENDING), encoding="utf-8")
     monkeypatch.setattr(_cli_get_services(), "_hyprial_home", lambda: tmp_path)
     monkeypatch.setattr(_cli_get_services(), "_state_dir", lambda: state)
-    def request(method: str, **_kwargs: object) -> object:
+    def request(method: str, _params: object = None, **_kwargs: object) -> object:
         if method == "autoupdate.status":
             return {"running": True, "active": False, "nextRunAt": "2026-09-27T03:17:00"}
+        if method == "upgrade.steps.status":
+            return {"steps": [], "pending": [], "legacyArgvFiles": [], "legacyProcesses": []}
         raise AssertionError(method)
 
     monkeypatch.setattr(_cli_support, "_daemon_request", request)
@@ -153,7 +155,7 @@ def _platform_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, daemon_pi
     def probe(timeout: float = 0.5) -> dict[str, object]:
         assert timeout <= 1.0  # status stays cheap
         if daemon_pid is None:
-            raise cli.ipc_errors.DaemonUnavailableError("no daemon", {})
+            raise ipc_errors.DaemonUnavailableError("no daemon", {})
         return {"running": True, "pid": daemon_pid}
 
     monkeypatch.setattr(_cli_get_services(), "_daemon_probe", probe)

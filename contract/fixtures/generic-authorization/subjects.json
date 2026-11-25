@@ -1,0 +1,314 @@
+{
+  "fixtureVersion": 1,
+  "kind": "subjects",
+  "cases": [
+    {
+      "id": "user-feishu-sub",
+      "operation": "match",
+      "pattern": "u.ou_11111111111111111111111111111111:*:*",
+      "subject": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": true,
+        "matches": true
+      }
+    },
+    {
+      "id": "owner-slot-rejects-device-id",
+      "operation": "decode_pattern",
+      "pattern": "d.123e4567e89b42d3a456426614174000:*:*",
+      "expected": {
+        "valid": false,
+        "reason": "OWNER_ID_INVALID"
+      }
+    },
+    {
+      "id": "host-slot-rejects-agent-id",
+      "operation": "decode_pattern",
+      "pattern": "*:a.abcdefghijklmnopqrstuvwxyz:*",
+      "expected": {
+        "valid": false,
+        "reason": "HOST_ID_INVALID"
+      }
+    },
+    {
+      "id": "agent-slot-rejects-device-id",
+      "operation": "decode_pattern",
+      "pattern": "*:*:d.123e4567e89b42d3a456426614174000",
+      "expected": {
+        "valid": false,
+        "reason": "AGENT_ID_INVALID"
+      }
+    },
+    {
+      "id": "mechanism-rejects-two-segments",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:*",
+      "expected": {
+        "valid": false,
+        "reason": "SEGMENT_COUNT"
+      }
+    },
+    {
+      "id": "exact-three-segments",
+      "operation": "match",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "subject": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": true,
+        "matches": true
+      }
+    },
+    {
+      "id": "owner-wide-cross-host",
+      "operation": "match",
+      "pattern": "u.ou_11111111111111111111111111111111:*:*",
+      "subject": "u.ou_11111111111111111111111111111111:d.223e4567e89b42d3a456426614174000:a.bcdefghijklmnopqrstuvwxyza",
+      "expected": {
+        "valid": true,
+        "matches": true
+      }
+    },
+    {
+      "id": "owner-wide-rejects-other-owner",
+      "operation": "match",
+      "pattern": "u.ou_11111111111111111111111111111111:*:*",
+      "subject": "u.ou_22222222222222222222222222222222:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": true,
+        "matches": false
+      }
+    },
+    {
+      "id": "host-literal-does-not-cross-host",
+      "operation": "match",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:*",
+      "subject": "u.ou_11111111111111111111111111111111:d.223e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": true,
+        "matches": false
+      }
+    },
+    {
+      "id": "any-owner-exact-host-agent",
+      "operation": "match",
+      "pattern": "*:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "subject": "u.ou_22222222222222222222222222222222:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": true,
+        "matches": true
+      }
+    },
+    {
+      "id": "global-three-segment-wildcard",
+      "operation": "match",
+      "pattern": "*:*:*",
+      "subject": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": true,
+        "matches": true
+      }
+    },
+    {
+      "id": "agent-literal-full-match",
+      "operation": "match",
+      "pattern": "u.ou_11111111111111111111111111111111:*:a.abcdefghijklmnopqrstuvwxyz",
+      "subject": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.bcdefghijklmnopqrstuvwxyza",
+      "expected": {
+        "valid": true,
+        "matches": false
+      }
+    },
+    {
+      "id": "bare-star",
+      "operation": "decode_pattern",
+      "pattern": "*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "two-stars",
+      "operation": "decode_pattern",
+      "pattern": "*:*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "empty-owner",
+      "operation": "decode_pattern",
+      "pattern": ":d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "four-segments",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz:extra",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "partial-owner",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111*:*:*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "partial-host",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123*:*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "double-star",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:**:*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "partial-agent",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "leading-space",
+      "operation": "decode_pattern",
+      "pattern": " u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "trailing-space",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz ",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "uppercase-owner",
+      "operation": "decode_pattern",
+      "pattern": "U.OU_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "unicode-host",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:主机:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "percent-escape",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123%3A456:*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "backslash-escape",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123\\456:*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "uri-is-not-subject",
+      "operation": "decode_pattern",
+      "pattern": "agent:u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "control-character",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz\n",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "display-name-owner",
+      "operation": "decode_pattern",
+      "pattern": "alice:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "host-id-not-exact-length",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a4564266141740000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "agent-is-not-uuid-hex",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.123e4567e89b42d3a456426614174000",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "json-decoded-colon",
+      "operation": "decode_pattern",
+      "pattern": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz:injected",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "concrete-subject-no-wildcards",
+      "operation": "decode_subject",
+      "subject": "u.ou_11111111111111111111111111111111:*:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "concrete-subject-two-segments",
+      "operation": "decode_subject",
+      "subject": "u.ou_11111111111111111111111111111111:*",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "concrete-subject-wrong-owner-slot",
+      "operation": "decode_subject",
+      "subject": "d.123e4567e89b42d3a456426614174000:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "literal-subject-roundtrip",
+      "operation": "decode_subject",
+      "subject": "u.ou_11111111111111111111111111111111:d.123e4567e89b42d3a456426614174000:a.abcdefghijklmnopqrstuvwxyz",
+      "expected": {
+        "valid": true
+      }
+    }
+  ]
+}

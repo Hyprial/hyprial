@@ -189,7 +189,7 @@ def fake_windows(monkeypatch: pytest.MonkeyPatch):
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
-    target = "hyprial.kernel.impl.platform.windows_owned_process"
+    target = "hyprial.kernel.impl.manysys.process.windows_owned_process"
     sys.modules.pop(target, None)
     module = importlib.import_module(target)
     monkeypatch.setattr(module, "process_identity", lambda pid: f"fake:{pid}")

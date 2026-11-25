@@ -1,3 +1,17 @@
+# Decision record (file header; no inline comments by repository rule):
+# - The actor engine keeps the mailbox across a restart and accepts tells
+#   while restart_pending (ABI v1 5.2, 6.3.5). Fenced commands and I/O
+#   completions are stamped with the generation read at submit time, which
+#   is still the failed generation g during that window and would be
+#   rejected as STALE by generation g + 1. submit() and _on_io_completion()
+#   therefore treat restart_pending exactly like the shipped CLOSED window:
+#   PORT_CLOSING "restarting" for commands and a CLOSED retry for completions
+#   (待 HQ 追认).
+# - _factory_generation advances only after DeliveryCustody was built, so a
+#   failed restart factory cannot leave the handler fence ahead of the
+#   engine generation.
+# - stopping (ABI v1 5.4) is terminal for the port: a stopping actor never
+#   accepts again, so CLOSED in that state latches the port closed.
 from __future__ import annotations
 import threading
 import time
@@ -7,7 +21,6 @@ from pathlib import Path
 from hyprial.kernel import (
     STATE_AUTHORITY,
     ActorHandle,
-    ActorRuntime,
     ActorSpec,
     ActorState,
     AdmissionResult,
@@ -17,6 +30,10 @@ from hyprial.kernel import PortAdmission, PortCommandRejected
 from hyprial.daemon.impl.inbox.contracts.api  import (
     DeliveryTransport,
     InboxMessage,
+)
+from hyprial.daemon.impl.inbox.contracts.origin import (
+    OriginClaim,
+    SessionCurrentFn,
 )
 from hyprial.daemon.impl.inbox.contracts.ports  import (
     CloseInboxCommand,
@@ -40,8 +57,15 @@ from .events import (
     DispatchIoRequested,
     ReassociateIoCompletion,
 )
-from .internal import _CompletionReceipts, _DurableCompletionHandoffs, _EventFanout, _ProjectionState
+from .internal import (
+    OriginCustody,
+    _CompletionReceipts,
+    _DurableCompletionHandoffs,
+    _EventFanout,
+    _ProjectionState,
+)
 from .worker import DeliveryIoWorker
+from hyprial.kernel import ipc_errors
 
 class DeliveryCustodyCoordinator(InboxProjectionPort):
     """Bounded, event-only command admission for the delivery authority."""
@@ -52,7 +76,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
         transport: DeliveryTransport,
         event_sink: InboxEventSink,
         *,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
         mailbox_capacity: int = 128,
         io_capacity: int = 32,
         completion_deadline: float = 1.0,
@@ -63,12 +87,15 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
         max_custody_bytes: int = 1 << 30,
         node_id: str = "local",
         service_options: dict[str, object] | None = None,
+        session_current: SessionCurrentFn | None = None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("delivery custody coordinator requires an actor host")
         if completion_receipt_timeout <= 0:
             raise ValueError("completion receipt timeout must be positive")
-        self._runtime = runtime or ActorRuntime()
         self._events = _EventFanout(event_sink)
         self._projection = _ProjectionState()
+        self._origin_claims = OriginCustody(session_current=session_current)
         self._lifecycle_lock = threading.Lock()
         self._closing = False
         self._factory_generation = 0
@@ -94,8 +121,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
 
         def factory() -> Callable[[object], None]:
             with self._lifecycle_lock:
-                self._factory_generation += 1
-                generation = self._factory_generation
+                generation = self._factory_generation + 1
             handler = DeliveryCustody(
                 database,
                 self._events,
@@ -109,12 +135,14 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
                 max_custody_bytes=max_custody_bytes,
                 node_id=node_id,
                 service_options=options,
+                origin_claims=self._origin_claims,
             )
             with self._lifecycle_lock:
+                self._factory_generation = generation
                 self._active_handler = handler
             return handler
 
-        self._handle: ActorHandle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="delivery-custody",
                 handler_factory=factory,
@@ -123,6 +151,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
                 undelivered_sink=self._undelivered,
             )
         )
+        self._handle: ActorHandle = self._cell.handle
 
     def _undelivered(self, command: object, reason: str) -> None:
         if not isinstance(command, WakeOutboxRecipientCommand):
@@ -131,7 +160,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
             PortCommandRejected(
                 correlation_id=command.correlation_id,
                 domain="inbox",
-                generation=self._runtime.snapshot(self._handle).generation,
+                generation=self._cell.snapshot().generation,
                 version=self._projection.version,
                 code=reason,
                 detail="accepted recipient wake never began",
@@ -145,7 +174,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
 
     @property
     def generation(self) -> int:
-        return self._runtime.snapshot(self._handle).generation
+        return self._cell.snapshot().generation
 
     @property
     def version(self) -> int:
@@ -160,11 +189,15 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
             if self._closing:
                 rejection = (
                     PortAdmission.CLOSING,
-                    "PORT_CLOSING",
+                    ipc_errors.PORT_CLOSING,
                     "delivery coordinator is closing",
                 )
             else:
-                admission = self._runtime.tell(self._handle, command)
+                admission = (
+                    AdmissionResult.CLOSED
+                    if self._restart_pending()
+                    else self._cell.tell(command)
+                )
                 if admission is AdmissionResult.ACCEPTED:
                     if isinstance(command, CloseInboxCommand):
                         self._closing = True
@@ -172,7 +205,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
                 if admission is AdmissionResult.OVERLOADED:
                     rejection = (
                         PortAdmission.OVERLOADED,
-                        "PORT_OVERLOADED",
+                        ipc_errors.PORT_OVERLOADED,
                         "delivery actor mailbox capacity is exhausted",
                     )
                 else:
@@ -182,14 +215,15 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
                     # the port on that would make every supervised restart
                     # permanently unrecoverable, so only a terminal guardian
                     # state closes it for good.
-                    terminal = self._runtime.snapshot(self._handle).state in {
+                    terminal = self._cell.snapshot().state in {
                         ActorState.QUARANTINED,
+                        ActorState.STOPPING,
                         ActorState.STOPPED,
                     }
                     self._closing = terminal
                     rejection = (
                         PortAdmission.CLOSING,
-                        "PORT_CLOSING",
+                        ipc_errors.PORT_CLOSING,
                         (
                             "delivery actor is not accepting commands"
                             if terminal
@@ -243,7 +277,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
     def _timeout_evidence(self, started: float, timeout: float) -> str:
         waited = time.monotonic() - started
         try:
-            snapshot = self._runtime.snapshot(self._handle)
+            snapshot = self._cell.snapshot()
         except Exception as exc:  # noqa: BLE001 - evidence must not mask the timeout
             return f"waited {waited:.3f}s of {timeout:.3f}s; actor snapshot failed: {exc!r}"
         return (
@@ -263,6 +297,9 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
 
     def read_claimed_message_ids(self) -> frozenset[str]:
         return self._projection.read_claimed_message_ids()
+
+    def read_origin_claims(self) -> dict[str, OriginClaim]:
+        return self._origin_claims.snapshot()
 
     def drain(self, timeout: float = 5.0) -> DrainReport:
         """Drain state, then I/O, then fenced completions for this domain only."""
@@ -291,8 +328,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
                 remaining=(self._handle,),
             )
         complete = False
-        complete = self._runtime.stop(
-            self._handle,
+        complete = self._cell.stop(
             timeout=max(0.0, deadline - time.monotonic()),
         )
         if complete:
@@ -309,19 +345,25 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
 
     def _wait_state_idle(self, deadline: float) -> bool:
         while time.monotonic() < deadline:
-            snapshot = self._runtime.snapshot(self._handle)
+            snapshot = self._cell.snapshot()
             if snapshot.queued == 0 and snapshot.in_flight == 0:
                 return True
             time.sleep(min(0.005, max(0.0, deadline - time.monotonic())))
-        snapshot = self._runtime.snapshot(self._handle)
+        snapshot = self._cell.snapshot()
         return snapshot.queued == 0 and snapshot.in_flight == 0
+
+    def _restart_pending(self) -> bool:
+        return self._cell.snapshot().state is ActorState.RESTART_PENDING
 
     def _on_io_completion(
         self,
         request: DispatchIoRequested,
         event: DispatchIoCompleted | DispatchIoFailed,
     ) -> AdmissionResult:
-        generation = self._runtime.snapshot(self._handle).generation
+        snapshot = self._cell.snapshot()
+        if snapshot.state is ActorState.RESTART_PENDING:
+            return AdmissionResult.CLOSED
+        generation = snapshot.generation
         if generation != event.generation:
             if (
                 request.kind is DispatchIoKind.DELIVERY
@@ -345,7 +387,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
         if claim is CompletionReceiptClaim.SETTLED:
             return AdmissionResult.ACCEPTED
         if claim is CompletionReceiptClaim.NEW:
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._receipts.acknowledge(
                     event.receipt_token,
@@ -442,7 +484,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
             PortCommandRejected(
                 correlation_id=command.correlation_id,
                 domain="inbox",
-                generation=self._runtime.snapshot(self._handle).generation,
+                generation=self._cell.snapshot().generation,
                 version=self._projection.version,
                 code=code,
                 detail=detail,

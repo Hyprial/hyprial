@@ -18,8 +18,7 @@ from typing import Any
 import pytest
 
 SCENARIOS = Path(__file__).resolve().parents[4] / 'contract/e2e'
-RUNNER = SCENARIOS / "run-host-invite.py"
-LEDGER = SCENARIOS / "run-capability-ledger.py"
+RUNNER = SCENARIOS / "run-hosted-registry.py"
 ANALYSIS = SCENARIOS / "_start_probe.py"
 
 
@@ -79,14 +78,8 @@ def test_probe_uses_only_stdlib(runner: Any) -> None:
     assert "hyprial" not in runner.PROBE
 
 
-def test_capability_ledger_bootstrap_keeps_probe() -> None:
-    ledger = _load(LEDGER, "probe_ledger")
-    assert ledger.base.BOOTSTRAP.startswith(ledger.base.PROBE)
-    assert "'identity.impl.agents.runtime.grants')" in ledger.base.BOOTSTRAP
-
-
 def test_hosted_upgrade_path_installs_probe() -> None:
-    """评审 59b38336 (2)：hosted-upgrade 经 run-hosted-start 加载同一份 run-host-invite。"""
+    """评审 59b38336 (2)：hosted-upgrade 加载同一份 run-hosted-registry。"""
     upgrade = _load(SCENARIOS / "run-hosted-upgrade.py", "probe_upgrade")
     base = upgrade.base
     assert base.BOOTSTRAP.startswith(base.PROBE)

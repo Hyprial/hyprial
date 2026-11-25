@@ -152,4 +152,31 @@ def test_maintenance_launch_has_no_backend_slots_or_public_inbound(tmp_path, mon
     monkeypatch.setattr(module.ForwardingSidecarController, 'from_environment', start)
     with TailnetMaintenance(tmp_path, tmp_path / 'state', environ={}):
         pass
-    assert observed[module.FORWARDING_TARGET_ENV].startswith('unix:/tmp/hr-repin-')
+    assert observed[module.FORWARDING_TARGET_ENV].startswith('unix:')
+    assert '/hr-repin-' in observed[module.FORWARDING_TARGET_ENV]
+
+
+def test_windows_maintenance_launch_reserves_nonzero_loopback_port(tmp_path, monkeypatch):
+    from hyprial.daemon.impl.forwarding.membership import maintenance as module
+    from hyprial.kernel import FORWARDING_UP_ENV
+
+    observed = {}
+    monkeypatch.setattr(module, 'loopback_inbound_supported', lambda: True)
+    monkeypatch.setattr(module, 'read_device_record', lambda _home: SimpleNamespace(device_id='local'))
+
+    def environment(_home, env, *, node_id):
+        observed.update(env)
+        return {FORWARDING_UP_ENV: json.dumps({'slots': ['must-not-open'], 'addressFile': 'must-not-write'})}
+
+    monkeypatch.setattr(module, 'daemon_forwarding_environment', environment)
+    monkeypatch.setattr(
+        module.ForwardingSidecarController,
+        'from_environment',
+        lambda _env: SimpleNamespace(close=lambda: None),
+    )
+    with TailnetMaintenance(tmp_path, tmp_path / 'state', environ={}):
+        pass
+    target = observed[module.FORWARDING_TARGET_ENV]
+    assert target.startswith('tcp:127.0.0.1:')
+    port = int(target.rsplit(':', 1)[1])
+    assert port > 0

@@ -28,7 +28,7 @@ from ..support import TERMINAL_WAIT_SECONDS, _CompletionPorts, _settles, _spec
 
 
 def test_a_waiting_caller_reads_the_journal_rarely_and_wakes_on_completion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host
 ) -> None:
     # A long safety re-check separates "woken by the completion" from "found
     # by the next re-check" by more than any runner jitter.
@@ -40,6 +40,7 @@ def test_a_waiting_caller_reads_the_journal_rarely_and_wakes_on_completion(
         LifecyclePorts(ports, ports, ports, ports),
         router,
         completion_timeout=0.05,
+        actor_host=actor_host,
     )
     reads = 0
     store_result = coordinator._store.result
@@ -91,7 +92,7 @@ def test_a_waiting_caller_reads_the_journal_rarely_and_wakes_on_completion(
         coordinator.drain(3.0)
 
 
-def test_an_already_terminal_operation_returns_at_once(tmp_path: Path) -> None:
+def test_an_already_terminal_operation_returns_at_once(tmp_path: Path, actor_host) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router)
     coordinator = LifecycleCoordinator(
@@ -99,6 +100,7 @@ def test_an_already_terminal_operation_returns_at_once(tmp_path: Path) -> None:
         LifecyclePorts(ports, ports, ports, ports),
         router,
         completion_timeout=0.05,
+        actor_host=actor_host,
     )
     try:
         coordinator.submit(LifecycleOperation.create("done", _spec()))
@@ -116,7 +118,7 @@ class _NeverCaches(dict):  # type: ignore[type-arg]
 
 
 def test_a_terminal_state_written_by_another_path_is_found_by_the_recheck(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host
 ) -> None:
     # Independent review on #1138: the safety re-check had no test.  Write
     # the terminal state straight to the journal, bypassing the coordinator's
@@ -129,6 +131,7 @@ def test_a_terminal_state_written_by_another_path_is_found_by_the_recheck(
         LifecyclePorts(ports, ports, ports, ports),
         router,
         completion_timeout=0.05,
+        actor_host=actor_host,
     )
     # The coordinator's own re-drive would also read the external write and
     # publish it through its cache; keep the cache empty so only the safety
@@ -150,7 +153,7 @@ def test_a_terminal_state_written_by_another_path_is_found_by_the_recheck(
 
 
 def test_a_slow_read_is_not_followed_straight_away_by_another(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host
 ) -> None:
     # Independent review on #1138 (blocking): the re-check interval was
     # measured from before the read, so a read slower than the interval was
@@ -163,6 +166,7 @@ def test_a_slow_read_is_not_followed_straight_away_by_another(
         LifecyclePorts(ports, ports, ports, ports),
         router,
         completion_timeout=0.05,
+        actor_host=actor_host,
     )
     reads: list[tuple[float, float]] = []
     store_result = coordinator._store.result

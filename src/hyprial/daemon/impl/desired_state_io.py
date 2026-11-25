@@ -12,11 +12,14 @@ import time
 import threading
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum, StrEnum
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from hyprial.kernel import AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 from hyprial.kernel import CallCostCounters
+
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
 
 from hyprial.daemon.impl.desired_state  import DesiredState
 from hyprial.daemon.impl.state_persistence  import (
@@ -105,7 +108,10 @@ class DesiredStateIoPort:
         late_result: Callable[[str], StateCommandCompleted | None] | None = None,
         capacity: int = 128,
         retry_seconds: float = 0.01,
+        actor_host=None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("desired-state I/O requires an actor host")
         self._store = store
         self._late_result = late_result
         self._complete = complete
@@ -113,7 +119,7 @@ class DesiredStateIoPort:
         self._handoff_lock = threading.Lock()
         self._delivered: set[tuple[str, int]] = set()
         self._effects: EffectLane[DesiredStateIoRequest, DesiredStateIoCompleted] = (
-            EffectLane(
+            actor_host.effect_lane(
                 name="desired-state-io",
                 execute=self._execute,
                 complete=self._deliver,

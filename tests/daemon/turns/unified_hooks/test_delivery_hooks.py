@@ -86,17 +86,18 @@ def _observer_service(
     invoker: _Invoker,
     consumer: _Recorder,
     *,
+    actor_host,
     entries: list[dict[str, object]],
 ) -> DeliveryHookService:
     _write_hooks_config(home, entries=entries)
-    return _delivery_hooks(home, invoker, consumers={"test": consumer})
+    return _delivery_hooks(home, invoker, consumers={"test": consumer}, actor_host=actor_host)
 
 
-def test_intercept_reply_appears_verbatim(tmp_path: Path) -> None:
+def test_intercept_reply_appears_verbatim(actor_host, tmp_path: Path) -> None:
     opaque = "  first line\n<opaque>& unchanged  "
     _write_hooks_config(tmp_path, timeout_ms=5_000)
     invoker = _Invoker(opaque)
-    service = _delivery_hooks(tmp_path, invoker)
+    service = _delivery_hooks(tmp_path, invoker, actor_host=actor_host)
     delivery = _delivery()
 
     prepared = _prepare_until_decided(service, delivery)
@@ -111,10 +112,10 @@ def test_intercept_reply_appears_verbatim(tmp_path: Path) -> None:
     "behavior", ["", None, RuntimeError("handler exploded")]
 )
 def test_error_and_empty_replies_fail_open(
-    tmp_path: Path, behavior: object
+    actor_host, tmp_path: Path, behavior: object
 ) -> None:
     _write_hooks_config(tmp_path, timeout_ms=5_000)
-    service = _delivery_hooks(tmp_path, _Invoker(behavior))
+    service = _delivery_hooks(tmp_path, _Invoker(behavior), actor_host=actor_host)
     delivery = _delivery()
 
     prepared = _prepare_until_decided(service, delivery)
@@ -122,7 +123,7 @@ def test_error_and_empty_replies_fail_open(
     assert prepared.hook_text is None
 
 
-def test_timeout_fails_open_and_never_blocks_the_caller(tmp_path: Path) -> None:
+def test_timeout_fails_open_and_never_blocks_the_caller(actor_host, tmp_path: Path) -> None:
     _write_hooks_config(tmp_path, timeout_ms=25)
     release = threading.Event()
 
@@ -130,7 +131,7 @@ def test_timeout_fails_open_and_never_blocks_the_caller(tmp_path: Path) -> None:
         release.wait(2)
         return "late"
 
-    service = _delivery_hooks(tmp_path, _Invoker(slow))
+    service = _delivery_hooks(tmp_path, _Invoker(slow), actor_host=actor_host)
     delivery = _delivery()
     try:
         started = time.monotonic()
@@ -143,11 +144,11 @@ def test_timeout_fails_open_and_never_blocks_the_caller(tmp_path: Path) -> None:
 
 
 def test_no_hooks_config_is_byte_identical_and_publishes_nothing(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     invoker = _Invoker("must not run")
     consumer = _Recorder()
-    service = _delivery_hooks(tmp_path, invoker, consumers={"test": consumer})
+    service = _delivery_hooks(tmp_path, invoker, consumers={"test": consumer}, actor_host=actor_host)
     delivery = _delivery()
     baseline = delivery_prompt(delivery).encode()
 
@@ -163,7 +164,7 @@ def test_no_hooks_config_is_byte_identical_and_publishes_nothing(
 
 
 def test_delivery_events_reach_an_observer_with_the_documented_payload(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     invoker = _Invoker("must not run")
     consumer = _Recorder()
@@ -171,6 +172,7 @@ def test_delivery_events_reach_an_observer_with_the_documented_payload(
         tmp_path,
         invoker,
         consumer,
+        actor_host=actor_host,
         entries=[
             {
                 "events": [
@@ -214,13 +216,14 @@ def test_delivery_events_reach_an_observer_with_the_documented_payload(
 
 
 def test_prepared_event_is_emitted_once_per_delivery_across_ticks(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     consumer = _Recorder()
     service = _observer_service(
         tmp_path,
         _Invoker("must not run"),
         consumer,
+        actor_host=actor_host,
         entries=[{"events": ["delivery.prepared"], "consumer": "test"}],
     )
     delivery = _delivery()
@@ -232,13 +235,14 @@ def test_prepared_event_is_emitted_once_per_delivery_across_ticks(
     assert len(consumer.events) == 1
 
 
-def test_blocking_observer_never_delays_delivery(tmp_path: Path) -> None:
+def test_blocking_observer_never_delays_delivery(actor_host, tmp_path: Path) -> None:
     release = threading.Event()
     consumer = _Recorder(release)
     service = _observer_service(
         tmp_path,
         _Invoker("must not run"),
         consumer,
+        actor_host=actor_host,
         entries=[
             {
                 "events": ["delivery.prepared", "delivery.dispatched"],
@@ -260,13 +264,13 @@ def test_blocking_observer_never_delays_delivery(tmp_path: Path) -> None:
 
 
 def test_intercept_request_document_shape_and_options_passthrough(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     _write_hooks_config(
         tmp_path, timeout_ms=5_000, options={"recentRecaps": 5}
     )
     invoker = _Invoker("context")
-    service = _delivery_hooks(tmp_path, invoker)
+    service = _delivery_hooks(tmp_path, invoker, actor_host=actor_host)
     delivery = _delivery(message="password=hunter2 full body")
 
     _prepare_until_decided(service, delivery)
@@ -287,7 +291,7 @@ def test_intercept_request_document_shape_and_options_passthrough(
 
 
 def test_registered_context_provider_fills_the_intercept_request(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     _write_hooks_config(tmp_path, timeout_ms=5_000, options={"recentRecaps": 2})
     provider_calls: list[tuple[str, dict[str, object]]] = []
@@ -297,7 +301,7 @@ def test_registered_context_provider_fills_the_intercept_request(
         return {"recentRecaps": [{"event": "turn"}, {"event": "annotation"}]}
 
     invoker = _Invoker("context")
-    service = _delivery_hooks(tmp_path, invoker, intercept_context=provider)
+    service = _delivery_hooks(tmp_path, invoker, intercept_context=provider, actor_host=actor_host)
 
     prepared = _prepare_until_decided(service, _delivery())
     assert prepared.hook_text == "context"
@@ -308,7 +312,7 @@ def test_registered_context_provider_fills_the_intercept_request(
 
 
 def test_failing_context_provider_keeps_the_intercept_alive(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     _write_hooks_config(tmp_path, timeout_ms=5_000)
     logs: list[str] = []
@@ -324,6 +328,7 @@ def test_failing_context_provider_keeps_the_intercept_alive(
         invoker,
         intercept_context=broken_provider,
         logger=lambda _level, _component, event, **_fields: logs.append(event),
+        actor_host=actor_host,
     )
 
     prepared = _prepare_until_decided(service, _delivery())
@@ -333,7 +338,7 @@ def test_failing_context_provider_keeps_the_intercept_alive(
 
 
 def test_unsupported_harness_kind_fails_open_without_invocation(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     _write_hooks_config(tmp_path, timeout_ms=5_000)
     logs: list[str] = []
@@ -347,6 +352,7 @@ def test_unsupported_harness_kind_fails_open_without_invocation(
         invoker,
         supports=broken_support,
         logger=lambda _level, _component, event, **_fields: logs.append(event),
+        actor_host=actor_host,
     )
     delivery = _delivery()
 
@@ -356,12 +362,12 @@ def test_unsupported_harness_kind_fails_open_without_invocation(
     assert "hooks.intercept_unsupported" in logs
 
 
-def test_invalid_hooks_config_fails_open(tmp_path: Path) -> None:
+def test_invalid_hooks_config_fails_open(actor_host, tmp_path: Path) -> None:
     config = tmp_path / "config" / "hooks.json"
     config.parent.mkdir(parents=True)
     config.write_text("{", encoding="utf-8")
     invoker = _Invoker("must not run")
-    service = _delivery_hooks(tmp_path, invoker)
+    service = _delivery_hooks(tmp_path, invoker, actor_host=actor_host)
     delivery = _delivery()
 
     prepared = _prepare_until_decided(service, delivery)
@@ -370,21 +376,21 @@ def test_invalid_hooks_config_fails_open(tmp_path: Path) -> None:
 
 
 def test_self_handler_intercept_is_disabled_without_invocation(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     _write_hooks_config(tmp_path, handler=RECIPIENT, timeout_ms=5_000)
     invoker = _Invoker("must not run")
-    service = _delivery_hooks(tmp_path, invoker)
+    service = _delivery_hooks(tmp_path, invoker, actor_host=actor_host)
 
     prepared = _prepare_until_decided(service, _delivery())
     assert prepared.hook_text is None
     assert invoker.calls == []
 
 
-def test_hook_request_deliveries_are_never_intercepted(tmp_path: Path) -> None:
+def test_hook_request_deliveries_are_never_intercepted(actor_host, tmp_path: Path) -> None:
     _write_hooks_config(tmp_path, timeout_ms=5_000)
     invoker = _Invoker("must not run")
-    service = _delivery_hooks(tmp_path, invoker)
+    service = _delivery_hooks(tmp_path, invoker, actor_host=actor_host)
     delivery = HarnessDelivery(
         "hook-exchange",
         "turn-hook:x",
@@ -401,19 +407,19 @@ def test_hook_request_deliveries_are_never_intercepted(tmp_path: Path) -> None:
 
 
 
-@pytest.mark.parametrize("harness", ("jev", "user-proxy"))
+@pytest.mark.parametrize("harness", ("jev",))
 def test_python_worker_harness_kind_rejects_delivery_intercepts(
     harness: str,
 ) -> None:
     assert not harness_supports_delivery_intercept(harness)
 
 
-@pytest.mark.parametrize("harness", ("claude", "codex", "pi", "dsh"))
+@pytest.mark.parametrize("harness", ("claude", "codex", "pi"))
 def test_prompt_harness_kinds_accept_delivery_intercepts(harness: str) -> None:
     assert harness_supports_delivery_intercept(harness)
 
 
-def test_config_wait_hold_is_bounded_and_fails_open(tmp_path: Path) -> None:
+def test_config_wait_hold_is_bounded_and_fails_open(actor_host, tmp_path: Path) -> None:
     """A dispatch pump never blocks on hooks.json: it holds, bounded, then
     fails open if the first load cannot complete."""
 
@@ -425,7 +431,7 @@ def test_config_wait_hold_is_bounded_and_fails_open(tmp_path: Path) -> None:
         assert release.wait(5)
         return tmp_path / "config" / "hooks.json"
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     hooks = DaemonHookService(
         bus=bus,
         config_path_for_agent=blocked_path,
@@ -455,7 +461,7 @@ def test_config_wait_hold_is_bounded_and_fails_open(tmp_path: Path) -> None:
 
 
 def test_intercept_request_carries_recent_recaps_from_the_recap_consumer(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """H2 x H3 seam: the recap consumer's serving reaches the handler.
 
@@ -480,6 +486,7 @@ def test_intercept_request_carries_recent_recaps_from_the_recap_consumer(
         invoker,
         consumers={"recap": recap},
         intercept_context=consumer_intercept_context({"recap": recap}),
+        actor_host=actor_host,
     )
 
     prepared = _prepare_until_decided(service, _delivery())
@@ -520,7 +527,7 @@ def test_consumer_intercept_context_bounds_the_requested_count() -> None:
 
 
 def test_shell_recap_consumer_serves_the_intercept_context_end_to_end(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """The real composition: shell ``recap`` consumer -> intercept context.
 
@@ -562,7 +569,7 @@ def test_shell_recap_consumer_serves_the_intercept_context_end_to_end(
     )
     assert sorted(consumers) == ["recap"]
     hooks = DaemonHookService(
-        bus=HookBus(),
+        bus=HookBus(actor_host=actor_host),
         config_path_for_agent=lambda _actor: home / "config" / "hooks.json",
         consumers=consumers,
         handler_notifier=lambda *_args, **_kwargs: None,
@@ -586,7 +593,7 @@ def test_shell_recap_consumer_serves_the_intercept_context_end_to_end(
 
 
 def test_turn_lifecycle_is_ledgered_without_any_hooks_subscription(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """PR #1463 finding 3: turns leave a durable trace unconditionally.
 
@@ -601,7 +608,7 @@ def test_turn_lifecycle_is_ledgered_without_any_hooks_subscription(
     def logger(level: str, component: str, event: str, **fields: object) -> None:
         lines.append((level, component, event, fields))
 
-    service = _delivery_hooks(tmp_path, _Invoker("unused"), logger=logger)
+    service = _delivery_hooks(tmp_path, _Invoker("unused"), logger=logger, actor_host=actor_host)
     delivery = _delivery(message="do the work")
     assert _prepare_until_decided(service, delivery) is delivery
     service.mark_dispatched(delivery.delivery_id)
@@ -624,7 +631,7 @@ def test_turn_lifecycle_is_ledgered_without_any_hooks_subscription(
 
 
 def test_turn_bus_events_publish_to_subscribed_lanes(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     invoker = _Invoker("must not run")
     consumer = _Recorder()
@@ -632,6 +639,7 @@ def test_turn_bus_events_publish_to_subscribed_lanes(
         tmp_path,
         invoker,
         consumer,
+        actor_host=actor_host,
         entries=[
             {
                 "events": ["turn.started", "turn.completed"],
@@ -653,7 +661,7 @@ def test_turn_bus_events_publish_to_subscribed_lanes(
     assert completed_event.payload["status"] == "completed"
 
 
-def test_settled_without_a_context_ledgers_no_turn(tmp_path: Path) -> None:
+def test_settled_without_a_context_ledgers_no_turn(actor_host, tmp_path: Path) -> None:
     """A result for an unprepared delivery invents no turn lifecycle."""
 
     lines: list[tuple[str, str, str, dict[str, object]]] = []
@@ -661,7 +669,7 @@ def test_settled_without_a_context_ledgers_no_turn(tmp_path: Path) -> None:
     def logger(level: str, component: str, event: str, **fields: object) -> None:
         lines.append((level, component, event, fields))
 
-    service = _delivery_hooks(tmp_path, _Invoker("unused"), logger=logger)
+    service = _delivery_hooks(tmp_path, _Invoker("unused"), logger=logger, actor_host=actor_host)
     service.settled(_result(delivery_id="never-dispatched"))
 
     assert [entry for entry in lines if entry[2].startswith("turn.")] == []

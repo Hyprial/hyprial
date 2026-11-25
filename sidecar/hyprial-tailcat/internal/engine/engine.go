@@ -57,7 +57,7 @@ type UpConfig struct {
 	ControlPort     int
 	Allow           []string
 	AllowAny        bool
-	InboundTarget   string // "tcp:127.0.0.1:N" or empty
+	InboundTarget   string // "unix:<absolute-path>", "tcp:127.0.0.1:N", or empty
 	PeerPort        int
 	AddressFile     string
 	DERP            *DERPOverride
@@ -209,12 +209,17 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 	}
 	e.mu.Unlock()
 
+	if !validInboundTarget(cfg.InboundTarget) {
+		return "", "", ErrBadInput
+	}
 	if cfg.MembershipStore != "" {
-		if len(cfg.Allow) > 0 || cfg.AllowAny || !strings.HasPrefix(cfg.InboundTarget, "unix:") {
+		if len(cfg.Allow) > 0 || cfg.AllowAny || cfg.InboundTarget == "" {
 			return "", "", ErrBadInput
 		}
-		if err := privatefs.Directory(filepath.Dir(strings.TrimPrefix(cfg.InboundTarget, "unix:"))); err != nil {
-			return "", "", ErrBadInput
+		if strings.HasPrefix(cfg.InboundTarget, "unix:") {
+			if err := privatefs.Directory(filepath.Dir(strings.TrimPrefix(cfg.InboundTarget, "unix:"))); err != nil {
+				return "", "", ErrBadInput
+			}
 		}
 	}
 	material, err := keys.Load(cfg.KeyFile)
@@ -859,6 +864,20 @@ func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remot
 		delete(exposed.pairs, pair)
 		e.mu.Unlock()
 	})
+}
+
+func validInboundTarget(target string) bool {
+	if target == "" {
+		return true
+	}
+	if strings.HasPrefix(target, "unix:") {
+		return filepath.IsAbs(strings.TrimPrefix(target, "unix:"))
+	}
+	if !strings.HasPrefix(target, "tcp:") {
+		return false
+	}
+	address, err := netip.ParseAddrPort(strings.TrimPrefix(target, "tcp:"))
+	return err == nil && address.Addr().String() == "127.0.0.1" && address.Port() != 0
 }
 
 func splitTarget(target string) (network, address string) {

@@ -233,6 +233,9 @@ DERP server 的证明；那一能力必须通过独立、确定性的双 server 
 
 ## n-a2-envelope-vectors（预留接入点，尚未落向量）
 
+> 2026-11-14：Python 侧 N-A2 信封实现、下文所述消费测试与静态向量已随 mobile 配对适配一并删除
+> （`docs/design/gui-single-launch-2026-11-14.md` 第 4 节）。本节保留为接入点的历史说明；当前没有消费方。
+
 N-A2 请求信封的**正式跨语言一致性向量**将落于本目录
 `golden/n-a2-envelope-vectors-*.json`（每文件形如
 `{"schema": "hyprial-n-a2-envelope-vectors/v1", "vectors": [...]}`，每个向量含

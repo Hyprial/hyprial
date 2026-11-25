@@ -7,7 +7,6 @@ from hyprial.identity.impl.agents.home.provisioner import HomeProvisioningAttemp
 from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from hyprial.identity.impl.agents.home.effects import ProvisionHome
 from hyprial.identity.impl.agents.home.provisioner import WorkspaceSummary
 from contextlib import contextmanager
 import json
@@ -22,6 +21,7 @@ from ._base import (
     RETIRED_SESSION_REF_RETENTION_MS,
     _LOG,
 )
+from .naming.id_form import stamp_agent_id
 
 
 class _RegistryHomeDestroyMixin:
@@ -38,7 +38,7 @@ class _RegistryHomeDestroyMixin:
 
         if not actor or not entity_token or not reason or not destroy_attempt:
             raise AgentError("retired session identity and reason must not be empty")
-        name = self.normalize_actor(actor)
+        name = self.actor_key(actor)
         refs = set(session_refs)
         if any(not item for item in refs):
             raise AgentError("retired session refs must not be empty")
@@ -79,6 +79,7 @@ class _RegistryHomeDestroyMixin:
                 ),
             )
             changed = self._db.total_changes - before
+            stamp_agent_id(self._db, "retired_session_refs", entity_token)
             self._refresh_retired_session_refs_locked()
             return changed
 
@@ -94,8 +95,9 @@ class _RegistryHomeDestroyMixin:
         return cursor.rowcount
 
     def prepare_destroy_record(
-        self, actor: str, expected_entity_token: str | None = None
+        self, actor: str, expected_entity_token: str | None = None,
     ) -> tuple[bool, AgentHomeReservation | None]:
+        """Delete one record and claim its home cleanup."""
         name = self.local_actor(actor)
         if name is None:
             return False, None
@@ -105,9 +107,7 @@ class _RegistryHomeDestroyMixin:
             ).fetchone()
             if previous is None:
                 return False, None
-            prior_agent = self._row_agent(
-                previous, self._pinned_adapters_locked(name)
-            )
+            prior_agent = self._row_agent(previous)
             if (
                 expected_entity_token is not None
                 and prior_agent.entity_token != expected_entity_token
@@ -184,30 +184,6 @@ class _RegistryHomeDestroyMixin:
             ) from error
         if prior_agent.entity_token != expected_entity_token:
             return "stale-incarnation", None
-        if claim is not None and home is None and prior_agent.hosted_by == "host-invite":
-            # A process can die after the filesystem effect but before the
-            # owner promotes its create claim to a revoked home receipt. The
-            # claim is the durable identity; cleanup handles either a still
-            # matching mirror or an absent, never-created home.
-            payload = json.loads(str(claim["payload"]))
-            if not isinstance(payload, dict) or payload.get("priorHome") is not None:
-                raise AgentDestroySettlementUnknown(
-                    f"Agent {name!r} failed create claim is not a fresh invite"
-                )
-            reservation = self._create_reservation_from_payload(claim_key, payload)
-            replacement = (
-                reservation.plan.receipt
-                if isinstance(reservation.plan, ProvisionHome)
-                else None
-            )
-            if replacement is None or reservation.agent is None or (
-                reservation.agent.entity_token != expected_entity_token
-            ):
-                raise AgentDestroySettlementUnknown(
-                    f"Agent {name!r} failed create claim changed incarnation"
-                )
-            self.revoke_failed_create_record(reservation, replacement)
-            return self.prepare_destroy_settlement(actor, expected_entity_token)
         if home is None:
             return "already-cleaned", None
         if bool(home["active"]):
@@ -326,7 +302,16 @@ class _RegistryHomeDestroyMixin:
                     (reservation.claim_key,),
                 )
     def ensure_home(self, actor: str) -> HomeReceipt:
-        """Provision or validate the current entity's home in two phases."""
+        """Provision or validate the current entity's home in two phases.
+
+        A ready home also carries its empty per-agent secret store, so the
+        reported readiness and the credential commands agree.  The store is
+        materialised while the lifecycle row is still an inactive claim, so a
+        failure compensates a home the rollback branch below can downgrade
+        instead of leaving an active ready receipt pointing at a removed
+        tree.  A ``cleaned`` row is retryable, the same way the create path
+        treats it, so the repair path can rebuild after such a rollback.
+        """
 
         agent = self.require(actor)
         if self._home is None:
@@ -345,8 +330,18 @@ class _RegistryHomeDestroyMixin:
                 ) from error
             if bool(row["active"]) and receipt.status == "ready":
                 self._home.validate(receipt)
+                self._home.ensure_secret_store(receipt)
                 return receipt
-            raise AgentHomeError("operation-pending", agent.actor, "ensure")
+            if bool(row["active"]) or receipt.status != "cleaned":
+                raise AgentHomeError("operation-pending", agent.actor, "ensure")
+            with self._lock, self._db:
+                released = self._db.execute(
+                    "DELETE FROM lifecycle_resources WHERE resource_key = ? "
+                    "AND active = 0 AND payload = ?",
+                    (f"agent-home:{agent.actor}", str(row["payload"])),
+                )
+            if released.rowcount != 1:
+                raise AgentHomeError("operation-pending", agent.actor, "ensure")
 
         claim = self._home.claim_receipt(
             actor=agent.actor, entity_token=agent.entity_token
@@ -365,6 +360,7 @@ class _RegistryHomeDestroyMixin:
         attempt: HomeProvisioningAttempt | None = None
         try:
             attempt = self._home.provision_claimed(claim)
+            self._home.ensure_secret_store(claim)
             with self._lock, self._db:
                 current = self.require(agent.actor)
                 row = self._db.execute(
@@ -642,6 +638,10 @@ class _RegistryHomeDestroyMixin:
             ),
         )
     def _revoke_home_locked(self, agent: Agent) -> HomeReceipt | None:
+        self._db.execute(
+            "DELETE FROM native_auth_imports WHERE actor = ? AND entity_token = ?",
+            (agent.actor, agent.entity_token),
+        )
         row = self._db.execute(
             "SELECT payload FROM lifecycle_resources WHERE resource_key = ?",
             (f"agent-home:{agent.actor}",),

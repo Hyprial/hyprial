@@ -15,6 +15,7 @@ from hyprial.daemon.impl.inbox import (
 
 from .support import (
     CANONICAL,
+    official_address,
     DurableReplyInbox,
     FakeInbox,
     _close_application_domains as _close_application_domains,
@@ -68,7 +69,7 @@ def test_reply_is_submitted_before_original_delivery_is_acknowledged(
         "replyTo": "message-1",
         "origin": {"via": "session"},
     }
-    assert inbox.acks == [(CANONICAL, "message-1")]
+    assert inbox.acks == [(official_address(app), "message-1")]
 
 
 def test_failed_lark_reply_keeps_original_pending_without_ack(
@@ -117,7 +118,7 @@ def test_failed_lark_reply_keeps_original_pending_without_ack(
     }
     assert len(inbox.submitted) == 1
     assert inbox.acks == []
-    assert inbox.pending_messages(CANONICAL) != ()
+    assert inbox.pending_messages(official_address(app)) != ()
 
 
 def test_lark_reply_retry_returns_settled_receipt_after_background_ack(
@@ -161,7 +162,7 @@ def test_lark_reply_retry_returns_settled_receipt_after_background_ack(
         "queued": False,
     }
     assert len(inbox.submitted) == 1
-    assert inbox.acks == [(CANONICAL, "message-1")]
+    assert inbox.acks == [(official_address(app), "message-1")]
 
 
 def test_lark_reply_retry_returns_same_pending_receipt(tmp_path: Path) -> None:
@@ -275,7 +276,7 @@ def test_reply_retry_with_different_text_after_settlement_is_rejected(
     assert retried["replyMessageId"] == "c4ff4b95-7cef-54b3-a843-1643bc36c56d"
     assert retried["retryable"] is False
     assert len(inbox.submitted) == 1
-    assert inbox.acks == [(CANONICAL, "message-1")]
+    assert inbox.acks == [(official_address(app), "message-1")]
 
 
 @pytest.mark.parametrize("durable_original", (False, True))
@@ -358,7 +359,7 @@ def test_ambiguous_lark_reply_is_retryable_and_acks_only_after_settlement(
 
     second = app.handle("message.reply", request)
     assert second["replied"] is True and second["acknowledged"] is True
-    assert inbox.acks == [(CANONICAL, "message-1")]
+    assert inbox.acks == [(official_address(app), "message-1")]
     assert inbox.attempts == 2
 
 
@@ -426,7 +427,7 @@ def test_different_text_retry_reports_already_submitted_without_ack_while_pendin
     }
     assert len(inbox.submitted) == 1
     assert inbox.acks == []
-    assert inbox.pending_messages(CANONICAL) != ()
+    assert inbox.pending_messages(official_address(app)) != ()
 
 
 def test_different_text_retry_acks_inbound_when_existing_reply_is_settled(
@@ -491,4 +492,4 @@ def test_different_text_retry_acks_inbound_when_existing_reply_is_settled(
         "settled": True,
     }
     assert len(inbox.submitted) == 1
-    assert inbox.acks == [(CANONICAL, "message-1")]
+    assert inbox.acks == [(official_address(app), "message-1")]

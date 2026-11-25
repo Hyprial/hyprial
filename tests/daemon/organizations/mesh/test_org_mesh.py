@@ -15,6 +15,7 @@ from hyprial.daemon.impl.org.document import parse_document, serialize_document
 from hyprial.daemon.impl.org.mesh import OrgContextMesh
 from hyprial.daemon.impl.org.store import OrgContextStore, OrgStoreError
 from hyprial.daemon.impl.transport import KeySpace, TransportSample
+from tests.support.actor_hosts import new_actor_host
 
 
 class _Registration:
@@ -137,8 +138,8 @@ def test_publish_subscribe_and_fetch_roundtrip_only_stage_pending(
     receiver_store = OrgContextStore(tmp_path / "receiver")
     accepted = _document(3)
     source_store.adopt(accepted)
-    source = OrgContextMesh(_Session(bus), source_store, "node-a")
-    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-b")
+    source = OrgContextMesh(_Session(bus), source_store, "node-a", actor_host=new_actor_host())
+    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-b", actor_host=new_actor_host())
     try:
         assert source.publish_accepted() is True
         assert receiver_store.load_accepted() is None
@@ -165,8 +166,8 @@ def test_zenoh_candidate_admission_does_not_wait_for_pending_file_io(
     source_store = OrgContextStore(tmp_path / "source")
     receiver_store = OrgContextStore(tmp_path / "receiver")
     source_store.adopt(_document(4))
-    source = OrgContextMesh(_Session(bus), source_store, "node-source")
-    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-receiver")
+    source = OrgContextMesh(_Session(bus), source_store, "node-source", actor_host=new_actor_host())
+    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-receiver", actor_host=new_actor_host())
     entered = threading.Event()
     release = threading.Event()
     original = receiver._receive_candidate
@@ -212,7 +213,7 @@ def test_org_context_authority_restart_does_not_repeat_admitted_stage(
 ) -> None:
     candidate_store = OrgContextStore(tmp_path / "candidate")
     candidate_mesh = OrgContextMesh(
-        _Session(_Bus()), candidate_store, "node-local"
+        _Session(_Bus()), candidate_store, "node-local", actor_host=new_actor_host()
     )
     document = _document(9)
     envelope = json.dumps(
@@ -247,17 +248,17 @@ def test_org_context_authority_restart_does_not_repeat_admitted_stage(
             )
             assert entered.wait(2)
             assert (
-                candidate_mesh._runtime.tell(candidate_mesh._authority, object())
+                candidate_mesh._cell.tell(object())
                 is AdmissionResult.ACCEPTED
             )
             deadline = time.monotonic() + 3
             while (
-                candidate_mesh._runtime.snapshot(candidate_mesh._authority).generation
+                candidate_mesh._cell.snapshot().generation
                 == 1
                 and time.monotonic() < deadline
             ):
                 time.sleep(0.005)
-            assert candidate_mesh._runtime.snapshot(candidate_mesh._authority).generation > 1
+            assert candidate_mesh._cell.snapshot().generation > 1
             release.set()
             record = accepted.result(timeout=3)
         assert record is not None
@@ -272,7 +273,7 @@ def test_org_context_total_custody_bounds_deferred_and_rebases_restart(
 ) -> None:
     monkeypatch.setattr('hyprial.daemon.impl.org.mesh._ORG_CONTEXT_CAPACITY', 2)
     store = OrgContextStore(tmp_path / "bounded")
-    mesh = OrgContextMesh(_Session(_Bus()), store, "node-local")
+    mesh = OrgContextMesh(_Session(_Bus()), store, "node-local", actor_host=new_actor_host())
     mesh._effects._capacity = 1
     entered = threading.Event()
     release = threading.Event()
@@ -300,12 +301,12 @@ def test_org_context_total_custody_bounds_deferred_and_rebases_restart(
                 time.sleep(0.005)
             with pytest.raises(OrgStoreError, match="total custody is full"):
                 mesh.receive(payload, expected_source="node-remote")
-            generation = mesh._runtime.snapshot(mesh._authority).generation
-            assert mesh._runtime.tell(mesh._authority, object()) is AdmissionResult.ACCEPTED
-            while mesh._runtime.snapshot(mesh._authority).generation == generation:
+            generation = mesh._cell.snapshot().generation
+            assert mesh._cell.tell(object()) is AdmissionResult.ACCEPTED
+            while mesh._cell.snapshot().generation == generation:
                 assert time.monotonic() < deadline
                 time.sleep(0.005)
-            current = mesh._runtime.snapshot(mesh._authority).generation
+            current = mesh._cell.snapshot().generation
             assert len(mesh._calls) == 2
             while [item.generation for item in mesh._deferred] != [current]:
                 assert time.monotonic() < deadline
@@ -331,7 +332,7 @@ def test_invalid_schema_and_non_monotonic_versions_are_logged_not_staged(
         _Session(_Bus()),
         store,
         "receiver",
-        logger=lambda level, event, **fields: events.append((level, event, fields)),
+        logger=lambda level, event, **fields: events.append((level, event, fields)), actor_host=new_actor_host(),
     )
     try:
         valid_v3 = serialize_document(_document(3))
@@ -365,8 +366,8 @@ def test_request_endpoint_answers_only_accepted_never_pending(tmp_path: Path) ->
     source_store.adopt(_document(1))
     source_store.stage(_document(5), source="other-node")
     receiver_store = OrgContextStore(tmp_path / "receiver")
-    source = OrgContextMesh(_Session(bus), source_store, "node-a")
-    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-b")
+    source = OrgContextMesh(_Session(bus), source_store, "node-a", actor_host=new_actor_host())
+    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-b", actor_host=new_actor_host())
     try:
         result = receiver.fetch(source="node-a", allowed_sources={"node-a"})
 
@@ -385,8 +386,8 @@ def test_request_endpoint_with_only_pending_returns_no_response(tmp_path: Path) 
     source_store = OrgContextStore(tmp_path / "source")
     source_store.stage(_document(5), source="other-node")
     receiver_store = OrgContextStore(tmp_path / "receiver")
-    source = OrgContextMesh(_Session(bus), source_store, "node-a")
-    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-b")
+    source = OrgContextMesh(_Session(bus), source_store, "node-a", actor_host=new_actor_host())
+    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-b", actor_host=new_actor_host())
     try:
         result = receiver.fetch(source="node-a", allowed_sources={"node-a"})
 
@@ -407,9 +408,9 @@ def test_fetch_all_targets_uses_one_unconsolidated_broadcast_query(
     receiver_store = OrgContextStore(tmp_path / "receiver")
     source_a_store.adopt(_document(3, title="Source A"))
     source_b_store.adopt(_document(4, title="Source B"))
-    source_a = OrgContextMesh(_Session(bus), source_a_store, "node-a")
-    source_b = OrgContextMesh(_Session(bus), source_b_store, "node-b")
-    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-c")
+    source_a = OrgContextMesh(_Session(bus), source_a_store, "node-a", actor_host=new_actor_host())
+    source_b = OrgContextMesh(_Session(bus), source_b_store, "node-b", actor_host=new_actor_host())
+    receiver = OrgContextMesh(_Session(bus), receiver_store, "node-c", actor_host=new_actor_host())
     try:
         result = receiver.fetch(
             allowed_sources={"node-a", "node-b"}, timeout=0.25

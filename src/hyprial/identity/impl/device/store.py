@@ -14,6 +14,7 @@ that a later ``read_device_record`` would have to guess about.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from hyprial.identity.impl.device.models import DeviceRecord
@@ -60,17 +61,22 @@ def address_path(home: Path) -> Path:
     return Path(home) / ADDRESS_RELPATH
 
 
-def read_device_record(home: Path) -> DeviceRecord | None:
+def read_device_record(
+    home: Path,
+    *,
+    file_reader: Callable[[Path], bytes | None] | None = None,
+) -> DeviceRecord | None:
     """Read the record; ``None`` when absent, ``ValueError`` when corrupt.
 
     A missing record is a normal state (before first login); a present but
     unparseable one is an operator situation worth naming, not papering
-    over with a reset.
+    over with a reset.  A caller that owns stricter storage rules can provide
+    a no-follow ``file_reader`` without duplicating device-record parsing.
     """
+    reader = file_reader or _read_file_if_present
     path = device_record_path(home)
-    try:
-        raw = path.read_text("utf-8")
-    except FileNotFoundError:
+    raw = reader(path)
+    if raw is None:
         return None
     try:
         parsed = json.loads(raw)
@@ -78,9 +84,8 @@ def read_device_record(home: Path) -> DeviceRecord | None:
         raise ValueError(f"device record at {path} is not valid JSON: {error}") from error
     record = DeviceRecord.from_record(parsed)
     identity_path = _device_identity_path(home)
-    try:
-        identity_raw = identity_path.read_text("utf-8")
-    except FileNotFoundError:
+    identity_raw = reader(identity_path)
+    if identity_raw is None:
         return record
     try:
         identity = json.loads(identity_raw)
@@ -89,6 +94,13 @@ def read_device_record(home: Path) -> DeviceRecord | None:
             f"device identity at {identity_path} is not valid JSON: {error}"
         ) from error
     return record.with_identity_record(identity)
+
+
+def _read_file_if_present(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
 
 
 def write_device_record(home: Path, record: DeviceRecord) -> None:

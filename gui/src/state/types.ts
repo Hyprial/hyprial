@@ -2,6 +2,7 @@ import type {
   ConnectionSummary,
   ConversationMessage,
   GuiPage,
+  SessionAgent,
   SessionTarget,
 } from './gui-view-model';
 
@@ -14,30 +15,31 @@ export interface NoticeItem {
   readonly tone: NoticeTone;
   readonly text: string;
   /**
-   * Where the notice came from: a stub operation id (e.g.
+   * Where the notice came from: an operation id (e.g.
    * connection.adapter.add) or a flow id (provider-login). Legacy set-notice
    * mirrors carry none and render as 来源未确认.
    */
   readonly source?: string;
+  /** Overrides the tone default: true dismisses the toast after the usual delay, the center entry stays. */
+  readonly autoDismiss?: boolean;
 }
-import type { FixtureAgent } from '../fixtures/demo';
-
 export type AgentFilter =
   | 'all'
   | 'available'
   | 'needs-connection'
-  | 'disabled';
+  | 'disabled'
+  | 'unknown';
 
 export type FirstRunMode =
   | 'simulate'
   | 'unavailable'
+  | 'live'
   | 'model-unavailable'
   | 'account-failure'
   | 'model-failure'
-  | 'squire-failure'
   | 'conversation-failure'
   | 'complete';
-export type FirstRunStep = 'account' | 'model' | 'squire' | 'conversation';
+export type FirstRunStep = 'account' | 'model' | 'conversation';
 export type FirstRunStatus =
   | 'idle'
   | 'pending'
@@ -75,11 +77,11 @@ export type ChatSendMode = 'reply' | 'fail' | 'unavailable';
 
 /**
  * Optional chat data supplied by a composition entry (tests or the development
- * preview). The product entry passes nothing and keeps the baseline fixtures.
+ * preview). The product entry passes nothing and keeps its formal state.
  */
 export interface ChatSeed {
   /** Local fixture ChatPage requires at least one target; contract empty uses its controller. */
-  readonly targets?: readonly [FixtureAgent, ...FixtureAgent[]];
+  readonly targets?: readonly [SessionAgent, ...SessionAgent[]];
   readonly activeTargetId?: string;
   readonly availableTargetId?: string;
   readonly threads?: Readonly<
@@ -104,7 +106,7 @@ export interface TargetChatState {
 export interface AppState {
   readonly firstRun: FirstRunState;
   readonly page: GuiPage;
-  readonly targets: readonly FixtureAgent[];
+  readonly targets: readonly SessionAgent[];
   readonly connections: readonly ConnectionSummary[];
   readonly threads: Readonly<
     Record<string, readonly ConversationMessage[]>
@@ -121,10 +123,11 @@ export interface AppState {
   readonly chatReplyText: string;
   /** Monotonic counter for deterministic local message ids. */
   readonly messageSeq: number;
-  /** Squire quick-chat panel visibility. */
-  readonly quickChatOpen: boolean;
   /** Most recently opened conversation, or null before any is opened. */
   readonly lastChatTargetId: string | null;
+  /** Agent detail "开始对话" intent; consumed by the connected chat page. */
+  readonly chatIntentTargetId: string | null;
+  readonly openedChatTargetIds?: readonly string[];
   /** Agent selected on the Agent page, or null when none is selected. */
   readonly selectedAgentId: string | null;
   /** Agent page panel: list, create form, or one Agent's detail. */
@@ -140,6 +143,22 @@ export interface AppState {
   readonly centerNotices: readonly NoticeItem[];
   readonly notificationCenterOpen: boolean;
   readonly centerUnread: number;
+  /** Identity the notices were raised under: null signed out, '' owner unknown, undefined before the first confirmation. */
+  readonly sessionIdentity?: string | null;
+}
+
+/**
+ * Presentation-state overlay injected by a composition entry (the development
+ * preview's linked session, or a test). The product entry passes nothing; the
+ * reducer stays the only in-app state authority.
+ */
+export interface StateSeed {
+  readonly firstRun?: FirstRunState;
+  readonly targets?: readonly SessionAgent[];
+  readonly connections?: readonly ConnectionSummary[];
+  readonly threads?: Readonly<
+    Record<string, readonly ConversationMessage[]>
+  >;
 }
 
 export type AppAction =
@@ -152,18 +171,21 @@ export type AppAction =
       readonly method: ModelConnectionMethod;
     }
   | { readonly type: 'first-run-submit'; readonly step: FirstRunStep }
+  | { readonly type: 'first-run-complete' }
   | { readonly type: 'first-run-succeed'; readonly step: FirstRunStep; readonly previewOnly?: boolean }
   | {
       readonly type: 'first-run-fail';
       readonly step: FirstRunStep;
       readonly message: string;
     }
-  | { readonly type: 'first-run-progress'; readonly value: number }
   | { readonly type: 'first-run-retry' }
   | { readonly type: 'first-run-back' }
   | { readonly type: 'navigate'; readonly page: GuiPage }
   | { readonly type: 'select-target'; readonly targetId: string }
   | { readonly type: 'open-chat'; readonly targetId: string }
+  | { readonly type: 'open-agent-chat'; readonly targetId: string }
+  | { readonly type: 'agent-deleted'; readonly targetId: string }
+  | { readonly type: 'clear-chat-intent' }
   | { readonly type: 'open-chat-draft'; readonly targetId: string; readonly draft: string }
   | { readonly type: 'open-agent'; readonly agentId: string }
   | { readonly type: 'open-agent-detail'; readonly agentId: string }
@@ -190,7 +212,6 @@ export type AppAction =
       readonly targetId: string;
       readonly messageId: string;
     }
-  | { readonly type: 'set-quick-chat'; readonly open: boolean }
   | {
       readonly type: 'select-message';
       readonly targetId: string;
@@ -218,10 +239,12 @@ export type AppAction =
       readonly text: string;
       /** Origin shown in the notification center; omit when unknown. */
       readonly source?: string;
+      readonly autoDismiss?: boolean;
     }
   | { readonly type: 'dismiss-notice'; readonly id: number }
   | { readonly type: 'toggle-notification-center'; readonly open: boolean }
-  | { readonly type: 'clear-center-notifications' };
+  | { readonly type: 'clear-center-notifications' }
+  | { readonly type: 'session-identity'; readonly identity: string | null };
 
 export function isChatTarget(target: SessionTarget): boolean {
   return target.kind === 'agent' && target.availability === 'available';

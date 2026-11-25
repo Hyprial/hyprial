@@ -1,0 +1,11 @@
+{
+  "base": "bd6eb9601ec3ee54b788d71ac7dfa3e0864fea72",
+  "registrySourceSha256": "6d5f6a7cd2567227ee56f6a2ef7f67038e8639af43718da91f1588557e986c01",
+  "sqlSha256": "d1394bee9a3a510b45ebffe27d6d68cf5a8ac171e5f0cf7da18179cb8f934806",
+  "homeSha256": "8033ef096442ce28dd2b99d4114d16c6ef3bba87019ed9c53b58d5f546ff8658",
+  "syntheticOnly": true,
+  "substitutions": [
+    "__HOME__: isolated absolute test home",
+    "__UID__: test OS uid"
+  ]
+}

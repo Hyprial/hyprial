@@ -21,11 +21,14 @@ import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
 
 #: A tick normally takes well under a second and runs every second; one
 #: minute without a completed tick is a stall, not a slow tick.
@@ -224,13 +227,14 @@ class ActorMaintenanceWatchdog:
         log: Callable[..., None],
         diagnostics: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("maintenance watchdog requires an actor host")
         self._stall_seconds = stall_seconds
         self._log = log
         self._diagnostics = diagnostics
         self._clock = clock
-        self._runtime = runtime or ActorRuntime()
         self._projection_lock = threading.Lock()
         self._projection: dict[str, Any] = {"stalled": False}
         self._tick: tuple[int | None, str, float] | None = None
@@ -244,7 +248,7 @@ class ActorMaintenanceWatchdog:
         self._stop = threading.Event()
         self._poller: threading.Thread | None = None
         self._check_replies: dict[str, _PollReply] = {}
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="maintenance-watchdog",
                 handler_factory=lambda: self._receive,
@@ -252,17 +256,17 @@ class ActorMaintenanceWatchdog:
             )
         )
         try:
-            self._effects: EffectLane[_Notice, dict[str, Any] | None] = EffectLane(
+            self._effects: EffectLane[_Notice, dict[str, Any] | None] = actor_host.effect_lane(
                 name="maintenance-watchdog-report",
                 execute=self._report,
-                complete=lambda event: self._runtime.tell(self._handle, event),
+                complete=self._cell.tell,
                 capacity=2,
             )
         except BaseException:
             # The application cannot close an object whose constructor did
             # not return. No command or effect has been admitted yet, so the
             # newly started actor must be fully stopped here.
-            if not self._runtime.stop(self._handle, 5.0):
+            if not self._cell.stop(5.0):
                 raise RuntimeError(
                     "maintenance watchdog actor did not stop after effect construction failed"
                 )
@@ -271,7 +275,7 @@ class ActorMaintenanceWatchdog:
     def _submit(self, command: object) -> AdmissionResult:
         if self._closing:
             return AdmissionResult.CLOSED
-        return self._runtime.tell(self._handle, command)
+        return self._cell.tell(command)
 
     def tick_started(self) -> None:
         current = threading.current_thread()
@@ -338,16 +342,21 @@ class ActorMaintenanceWatchdog:
             if self._poller.is_alive():
                 return False
         barrier = threading.Event()
-        if self._runtime.tell(
-            self._handle, _Barrier(barrier)
-        ) is not AdmissionResult.ACCEPTED or not barrier.wait(
+        admission = self._cell.tell(_Barrier(barrier))
+        stopped = admission is AdmissionResult.CLOSED
+        if stopped:
+            # The host stopped the actor before this close ran.  A stopped
+            # mailbox owns no reporting work, so the guarantee this method
+            # asserts still holds; only the lane bookkeeping remains.
+            self._pending_recovery = None
+        elif admission is not AdmissionResult.ACCEPTED or not barrier.wait(
             max(0.0, deadline - time.monotonic())
         ):
             return False
         # Do not close effect admission while an accepted log or deferred
         # recovery still owns custody. A bounded close can be retried after it
         # times out, and the effect lane remains available for the successor.
-        while (
+        while not stopped and (
             self._effects.snapshot().outstanding or self._pending_recovery is not None
         ):
             if time.monotonic() >= deadline:
@@ -356,9 +365,12 @@ class ActorMaintenanceWatchdog:
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
         if not self._closed:
-            self._closed = self._runtime.stop(
-                self._handle, max(0.0, deadline - time.monotonic())
-            )
+            if stopped:
+                self._closed = True
+            else:
+                self._closed = self._cell.stop(
+                    max(0.0, deadline - time.monotonic())
+                )
         return self._closed
 
     def _receive(self, command: object) -> None:

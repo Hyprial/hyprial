@@ -13,6 +13,10 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 
 from hyprial.daemon.impl.transport.api import Registration, TransportSample
@@ -55,11 +59,14 @@ class LivelinessDirectory:
         *,
         on_actor_online: Callable[[str], None] | None = None,
         observation_sink: Callable[[PresenceObservation], None] | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self._keys = keys or KeySpace()
         self._observation_sink = observation_sink
         self._session = session
-        self._authority = PresenceAuthority(confirm_present=self._confirm_present)
+        self._authority = PresenceAuthority(
+            confirm_present=self._confirm_present, actor_host=actor_host
+        )
         self._legacy_online_unbind: Callable[[], None] | None = None
         self._session_generation = getattr(session, "projection", None)
         # A rebuilt session re-learns presence from the replayed observers'

@@ -12,11 +12,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
+from typing import TYPE_CHECKING
 
 from hyprial.kernel import AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.kernel import atomic_json_write
+
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
 
 
 RESTORE_THRESHOLD_MS = 12 * 60 * 60 * 1_000
@@ -170,7 +174,10 @@ class _RestorePolicyStore:
 class RestorePolicyAuthority:
     """The sole policy-file owner; callers read one immutable cached snapshot."""
 
-    def __init__(self, path: Path, *, normalize, capacity: int = 32, timeout=5.0):
+    def __init__(self, path: Path, *, normalize, capacity: int = 32, timeout=5.0, actor_host=None):
+        if actor_host is None:
+            raise ValueError("restore policy authority requires an actor host")
+        self._actor_host = actor_host
         if capacity < 1:
             raise ValueError("restore policy capacity must be positive")
         self.path = Path(path)
@@ -236,7 +243,7 @@ class RestorePolicyAuthority:
             if self._closed:
                 raise RestorePolicyError("restore policy authority is closed")
             if self._effects is None:
-                self._effects = EffectLane(
+                self._effects = self._actor_host.effect_lane(
                     name="agent-restore-policy-storage",
                     execute=self._execute,
                     complete=self._receive,
@@ -311,7 +318,10 @@ class _OwnerBlockNotice:
 class BlockingFailureAuthority:
     """Bounded retained bridge from settled delivery failure to Agent state."""
 
-    def __init__(self, *, block, notify, capacity: int = 64):
+    def __init__(self, *, block, notify, capacity: int = 64, actor_host=None):
+        if actor_host is None:
+            raise ValueError("blocking failure authority requires an actor host")
+        self._actor_host = actor_host
         self._block = block
         self._notify = notify
         self._guard = threading.Lock()
@@ -328,7 +338,7 @@ class BlockingFailureAuthority:
 
     def _effects_locked(self) -> EffectLane:
         if self._effects is None:
-            self._effects = EffectLane(
+            self._effects = self._actor_host.effect_lane(
                 name="agent-blocking-failure",
                 execute=self._execute,
                 complete=self._complete,

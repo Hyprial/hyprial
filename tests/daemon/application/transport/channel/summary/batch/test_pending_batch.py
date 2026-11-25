@@ -22,19 +22,48 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import threading
 from pathlib import Path
 
 import pytest
 
 from hyprial.daemon.impl.inbox import InboxService
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMessage
+from hyprial.kernel import DaemonRequestError
+from hyprial.kernel import ipc_errors
+from tests.kernel.actors.identity.support import PI_WORKER, application as identity_application
 from ...support import (
-    FakeLinkGate,
     LoopbackTransport,
     _close_application_domains as _close_application_domains,
     durable_application,
     register_actor,
 )
+
+
+def _wire_batch_error(app, *, request_id: str, params: dict[str, str]):  # type: ignore[no-untyped-def]
+    server, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    worker = threading.Thread(target=app._serve_client, args=(server,), daemon=True)
+    worker.start()
+    try:
+        client.sendall(
+            json.dumps(
+                {
+                    "version": 1,
+                    "id": request_id,
+                    "method": "message.pending.batch",
+                    "params": params,
+                }
+            ).encode()
+            + b"\n"
+        )
+        client.settimeout(5)
+        response = json.loads(client.makefile("rb").readline())
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        return response
+    finally:
+        client.close()
 
 
 @pytest.fixture(autouse=True)
@@ -57,13 +86,14 @@ def _message(
     body: str | None = None,
     created_at_ms: int = 1,
     idempotency_key: str | None = None,
+    recipient: str = "agent:op:node-1:reader",
 ) -> InboxMessage:
     text = body or f"body-{message_id}"
     return InboxMessage(
         message_id=message_id,
         conversation_id=f"conversation-{message_id}",
         sender=sender,
-        recipient="agent:op:node-1:reader",
+        recipient=recipient,
         payload=json.dumps({"message": text}).encode(),
         intent=intent,
         lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -71,6 +101,12 @@ def _message(
         idempotency_key=idempotency_key,
         summary=summary or f"summary-{message_id}",
     )
+
+
+def _reader(app) -> str:  # type: ignore[no-untyped-def]
+    """The reader's official address: rows are queued at its id URI."""
+
+    return app.agents.require("reader").uri
 
 
 def _seed(
@@ -93,6 +129,7 @@ def _seed(
             body=body,
             created_at_ms=created_at_ms,
             idempotency_key=idempotency_key,
+            recipient=_reader(app),
         )
     )
     assert result.accepted is True
@@ -106,7 +143,7 @@ def _seed_notice(
             message_id=message_id,
             conversation_id=f"conversation-{message_id}",
             sender="system:hyprial:node-1",
-            recipient="agent:op:node-1:reader",
+            recipient=_reader(app),
             payload=json.dumps(
                 {"message": text or f"notice-{message_id}", "systemNotice": True}
             ).encode(),
@@ -134,27 +171,125 @@ def _batch(
     return app.handle("message.pending.batch", params)
 
 
-class _SelectiveGate(FakeLinkGate):
-    def __init__(self, held: set[str]) -> None:
-        super().__init__()
-        self.held = held
-        self.released = False
+@pytest.mark.parametrize("actor", ["dispatch-coordinator", "_turn-hooks"])
+def test_registered_batch_preserves_reserved_actor_error_over_real_ipc(
+    tmp_path: Path, actor: str
+) -> None:
+    app = durable_application(tmp_path / actor)
+    params = {"actor": actor, "sessionRef": "synthetic-session"}
+    with pytest.raises(DaemonRequestError) as direct:
+        app._ipc_message_pending_batch(  # noqa: SLF001
+            "message.pending.batch", params, _trusted_message_origin="ipc"
+        )
+    assert direct.value.code == "INVALID_AGENT_NAME"
 
-    def admit_dispatch(self, **kwargs):  # type: ignore[no-untyped-def]
-        original = self.admit
-        self.admit = self.released or kwargs["message_id"] not in self.held
-        try:
-            return super().admit_dispatch(**kwargs)
-        finally:
-            self.admit = original
+    response = _wire_batch_error(app, request_id="reserved-actor", params=params)
+    assert response["error"]["code"] == "INVALID_AGENT_NAME"
 
 
-def _ready(
-    tmp_path: Path, *, gate: FakeLinkGate | None = None
-):  # type: ignore[no-untyped-def]
+def test_registered_batch_preserves_operator_provenance_over_real_ipc(
+    tmp_path: Path,
+) -> None:
+    app = durable_application(tmp_path / "provenance")
+    app.handle("agent.create", {"name": "worker-b"})
+    register_actor(app, "reader")
+    # Registered agents are addressed at their official (runtime-minted)
+    # address; the URI minted from the name is retired under id-form minting.
+    reader = app.agents.require("reader").uri
+    app.handle(
+        "message.send",
+        {
+            "from": "user:op",
+            "onBehalfOf": "worker-b",
+            "to": [reader],
+            "summary": "operator relay",
+            "message": "operator relay",
+        },
+        _trusted_message_origin="ipc",
+    )
+    response = _wire_batch_error(
+        app,
+        request_id="operator-provenance",
+        params={"actor": "reader", "sessionRef": "session-1"},
+    )
+    assert response["result"]["items"][0]["origin"] == {
+        "via": "operator",
+        "onBehalfOf": app.agents.require("worker-b").uri,
+    }
+
+
+def test_registered_batch_rejects_forged_trusted_origin_parameter(
+    tmp_path: Path,
+) -> None:
+    app = durable_application(tmp_path / "forged-origin")
+    with pytest.raises(DaemonRequestError) as refused:
+        app.handle(
+            "message.pending.batch",
+            {
+                "actor": "reader",
+                "sessionRef": "session-1",
+                "_trusted_message_origin": "ipc",
+            },
+            _trusted_message_origin="ipc",
+        )
+    assert refused.value.code == ipc_errors.INVALID_ARGUMENT
+
+
+def test_registered_batch_preserves_unresolved_sender_error_over_real_ipc(
+    tmp_path: Path,
+) -> None:
+    app = identity_application(tmp_path / "unresolved")
+    try:
+        params = {"from": "user:op", "onBehalfOf": "nobody-here"}
+        with pytest.raises(DaemonRequestError) as direct:
+            app._ipc_message_pending_batch(  # noqa: SLF001
+                "message.pending.batch", params, _trusted_message_origin="ipc"
+            )
+        assert direct.value.code == ipc_errors.SENDER_UNRESOLVED
+        assert direct.value.data == {"sender": "nobody-here"}
+
+        response = _wire_batch_error(
+            app, request_id="unresolved-sender", params=params
+        )
+        assert response["error"]["code"] == ipc_errors.SENDER_UNRESOLVED
+        assert response["error"]["data"] == direct.value.data
+    finally:
+        app._close()  # noqa: SLF001
+        app._close_home_lease()  # noqa: SLF001
+
+
+def test_registered_batch_preserves_ambiguous_target_error_over_real_ipc(
+    tmp_path: Path,
+) -> None:
+    provider = dict(PI_WORKER)
+    provider["name"] = "moved"
+    provider["pinnedOwner"] = "someone-else"
+    app = identity_application(tmp_path / "ambiguous", providers=(provider,))
+    try:
+        app.handle("agent.create", {"name": "moved"})
+        params = {"from": "user:op", "onBehalfOf": "moved"}
+        with pytest.raises(DaemonRequestError) as direct:
+            app._ipc_message_pending_batch(  # noqa: SLF001
+                "message.pending.batch", params, _trusted_message_origin="ipc"
+            )
+        assert direct.value.code == ipc_errors.AMBIGUOUS_TARGET
+        assert direct.value.data["target"] == "moved"
+        assert isinstance(direct.value.data["candidates"], list)
+        assert len(direct.value.data["candidates"]) >= 2
+
+        response = _wire_batch_error(
+            app, request_id="ambiguous-target", params=params
+        )
+        assert response["error"]["code"] == ipc_errors.AMBIGUOUS_TARGET
+        assert response["error"]["data"] == direct.value.data
+    finally:
+        app._close()  # noqa: SLF001
+        app._close_home_lease()  # noqa: SLF001
+
+
+def _ready(tmp_path: Path):  # type: ignore[no-untyped-def]
     app = durable_application(tmp_path)
     register_actor(app, "reader")
-    app.link_admission.bind(gate or FakeLinkGate())
     return app
 
 
@@ -162,109 +297,6 @@ def _renew_session_liveness(app) -> None:  # type: ignore[no-untyped-def]
     agent = app.agents.get("reader")
     assert agent is not None
     app._agent_liveness.touch(agent.uri)  # noqa: SLF001 - liveness fixture seam
-
-
-def test_batch_returns_fixed_contract_and_full_bodies(tmp_path: Path) -> None:
-    app = _ready(tmp_path)
-    _seed(app, message_id="m1", summary="first", body="full first body")
-    _seed(app, message_id="m2", summary="second", body="full second body")
-
-    result = _batch(app)
-
-    assert set(result) == {
-        "ok",
-        "schemaVersion",
-        "format",
-        "cursor",
-        "daemonEpoch",
-        "actor",
-        "itemCount",
-        "totalBodyBytes",
-        "inlineLimitBytes",
-        "items",
-        "delivery",
-    }
-    assert result["ok"] is True
-    assert result["schemaVersion"] == 1
-    assert result["format"] == "inbox-batch-v1"
-    assert result["itemCount"] == 2
-    assert [item["body"] for item in result["items"]] == [
-        "full first body",
-        "full second body",
-    ]
-    assert set(result["delivery"]) == {
-        "mode",
-        "text",
-        "spillPath",
-        "spillBytes",
-        "spillSha256",
-    }
-    assert result["delivery"]["mode"] == "inline"
-    assert "full first body" in result["delivery"]["text"]
-    assert "full second body" in result["delivery"]["text"]
-    assert "harness_read_body" not in result["delivery"]["text"]
-    assert "BEGIN UNTRUSTED MESSAGE DATA" in result["delivery"]["text"]
-    # The managed runtime must not start a second turn for a row it already
-    # delivered: the capture stamped it fetched, so it is no longer dispatchable
-    # until a failure retry says so.
-    assert (
-        app._inbox.admitted_dispatchable("agent:op:node-1:reader") == ()
-    )  # noqa: SLF001 - durable authority seam
-
-
-def test_cursor_freezes_admitted_members_across_both_sources(
-    tmp_path: Path,
-) -> None:
-    gate = _SelectiveGate({"held-at-capture"})
-    app = _ready(tmp_path, gate=gate)
-    _seed(app, message_id="before-message")
-    _seed(app, message_id="held-at-capture")
-    _seed_notice(app, message_id="before-notice")
-    first = _batch(app)
-    assert [item["messageId"] for item in first["items"]] == [
-        "before-message",
-        "before-notice",
-    ]
-
-    # Both physical sources advance, and the formerly held row becomes
-    # admissible. None may expand the already frozen cursor membership.
-    _seed(app, message_id="after-message")
-    _seed_notice(app, message_id="after-notice")
-    gate.released = True
-    replay = _batch(app, cursor=first["cursor"])
-    assert [item["messageId"] for item in replay["items"]] == [
-        "before-message",
-        "before-notice",
-    ]
-
-    # A distinct successor retries the predecessor's deferred member and adds
-    # both sources above its capture bound. It never repeats unsettled c1 rows.
-    successor = _batch(app, after_cursor=first["cursor"])
-    assert [item["messageId"] for item in successor["items"]] == [
-        "held-at-capture",
-        "after-message",
-        "after-notice",
-    ]
-    assert _batch(app, cursor=successor["cursor"])["items"] == successor["items"]
-    _seed(app, message_id="after-successor")
-    next_successor = _batch(app, after_cursor=successor["cursor"])
-    assert [item["messageId"] for item in next_successor["items"]] == [
-        "after-successor"
-    ]
-
-    acknowledged = app.handle(
-        "message.ack",
-        {
-            "actor": "reader",
-            "sessionRef": "session-1",
-            "messageId": "before-message",
-        },
-    )
-    assert acknowledged["acknowledged"] is True
-    replay_after_ack = _batch(app, cursor=first["cursor"])
-    assert [item["messageId"] for item in replay_after_ack["items"]] == [
-        "before-notice"
-    ]
 
 
 def test_successor_has_no_predecessor_member_count_ceiling(tmp_path: Path) -> None:
@@ -381,7 +413,7 @@ def test_pending_list_does_not_drain_notice_and_ack_is_per_id(tmp_path: Path) ->
         {**params, "messageId": "notice-remove"},
     )
     assert acknowledged["acknowledged"] is True
-    assert app._inbox.system_notices("agent:op:node-1:reader") == ()  # noqa: SLF001
+    assert app._inbox.system_notices(_reader(app)) == ()  # noqa: SLF001
     assert [item["messageId"] for item in _batch(app)["items"]] == ["keep"]
 
 
@@ -439,7 +471,6 @@ def test_old_cursor_identity_survives_inbox_restart(tmp_path: Path) -> None:
     restarted = InboxService(
         tmp_path / "inbox.sqlite3",
         transport,
-        link_admission=app.link_admission,
     )
     transport.service = restarted
     app._inbox = restarted  # type: ignore[assignment]  # noqa: SLF001

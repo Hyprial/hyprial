@@ -6,8 +6,8 @@ that window closed, the restart was blocked -- and then forgotten: the next
 run found the new version "already current" and never restarted, leaving the
 daemon on old code indefinitely.
 
-Now: the timer installs and records a pending restart; the owner is told in
-the ordinary post-upgrade alert; ``hyprial daemon upgrade apply`` applies it.
+Now: the timer installs and records a pending restart (R2: nothing is sent to
+any IM); ``hyprial daemon upgrade apply`` applies it.
 """
 
 from __future__ import annotations
@@ -18,13 +18,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from hyprial.shell.impl.cli.runtime import entry as cli
+from hyprial.kernel import ipc_errors
 
 import hyprial.daemon.impl.updates as updates
 from hyprial.daemon.impl.autoupdate import read_last_run, write_last_run
-from hyprial.daemon.impl.autoupdate.alert import UPGRADE_AWAITING_RESTART
 from tests.shell.cli.installation.restart.support import _fake_upgrade
-from tests.shell.upgrades.test_upgrade_selfcheck import _notify
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
@@ -140,7 +138,7 @@ def test_autoupdate_status_drops_stale_wait_after_confirmed_restart(
         _cli_support,
         "_daemon_request",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            cli.ipc_errors.DaemonUnavailableError("status probe unavailable")
+            ipc_errors.DaemonUnavailableError("status probe unavailable")
         ),
     )
     status = CliRunner().invoke(_cli_root_app, ["daemon", "upgrade", "status", "--json"])
@@ -179,16 +177,6 @@ def test_restart_skips_a_daemon_that_was_already_restarted_after_the_install(
     assert payload["reason"] == "daemon was already restarted after the install"
     assert not any(event.startswith("shutdown") for event in events)
     assert not _pending(tmp_path).exists()
-
-
-def test_the_owner_alert_says_what_to_run(tmp_path: Path) -> None:
-    outcome, recorder = _notify(tmp_path, ok=True, action=UPGRADE_AWAITING_RESTART)
-
-    assert outcome.delivered is True
-    text = recorder.sent[0]
-    assert "hyprial daemon upgrade apply" in text
-    assert "仍在旧版本" in text
-    assert "失败" not in text
 
 
 def test_apply_calls_the_shared_upgrade_step_runner(monkeypatch, tmp_path) -> None:

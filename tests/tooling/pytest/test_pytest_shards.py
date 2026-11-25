@@ -78,6 +78,15 @@ def test_plan_is_deterministic_and_balances_by_weight(impact, suite):
     assert holder["tests/a/test_a.py"] != holder["tests/b/test_b.py"]
 
 
+def test_nested_fd_probe_runs_before_other_tests_in_its_shard(impact, suite):
+    probe = "tests/tooling/isolation/test_fd_hygiene_collection.py"
+    write(suite, probe)
+    selected = ["tests/a/test_a.py", probe, "tests/b/test_b.py"]
+    assert impact.shard_plan(suite, selected, 1, {}) == [
+        [probe, "tests/a/test_a.py", "tests/b/test_b.py"]
+    ]
+
+
 def test_pr_selection_is_packed_exhaustively_and_may_leave_shards_empty(impact, suite):
     selected = ["tests/a/test_a.py", "tests/b/test_b.py"]
     bins = impact.shard_plan(suite, selected, 4, {})
@@ -123,6 +132,93 @@ def test_a_shard_runs_one_wave_with_its_own_temp_and_junit(impact, monkeypatch, 
     assert json.loads(line.split(" ", 1)[1])["catchAll"] is True
 
 
+def test_only_the_probe_wave_is_bounded_and_the_rest_keeps_the_declared_workers(impact, monkeypatch, capsys):
+    probe = impact.NESTED_XDIST_PROBE
+    shard = [probe, "tests/other/test_other.py", "tests/a/test_a.py"]
+    bins = [[], [], shard, []]
+    monkeypatch.setattr(impact, "shard_plan", lambda *args: bins)
+    decision = {"mode": "selected", "tests": shard}
+    status, calls = run_main(
+        impact, monkeypatch,
+        ["--shard", "3/4", "--", "-q", "-n", "2", "--basetemp=/tmp/bt", "--junitxml=/tmp/unit.xml"],
+        decision,
+    )
+    assert status == 0
+    assert len(calls) == 2
+    probe_argv, rest_argv = calls
+    assert probe_argv[3] == probe
+    assert rest_argv[3:5] == shard[1:]
+    assert probe_argv[probe_argv.index("-n") + 1] == "1"
+    assert rest_argv[rest_argv.index("-n") + 1] == "2"
+    assert "--basetemp=/tmp/bt-fd-probe" in probe_argv
+    assert "--junitxml=/tmp/unit.xml.fd-probe.xml" in probe_argv
+    assert "--basetemp=/tmp/bt-shard-3of4" in rest_argv
+    assert "--junitxml=/tmp/unit.xml.shard-3of4.xml" in rest_argv
+    stages = [json.loads(line.split(" ", 1)[1]) for line in capsys.readouterr().out.splitlines()
+              if line.startswith("PYTEST_STAGE ")]
+    assert [stage["name"] for stage in stages] == ["fd-probe", "shard-3of4"]
+
+
+def test_probe_wave_and_rest_partition_the_shard_exactly(impact):
+    shard = [impact.NESTED_XDIST_PROBE, "tests/a/test_a.py", "tests/b/test_b.py"]
+    probe, rest = impact.probe_wave(shard)
+    assert probe == [impact.NESTED_XDIST_PROBE]
+    assert rest == ["tests/a/test_a.py", "tests/b/test_b.py"]
+    assert probe + rest == shard
+    assert not set(probe) & set(rest)
+    assert impact.probe_wave(["tests/a/test_a.py", "tests/b/test_b.py"]) == (
+        [], ["tests/a/test_a.py", "tests/b/test_b.py"])
+    assert impact.probe_wave([impact.NESTED_XDIST_PROBE]) == ([impact.NESTED_XDIST_PROBE], [])
+    assert impact.probe_wave([]) == ([], [])
+
+
+@pytest.mark.parametrize("probe_status,rest_status", [(1, 0), (0, 1), (1, 1), (0, 0)])
+def test_a_failed_probe_wave_never_skips_the_rest_of_its_shard(impact, monkeypatch, probe_status, rest_status):
+    probe = impact.NESTED_XDIST_PROBE
+    shard = [probe, "tests/other/test_other.py"]
+    bins = [[], [], shard, []]
+    monkeypatch.setattr(impact, "shard_plan", lambda *args: bins)
+    statuses = iter([probe_status, rest_status])
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=next(statuses))
+
+    monkeypatch.setattr(impact.subprocess, "run", run)
+    monkeypatch.setattr(sys, "argv", ["pytest_impact.py", "--shard", "3/4", "--", "-q", "-n", "2"])
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert impact.main() == (probe_status or rest_status)
+    assert len(calls) == 2
+
+
+def test_a_probe_only_shard_stays_a_single_bounded_wave(impact, monkeypatch):
+    probe = impact.NESTED_XDIST_PROBE
+    bins = [[probe], [], [], []]
+    monkeypatch.setattr(impact, "shard_plan", lambda *args: bins)
+    decision = {"mode": "selected", "tests": [probe]}
+    status, calls = run_main(
+        impact, monkeypatch,
+        ["--shard", "1/4", "--", "-q", "-n", "2", "--junitxml=/tmp/unit.xml"], decision,
+    )
+    assert status == 0
+    assert len(calls) == 1
+    assert calls[0][3] == probe
+    assert calls[0][calls[0].index("-n") + 1] == "1"
+    assert "--junitxml=/tmp/unit.xml.shard-1of4.xml" in calls[0]
+
+
+def test_other_shards_keep_the_declared_worker_count(impact, monkeypatch):
+    bins = [["tests/a/test_a.py"], [], [], []]
+    monkeypatch.setattr(impact, "shard_plan", lambda *args: bins)
+    decision = {"mode": "selected", "tests": ["tests/a/test_a.py"]}
+    status, calls = run_main(
+        impact, monkeypatch, ["--shard", "1/4", "--", "-q", "-n", "2"], decision
+    )
+    assert status == 0
+    assert calls[0][calls[0].index("-n") + 1] == "2"
+
+
 def test_shard_cannot_be_combined_with_grouped_waves(impact, monkeypatch):
     with pytest.raises(SystemExit):
         run_main(impact, monkeypatch, ["--shard", "1/4", "--grouped"], {"mode": "full", "tests": ["tests/"]})
@@ -134,8 +230,12 @@ def test_repository_shards_cover_every_test_file(impact):
     explicit = [path for paths in bins[:-1] for path in paths]
     assert len(explicit) == len(set(explicit))
     assert all((ROOT / path).is_file() for path in explicit)
-    # Everything not explicit belongs to the catch-all, which ignores exactly the explicit set.
-    assert bins[-1] == ["tests/", *(f"--ignore={path}" for path in sorted(explicit))]
+    assert sum(paths[:1] == [impact.NESTED_XDIST_PROBE] for paths in bins[:-1]) == 1
+    assert bins[-1] == [
+        "tests/",
+        *(f"--ignore={path}" for path in sorted(explicit)),
+        *(f"--ignore={base}" for base in impact.isolated_paths(ROOT, ["tests/"])),
+    ]
 
 
 def test_durations_resolve_xunit2_classnames_to_real_modules(impact, suite, tmp_path):

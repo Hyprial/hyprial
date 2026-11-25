@@ -85,6 +85,7 @@ class PacRoutineDispatch:
         resolve_principal: Callable[[str], str],
         workflow: Any | None = None,
         graph_authority: Any | None = None,
+        resolve_routine_target: Callable[[str, str], str] | None = None,
     ) -> None:
         self._state_dir = Path(state_dir)
         self._database = default_database_path(self._state_dir)
@@ -96,8 +97,26 @@ class PacRoutineDispatch:
         # unresolvable target fails the dispatch loudly instead of writing a
         # short name a later flag could never authorize against.
         self._resolve_principal = resolve_principal
+        self._resolve_target = resolve_routine_target or (lambda _name, target: resolve_principal(target))
         self._workflow = workflow
         self._graph_authority = graph_authority
+
+    def graph_absent(self, graph_id: str) -> bool:
+        """Return whether the local PAC store proves this graph does not exist.
+
+        Only a *successful* read that finds no row is proof.  A missing or
+        corrupt database, a SQL error or a lock timeout raises (or is reported
+        as "not proven" by the caller): those are read failures, and a read
+        failure must never be treated as "the graph is gone".
+        """
+
+        if not isinstance(graph_id, str) or not graph_id:
+            return False
+        store = PacGraphStore(self._database, read_only=True)
+        try:
+            return store.graph(graph_id) is None
+        finally:
+            store.close()
 
     # -- dispatch --------------------------------------------------------
 
@@ -192,7 +211,7 @@ class PacRoutineDispatch:
             if not legacy:
                 import yaml
 
-                target = self._resolve_principal(target)
+                target = self._resolve_target(routine_name, target)
                 escalation = self._resolve_principal(escalate_to)
                 document = {
                     "version": 2,
@@ -221,7 +240,7 @@ class PacRoutineDispatch:
                     "state": self._workflow_state(str(result["state"])),
                 }
 
-        target = self._resolve_principal(target)
+        target = self._resolve_target(routine_name, target)
         escalate_to = self._resolve_principal(escalate_to)
         if self._graph_authority is not None:
             prepared = self._graph_authority.start_legacy_routine_graph(

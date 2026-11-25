@@ -21,9 +21,11 @@ from hyprial.daemon.impl.application.ports import (
 )
 from hyprial.daemon.impl.dispatch.admission import dispatch_gate
 from hyprial.daemon.impl.alias_resolver import AliasSurface
+from hyprial.daemon.impl.composition.cells import cell_runtime
 from hyprial.kernel import (
     canonical_agent_uri,
     canonical_user_uri,
+    is_agent_id_segment,
     legacy_user_uri,
     parse_agent_uri,
 )
@@ -168,13 +170,97 @@ class _RoutinesMixin:
             return produced if isinstance(produced, str) else None
         return None
 
+    def _routine_actor_key(self, value: str) -> tuple[str, str]:
+        """Comparison key for a routine binding or an agent address.
+
+        Both sides resolve through the registry to the local actor, so a
+        binding stored as the name URI minted at ``routine.add`` and one
+        stored as the coordinator's ``a.`` id URI name the same agent.  A
+        value the registry does not claim as local compares verbatim.
+        """
+
+        try:
+            local = (
+                self.agents.local_actor(value)
+                if parse_agent_uri(value) is not None
+                else None
+            )
+        except Exception:  # noqa: BLE001 - an unreadable registry compares verbatim
+            local = None
+        return ("value", value) if local is None else ("local", local)
+
+    def _routine_binding_key(self, value: str) -> str:
+        """Equality key the routine service compares stored bindings by.
+
+        A binding minted at ``routine.add`` names its coordinator by name URI;
+        it keys as the id URI of the live id-minted agent with that name, so
+        it equals the one the storage migration rewrites.  Destroy removes
+        every routine bound to an agent, so none passes to a later same-name
+        agent.  Every other value keys as itself; with id-form minting off no
+        record is stored at an id URI and the service compares verbatim.
+        """
+
+        parsed = parse_agent_uri(value)
+        if parsed is None or is_agent_id_segment(parsed[2]):
+            return value
+        try:
+            agent = self.agents.get(parsed[2])
+        except Exception:  # noqa: BLE001 - an unreadable registry compares verbatim
+            return value
+        located = None if agent is None else parse_agent_uri(agent.uri)
+        if located is None or not is_agent_id_segment(located[2]):
+            return value
+        named = canonical_agent_uri(located[0], located[1], agent.actor)
+        return agent.uri if named == value else value
+
+    def _routine_caller_is(self, caller: str, *principals: object) -> bool:
+        """Whether ``caller`` is one of a routine's ``principals`` (any spelling).
+
+        A live id-minted agent and its name URI are one principal for a
+        routine binding (``_routine_binding_key``), so a caller verified at
+        either spelling matches an owner or borrowed actor stored at the
+        other.  An id URI of a destroyed agent keys as itself, so it never
+        matches a later agent of the same name.  Nothing else widens: with
+        id-form minting off the comparison is the plain string match it was.
+        """
+
+        caller_key = self._routine_binding_key(caller)
+        return any(
+            isinstance(principal, str)
+            and (caller == principal or self._routine_binding_key(principal) == caller_key)
+            for principal in principals
+        )
+
+    def _routine_coordinator_identity(self, produced: str) -> tuple[str, str]:
+        """The harness name and official address behind a ``produces`` URI."""
+
+        parsed = parse_agent_uri(produced)
+        if parsed is None:
+            raise DaemonRequestError("ROUTINE_COORDINATOR_INVALID", "produces must be a canonical agent URI")
+        kind, local = self._routine_actor_key(produced)
+        if kind == "local":
+            name = local
+        elif is_agent_id_segment(parsed[2]):
+            raise DaemonRequestError(
+                "ROUTINE_COORDINATOR_INVALID",
+                f"coordinator {produced} does not resolve to a local agent",
+            )
+        else:
+            name = parsed[2]
+        if parsed[:2] != (self.owner, self.node_id):
+            return name, produced
+        return name, self._agent_address(name)
+
     def _routines_bound_to(self, actor: str) -> list[dict[str, object]]:
         if self._routine_service is None:
             return []
+        key = self._routine_actor_key(actor)
         return [
             routine
             for routine in self._routine_service.list()["routines"]
-            if isinstance(routine, dict) and self._routine_binding(routine) == actor
+            if isinstance(routine, dict)
+            and (binding := self._routine_binding(routine)) is not None
+            and self._routine_actor_key(binding) == key
         ]
 
     @staticmethod
@@ -182,7 +268,7 @@ class _RoutinesMixin:
         return f"agent-home-setup-{hashlib.sha256(actor.encode()).hexdigest()[:16]}"
 
     def _register_default_agent_routine(
-        self, agent: Agent
+        self, agent: Agent, *, compose_cells: bool = True
     ) -> dict[str, object] | None:
         """Bind the default routine, retaining accepted timeout custody."""
 
@@ -202,6 +288,10 @@ class _RoutinesMixin:
             return warning
         if self._routines_bound_to(agent.uri):
             return None
+        if compose_cells:
+            # IPC creation brings the cell runtime up so the new agent's cell
+            # is registered at once; boot-time paths pass False and compose none.
+            cell_runtime(self)
         name = self._default_agent_routine_name(agent.uri)
         yaml_text = self._routine_template_renderer(
             "agent-home-setup",
@@ -248,10 +338,12 @@ class _RoutinesMixin:
         return None
 
     def _finish_resident_agent_creation(
-        self, agent: Agent
+        self, agent: Agent, *, compose_cells: bool = True
     ) -> dict[str, object] | None:
         try:
-            return self._register_default_agent_routine(agent)
+            return self._register_default_agent_routine(
+                agent, compose_cells=compose_cells
+            )
         except RoutinePortTimeout as error:
             raise DaemonRequestError(
                 ipc_errors.AGENT_DEFAULT_ROUTINE_PENDING,
@@ -409,7 +501,7 @@ class _RoutinesMixin:
         """Reconcile one row against the pass snapshot; lifecycle owns admission."""
         schema_error = routine.get("schemaError")
         if isinstance(schema_error, str):
-            raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", schema_error)
+            raise DaemonRequestError(ipc_errors.ROUTINE_SCHEMA_ERROR, schema_error)
         produced = routine.get("produces")
         if not isinstance(produced, str):
             return None
@@ -419,7 +511,8 @@ class _RoutinesMixin:
         if parsed[:2] != (self.owner, self.node_id):
             raise DaemonRequestError("ROUTINE_COORDINATOR_IDENTITY_MISMATCH",
                                      f"coordinator {produced} must belong to agent:{self.owner}:{self.node_id}:*")
-        name, actor_name = str(routine["name"]), parsed[2]
+        name = str(routine["name"])
+        actor_name, official = self._routine_coordinator_identity(produced)
         marker = self._routine_coordinator_marker(name, routine.get("registrationId"))
         from hyprial.daemon.impl.harnesses.capabilities import worker_spec
 
@@ -428,7 +521,7 @@ class _RoutinesMixin:
             if existing is None or existing.nickname != marker:
                 raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
                                          f"actor {produced} is not owned by routine {name}")
-            return {"actor": produced, "restored": recovering, "changed": False}
+            return {"actor": official, "restored": recovering, "changed": False}
         launch = routine.get("launch")
         if not isinstance(launch, dict):
             from hyprial.daemon.impl.dispatch.matrix import resolve
@@ -445,7 +538,11 @@ class _RoutinesMixin:
             **({"args": launch["args"]} if launch.get("args") else {}),
             "operationId": f"{marker}:start",
         })
-        if not isinstance(launched, dict) or launched.get("actor") != produced:
+        launched_actor = launched.get("actor") if isinstance(launched, dict) else None
+        if not isinstance(launched_actor, str) or (
+            self._routine_actor_key(launched_actor)
+            != self._routine_actor_key(produced)
+        ):
             self.handle("down", {"target": actor_name, "provider": launch["harness"]})
             raise DaemonRequestError("ROUTINE_COORDINATOR_IDENTITY_MISMATCH",
                                      f"coordinator did not resolve as {produced}")
@@ -468,7 +565,7 @@ class _RoutinesMixin:
             if not matches:
                 return None
             item = matches[0]
-            actor = canonical_agent_uri(self.owner, self.node_id, item.name)
+            actor = self._agent_address(item.name)
             result = self.handle(
                 "down", {"target": item.name, "provider": item.harness}
             )
@@ -480,19 +577,23 @@ class _RoutinesMixin:
         if not isinstance(produced, str):
             return None
         parsed = parse_agent_uri(produced)
-        if parsed is None:
-            raise DaemonRequestError("ROUTINE_COORDINATOR_INVALID", "produces must be a canonical agent URI")
-        actor_name = parsed[2]
+        if (
+            parsed is not None
+            and is_agent_id_segment(parsed[2])
+            and self._routine_actor_key(produced)[0] != "local"
+        ):
+            return {"actor": produced, "retired": False, "changed": False}
+        actor_name, official = self._routine_coordinator_identity(produced)
         from hyprial.daemon.impl.harnesses.capabilities import worker_spec
 
         item = worker_spec(self.desired_state.load().harnesses, actor_name)
         if item is None:
-            return {"actor": produced, "retired": False, "changed": False}
+            return {"actor": official, "retired": False, "changed": False}
         if item.nickname != self._routine_coordinator_marker(name, routine.get("registrationId")):
             raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
                                      f"actor {produced} is not owned by routine {name}")
         result = self.handle("down", {"target": actor_name, "provider": item.harness})
-        return {"actor": produced, "retired": True, "changed": bool(result.get("removed"))}
+        return {"actor": official, "retired": True, "changed": bool(result.get("removed"))}
 
     def _ipc_routine_add(self, params) -> Any:
         if self._routine_service is None:
@@ -502,13 +603,13 @@ class _RoutinesMixin:
         try:
             spec = self._routine_text_loader(yaml_text)
         except RoutineSchemaPortError as error:
-            raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", str(error)) from error
+            raise DaemonRequestError(ipc_errors.ROUTINE_SCHEMA_ERROR, str(error)) from error
         source = self._workflow_caller(params)
         if spec.actor is None and spec.produces is None:
             document = yaml.safe_load(yaml_text)
             from hashlib import sha256
             actor_name = f"routine-{spec.name}" if len(spec.name) <= 48 else "routine-" + sha256(spec.name.encode()).hexdigest()[:16]
-            document["produces"] = canonical_agent_uri(self.owner, self.node_id, actor_name)
+            document["produces"] = self._agent_address(actor_name)
             yaml_text = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
             spec = self._routine_text_loader(yaml_text)
         self._routine_admit(spec)
@@ -543,7 +644,9 @@ class _RoutinesMixin:
             )
         with self._routine_legacy_lock:
             if spec.produces is not None and any(
-                item.get("produces") == spec.produces
+                isinstance(item.get("produces"), str)
+                and self._routine_actor_key(item["produces"])
+                == self._routine_actor_key(spec.produces)
                 for item in self._routine_service.list()["routines"]
             ):
                 raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
@@ -583,7 +686,7 @@ class _RoutinesMixin:
             if not (
                 all_callers
                 or routine_caller == canonical_user_uri(self.owner)
-                or routine_caller in (owner, actor)
+                or self._routine_caller_is(routine_caller, owner, actor)
             ):
                 continue
             outcomes = routine.get("outcomes")
@@ -715,14 +818,20 @@ class _RoutinesMixin:
         try:
             spec = self._routine_text_loader(yaml_text)
         except RoutineSchemaPortError as error:
-            raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", str(error)) from error
+            raise DaemonRequestError(ipc_errors.ROUTINE_SCHEMA_ERROR, str(error)) from error
         current = self._routine_service.status(name=name)
         if spec.name != name:
             raise DaemonRequestError(
                 ipc_errors.ROUTINE_NAME_IMMUTABLE,
                 f"replacement name must remain {name!r}",
             )
-        if (spec.actor or spec.produces) != self._routine_binding(current):
+        requested = spec.actor or spec.produces
+        bound = self._routine_binding(current)
+        if requested != bound and (
+            requested is None
+            or bound is None
+            or self._routine_actor_key(requested) != self._routine_actor_key(bound)
+        ):
             raise DaemonRequestError(
                 ipc_errors.ROUTINE_BINDING_IMMUTABLE,
                 "routine set keeps the existing actor/produces binding",
@@ -746,6 +855,13 @@ class _RoutinesMixin:
         if self._routine_service is None:
             raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
         name = _required_string(params.get("name"), "name")
+        from hyprial.daemon.impl.user_agent.naming import refuse_user_agent_work
+
+        try:
+            bound = self._routine_service.status(name=name).get("actor")
+        except RoutinePortError as error:
+            raise DaemonRequestError(error.code, str(error)) from error
+        refuse_user_agent_work(self.agents, bound)
         try:
             return self._routine_service.resume(name=name)
         except RoutinePortError as error:
@@ -766,6 +882,9 @@ class _RoutinesMixin:
         :func:`dispatch_gate`.
         """
 
+        from hyprial.daemon.impl.user_agent.naming import refuse_user_agent_work
+
+        refuse_user_agent_work(self.agents, spec.actor or spec.produces)
         self._validate_routine_aliases(spec)
         target = spec.actor or spec.produces
         if target is None:
@@ -785,6 +904,7 @@ class _RoutinesMixin:
                             role=spec.role,
                             first_output_eta=None,
                             human_gates=None,
+                            expands=None,
                         )
                     )
                 except PacError as error:

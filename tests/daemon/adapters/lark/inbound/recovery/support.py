@@ -160,11 +160,6 @@ class FakeLark:
         self.replies.append((message_id, text))
         return "om_guidance"
 
-    def send_owner_dm(
-        self, open_id: str, text: str, *, idempotency_key: str
-    ) -> str:
-        return "om_owner_dm"
-
     def get_message(self, message_id: str):  # type: ignore[no-untyped-def]
         return None
 
@@ -215,20 +210,20 @@ class FakeHarness:
 
 class FakeRoutes:
     def __init__(self) -> None:
-        self.pins: dict[str, ActorTarget] = {}
+        self.bindings: dict[str, ActorTarget] = {}
         self.mentions: dict[str, ActorTarget] = {}
 
     def actor_by_key(self, actor_key: str) -> ActorTarget | None:
         return next(
-            (actor for actor in self.pins.values() if actor.actor_key == actor_key),
+            (actor for actor in self.bindings.values() if actor.actor_key == actor_key),
             None,
         )
 
     def resolve_mention(self, name: str) -> ActorTarget | None:
         return self.mentions.get(name)
 
-    def pinned_actor(self, conversation_id: str) -> ActorTarget | None:
-        return self.pins.get(conversation_id)
+    def routed_actor(self, conversation_id: str) -> ActorTarget | None:
+        return self.bindings.get(conversation_id)
 
 
 @pytest.fixture
@@ -254,7 +249,7 @@ def make_adapter(
     harness = FakeHarness()
     routes = FakeRoutes()
     if actor is not None:
-        routes.pins["lark:oc_dm:oc_dm"] = actor
+        routes.bindings["lark:oc_dm:oc_dm"] = actor
     budget: dict[str, object] = {}
     if inline_backfill_budget is not None:
         budget["inline_backfill_budget"] = inline_backfill_budget
@@ -263,7 +258,7 @@ def make_adapter(
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:test",
+        channel_actor_id="adapter:lark:test",
         logger=logger,
         notify_operator=notify_operator,
         dead_letter_alert_threshold=dead_letter_alert_threshold,

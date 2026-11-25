@@ -16,6 +16,7 @@ from ..support import (
     _Launcher,
     _Process,
     _actor_dispatch_source,
+    _envelope,
     _handled_frozen_commands,
     _spec,
     _wait_for,
@@ -90,7 +91,7 @@ def test_harness_reconcile_uses_restore_projection_without_callback_io() -> None
     _wait_for(lambda: not actor.read_harness("codex:worker").running)
     _wait_for(
         lambda: actor._io.in_flight == 0
-        and (snapshot := actor._runtime.snapshot(actor._handle)).queued
+        and (snapshot := actor._cell.snapshot()).queued
         == snapshot.in_flight == 0
     )
     assert len(launcher.processes) == 1
@@ -140,7 +141,7 @@ def test_restore_projection_rejects_late_entity_and_desired_generation() -> None
         )
     ) is PortAdmission.ACCEPTED
     _wait_for(
-        lambda: (snapshot := actor._runtime.snapshot(actor._handle)).queued
+        lambda: (snapshot := actor._cell.snapshot()).queued
         == snapshot.in_flight == 0
     )
     assert actor._restore_eligibility["worker"] == current
@@ -232,9 +233,7 @@ def test_mailbox_overload_is_explicit_while_projection_publish_is_blocked() -> N
         third = HarnessTimerElapsedCommand("third", 1, 3, 1)
         assert supervisor._actor.submit(first) is PortAdmission.ACCEPTED
         _wait_for(
-            lambda: supervisor._actor._runtime.snapshot(
-                supervisor._actor._handle
-            ).in_flight
+            lambda: supervisor._actor._cell.snapshot().in_flight
             == 1
         )
         assert supervisor._actor.submit(second) is PortAdmission.ACCEPTED
@@ -244,7 +243,7 @@ def test_mailbox_overload_is_explicit_while_projection_publish_is_blocked() -> N
         )
     finally:
         projection._lock.release()
-    _wait_for(lambda: supervisor._actor._runtime.snapshot(supervisor._actor._handle).in_flight == 0)
+    _wait_for(lambda: supervisor._actor._cell.snapshot().in_flight == 0)
     supervisor.stop()
 
 
@@ -300,7 +299,7 @@ def test_frozen_dispatch_progress_result_and_session_ref_projections() -> None:
         "delivery-1", "conversation-1", "sender", "agent:o:n:worker", "hello"
     )
     assert actor.submit(
-        DispatchHarnessDeliveryCommand("dispatch", "worker", delivery)
+        DispatchHarnessDeliveryCommand("dispatch", _envelope(delivery))
     ) is PortAdmission.ACCEPTED
     assert actor.submit(DrainHarnessProgressCommand("progress")) is PortAdmission.ACCEPTED
     assert actor.submit(DrainHarnessResultsCommand("results")) is PortAdmission.ACCEPTED

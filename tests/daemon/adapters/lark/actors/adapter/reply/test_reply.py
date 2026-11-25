@@ -46,9 +46,9 @@ def test_reply_accepts_before_best_effort_ack_clear_and_route_survives_restart(
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:tenant:bot",
+        channel_actor_id="adapter:lark:tenant:bot",
     )
-    routes.pins["lark:oc_dm:oc_dm"] = ActorTarget(
+    routes.bindings["lark:oc_dm:oc_dm"] = ActorTarget(
         actor_id="agent:bob:pi:main",
         actor_key="bob/pi/main",
         display_name="bob/pi/main",
@@ -111,14 +111,14 @@ def test_slow_ack_add_does_not_block_reply_and_clear_wins_race(
     routes = FakeRoutes()
     routes.actors[actor.actor_id] = actor
     routes.mentions[actor.display_name] = actor
-    routes.pins["lark:oc_dm:oc_dm"] = actor
+    routes.bindings["lark:oc_dm:oc_dm"] = actor
     adapter = LarkAdapter(
         state=LarkStateStore(tmp_path / "lark-state.sqlite3"),
         lark=reply_lark,
         reaction_lark=reactions,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:tenant:bot",
+        channel_actor_id="adapter:lark:tenant:bot",
         org_context_path=tmp_path / "org-context.md",
     )
     inbound: list[InboundOutcome] = []
@@ -282,7 +282,7 @@ def test_unresolved_reply_without_pin_returns_explicit_guidance(
     tmp_path: Path, actor: ActorTarget
 ) -> None:
     adapter, lark, harness, routes, _events = make_adapter(tmp_path, actor)
-    routes.pins.clear()
+    routes.bindings.clear()
 
     sdk_event(
         adapter.handle_sdk_event,

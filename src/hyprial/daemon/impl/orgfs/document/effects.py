@@ -25,11 +25,10 @@ from typing import Any, Mapping
 
 
 from hyprial.kernel import (
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
 
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 
 
@@ -150,7 +149,6 @@ class FacadeEffects:
             raise OrgFsError("unavailable", {"message": "orgfs is closing"})
         if self._effect_lane is not None:
             return
-        runtime = ActorRuntime()
         owner_ref = weakref.ref(self)
 
         def handle_completion(command: object) -> None:
@@ -174,7 +172,8 @@ class FacadeEffects:
                 else _FacadeEffectResult(("owner-closed",))
             )
 
-        handle = runtime.start(
+        host = self._actor_hosts.host
+        cell = host.spawn(
             ActorSpec(
                 "orgfs-post-commit-effects",
                 lambda: handle_completion,
@@ -182,19 +181,18 @@ class FacadeEffects:
                 supervision_profile="state_authority",
             )
         )
-        self._effect_runtime = runtime
-        self._effect_actor = handle
-        self._effect_lane = EffectLane(
+        self._effect_cell = cell
+        self._effect_lane = host.effect_lane(
             name="orgfs-post-commit-callbacks",
             execute=execute_batch,
-            complete=lambda completion: runtime.tell(handle, completion),
+            complete=lambda completion: cell.tell(completion),
             capacity=_FACADE_EFFECT_CAPACITY,
             workers=1,
         )
-        self._network_effect_lane = EffectLane(
+        self._network_effect_lane = host.effect_lane(
             name="orgfs-post-commit-network",
             execute=execute_network,
-            complete=lambda completion: runtime.tell(handle, completion),
+            complete=lambda completion: cell.tell(completion),
             capacity=_FACADE_NETWORK_EFFECT_CAPACITY,
             workers=4,
         )
@@ -432,7 +430,7 @@ class FacadeEffects:
             owner = self._space_state_owners.get(space_id)
         if owner is not None:
             while time.monotonic() < deadline:
-                snapshot = owner.runtime.snapshot(owner.actor)
+                snapshot = owner.runtime.snapshot()
                 if (
                     snapshot.queued == 0
                     and snapshot.in_flight == 0
@@ -445,7 +443,7 @@ class FacadeEffects:
             if not owner.effects.close(max(0.0, deadline - time.monotonic())):
                 return False
             if not owner.runtime.stop(
-                owner.actor, timeout=max(0.0, deadline - time.monotonic())
+                timeout=max(0.0, deadline - time.monotonic())
             ):
                 return False
         while time.monotonic() < deadline:
@@ -490,13 +488,12 @@ class FacadeEffects:
             state_owners = tuple(self._space_state_owners.items())
             lane = self._effect_lane
             network_lane = self._network_effect_lane
-            runtime = self._effect_runtime
-            actor = self._effect_actor
+            cell = self._effect_cell
             authorities = tuple(self._space_authorities.values())
         deadline = time.monotonic() + timeout
         for _space_id, owner in state_owners:
             while time.monotonic() < deadline:
-                snapshot = owner.runtime.snapshot(owner.actor)
+                snapshot = owner.runtime.snapshot()
                 if (
                     snapshot.queued == 0
                     and snapshot.in_flight == 0
@@ -509,7 +506,7 @@ class FacadeEffects:
             if not owner.effects.close(max(0.0, deadline - time.monotonic())):
                 return False
             if not owner.runtime.stop(
-                owner.actor, timeout=max(0.0, deadline - time.monotonic())
+                timeout=max(0.0, deadline - time.monotonic())
             ):
                 return False
         with self._lock:
@@ -524,21 +521,20 @@ class FacadeEffects:
                 return False
             with self._lock:
                 self._effect_generation += 1
-            if runtime is not None and actor is not None:
-                if not runtime.stop(actor, timeout=max(0.0, deadline - time.monotonic())):
+            if cell is not None:
+                if not cell.stop(timeout=max(0.0, deadline - time.monotonic())):
                     return False
             with self._lock:
                 self._effect_lane = None
                 self._network_effect_lane = None
-                self._effect_runtime = None
-                self._effect_actor = None
+                self._effect_cell = None
         for authority in authorities:
             if not authority.close(timeout=max(0.0, deadline - time.monotonic())):
                 return False
         with self._lock:
             self._space_authorities.clear()
             self._space_state_owners.clear()
-        return True
+        return self._actor_hosts.shutdown(max(0.0, deadline - time.monotonic()))
 
 
     def __del__(self) -> None:
@@ -629,6 +625,8 @@ class FacadeEffects:
         with self._lock:
             authority = self._space_authorities.get(space_id)
             if authority is None:
-                authority = OrgSpaceAuthority(space_id, store)
+                authority = OrgSpaceAuthority(
+                    space_id, store, actor_host=self._actor_hosts.host
+                )
                 self._space_authorities[space_id] = authority
             return authority

@@ -17,7 +17,6 @@ from hyprial.identity import (
     RUNTIME_HEADLESS,
     RUNTIME_INTERACTIVE,
     HandoverNotice,
-    PinConflictError,
 )
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
@@ -224,10 +223,17 @@ class _SessionRegistryMixin:
 
     def _reject_retired_session_ref(self, actor: str, session_ref: str) -> None:
         if self.agents.is_session_ref_retired(actor, session_ref):
+            detail = (
+                f"agent {actor} was destroyed"
+                if self.agents.get(actor) is None
+                else f"this session ref was retired (the agent that held it was "
+                f"destroyed, or it was retired for agent {actor} itself)"
+            )
             raise DaemonRequestError(
                 ipc_errors.SESSION_SUPERSEDED,
-                f"agent {actor} was destroyed; this session is permanently retired",
+                f"{detail}; this session is permanently retired",
             )
+        self._refuse_dead_session_address(actor)
 
     @staticmethod
     def _verified_ipc_process_fence(
@@ -312,6 +318,9 @@ class _SessionRegistryMixin:
                 process_identity,
                 getattr(self._ipc_peer, "pid", None),
             )
+        from hyprial.daemon.impl.user_agent.naming import refuse_user_agent_session
+
+        refuse_user_agent_session(self.agents, actor)
         command = params.get("command")
         if (
             not isinstance(command, list)
@@ -371,6 +380,10 @@ class _SessionRegistryMixin:
             manage_agent=self.agents.get(actor) is not None,
             refuse_live_incumbent=guarded,
         )
+        registration = self._official_registration_command(
+            registration, harness=_session_harness(registration)
+        )
+        actor = registration.actor
         completed, handover = self._register_interactive_session_with_turn_stats(
             actor=actor,
             session_ref=session_ref,
@@ -418,7 +431,14 @@ class _SessionRegistryMixin:
         actor: str,
         harness: str,
     ) -> tuple[RegisterSessionCommand, Any, Any, HandoverNotice | None]:
-        """Prepare Agent state before a plain or guarded Session commit."""
+        """Prepare Agent state before a plain or guarded Session commit.
+
+        A first registration creates the Agent here, after the boundary
+        canonicalized ``actor`` while no record existed yet.  The command is
+        re-canonicalized once the record exists, so the Session is stored
+        under the address the Agent is reached at (its ``a.`` id URI under
+        id-form minting) rather than the name-composed URI.
+        """
         existing_agent = self.agents.get(actor)
         if command.refuse_live_incumbent and existing_agent is None:
             raise DaemonRequestError(
@@ -426,7 +446,7 @@ class _SessionRegistryMixin:
                 f"no agent named {actor!r} on this machine",
             )
         self._refuse_if_running(
-            actor,
+            actor if existing_agent is None else existing_agent.uri,
             harness=harness,
             runtime=RUNTIME_INTERACTIVE,
             refuse_runtimes=(
@@ -466,7 +486,17 @@ class _SessionRegistryMixin:
             and agent.last_harness != harness
             else None
         )
-        return replace(command, manage_agent=agent is not None), existing_agent, agent, handover
+        actor_key = (
+            command.actor
+            if agent is None
+            else self._canonical_interactive_actor(command.actor)
+        )
+        return (
+            replace(command, actor=actor_key, manage_agent=agent is not None),
+            existing_agent,
+            agent,
+            handover,
+        )
 
     def _register_session_effect(
         self,
@@ -519,7 +549,7 @@ class _SessionRegistryMixin:
                     not isinstance(session_error, DaemonRequestError)
                     or session_error.code
                     in {
-                        "DOMAIN_COMMAND_TIMEOUT",
+                        ipc_errors.DOMAIN_COMMAND_TIMEOUT,
                         "DOMAIN_EVENTS_CLOSED",
                         ipc_errors.IPC_TIMEOUT,
                     }
@@ -614,108 +644,6 @@ class _SessionRegistryMixin:
         )
         return completed.result.to_payload()
 
-    def _migrate_legacy_channel_pins(self) -> None:
-        """Move desired-state ``channelPins`` into the agents database, loudly.
-
-        Runs at daemon startup and again whenever an agent is created, and is
-        idempotent: an entry either migrates (value normalized to the agent's
-        canonical URI, binding written to the ``pins`` table) or stays in
-        ``channelPins`` with an error-level log naming the exact remedy.  A
-        pin is never silently dropped -- with one decided exception: IRC
-        ``#channel`` pins, whose feature is removed outright (nothing ever
-        read them for delivery; production carried zero).
-        """
-
-        state = self.desired_state.load()
-        if not state.channel_pins:
-            return
-        gateways = set(self._lark_gateway_names())
-        remaining: dict[str, str] = {}
-        for adapter, value in state.channel_pins:
-            if adapter.startswith("#"):
-                self._log(
-                    "warn",
-                    "daemon",
-                    "pin.migration.irc-dropped",
-                    channel=adapter,
-                    actor=value,
-                    detail="IRC channel pins are removed; nothing read them",
-                )
-                continue
-            if gateways is not None and adapter not in gateways:
-                remaining[adapter] = value
-                self._log(
-                    "error",
-                    "daemon",
-                    "pin.migration.unknown-adapter",
-                    adapter=adapter,
-                    actor=value,
-                    detail=(
-                        f"{adapter!r} is not a configured adapter; the entry "
-                        f"is kept unmigrated. Configure the adapter and "
-                        f"restart, or drop the entry from desired-state"
-                    ),
-                )
-                continue
-            agent = self.agents.get(value)
-            if agent is None:
-                remaining[adapter] = value
-                self._log(
-                    "error",
-                    "daemon",
-                    "pin.migration.unresolved",
-                    adapter=adapter,
-                    actor=value,
-                    detail=(
-                        f"pin target {value!r} does not resolve to an agent "
-                        f"on this machine; the pin is kept unmigrated and is "
-                        f"NOT routing. Create the agent ('hyprial agent create "
-                        f"--name {value}' or 'hyprial agent start') and it migrates "
-                        f"immediately, or drop it with 'hyprial adapter unpin "
-                        f"{adapter}'"
-                    ),
-                )
-                continue
-            try:
-                self.agents.pin(adapter, agent.actor)
-            except PinConflictError as error:
-                # The pins table's UNIQUE(agent) spoke; keep the entry
-                # unmigrated and say exactly how to resolve it.
-                remaining[adapter] = value
-                self._log(
-                    "error",
-                    "daemon",
-                    "pin.migration.conflict",
-                    adapter=adapter,
-                    actor=agent.uri,
-                    pinnedBy=error.holder,
-                    detail=(
-                        f"agent {agent.uri} is already pinned by "
-                        f"{error.holder!r} and adapter/agent bind one-to-one; "
-                        f"the entry is kept unmigrated. Keep one: 'hyprial "
-                        f"adapter unpin {error.holder}' then 'hyprial adapter "
-                        f"pin {adapter} {agent.actor}', or 'hyprial adapter "
-                        f"unpin {adapter}'"
-                    ),
-                )
-                continue
-            self._log(
-                "info",
-                "daemon",
-                "pin.migrated",
-                adapter=adapter,
-                actor=agent.uri,
-                legacyValue=value,
-            )
-        if remaining != dict(state.channel_pins):
-            self.desired_state.remove_matching_channel_pins(
-                tuple(
-                    (adapter, value)
-                    for adapter, value in state.channel_pins
-                    if adapter not in remaining
-                )
-            )
-
     def _register_interactive_session_with_turn_stats(
         self,
         *,
@@ -724,7 +652,12 @@ class _SessionRegistryMixin:
         command: RegisterSessionCommand,
         reporting: bool,
     ) -> Any:
-        """Serialize ownership replacement with its turn-counter reset."""
+        """Serialize ownership replacement with its turn-counter reset.
+
+        The reset follows the actor the Session committed under, which a
+        first registration may have moved from the name URI to the new
+        Agent's official address.
+        """
 
         completed = self._call_session_route(
             SessionRouteKind.REGISTER,
@@ -732,8 +665,9 @@ class _SessionRegistryMixin:
             session_ref=session_ref,
             command=command,
         )
+        registered, _handover = completed
         self._reset_interactive_turn_stats(
-            actor, session_ref, reporting=reporting
+            registered.result.actor, session_ref, reporting=reporting
         )
         return completed
 

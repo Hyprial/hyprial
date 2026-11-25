@@ -1,7 +1,8 @@
 import '../../styles/primitives.css';
 
 export { Button, type ButtonProps, type ButtonSize, type ButtonVariant } from './Button';
-export { Card, StatusCard, type CardProps, type StatusCardProps } from './Card';
+export { Card, StatusCard, type CardProps, type StatusCardProps, type StatusCardState } from './Card';
+export { ModuleSection, type ModuleSectionProps } from './ModuleSection';
 export { DiagnosticBox, type DiagnosticBoxProps } from './DiagnosticBox';
 export {
   Dialog,
@@ -9,6 +10,8 @@ export {
   type DialogProps,
 } from './Dialog';
 export { Field, type FieldProps } from './Field';
+export { Icon, type IconName, type IconProps, type IconSize } from './Icon';
+export { InfoTip, Tooltip, type InfoTipProps, type TooltipProps } from './Tooltip';
 export { Notice, type NoticeAction, type NoticeProps } from './Notice';
 export { Select, type SelectOption, type SelectProps } from './Select';
 export { PageHeader, type PageHeaderProps } from './PageHeader';
@@ -17,11 +20,9 @@ export {
   EmptyState,
   ErrorState,
   LoadingState,
-  UnsupportedState,
   type EmptyStateProps,
   type ErrorStateProps,
   type LoadingStateProps,
-  type UnsupportedStateProps,
 } from './States';
 export {
   Stepper,

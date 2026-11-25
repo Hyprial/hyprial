@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "presets": {
+    "success": { "scenario": "success" },
+    "empty": { "scenario": "empty" },
+    "unconfigured": { "scenario": "unconfigured" },
+    "error": { "scenario": "error" }
+  },
+  "transitions": [],
+  "inputGuards": [
+    {
+      "method": "agent.provider.login",
+      "requireOneOf": [
+        { "path": ["setupToken"], "equals": "example-not-a-credential" },
+        { "path": ["files", "*", "contentBase64"], "equals": "ZXhhbXBsZS1ub3QtYS1jcmVkZW50aWFs" }
+      ],
+      "refusal": {
+        "code": "INVALID_ARGUMENT",
+        "message": "mock login accepts only the documented synthetic sentinel"
+      }
+    }
+  ]
+}

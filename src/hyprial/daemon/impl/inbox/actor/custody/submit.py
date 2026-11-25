@@ -54,30 +54,7 @@ class DeliveryCustodySubmitMixin:
             self._reject_correlation(command.correlation_id)
             return
         now = self._service._now_ms() if command.now_ms is None else command.now_ms
-        self._service._insert_outbox(
-            command.message,
-            now,
-            link_hold=command.link_hold,
-            link_open=command.link_open,
-            link_reply_close=command.link_reply_close,
-        )
-        if command.link_hold is not None:
-            # A held message only enters durable state: no I/O on this command
-            # (WP2 §2.4, §3.6).  The receipt stays queued so a replay joins it.
-            version = self._committed_version()
-            result = SubmissionResult(command.message.message_id, True, queued=True)
-            self._persist_submission_receipt(
-                command.correlation_id,
-                command.message,
-                result,
-                now,
-            )
-            self._publish_submission(
-                command.correlation_id,
-                version,
-                result,
-            )
-            return
+        self._service._insert_outbox(command.message, now)
         if command.defer_direct:
             version = self._committed_version()
             result = SubmissionResult(command.message.message_id, True, queued=True)
@@ -231,7 +208,11 @@ class DeliveryCustodySubmitMixin:
                 (inbound_message_id,),
             ).fetchone()
             if inbound is not None:
-                self._service.ack(str(inbound["recipient"]), inbound_message_id)
+                inbound_recipient = str(inbound["recipient"])
+                if self._service.ack(
+                    inbound_recipient, inbound_message_id
+                ).acknowledged:
+                    self._origin_claims.forget_origin(inbound_message_id)
     def _settle_submission_receipt_locked(
         self,
         receipt_correlation_id: str | None,

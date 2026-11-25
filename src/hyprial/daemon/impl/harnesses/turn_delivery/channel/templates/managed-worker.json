@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "managed-worker",
+  "harnessTools": [
+    "harness_ack",
+    "harness_delegate",
+    "harness_progress",
+    "harness_read",
+    "harness_read_body",
+    "harness_reply",
+    "harness_send",
+    "harness_targets",
+    "harness_whoami",
+    "workflow_complete",
+    "workflow_fail"
+  ],
+  "allowedTools": ["Bash(hyprial:*)"],
+  "disallowedTools": [
+    "Bash(hyprial agent destroy:*)",
+    "Bash(hyprial daemon upgrade:*)",
+    "Bash(hyprial daemon:*)",
+    "Bash(hyprial init:*)",
+    "Bash(hyprial org:*)"
+  ]
+}

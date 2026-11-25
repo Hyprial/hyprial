@@ -6,6 +6,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.inbox.contracts.api import InboxMessage
+from hyprial.daemon.impl.inbox.contracts.origin import OriginClaim, OriginOwnerKind
 from hyprial.daemon.impl.operations.top import build_top_snapshot
 from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports import (
     CloseTurnPumpCommand,
@@ -39,8 +40,8 @@ def _big_request(message_id: str, *, created_at_ms: int = 1_000) -> InboxMessage
     )
 
 
-def test_oversized_backlog_spills_and_is_offered(tmp_path):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_oversized_backlog_spills_and_is_offered(tmp_path, *, actor_host):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     home = tmp_path / "agent-home"
     (home / "state").mkdir(parents=True)
     bridge._batch_actor_home = lambda actor: home
@@ -52,15 +53,15 @@ def test_oversized_backlog_spills_and_is_offered(tmp_path):
         assert len(harnesses.batch_deliveries) == 1
         delivery = harnesses.batch_deliveries[0]
         assert delivery.message_ids == ("big-0", "big-1")
-        assert "inbox-batches" in delivery.message
+        assert "inbox-batches" in delivery.input.message
         assert inbox.has_fetched("big-0") and inbox.has_fetched("big-1")
     finally:
         bridge.stop()
         inbox.close()
 
 
-def test_oversized_backlog_without_home_falls_back_to_scalar(tmp_path):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_oversized_backlog_without_home_falls_back_to_scalar(tmp_path, *, actor_host):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     logs = []
     bridge._logger = lambda level, component, event, **fields: logs.append((event, fields))
     bridge._batch_actor_home = lambda actor: None
@@ -71,7 +72,7 @@ def test_oversized_backlog_without_home_falls_back_to_scalar(tmp_path):
         bridge.on_timer()
         deliveries = harnesses.batch_deliveries
         assert deliveries, "oversized backlog must still reach the worker"
-        assert all(not d.message_ids and d.batch_cursor is None for d in deliveries)
+        assert all(not d.message_ids and d.input.batch_cursor is None for d in deliveries)
         fallback = [fields for event, fields in logs if event == "harness.batch.spill_fallback"]
         assert fallback
         assert fallback[0]["agent"] == WORKER
@@ -82,8 +83,10 @@ def test_oversized_backlog_without_home_falls_back_to_scalar(tmp_path):
 
 
 @pytest.mark.parametrize("accepted, consumed", [(False, False), (True, True), (True, False)])
-def test_running_turn_queued_batch_steer_then_successor(tmp_path, accepted, consumed):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_running_turn_queued_batch_steer_then_successor(
+    tmp_path, accepted, consumed, *, actor_host
+):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     started, events = [], []
     def io_steer(generation, version, correlation, delivery_id, message):
         turn.complete_steer(
@@ -103,22 +106,24 @@ def test_running_turn_queued_batch_steer_then_successor(tmp_path, accepted, cons
         event_sink=events.append,
     )
     original_dispatch = harnesses.dispatch
+    steered: list[object] = []
 
-    def dispatch(name, delivery):
-        result = original_dispatch(name, delivery)
+    def dispatch(envelope):
+        result = original_dispatch(envelope)
         if result:
-            turn.submit(EnqueueTurnCommand(delivery.delivery_id, TurnDeliveryProjection(
-                delivery_id=delivery.delivery_id,
-                conversation_id=delivery.conversation_id,
-                sender=delivery.sender,
-                recipient=delivery.recipient,
-                message=delivery.message,
-                message_ids=delivery.message_ids,
+            turn.submit(EnqueueTurnCommand(envelope.delivery_id, TurnDeliveryProjection(
+                delivery_id=envelope.delivery_id,
+                conversation_id=envelope.input.conversation_id,
+                sender=envelope.input.sender,
+                recipient=envelope.input.recipient,
+                message=envelope.input.message,
+                message_ids=envelope.message_ids,
             )))
         return result
 
-    def steer(name, delivery_id, timeout=5):
-        turn.submit(SteerTurnCommand("steer", delivery_id))
+    def steer(envelope, timeout=5):
+        steered.append(envelope)
+        turn.submit(SteerTurnCommand("steer", envelope.delivery_id))
         _wait(lambda: any(isinstance(e, TurnSteerIoCompleted) for e in events))
         return accepted
 
@@ -136,6 +141,11 @@ def test_running_turn_queued_batch_steer_then_successor(tmp_path, accepted, cons
         attempt = bridge._inflight["queued-1"]
         assert inbox.ack(WORKER, "queued-2").acknowledged
         assert bridge._steer_stalled_delivery(attempt) is accepted
+        if accepted:
+            assert steered[0].stamp.member == attempt.worker_name
+            assert steered[0].stamp.origin_message_ids == (
+                attempt.identity.delivery_id,
+            )
         if accepted:
             assert not bridge._batch_claims
         else:
@@ -163,8 +173,8 @@ def test_running_turn_queued_batch_steer_then_successor(tmp_path, accepted, cons
 
 
 @pytest.mark.parametrize("mode", ["stop", "generation", "consumed", "stale"])
-def test_claim_self_heals(tmp_path, mode):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_claim_self_heals(tmp_path, mode, *, actor_host):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     generation = [1]
     harnesses.streaming_generations = lambda: {"squire": generation[0]}
     bridge.start()
@@ -191,8 +201,8 @@ def test_claim_self_heals(tmp_path, mode):
         inbox.close()
 
 
-def test_claim_diagnostics_and_progress_lease(tmp_path):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_claim_diagnostics_and_progress_lease(tmp_path, *, actor_host):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     logs = []
     bridge._logger = lambda level, component, event, **fields: logs.append((event, fields))
     bridge.start()
@@ -232,8 +242,10 @@ def test_claim_diagnostics_and_progress_lease(tmp_path):
         inbox.close()
 
 
-def test_steer_release_does_not_repeat_deferred_fetch_members(tmp_path, monkeypatch):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_steer_release_does_not_repeat_deferred_fetch_members(
+    tmp_path, monkeypatch, *, actor_host
+):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     bridge.start()
     try:
         assert inbox.receive(_request("steered")).accepted
@@ -264,15 +276,15 @@ def test_steer_release_does_not_repeat_deferred_fetch_members(tmp_path, monkeypa
         inbox.close()
 
 
-def test_refused_batch_stays_dispatchable(tmp_path):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_refused_batch_stays_dispatchable(tmp_path, *, actor_host):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     real_dispatch = harnesses.dispatch
     refusal = {"active": True}
 
-    def dispatch(name, delivery):
+    def dispatch(envelope):
         if refusal["active"]:
             return False
-        return real_dispatch(name, delivery)
+        return real_dispatch(envelope)
 
     harnesses.dispatch = dispatch
     bridge.start()
@@ -292,15 +304,15 @@ def test_refused_batch_stays_dispatchable(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["generation", "stale"])
-def test_pending_offer_claim_recovers(tmp_path, mode):
-    inbox, harnesses, clock, bridge = _arrange(tmp_path)
+def test_pending_offer_claim_recovers(tmp_path, mode, *, actor_host):
+    inbox, harnesses, clock, bridge = _arrange(tmp_path, actor_host=actor_host)
     generation = [1]
     harnesses.streaming_generations = lambda: {"squire": generation[0]}
     bridge.start()
     try:
         message = _request("pending")
         assert inbox.receive(message).accepted
-        bridge._pending_batch_claims["squire"] = (("pending",), (message,))
+        bridge._pending_batch_claims["squire"] = (("pending",), (message,), None)
         bridge._begin_batch_claim("squire", ("pending",))
         if mode == "generation":
             generation[0] = 2
@@ -311,6 +323,154 @@ def test_pending_offer_claim_recovers(tmp_path, mode):
         assert not bridge._batch_claim_metadata
         bridge.on_timer()
         assert harnesses.batch_deliveries[-1].message_ids == ("pending",)
+    finally:
+        bridge.stop()
+        inbox.close()
+
+
+def test_origin_claim_release_retries_after_unavailable_cas(
+    tmp_path, monkeypatch, *, actor_host
+):
+    inbox, harnesses, _clock, bridge = _arrange(tmp_path, actor_host=actor_host)
+    bridge.start()
+    try:
+        assert inbox.receive(_request("release-retry")).accepted
+        bridge._record_origin_claims(("release-retry",), WORKER, 7)  # noqa: SLF001
+        assert bridge._origin_claim_seqs  # noqa: SLF001
+
+        calls = []
+
+        def unavailable(*args, **kwargs):
+            calls.append("unavailable")
+            raise OSError("origin authority unavailable")
+
+        monkeypatch.setattr(inbox, "release_origin_claims", unavailable, raising=False)
+        bridge._release_origin_claims(("release-retry",))  # noqa: SLF001
+        assert bridge._origin_claim_seqs  # noqa: SLF001
+
+        def available(*args, **kwargs):
+            calls.append("available")
+            return True
+
+        monkeypatch.setattr(inbox, "release_origin_claims", available, raising=False)
+        monkeypatch.setattr(inbox, "read_origin_claims", lambda: {}, raising=False)
+        bridge.on_timer()
+        assert calls == ["unavailable", "available"]
+        assert not bridge._origin_claim_seqs  # noqa: SLF001
+    finally:
+        bridge.stop()
+        inbox.close()
+
+
+def test_false_origin_claim_release_keeps_still_held_record_until_safe(
+    tmp_path, monkeypatch, *, actor_host
+):
+    inbox, harnesses, _clock, bridge = _arrange(tmp_path, actor_host=actor_host)
+    bridge.start()
+    try:
+        bridge._record_origin_claims(("false-release",), WORKER, 7)  # noqa: SLF001
+        held = OriginClaim(
+            message_id="false-release",
+            owner_kind=OriginOwnerKind.HEADLESS,
+            owner_actor=WORKER,
+            owner_id=WORKER,
+            claim_seq=7,
+        )
+        monkeypatch.setattr(
+            inbox, "release_origin_claims", lambda *args, **kwargs: False,
+            raising=False,
+        )
+        snapshots = [{"false-release": held}, {}]
+        monkeypatch.setattr(
+            inbox, "read_origin_claims", lambda: snapshots.pop(0), raising=False
+        )
+
+        bridge._release_origin_claims(("false-release",))  # noqa: SLF001
+        assert bridge._origin_claim_seqs == {"false-release": (WORKER, 7)}  # noqa: SLF001
+        bridge.on_timer()
+        assert not bridge._origin_claim_seqs  # noqa: SLF001
+    finally:
+        bridge.stop()
+        inbox.close()
+
+
+def test_active_origin_claim_is_not_released_by_reconcile_tick(
+    tmp_path, monkeypatch, *, actor_host
+):
+    inbox, harnesses, _clock, bridge = _arrange(tmp_path, actor_host=actor_host)
+    bridge.start()
+    try:
+        bridge._record_origin_claims(("active-claim",), WORKER, 9)  # noqa: SLF001
+        calls = []
+        monkeypatch.setattr(
+            inbox,
+            "release_origin_claims",
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+            raising=False,
+        )
+        bridge.on_timer()
+        assert calls == []
+        assert bridge._origin_claim_seqs == {"active-claim": (WORKER, 9)}  # noqa: SLF001
+    finally:
+        bridge.stop()
+        inbox.close()
+
+
+def test_stop_fails_when_origin_claim_release_keeps_failing(
+    tmp_path, monkeypatch, *, actor_host
+):
+    inbox, harnesses, _clock, bridge = _arrange(tmp_path, actor_host=actor_host)
+    bridge.start()
+    failed = {"value": True}
+
+    def release(*args, **kwargs):
+        if failed["value"]:
+            raise OSError("origin authority unavailable")
+        return True
+
+    monkeypatch.setattr(inbox, "release_origin_claims", release, raising=False)
+    bridge._record_origin_claims(("stop-retry",), WORKER, 11)  # noqa: SLF001
+    bridge._release_origin_claims(("stop-retry",))  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="origin claim releases did not settle"):
+        bridge.stop(timeout=0.02)
+    failed["value"] = False
+    try:
+        monkeypatch.setattr(inbox, "read_origin_claims", lambda: {}, raising=False)
+        bridge.stop()
+    finally:
+        inbox.close()
+
+
+def test_partial_origin_claim_release_keeps_unreleased_group_member(
+    tmp_path, monkeypatch, *, actor_host
+):
+    inbox, harnesses, _clock, bridge = _arrange(tmp_path, actor_host=actor_host)
+    bridge.start()
+    try:
+        members = ("partial-one", "partial-two")
+        bridge._record_origin_claims(members, WORKER, 13)  # noqa: SLF001
+        remaining = OriginClaim(
+            message_id="partial-two",
+            owner_kind=OriginOwnerKind.HEADLESS,
+            owner_actor=WORKER,
+            owner_id=WORKER,
+            claim_seq=13,
+        )
+        monkeypatch.setattr(
+            inbox, "release_origin_claims", lambda *args, **kwargs: True,
+            raising=False,
+        )
+        snapshots = [{"partial-two": remaining}, {}]
+        monkeypatch.setattr(
+            inbox, "read_origin_claims", lambda: snapshots.pop(0), raising=False
+        )
+
+        bridge._release_origin_claims(members)  # noqa: SLF001
+        assert bridge._origin_claim_seqs == {"partial-two": (WORKER, 13)}  # noqa: SLF001
+        assert bridge._origin_claim_release_retries == {"partial-two"}  # noqa: SLF001
+        bridge.on_timer()
+        assert not bridge._origin_claim_seqs  # noqa: SLF001
+        assert not bridge._origin_claim_release_retries  # noqa: SLF001
     finally:
         bridge.stop()
         inbox.close()

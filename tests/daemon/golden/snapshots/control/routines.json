@@ -1,0 +1,581 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "control",
+ "scenario": "routines",
+ "steps": [
+  {
+   "step": 1,
+   "method": "routine.list",
+   "label": "unavailable",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "ROUTINE_UNAVAILABLE",
+    "message": "routine service is not running"
+   }
+  },
+  {
+   "step": 2,
+   "method": "routine.add",
+   "label": "unavailable",
+   "origin": "ipc",
+   "params": {
+    "yaml": "actor: agent:op:node-1:alpha\nmode: scheduled\nname: golden-duty\non_task_timeout:\n  action: escalate\n  escalate_to: user:op\nrole: review\nschedule:\n  interval: 15m\ntask: golden duty\nversion: 2\n",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "ROUTINE_UNAVAILABLE",
+    "message": "routine service is not running"
+   }
+  },
+  {
+   "step": 3,
+   "method": "routine.list",
+   "label": "empty",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "routines": []
+   }
+  },
+  {
+   "step": 4,
+   "method": "routine.add",
+   "origin": "ipc",
+   "params": {
+    "yaml": "actor: agent:op:node-1:alpha\nmode: scheduled\nname: golden-duty\non_task_timeout:\n  action: escalate\n  escalate_to: user:op\nrole: review\nschedule:\n  interval: 15m\ntask: golden duty\nversion: 2\n",
+    "actor": "user:op"
+   },
+   "result": {
+    "name": "golden-duty",
+    "enabled": true,
+    "intervalSeconds": 900.0,
+    "nextDueMs": 1800000900000
+   }
+  },
+  {
+   "step": 5,
+   "method": "routine.add",
+   "label": "duplicate",
+   "origin": "ipc",
+   "params": {
+    "yaml": "actor: agent:op:node-1:alpha\nmode: scheduled\nname: golden-duty\non_task_timeout:\n  action: escalate\n  escalate_to: user:op\nrole: review\nschedule:\n  interval: 15m\ntask: golden duty\nversion: 2\n",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "ROUTINE_EXISTS",
+    "message": "routine already exists: golden-duty"
+   }
+  },
+  {
+   "step": 6,
+   "method": "routine.add",
+   "label": "bad-yaml",
+   "origin": "ipc",
+   "params": {
+    "yaml": "version: 2\nname: [",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "ROUTINE_SCHEMA_ERROR",
+    "message": "routine is not valid YAML: while parsing a flow node\nexpected the node content, but found '<stream end>'\n  in \"<unicode string>\", line 2, column 8:\n    name: [\n           ^"
+   }
+  },
+  {
+   "step": 7,
+   "method": "routine.list",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "routines": [
+     {
+      "name": "golden-duty",
+      "owner": "user:op",
+      "enabled": true,
+      "nextDueMs": 1800000900000,
+      "sourceErrorStreak": 0,
+      "outcomes": [],
+      "registrationId": "<uuid4#1>",
+      "mode": "scheduled",
+      "role": "review",
+      "actor": "agent:op:node-1:alpha",
+      "actorOwnership": "borrowed",
+      "launch": null,
+      "overlap": "skip",
+      "missedPeriods": "skip",
+      "inFlight": [],
+      "lastDispatchAtMs": null,
+      "lastOutcome": null
+     }
+    ]
+   }
+  },
+  {
+   "step": 8,
+   "method": "routine.status",
+   "origin": "ipc",
+   "params": {
+    "name": "golden-duty",
+    "actor": "user:op"
+   },
+   "result": {
+    "name": "golden-duty",
+    "owner": "user:op",
+    "enabled": true,
+    "nextDueMs": 1800000900000,
+    "sourceErrorStreak": 0,
+    "outcomes": [],
+    "registrationId": "<uuid4#1>",
+    "mode": "scheduled",
+    "role": "review",
+    "actor": "agent:op:node-1:alpha",
+    "actorOwnership": "borrowed",
+    "launch": null,
+    "overlap": "skip",
+    "missedPeriods": "skip",
+    "inFlight": [],
+    "scheduleEvents": []
+   }
+  },
+  {
+   "step": 9,
+   "method": "routine.set",
+   "origin": "ipc",
+   "params": {
+    "name": "golden-duty",
+    "actor": "user:op",
+    "yaml": "actor: agent:op:node-1:alpha\nmode: scheduled\nname: golden-duty\non_task_timeout:\n  action: escalate\n  escalate_to: user:op\nrole: review\nschedule:\n  interval: 30m\ntask: golden duty\nversion: 2\n"
+   },
+   "result": {
+    "name": "golden-duty",
+    "enabled": true
+   }
+  },
+  {
+   "step": 10,
+   "method": "routine.pause",
+   "origin": "ipc",
+   "params": {
+    "name": "golden-duty",
+    "actor": "user:op"
+   },
+   "result": {
+    "name": "golden-duty",
+    "enabled": false
+   }
+  },
+  {
+   "step": 11,
+   "method": "routine.resume",
+   "origin": "ipc",
+   "params": {
+    "name": "golden-duty",
+    "actor": "user:op"
+   },
+   "result": {
+    "name": "golden-duty",
+    "enabled": true
+   }
+  },
+  {
+   "step": 12,
+   "method": "routine.status",
+   "label": "not-owner",
+   "origin": "ipc",
+   "params": {
+    "name": "golden-duty",
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   },
+   "error": {
+    "code": "CALLER_NOT_AUTHORIZED",
+    "message": "caller does not own this routine"
+   }
+  },
+  {
+   "step": 13,
+   "method": "routine.status",
+   "label": "missing",
+   "origin": "ipc",
+   "params": {
+    "name": "missing",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "ROUTINE_NOT_FOUND",
+    "message": "no such routine: missing"
+   }
+  },
+  {
+   "step": 14,
+   "method": "routine.audit",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "quarantined": [],
+    "addressMigrations": []
+   }
+  },
+  {
+   "step": 15,
+   "method": "routine.remove",
+   "label": "last-binding",
+   "origin": "ipc",
+   "params": {
+    "name": "golden-duty",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "ROUTINE_LAST_BINDING",
+    "message": "routine 'golden-duty' is the last unreserved routine bound to agent:op:node-1:alpha; bind a new one first with `hyprial routine add`, or modify this one with `hyprial routine set`. If `routine set` answers ROUTINE_BUSY, add a short-lived placeholder routine first: that unbinds \"last\", so this `routine remove` goes through (M-hq-adjutant-0012)",
+    "data": {
+     "routine": "golden-duty",
+     "actor": "agent:op:node-1:alpha"
+    }
+   }
+  },
+  {
+   "step": 16,
+   "method": "routine.add",
+   "label": "second-binding",
+   "origin": "ipc",
+   "params": {
+    "yaml": "actor: agent:op:node-1:alpha\nmode: scheduled\nname: golden-duty-2\non_task_timeout:\n  action: escalate\n  escalate_to: user:op\nrole: review\nschedule:\n  interval: 15m\ntask: golden duty\nversion: 2\n",
+    "actor": "user:op"
+   },
+   "result": {
+    "name": "golden-duty-2",
+    "enabled": true,
+    "intervalSeconds": 900.0,
+    "nextDueMs": 1800000900000
+   }
+  },
+  {
+   "step": 17,
+   "method": "routine.remove",
+   "origin": "ipc",
+   "params": {
+    "name": "golden-duty",
+    "actor": "user:op"
+   },
+   "result": {
+    "name": "golden-duty",
+    "removed": true
+   }
+  },
+  {
+   "step": 18,
+   "method": "routine.list",
+   "label": "after-remove",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "routines": [
+     {
+      "name": "golden-duty-2",
+      "owner": "user:op",
+      "enabled": true,
+      "nextDueMs": 1800000900000,
+      "sourceErrorStreak": 0,
+      "outcomes": [],
+      "registrationId": "<uuid4#2>",
+      "mode": "scheduled",
+      "role": "review",
+      "actor": "agent:op:node-1:alpha",
+      "actorOwnership": "borrowed",
+      "launch": null,
+      "overlap": "skip",
+      "missedPeriods": "skip",
+      "inFlight": [],
+      "lastDispatchAtMs": null,
+      "lastOutcome": null
+     }
+    ]
+   }
+  },
+  {
+   "step": 19,
+   "method": "agent.create",
+   "label": "default-routine",
+   "origin": "ipc",
+   "params": {
+    "name": "delta"
+   },
+   "result": {
+    "ok": true,
+    "created": true,
+    "agent": {
+     "uri": "agent:op:node-1:delta",
+     "actor": "delta",
+     "owner": "op",
+     "machine": "node-1",
+     "cwd": "<tmp>/home/agents/delta/workspace",
+     "config": {
+      "sources": [
+       {
+        "path": "<tmp>/home/agents/delta/config",
+        "required": true
+       }
+      ],
+      "discovery": "explicit-only"
+     },
+     "provider": null,
+     "model": null,
+     "capabilities": {},
+     "harnessArgs": {},
+     "preferredHarness": null,
+     "lastHarness": null,
+     "lastSessionId": null,
+     "createdAtMs": 1800000000000,
+     "hosted": false,
+     "hostedBy": null,
+     "agentId": "a.pc6pkqhuopzxey2tasj3mfsoka",
+     "displayName": null,
+     "status": "offline",
+     "harness": null,
+     "runtime": null,
+     "sessionId": null,
+     "heartbeatAgeSeconds": null,
+     "runState": {
+      "state": "unknown",
+      "baseState": "unknown",
+      "reason": "source-unavailable",
+      "certainty": "unknown",
+      "scope": "whole-session",
+      "observedAtMs": 1800000000000,
+      "sinceMs": null,
+      "turnAgeMs": null,
+      "lastActivityAtMs": null,
+      "coverage": {
+       "turnBoundaries": false,
+       "permissionWait": false,
+       "producerActivity": false,
+       "processExit": false
+      },
+      "observationHealth": "unavailable",
+      "suspicions": [],
+      "policyRevision": 1,
+      "providerBlocked": false,
+      "thresholds": {
+       "turnLongAfterMs": 1800000,
+       "permissionLongAfterMs": 300000,
+       "quietAfterMs": null
+      },
+      "lastKnown": null,
+      "runtimeIncarnation": "3f4295ae9d7aff80ede8089b6366dadf",
+      "epoch": "<uuid4#3>",
+      "revision": 4
+     }
+    },
+    "providerDefault": null
+   }
+  },
+  {
+   "step": 20,
+   "method": "routine.list",
+   "label": "after-agent-create",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "routines": [
+     {
+      "name": "golden-duty-2",
+      "owner": "user:op",
+      "enabled": true,
+      "nextDueMs": 1800000900000,
+      "sourceErrorStreak": 0,
+      "outcomes": [],
+      "registrationId": "<uuid4#2>",
+      "mode": "scheduled",
+      "role": "review",
+      "actor": "agent:op:node-1:alpha",
+      "actorOwnership": "borrowed",
+      "launch": null,
+      "overlap": "skip",
+      "missedPeriods": "skip",
+      "inFlight": [],
+      "lastDispatchAtMs": null,
+      "lastOutcome": null
+     },
+     {
+      "name": "agent-home-setup-efb52d30c9470f92",
+      "owner": "user:op",
+      "enabled": true,
+      "nextDueMs": 1800000900000,
+      "sourceErrorStreak": 0,
+      "outcomes": [],
+      "registrationId": "<uuid4#4>",
+      "mode": "scheduled",
+      "role": "dispatch",
+      "actor": "agent:op:node-1:delta",
+      "actorOwnership": "borrowed",
+      "launch": null,
+      "overlap": "skip",
+      "missedPeriods": "skip",
+      "inFlight": [],
+      "lastDispatchAtMs": null,
+      "lastOutcome": null
+     }
+    ]
+   }
+  },
+  {
+   "step": 21,
+   "method": "agent.create",
+   "label": "reuse-routine-bound",
+   "origin": "ipc",
+   "params": {
+    "name": "delta",
+    "existing": "reuse"
+   },
+   "result": {
+    "ok": true,
+    "created": false,
+    "agent": {
+     "uri": "agent:op:node-1:delta",
+     "actor": "delta",
+     "owner": "op",
+     "machine": "node-1",
+     "cwd": "<tmp>/home/agents/delta/workspace",
+     "config": {
+      "sources": [
+       {
+        "path": "<tmp>/home/agents/delta/config",
+        "required": true
+       }
+      ],
+      "discovery": "explicit-only"
+     },
+     "provider": null,
+     "model": null,
+     "capabilities": {},
+     "harnessArgs": {},
+     "preferredHarness": null,
+     "lastHarness": null,
+     "lastSessionId": null,
+     "createdAtMs": 1800000000000,
+     "hosted": false,
+     "hostedBy": null,
+     "agentId": "a.pc6pkqhuopzxey2tasj3mfsoka",
+     "displayName": null,
+     "status": "offline",
+     "harness": null,
+     "runtime": null,
+     "sessionId": null,
+     "heartbeatAgeSeconds": null,
+     "runState": {
+      "state": "unknown",
+      "baseState": "unknown",
+      "reason": "source-unavailable",
+      "certainty": "unknown",
+      "scope": "whole-session",
+      "observedAtMs": 1800000000000,
+      "sinceMs": null,
+      "turnAgeMs": null,
+      "lastActivityAtMs": null,
+      "coverage": {
+       "turnBoundaries": false,
+       "permissionWait": false,
+       "producerActivity": false,
+       "processExit": false
+      },
+      "observationHealth": "unavailable",
+      "suspicions": [],
+      "policyRevision": 1,
+      "providerBlocked": false,
+      "thresholds": {
+       "turnLongAfterMs": 1800000,
+       "permissionLongAfterMs": 300000,
+       "quietAfterMs": null
+      },
+      "lastKnown": null,
+      "runtimeIncarnation": "3f4295ae9d7aff80ede8089b6366dadf",
+      "epoch": "<uuid4#3>",
+      "revision": 5
+     }
+    },
+    "providerDefault": null
+   }
+  },
+  {
+   "step": 22,
+   "method": "agent.create",
+   "label": "duplicate",
+   "origin": "ipc",
+   "params": {
+    "name": "delta"
+   },
+   "error": {
+    "code": "AGENT_EXISTS",
+    "message": "the name 'delta' is already taken on this node (op@node-1) — agent:op:node-1:delta exists. One name is one agent, whether or not anything is currently running under it. To reuse the name, destroy that agent first ('hyprial agent destroy delta', which is irreversible); to run this agent on a different harness, just start it there — that is a rebinding of the same agent, not a new one.",
+    "data": {
+     "actor": "agent:op:node-1:delta",
+     "agent": "delta"
+    }
+   }
+  },
+  {
+   "step": 23,
+   "method": "routine.list",
+   "label": "after-reuse",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "routines": [
+     {
+      "name": "golden-duty-2",
+      "owner": "user:op",
+      "enabled": true,
+      "nextDueMs": 1800000900000,
+      "sourceErrorStreak": 0,
+      "outcomes": [],
+      "registrationId": "<uuid4#2>",
+      "mode": "scheduled",
+      "role": "review",
+      "actor": "agent:op:node-1:alpha",
+      "actorOwnership": "borrowed",
+      "launch": null,
+      "overlap": "skip",
+      "missedPeriods": "skip",
+      "inFlight": [],
+      "lastDispatchAtMs": null,
+      "lastOutcome": null
+     },
+     {
+      "name": "agent-home-setup-efb52d30c9470f92",
+      "owner": "user:op",
+      "enabled": true,
+      "nextDueMs": 1800000900000,
+      "sourceErrorStreak": 0,
+      "outcomes": [],
+      "registrationId": "<uuid4#4>",
+      "mode": "scheduled",
+      "role": "dispatch",
+      "actor": "agent:op:node-1:delta",
+      "actorOwnership": "borrowed",
+      "launch": null,
+      "overlap": "skip",
+      "missedPeriods": "skip",
+      "inFlight": [],
+      "lastDispatchAtMs": null,
+      "lastOutcome": null
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -2,6 +2,8 @@
 from dataclasses import replace
 
 from hyprial.daemon.impl.cells.observability.model import RunFacts
+from .cell_states import cell_actor_facts
+from .mount import CellActorMount
 
 
 def operation_fence(view, actor):
@@ -26,42 +28,62 @@ def operation_fence(view, actor):
     return entity.entity_token, key, runtime
 
 
-def run_states(view, interactive, blocks, *, now_ms, monotonic_ms):
-    managed = view._harnesses.read_run_facts() if view._harnesses is not None else {}
-    operations = view._coordinator.read_run_operations() if view._coordinator is not None else ()
+def run_states(view, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=None):
+    if cell_actors is not None and not isinstance(cell_actors, CellActorMount):
+        cell_actors = CellActorMount(cell_actors)
+    actor_source = cell_actors is not None
+    managed = (
+        view._harnesses.read_run_facts()
+        if not actor_source and view._harnesses is not None else {}
+    )
+    operations = (
+        view._coordinator.read_run_operations()
+        if not actor_source and view._coordinator is not None else ()
+    )
     inputs = {}
-    for entity in view._agents.read_agents():
-        cell = view._refresh(entity.uri)
+    entities = tuple(view._agents.read_agents())
+    for entity in entities:
+        cell = (view._refresh(entity.uri, actor_source=True)
+                if actor_source else view._refresh(entity.uri))
         if cell is None:
             continue
         current, binding = view._identity(entity.uri)
         if current is None or current.entity_token != entity.entity_token:
             continue
         facts = RunFacts()
-        if binding is not None:
+        if actor_source:
+            facts = cell_actor_facts((entity,), cell_actors).get(entity.uri, facts)
+            if cell.lifecycle is not None and facts.source_epoch == "cell-unavailable":
+                facts = replace(facts, source_epoch=f"{cell.lifecycle.epoch}:unavailable")
+        elif binding is not None:
             if binding.runtime == "headless":
                 facts = managed.get((f"{binding.harness}:{entity.actor}", entity.entity_token, binding.revision), facts)
             elif binding.runtime == "interactive":
                 facts = interactive.get((entity.uri, entity.entity_token, binding.revision, binding.session_id), facts)
         # Source owners do not share a transaction. Never adopt a changed mount.
-        after = view._refresh(entity.uri)
+        after = (view._refresh(entity.uri, actor_source=True)
+                 if actor_source else view._refresh(entity.uri))
         if after != cell:
             inputs[entity.uri] = (cell.diagnostic_incarnation, RunFacts(conflict=True),
                                   view._policies.for_actor(entity.uri))
             continue  # The old mount's positive exit/operation is no longer current.
-        lifecycle = cell.lifecycle
-        operation = lifecycle.state if lifecycle.state in {"starting", "stopping"} else None
-        pending_rows = tuple(row for row in operations if row.actor == entity.uri)
-        fence = operation_fence(view, entity.uri) if pending_rows else None
-        for pending in pending_rows:
-            if pending.fence == fence:
-                operation = pending.state
-                if operation == "stopping":
-                    break
-        facts = replace(facts, source_epoch=f"{lifecycle.epoch}:{facts.source_epoch}",
-                        exit_verified=facts.exit_verified or lifecycle.state == "stopped",
-                        process_exit_supported=facts.process_exit_supported or lifecycle.state == "stopped",
-                        operation=operation,
-                        provider_block=bool(blocks.get(entity.uri, entity.block is not None)))
+        if not actor_source:
+            lifecycle = cell.lifecycle
+            operation = lifecycle.state if lifecycle.state in {"starting", "stopping"} else None
+            pending_rows = tuple(row for row in operations if row.actor == entity.uri)
+            fence = operation_fence(view, entity.uri) if pending_rows else None
+            for pending in pending_rows:
+                if pending.fence == fence:
+                    operation = pending.state
+                    if operation == "stopping":
+                        break
+            facts = replace(
+                facts,
+                source_epoch=f"{lifecycle.epoch}:{facts.source_epoch}",
+                exit_verified=facts.exit_verified or lifecycle.state == "stopped",
+                process_exit_supported=facts.process_exit_supported or lifecycle.state == "stopped",
+                operation=operation,
+                provider_block=bool(blocks.get(entity.uri, entity.block is not None)),
+            )
         inputs[entity.uri] = (cell.diagnostic_incarnation, facts, view._policies.for_actor(entity.uri))
     return view._runs.publish(inputs, now_ms=now_ms, monotonic_ms=monotonic_ms)

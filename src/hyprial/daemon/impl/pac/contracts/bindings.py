@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import socket
 from pathlib import Path
 from time import time_ns
 from uuid import uuid4
+
+from hyprial.kernel import connect_local_ipc
 
 
 class RemoteWorkflowUnavailable(RuntimeError):
@@ -30,9 +31,8 @@ def remote_current(state_dir: Path, bound, *, now_ms=None):
         "params": {"messageId": bound["message_id"]},
     }
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        with connect_local_ipc(state_dir / "daemon.sock", 6) as client:
             client.settimeout(6)
-            client.connect(str(state_dir / "daemon.sock"))
             client.sendall(json.dumps(frame).encode() + b"\n")
             buffer = bytearray()
             while b"\n" not in buffer and len(buffer) < 65536:

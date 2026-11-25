@@ -7,17 +7,19 @@ import threading
 import uuid
 import weakref
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hyprial.kernel import (
     ActorEvent,
     ActorEventKind,
-    ActorHandle,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
+
+from hyprial.daemon.impl.orgfs.composition.vocabulary import OrgFsActorHostCustody
 from hyprial.daemon.impl.orgfs.api  import ChangeEvent, OrgFsError
 from hyprial.daemon.impl.orgfs.projection.checkout  import CheckoutManager
 
@@ -60,9 +62,16 @@ class CheckoutAuthority:
     """
 
     def __init__(
-        self, facade: Any, blobs: Any, space_id: str, root: Path | str
+        self,
+        facade: Any,
+        blobs: Any,
+        space_id: str,
+        root: Path | str,
+        *,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self.space_id = space_id
+        self._actor_hosts = OrgFsActorHostCustody(actor_host)
         self.manager = CheckoutManager(facade, blobs, space_id, root)
         self._facade = facade
         self._lock = threading.RLock()
@@ -113,13 +122,14 @@ class CheckoutAuthority:
             except Exception as error:
                 return _CheckoutResult(f"{type(error).__name__}: {error}")
 
-        self._runtime = ActorRuntime(event_sink=actor_event)
-        self._actor: ActorHandle = self._runtime.start(
+        host = self._actor_hosts.host
+        self._cell = host.spawn(
             ActorSpec(
                 f"orgfs-checkout-{space_id[:12]}",
                 lambda: handle,
                 mailbox_capacity=_CHECKOUT_CAPACITY,
                 supervision_profile="state_authority",
+                event_sink=actor_event,
             )
         )
 
@@ -127,9 +137,9 @@ class CheckoutAuthority:
             owner = owner_ref()
             if owner is None:
                 return AdmissionResult.CLOSED
-            return owner._runtime.tell(owner._actor, completion)
+            return owner._cell.tell(completion)
 
-        self._effects: EffectLane[_CheckoutIo, _CheckoutResult] = EffectLane(
+        self._effects: EffectLane[_CheckoutIo, _CheckoutResult] = host.effect_lane(
             name=f"orgfs-checkout-{space_id[:12]}-io",
             execute=execute,
             complete=complete,
@@ -147,7 +157,7 @@ class CheckoutAuthority:
             if self._closed or self._closing:
                 return AdmissionResult.CLOSED
             self._commands[command.operation_id] = command
-        admission = self._runtime.tell(self._actor, command)
+        admission = self._cell.tell(command)
         if admission is not AdmissionResult.ACCEPTED:
             with self._lock:
                 self._commands.pop(command.operation_id, None)
@@ -171,7 +181,7 @@ class CheckoutAuthority:
             command = _CheckoutCommand(operation_id, self._generation, action)
             self._commands[operation_id] = command
         while True:
-            admission = self._runtime.tell(self._actor, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 break
             with self._lock:
@@ -245,7 +255,7 @@ class CheckoutAuthority:
             for command in replay:
                 self._commands[command.operation_id] = command
         for command in replay:
-            if self._runtime.tell(self._actor, command) is AdmissionResult.CLOSED:
+            if self._cell.tell(command) is AdmissionResult.CLOSED:
                 return
 
     def _on_command(self, command: object) -> None:
@@ -407,5 +417,5 @@ class CheckoutAuthority:
             self._closing = True
             self._closed = True
         drained = self._effects.close(timeout=timeout)
-        self._runtime.stop(self._actor, timeout=timeout)
-        return drained
+        self._cell.stop(timeout=timeout)
+        return drained and self._actor_hosts.shutdown(timeout)

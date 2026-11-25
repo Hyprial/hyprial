@@ -140,9 +140,6 @@ def test_endpointless_daemon_warns_in_log_init_and_fails_doctor() -> None:
             assert [item.get("code") for item in warnings if isinstance(item, dict)] == [
                 "ORG_CONTEXT_ABSENT",
                 "ZENOH_ENDPOINTS_UNSET",
-                # A production-shaped daemon whose owner has no squire is
-                # told so at init (Allen 2026-09-26, squire first).
-                "SQUIRE_NOT_CONFIGURED",
             ]
 
             events = _daemon_events(root / "state")
@@ -191,7 +188,6 @@ def test_configured_daemon_has_no_endpoint_warning_and_passes_zenoh_check() -> N
             assert isinstance(warnings, list), init
             assert [item.get("code") for item in warnings if isinstance(item, dict)] == [
                 "ORG_CONTEXT_ABSENT",
-                "SQUIRE_NOT_CONFIGURED",
             ]
 
             events = _daemon_events(root / "state")

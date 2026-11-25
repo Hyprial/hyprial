@@ -15,7 +15,7 @@ from hyprial.daemon.impl import (
 from hyprial.kernel import canonical_agent_uri
 from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxAuthorityUnavailable, InboxMessage
 from tests.support.runtime._desired_state import write_v1
-
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 
 class FakeProcess:
     def __init__(self) -> None:
@@ -27,7 +27,6 @@ class FakeProcess:
         self.stops += 1
         self.running = False
 
-
 class FakeHarnessLauncher:
     def __init__(self) -> None:
         self.started: list[tuple[str, FakeProcess]] = []
@@ -37,10 +36,8 @@ class FakeHarnessLauncher:
         # A real managed process owns these; the projection reads them from the
         # process, never from the launch spec.
         process.endpoint = "http://127.0.0.1:41234"
-        process.dsh_home = Path("/tmp/worker/dsh")
         self.started.append((spec.name, process))
         return process
-
 
 def _tick_until(runtime, done, timeout: float = 5.0):  # type: ignore[no-untyped-def]
     """Tick reconcile until ``done(outcome)`` holds.
@@ -58,28 +55,6 @@ def _tick_until(runtime, done, timeout: float = 5.0):  # type: ignore[no-untyped
         time.sleep(0.01)
         outcome = runtime.on_timer()
     return outcome
-
-
-def test_supervisor_status_reports_the_process_owned_dsh_endpoint() -> None:
-    launcher = FakeHarnessLauncher()
-    supervisor = ManagedHarnessRuntime(launcher)
-    supervisor.start(
-        HarnessLaunchSpec(
-            "dsh",
-            "dsh-worker",
-            True,
-            # A persisted endpoint argument is no longer a source of truth:
-            # the endpoint is an OUTPUT of the spawned generation.
-            args=("--endpoint", "http://127.0.0.1:4080"),
-        )
-    )
-    process = launcher.started[0][1]
-
-    status = supervisor.status()[0]
-    assert status["endpoint"] == "http://127.0.0.1:41234"
-    assert status["dshHome"] == "/tmp/worker/dsh"
-    assert process.endpoint == "http://127.0.0.1:41234"
-
 
 def test_supervisor_status_surfaces_process_runtime_error() -> None:
     launcher = FakeHarnessLauncher()
@@ -107,14 +82,12 @@ def test_supervisor_status_surfaces_process_runtime_error() -> None:
     finally:
         supervisor.stop(2.0)
 
-
 class FakeRegistration:
     def __init__(self) -> None:
         self.closed = False
 
     def close(self) -> None:
         self.closed = True
-
 
 class FakeTransport:
     def __init__(self) -> None:
@@ -127,7 +100,6 @@ class FakeTransport:
 
     def close(self) -> None:
         self.closed = True
-
 
 class FakeInbox:
     def __init__(self) -> None:
@@ -147,10 +119,9 @@ class FakeInbox:
     def close(self) -> None:
         self.closed = True
 
-
 @pytest.mark.parametrize("unclean_marker", [False, True])
 def test_event_bridge_start_never_restores_harness_processes(
-    tmp_path: Path, unclean_marker: bool
+    tmp_path: Path, unclean_marker: bool, *, actor_host
 ) -> None:
     desired_path = tmp_path / "desired-state.json"
     write_v1(desired_path)
@@ -165,7 +136,8 @@ def test_event_bridge_start_never_restores_harness_processes(
         desired_state=DesiredStateStore(desired_path),
         transport=FakeTransport(),
         inbox=FakeInbox(),
-        harnesses=ManagedHarnessRuntime(launcher),
+        harnesses=ManagedHarnessRuntime(launcher), cell_delivery=AdmittingCellDelivery(),
+        actor_host=actor_host,
     )
 
     summary = runtime.start()
@@ -177,9 +149,8 @@ def test_event_bridge_start_never_restores_harness_processes(
     assert launcher.started == []
     runtime.stop()
 
-
 def test_mailbox_role_is_advertised_and_provider_crashes_are_restarted(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     desired_path = tmp_path / "desired-state.json"
     write_v1(desired_path, as_mailbox=True)
@@ -195,6 +166,7 @@ def test_mailbox_role_is_advertised_and_provider_crashes_are_restarted(
         transport=transport,
         inbox=FakeInbox(),
         harnesses=supervisor,
+        cell_delivery=AdmittingCellDelivery(), actor_host=actor_host,
     )
     runtime.start()
     assert transport.liveliness == ["hyprial/v1/liveliness/mailbox/node-mailbox"]
@@ -206,10 +178,8 @@ def test_mailbox_role_is_advertised_and_provider_crashes_are_restarted(
     assert [name for name, _process in launcher.started] == ["squire", "squire"]
     runtime.stop()
 
-
 def test_on_timer_retries_orphan_collection_every_tick(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, actor_host
 ) -> None:
     calls: list[None] = []
     supervisor = ManagedHarnessRuntime(FakeHarnessLauncher())
@@ -225,6 +195,7 @@ def test_on_timer_retries_orphan_collection_every_tick(
         transport=FakeTransport(),
         inbox=FakeInbox(),
         harnesses=supervisor,
+        cell_delivery=AdmittingCellDelivery(), actor_host=actor_host,
     )
     runtime.start()
     try:
@@ -238,8 +209,7 @@ def test_on_timer_retries_orphan_collection_every_tick(
     assert second.harness_orphans_retired == 0
     assert "harnesses.collect_orphans" in dict(first.phase_ms)
 
-
-def test_on_timer_drains_readiness_reports(tmp_path: Path) -> None:
+def test_on_timer_drains_readiness_reports(tmp_path: Path, *, actor_host) -> None:
     """Phase ③ rides the tick: disposition reports land in ReconcileSummary.
 
     Restore settles one start, which buffers one report inside the actor;
@@ -261,6 +231,7 @@ def test_on_timer_drains_readiness_reports(tmp_path: Path) -> None:
         transport=FakeTransport(),
         inbox=FakeInbox(),
         harnesses=supervisor,
+        cell_delivery=AdmittingCellDelivery(), actor_host=actor_host,
     )
     runtime.start()
 
@@ -273,7 +244,6 @@ def test_on_timer_drains_readiness_reports(tmp_path: Path) -> None:
     # Drained once: the same disposition must not be reported twice.
     assert runtime.on_timer().harness_readiness == ()
     runtime.stop()
-
 
 class FakeStreamingProcess(FakeProcess):
     """Satisfies the StreamingHarnessProcess protocol for the pump."""
@@ -292,7 +262,6 @@ class FakeStreamingProcess(FakeProcess):
     def interrupt(self, delivery_id: str, *, timeout: float = 1.0) -> bool:
         return False
 
-
 class FakeStreamingLauncher:
     def __init__(self) -> None:
         self.started: list[tuple[str, FakeStreamingProcess]] = []
@@ -306,7 +275,6 @@ class FakeStreamingLauncher:
         process = FakeStreamingProcess()
         self.started.append((spec.name, process))
         return process
-
 
 class FakeActorRegistration:
     def __init__(self, name: str) -> None:
@@ -329,17 +297,16 @@ class FakeActorRegistration:
         self.closed = True
         self.close_attribution.append((reason, initiator))
 
-
 # The identity the daemon advertises for a managed provider is the
 # canonical four-segment URI, never the supervisor-local short name.
 SQUIRE_URI = canonical_agent_uri("op", "node-reg", "squire")
-
 
 def _streaming_runtime(
     tmp_path: Path,
     *,
     clock=None,  # type: ignore[no-untyped-def]
     restart_backoff_seconds: float = 0.0,
+    actor_host,
 ):  # type: ignore[no-untyped-def]
     desired_path = tmp_path / "desired-state.json"
     write_v1(desired_path)
@@ -369,13 +336,14 @@ def _streaming_runtime(
         inbox=FakeInbox(),
         harnesses=supervisor,
         harness_actor_registrar=registrar,
-        harness_actor_uri=lambda name: canonical_agent_uri("op", "node-reg", name),
+        harness_actor_uri=lambda name: canonical_agent_uri("op", "node-reg", name), actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     return runtime, launcher, registrations
 
-
-def test_streaming_provider_actor_is_registered_on_start(tmp_path: Path) -> None:
-    runtime, _launcher, registrations = _streaming_runtime(tmp_path)
+def test_streaming_provider_actor_is_registered_on_start(
+    tmp_path: Path, *, actor_host
+) -> None:
+    runtime, _launcher, registrations = _streaming_runtime(tmp_path, actor_host=actor_host)
     runtime.start()
     try:
         assert [item.name for item in registrations] == [SQUIRE_URI]
@@ -383,9 +351,8 @@ def test_streaming_provider_actor_is_registered_on_start(tmp_path: Path) -> None
     finally:
         runtime.stop()
 
-
 def test_active_streaming_provider_redeclares_a_lost_actor_registration(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """A retained map key must not make a dead registration permanent.
 
@@ -396,7 +363,7 @@ def test_active_streaming_provider_redeclares_a_lost_actor_registration(
     for an operator to restart the connector.
     """
 
-    runtime, _launcher, registrations = _streaming_runtime(tmp_path)
+    runtime, _launcher, registrations = _streaming_runtime(tmp_path, actor_host=actor_host)
     runtime.start()
     try:
         assert len(registrations) == 1
@@ -417,9 +384,8 @@ def test_active_streaming_provider_redeclares_a_lost_actor_registration(
     finally:
         runtime.stop()
 
-
 def test_streaming_provider_gets_system_notice_once_without_fifo_ack(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     notice = InboxMessage(
         message_id="notice-1",
@@ -448,7 +414,7 @@ def test_streaming_provider_gets_system_notice_once_without_fifo_ack(
             ]
             return True
 
-    runtime, launcher, _registrations = _streaming_runtime(tmp_path)
+    runtime, launcher, _registrations = _streaming_runtime(tmp_path, actor_host=actor_host)
     inbox = NoticeInbox()
     runtime.inbox = inbox  # type: ignore[assignment]
     runtime.start()
@@ -468,14 +434,15 @@ def test_streaming_provider_gets_system_notice_once_without_fifo_ack(
     finally:
         runtime.stop()
 
-
-def test_restart_withdraws_then_redeclares_the_registration(tmp_path: Path) -> None:
+def test_restart_withdraws_then_redeclares_the_registration(
+    tmp_path: Path, *, actor_host
+) -> None:
     """Starts are asynchronous, so a death always costs one registration gap:
     the token is withdrawn when the corpse is reaped and redeclared on the
     tick that harvests the replacement.  In-flight sends queue durably in
     between instead of targeting a dead connector."""
 
-    runtime, launcher, registrations = _streaming_runtime(tmp_path)
+    runtime, launcher, registrations = _streaming_runtime(tmp_path, actor_host=actor_host)
     runtime.start()
     try:
         launcher.started[0][1].running = False
@@ -489,9 +456,8 @@ def test_restart_withdraws_then_redeclares_the_registration(tmp_path: Path) -> N
     finally:
         runtime.stop()
 
-
 def test_dead_child_is_offline_before_bounded_supervisor_restart(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """The daemon must expose a real stopped/error interval and withdraw the
     target before desired-state recovery advertises a replacement process."""
@@ -500,7 +466,7 @@ def test_dead_child_is_offline_before_bounded_supervisor_restart(
     runtime, launcher, registrations = _streaming_runtime(
         tmp_path,
         clock=lambda: now["value"],
-        restart_backoff_seconds=1.0,
+        restart_backoff_seconds=1.0, actor_host=actor_host,
     )
     runtime.start()
     try:
@@ -544,15 +510,14 @@ def test_dead_child_is_offline_before_bounded_supervisor_restart(
     finally:
         runtime.stop()
 
-
 def test_unrestartable_provider_loses_its_registration_until_recovery(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """A connector that dies and cannot restart must disappear from the
     network so later sends queue durably instead of targeting a corpse;
     recovery registers anew."""
 
-    runtime, launcher, registrations = _streaming_runtime(tmp_path)
+    runtime, launcher, registrations = _streaming_runtime(tmp_path, actor_host=actor_host)
     runtime.start()
     try:
         launcher.started[0][1].running = False
@@ -577,9 +542,8 @@ def test_unrestartable_provider_loses_its_registration_until_recovery(
     finally:
         runtime.stop()
 
-
-def test_stop_closes_every_actor_registration(tmp_path: Path) -> None:
-    runtime, _launcher, registrations = _streaming_runtime(tmp_path)
+def test_stop_closes_every_actor_registration(tmp_path: Path, *, actor_host) -> None:
+    runtime, _launcher, registrations = _streaming_runtime(tmp_path, actor_host=actor_host)
     runtime.start()
     runtime.stop()
     assert registrations and all(item.closed for item in registrations)
@@ -587,8 +551,9 @@ def test_stop_closes_every_actor_registration(tmp_path: Path) -> None:
         ("daemon-stop", "daemon-runtime")
     ]
 
-
-def test_non_streaming_processes_are_not_registered(tmp_path: Path) -> None:
+def test_non_streaming_processes_are_not_registered(
+    tmp_path: Path, *, actor_host
+) -> None:
     """PTY-style providers have no delivery channel yet; registering them
     would advertise an actor whose messages nobody could ever consume."""
 
@@ -605,7 +570,7 @@ def test_non_streaming_processes_are_not_registered(tmp_path: Path) -> None:
         harness_actor_registrar=lambda name: registrations.append(
             FakeActorRegistration(name)
         )
-        or registrations[-1],
+        or registrations[-1], actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:
@@ -613,9 +578,8 @@ def test_non_streaming_processes_are_not_registered(tmp_path: Path) -> None:
     finally:
         runtime.stop()
 
-
 def test_stuck_outbound_retry_does_not_hold_the_reconcile_tick(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """2026-09-14: ``retry_due`` waits on outbound sends up to the facade's
     authority timeout; 62 of 99 reconcile-tick overruns were this one call,
@@ -658,6 +622,7 @@ def test_stuck_outbound_retry_does_not_hold_the_reconcile_tick(
         transport=FakeTransport(),
         inbox=inbox,
         harnesses=ManagedHarnessRuntime(FakeHarnessLauncher()),
+        actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:
@@ -676,8 +641,9 @@ def test_stuck_outbound_retry_does_not_hold_the_reconcile_tick(
     # stop() halted and joined the pump.
     assert runtime._retry_pump_thread is None
 
-
-def test_retry_pump_logs_completion_counts_off_the_tick(tmp_path: Path) -> None:
+def test_retry_pump_logs_completion_counts_off_the_tick(
+    tmp_path: Path, *, actor_host
+) -> None:
     """Settled retry results are counted on the pump's own event, so the
     tick's inbox_results no longer claims work that is still in flight."""
 
@@ -699,7 +665,7 @@ def test_retry_pump_logs_completion_counts_off_the_tick(tmp_path: Path) -> None:
         harnesses=ManagedHarnessRuntime(FakeHarnessLauncher()),
         logger=lambda level, component, event, **fields: logged.append(
             (level, component, event, fields)
-        ),
+        ), actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:
@@ -720,8 +686,9 @@ def test_retry_pump_logs_completion_counts_off_the_tick(tmp_path: Path) -> None:
     finally:
         runtime.stop()
 
-
-def test_retry_pump_survives_retry_due_exceptions(tmp_path: Path) -> None:
+def test_retry_pump_survives_retry_due_exceptions(
+    tmp_path: Path, *, actor_host
+) -> None:
     """The pump is a thread whose whole job is calling into failure-prone
     I/O: an exception from retry_due must be logged and the next kick still
     processed -- never the silent-thread-death shape this change set exists
@@ -759,7 +726,7 @@ def test_retry_pump_survives_retry_due_exceptions(tmp_path: Path) -> None:
         harnesses=ManagedHarnessRuntime(FakeHarnessLauncher()),
         logger=lambda level, component, event, **fields: logged.append(
             (level, component, event, fields)
-        ),
+        ), actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:
@@ -767,12 +734,13 @@ def test_retry_pump_survives_retry_due_exceptions(tmp_path: Path) -> None:
         deadline = time.monotonic() + 2.0
         while inbox.retries < 1 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert inbox.retries == 1
+        assert inbox.retries >= 1, "the pump never ran a retry round"
+        before_kick2 = inbox.retries
         runtime.on_timer()  # kick 2: must still be processed
         deadline = time.monotonic() + 2.0
-        while inbox.retries < 2 and time.monotonic() < deadline:
+        while inbox.retries <= before_kick2 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert inbox.retries >= 2, "kick after a pump exception was never processed"
+        assert inbox.retries > before_kick2, "pump stopped after a retry_due exception"
         failed = [
             fields for _, _, event, fields in logged
             if event == "inbox.retry_pump.failed"
@@ -784,8 +752,9 @@ def test_retry_pump_survives_retry_due_exceptions(tmp_path: Path) -> None:
     finally:
         runtime.stop()
 
-
-def test_retry_pump_yields_on_stale_command_without_error(tmp_path: Path) -> None:
+def test_retry_pump_yields_on_stale_command_without_error(
+    tmp_path: Path, *, actor_host
+) -> None:
     """retry_due left the tick thread, so the pump now races the tick's own
     inbox commands; a generation/version fence that goes stale mid-flight is
     the expected loser of that race, not a fault.  A rejected round yields
@@ -823,7 +792,7 @@ def test_retry_pump_yields_on_stale_command_without_error(tmp_path: Path) -> Non
         harnesses=ManagedHarnessRuntime(FakeHarnessLauncher()),
         logger=lambda level, component, event, **fields: logged.append(
             (level, component, event, fields)
-        ),
+        ), actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:
@@ -831,12 +800,13 @@ def test_retry_pump_yields_on_stale_command_without_error(tmp_path: Path) -> Non
         deadline = time.monotonic() + 2.0
         while inbox.retries < 1 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert inbox.retries == 1
+        assert inbox.retries >= 1, "the pump never ran a retry round"
+        before_kick2 = inbox.retries
         runtime.on_timer()  # kick 2: fresh fence, round runs
         deadline = time.monotonic() + 2.0
-        while inbox.retries < 2 and time.monotonic() < deadline:
+        while inbox.retries <= before_kick2 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert inbox.retries >= 2, "kick after a stale yield was never processed"
+        assert inbox.retries > before_kick2, "pump stopped after a stale yield"
 
         # The yield is visible, at info, with the rejection detail -- not an
         # error: only real pump failures reach inbox.retry_pump.failed.
@@ -858,8 +828,9 @@ def test_retry_pump_yields_on_stale_command_without_error(tmp_path: Path) -> Non
     finally:
         runtime.stop()
 
-
-def test_prune_yields_on_fence_race_and_retries_next_tick(tmp_path: Path) -> None:
+def test_prune_yields_on_fence_race_and_retries_next_tick(
+    tmp_path: Path, *, actor_host
+) -> None:
     from hyprial.daemon.impl.inbox.contracts.api import InboxPruneItem
 
     item = InboxPruneItem("expired", "agent:o:n:worker", "TTL_EXPIRED", 1, 2)
@@ -886,7 +857,7 @@ def test_prune_yields_on_fence_race_and_retries_next_tick(tmp_path: Path) -> Non
         harnesses=ManagedHarnessRuntime(FakeHarnessLauncher()),
         logger=lambda level, _component, event, **_fields: logged.append(
             (level, event)
-        ),
+        ), actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:
@@ -900,7 +871,6 @@ def test_prune_yields_on_fence_race_and_retries_next_tick(tmp_path: Path) -> Non
     finally:
         runtime.stop()
 
-
 @pytest.mark.parametrize(
     "error",
     [
@@ -908,7 +878,9 @@ def test_prune_yields_on_fence_race_and_retries_next_tick(tmp_path: Path) -> Non
         OSError("database unavailable"),
     ],
 )
-def test_prune_preserves_non_fence_failures(tmp_path: Path, error: Exception) -> None:
+def test_prune_preserves_non_fence_failures(
+    tmp_path: Path, error: Exception, *, actor_host
+) -> None:
     class BrokenInbox(FakeInbox):
         def prune_inbox(self):  # type: ignore[no-untyped-def]
             raise error
@@ -922,6 +894,7 @@ def test_prune_preserves_non_fence_failures(tmp_path: Path, error: Exception) ->
         transport=FakeTransport(),
         inbox=BrokenInbox(),
         harnesses=ManagedHarnessRuntime(FakeHarnessLauncher()),
+        actor_host=actor_host, cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:
@@ -931,16 +904,15 @@ def test_prune_preserves_non_fence_failures(tmp_path: Path, error: Exception) ->
     finally:
         runtime.stop()
 
-
 def test_dead_child_stop_effect_can_be_held_after_offline_projection(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """A timer return is not the old process-stop acknowledgement."""
     now = {"value": 10.0}
     runtime, launcher, registrations = _streaming_runtime(
         tmp_path,
         clock=lambda: now["value"],
-        restart_backoff_seconds=1.0,
+        restart_backoff_seconds=1.0, actor_host=actor_host,
     )
     entered = threading.Event()
     release = threading.Event()

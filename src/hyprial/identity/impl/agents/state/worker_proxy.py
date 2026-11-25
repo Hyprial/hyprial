@@ -84,13 +84,10 @@ DEFAULT_WORKER_PROXY_VENDORS = (OPENAI_VENDOR_FAMILY, ANTHROPIC_VENDOR_FAMILY)
 #: reject it there, which would silently recreate the incident.
 WORKER_PROXY_URL_SCHEMES = ("http", "https")
 
-#: The model vendor a harness talks to when the launch names none: the
-#: subscription path of each native CLI.  Any other harness without an
-#: explicit model vendor has no knowable vendor (pi falls back to its own
-#: configured default, jev/dsh/lark/user-proxy are not matrix models).
 _NATIVE_VENDOR_FAMILY = {
     "codex": OPENAI_VENDOR_FAMILY,
     "claude": ANTHROPIC_VENDOR_FAMILY,
+    "agy": "google",
 }
 #: pi names OpenAI's subscription route ``openai-codex`` (and may grow
 #: suffixed variants); it is the same vendor family as ``openai``.

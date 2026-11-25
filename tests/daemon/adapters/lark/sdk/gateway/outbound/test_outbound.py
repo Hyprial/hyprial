@@ -197,20 +197,6 @@ def test_sdk_gateway_uploads_and_sends_image_without_regressing_image_path() -> 
     }
 
 
-def test_owner_dm_derives_a_stable_bounded_lark_uuid() -> None:
-    client = FakeClient()
-    gateway = LarkSdkGateway(client)
-    business_key = "operation:" + "very-long-owner-segment-" * 8
-
-    gateway.send_owner_dm("ou_owner", "first", idempotency_key=business_key)
-    gateway.send_owner_dm("ou_owner", "retry", idempotency_key=business_key)
-
-    uuids = [request.request_body.uuid for request in client.message.creates]
-    assert uuids[0] == uuids[1]
-    assert uuids[0] != business_key
-    assert len(uuids[0]) <= 50
-
-
 def test_reply_derives_a_stable_bounded_lark_uuid() -> None:
     client = FakeClient()
     gateway = LarkSdkGateway(client)

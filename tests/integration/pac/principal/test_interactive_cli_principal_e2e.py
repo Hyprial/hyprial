@@ -157,7 +157,12 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
                     "channelConfirmed": True,
                 },
             )
-            assert registered["actor"] == ACTOR
+            record = _ipc(socket_path, "agent.get", {"name": "codex-interactive"})[
+                "agent"
+            ]
+            address = record["uri"]
+            assert address == f"agent:{OWNER}:{NODE}:{record['agentId']}"
+            assert registered["actor"] == address
 
             binding_file = root / "codex-session.ref"
             binding_file.write_text(SESSION, encoding="utf-8")
@@ -165,7 +170,7 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
             agent_environment = {
                 **environment,
                 "HYPRIAL_AGENT_SESSION": "1",
-                "HYPRIAL_WORKER_ACTOR": ACTOR,
+                "HYPRIAL_WORKER_ACTOR": address,
                 "HYPRIAL_WORKER_SESSION_REF_FILE": str(binding_file),
             }
             workflow = root / "workflow.yaml"
@@ -175,7 +180,7 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
                 "nodes:\n"
                 "  - id: work\n"
                 "    role: review\n"
-                f"    owner: '{ACTOR}'\n"
+                f"    owner: '{address}'\n"
                 "    task: Complete this isolated acceptance node.\n",
                 encoding="utf-8",
             )
@@ -187,7 +192,7 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
                 str(workflow),
                 "--yes",
             )
-            assert started["actingPrincipal"] == ACTOR
+            assert started["actingPrincipal"] == address
             graph_id = started["graphId"]
 
             def requested() -> dict[str, Any] | None:
@@ -199,7 +204,7 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
             _ipc(
                 socket_path,
                 "session.heartbeat",
-                {"actor": ACTOR, "sessionRef": SESSION},
+                {"actor": address, "sessionRef": SESSION},
             )
             completed = _cli(
                 agent_environment,
@@ -214,13 +219,13 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
                 "--output-text",
                 OUTPUT,
             )
-            assert completed["actingPrincipal"] == ACTOR
+            assert completed["actingPrincipal"] == address
 
             def completion_entry() -> dict[str, Any] | None:
                 queried = _ipc(
                     socket_path,
                     "message.query",
-                    {"from": ACTOR, "view": "inbox"},
+                    {"from": address, "view": "inbox"},
                 )
                 return next(
                     (
@@ -235,7 +240,7 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
             fetched = _ipc(
                 socket_path,
                 "message.pending.list",
-                {"from": ACTOR, "sessionRef": SESSION, "fetched": True},
+                {"from": address, "sessionRef": SESSION, "fetched": True},
             )
             assert notice["messageId"] in {
                 item["messageId"] for item in fetched["messages"]
@@ -253,7 +258,7 @@ def test_interactive_codex_cli_workflow_notice_stays_with_agent() -> None:
                         (OUTPUT,),
                     )
                 }
-            assert ACTOR in recipients
+            assert address in recipients
             assert f"user:{OWNER}" not in recipients
         except BaseException:
             if daemon_log.exists():

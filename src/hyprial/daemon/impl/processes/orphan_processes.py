@@ -1,30 +1,38 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Replaces raw os.killpg existence probing and termination with
+#   hyprial.kernel.{probe_process_group_or_pid, terminate_fenced_process}.
 """Persistent custody and conservative collection of detached harness processes."""
 
 from __future__ import annotations
 
-import os
-import signal
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from hyprial.daemon.impl.mcp.channel.ownership import (
     _process_identities_comparable,
     _process_identities_match,
 )
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
-from hyprial.kernel import atomic_json_write
-
-from hyprial.kernel  import (
+from hyprial.kernel import (
+    ActorSpec,
+    AdmissionResult,
+    EffectCompleted,
+    EffectRequest,
     ManagedHarnessProcess,
+    ProcessLiveness,
     ProcessLivenessProbeError,
+    ProcessLivenessState,
+    atomic_json_write,
+    probe_process_group_or_pid,
+    terminate_fenced_process,
 )
 
-from hyprial.kernel import ProcessLiveness, ProcessLivenessState
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
 
 from .orphan.models import (
     ProcessCustodyCommand as ProcessCustodyCommand,
@@ -592,19 +600,14 @@ class OrphanProcessRegistry:
             raise ProcessLivenessProbeError(
                 f"process identity changed for pid {pid}"
             )
-        try:
-            os.killpg(pid, 0)
-        except ProcessLookupError:
+        probed = probe_process_group_or_pid(pid)
+        if probed.state is ProcessLivenessState.DEAD:
             return ProcessLiveness(
                 ProcessLivenessState.DEAD,
                 observed=True,
                 pid=pid,
                 marker=expected_marker,
             )
-        except OSError as error:
-            raise ProcessLivenessProbeError(
-                f"existence probe failed for pid {pid}: {error}"
-            ) from error
         return ProcessLiveness(
             ProcessLivenessState.UNKNOWN,
             observed=True,
@@ -648,7 +651,11 @@ class OrphanProcessRegistry:
                     if marker is not None and _process_identities_match(
                         entry.marker, marker
                     ):
-                        os.killpg(entry.pid, signal.SIGTERM)
+                        terminate_fenced_process(
+                            entry.pid,
+                            birth_marker=entry.marker,
+                            process_group=True,
+                        )
                     elif marker is not None and _process_identities_comparable(
                         entry.marker, marker
                     ):
@@ -750,8 +757,10 @@ class OrphanProcessAuthority:
         logger: Callable[..., None] | None = None,
         capacity: int = 64,
         timeout: float = 10.0,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("orphan process custody requires an actor host")
         self._registry = OrphanProcessRegistry(
             path,
             identity_reader=identity_reader,
@@ -760,7 +769,6 @@ class OrphanProcessAuthority:
             logger=logger,
             cleanup_async=False,
         )
-        self._runtime = runtime or ActorRuntime()
         self._guard = threading.Lock()
         self._generation = 1
         self._version = 0
@@ -773,7 +781,7 @@ class OrphanProcessAuthority:
         self._rejected = self._failed = 0
         self._rows = self._freeze_rows(self._registry.status())
         self._write_stats = self._registry.persistence_stats()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="orphan-process-custody",
                 handler_factory=lambda: self._receive,
@@ -782,10 +790,10 @@ class OrphanProcessAuthority:
         )
         self._effects: EffectLane[
             ProcessCustodyCommand, ProcessCustodyCompleted
-        ] = EffectLane(
+        ] = actor_host.effect_lane(
             name="orphan-process-custody-io",
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=capacity,
         )
 
@@ -852,7 +860,7 @@ class OrphanProcessAuthority:
             self._pending[operation_id] = waiter
             if process is not None:
                 self._processes[operation_id] = process
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._pending.pop(operation_id)
                 self._processes.pop(operation_id, None)
@@ -983,6 +991,6 @@ class OrphanProcessAuthority:
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
+        return self._cell.stop(
+            max(0.0, deadline - time.monotonic())
         )

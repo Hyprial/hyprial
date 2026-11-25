@@ -139,6 +139,41 @@ def test_write_with_uri_of_nonexistent_node_creates_nothing(tmp_path) -> None:
         _close(application)
 
 
+def test_orgfs_ls_recursive_returns_descendants_through_the_daemon_entry(
+    tmp_path,
+) -> None:
+    application = _application(tmp_path)
+    try:
+        space_id, _written = _create_doc(application)
+        application._handle_orgfs(
+            "orgfs.mkdir", {"spaceId": space_id, "path": "docs"}
+        )
+        application._handle_orgfs(
+            "orgfs.mkdir", {"spaceId": space_id, "path": "docs/nested"}
+        )
+        application._handle_orgfs(
+            "orgfs.write",
+            {"spaceId": space_id, "path": "docs/nested/guide.md", "text": "guide"},
+        )
+
+        direct = application._handle_orgfs(
+            "orgfs.ls", {"spaceId": space_id, "path": ""}
+        )
+        assert [node["path"] for node in direct["nodes"]] == ["docs", "readme.md"]
+
+        recursive = application._handle_orgfs(
+            "orgfs.ls", {"spaceId": space_id, "path": "", "recursive": True}
+        )
+        assert [(node["path"], node["kind"]) for node in recursive["nodes"]] == [
+            ("docs", "dir"),
+            ("docs/nested", "dir"),
+            ("docs/nested/guide.md", "doc"),
+            ("readme.md", "doc"),
+        ]
+    finally:
+        _close(application)
+
+
 def test_uri_is_stable_across_move_trash_and_restore(tmp_path) -> None:
     application = _application(tmp_path)
     try:

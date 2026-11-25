@@ -33,17 +33,7 @@ class _ProbeMode(str, enum.Enum):
 
 
 COMMAND_GUIDANCE = re.compile(r"`hyprial\s+([^`]+)`")
-#: The one embedded-JavaScript literal in the product tree.  ``dsh_tui`` writes a
-#: JS plugin whose socket logger interpolates; that log is not a command an
-#: operator could run.  It is excluded by **exact file and exact span**, never by
-#: a pattern: any other ``${...}`` span is still validated, and the entry is
-#: asserted below to still be found so it cannot rot into a silent blind spot.
-EMBEDDED_JS_GUIDANCE = {
-    (
-        "src/hyprial/daemon/impl/harnesses/dsh_tui/plugin.py",
-        "bridge socket failed: ${String(error)}",
-    ): "the written JS plugin's template-literal log, not operator guidance",
-}
+EMBEDDED_JS_GUIDANCE: dict[tuple[str, str], str] = {}
 
 
 def _registered_top_level() -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -152,12 +142,18 @@ def test_scan_rejects_a_retired_command_hidden_behind_js_interpolation() -> None
     ]
 
 
-def test_scan_excludes_only_the_embedded_js_log_in_its_own_file() -> None:
+def test_scan_excludes_only_the_embedded_js_log_in_its_own_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     text = 'ctx.logger?.warn?.(`hyprial bridge socket failed: ${String(error)}`)'
-    allowed = "src/hyprial/daemon/impl/harnesses/dsh_tui/plugin.py"
+    allowed = "src/hyprial/daemon/impl/synthetic_js_plugin.py"
+    monkeypatch.setitem(
+        EMBEDDED_JS_GUIDANCE,
+        (allowed, "bridge socket failed: ${String(error)}"),
+        "synthetic allowlist test entry",
+    )
 
     assert _unregistered_guidance(text, allowed) == []
-    # Same span elsewhere is not covered by the exemption.
     assert _unregistered_guidance(text, "src/hyprial/daemon/impl/example.py") == [
         "bridge socket failed: ${String(error)}"
     ]
@@ -243,20 +239,15 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
     assert hasattr(upgrade_group, "commands")
     assert {"status", "apply", "run"} == set(upgrade_group.commands)
     assert upgrade_group.commands["run"].hidden is True
-    link = root.commands["agent"].commands["link"]
-    assert hasattr(link, "commands")
-    assert set(link.commands) == {"list", "stats", "add", "drop"}
     routine = root.commands["routine"]
     assert hasattr(routine, "commands")
     assert "set" in routine.commands
     user = root.commands["user"]
     assert hasattr(user, "commands")
-    assert {"add", "bind", "bindings", "list", "show", "unbind", "whois", "proxy"} == set(
-        user.commands
-    )
-    bindings = user.commands["bindings"]
-    assert hasattr(bindings, "commands")
-    assert set(bindings.commands) == {"audit", "publish", "withdraw"}
+    assert {"add", "key", "list", "provider", "show"} == set(user.commands)
+    key = user.commands["key"]
+    assert hasattr(key, "commands")
+    assert set(key.commands) == {"renew", "revoke", "rotate", "status"}
     org = root.commands["org"]
     assert hasattr(org, "commands")
     context = org.commands["context"]
@@ -266,21 +257,7 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
         assert retired not in org.commands
     work = org.commands["work"]
     assert hasattr(work, "commands")
-    assert set(work.commands) == {
-        "add",
-        "check",
-        "collect",
-        "finish",
-        "note",
-        "status",
-        "done",
-        "show",
-        "ls",
-        "link",
-        "keywords",
-        "repair",
-        "resolve",
-    }
+    assert set(work.commands) == {"ls", "show"}
     workflow = root.commands["workflow"]
     assert hasattr(workflow, "commands")
     assert "missions" not in workflow.commands
@@ -288,12 +265,10 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
     assert hasattr(agent, "commands")
     assert {
         "create",
-        "host-invite",
         "list",
         "start",
         "stop",
         "top",
-        "move",
         "unblock",
         "restore",
         "grant",
@@ -306,20 +281,24 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
         "readiness",
         "provider",
         "tiers",
-        "transfer",
-        "link",
+        "attach",
+        "detach",
+        "rename",
+        "cell",
+        "args",
+        "teleport",
     } == set(agent.commands)
-    transfer = agent.commands["transfer"]
-    assert transfer.hidden is True
-    assert "runtime" in transfer.commands
+    assert "link" not in agent.commands
+    assert "runtime" not in agent.commands
+    assert "authority" not in agent.commands
+    cell = agent.commands["cell"]
+    assert set(cell.commands) == {"show", "apply"}
     home = agent.commands["home"]
     assert set(home.commands) == {"census", "migrate"}
     tiers = agent.commands["tiers"]
     assert hasattr(tiers, "commands")
     assert set(tiers.commands) == {"probe"}
-    squire = root.commands["squire"]
-    assert hasattr(squire, "commands")
-    assert "probe" not in squire.commands
+    assert "squire" not in root.commands
     host = root.commands["host"]
     assert hasattr(host, "commands")
     assert {"create", "list", "status"} <= set(host.commands)
@@ -347,6 +326,7 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
     message = root.commands["message"]
     assert hasattr(message, "commands")
     assert {"send", "ack", "reply", "batch"} <= set(message.commands)
+    assert "thread" not in message.commands
     fs = org.commands["fs"]
     assert hasattr(fs, "commands")
     assert {"space", "member", "trash", "purge"} <= set(fs.commands)
@@ -408,11 +388,10 @@ def test_registered_command_tree_is_recursive_and_marks_real_executables() -> No
     assert "agent" in entries
     assert entries["agent"].kind == "group"
     assert entries["agent"].executable is False
-    assert entries["agent move"].kind == "leaf"
+    assert entries["agent teleport"].kind == "leaf"
     # A group callback is an operator entry point; a plain group only dispatches.
     assert entries["agent tiers"].executable is True
-    assert entries["agent transfer"].hidden is True
-    assert entries["agent transfer runtime probe"].hidden is True
+    assert "agent runtime" not in entries
     assert entries["daemon upgrade run"].hidden is True
 
 

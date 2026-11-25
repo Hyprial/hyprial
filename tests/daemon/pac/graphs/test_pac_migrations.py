@@ -41,7 +41,10 @@ def _strip_v18(db: sqlite3.Connection) -> None:
     for table, columns in (
         ("workflow_outcome_receipts", ("expansion_digest", "node_id", "graph_id")),
         ("remote_workflow_outbox", ("attempt_no", "expansion_digest", "expansion_text")),
-        ("workflow_graphs", ("expansion_deadline_ms", "parent_node_id", "parent_graph_id")),
+        ("workflow_graphs", (
+            "held_at_ms",  # v20 (#1803): newer than any fixture below
+            "expansion_deadline_ms", "parent_node_id", "parent_graph_id",
+        )),
     ):
         for column in columns:
             db.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
@@ -72,7 +75,7 @@ def test_real_slice1_upgrade_preserves_history_and_notification_keys(legacy):
     path, before = legacy
     store = PacGraphStore(path)
     try:
-        assert store._db.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert store._db.execute("PRAGMA user_version").fetchone()[0] == 20
         for table, rows in before.items():
             actual = [tuple(row) for row in store._db.execute(f"SELECT * FROM {table}")]
             if table == "graphs":
@@ -226,7 +229,7 @@ nodes:
             row["name"]: row for row in migrated._db.execute("PRAGMA table_info(workflow_nodes)")
         }
         assert columns["deadline_ms"]["notnull"] == 0
-        assert migrated._db.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert migrated._db.execute("PRAGMA user_version").fetchone()[0] == 20
     finally:
         migrated.close()
 
@@ -293,7 +296,7 @@ def test_v13_adds_optional_workflow_output_columns(tmp_path):
 
     migrated = PacGraphStore(path)
     try:
-        assert migrated._db.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert migrated._db.execute("PRAGMA user_version").fetchone()[0] == 20
         for table in (
             "workflow_nodes",
             "workflow_outcome_receipts",

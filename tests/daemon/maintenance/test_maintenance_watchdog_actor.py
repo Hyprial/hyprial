@@ -53,7 +53,7 @@ class _Log:
 
 
 def test_actor_hung_phase_returns_full_report_after_logging(
-    watchdog_module: ModuleType,
+    watchdog_module: ModuleType, actor_host
 ) -> None:
     clock, log = _Clock(), _Log()
     holder = {
@@ -63,7 +63,8 @@ def test_actor_hung_phase_returns_full_report_after_logging(
         "stack": "...",
     }
     watchdog = watchdog_module.ActorMaintenanceWatchdog(
-        stall_seconds=60, log=log, diagnostics=lambda: holder, clock=clock
+        stall_seconds=60, log=log, diagnostics=lambda: holder, clock=clock,
+        actor_host=actor_host,
     )
     entered, release = threading.Event(), threading.Event()
 
@@ -114,13 +115,14 @@ def test_actor_hung_phase_returns_full_report_after_logging(
 
 
 def test_actor_scheduler_gap_and_original_thresholds(
-    watchdog_module: ModuleType,
+    watchdog_module: ModuleType, actor_host
 ) -> None:
     assert watchdog_module.DEFAULT_STALL_SECONDS == 60.0
     assert watchdog_module.POLL_SECONDS == 5.0
     clock, log = _Clock(), _Log()
     watchdog = watchdog_module.ActorMaintenanceWatchdog(
-        stall_seconds=60, log=log, diagnostics=lambda: None, clock=clock
+        stall_seconds=60, log=log, diagnostics=lambda: None, clock=clock,
+        actor_host=actor_host,
     )
     try:
         assert watchdog.check() is None, "startup before any tick is not a stall"
@@ -140,7 +142,7 @@ def test_actor_scheduler_gap_and_original_thresholds(
 
 
 def test_actor_check_joins_exact_blocked_report_and_close_keeps_custody(
-    watchdog_module: ModuleType,
+    watchdog_module: ModuleType, actor_host
 ) -> None:
     clock = _Clock()
     entered, release, returned = threading.Event(), threading.Event(), threading.Event()
@@ -153,7 +155,8 @@ def test_actor_check_joins_exact_blocked_report_and_close_keeps_custody(
             records.append(fields)
 
     watchdog = watchdog_module.ActorMaintenanceWatchdog(
-        stall_seconds=60, log=log, diagnostics=lambda: {"role": "lock"}, clock=clock
+        stall_seconds=60, log=log, diagnostics=lambda: {"role": "lock"}, clock=clock,
+        actor_host=actor_host,
     )
     watchdog.tick_started()
     watchdog.phase("runtime.timer")
@@ -183,10 +186,28 @@ def test_actor_check_joins_exact_blocked_report_and_close_keeps_custody(
     assert outcome[0]["transportLock"] == {"role": "lock"}
 
 
+def test_close_after_the_host_stopped_the_actor_reports_closed(
+    watchdog_module: ModuleType,
+) -> None:
+    """An owner may stop the shared host before this authority closes."""
+
+    from hyprial.kernel import create_actor_host
+
+    host = create_actor_host()
+    watchdog = watchdog_module.ActorMaintenanceWatchdog(
+        log=lambda *_a, **_k: None, actor_host=host
+    )
+    assert host.shutdown()
+    assert watchdog.close(2.0)
+    assert watchdog.close(2.0)
+
+
 @pytest.fixture(params=[False, True])
-def sibling_watchdog(watchdog_module: ModuleType, request):
+def sibling_watchdog(watchdog_module: ModuleType, actor_host, request):
     sibling = (
-        watchdog_module.ActorMaintenanceWatchdog(log=lambda *_a, **_k: None)
+        watchdog_module.ActorMaintenanceWatchdog(
+            log=lambda *_a, **_k: None, actor_host=actor_host
+        )
         if request.param else None
     )
     try:
@@ -196,44 +217,53 @@ def sibling_watchdog(watchdog_module: ModuleType, request):
             assert sibling.close(2.0)
 
 
-def test_effect_lane_constructor_failure_stops_the_unreturned_actor(
-    watchdog_module: ModuleType, monkeypatch: pytest.MonkeyPatch, sibling_watchdog,
-) -> None:
-    threads_before = frozenset(threading.enumerate())
-    runtime = watchdog_module.ActorRuntime(event_sink=lambda _event: None)
-    handles = []
-    stopped = []
-    real_start = runtime.start
-    real_stop = runtime.stop
+class _StopRecordingCell:
+    def __init__(self, cell, stopped: list[bool]) -> None:
+        self._cell = cell
+        self._stopped = stopped
 
-    def start(spec):  # type: ignore[no-untyped-def]
-        handle = real_start(spec)
-        handles.append(handle)
-        return handle
-
-    def stop(handle, timeout):  # type: ignore[no-untyped-def]
-        result = real_stop(handle, timeout)
-        stopped.append(result)
+    def stop(self, timeout: float = 1.0) -> bool:
+        result = self._cell.stop(timeout)
+        self._stopped.append(result)
         return result
 
-    def fail_effect_lane(**_kwargs):  # type: ignore[no-untyped-def]
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self._cell, name)
+
+
+class _FailingEffectHost:
+    def __init__(self, host) -> None:
+        self._host = host
+        self.cells = []
+        self.stopped: list[bool] = []
+
+    def spawn(self, spec):  # type: ignore[no-untyped-def]
+        cell = _StopRecordingCell(self._host.spawn(spec), self.stopped)
+        self.cells.append(cell)
+        return cell
+
+    def effect_lane(self, **_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("injected second allocation failure")
 
-    monkeypatch.setattr(runtime, "start", start)
-    monkeypatch.setattr(runtime, "stop", stop)
-    monkeypatch.setattr(watchdog_module, "EffectLane", fail_effect_lane)
+
+def test_effect_lane_constructor_failure_stops_the_unreturned_actor(
+    watchdog_module: ModuleType, actor_host, sibling_watchdog,
+) -> None:
+    threads_before = frozenset(threading.enumerate())
+    host = _FailingEffectHost(actor_host)
 
     with pytest.raises(RuntimeError, match="injected second allocation failure"):
         watchdog_module.ActorMaintenanceWatchdog(
-            log=lambda *_a, **_k: None, runtime=runtime
+            log=lambda *_a, **_k: None, actor_host=host
         )
 
-    assert len(handles) == 1
-    assert stopped == [True]
-    snapshot = runtime.snapshot(handles[0])
+    assert len(host.cells) == 1
+    assert host.stopped == [True]
+    cell = host.cells[0]
+    snapshot = cell.snapshot()
     assert snapshot.state.value == "stopped"
     assert snapshot.queued == 0 and snapshot.in_flight == 0
-    assert runtime.tell(handles[0], object()) is watchdog_module.AdmissionResult.CLOSED
+    assert cell.tell(object()) is watchdog_module.AdmissionResult.CLOSED
     assert not any(
         thread not in threads_before
         and thread.name.startswith("maintenance-watchdog-report") and thread.is_alive()

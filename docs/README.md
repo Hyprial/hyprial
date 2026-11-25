@@ -40,7 +40,7 @@ Rules for this tree:
 | [Zenoh two-machine setup](guides/zenoh-two-machine.md) · [Network isolation](guides/network-isolation.md) | Explicit endpoints and isolated test daemons |
 | [Agent secrets](guides/agent-secrets.md) · [Agent readiness preflight](guides/agent-readiness-preflight.md) | Manage agent credentials and check an agent before start |
 | [Daemon recovery runbook](guides/daemon-recovery-runbook.md) · [Pi projection recovery](guides/pi-projection-recovery.md) | Recover a broken daemon or Pi setup |
-| [Cross-machine agent move](guides/transfer-at12-cross-machine-runbook.md) | Support matrix and rollback for moving an agent |
+| [Cross-machine agent move (retired runbook)](guides/transfer-at12-cross-machine-runbook.md) | Historical SSH-chain runbook; use `hyprial agent teleport` to move an agent |
 | [Retired TypeScript install](guides/cutover-runbook.md) | Remove an old TypeScript install before a fresh install |
 | [GUI source mode](guides/gui-dev-mode.md) | Run `hyprial gui` and `hyprial gui dev` |
 
@@ -50,13 +50,14 @@ Maintainer process guides: [dev source-branch rule](guides/dev-source-branch-rul
 [homepage changelog sync](guides/homepage-changelog-sync.md).
 Frontend work: [frontend components](guides/frontend-components.md),
 [dev-03 components](guides/dev-03-components.md),
-[dev-03 live integration](guides/dev-03-live-integration.md),
+[GUI journey and method ledger](design/gui-v0.1-method-plan-2026-11-13.md),
 [daemon request Contract Mock](guides/daemon-request-contract-mock.md),
 [GUI prototype handoff](guides/gui-prototype-handoff/README.md).
 
 ## Reference — how the system is today
 
 - [Known problems](reference/known-problems.md) — read before you fix a bug.
+- [dev red baseline 2026-11-15](reference/dev-red-baseline-2026-11-15.md) — work list of everything red on `dev` (CI, local, GUI browser scripts) with owners and fix order.
 - Architecture boundaries: [P1 transport/inbox](reference/p1-transport-inbox.md),
   [P2 daemon](reference/p2-daemon.md), [P2 providers](reference/p2-providers.md),
   [P3 MCP](reference/p3-mcp.md), [P3 Lark event dispatch](reference/p3-lark-event-dispatch.md),

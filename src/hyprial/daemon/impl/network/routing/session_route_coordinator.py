@@ -8,10 +8,14 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
 
 from hyprial.daemon.impl.operations.session_ports  import (
     HeartbeatSessionCommand,
@@ -104,12 +108,13 @@ class SessionRouteCoordinator:
         *,
         capacity: int = 32,
         effect_workers: int = 8,
-        runtime: ActorRuntime | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         if capacity < 1 or effect_workers < 1:
             raise ValueError("capacity and effect_workers must be positive")
         self._apply = apply
-        self._runtime = runtime or ActorRuntime()
+        self._hosts = ActorHostCustody(actor_host, owner="network")
+        host = self._hosts.host
         self._lock = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
@@ -123,9 +128,9 @@ class SessionRouteCoordinator:
         self._queued: deque[SessionRouteRequest] = deque()
         self._active: dict[str, frozenset[str]] = {}
         self._active_resources: set[str] = set()
-        handle = None
+        cell = None
         try:
-            handle = self._runtime.start(
+            cell = host.spawn(
                 ActorSpec(
                     name="session-route",
                     handler_factory=lambda: self._handle_command,
@@ -133,23 +138,25 @@ class SessionRouteCoordinator:
                     undelivered_sink=self._undelivered,
                 )
             )
-            self._handle = handle
+            self._cell = cell
             self._effects: EffectLane[
                 SessionRouteRequest, SessionRouteCompleted
-            ] = EffectLane(
+            ] = host.effect_lane(
                 name="session-route-effects",
                 execute=self._execute,
-                complete=lambda event: self._runtime.tell(self._handle, event),
+                complete=lambda event: self._cell.tell(event),
                 capacity=capacity,
                 workers=min(capacity, effect_workers),
             )
         except BaseException as error:
             # The application receives no coordinator to close when its
             # constructor fails. No request has been admitted yet.
-            if handle is not None:
+            if cell is not None:
                 try:
-                    if not self._runtime.stop(handle, 5.0):
+                    if not cell.drain(5.0).complete:
                         error.add_note("session-route actor did not stop during construction rollback")
+                    if not self._hosts.shutdown(5.0):
+                        error.add_note("session-route actor host did not stop during construction rollback")
                 except BaseException as cleanup_error:
                     error.add_note(
                         "session-route actor rollback raised "
@@ -208,7 +215,7 @@ class SessionRouteCoordinator:
                 operation_id, self._epoch, kind, actor, session_ref,
                 session_command, observed_at, retirement,
             )
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 self._accepted += 1
             else:
@@ -253,9 +260,8 @@ class SessionRouteCoordinator:
             return False
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        stopped = self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
-        )
+        stopped = self._cell.drain(max(0.0, deadline - time.monotonic())).complete
+        self._hosts.shutdown(max(0.0, deadline - time.monotonic()))
         with self._lock:
             self._closed = stopped
             if stopped:

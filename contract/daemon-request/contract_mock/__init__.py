@@ -1,7 +1,12 @@
-"""Runnable Contract Mock for the daemon request business projection."""
+"""Contract Mock example loading and validation for the daemon request projection.
+
+The served mock is the JavaScript module ``gui/contract-mock``; this package no
+longer serves anything.
+"""
 
 from __future__ import annotations
 
+from .checks import check_contract
 from .contract import (
     DEFAULT_CONTRACT,
     DEFAULT_ENVELOPE,
@@ -11,8 +16,6 @@ from .contract import (
     load_contract,
 )
 from .envelope import Envelope
-from .server import create_server, main
-from .service import MockService, Response
 
 __all__ = [
     "Contract",
@@ -20,10 +23,7 @@ __all__ = [
     "DEFAULT_CONTRACT",
     "DEFAULT_ENVELOPE",
     "Envelope",
-    "MockService",
-    "Response",
     "SCENARIOS",
-    "create_server",
+    "check_contract",
     "load_contract",
-    "main",
 ]

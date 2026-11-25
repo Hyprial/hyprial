@@ -24,6 +24,9 @@ def test_org_create_succeeds_on_an_isolated_daemon() -> None:
                 "org", "create", "isolated-group", "--json", exits=(0,), timeout=60
             )
             listed = daemon.command("org", "list", "--json")
+            targets = daemon.command(
+                "message", "targets", "--kind", "agent", "--json"
+            )
             status = daemon.ps()
             invited = daemon.command(
                 "org", "invite", created["org"], "--user", "bob@example", "--json",
@@ -37,6 +40,8 @@ def test_org_create_succeeds_on_an_isolated_daemon() -> None:
     assert created["tailnetInitialized"] is False
     assert created["published"] is created["devicePublished"] is None
     assert listed["orgs"][0]["state"] == "active"
+    assert targets["ok"] is True
+    assert targets["targets"] == []
     assert status["zenoh"]["isolated"] is True
     assert invited["ok"] is False
     assert invited["code"] == "MEMBERSHIP_NOT_INITIALIZED"

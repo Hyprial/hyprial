@@ -839,3 +839,127 @@ def test_start_codex_rejects_hyprial_owned_remote_flags(
     assert result.exit_code != 0
     assert "hyprial owns" in " ".join(result.output.split())
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "json_output,notice_on_stderr",
+    [(False, True), (True, False)],
+    ids=["human-warning", "json-silent"],
+)
+def test_start_codex_interactive_passes_json_output_to_runtime_notices(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    json_output: bool,
+    notice_on_stderr: bool,
+) -> None:
+    """#2600: the Codex launcher's own ``json_output`` reaches the daemon notice.
+
+    The helper is the real one; only the daemon transport is faked.  A
+    hardcoded ``False`` at the launcher call site would print the notice on
+    stderr under ``--json``, which the json case forbids (stderr empty).
+    """
+
+    message = (
+        "tool profile(s) rev-1/legacy predate runtime git-identity resolution "
+        "and were re-resolved to 'profile'; each legacy directory was set aside "
+        "as *.migrated (git history untouched)"
+    )
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("HYPRIAL_HOME", str(home))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+
+    def daemon_request(
+        method: str, params: dict[str, object] | None = None, **_kwargs: object
+    ) -> dict[str, object]:
+        payload = params or {}
+        if method == "agent.runtime-context":
+            return {
+                "ok": True,
+                "mode": "agent-home-p2",
+                "authorityPrepared": True,
+                "launchToken": "context",
+                "actor": ACTOR,
+                "harness": "codex",
+                "projectionRoot": str(tmp_path / "projection"),
+                "nativeRoot": str(tmp_path / "native"),
+                "sessionRoot": str(tmp_path / "sessions"),
+                "environment": {
+                    "HOME": str(tmp_path / "tool-home"),
+                    "CODEX_HOME": str(tmp_path / "native"),
+                },
+                "notices": [
+                    {
+                        "code": "TOOL_PROFILE_MIGRATED",
+                        "actor": "codex-tui",
+                        "message": message,
+                        "path": str(tmp_path / "projection" / "tools" / "legacy.migrated"),
+                    }
+                ],
+            }
+        if method == "agent.runtime-launch.acquire":
+            return {
+                "ok": True,
+                "operationId": payload["operationId"],
+                "leaseToken": "lease",
+                "secretEnvironment": {"DEEPSEEK_API_KEY": "canary"},
+            }
+        if method == "ps":
+            return {"daemon": {"owner": "op", "nodeId": "node-1"}}
+        return {"ok": True}
+
+    class FakeServer:
+        pid = 4321
+        native_load_evidence = None
+
+        def __init__(self, _socket_path: Path, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def discover_thread(self) -> tuple[str, str]:
+            return THREAD_ID, "thread/list"
+
+        def stop(self) -> None:
+            pass
+
+    class FakeProcess:
+        def __init__(self, _argv: list[str], **_kwargs: object) -> None:
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", daemon_request)
+    monkeypatch.setattr("hyprial.daemon.CodexInteractiveAppServer", FakeServer)
+    monkeypatch.setattr(_cli_subprocess, "Popen", FakeProcess)
+
+    result = _cli_get_services()._start_interactive_codex(
+        name="codex-tui",
+        nickname=None,
+        cwd=tmp_path,
+        runtime_args=(),
+        model_provider="deepseek",
+        model="deepseek-flash",
+        json_output=json_output,
+    )
+
+    stderr = capsys.readouterr().err
+    assert result["ok"] is True
+    assert result["sessionRef"] == THREAD_ID
+    assert (message in stderr) is notice_on_stderr
+    if json_output:
+        assert stderr == ""

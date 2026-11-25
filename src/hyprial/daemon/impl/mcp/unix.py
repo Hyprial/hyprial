@@ -1,10 +1,8 @@
-"""Async facade over the daemon's versioned Unix-socket IPC."""
+"""Async facade over the daemon's versioned local IPC."""
 
 from __future__ import annotations
 
 import json
-import os
-import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,7 +11,7 @@ from typing import Any
 import anyio
 
 from hyprial.daemon.impl.mcp.api  import DaemonDisconnected, DaemonRequestRejected
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import connect_local_ipc, ipc_errors
 
 
 class UnixDaemonConnection:
@@ -41,15 +39,9 @@ class UnixDaemonConnection:
             "method": method,
             "params": params,
         }
-        if os.name == "nt":
-            from hyprial.kernel import connect_named_pipe as connect
-
-            client = connect(self.socket_path, self.timeout)
-        else:
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client.settimeout(self.timeout)
-            client.connect(str(self.socket_path))
+        client = connect_local_ipc(self.socket_path, self.timeout)
         try:
+            client.settimeout(self.timeout)
             client.sendall(json.dumps(frame, separators=(",", ":")).encode() + b"\n")
             response = bytearray()
             while b"\n" not in response:

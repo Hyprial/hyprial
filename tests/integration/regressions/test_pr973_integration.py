@@ -4,13 +4,14 @@ import time
 
 from hyprial.daemon.impl.inbox import DeliveryCustodyCoordinator, DeliveryCustodyFacade
 from tests.daemon.outbox.lifecycle.test_outbox_reconcile_submit_timeout import RECIPIENT, _Events, _HalfOpenCommittedTransport, _message
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_actor_restart_preserves_online_retry_without_confirmation_state(tmp_path):
     transport = _HalfOpenCommittedTransport()
     transport.set_online(RECIPIENT, True)
     database = tmp_path / "actor-ack-or-ttl.sqlite3"
-    owner = DeliveryCustodyCoordinator(database, transport, _Events())
+    owner = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
     facade = DeliveryCustodyFacade(owner, database)
     try:
         start = time.time_ns() // 1_000_000
@@ -25,7 +26,7 @@ def test_actor_restart_preserves_online_retry_without_confirmation_state(tmp_pat
         assert transport.notices == []
 
         facade.close()
-        owner = DeliveryCustodyCoordinator(database, transport, _Events())
+        owner = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
         facade = DeliveryCustodyFacade(owner, database)
         restored = facade.outbox_item("actor-ack-or-ttl")
         [result] = facade.retry_due(now_ms=restored.next_attempt_ms)

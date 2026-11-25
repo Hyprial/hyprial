@@ -1,0 +1,33 @@
+# GUI structure, component, and artifact gates: implementation plan
+
+Status: implementation and local verification complete on a rebase onto `dev@59b62d98a` (#2578 merge plus #2628) on 2026-11-10; the PR remains Draft pending remote CI on the rebased head. Target: `dev`.
+
+The handoff used KP-036/037/038 for its three GUI findings. Current `dev` has assigned those identifiers to unrelated issues. This candidate records the GUI findings as KP-042/043/044 in `known-problems.md`; the handoff's original identifiers remain historical references.
+
+During preparation, remote `dev` advanced to `c61bd54b619` (including #2581/#2588) and then accepted #2578 as `3dbea63c64e`. The branch was rebased onto `3dbea63c64e`: its four own commits were replayed and the four upstream-sync merge commits were dropped because their content is now in `dev`; no #2578 commit is replayed. Two conflicts were resolved: `contract-gap.test.ts` keeps dev's 102/102/133 contract pins plus this branch's `org.invites.list`/`org.receivers.get` assertions, and `known-problems.md` keeps dev's KP-039/040/041 while this branch records KP-042/043/044. The PR diff is the same 20 files as before the rebase. A later dev advance to `59b62d98a` (#2628) changed none of those 20 files; the branch was rebased again without conflicts and the GUI gates were re-run.
+
+## Scope and order
+
+1. Verify the #2578 module structure on its exact head and wire `check:module-boundaries` into the GUI CI job after locked installation. Keep the existing Python structure checks. Confirm a deliberately invalid import fails the gate and the current tree passes.
+2. Restore the #2579 component and artifact contracts on the current module layout. Confirm each expected failure before changing product code; adapt only paths and harness setup required by #2578.
+3. Fix Select/Field accessibility propagation (KP-037). Preserve controlled values, the empty-value sentinel, disabled semantics, and caller-owned descriptions. Exit: 13/13 contracts, existing primitive tests, typecheck, full GUI tests, and build pass.
+4. Fix Dialog/Select stacking, Escape handling, and focus return (KP-036). Exit: jsdom contracts plus Chromium behavior and screenshot evidence pass without weakening assertions.
+5. Make production-copy fail on missing, empty, corrupt, or forbidden output (KP-038); remove the existing test's false-green path. Run the check after the build in the applicable CI job and align the summary with what ran. Exit: 13/13 artifact contracts, valid build, negative fixtures, and remote CI job evidence pass.
+6. Review browser test collection and the KP-025/KP-026 first-run prerequisite. Separate readiness from unrelated page journeys, record all unrun scenarios explicitly, and keep preview/live on the same view implementation.
+
+## Evidence and constraints
+
+Run focused tests before broad suites. For behavior changes, record a failing test on the unchanged product and a passing result after the minimal fix. Run `npm --prefix gui run check:module-boundaries`, `typecheck`, `test`, `build`, and the relevant browser contracts. Run the repository structural gates, `git diff --check`, and inspect the actual CI event and job selection. Do not treat a local build as remote CI, browser, daemon, or accessibility acceptance.
+
+Keep published API fields, events, and error meanings unchanged. Do not add a second preview/live page, a new framework dependency, or a new baseline exception. Do not mark a PR ready while its own exit criteria remain red or blocked.
+
+## Local evidence and remaining work
+
+- Module boundary gate passes all seven categories with zero registered exceptions. The root GUI workflow invokes it through the `gui` build script after locked dependency installation.
+- Select/Field contracts: 13/13 passed after a failing baseline; Dialog/Select contracts: 5/5 passed after a failing baseline. The isolated Chromium probe passed portal stacking, click, Escape layering, and focus checks. These are component probes, not all page journeys.
+- Production artifact contracts: 13/13 passed after a failing baseline; the existing production-copy suite and contract suite passed 53/53 together. The GUI job runs tests before its build step, so the `pretest` script first invokes the same checked build and supplies `gui/dist` to production-bundle tests. The existing build step then repeats the checks. Workflow-to-package-script tests cover this sequence without changing the protected workflow.
+- #2578 combined with current dev exposed one `FixtureApp` reference error in the org request test. The corrected focused suite passed 25/25 and typecheck passed.
+- The GUI test collector includes `tests/**/*.test.{ts,tsx,mjs}`. The default `test` script excludes three browser-oriented test files with separate `verify:*` scripts. The GUI CI job runs the default test collector and source-mode lifecycle tests; it does not run the entire browser journey chain. `test:browser` and `verify:first-run-browser` remain affected by KP-025's first-run prerequisite. Those journeys have not been claimed as passing here.
+- The full GUI suite initially reported 1760 passed and five failures in two files: the Contract Mock subprocess used a dependency-free Python environment, and #2578's HTTP contract count pins predated two dev operations and 19 net new method declarations. After adjusting the test environment and reviewed counts, those two files passed 7/7.
+- Rebased head re-verification (2026-11-10, local checkouts, Node 22.21.0 rather than CI's Node 24; full GUI suite and browser probe on the `3dbea63c6`-based head, then module boundaries, typecheck, build/verifier, focused contracts, structural/module-boundary checks and ruff re-run on the `59b62d98a`-based head): module boundaries PASS (7 categories, 0 exceptions); typecheck PASS; `npm --prefix gui test` 163 files/1764 tests passed with 1 file/1 test skipped, plus the excluded browser suites unchanged; `npm run build` PASS and `node gui/scripts/verify-production-copy.mjs gui/dist` PASS with 0 forbidden markers; focused contracts 103/103 PASS; `node gui/tests/forms/dialog-select-browser.mjs` PASS against real Chromium; `pytest tests/tooling/ci/planning/gui/test_root_gui_workflow.py` 3/3 PASS; `node --test scripts/ci/ci-scope.test.mjs scripts/ci/ci-plan.test.mjs` 155/155 PASS; Python structural and module-boundary gates PASS; `ruff check .` PASS; `git diff --check` PASS. No gate failed, so no dev-baseline failure needed to be attributed.
+- Remote PR CI and the Draft flag are not covered by these local results. Re-read the full run for the rebased head before treating the PR as merge-ready; the previous head's status is not evidence for it.

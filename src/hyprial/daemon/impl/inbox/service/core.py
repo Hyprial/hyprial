@@ -11,7 +11,6 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     DeliveryLifecycle,
     DeliveryTransport,
     InboxMessage,
-    LinkLedgerOpen,
     SubmissionResult,
 )
 from hyprial.daemon.impl.inbox.links.pull  import (
@@ -21,7 +20,6 @@ from hyprial.daemon.impl.inbox.links.pull  import (
     HoldReason,
     TerminalState,
 )
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.daemon.impl.inbox.service.delivery.notices import _ExpiredSenderNotice
 from hyprial.daemon.impl.inbox.service.state import ConsumptionState
 from hyprial.daemon.impl.inbox.service.policy import (
@@ -35,7 +33,18 @@ from hyprial.daemon.impl.inbox.service.synchronization import (
     _CommittedChanges,
     _synchronized,
 )
-from hyprial.daemon.impl.inbox.service.link_ledger import _link_reply_to
+from hyprial.daemon.impl.inbox.envelope.columns import (
+    ENVELOPE_COLUMN_LIST,
+    ENVELOPE_PLACEHOLDERS,
+    ensure_envelope_columns,
+    envelope_values,
+)
+from hyprial.daemon.impl.delivery import (
+    HumanWakeGate,
+    ObserveWakeGate,
+    ensure_body_retention_schema,
+)
+from hyprial.daemon.impl.inbox.envelope.rules import message_class_of
 
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
 DAY_MS = 86_400_000
@@ -57,8 +66,9 @@ class InboxServiceCoreMixin:
         logger: Logger | None = None,
         alarm_human_delivery: AlarmDelivery | None = None,
         interactive_recipient: Callable[[str], bool] | None = None,
-        link_admission: LinkAdmission | None = None,
         notice_recipient_resolver: Callable[[str], str | None] | None = None,
+        human_wake_gate: HumanWakeGate | None = None,
+        recipient_claimed: Callable[[str], bool] | None = None,
         _serialized_by_actor: bool = False,
     ) -> None:
         database.parent.mkdir(parents=True, exist_ok=True)
@@ -80,14 +90,6 @@ class InboxServiceCoreMixin:
         self._interactive_recipient = interactive_recipient or (
             lambda _recipient: False
         )
-        #: The send-link admission slot (WP4).  There is exactly one default:
-        #: a fresh, unbound slot (fail-closed at dispatch).  A raw service can
-        #: no longer opt out by passing ``None`` (review item 3).
-        self._link_admission = link_admission or LinkAdmission(logger=logger)
-        #: Notices staged by a refused receive, drained by the custody actor
-        #: after the refused record commits (review B4).  Unbounded: a silent
-        #: drop past a cap would lose a sender's only terminal explanation
-        #: (review B4.5), and the actor drains it on the same tick.
         self._pending_link_notices: deque[_ExpiredSenderNotice] = deque()
         # Per-instance so a daemon or agent can be configured independently
         # without mutating the class default other instances read.
@@ -101,6 +103,10 @@ class InboxServiceCoreMixin:
         )
         self._logger = logger or Logger.daemon(database.parent, name=node_id)
         self._notice_recipient_resolver = notice_recipient_resolver
+        self._human_wake_gate = human_wake_gate or ObserveWakeGate(
+            message_class_of, log=self._logger.log
+        )
+        self._recipient_claimed = recipient_claimed
         self._initialize_system_notices()
         self._alarm = AlarmEmitter(
             self._logger,
@@ -171,6 +177,8 @@ class InboxServiceCoreMixin:
             );
             CREATE INDEX IF NOT EXISTS sender_copies_history
                 ON sender_copies(conversation_id, sender, created_at_ms, message_id);
+            CREATE INDEX IF NOT EXISTS sender_copies_operation_key
+                ON sender_copies(sender, idempotency_key);
 
             CREATE TABLE IF NOT EXISTS inbox (
                 arrival_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -467,7 +475,8 @@ class InboxServiceCoreMixin:
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS inbox_expiry ON inbox(consumed, expires_at_ms)"
         )
-        self._create_link_ledger_schema()
+        ensure_envelope_columns(self._db)
+        ensure_body_retention_schema(self._db)
         self._db.commit()
 
     def _create_batch_schema(self, inbox_columns: set[str]) -> None:
@@ -567,9 +576,6 @@ class InboxServiceCoreMixin:
         *,
         now_ms: int | None = None,
         defer_direct: bool = False,
-        link_hold: str | None = None,
-        link_open: LinkLedgerOpen | None = None,
-        link_reply_close: bool = False,
     ) -> SubmissionResult:
         now = self._now_ms() if now_ms is None else now_ms
         if (
@@ -582,17 +588,7 @@ class InboxServiceCoreMixin:
                 code="TARGET_OFFLINE",
             )
 
-        self._insert_outbox(
-            message,
-            now,
-            link_hold=link_hold,
-            link_open=link_open,
-            link_reply_close=link_reply_close,
-        )
-        if link_hold is not None:
-            # A held message only enters durable state: no direct attempt, no
-            # custody transfer and no fetch receipt (WP2 §2.4, §3.6).
-            return SubmissionResult(message.message_id, accepted=True, queued=True)
+        self._insert_outbox(message, now)
         if defer_direct:
             # The PAC workflow tick's required shape (#99 guardrail): inside
             # the IPC request lock the caller only enqueues and advances
@@ -604,10 +600,12 @@ class InboxServiceCoreMixin:
             message, now
         ):
             return SubmissionResult(message.message_id, accepted=True, queued=False)
+        unclaimed = self._unclaimed_dead_letter(message.message_id, "outbox")
+        if unclaimed is not None:
+            return unclaimed
 
         mailbox = self._attempt_custody(message)
         if mailbox is not None:
-            self._ledger_sent_for_outbox_locked(message.message_id, now)
             self._delete_outbox(message.message_id)
             return SubmissionResult(
                 message.message_id,
@@ -628,10 +626,6 @@ class InboxServiceCoreMixin:
         self,
         message: InboxMessage,
         now_ms: int,
-        *,
-        link_hold: str | None = None,
-        link_open: LinkLedgerOpen | None = None,
-        link_reply_close: bool = False,
     ) -> None:
         expires_at_ms = (
             message.expires_at_ms
@@ -639,12 +633,12 @@ class InboxServiceCoreMixin:
             else now_ms + self.durable_ttl_ms
         )
         self._db.execute(
-            """INSERT OR IGNORE INTO outbox (
+            f"""INSERT OR IGNORE INTO outbox (
                    message_id, conversation_id, sender, recipient, payload, intent,
                    lifecycle, idempotency_key, created_at_ms,
                    message_expires_at_ms, expires_at_ms, next_attempt_ms,
-                   retry_started_at_ms, link_hold, summary
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   retry_started_at_ms, summary, {ENVELOPE_COLUMN_LIST}
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {ENVELOPE_PLACEHOLDERS})""",
             (
                 message.message_id,
                 message.conversation_id,
@@ -660,33 +654,23 @@ class InboxServiceCoreMixin:
                 # A producer deadline is an explicit absolute work-order
                 # boundary, never inferred from foreign ``created_at_ms``.
                 expires_at_ms,
-                # A held row parks at its own deadline: the retry pump must
-                # not attempt it before then (WP2 §3.6).
-                expires_at_ms if link_hold is not None else now_ms,
                 now_ms,
-                link_hold,
+                now_ms,
                 message.summary,
+                *envelope_values(message),
             ),
         )
-        if link_open is not None:
-            self._ledger_open_locked(link_open)
-        if link_reply_close:
-            original = _link_reply_to(message)
-            if original is None and isinstance(message.idempotency_key, str):
-                original = message.idempotency_key.removeprefix("reply:") or None
-            if original is not None:
-                self._ledger_close_inbound_locked(message.sender, original, now_ms)
         if message.lifecycle == DeliveryLifecycle.DURABLE_SERVICE:
             # One sender-owned copy, committed atomically with the outbox
             # row.  A replay reuses the message id, so OR IGNORE keeps one
             # row; the history read deduplicates this copy against the
             # retained inbox copy of a same-daemon delivery.
             self._db.execute(
-                """INSERT OR IGNORE INTO sender_copies (
+                f"""INSERT OR IGNORE INTO sender_copies (
                        message_id, conversation_id, sender, recipient, payload,
                        intent, lifecycle, idempotency_key, created_at_ms,
-                       message_expires_at_ms
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       message_expires_at_ms, {ENVELOPE_COLUMN_LIST}
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {ENVELOPE_PLACEHOLDERS})""",
                 (
                     message.message_id,
                     message.conversation_id,
@@ -698,6 +682,7 @@ class InboxServiceCoreMixin:
                     message.idempotency_key,
                     message.created_at_ms,
                     message.expires_at_ms,
+                    *envelope_values(message),
                 ),
             )
         self._db.commit()
@@ -729,9 +714,6 @@ class InboxServiceCoreMixin:
                     state=TerminalState.FETCHED,
                     reason=HoldReason.ACK_RECEIVED,
                     now_ms=confirmed_at_ms,
-                )
-                self._ledger_sent_for_outbox_locked(
-                    message.message_id, confirmed_at_ms
                 )
                 self._db.execute(
                     "DELETE FROM outbox WHERE message_id = ?", (message.message_id,)
@@ -851,10 +833,15 @@ class InboxServiceCoreMixin:
                     outcomes.append(
                         SubmissionResult(message.message_id, True, queued=False)
                     )
+                elif (
+                    unclaimed := self._unclaimed_dead_letter(
+                        message.message_id, "outbox"
+                    )
+                ) is not None:
+                    outcomes.append(unclaimed)
                 else:
                     mailbox = self._attempt_custody(message)
                     if mailbox is not None:
-                        self._ledger_sent_for_outbox_locked(message.message_id, now)
                         self._delete_outbox(message.message_id)
                         outcomes.append(
                             SubmissionResult(
@@ -882,7 +869,6 @@ class InboxServiceCoreMixin:
                 """UPDATE outbox
                       SET next_attempt_ms = ?
                     WHERE recipient = ?
-                      AND link_hold IS NULL
                       AND expires_at_ms > ?
                       AND next_attempt_ms > ?""",
                 (now, recipient, now, now),

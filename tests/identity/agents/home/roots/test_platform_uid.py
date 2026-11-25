@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.identity.impl.agents import AgentHomeError
-from hyprial.kernel.impl.platform.privacy import account, private_access
+from hyprial.kernel.impl.manysys.fs import account, private_access
 
 from .lifecycle.support import (
     _isolated_environment as _isolated_environment,

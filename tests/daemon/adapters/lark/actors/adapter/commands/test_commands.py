@@ -23,7 +23,7 @@ def test_agents_lists_agent_entities_with_current_status_and_metadata(
         AgentDirectoryEntry(
             name="alice",
             status="running",
-            pinned_adapters=("lark-main",),
+            bound_adapters=("lark-main",),
             preferred_harness="claude",
         ),
         AgentDirectoryEntry(
@@ -75,7 +75,6 @@ def test_worker_agent_directory_joins_registry_records_with_live_presence(
                         "uri": "agent:alice:mac:worker",
                         "actor": "worker",
                         "status": "offline",
-                        "pinnedAdapters": ["lark-main"],
                         "preferredHarness": "claude",
                     }
                 ]
@@ -97,6 +96,12 @@ def test_worker_agent_directory_joins_registry_records_with_live_presence(
                     },
                 ]
             }
+        if method == "adapter.list":
+            return {
+                "adapters": [
+                    {"name": "lark-main", "agent": "agent:alice:mac:worker"},
+                ]
+            }
         raise AssertionError(method)
 
     monkeypatch.setattr(lark_worker_daemon_link, "_ipc", fake_ipc)
@@ -108,7 +113,7 @@ def test_worker_agent_directory_joins_registry_records_with_live_presence(
         AgentDirectoryEntry(
             name="worker",
             status="running",
-            pinned_adapters=("lark-main",),
+            bound_adapters=("lark-main",),
             preferred_harness="claude",
         ),
         AgentDirectoryEntry(name="agent:bob:linux:pi", status="running"),
@@ -321,14 +326,14 @@ def test_ask_rejects_a_control_character_target_before_directory_lookup(
 
 
 @pytest.mark.parametrize("text", ("/hyprial agents pin worker", "/hyprial agents unpin"))
-def test_pin_commands_show_the_current_pin_and_name_the_exact_cli_remedy(
+def test_pin_commands_show_the_current_binding_and_name_the_exact_cli_remedy(
     tmp_path: Path, actor: ActorTarget, text: str
 ) -> None:
-    """Read-only pin visibility in chat, plus the exact operator command.
+    """Read-only binding visibility in chat, plus the exact operator remedy.
 
-    Writing a pin from chat stays refused (no operator identity in Lark),
-    but the reply must never be a dead end: it shows which agent this
-    adapter is pinned to and the exact CLI including the adapter's name.
+    Changing the binding from chat stays refused (no operator identity in
+    Lark), but the reply must never be a dead end: it shows which agent this
+    adapter is bound to and how an operator edits the cell document.
     """
 
     adapter, lark, harness, _routes, _events = make_adapter(tmp_path, actor)
@@ -342,20 +347,18 @@ def test_pin_commands_show_the_current_pin_and_name_the_exact_cli_remedy(
 
     assert harness.requests == []
     assert lark.last_reply_text is not None
-    # make_adapter pins the DM to the fixture actor; that binding is shown.
-    assert f"pinned to: {actor.actor_id}" in lark.last_reply_text
+    assert f"bound to: {actor.actor_id}" in lark.last_reply_text
     assert "not supported in Lark chat" in lark.last_reply_text
-    # The command names THIS adapter ("bot" from channel:lark:tenant:bot).
-    assert "hyprial adapter pin bot <agent>" in lark.last_reply_text
-    assert "hyprial adapter unpin bot" in lark.last_reply_text
+    assert "hyprial agent cell show <agent>" in lark.last_reply_text
+    assert "hyprial agent cell apply" in lark.last_reply_text
 
 
 @pytest.mark.parametrize("text", ("/hyprial agents pin worker", "/hyprial agents unpin"))
-def test_pin_commands_without_a_pin_say_so(
+def test_pin_commands_without_a_binding_say_so(
     tmp_path: Path, actor: ActorTarget, text: str
 ) -> None:
     adapter, lark, harness, routes, _events = make_adapter(tmp_path, actor)
-    routes.pins.clear()
+    routes.bindings.clear()
 
     sdk_event(
         adapter.handle_sdk_event,
@@ -366,8 +369,8 @@ def test_pin_commands_without_a_pin_say_so(
 
     assert harness.requests == []
     assert lark.last_reply_text is not None
-    assert "no pinned agent" in lark.last_reply_text
-    assert "hyprial adapter pin bot <agent>" in lark.last_reply_text
+    assert "no bound agent" in lark.last_reply_text
+    assert "hyprial agent cell" in lark.last_reply_text
 
 
 def test_route_command_is_consumed_with_explicit_unsupported_response(

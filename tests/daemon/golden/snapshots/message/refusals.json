@@ -1,0 +1,508 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "message",
+ "scenario": "refusals",
+ "steps": [
+  {
+   "step": 1,
+   "method": "message.send",
+   "label": "missing-summary",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "to": [
+     "agent:op:node-1:beta"
+    ]
+   },
+   "error": {
+    "code": "SUMMARY_REQUIRED",
+    "message": "summary is the only part of a message that enters the recipient's context and must be at most 512 bytes of UTF-8",
+    "data": {
+     "field": "summary",
+     "reason": "missing",
+     "maxBytes": 512
+    }
+   }
+  },
+  {
+   "step": 2,
+   "method": "message.send",
+   "label": "empty-to",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s",
+    "to": []
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "to must be a non-empty array"
+   }
+  },
+  {
+   "step": 3,
+   "method": "message.send",
+   "label": "missing-to",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "to must be a non-empty array"
+   }
+  },
+  {
+   "step": 4,
+   "method": "message.send",
+   "label": "bad-reply-to",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s",
+    "to": [
+     "agent:op:node-1:beta"
+    ],
+    "replyTo": 7
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "replyTo must be a non-empty string naming the request this message answers; no message was queued or sent"
+   }
+  },
+  {
+   "step": 5,
+   "method": "message.send",
+   "label": "empty-message",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s",
+    "to": [
+     "agent:op:node-1:beta"
+    ]
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "message must be a non-empty string"
+   }
+  },
+  {
+   "step": 6,
+   "method": "message.send",
+   "label": "resources-on-agent",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s",
+    "to": [
+     "agent:op:node-1:beta"
+    ],
+    "resourcePaths": [
+     {
+      "path": "<tmp>/x.txt",
+      "kind": "file"
+     }
+    ]
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "attachments are pushed only to user:<owner> of this node, not to 'agent:op:node-1:beta'; no message was queued or sent",
+    "data": {
+     "target": "agent:op:node-1:beta"
+    }
+   }
+  },
+  {
+   "step": 7,
+   "method": "message.send",
+   "label": "stale-session",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-bogus",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s",
+    "to": [
+     "agent:op:node-1:beta"
+    ]
+   },
+   "error": {
+    "code": "SESSION_SUPERSEDED",
+    "message": "actor agent:op:node-1:alpha is now owned by another interactive session"
+   }
+  },
+  {
+   "step": 8,
+   "method": "message.send",
+   "label": "agent-on-behalf-of",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s",
+    "to": [
+     "agent:op:node-1:beta"
+    ],
+    "onBehalfOf": "agent:op:node-1:gamma"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "onBehalfOf is available only to the local operator identity"
+   }
+  },
+  {
+   "step": 9,
+   "method": "message.send",
+   "label": "bad-target",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "message": "m",
+    "conversationId": "conv-r",
+    "idempotencyKey": "key-r",
+    "summary": "s",
+    "to": [
+     "channel:nowhere"
+    ]
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'channel:nowhere' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "channel:nowhere"
+    }
+   }
+  },
+  {
+   "step": 10,
+   "method": "message.reply",
+   "label": "unknown-request",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "no-such-message",
+    "summary": "s",
+    "message": "m"
+   },
+   "error": {
+    "code": "MESSAGE_REPLY_UNAVAILABLE",
+    "message": "pending message was not found"
+   }
+  },
+  {
+   "step": 11,
+   "method": "message.reply",
+   "label": "missing-id",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "summary": "s",
+    "message": "m"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "messageId must be a non-empty string"
+   }
+  },
+  {
+   "step": 12,
+   "method": "message.ack",
+   "label": "unknown",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "no-such-message"
+   },
+   "result": {
+    "ok": false,
+    "messageId": "no-such-message",
+    "acknowledged": false,
+    "code": "MESSAGE_ACK_UNAVAILABLE"
+   }
+  },
+  {
+   "step": 13,
+   "method": "message.read_body",
+   "label": "unknown",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "no-such-message"
+   },
+   "error": {
+    "code": "MESSAGE_BODY_UNAVAILABLE",
+    "message": "no message body is readable for this id",
+    "data": {
+     "messageId": "no-such-message"
+    }
+   }
+  },
+  {
+   "step": 14,
+   "method": "message.read_body",
+   "label": "unfenced",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "messageId": "no-such-message"
+   },
+   "error": {
+    "code": "SENDER_NOT_AUTHENTICATED",
+    "message": "identity 'agent:op:node-1:beta' was claimed, but no matching session was presented; the operator form is --from user:<owner> --on-behalf-of <actor>",
+    "data": {
+     "claimedIdentity": "agent:op:node-1:beta"
+    }
+   }
+  },
+  {
+   "step": 15,
+   "method": "message.status",
+   "label": "unknown",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "messageId": "no-such-message"
+   },
+   "result": {
+    "ok": true,
+    "from": "agent:op:node-1:alpha",
+    "records": [],
+    "diagnostics": {
+     "localRecords": 0,
+     "meshReplies": 0,
+     "meshRecords": 0,
+     "meshHolders": [],
+     "meshResponders": [],
+     "undecodableReplies": 0,
+     "undecodableHolders": [],
+     "replyErrors": 0,
+     "meshError": null,
+     "holders": [],
+     "missingRecipientHolders": [],
+     "conflictingMessageIds": [],
+     "duplicateHolderRecords": [],
+     "noKnownLoss": true
+    },
+    "messageId": "no-such-message",
+    "state": "unknown"
+   }
+  },
+  {
+   "step": 16,
+   "method": "message.history",
+   "label": "missing-conversation",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "message.history params do not match the declared schema at <root>"
+   }
+  },
+  {
+   "step": 17,
+   "method": "message.history",
+   "label": "bad-cursor",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "conversationId": "conv-r",
+    "cursor": "not-a-cursor"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "cursor is not a history page cursor issued for this conversation and caller"
+   }
+  },
+  {
+   "step": 18,
+   "method": "message.pending.wait",
+   "label": "negative-hold",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "holdMs": -1
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "holdMs must be a non-negative integer"
+   }
+  },
+  {
+   "step": 19,
+   "method": "message.pending.wait",
+   "label": "bad-known",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "knownMessageIds": "x"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "knownMessageIds must be a list of message ids"
+   }
+  },
+  {
+   "step": 20,
+   "method": "message.pending.batch",
+   "label": "cursor-and-after",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "cursor": "a",
+    "afterCursor": "b"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "cursor and afterCursor are mutually exclusive"
+   }
+  },
+  {
+   "step": 21,
+   "method": "message.pending.batch",
+   "label": "unknown-cursor",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "cursor": "unknown"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "cursor is not in the expected two-part form"
+   }
+  },
+  {
+   "step": 22,
+   "method": "message.pending.list",
+   "label": "fetched-marker",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "fetched": true
+   },
+   "result": {
+    "ok": true,
+    "messages": [],
+    "daemonEpoch": "<uuid4#1>"
+   }
+  },
+  {
+   "step": 23,
+   "method": "message.pending.list",
+   "label": "unfenced-fetch",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "fetched": true
+   },
+   "error": {
+    "code": "SENDER_NOT_AUTHENTICATED",
+    "message": "identity 'agent:op:node-1:beta' was claimed, but no matching session was presented; the operator form is --from user:<owner> --on-behalf-of <actor>",
+    "data": {
+     "claimedIdentity": "agent:op:node-1:beta"
+    }
+   }
+  },
+  {
+   "step": 24,
+   "method": "message.query",
+   "label": "bad-view",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "view": "drafts"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "message.query params do not match the declared schema at view"
+   }
+  },
+  {
+   "step": 25,
+   "method": "message.query",
+   "label": "missing-view",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "message.query params do not match the declared schema at <root>"
+   }
+  },
+  {
+   "step": 26,
+   "method": "message.send.lookup",
+   "label": "schema",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "target": "user:op"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "message.send.lookup params do not match the declared schema at <root>"
+   }
+  },
+  {
+   "step": 27,
+   "method": "message.settle_hint",
+   "label": "missing-id",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "messageId must be a non-empty string"
+   }
+  }
+ ]
+}

@@ -723,7 +723,7 @@ def test_recovery_cleanup_failure_is_logged_and_handle_retained(
 
 
 def test_remote_constructor_partial_failure_cleans_wire(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host,
 ) -> None:
     database = tmp_path / "pac-graph.sqlite3"
     from hyprial.daemon.impl.pac.storage.store import PacGraphStore
@@ -767,6 +767,9 @@ def test_remote_constructor_partial_failure_cleans_wire(
         state_dir=tmp_path,
         _dispatch_service_actor="agent:owner:node:daemon",
         _workflow_service=object(),
+        _agent_session_domains=SimpleNamespace(
+            actor_hosts=SimpleNamespace(host_for=lambda _owner: actor_host),
+        ),
     )
     monkeypatch.setattr(remote_workflow, "RemoteWire", Wire)
     # Limit the late-acquisition fault to this module's outcome pump. Replacing

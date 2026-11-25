@@ -31,8 +31,9 @@ import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explici
 class FakeRunner:
     """A ``ServiceCommandRunner`` that answers ``systemctl`` like an idle unit."""
 
-    def __init__(self, unit_path: Path) -> None:
+    def __init__(self, unit_path: Path, main_pid: int = 0) -> None:
         self.unit_path = unit_path
+        self.main_pid = main_pid
         self.commands: list[tuple[str, ...]] = []
 
     def __call__(self, command, *, timeout=None):  # type: ignore[no-untyped-def]
@@ -41,9 +42,11 @@ class FakeRunner:
         stdout = ""
         returncode = 0
         if command[:3] == ("systemctl", "--user", "show"):
+            active, sub = ("active", "running") if self.main_pid else ("inactive", "dead")
             stdout = (
-                "LoadState=loaded\nActiveState=inactive\nSubState=dead\n"
-                f"MainPID=0\nNRestarts=0\nExecMainStatus=0\nFragmentPath={self.unit_path}\n"
+                f"LoadState=loaded\nActiveState={active}\nSubState={sub}\n"
+                f"MainPID={self.main_pid}\nNRestarts=0\nExecMainStatus=0\n"
+                f"FragmentPath={self.unit_path}\n"
             )
         elif command[0] == "loginctl":
             returncode = 1
@@ -57,7 +60,9 @@ class FakeRunner:
         ]
 
 
-def _manager(tmp_path: Path, *, installed: bool = True) -> tuple[ServiceManager, FakeRunner]:
+def _manager(
+    tmp_path: Path, *, installed: bool = True, main_pid: int = 0
+) -> tuple[ServiceManager, FakeRunner]:
     config = ServiceConfig(
         executable=tmp_path / "bin" / "hyprial",
         home=tmp_path / "account",
@@ -65,7 +70,7 @@ def _manager(tmp_path: Path, *, installed: bool = True) -> tuple[ServiceManager,
         state_dir=tmp_path / "state",
     )
     probe = ServiceManager(config, platform="systemd", uid=1000, username="user")
-    runner = FakeRunner(probe.unit_path)
+    runner = FakeRunner(probe.unit_path, main_pid)
     manager = ServiceManager(
         config, platform="systemd", runner=runner, uid=1000, username="user"
     )
@@ -95,6 +100,7 @@ def test_start_with_installed_service_asks_the_supervisor(
 ) -> None:
     manager, runner = _manager(tmp_path)
     monkeypatch.setattr(service_module, "_service_manager", lambda: manager)
+    monkeypatch.setenv("HYPRIAL_DAEMON_AUTOSTART", "1")
     _no_spawn(monkeypatch)
     monkeypatch.setattr(
         services,
@@ -113,7 +119,9 @@ def test_start_with_installed_service_asks_the_supervisor(
         ready_timeout=3.0, expected_identity_generation=4
     )
 
-    assert runner.mutations() == [("systemctl", "--user", "start", "hyprial.service")]
+    assert runner.mutations() == [
+        ("systemctl", "--user", "start", manager.unit_path.name)
+    ]
     assert launched.running and launched.pid == 77
     assert waited[0]["timeout"] == 3.0
     assert "process" not in waited[0]
@@ -148,6 +156,7 @@ def test_endpoint_overrides_cannot_reach_a_supervised_launch(
 ) -> None:
     manager, runner = _manager(tmp_path)
     monkeypatch.setattr(service_module, "_service_manager", lambda: manager)
+    monkeypatch.setenv("HYPRIAL_DAEMON_AUTOSTART", "1")
     _no_spawn(monkeypatch)
     monkeypatch.setattr(
         services,
@@ -163,7 +172,7 @@ def test_endpoint_overrides_cannot_reach_a_supervised_launch(
 def test_daemon_stop_with_installed_service_stops_the_supervisor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, services
 ) -> None:
-    manager, runner = _manager(tmp_path)
+    manager, runner = _manager(tmp_path, main_pid=77)
     monkeypatch.setattr(service_module, "_service_manager", lambda: manager)
     monkeypatch.setattr(
         services, "_daemon_probe", lambda **_k: {"pid": 77, "epoch": "e-1"}
@@ -182,9 +191,14 @@ def test_daemon_stop_with_installed_service_stops_the_supervisor(
 
     result = daemon_stop._stop_daemon_for_operator()
 
-    assert runner.mutations() == [("systemctl", "--user", "stop", "hyprial.service")]
+    assert runner.mutations() == [
+        ("systemctl", "--user", "stop", manager.unit_path.name)
+    ]
     assert result["pid"] == 77
-    assert result["supervisor"] == {"platform": "systemd", "unit": "hyprial.service"}
+    assert result["supervisor"] == {
+        "platform": "systemd",
+        "unit": manager.unit_path.name,
+    }
     assert result["teardownCompleted"] is True
 
     with pytest.raises(services.CliError) as raised:

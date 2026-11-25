@@ -1,11 +1,12 @@
 from __future__ import annotations
 import json
 from uuid import NAMESPACE_URL, uuid5
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import ipc_errors, parse_user_uri
 from hyprial.daemon.impl.inbox.contracts.api  import (
     DeliveryLifecycle,
     InboxMessage,
     ReceiveResult,
+    SubmissionResult,
 )
 from hyprial.daemon.impl.inbox.links.pull  import (
     HoldReason,
@@ -16,7 +17,12 @@ from hyprial.daemon.impl.inbox.service.delivery.notices import (
     _bare_sender,
 )
 from hyprial.daemon.impl.inbox.service.synchronization import _synchronized
-from hyprial.daemon.impl.inbox.service.link_ledger import _link_reply_to
+from hyprial.daemon.impl.inbox.envelope.columns import (
+    ENVELOPE_COLUMN_LIST,
+    ENVELOPE_PLACEHOLDERS,
+    envelope_values,
+)
+from hyprial.daemon.impl.inbox.envelope.payload import adopt_payload_envelope
 
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
 
@@ -26,6 +32,7 @@ class InboxServiceReceiveMixin:
         self, message: InboxMessage, *, now_ms: int | None = None
     ) -> ReceiveResult:
         now = self._now_ms() if now_ms is None else now_ms
+        message = adopt_payload_envelope(message)
         if _bare_sender(message.sender):
             # Ingress admission gate (Allen B): after the daemon send
             # boundary canonicalizes every sender, a bare (node-shaped)
@@ -35,8 +42,7 @@ class InboxServiceReceiveMixin:
             # sender's unreceipted retries continue until ACK or TTL,
             # and the notice states the reason.
             return self._reject_bare_sender(message, now)
-        refusal_code: str | None = None
-        accepted = False
+        unclaimed = self._recipient_unclaimed(message)
         with self._db:
             self._db.execute("DELETE FROM dedup WHERE expires_at_ms <= ?", (now,))
             keys = [f"msgid:{message.message_id}"]
@@ -87,8 +93,7 @@ class InboxServiceReceiveMixin:
                     acknowledged=True,
                     duplicate=True,
                 )
-            refusal_code = self._link_ingress_code(message)
-            if refusal_code is None:
+            if not unclaimed:
                 pending = self._db.execute(
                     """SELECT COUNT(*) FROM inbox
                        WHERE consumed = 0
@@ -122,12 +127,13 @@ class InboxServiceReceiveMixin:
                     (message.message_id,),
                 )
                 self._db.execute(
-                    """INSERT INTO inbox (
+                    f"""INSERT INTO inbox (
                            message_id, conversation_id, sender, recipient, payload, intent,
                            lifecycle, idempotency_key, created_at_ms, received_at_ms,
                            message_expires_at_ms, expires_at_ms, origin_node, summary,
-                           arrival_ordinal
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           arrival_ordinal, {ENVELOPE_COLUMN_LIST}
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                 {ENVELOPE_PLACEHOLDERS})""",
                     (
                         message.message_id,
                         message.conversation_id,
@@ -151,6 +157,7 @@ class InboxServiceReceiveMixin:
                         message.origin_node,
                         message.summary,
                         self._next_arrival_ordinal(),
+                        *envelope_values(message),
                     ),
                 )
                 for key in keys:
@@ -164,32 +171,11 @@ class InboxServiceReceiveMixin:
                     reason=HoldReason.ACK_RECEIVED,
                     now_ms=now,
                 )
-                accepted = True
-            else:
-                # Ingress refusal (WP4 §4.6): no inbox row, no dedup row and no
-                # signed receipt.  The terminal record commits with this
-                # transaction; the notice is staged only after the commit
-                # succeeds (review B4).
-                self._record_terminal(
-                    message,
-                    state=TerminalState.REFUSED,
-                    reason=HoldReason.LINK_UNKNOWN,
-                    now_ms=now,
-                )
-        if not accepted:
-            self._stage_link_unknown_notice(
-                message, now_ms=now, code=refusal_code or ipc_errors.LINK_UNKNOWN
-            )
-            self._log_ingress_refusal(message, str(refusal_code))
-            return ReceiveResult(
-                message.message_id,
-                accepted=False,
-                acknowledged=False,
-                code=refusal_code,
-            )
+        if unclaimed:
+            return self._unclaimed_recipient_refusal(message, now)
         wake = message.intent in {"request", "reply"}
-        if accepted and self._close_reply_ledger(message, now):
-            self._sink_reply_received(message.recipient, message, now)
+        if wake and parse_user_uri(message.recipient) is not None:
+            self._human_wake_gate.observe(message, path="inbox.receive")
         return ReceiveResult(
             message.message_id,
             accepted=True,
@@ -198,92 +184,128 @@ class InboxServiceReceiveMixin:
             reply_owed=message.intent == "request",
         )
 
-    def _close_reply_ledger(self, message: InboxMessage, now_ms: int) -> bool:
-        """Close the outbound row an arriving reply answers (B7, §3.9).
+    def _recipient_unclaimed(self, message: InboxMessage) -> bool:
+        """Whether the injected ``recipient_claimed`` rejects the recipient.
 
-        Runs in its own transaction after the inbox row committed; the
-        ``sample_pending`` flag it leaves is what lets a later tick record the
-        RTT when the in-memory callback was lost (B7).
+        The daemon injects the predicate (UUID addressing §2.3); without it
+        every recipient is claimed and receive is unchanged.  receive asks
+        before its write transaction, so the predicate's registry, desired
+        state and presence reads never run under the inbox write lock, and
+        uses the answer only after its duplicate checks, so a message already
+        received keeps its duplicate ACK.
         """
 
-        reply_to = _link_reply_to(message)
-        if reply_to is None:
-            return False
-        with self._db:
-            return self._ledger_close_outbound_locked(
-                message.recipient, reply_to, message.sender, now_ms
-            )
+        claimed = self._recipient_claimed
+        return claimed is not None and not claimed(message.recipient)
 
-    def _link_ingress_code(self, message: InboxMessage) -> str | None:
-        """The ingress refusal code for this message, or None to accept.
+    def _unclaimed_recipient_refusal(
+        self, message: InboxMessage, now_ms: int
+    ) -> ReceiveResult:
+        """End a message whose recipient nothing here claims (UUID §2.3).
 
-        Runs on the inbox actor thread inside the receive transaction.  The
-        admission slot answers from the gate's in-memory copy; it never does
-        I/O here.  ``InboxService`` always owns a slot (review item 3), so
-        there is no ``None``-means-permissive second default: an unbound slot
-        accepts at ingress and holds at dispatch, never both ways.
+        A copy this node still holds (the local sender's outbox row, or a
+        custody row the mailbox pump is delivering) moves to the DLQ with
+        ``TARGET_UNRESOLVED``; a network arrival is refused like any ingress
+        refusal: a terminal ``refused`` record, no inbox row, no receipt,
+        and a notice to the sender staged after the record commits.
         """
 
-        return self._link_admission.ingress_refusal(
-            sender=message.sender,
-            recipient=message.recipient,
-            intent=message.intent,
+        reason = ipc_errors.TARGET_UNRESOLVED
+        held = {
+            table: self._db.execute(
+                f"SELECT * FROM {table} WHERE message_id = ? AND recipient = ?",  # noqa: S608
+                (message.message_id, message.recipient),
+            ).fetchone()
+            for table in ("outbox", "custody")
+        }
+        if held["outbox"] is not None:
+            self._outbox_to_dlq(held["outbox"], reason, now_ms)
+        elif held["custody"] is not None:
+            self._custody_to_dlq(held["custody"], reason, now_ms)
+        else:
+            with self._db:
+                self._record_terminal(
+                    message,
+                    state=TerminalState.REFUSED,
+                    reason=reason,
+                    now_ms=now_ms,
+                )
+            self._stage_unclaimed_notice(message, now_ms=now_ms)
+        self._log_ingress_refusal(message, reason)
+        return ReceiveResult(
+            message.message_id, accepted=False, acknowledged=False, code=reason
         )
 
-    def _stage_link_unknown_notice(
-        self,
-        message: InboxMessage,
-        *,
-        now_ms: int,
-        code: str,
-    ) -> None:
-        """Queue the LINK_UNKNOWN notice for the custody actor (B4).
+    def _unclaimed_dead_letter(
+        self, message_id: str, table: str
+    ) -> SubmissionResult | None:
+        """The submission outcome when receive dead-lettered a held copy.
 
-        The refused record already committed; nothing here touches the
-        transport.  The notice id is deterministic in the original message id
-        so a sender's unreceipted retries dedup at the receiving node instead
-        of piling up.
+        After a failed local delivery, a ``table`` row that is gone with
+        ``TARGET_UNRESOLVED`` as its latest DLQ reason ended in
+        ``_unclaimed_recipient_refusal``; the pump reports that terminal
+        code instead of ``queued``.  Without an injected predicate this is
+        always None.
         """
 
-        notice_id = str(
-            uuid5(NAMESPACE_URL, f"hyprial:link-unknown:{message.message_id}")
+        if self._recipient_claimed is None:
+            return None
+        if self._db.execute(
+            f"SELECT 1 FROM {table} WHERE message_id = ?",  # noqa: S608
+            (message_id,),
+        ).fetchone() is not None:
+            return None
+        row = self._db.execute(
+            "SELECT reason FROM dlq WHERE message_id = ? ORDER BY dlq_id DESC LIMIT 1",
+            (message_id,),
+        ).fetchone()
+        if row is None or row[0] != ipc_errors.TARGET_UNRESOLVED:
+            return None
+        return SubmissionResult(
+            message_id, False, code=ipc_errors.TARGET_UNRESOLVED
         )
-        summary = (
-            f"message {message.message_id} was refused at ingress: {code}"
+
+    def _stage_unclaimed_notice(self, message: InboxMessage, *, now_ms: int) -> None:
+        """Queue the sender's notice for an unclaimed recipient (custody actor)."""
+
+        reason = ipc_errors.TARGET_UNRESOLVED
+        text = (
+            f"message {message.message_id} was refused at ingress: nothing on "
+            f"node {self.node_id} claims {message.recipient!r} ({reason})"
         )
         payload = json.dumps(
             {
-                "message": (
-                    f"message {message.message_id} was refused at ingress: "
-                    f"the recipient's orgfs copy holds no link file for "
-                    f"{message.sender!r} ({code})"
-                ),
+                "message": text,
                 "originalMessageId": message.message_id,
-                "reason": code,
+                "reason": reason,
                 "systemNotice": True,
             },
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode()
-        notice = InboxMessage(
-            message_id=notice_id,
-            conversation_id=message.conversation_id,
-            sender=f"system:hyprial:{self.node_id}",
-            recipient=message.sender,
-            payload=payload,
-            intent="system",
-            lifecycle=DeliveryLifecycle.ONLINE_ONLY,
-            idempotency_key=f"link-unknown:{message.message_id}",
-            created_at_ms=now_ms,
-            summary=summary[:512],
-        )
         self._pending_link_notices.append(
             _ExpiredSenderNotice(
                 original_message_id=message.message_id,
                 target_node=(
                     message.origin_node or self._agent_node(message.sender)
                 ),
-                notice=notice,
+                notice=InboxMessage(
+                    message_id=str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"hyprial:target-unresolved:{message.message_id}",
+                        )
+                    ),
+                    conversation_id=message.conversation_id,
+                    sender=f"system:hyprial:{self.node_id}",
+                    recipient=message.sender,
+                    payload=payload,
+                    intent="system",
+                    lifecycle=DeliveryLifecycle.ONLINE_ONLY,
+                    idempotency_key=f"target-unresolved:{message.message_id}",
+                    created_at_ms=now_ms,
+                    summary=text[:512],
+                ),
             )
         )
 

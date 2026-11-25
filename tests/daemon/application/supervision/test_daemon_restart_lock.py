@@ -471,9 +471,9 @@ def test_a_survivor_alerts_a_person_while_an_ordinary_timeout_does_not() -> None
 
     On 2026-08-30 the cost was not that the replacement was blocked -- it was
     that nine hours passed with nobody knowing. This asserts the survivor branch
-    reaches the alert channel, and that the plain timeout does not: an alert on
-    every timeout would be back to noise, and noise is what made the last one
-    invisible.
+    writes the failure marker (R2: nothing is sent to any IM), and that the
+    plain timeout does not: a marker on every timeout would be back to noise,
+    and noise is what made the last one invisible.
     """
 
     source = (
@@ -490,7 +490,7 @@ def test_a_survivor_alerts_a_person_while_an_ordinary_timeout_does_not() -> None
         "the upgrade path cannot tell a survivor from an ordinary timeout"
     )
     survivor_at = skeleton.index('stop_error.code == "DAEMON_STOP_SURVIVOR"')
-    alert_at = skeleton.index("notify_upgrade_failure(", survivor_at)
+    alert_at = skeleton.index("write_failure_marker(", survivor_at)
     # The alert must sit inside the survivor branch, not before it -- otherwise
     # every timeout alerts and the distinction buys nothing.
     assert alert_at > survivor_at

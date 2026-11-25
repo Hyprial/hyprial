@@ -86,7 +86,7 @@ def test_explicit_migration_defaults_native_rows_to_null(registry: AgentRegistry
         reopened.close()
 
 
-@pytest.mark.parametrize("authority", ["transfer-receive", "squire-container"])
+@pytest.mark.parametrize("authority", ["transfer-receive"])
 def test_hosting_authority_persists_in_real_database(
     registry: AgentRegistry, authority: str,
 ) -> None:
@@ -146,7 +146,7 @@ def test_receive_authority_creation_is_insert_only(registry: AgentRegistry) -> N
     from hyprial.identity.impl.agents.registry._base import AgentExistsError
 
     record = registry.create_transfer_hosted("worker", pinned_owner="source-owner")
-    assert record.uri == "agent:source-owner:target-node:worker"
+    assert record.uri == f"agent:source-owner:target-node:{record.agent_id}"
     assert record.hosted_by == "transfer-receive"
     assert registry.require(record.uri) == record
     with pytest.raises(AgentExistsError):
@@ -169,7 +169,7 @@ def test_native_creation_uses_uri_leaf_parser_at_runtime(
     native = registry.create("worker")
 
     assert native.actor == "worker"
-    assert native.uri == "agent:target-owner:target-node:worker"
+    assert native.uri == f"agent:target-owner:target-node:{native.agent_id}"
 
 
 def test_transfer_hosted_creation_uses_uri_leaf_composer_at_runtime(
@@ -178,7 +178,7 @@ def test_transfer_hosted_creation_uses_uri_leaf_composer_at_runtime(
     hosted = registry.create_transfer_hosted("worker", pinned_owner="source-owner")
 
     assert hosted.actor == "worker"
-    assert hosted.uri == "agent:source-owner:target-node:worker"
+    assert hosted.uri == f"agent:source-owner:target-node:{hosted.agent_id}"
 
 
 def test_uri_for_keeps_stored_hosted_address_before_canonical_fallback(
@@ -194,15 +194,13 @@ def test_uri_for_keeps_stored_hosted_address_before_canonical_fallback(
     )
 
 
-def test_destroy_hosted_row_cascades_pins_and_rejects_other_uris(
+def test_destroy_hosted_row_and_rejects_other_uris(
     registry: AgentRegistry,
 ) -> None:
     record = registry.create_transfer_hosted("worker", pinned_owner="source-owner")
-    registry.pin("test-adapter", record.uri)
     assert not registry.destroy("agent:unrelated:target-node:worker")
-    assert registry.pins() == {"test-adapter": record.uri}
+    assert registry.get("worker") is not None
     assert registry.destroy(record.uri)
-    assert registry.pins() == {}
     assert registry.get("worker") is None
     assert registry.local_actor(record.uri) is None
 
@@ -217,10 +215,23 @@ def test_save_is_not_a_hosting_authority(registry: AgentRegistry) -> None:
         registry.save(record)
     assert registry.require("worker") == native
     registry.destroy("worker")
-    hosted = registry.create_transfer_hosted("worker", pinned_owner="source-owner")
+    with pytest.raises(AgentError, match="save cannot authorize"):
+        registry.save(record)
+    assert registry.get("worker") is None
+    rehosted = registry.create_transfer_hosted("worker", pinned_owner="source-owner")
+    assert rehosted.agent_id != native.agent_id
+    assert rehosted.entity_token != native.entity_token
+    assert rehosted.uri not in {native.uri, record.uri}
+    assert (rehosted.owner, rehosted.hosted_by) == ("source-owner", "transfer-receive")
+    assert registry.local_actor(native.uri) is None
+    for stale in (record, native, replace(native, hosted_by="transfer-receive")):
+        with pytest.raises(AgentError, match="save cannot"):
+            registry.save(stale)
+    assert registry.require("worker") == rehosted
+    hosted =registry.create_transfer_hosted("hosted-worker", pinned_owner="source-owner")
     for changed in (
         replace(hosted, hosted_by=None),
-        replace(hosted, hosted_by="squire-container"),
+        replace(hosted, hosted_by="host-invite"),
         replace(hosted, owner="another-owner"),
     ):
         with pytest.raises(AgentError, match="save cannot authorize"):

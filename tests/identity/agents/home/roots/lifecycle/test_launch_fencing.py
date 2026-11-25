@@ -34,6 +34,7 @@ from .support import (
     _registry,
 )
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_agent_home_lifecycle_io_does_not_hold_mailbox_or_registry_lock(
@@ -42,25 +43,27 @@ def test_agent_home_lifecycle_io_does_not_hold_mailbox_or_registry_lock(
     registry = _registry(tmp_path)
     registry.create("steady")
     events = _AgentEvents()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     provisioner = registry._home
     assert provisioner is not None
     provision = provisioner.provision
     entered = threading.Event()
     release = threading.Event()
+    home_effect_thread_idents: list[int] = []
 
     def blocking_provision(**kwargs: object):  # type: ignore[no-untyped-def]
         if kwargs.get("actor") == "slow":
+            home_effect_thread_idents.append(threading.get_ident())
             entered.set()
             assert release.wait(3.0)
         return provision(**kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(provisioner, "provision", blocking_provision)
-    mutation_threads: list[str] = []
+    mutation_thread_idents: list[int] = []
 
     def trace(statement: str) -> None:
         if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
-            mutation_threads.append(threading.current_thread().name)
+            mutation_thread_idents.append(threading.get_ident())
 
     registry._db.set_trace_callback(trace)
     lifecycle = LifecycleMutationRequest(
@@ -84,10 +87,10 @@ def test_agent_home_lifecycle_io_does_not_hold_mailbox_or_registry_lock(
         completed = events.wait("lifecycle-create-slow", LifecycleMutationCompleted)
         assert completed.provenance.changed
         assert registry.home_receipt("slow").status == "ready"
-        assert mutation_threads
-        assert len(set(mutation_threads)) == 1
-        assert "agent-home-effect" not in mutation_threads
-        assert mutation_threads[0] != threading.current_thread().name
+        assert mutation_thread_idents
+        assert len(set(mutation_thread_idents)) == 1
+        assert not set(home_effect_thread_idents) & set(mutation_thread_idents)
+        assert mutation_thread_idents[0] != threading.get_ident()
     finally:
         registry._db.set_trace_callback(None)
         release.set()
@@ -100,7 +103,7 @@ def test_workspace_publication_is_fenced_by_destroyed_home_incarnation(
     registry = _registry(tmp_path)
     registry.create("worker")
     events = _AgentEvents()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     provisioner = registry.home_provisioner
     original = provisioner.ensure_workspace
     entered = threading.Event()
@@ -314,8 +317,12 @@ def test_replaced_incarnation_rejects_old_runtime_launch_token(
         )) is PortAdmission.ACCEPTED
         events.wait("destroy-old-context", AgentMutationCompleted)
         assert actor.submit(CreateAgentCommand(
+            "create-same-name", "worker", cwd=str(tmp_path / "work"),
+        )) is PortAdmission.ACCEPTED
+        events.wait("create-same-name", AgentMutationCompleted)
+        assert actor.submit(CreateAgentCommand(
             "create-replacement",
-            "worker",
+            "worker-2",
             cwd=str(tmp_path / "work"),
             config={
                 "sources": [{

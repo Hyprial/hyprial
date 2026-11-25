@@ -1,3 +1,16 @@
+# Decision record (harnesses/codex/native_env, W1E-1 2026-11-21):
+# - Implements Owner 5A portability ruling for Codex runtime preparation:
+#   non-secret projection files are already materialized as regular files via
+#   write_or_verify_projection_file, while P22 (identity/impl/agents/runtime/
+#   context.py) and transfer rollout archiving (daemon/impl/transfer/archive/
+#   session_files.py) bind Codex rollouts to the separate physical session_root
+#   (<agent_home>/state/sessions/codex) outside secrets/native/codex.
+# - Replaced CODEX_HOME/sessions symlink_to + is_symlink checks with
+#   manysys.link_directory, manysys.is_directory_link, and
+#   manysys.path_is_reparse (POSIX symlink, Windows unprivileged NTFS junction),
+#   and taught _verify_codex_native_inventory to validate the sessions reparse
+#   point without traversing into session_root or admitting unauthorized
+#   junctions.
 """Codex agent-home projection, native-load validation, thread config
 and turn-result parsing helpers."""
 from __future__ import annotations
@@ -19,7 +32,7 @@ from hyprial.identity import (
     AgentRuntimeNotice,
     whitelist_replacement_environment,
 )
-from hyprial.kernel import PrivateAccessUnsupported, harden_private_path
+from hyprial.kernel import PrivateAccessUnsupported, harden_private_path, manysys
 from hyprial.identity import ConfigProjectionReceipt, verify_native_projection
 from hyprial.identity import (
     AgentRuntimeContext,
@@ -100,6 +113,15 @@ def _allowed_codex_mutable_file(relative: str) -> bool:
         or relative.startswith(_CODEX_MUTABLE_PREFIXES)
     )
 
+def _is_valid_sessions_link(sessions: Path, session_root: Path) -> bool:
+    if not manysys.is_directory_link(sessions):
+        return False
+    try:
+        return sessions.resolve(strict=True) == session_root.resolve(strict=True)
+    except OSError:
+        return False
+
+
 def _verify_codex_native_inventory(
     native_root: Path,
     *,
@@ -108,13 +130,9 @@ def _verify_codex_native_inventory(
     codex_executable: Path | Callable[[], Path],
     shared_credential: SharedCredentialBinding | None = None,
 ) -> None:
-    # Resolved lazily and once: only an arg0 alias needs the launched
-    # executable, so a home without aliases never depends on codex's PATH.
     launched = functools.cache(
         (lambda: codex_executable) if isinstance(codex_executable, Path) else codex_executable
     )
-    # The set of executables the launch chain may legitimately run: the
-    # resolved launch target plus, for an npm shim, its vendored binary.
     acceptable = functools.cache(lambda: codex_launch_executables(launched()))
     stack = [native_root]
     while stack:
@@ -163,7 +181,13 @@ def _verify_codex_native_inventory(
                         f"Codex arg0 alias {relative} -> {link} is an unauthorized "
                         f"symbolic link; it must be an absolute link to {expected_target}"
                     )
-                if relative != "sessions" or candidate.resolve() != session_root.resolve():
+                if relative != "sessions" or not _is_valid_sessions_link(candidate, session_root):
+                    raise CodexAgentHomeError(
+                        f"Codex native item {relative} is an unauthorized symbolic link"
+                    )
+                continue
+            if manysys.path_is_reparse(metadata):
+                if relative != "sessions" or not _is_valid_sessions_link(candidate, session_root):
                     raise CodexAgentHomeError(
                         f"Codex native item {relative} is an unauthorized symbolic link"
                     )
@@ -222,7 +246,7 @@ def prepare_codex_runtime_roots(
         expected_items: list[str] = []
         for candidate in projection_root.rglob("*"):
             metadata = candidate.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
+            if stat.S_ISLNK(metadata.st_mode) or manysys.path_is_reparse(metadata):
                 raise CodexAgentHomeError("Codex projection contains a symbolic link")
             if stat.S_ISREG(metadata.st_mode):
                 expected_items.append(candidate.relative_to(projection_root).as_posix())
@@ -247,15 +271,27 @@ def prepare_codex_runtime_roots(
             read_only=read_only,
         )
     sessions = native_root / "sessions"
-    if sessions.exists() or sessions.is_symlink():
-        if not sessions.is_symlink() or sessions.resolve() != session_root.resolve():
+    try:
+        sessions.lstat()
+        sessions_present = True
+    except FileNotFoundError:
+        sessions_present = False
+    except OSError as error:
+        raise CodexAgentHomeError("cannot inspect Codex sessions path") from error
+    if sessions_present:
+        if not _is_valid_sessions_link(sessions, session_root):
             raise CodexAgentHomeError(
                 "Codex sessions path is not bound to the resolved session root"
             )
     elif read_only:
         raise CodexAgentHomeError("authority-prepared Codex sessions link is missing")
     else:
-        sessions.symlink_to(session_root, target_is_directory=True)
+        try:
+            manysys.link_directory(session_root, sessions)
+        except OSError as error:
+            raise CodexAgentHomeError(
+                f"cannot link Codex sessions path to session root: {error}"
+            ) from error
     _verify_codex_native_inventory(
         native_root,
         expected=expected,

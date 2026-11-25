@@ -1,4 +1,15 @@
-"""DaemonEventBridge core: construction, startup recovery, the reconcile timer and projection surface."""
+# Decision record (W2B-2, 2026-11-21):
+# - _RunMarker.begin hardens the temporary run marker via
+#   hyprial.kernel.harden_private_path before atomic replacement.
+"""DaemonEventBridge core: construction, startup recovery, the reconcile timer and projection surface.
+
+Decision record (cell model I5-2 C, second review round 2026-11-20): the
+headless cell delivery port is a required constructor input — every
+composition, production and test alike, states how headless work is
+admitted.  The dispatch callable handed to the offer coordinator therefore
+always receives exactly one cell dispatch envelope; the worker name stays
+the coordinator's lane key and never reaches the execution edge.
+"""
 
 from __future__ import annotations
 from hyprial.daemon.impl.runtime.settlement import (
@@ -7,25 +18,23 @@ from hyprial.daemon.impl.runtime.settlement import (
 )
 import json
 import os
-import queue
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Collection
+from typing import TYPE_CHECKING, Any, Callable
 from hyprial.daemon.impl.inbox import (
     DEFAULT_HOLD_TTL_MS,
     InboxAuthorityUnavailable,
 )
 from hyprial.daemon.impl.inbox.contracts.api import InboxMessage, InboxPruneItem
-from hyprial.kernel import ReadinessReport
+from hyprial.kernel import AdmissionResult, ReadinessReport, harden_private_path
 from hyprial.daemon.impl.api  import (
     HarnessResult,
 )
 from hyprial.daemon.impl.desired_state  import DesiredStateStore, InteractiveSession
 from hyprial.daemon.impl.processes.supervisor  import ManagedHarnessRuntime
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.daemon.impl.dispatch.runtime.state  import (
     DispatchOwnedMap,
     DispatchOwnedSet,
@@ -39,18 +48,15 @@ from hyprial.daemon.impl.dispatch.runtime.progress  import ProgressPublishCoordi
 from hyprial.daemon.impl.correlation.bounded_cadence  import BoundedCadence, CadenceCompleted
 from hyprial.daemon.impl.processes.result_settlement  import ResultSettlementCoordinator, SettlementProjection
 from hyprial.daemon.impl.harnesses.runtime.ports  import HarnessResultsClaimed
-from hyprial.kernel import AdmissionResult
 if TYPE_CHECKING:
+    from hyprial.daemon.impl.cells.actor.contracts import CellDispatchStamp
     from hyprial.daemon.impl.inbox.contracts.api import DeliveryTransport, InboxPort
     from hyprial.daemon.impl.transport.api import PresenceView, TransportSession
     from hyprial.daemon.impl.hooks.intercept import DeliveryHookService
+    from hyprial.daemon.impl.composition.cell_delivery.port import CellDeliveryPort
 
 from .settlement import (
     BLOCKING_FAILURE_CUSTODY_CAPACITY,
-    ForwardOutcome,
-    ForwardSettlementCoordinator,
-    ForwardSettlementProjection,
-    Forwarder,
     _InflightAttempt,
     _QueuedDeliveryHold,
 )
@@ -128,12 +134,15 @@ class _RunMarker:
         )
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = self.path.with_suffix(f".tmp.{os.getpid()}")
-        temporary.write_text(
-            json.dumps({"schemaVersion": 1, "pid": os.getpid()}) + "\n",
-            encoding="utf-8",
-        )
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, self.path)
+        try:
+            temporary.write_text(
+                json.dumps({"schemaVersion": 1, "pid": os.getpid()}) + "\n",
+                encoding="utf-8",
+            )
+            harden_private_path(temporary, mode=0o600)
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return previous_unclean
 
     def finish(self) -> None:
@@ -160,6 +169,9 @@ class DaemonEventBridge(
         harness_actor_registrar: Callable[[str], "HarnessActorRegistration"]
         | None = None,
         harness_actor_uri: Callable[[str], str] | None = None,
+        harness_read_keys: Callable[[str], tuple[str, ...]] | None = None,
+        recipient_read_keys: Callable[[str], tuple[str, ...]] | None = None,
+        official_actor_uri: Callable[[str], str] | None = None,
         logger: Callable[..., None] | None = None,
         clock_ms: Callable[[], int] | None = None,
         blocking_failure_observer: (
@@ -169,24 +181,19 @@ class DaemonEventBridge(
         blocking_failure_identity: Callable[[str], str | None] | None = None,
         blocked_actor: Callable[[str], bool] | None = None,
         workflow_outcome: Callable[[HarnessResult], bool] | None = None,
-        forwarder: Forwarder | None = None,
-        owner_notifier: Callable[..., object] | None = None,
         in_channel_notice_delivery: Callable[..., object] | None = None,
-        owner_requester_addresses: Collection[str] = (),
         hold_ttl_ms: int = DEFAULT_HOLD_TTL_MS,
         delivery_hooks: "DeliveryHookService | None" = None,
-        link_admission: object | None = None,
         actor_mode: bool = False,
         batch_actor_home: Callable[[str], object] | None = None,
+        cell_delivery: "CellDeliveryPort",
+        actor_host=None,
     ) -> None:
         if hold_ttl_ms <= 0:
             raise ValueError("hold TTL must be positive")
+        self._actor_host = actor_host
+        self._cell_delivery = cell_delivery
         self.state_dir = Path(state_dir)
-        # Allen 2026-09-26 「提醒改发负责人」: a fail-loud notice diverted away
-        # from a person's chat goes to the owner through the existing
-        # owner-DM channel instead of only the log.  Called off the runtime
-        # loop; never raises into it.
-        self._owner_notifier = owner_notifier
         # Allen 2026-10-13 (in-DM alarm ruling): a fail-loud notice for a
         # human-originated conversation is replied into the chat the request
         # came from.  The adapter owns that chat handle, so the hand-off is
@@ -195,11 +202,6 @@ class DaemonEventBridge(
         # timeout/custody decisions.  Called off the runtime loop's custody
         # paths; must never raise into them.
         self._in_channel_notice_delivery = in_channel_notice_delivery
-        # Addresses that ALREADY reach the owner: their own squire adapter, one
-        # of its routes, their ``user:`` address.  Handing a diverted notice to
-        # "the owner" when the waiting sender is one of these puts the same
-        # machine text in front of the same person, one wrapper deeper.
-        self._owner_requester_addresses = frozenset(owner_requester_addresses)
         self.node_id = node_id
         self.desired_state = desired_state
         self.transport = transport
@@ -212,11 +214,6 @@ class DaemonEventBridge(
         self.harness_actor_registrar = harness_actor_registrar
         self._logger = logger
         self._delivery_hooks = delivery_hooks
-        # The shared send-link admission slot (WP4).  The runtime reaches the
-        # gate through the inbox actor command, but it still holds the one
-        # composed slot so WP2's single bind is visible here (see wp4 T17).
-        # There is exactly one default: a fresh, unbound slot (review item 3).
-        self._link_admission = link_admission or LinkAdmission(logger=logger)
         self._batch_actor_home = batch_actor_home
         self._blocking_failure_observer = blocking_failure_observer
         self._blocking_failure_identity = blocking_failure_identity
@@ -234,14 +231,20 @@ class DaemonEventBridge(
         # never re-dispatched meanwhile: the answer exists, asking the model
         # again is what looped wangshuo-sprite on 2026-09-24.
         self._pending_settle_results: dict[str, HarnessResult] = {}
+        self._cell_hop_lock = threading.Lock()
+        self._active_cell_hops: dict[str, object] = {}
+        self._held_cell_origins: set[str] = set()
         #: Members an accepted managed batch already claimed, keyed only by
         #: actor.  The wrapper's transient turn id is never a settlement key.
         self._batch_claims: dict[str, tuple[str, ...]] = {}
         self._batch_claim_metadata: dict[str, tuple[int, int | None]] = {}
         self._batch_claim_snapshot: tuple[tuple[str, tuple[str, ...], int], ...] = ()
         self._pending_batch_claims: dict[
-            str, tuple[tuple[str, ...], tuple[InboxMessage, ...]]
+            str,
+            tuple[tuple[str, ...], tuple[InboxMessage, ...], "CellDispatchStamp | None"],
         ] = {}
+        self._origin_claim_seqs: dict[str, tuple[str, int]] = {}
+        self._origin_claim_release_retries: set[str] = set()
         self._pending_batch_fetches: dict[str, tuple[str, tuple[str, ...]]] = {}
         #: Actor-mode batch members not yet durably classified.  The outer key
         #: exists only until the transient Harness claim can be retired.
@@ -249,7 +252,6 @@ class DaemonEventBridge(
         from hyprial.daemon.impl.inbox.batch import inline_limit_from_environment
 
         self._inbox_batch_inline_limit_bytes = inline_limit_from_environment()
-        self._pending_forward_outcomes: dict[str, ForwardOutcome] = {}
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         # Refresh halfway through the existing hold budget.  This leaves one
         # half-budget of scheduler delay while avoiding a write on every tick.
@@ -258,6 +260,9 @@ class DaemonEventBridge(
         # identity.  Registration and the delivery pump must share it: keys
         # that disagree recreate the queue-forever trap this closes.
         self.harness_actor_uri = harness_actor_uri or (lambda name: name)
+        self._harness_read_keys = harness_read_keys
+        self._recipient_consumer_keys = recipient_read_keys
+        self._official_actor_uri = official_actor_uri
         self._marker = _RunMarker(self.state_dir / "daemon-run.json")
         self._mailbox_registration = None
         self._actor_registrations: dict[str, HarnessActorRegistration] = {}
@@ -286,37 +291,16 @@ class DaemonEventBridge(
         #: is never reported as delivered.
         self._pending_notices: dict[str, InboxMessage] = {}
         self._notice_failures_logged: set[str] = set()
-        #: (conversation id, notice kind) pairs already replied into a human
-        #: conversation this run -- the in-channel rate limit's once-keys
-        #: (first occurrence + terminal outcome only, Allen 2026-10-13).
         self._in_channel_notice_keys: set[tuple[str, str]] = set()
-        # Forwards (user-proxy).  The send can post to Lark and has no bound
-        # of its own, so it runs on one FIFO thread instead of the tick; one
-        # thread keeps the order in which the worker finished its turns.
-        # Outcomes come back through a queue and are settled on the tick, the
-        # only thread that touches the fail-loud state above.
-        self._forwarder = forwarder
-        self._forward_jobs: queue.Queue[
-            tuple[InboxMessage, HarnessResult, _InflightAttempt | None] | None
-        ] = queue.Queue()
-        self._forward_outcomes: queue.Queue[
-            tuple[
-                InboxMessage,
-                HarnessResult,
-                ForwardOutcome,
-                _InflightAttempt | None,
-            ]
-        ] = queue.Queue()
-        self._forward_thread: threading.Thread | None = None
         self._actor_mode = actor_mode
         self._dispatch_state: DispatchStateAuthority | None = None
         self._dispatch_offers: DispatchOfferCoordinator | None = None
+        self._dispatch_execute = None
         self._dispatch_agent_timeout_ms = 1500
         self._dispatch_timeout_announced: set[str] = set()
         self._hold_refresh: HoldRefreshCoordinator | None = None
         self._progress_publish: ProgressPublishCoordinator | None = None
         self._result_settlement: ResultSettlementCoordinator | None = None
-        self._forward_settlement: ForwardSettlementCoordinator | None = None
         self._result_claim_lane: BoundedCadence[HarnessResultsClaimed] | None = None
         self._last_result_completed = 0
         self._availability_lane: BoundedCadence[int] | None = None
@@ -352,11 +336,6 @@ class DaemonEventBridge(
         owner = self._result_settlement
         return owner.projection() if owner is not None else None
 
-    @property
-    def forward_settlement_projection(self) -> ForwardSettlementProjection | None:
-        owner = self._forward_settlement
-        return owner.projection() if owner is not None else None
-
     def start(self) -> DaemonRecoverySummary:
         if self._started:
             raise RuntimeError("daemon runtime is already started")
@@ -378,7 +357,7 @@ class DaemonEventBridge(
                 ) from error
             raise
         if self._actor_mode:
-            owner = DispatchStateAuthority()
+            owner = DispatchStateAuthority(actor_host=self._actor_host)
             self._dispatch_state = owner
             self._inflight = DispatchOwnedMap(owner, DispatchTable.INFLIGHT)
             self._attempt_generation = DispatchOwnedMap(
@@ -396,9 +375,6 @@ class DaemonEventBridge(
             self._pending_settle_results = DispatchOwnedMap(
                 owner, DispatchTable.PENDING_REPLY_RESULTS
             )
-            self._pending_forward_outcomes = DispatchOwnedMap(
-                owner, DispatchTable.PENDING_FORWARD_OUTCOMES
-            )
             self._pending_notices = DispatchOwnedMap(
                 owner, DispatchTable.PENDING_NOTICES
             )
@@ -408,50 +384,55 @@ class DaemonEventBridge(
             refresh_hold = getattr(self.inbox, "refresh_hold", None)
             if callable(refresh_hold):
                 self._hold_refresh = HoldRefreshCoordinator(
-                    refresh_hold, owner
+                    refresh_hold, owner, actor_host=self._actor_host
                 )
             submit_progress = getattr(self.inbox, "submit_progress_event", None)
             if callable(submit_progress):
                 self._progress_publish = ProgressPublishCoordinator(
-                    submit_progress
+                    submit_progress, actor_host=self._actor_host
                 )
             claim_results = getattr(self.harnesses, "claim_result_batch", None)
             settle_result = getattr(self.harnesses, "settle_result", None)
             if callable(claim_results) and callable(settle_result):
                 self._result_settlement = ResultSettlementCoordinator(
-                    self._settle_claimed_result
+                    self._settle_claimed_result, actor_host=self._actor_host
                 )
-                if self._forwarder is not None:
-                    self._forward_settlement = ForwardSettlementCoordinator(
-                        self._forwarder
-                    )
                 self._result_claim_lane = BoundedCadence(
                     "harness-result-claim",
                     lambda _at_ms: claim_results(),
                     self._claimed_results_available,
+                    actor_host=self._actor_host,
                 )
             self._harness_reconcile_lane = BoundedCadence(
                 "harness-reconcile",
                 lambda _at_ms: self.harnesses.reconcile(),
                 self._harness_reconcile_completed,
+                actor_host=self._actor_host,
             )
             self._session_ref_lane = BoundedCadence(
                 "harness-session-refs",
                 lambda _at_ms: self._sync_harness_session_refs(),
                 self._session_ref_completed,
+                actor_host=self._actor_host,
             )
             self._prune_lane = BoundedCadence(
                 "inbox-prune", lambda _at_ms: self._prune_inbox(),
                 self._prune_completed,
+                actor_host=self._actor_host,
             )
             self._availability_lane = BoundedCadence(
                 "availability-notices",
                 lambda _at_ms: self._report_stalled_deliveries(),
                 self._availability_completed,
+                actor_host=self._actor_host,
             )
         dispatch = getattr(self.harnesses, "dispatch", None)
+        self._dispatch_execute = None
+        if callable(dispatch):
+            self._dispatch_execute = lambda _worker, envelope: dispatch(envelope)
         self._dispatch_offers = (
-            DispatchOfferCoordinator(dispatch) if callable(dispatch) else None
+            DispatchOfferCoordinator(self._dispatch_execute, actor_host=self._actor_host)
+            if self._dispatch_execute is not None else None
         )
         self._started = True
         self._retry_pump_halt.clear()

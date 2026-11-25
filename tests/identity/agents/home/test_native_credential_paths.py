@@ -133,11 +133,27 @@ def test_logout_refuses_a_symlinked_harness_directory(tmp_path: Path) -> None:
     assert (native_secrets_root(victim, "claude") / ".credentials.json").exists()
 
 
-def test_a_non_private_existing_directory_is_refused(tmp_path: Path) -> None:
-    home = _home(tmp_path)
-    (home / "secrets" / "native").mkdir(mode=0o700)
-    os.chmod(home / "secrets" / "native", 0o755)
+def test_reparse_point_directory_in_chain_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
 
+    home = _home(tmp_path)
+    native_dir = home / "secrets" / "native"
+    native_dir.mkdir(mode=0o700)
+    real_lstat = Path.lstat
+
+    def reparse_lstat(self: Path) -> os.stat_result:
+        metadata = real_lstat(self)
+        if self == native_dir:
+            return SimpleNamespace(  # type: ignore[return-value]
+                st_mode=metadata.st_mode,
+                st_size=metadata.st_size,
+                st_file_attributes=0x400,
+            )
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", reparse_lstat)
     with pytest.raises(NativeCredentialError) as refused:
         install_native_credential_set(home, "claude", [(".credentials.json", SECRET)])
 
@@ -169,16 +185,16 @@ def test_a_failed_write_leaves_no_new_file_and_no_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = _home(tmp_path)
-    real_rename = os.rename
+    real_replace = os.replace
     calls = {"n": 0}
 
-    def failing_rename(*args: object, **kwargs: object) -> None:
+    def failing_replace(*args: object, **kwargs: object) -> None:
         calls["n"] += 1
         if calls["n"] == 2:
             raise OSError(28, "No space left on device")
-        real_rename(*args, **kwargs)  # type: ignore[arg-type]
+        real_replace(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(os, "rename", failing_rename)
+    monkeypatch.setattr(os, "replace", failing_replace)
 
     with pytest.raises(NativeCredentialError):
         install_native_credential_set(home, "pi", PI_SET)
@@ -239,16 +255,16 @@ def test_a_forced_replacement_that_fails_keeps_the_old_set_whole(
     old = [("auth.json", b'{"auth": "old"}'), ("models-store.json", b'{"s": "old"}')]
     install_native_credential_set(home, "pi", old)
     root = native_secrets_root(home, "pi")
-    real_rename = os.rename
+    real_replace = os.replace
     calls = {"n": 0}
 
-    def failing_rename(*args: object, **kwargs: object) -> None:
+    def failing_replace(*args: object, **kwargs: object) -> None:
         calls["n"] += 1
         if calls["n"] == 4:
             raise OSError(5, "Input/output error")
-        real_rename(*args, **kwargs)  # type: ignore[arg-type]
+        real_replace(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(os, "rename", failing_rename)
+    monkeypatch.setattr(os, "replace", failing_replace)
 
     with pytest.raises(NativeCredentialError):
         install_native_credential_set(home, "pi", PI_SET, force=True)
@@ -306,31 +322,3 @@ def test_an_agent_home_that_is_a_symlink_is_refused(tmp_path: Path) -> None:
             operation()
         assert refused.value.code == ipc_errors.PROVIDER_UNSAFE_PATH
     assert not (real / "secrets" / "native").exists()
-
-
-def test_an_agent_home_that_is_not_private_is_refused(tmp_path: Path) -> None:
-    home = _home(tmp_path)
-    home.chmod(0o755)
-
-    with pytest.raises(NativeCredentialError) as refused:
-        install_native_credential_set(home, "codex", [("auth.json", SECRET)])
-
-    assert refused.value.code == ipc_errors.PROVIDER_UNSAFE_PATH
-    assert not (home / "secrets" / "native").exists()
-
-
-def test_a_level_owned_by_another_uid_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = _home(tmp_path)
-    (home / "secrets" / "native").mkdir(mode=0o700)
-    real_uid = os.getuid()
-    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
-
-    for operation in (
-        lambda: install_native_credential_set(home, "codex", [("auth.json", SECRET)]),
-        lambda: remove_native_credentials(home, "codex"),
-    ):
-        with pytest.raises(NativeCredentialError) as refused:
-            operation()
-        assert refused.value.code == ipc_errors.PROVIDER_UNSAFE_PATH

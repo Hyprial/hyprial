@@ -289,6 +289,39 @@ def test_real_coordinator_uses_underlying_service_with_real_pac_authority(tmp_pa
         authority.close(2)
 
 
+def test_routine_factory_hands_the_binding_key_to_service_and_coordinator(
+    tmp_path, monkeypatch,
+):
+    from hyprial.daemon import RoutineRuntimeDeps
+    from hyprial.shell.impl.daemon_wiring import routines
+
+    received: dict[str, object] = {}
+
+    def service(**options):
+        received["service"] = options.get("binding_key")
+        return SimpleNamespace(close=lambda: None)
+
+    def coordinator(**options):
+        received["coordinator"] = options.get("binding_key")
+        return SimpleNamespace()
+
+    def key(value):
+        return value
+
+    monkeypatch.setattr(routines, "PacRoutineDispatch", lambda **_options: object())
+    monkeypatch.setattr(routines, "RoutineService", service)
+    monkeypatch.setattr(routines, "RoutineCoordinator", coordinator)
+    deps = RoutineRuntimeDeps(
+        state_dir=tmp_path, hyprial_home=tmp_path / "home", owner="test",
+        logger=None, alarm=SimpleNamespace(escalate=lambda **keywords: None),
+        deliver_task=lambda **keywords: True, clock_ms=lambda: 0,
+        resolve_principal=lambda actor: actor, migrate_address=lambda actor: actor,
+        workflow_service=object(), graph_authority=object(), binding_key=key,
+    )
+    routines.routine_runtime_factory(deps)
+    assert received == {"service": key, "coordinator": key}
+
+
 def test_quota_hook_consumer_factory_wraps_the_authority():
     """H4: the shell hands the daemon a biz consumer around its watchdog."""
 

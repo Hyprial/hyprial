@@ -10,8 +10,12 @@ ADAPTER_PROVIDERS = frozenset({"lark"})
 DEFAULT_ADAPTER_PROVIDER = "lark"
 
 
-def is_adapter_provider(value: object) -> bool:
+def is_adapter_platform(value: object) -> bool:
     return isinstance(value, str) and value in ADAPTER_PROVIDERS
+
+
+def is_adapter_provider(value: object) -> bool:
+    return is_adapter_platform(value)
 
 
 @dataclass(frozen=True, slots=True)

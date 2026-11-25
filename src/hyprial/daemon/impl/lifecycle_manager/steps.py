@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from __future__ import annotations
-from __future__ import annotations
-from hyprial.kernel import parse_execution_runtime
 import json
 from dataclasses import asdict
 from hyprial.identity import (
@@ -46,6 +43,45 @@ from .vocabulary import (
     SessionLifecycleSpec,
     _Step,
 )
+
+CELL_MEMBER_ENSURE = "cell.member.ensure"
+CELL_MEMBER_STOP = "cell.member.stop"
+CELL_MEMBER_POLICY_APPLY = "cell.member.policy.apply"
+CELL_MEMBER_EFFECT_NAMES = frozenset(
+    {CELL_MEMBER_ENSURE, CELL_MEMBER_STOP, CELL_MEMBER_POLICY_APPLY}
+)
+CELL_MEMBER_EFFECT_PREFIX = "cell-reconcile:"
+
+
+class LegacyLifecycleOperationError(ValueError):
+    """Raised when a persisted lifecycle operation cannot be decoded fail-closed."""
+
+
+def is_cell_member_effect(effect_name: str) -> bool:
+    """Whether *effect_name* is one of the I6 cell member reconcile effects."""
+
+    return effect_name in CELL_MEMBER_EFFECT_NAMES
+
+
+def is_cell_member_effect_operation(operation_id: str) -> bool:
+    """Whether a journal row is a cell member reconcile effect, not a lifecycle saga."""
+
+    return operation_id.startswith(CELL_MEMBER_EFFECT_PREFIX)
+
+
+def cell_member_effect_operation_id(
+    cell_id: str,
+    epoch: str,
+    revision: int,
+    member: str,
+    effect_name: str | None = None,
+) -> str:
+    """Stable fenced journal operation id for one cell member reconcile step."""
+
+    base = f"{CELL_MEMBER_EFFECT_PREFIX}{cell_id}:{epoch}:{revision}:{member}"
+    if effect_name is None:
+        return base
+    return f"{base}:{effect_name}"
 
 
 def _create_steps(spec: LifecycleSpec, prefix: str = "") -> tuple[_Step, ...]:
@@ -179,6 +215,8 @@ def _command(
             spec.harness.harness,
             spec.harness.name,
             interruption_reason=spec.interruption_reason,
+            member=spec.harness.member,
+            keep_intent=spec.keep_intent,
         )
     if step.domain == "session":
         session = spec.session
@@ -266,6 +304,7 @@ def _spec_payload(spec: LifecycleSpec) -> dict[str, object]:
             if spec.interruption_reason is not None
             else {}
         ),
+        **({"keepIntent": True} if spec.keep_intent else {}),
     }
 
 
@@ -275,6 +314,8 @@ def _operation_json(operation: LifecycleOperation) -> str:
             "operationId": operation.operation_id,
             "kind": operation.kind.value,
             "target": _spec_payload(operation.target),
+            **({"observedEntityToken": operation.observed_entity_token}
+               if operation.observed_entity_token is not None else {}),
             "source": None
             if operation.source is None
             else _spec_payload(operation.source),
@@ -285,13 +326,19 @@ def _operation_json(operation: LifecycleOperation) -> str:
 
 
 def _operation_from_json(payload: str) -> LifecycleOperation:
-    raw = json.loads(payload)
-    return LifecycleOperation(
-        str(raw["operationId"]),
-        LifecycleKind(str(raw["kind"])),
-        _spec_from_payload(raw["target"]),
-        None if raw["source"] is None else _spec_from_payload(raw["source"]),
-    )
+    try:
+        raw = json.loads(payload)
+        return LifecycleOperation(
+            str(raw["operationId"]),
+            LifecycleKind(str(raw["kind"])),
+            _spec_from_payload(raw["target"]),
+            None if raw["source"] is None else _spec_from_payload(raw["source"]),
+            observed_entity_token=_optional_str(raw.get("observedEntityToken")),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise LegacyLifecycleOperationError(
+            f"unsupported legacy lifecycle operation: {error}"
+        ) from error
 
 
 def _spec_from_payload(raw: dict[str, object]) -> LifecycleSpec:
@@ -300,6 +347,8 @@ def _spec_from_payload(raw: dict[str, object]) -> LifecycleSpec:
     session = raw["session"]
     if not isinstance(harness, dict) or not isinstance(route, dict):
         raise ValueError("invalid lifecycle journal payload")
+    if harness.get("executionRuntime") is not None:
+        raise ValueError("unsupported executionRuntime; smolvm runtime has been retired")
     return LifecycleSpec(
         agent_name=str(raw["agentName"]),
         actor=str(raw["actor"]),
@@ -319,9 +368,9 @@ def _spec_from_payload(raw: dict[str, object]) -> LifecycleSpec:
             containerized=bool(harness.get("containerized", False)),
             pinned_owner=_optional_str(harness.get("pinnedOwner")),
             container_image=_optional_str(harness.get("containerImage")),
-            execution_runtime=parse_execution_runtime(harness.get("executionRuntime")),
             model_provider=_optional_str(harness.get("modelProvider")),
             model=_optional_str(harness.get("model")),
+            member=_optional_str(harness.get("member")),
         ),
         route=RouteSpec(
             str(route["route_id"]),
@@ -342,6 +391,7 @@ def _spec_from_payload(raw: dict[str, object]) -> LifecycleSpec:
         ),
         interruption_reason=_optional_str(raw.get("interruptionReason")),
         expected_entity_token=raw.get("expectedEntityToken"),
+        keep_intent=raw.get("keepIntent") is True,
     )
 
 

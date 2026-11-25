@@ -40,16 +40,19 @@ export function Field({
 }: FieldProps) {
   const hintId = hint ? `${htmlFor}-hint` : undefined;
   const errorId = error ? `${htmlFor}-error` : undefined;
-  const describedBy =
-    [hintId, errorId].filter((id): id is string => Boolean(id)).join(' ') ||
-    undefined;
+  const childProps = isValidElement<FieldControlProps>(children) ? children.props : undefined;
+  const describedBy = [...new Set([
+    ...(childProps?.['aria-describedby']?.split(/\s+/).filter(Boolean) ?? []),
+    hintId,
+    errorId,
+  ].filter((id): id is string => Boolean(id)))].join(' ') || undefined;
 
-  const control = isValidElement<FieldControlProps>(children)
+  const control = childProps
     ? cloneElement(children as ReactElement<FieldControlProps>, {
         'aria-describedby': describedBy,
-        'aria-invalid': error ? true : undefined,
-        'aria-errormessage': errorId,
-        required,
+        'aria-invalid': error ? true : childProps['aria-invalid'],
+        'aria-errormessage': errorId ?? childProps['aria-errormessage'],
+        required: required || childProps.required,
       })
     : children;
 

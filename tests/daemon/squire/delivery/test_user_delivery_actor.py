@@ -1,47 +1,58 @@
-import json
 import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
 
 from hyprial.kernel.impl.actor_runtime import AdmissionResult
-from hyprial.daemon.impl.squire.addressing import UserDeliveryRequest, UserDeliveryResult
-from hyprial.daemon.impl.squire.actors.delivery import UserDeliveryActor
+from hyprial.daemon.impl.adapters.user_delivery.receiver import UserDeliveryRequest, UserDeliveryResult
+from hyprial.daemon.impl.adapters.user_delivery.actor import UserDeliveryActor
 
 
-PROFILE_OWNER = "owner.person@example.test"
+class _Gateways:
+    """The per-owner native senders behind the fake owner push (the user agent cell)."""
+
+    def __init__(self, gateways):
+        self.gateways = dict(gateways)
+
+    def push(self, request):
+        gateway = self.gateways[request.owner]
+        try:
+            native = gateway.deliver(
+                f"ou_{request.owner}", request.message,
+                idempotency_key=request.idempotency_key,
+            )
+        except Exception as error:  # noqa: BLE001 - mirrors a native send failure
+            return UserDeliveryResult(
+                request.message_id, False, code="USER_DELIVERY_FAILED",
+                message=str(error), definitely_not_sent=False,
+            )
+        return UserDeliveryResult(request.message_id, True, native_message_id=native)
+
+    def close(self, timeout):
+        return all(
+            gateway.close(timeout)
+            for gateway in self.gateways.values()
+            if callable(getattr(gateway, "close", None))
+        )
 
 
 def _real_receiver(tmp_path, gateways):
-    from hyprial.identity.impl.users.profile import UserProfileStore
-    from hyprial.daemon.impl.squire.addressing import (
+    """A real receiver whose owner push (I7a) is a native send per owner."""
+
+    from hyprial.daemon.impl.adapters.user_delivery.receiver import (
         ReceiverUserDelivery,
-        UserAdapterRegistry,
         UserDeliveryLedger,
     )
 
-    profiles = UserProfileStore(tmp_path / "users.json")
-    adapters = UserAdapterRegistry()
-    for owner, gateway in gateways.items():
-        profiles.ensure(
-            owner=owner,
-            owner_key=f"key-{owner}",
-            login_name=owner,
-            machine="receiver",
-            machine_key="receiver-key",
-        )
-        channel = f"channel:{owner}:receiver:squire"
-        profiles.set_squire_channel(f"key-{owner}", channel)
-        profiles.bind_owner_open_id(
-            f"key-{owner}", channel=channel, open_id=f"ou_{owner}"
-        )
-        adapters.register(channel, gateway)
-    return ReceiverUserDelivery(
+    native = _Gateways(gateways)
+    receiver = ReceiverUserDelivery(
         node_id="receiver",
-        profiles=profiles,
-        adapters=adapters,
+        owns=lambda owner: owner in gateways,
         ledger=UserDeliveryLedger(tmp_path / "deliveries.json"),
+        owner_push=native.push,
     )
+    receiver.adapters = native
+    return receiver
 
 
 def _wait_receipt(actor, attempt):
@@ -54,100 +65,9 @@ def _wait_receipt(actor, attempt):
     raise AssertionError(f"no receipt for {attempt}")
 
 
-def _profile(
-    owner: str, owner_key: str, squire_channel: str | None = None
-) -> dict[str, object]:
-    profile = {
-        "owner": owner,
-        "ownerKey": owner_key,
-        "loginName": owner,
-        "agents": [],
-        "notificationRules": [],
-        "preferredReceiver": {
-            "machine": "receiver",
-            "machineKey": "receiver-key",
-        },
-    }
-    if squire_channel is not None:
-        profile["squireChannel"] = squire_channel
-    return profile
-
-
-def _receipt_after_profile_corruption(tmp_path, users):
-    receiver = _real_receiver(
-        tmp_path,
-        {"alice": SimpleNamespace(send_owner_dm=lambda *args, **kwargs: "unused")},
-    )
-    (tmp_path / "users.json").write_text(
-        json.dumps({"version": 1, "users": users}), encoding="utf-8"
-    )
-    actor = UserDeliveryActor(receiver)
-    completions = []
-    complete = actor._effects._complete
-
-    def capture(event):
-        completions.append(event)
-        return complete(event)
-
-    actor._effects._complete = capture
-    try:
-        request = UserDeliveryRequest(
-            "corrupt", "corrupt-key", PROFILE_OWNER, "sender", "text", "c", "corrupt"
-        )
-        actor.admit(request)
-        return _wait_receipt(actor, "corrupt"), completions[-1]
-    finally:
-        assert actor.close(2)
-        assert receiver.adapters.close(2)
-
-
-def test_two_real_profile_corruptions_have_distinct_details_and_keep_class_name(tmp_path):
-    duplicate_receipt, duplicate_completion = _receipt_after_profile_corruption(
-        tmp_path / "duplicate-keys",
-        [
-            _profile(PROFILE_OWNER, "first-key"),
-            _profile("other@example.test", "first-key"),
-        ],
-    )
-    legacy_receipt, legacy_completion = _receipt_after_profile_corruption(
-        tmp_path / "legacy-channel",
-        [_profile(PROFILE_OWNER, "first-key", squire_channel="legacy")],
-    )
-
-    for receipt, completion in (
-        (duplicate_receipt, duplicate_completion),
-        (legacy_receipt, legacy_completion),
-    ):
-        assert receipt.code == "USER_DELIVERY_FAILED"
-        assert receipt.message == "UserProfileError"
-        assert completion.error == "UserProfileError"
-
-    assert duplicate_completion.detail == "user profile data contains duplicate owner keys"
-    assert (
-        legacy_completion.detail
-        == "users[0].squireChannel must be a channel:<owner>:<machine>:<channel> URI"
-    )
-
-
-def test_ambiguous_owner_detail_masks_the_owner_email(tmp_path):
-    receipt, completion = _receipt_after_profile_corruption(
-        tmp_path / "ambiguous-owner",
-        [
-            _profile(PROFILE_OWNER, "first-key"),
-            _profile(PROFILE_OWNER, "second-key"),
-        ],
-    )
-
-    assert receipt.code == "USER_DELIVERY_FAILED"
-    assert receipt.message == "UserProfileError"
-    assert completion.error == "UserProfileError"
-    assert completion.detail == "user owner <redacted> is ambiguous"
-    assert PROFILE_OWNER not in completion.detail
-
-
-def test_real_receiver_blocked_gateway_does_not_block_other_owner(tmp_path):
-    from hyprial.daemon.impl.adapters.lark.outbound.gateway import GatewayIoAuthority
-
+def test_real_receiver_blocked_gateway_does_not_block_other_owner(
+    tmp_path, actor_host
+):
     entered, release = threading.Event(), threading.Event()
 
     def blocked(*args, **kwargs):
@@ -155,12 +75,10 @@ def test_real_receiver_blocked_gateway_does_not_block_other_owner(tmp_path):
         assert release.wait(4)
         return "native-a"
 
-    first = GatewayIoAuthority(SimpleNamespace(send_owner_dm=blocked), timeout=0.01)
-    second = GatewayIoAuthority(
-        SimpleNamespace(send_owner_dm=lambda *a, **kw: "native-b")
-    )
+    first = SimpleNamespace(deliver=blocked)
+    second = SimpleNamespace(deliver=lambda *a, **kw: "native-b")
     receiver = _real_receiver(tmp_path, {"alice": first, "bob": second})
-    actor = UserDeliveryActor(receiver)
+    actor = UserDeliveryActor(receiver, actor_host=actor_host)
     request = UserDeliveryRequest("a", "idem-a", "alice", "sender", "text", "c", "a")
     try:
         assert actor.admit(request) is AdmissionResult.ACCEPTED
@@ -192,9 +110,9 @@ def test_real_receiver_blocked_gateway_does_not_block_other_owner(tmp_path):
     assert receiver.ledger.get("idem-a").native_message_id == "native-a"
 
 
-def test_ledger_outcome_unknown_does_not_keep_delivery_pending(tmp_path):
-    from hyprial.daemon.impl.adapters.lark.outbound.gateway import GatewayIoAuthority
-
+def test_ledger_outcome_unknown_does_not_keep_delivery_pending(
+    tmp_path, actor_host
+):
     release = threading.Event()
     native_calls: list[str] = []
     record_calls: list[str] = []
@@ -203,7 +121,7 @@ def test_ledger_outcome_unknown_does_not_keep_delivery_pending(tmp_path):
         native_calls.append(kwargs["idempotency_key"])
         return "native-once"
 
-    gateway = GatewayIoAuthority(SimpleNamespace(send_owner_dm=send))
+    gateway = SimpleNamespace(deliver=send)
     receiver = _real_receiver(tmp_path, {"alice": gateway})
 
     def blocked_record(key, _result):
@@ -212,7 +130,7 @@ def test_ledger_outcome_unknown_does_not_keep_delivery_pending(tmp_path):
         raise RuntimeError("late ledger failure")
 
     receiver.ledger.record = blocked_record
-    actor = UserDeliveryActor(receiver)
+    actor = UserDeliveryActor(receiver, actor_host=actor_host)
     actor._ledger_owner._completion_timeout = 0.02
     request = UserDeliveryRequest(
         "message", "stable-key", "alice", "sender", "text", "conversation", "attempt"
@@ -231,44 +149,7 @@ def test_ledger_outcome_unknown_does_not_keep_delivery_pending(tmp_path):
         assert receiver.adapters.close(2.0)
 
 
-def test_canonical_owner_aliases_join_one_native_delivery(tmp_path):
-    from hyprial.daemon.impl.adapters.lark.outbound.gateway import GatewayIoAuthority
-
-    entered, release = threading.Event(), threading.Event()
-    calls = []
-
-    def blocked(*args, **kwargs):
-        calls.append(kwargs["idempotency_key"])
-        entered.set()
-        assert release.wait(4)
-        return "native-once"
-
-    gateway = GatewayIoAuthority(SimpleNamespace(send_owner_dm=blocked))
-    receiver = _real_receiver(tmp_path, {"alice": gateway})
-    actor = UserDeliveryActor(receiver)
-    request = UserDeliveryRequest("a", "same", "alice", "sender", "text", "c", "a")
-    try:
-        actor.admit(request)
-        assert entered.wait(1)
-        actor.admit(replace(request, owner="key-alice", attempt_id="alias"))
-        deadline = time.monotonic() + 1
-        while actor.snapshot().pending < 2 and time.monotonic() < deadline:
-            time.sleep(0.005)
-        assert actor.snapshot().pending == 2
-        release.set()
-        assert _wait_receipt(actor, "a").accepted
-        duplicate = _wait_receipt(actor, "alias")
-        assert duplicate.accepted and duplicate.duplicate
-        assert duplicate.native_message_id == "native-once"
-    finally:
-        release.set()
-        assert actor.close(2)
-        assert receiver.adapters.close(2)
-    assert calls == ["same"]
-    assert receiver.ledger.get("same").duplicate
-
-
-def test_native_delivery_stall_keeps_receipts_and_mailbox_responsive():
+def test_native_delivery_stall_keeps_receipts_and_mailbox_responsive(actor_host):
     entered, release = threading.Event(), threading.Event()
 
     class Receiver:
@@ -282,7 +163,7 @@ def test_native_delivery_stall_keeps_receipts_and_mailbox_responsive():
                 request.message_id, True, native_message_id="native"
             )
 
-    actor = UserDeliveryActor(Receiver(), capacity=1)
+    actor = UserDeliveryActor(Receiver(), capacity=1, actor_host=actor_host)
     request = UserDeliveryRequest(
         "message", "idem", "owner", "sender", "text", "conversation", "attempt"
     )
@@ -299,7 +180,7 @@ def test_native_delivery_stall_keeps_receipts_and_mailbox_responsive():
     assert actor.receipt("attempt").accepted
 
 
-def test_delivery_exception_settles_and_does_not_kill_authority():
+def test_delivery_exception_settles_and_does_not_kill_authority(actor_host):
     class Receiver:
         def owns(self, owner):
             return True
@@ -307,7 +188,7 @@ def test_delivery_exception_settles_and_does_not_kill_authority():
         def handle(self, request):
             raise OSError("synthetic-secret should not reach receipt")
 
-    actor = UserDeliveryActor(Receiver())
+    actor = UserDeliveryActor(Receiver(), actor_host=actor_host)
     request = UserDeliveryRequest(
         "message", "idem", "owner", "sender", "text", "conversation", "attempt"
     )
@@ -324,16 +205,18 @@ def test_delivery_exception_settles_and_does_not_kill_authority():
         assert actor.close(2)
 
 
-def test_endpoint_registration_failure_drains_allocated_authority(monkeypatch):
+def test_endpoint_registration_failure_drains_allocated_authority(
+    monkeypatch, actor_host
+):
     import pytest
-    from hyprial.daemon.impl.squire import addressing
+    from hyprial.daemon.impl.adapters.user_delivery import receiver as addressing
 
     owners = []
     closed = []
     real = addressing.UserDeliveryActor
 
-    def construct(receiver):
-        result = real(receiver)
+    def construct(receiver, **kwargs):
+        result = real(receiver, **kwargs)
         owners.append(result)
         return result
 
@@ -349,18 +232,20 @@ def test_endpoint_registration_failure_drains_allocated_authority(monkeypatch):
     )
     receiver = SimpleNamespace(owns=lambda owner: True, handle=lambda request: None)
     with pytest.raises(OSError, match="declaration failure"):
-        addressing.ZenohUserDeliveryEndpoint(session, receiver)
+        addressing.ZenohUserDeliveryEndpoint(
+            session, receiver, actor_host=actor_host
+        )
     assert closed == [True]
     assert owners[0].snapshot().closed
     assert owners[0].close(0)
 
 
 def test_native_success_ledger_failure_is_outcome_unknown_without_resend(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, actor_host
 ):
     calls = []
     receiver = _real_receiver(tmp_path, {"alice": SimpleNamespace(
-        send_owner_dm=lambda *a, **kw: calls.append(kw["idempotency_key"]) or "native"
+        deliver=lambda *a, **kw: calls.append(kw["idempotency_key"]) or "native"
     )})
     failed, allow_failure = threading.Event(), threading.Event()
     def record_after_recovery(key, result):
@@ -369,7 +254,7 @@ def test_native_success_ledger_failure_is_outcome_unknown_without_resend(
         raise OSError("synthetic unavailable disk")
 
     monkeypatch.setattr(receiver.ledger, "record", record_after_recovery)
-    actor = UserDeliveryActor(receiver)
+    actor = UserDeliveryActor(receiver, actor_host=actor_host)
     request = UserDeliveryRequest("a", "stable", "alice", "sender", "text", "c", "a")
     try:
         actor.admit(request)
@@ -393,14 +278,14 @@ def test_native_success_ledger_failure_is_outcome_unknown_without_resend(
     assert receiver.ledger.get("stable") is None
 
 
-def test_outcome_unknown_result_stays_exactly_once_through_actor(tmp_path):
+def test_outcome_unknown_result_stays_exactly_once_through_actor(
+    tmp_path, actor_host
+):
     calls = []
     receiver = _real_receiver(tmp_path, {"alice": SimpleNamespace(
-        send_owner_dm=lambda *a, **kw: "unused"
+        deliver=lambda *a, **kw: "unused"
     )})
-    receiver.profiles.set_delivery_agent("key-alice", "alice-proxy")
-
-    def outcome_unknown(_agent, request):
+    def outcome_unknown(request):
         calls.append(request.idempotency_key)
         return UserDeliveryResult(
             request.message_id,
@@ -409,8 +294,8 @@ def test_outcome_unknown_result_stays_exactly_once_through_actor(tmp_path):
             definitely_not_sent=False,
         )
 
-    receiver.delivery_agent_delivery = outcome_unknown
-    actor = UserDeliveryActor(receiver)
+    receiver.owner_push = outcome_unknown
+    actor = UserDeliveryActor(receiver, actor_host=actor_host)
     request = UserDeliveryRequest("a", "stable", "alice", "sender", "text", "c", "a")
     try:
         actor.admit(request)
@@ -427,7 +312,7 @@ def test_outcome_unknown_result_stays_exactly_once_through_actor(tmp_path):
 
 
 def test_delivery_certainty_survives_receipt_wire():
-    from hyprial.daemon.impl.squire.addressing import encode_user_result, decode_user_result
+    from hyprial.daemon.impl.adapters.user_delivery.receiver import encode_user_result, decode_user_result
 
     for certain in (False, True):
         result = UserDeliveryResult("id", False, definitely_not_sent=certain)

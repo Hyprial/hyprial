@@ -58,6 +58,7 @@ def test_claude_explicit_effort(provider, effort, legacy):
 @pytest.mark.parametrize("harness,effort,expected", [
     ("codex", "max", ["-c", 'model_reasoning_effort="max"']),
     ("claude", "low", ["--effort", "low"]),
+    ("agy", "medium", ["--effort", "medium"]),
 ])
 def test_start_official_effort_is_durable(monkeypatch, tmp_path, harness, effort, expected):
     calls = []
@@ -74,7 +75,7 @@ def test_start_official_effort_is_durable(monkeypatch, tmp_path, harness, effort
     assert json.loads(result.stdout)["ok"] is True
 
 
-@pytest.mark.parametrize("harness,effort", [("codex", "bogus"), ("claude", "ultra"), ("pi", "high")])
+@pytest.mark.parametrize("harness,effort", [("codex", "bogus"), ("claude", "ultra"), ("pi", "high"), ("agy", "xhigh")])
 def test_start_rejects_invalid_effort_before_daemon(monkeypatch, harness, effort):
     calls = []
     monkeypatch.setattr(_cli_support, "_daemon_request", lambda *a, **kw: calls.append(a))
@@ -151,9 +152,8 @@ def test_p2_native_openai_effort_is_independent_of_provider(tmp_path):
     assert "sessionFlags" in evidence.layer_types
 
 
-def test_claude_sdk_and_connector_receive_explicit_effort(tmp_path):
+def test_claude_sdk_receives_explicit_effort(tmp_path):
     from hyprial.daemon.impl.harnesses.agent_sdk import IsolatedAgentSdkClient
-    from hyprial.daemon.impl.harnesses.claude import ClaudeConnector
 
     spec = HarnessLaunchSpec("claude", "worker", True, cwd=str(tmp_path),
                              model_provider="deepseek", args=("--effort", "low"))
@@ -161,7 +161,6 @@ def test_claude_sdk_and_connector_receive_explicit_effort(tmp_path):
                                     worker_command=("/fake/claude-worker",))
     assert client._env["CLAUDE_CODE_EFFORT_LEVEL"] == "low"
     assert client.options["extraArgs"]["effort"] == "low"
-    assert "--effort" in ClaudeConnector().build_argv(spec)
 
 
 @pytest.mark.parametrize("harness,tail", [

@@ -1,3 +1,8 @@
+# Decision record (W2B-2, 2026-11-21):
+# - _publish_session_ref already allocates the staging file via tempfile.mkstemp
+#   (0o600 on POSIX) inside the guarded state directory under process umask, so
+#   the redundant temporary.chmod(0o600) is removed without growing CLI->backend
+#   import ratchet edges.
 """Shared interactive-session launch runtime (context, custody, TUI)."""
 
 from __future__ import annotations
@@ -7,10 +12,11 @@ from hyprial.shell.impl.cli.output import warn
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from contextlib import contextmanager
-from hyprial.kernel import ipc_errors, resolve_node_id
+from hyprial.error import codes
+from hyprial.kernel import agent_uri_actor, canonical_agent_uri, resolve_node_id
 import json
 import os
 import re
@@ -32,7 +38,6 @@ def _preflight_codex_credential(
         SharedCredentialBinding,
         preflight_codex_credential,
     )
-    from hyprial.kernel import agent_uri_actor
 
     shared = projection.get("sharedCredential")
     binding = (
@@ -55,7 +60,7 @@ def _preflight_codex_credential(
         )
     except AgentRuntimeError as error:
         raise get_services().CliError(
-            error.code or ipc_errors.INVALID_ARGUMENT,
+            error.code or codes.INVALID_ARGUMENT,
             str(error),
             data=error.data,
         ) from error
@@ -100,7 +105,6 @@ def _publish_session_ref(path: Path, session_ref: str) -> None:
             stream.write(session_ref)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.chmod(0o600)
         temporary.replace(path)
     except BaseException:
         temporary.unlink(missing_ok=True)
@@ -147,10 +151,10 @@ def _interactive_actor(name: str, status: JsonObject) -> str:
 
     Pins, harnesses, and delivery addressing all speak the four-segment
     URI, and launch-time code that must *compare* against daemon truth
-    (registration polling, tmux session names, result payloads) needs the
+    (registration polling, result payloads) needs the
     minted spelling. The daemon's ``ps`` response is the source of truth for
     owner and node id, with the daemon's own fallbacks
-    (``HYPRIAL_OWNER``/login, ``HYPRIAL_NODE_ID``/hostname) mirrored for older
+    (``HYPRIAL_OWNER``/login, ``HYPRIAL_NODE_ID``/home node-id file) mirrored for older
     daemons that do not report them yet. A name that already is a
     four-segment URI passes through; any other colon form is rejected
     loudly instead of registering a third spelling.
@@ -165,7 +169,6 @@ def _interactive_actor(name: str, status: JsonObject) -> str:
 
     if ":" not in name:
         from hyprial.daemon import resolve_node_owner
-        from hyprial.kernel import canonical_agent_uri
 
         daemon = status.get("daemon") if isinstance(status, dict) else None
         node_id = ""
@@ -177,16 +180,78 @@ def _interactive_actor(name: str, status: JsonObject) -> str:
             node_id = resolve_node_id()
         if not owner:
             owner = resolve_node_owner()
-        return canonical_agent_uri(owner, node_id, name)
-    from hyprial.kernel import agent_uri_actor
-
+        return _registered_id_address(name, status, owner, node_id) or (
+            canonical_agent_uri(owner, node_id, name)
+        )
     if agent_uri_actor(name) is not None:
         return name
     raise services.CliError(
-        ipc_errors.INVALID_ARGUMENT,
+        codes.INVALID_ARGUMENT,
         f"--name {name!r} is neither a bare actor name nor a canonical "
         "agent:<owner>:<machine>:<actor> URI",
     )
+
+
+def _registered_id_address(
+    name: str, status: JsonObject, owner: str, node_id: str
+) -> str | None:
+    """The ``a.`` id URI the daemon's ``ps`` reports for local agent ``name``.
+
+    The daemon registers a registered agent's interactive session at the
+    URI its record stores; once records are minted under their id that is
+    not the name-composed URI, so the launcher must compare against the
+    record.  Only an id-form URI under this daemon's own owner and node is
+    taken; every other case keeps the name-composed address.
+    """
+
+    rows = status.get("agents") if isinstance(status, dict) else None
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict) or row.get("actor") != name:
+            continue
+        if row.get("owner") != owner or row.get("machine", node_id) != node_id:
+            continue
+        uri = row.get("uri")
+        if isinstance(uri, str) and uri:
+            return uri
+    return None
+
+
+def _official_session_address(actor: str, status: JsonObject) -> str:
+    """The address the daemon's ``ps`` registers ``actor``'s session at.
+
+    Integrator decision D12: a launcher may mint the name URI before the
+    record exists (its first ``session.register`` creates it), while the
+    daemon registers the session at the URI the record stores, the ``a.``
+    id URI once records are id-minted.  The ``ps`` agents row whose own
+    owner, node and name compose ``actor`` gives that address (a row without
+    a machine is on the daemon's reported node); anything else keeps
+    ``actor``.  The URI is never decomposed here: only the URI module reads
+    its segments.
+    """
+
+    name = agent_uri_actor(actor)
+    if name is None:
+        return actor
+    daemon = status.get("daemon") if isinstance(status, dict) else None
+    daemon_node = daemon.get("nodeId") if isinstance(daemon, dict) else None
+    rows = status.get("agents") if isinstance(status, dict) else None
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict) or row.get("actor") != name:
+            continue
+        owner = row.get("owner")
+        node_id = row.get("machine", daemon_node)
+        if not isinstance(owner, str) or not isinstance(node_id, str):
+            continue
+        try:
+            composed = canonical_agent_uri(owner, node_id, name)
+        except ValueError:
+            continue
+        if composed != actor:
+            continue
+        uri = row.get("uri")
+        if isinstance(uri, str) and uri:
+            return uri
+    return actor
 
 
 def _interactive_actor_name(name: str) -> str:
@@ -203,13 +268,11 @@ def _interactive_actor_name(name: str) -> str:
 
     if ":" not in name:
         return name
-    from hyprial.kernel import agent_uri_actor
-
     short = agent_uri_actor(name)
     if short is not None:
         return short
     raise services.CliError(
-        ipc_errors.INVALID_ARGUMENT,
+        codes.INVALID_ARGUMENT,
         f"--name {name!r} is neither a bare actor name nor a canonical "
         "agent:<owner>:<machine>:<actor> URI",
     )
@@ -226,9 +289,16 @@ def _handover_prompt(result: JsonObject) -> str | None:
 
 
 def _runtime_context_environment(
-    *, name: str, harness: str, cwd: Path, include_projection: bool = False
+    *,
+    name: str,
+    harness: str,
+    cwd: Path,
+    json_output: bool,
+    include_projection: bool = False,
 ) -> JsonObject | None:
-    projection = _runtime_context_projection(name=name, harness=harness, cwd=cwd)
+    projection = _runtime_context_projection(
+        name=name, harness=harness, cwd=cwd, json_output=json_output
+    )
     if projection is None:
         return None
     return (
@@ -243,6 +313,7 @@ def _runtime_context_projection(
     name: str,
     harness: str,
     cwd: Path,
+    json_output: bool,
     model_provider: str | None = None,
     credential_preflight: bool = False,
 ) -> JsonObject | None:
@@ -253,6 +324,8 @@ def _runtime_context_projection(
     cross in this projection. Credential values cross only in the later
     acquire reply, and only for the one child protected by its spawn lease.
     An opaque launch token authorizes the final incarnation and grant checks.
+    Each daemon notice is warned on stderr; ``json_output`` is the caller's
+    real value, so ``warn`` keeps its own --json contract (#2600).
     """
     services = get_services()
 
@@ -278,7 +351,7 @@ def _runtime_context_projection(
         return None
     if result.get("mode") != "agent-home-p2":
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "daemon returned an unsupported agent runtime context mode",
         )
     environment = result.get("environment")
@@ -287,20 +360,20 @@ def _runtime_context_projection(
         for key, value in environment.items()
     ):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "daemon returned an invalid agent runtime environment",
         )
     for field in ("projectionRoot", "nativeRoot", "sessionRoot"):
         value = result.get(field)
         if not isinstance(value, str) or not Path(value).is_absolute():
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 f"daemon returned an invalid agent runtime {field}",
             )
     notices = result.get("notices", [])
     if not isinstance(notices, list):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "daemon returned invalid Agent runtime notices",
         )
     for notice in notices:
@@ -313,24 +386,24 @@ def _runtime_context_projection(
             or not Path(notice["path"]).is_absolute()
         ):
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "daemon returned an invalid Agent runtime notice",
             )
-        warn(notice["message"])
+        warn(notice["message"], json_output=json_output)
     shared_credential = result.get("sharedCredential")
     if shared_credential is not None:
         if not isinstance(shared_credential, dict) or shared_credential.get(
             "authMode"
         ) != "native-shared-link":
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "daemon returned an invalid shared credential binding",
             )
         for field in ("nativePath", "targetPath"):
             value = shared_credential.get(field)
             if not isinstance(value, str) or not Path(value).is_absolute():
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     f"daemon returned an invalid shared credential {field}",
                 )
     return result
@@ -345,7 +418,7 @@ def _runtime_launch_custody(projection: JsonObject | None):
     launch_token = projection.get("launchToken")
     if not isinstance(launch_token, str) or not launch_token:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "authority-prepared runtime context is missing launchToken",
         )
     operation_id = f"cli:runtime-launch:{services.uuid4().hex}"
@@ -355,13 +428,13 @@ def _runtime_launch_custody(projection: JsonObject | None):
     )
     if acquired.get("operationId") != operation_id:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "daemon returned a mismatched Agent runtime launch operation",
         )
     lease_token = acquired.get("leaseToken")
     if not isinstance(lease_token, str) or not lease_token:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "daemon returned an invalid Agent runtime launch lease",
         )
     body_failed = False
@@ -374,7 +447,7 @@ def _runtime_launch_custody(projection: JsonObject | None):
             for name, value in raw_secret_environment.items()
         ):
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "daemon returned an invalid Agent launch secret environment",
             )
         secret_environment = dict(raw_secret_environment)
@@ -396,12 +469,19 @@ def _runtime_launch_custody(projection: JsonObject | None):
 def _channel_registration_confirmed(
     actor: str, session_ref: str, status: JsonObject
 ) -> bool:
-    """Readiness for the Claude Channel carrier: registered AND confirmed."""
+    """Readiness for the Claude Channel carrier: registered AND confirmed.
 
+    The session is compared at its official address (D12), as for the pi and
+    Codex carriers: the daemon registers the Channel session at the URI the
+    record stores (its ``a.`` id URI once records are id-minted), never at a
+    name URI the launcher holds (``--name agent:<owner>:<node>:<actor>``).
+    """
+
+    official = _official_session_address(actor, status)
     sessions = status.get("interactiveSessions", [])
     return isinstance(sessions, list) and any(
         isinstance(item, dict)
-        and item.get("actor") == actor
+        and item.get("actor") == official
         and item.get("sessionRef") == session_ref
         and item.get("channelConfirmed") is True
         for item in sessions
@@ -409,12 +489,17 @@ def _channel_registration_confirmed(
 
 
 def _pi_attach_registration(actor: str, session_ref: str, status: JsonObject) -> bool:
-    """Readiness for the pi attach carrier: its session.register has landed."""
+    """Readiness for the pi attach carrier: its session.register has landed.
 
+    The session is compared at its official address (D12), not at the name
+    URI the CLI minted before the record existed.
+    """
+
+    official = _official_session_address(actor, status)
     sessions = status.get("interactiveSessions", [])
     return isinstance(sessions, list) and any(
         isinstance(item, dict)
-        and item.get("actor") == actor
+        and item.get("actor") == official
         and item.get("sessionRef") == session_ref
         and item.get("source") == "pi-extension"
         for item in sessions
@@ -432,159 +517,3 @@ def _write_launch_config(config_path: Path, config: JsonObject) -> None:
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(config, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
-
-
-def _launch_detached_tui(
-    *,
-    argv: list[str],
-    env: dict[str, str],
-    cwd: Path,
-    actor: str,
-    session_ref: str,
-    session_name: str,
-    harness: str,
-    registration_deadline_seconds: float,
-    is_session_registered: Callable[[JsonObject], bool],
-    registration_failure: str,
-    config: JsonObject | None = None,
-    config_path: Path | None = None,
-    recovery_path: Path | None = None,
-    warnings: Sequence[JsonObject] = (),
-) -> JsonObject:
-    """Spawn an interactive TUI inside a detached tmux session, then return.
-
-    Unlike the foreground path this launcher does NOT wait for the TUI: the
-    tmux server owns the pane, attach/detach never signals it, and an
-    optional launch-scoped mcp config stays on disk so an in-session MCP
-    reconnect can still read it after this process exits. Registration is
-    still the readiness gate: a session that never registers is killed again,
-    exactly like the foreground spawn-failure path. ``harness`` decides the
-    registration predicate (Claude: channelConfirmed; pi: the extension's
-    session.register) and the deadline (pi's trust prompt stalls longer).
-    """
-    services = get_services()
-
-    from hyprial.daemon import harnesses_tmux as tmux_mod
-
-    tmux_bin = tmux_mod.find_tmux()
-    if tmux_bin is None:
-        if config_path is not None:
-            from hyprial.daemon import cleanup_launch_resources
-
-            cleanup_launch_resources(config_path, recovery_path)
-        raise services.CliError(
-            "TMUX_UNAVAILABLE",
-            "--tmux requires the tmux binary on PATH",
-        )
-    if tmux_mod.has_session(tmux_bin, session_name):
-        if config_path is not None:
-            from hyprial.daemon import cleanup_launch_resources
-
-            cleanup_launch_resources(config_path, recovery_path)
-        hints = tmux_mod.attach_hints(session_name)
-        raise services.CliError(
-            "TMUX_SESSION_EXISTS",
-            f"tmux session {session_name} already exists; attach to it with "
-            f"`{hints['wsl-linux-terminal']}` (WSL/Linux) or "
-            f"`{hints['macOS-iTerm2']}` (macOS iTerm2), or kill it first",
-        )
-    if config is not None:
-        if config_path is None:
-            raise ValueError("config_path is required when config is given")
-        try:
-            _write_launch_config(config_path, config)
-        except BaseException:
-            from hyprial.daemon import cleanup_launch_resources
-
-            cleanup_launch_resources(config_path, recovery_path)
-            raise
-    try:
-        cleanup = (
-            tmux_mod.LaunchCleanupResources(config_path, recovery_path)
-            if config_path is not None
-            else None
-        )
-        tmux_mod.new_detached_session(
-            tmux_bin,
-            session_name,
-            argv,
-            cwd=cwd,
-            env=env,
-            cleanup=cleanup,
-        )
-    except subprocess.CalledProcessError as error:
-        if config_path is not None:
-            from hyprial.daemon import cleanup_launch_resources
-
-            cleanup_launch_resources(config_path, recovery_path)
-        detail = (error.stderr or "").strip()
-        raise services.CliError(
-            "TMUX_SPAWN_FAILED",
-            f"tmux failed to start detached session {session_name}"
-            + (f": {detail}" if detail else ""),
-        ) from error
-    registered = False
-    deadline = services.time.monotonic() + registration_deadline_seconds
-    next_pane_read = services.time.monotonic()
-    while services.time.monotonic() < deadline:
-        registered = is_session_registered(services.runtime.request("ps"))
-        # A dead tmux session is this path's process.poll(): the TUI exited
-        # before its carrier ever registered.
-        if registered or not tmux_mod.has_session(tmux_bin, session_name):
-            break
-        if services.time.monotonic() >= next_pane_read:
-            next_pane_read = services.time.monotonic() + 1.0
-            prompt = tmux_mod.claude_confirmation_prompt(
-                tmux_mod.pane_text(tmux_bin, session_name)
-            )
-            if prompt is not None:
-                # A Claude Code start-up confirmation (folder trust, or the
-                # development-channels warning).  Both are CC-owned on purpose
-                # and cannot be pre-accepted, so nobody in a detached pane will
-                # ever answer.  Waiting out the deadline and killing the pane
-                # (the old path) reported the wrong failure and destroyed the
-                # one pane a person could confirm in.  Keep it (and its launch
-                # config) and say exactly what to do.
-                hints = tmux_mod.attach_hints(session_name)
-                question = {
-                    "folder-trust": "whether to trust the working folder",
-                    "development-channels": "its 'Loading development channels' warning",
-                }[prompt]
-                raise services.CliError(
-                    "CLAUDE_CONFIRMATION_REQUIRED",
-                    f"{harness} in tmux session {session_name} is waiting for a "
-                    f"person to confirm {question}; attach with "
-                    f"`{hints['wsl-linux-terminal']}` (iTerm2: "
-                    f"`{hints['macOS-iTerm2']}`), confirm, then detach -- the "
-                    "session registers with the daemon on its own",
-                    {
-                        "prompt": prompt,
-                        "actor": actor,
-                        "sessionRef": session_ref,
-                        "tmuxSession": session_name,
-                        "attach": hints,
-                    },
-                )
-        services.time.sleep(0.1)
-    if not registered:
-        tmux_mod.kill_session(tmux_bin, session_name)
-        if config_path is not None:
-            from hyprial.daemon import cleanup_launch_resources
-
-            cleanup_launch_resources(config_path, recovery_path)
-        raise services.CliError("CHANNEL_REGISTRATION_FAILED", registration_failure)
-    return _with_plugin_warnings(
-        {
-            "ok": True,
-            "actor": actor,
-            # The IPC key stays "provider" so this CLI can talk to a daemon (and
-            # reports) running an older build.
-            "provider": harness,
-            "runtime": "interactive",
-            "sessionRef": session_ref,
-            "detached": True,
-            "tmuxSession": session_name,
-            "attach": tmux_mod.attach_hints(session_name),
-        },
-        warnings,
-    )

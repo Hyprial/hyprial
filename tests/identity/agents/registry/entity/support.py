@@ -30,6 +30,7 @@ from hyprial.daemon.impl.inbox import (
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 from hyprial.shell.impl.daemon_wiring.routine_coordinator import RoutineCoordinatorAdapter
 from hyprial.shell.impl.daemon_wiring.routine_service import RoutineServiceAdapter
+from tests.support.runtime.environment import UNIT_USER_ID
 
 OWNER = "op"
 NODE = "node-1"
@@ -203,7 +204,7 @@ def application(
         state_dir=tmp_path,
         socket_path=tmp_path / "daemon.sock",
         node_id=NODE,
-        owner=OWNER,
+        owner=OWNER, user_id=UNIT_USER_ID,
         zenoh_listen=("tcp/127.0.0.1:0",),
         zenoh_connect=(),
     **_deep_module_daemon_dependencies())
@@ -246,6 +247,16 @@ def enable_routine_coordinator(app: DaemonApplication, state_dir: Path) -> None:
         ),
     )
     app._routine_coordinator = RoutineCoordinatorAdapter(coordinator)
+
+
+def official_uri(app: DaemonApplication, name: str = "foo") -> str:
+    """The stored URI of local agent ``name``: its official address.
+
+    Bindings, sessions and routes are keyed by it, which is the ``a.`` id
+    URI under id-form minting rather than the name-composed ``URI``.
+    """
+
+    return app.agents.require(name).uri
 
 
 def start_headless(app: DaemonApplication, harness: str, name: str) -> dict[str, Any]:
@@ -320,3 +331,18 @@ def _scheduled_routine(
         allow_unicode=True,
         sort_keys=False,
     )
+
+
+def address_of(agent: Any) -> str:
+    """The official id-form address an agent record is reached at."""
+
+    from hyprial.kernel import canonical_agent_uri
+
+    assert agent.agent_id, agent
+    return canonical_agent_uri(agent.owner, agent.machine, agent.agent_id)
+
+
+def address(app: DaemonApplication, name: str) -> str:
+    """The official id-form address of the registered agent ``name``."""
+
+    return address_of(app.agents.require(name))

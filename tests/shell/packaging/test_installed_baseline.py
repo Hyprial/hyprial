@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from scripts.verify.verify_installed_baseline import (
-    EXPECTED_METHODS,
     EXPECTED_PUBLIC_IMPORTS,
     PUBLIC_PROBE,
     READY_PROBE,
@@ -205,7 +204,7 @@ def test_task_environment_uses_task_owned_roots(
     assert "GIT_DIR" not in env
 
 
-def test_main_requires_contract_and_golden(
+def test_main_requires_contract(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit):
@@ -226,8 +225,6 @@ def test_main_rejects_a_non_hex_expected_commit(
                 "zzzzzzz",
                 "--contract",
                 str(tmp_path / "contract.json"),
-                "--golden",
-                str(tmp_path / "golden.json"),
             ]
         )
     assert "lowercase hex" in capsys.readouterr().err
@@ -279,28 +276,6 @@ def test_check_contract_uses_the_installed_openapi_hash(tmp_path: Path) -> None:
     payload["openapiCanonicalSha256"] = "0" * 64
     _, problems = check_contract(payload, contract)
     assert any("!= contract" in problem for problem in problems)
-
-
-def test_all_thirteen_daemon_cases_use_agent_link(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from scripts.verify import verify_installed_baseline as baseline
-
-    calls: list[list[str]] = []
-
-    def record_cli(_hyprial: str, argv: list[str], **_kwargs: object) -> dict:
-        calls.append(argv)
-        return {
-            "argv": argv, "exitCode": 0, "stdout": "{}", "stderr": "",
-            "stdoutBytes": b"{}", "stderrBytes": b"",
-        }
-
-    monkeypatch.setattr(baseline, "run_cli", record_cli)
-    results, _ = baseline.daemon_cases("unused", tmp_path, {}, None)
-    assert len(results) == len(calls) == 13
-    assert all(argv[:2] == ["agent", "link"] for argv in calls), calls
-
-
 def test_readiness_probe_uses_the_public_client() -> None:
     assert "from hyprial.kernel import daemon_request" in READY_PROBE
     assert 'daemon_request("ping"' in READY_PROBE
@@ -311,7 +286,7 @@ def _valid_probe_payload() -> dict[str, object]:
         "module": "/isolated/site-packages/hyprial/__init__.py",
         "moduleInsidePrefix": True,
         "cwd": "/tmp/a05-probe",
-        "methods": sorted(EXPECTED_METHODS),
+        "methods": [],
         "openapi": "3.1.0",
         "resource": "/isolated/site-packages/hyprial/_bin/hyprial-tailcat",
         "resourceMagic": True,

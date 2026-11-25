@@ -19,6 +19,7 @@ from hyprial.daemon.impl.inbox.service import InboxService
 from hyprial.daemon.impl.transport.api import TransportSample
 from hyprial.daemon.impl.transport.keys import KeySpace
 from hyprial.daemon.impl.transport.zenoh.presence import LivelinessDirectory
+from tests.support.actor_hosts import new_actor_host
 
 SENDER = "agent:owner:node-a:sender"
 RECIPIENT = "agent:owner:node-b:recipient"
@@ -85,7 +86,7 @@ def test_actor_authority_last_round_matches_the_service_contract(tmp_path: Path)
     transport = MemoryDeliveryTransport()
     events = _Events()
     database = tmp_path / "authority.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, events)
+    coordinator = DeliveryCustodyCoordinator(database, transport, events, actor_host=new_actor_host())
     facade = DeliveryCustodyFacade(coordinator, database)
     try:
         now_ms = time.time_ns() // 1_000_000
@@ -202,7 +203,7 @@ class _PresenceSession:
         authority = self._actor_callback.__self__._authority
         deadline = time.monotonic() + 1.0
         while True:
-            state = authority._runtime.snapshot(authority._handle)
+            state = authority._cell.snapshot()
             if state.queued == 0 and state.in_flight == 0:
                 break
             if time.monotonic() >= deadline:
@@ -239,7 +240,7 @@ def test_online_callback_does_not_wait_on_inbox_authority_and_close_completes(
     monkeypatch.setattr(DeliveryCustody, "_handle", stall_wake)
     transport = MemoryDeliveryTransport()
     database = tmp_path / "nonblocking-wake.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, _Events())
+    coordinator = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
     facade = DeliveryCustodyFacade(coordinator, database)
     application = _wake_application(facade)
     presence = _PresenceSession()
@@ -288,7 +289,7 @@ def test_online_callback_wake_is_applied_and_delivered_by_next_pump(
 ) -> None:
     transport = MemoryDeliveryTransport()
     database = tmp_path / "deferred-wake.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, _Events())
+    coordinator = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
     facade = DeliveryCustodyFacade(coordinator, database)
     application = _wake_application(facade)
     presence = _PresenceSession()
@@ -323,7 +324,7 @@ def test_online_transition_wakes_only_that_recipients_unexpired_rows(
     transport = MemoryDeliveryTransport()
     events = _Events()
     database = tmp_path / "wake.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, events)
+    coordinator = DeliveryCustodyCoordinator(database, transport, events, actor_host=new_actor_host())
     facade = DeliveryCustodyFacade(coordinator, database)
     presence = _PresenceSession()
     wakes: list[str] = []

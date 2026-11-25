@@ -40,6 +40,7 @@ CODEX_AUTH = '{"OPENAI_API_KEY": "sk-codex-marker-3f9d"}\n'
 CLAUDE_CREDENTIALS = '{"token": "claude-marker-aa11"}\n'
 PI_AUTH = "pi-marker-77c2\n"
 PI_STORE = '{"entries": "pi-store-marker-51b8"}\n'
+AGY_TOKEN = '{"access_token": "agy-marker-99e4"}\n'
 
 
 def _home(tmp_path: Path) -> Path:
@@ -47,6 +48,7 @@ def _home(tmp_path: Path) -> Path:
 
     home = tmp_path / "home"
     for harness, files in {
+        "agy": {"antigravity-oauth-token": AGY_TOKEN},
         "claude": {".credentials.json": CLAUDE_CREDENTIALS},
         "codex": {"auth.json": CODEX_AUTH, "settings.json": '{"theme": "dark"}\n'},
         "pi": {"auth.json": PI_AUTH, "models.json": PI_STORE},
@@ -68,6 +70,7 @@ def test_the_plan_seals_the_named_credentials_and_excludes_their_plaintext(
     plan = plan_credential_seal(home)
 
     assert [record.name for record in plan.records] == [
+        "native-agy-antigravity-oauth-token",
         "native-claude-credentials.json",
         "native-codex-auth.json",
         "native-pi-auth.json",
@@ -77,6 +80,7 @@ def test_the_plan_seals_the_named_credentials_and_excludes_their_plaintext(
     assert {
         (record.install.harness, record.install.path) for record in plan.records
     } == {
+        ("agy", "antigravity-oauth-token"),
         ("claude", ".credentials.json"),
         ("codex", "auth.json"),
         ("pi", "auth.json"),
@@ -85,12 +89,14 @@ def test_the_plan_seals_the_named_credentials_and_excludes_their_plaintext(
     assert all(record.machine_bound is False for record in plan.records)
     assert all(record.requires_reauth is False for record in plan.records)
     assert plan.secrets == {
+        "native-agy-antigravity-oauth-token": AGY_TOKEN,
         "native-claude-credentials.json": CLAUDE_CREDENTIALS,
         "native-codex-auth.json": CODEX_AUTH,
         "native-pi-auth.json": PI_AUTH,
         "native-pi-models.json": PI_STORE,
     }
     assert plan.excluded == (
+        "secrets/native/agy/antigravity-oauth-token",
         "secrets/native/claude/.credentials.json",
         "secrets/native/codex/auth.json",
         "secrets/native/pi/auth.json",
@@ -251,7 +257,7 @@ def test_an_export_carries_the_envelope_and_no_plaintext(tmp_path: Path) -> None
     assert not (payload / "secrets" / "native" / "codex" / "auth.json").exists()
     assert (payload / "secrets" / "native" / "codex" / "settings.json").is_file()
     # And no file in the whole bundle carries any sealed value in the clear.
-    markers = (b"sk-codex-marker-3f9d", b"claude-marker-aa11", b"pi-marker-77c2", b"pi-store-marker-51b8")
+    markers = (b"sk-codex-marker-3f9d", b"claude-marker-aa11", b"pi-marker-77c2", b"pi-store-marker-51b8", b"agy-marker-99e4")
     for path in bundle_dir.rglob("*"):
         if path.is_file():
             raw = path.read_bytes()

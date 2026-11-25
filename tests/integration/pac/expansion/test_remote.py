@@ -102,7 +102,7 @@ def test_only_definitive_invalid_result_allows_corrected_attempt():
     db.close()
 
 
-def test_two_daemon_remote_expansion_is_preflighted_on_origin(tmp_path):
+def test_two_daemon_remote_expansion_is_preflighted_on_origin(tmp_path, actor_host):
     from tests.daemon.pac.workflows.delivery.test_pac_remote_workflow import (
         Mesh,
         application,
@@ -113,8 +113,8 @@ def test_two_daemon_remote_expansion_is_preflighted_on_origin(tmp_path):
     )
 
     mesh = Mesh()
-    origin = application(tmp_path, "origin", mesh)
-    executor = application(tmp_path, "executor", mesh)
+    origin = application(tmp_path, "origin", mesh, actor_host)
+    executor = application(tmp_path, "executor", mesh, actor_host)
     repo, _base = repository(tmp_path)
     home, _work_root = policy_home(tmp_path, repo)
     origin.hyprial_home = home

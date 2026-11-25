@@ -1,6 +1,8 @@
 """agent_home_dirs: destruction scenarios."""
 
 from __future__ import annotations
+
+from tests.support.agent_destroy import destroy_agent
 import shutil
 import time
 from pathlib import Path
@@ -11,6 +13,8 @@ from hyprial.identity.impl.agents import (
     SecretResolutionError,
     SecretSource,
 )
+from hyprial.identity import AgentSecretStore
+import hyprial.identity.impl.agents.addressing as addressing
 from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
 from hyprial.identity.impl.agents.actor._core import AgentActor
 from hyprial.identity.impl.agents.actor.ports import (
@@ -27,31 +31,57 @@ from .support import (
     _isolated_environment as _isolated_environment,
     _registry,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
+_DESTROY_PATHS = ("forward", "forward-switch-off", "compensating")
+
+
+def _force_switch(destroy: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    if destroy == "forward-switch-off":
+        monkeypatch.setattr(addressing, "ID_FORM_MINTING", False)
+
+
+@pytest.mark.parametrize("destroy", _DESTROY_PATHS)
 def test_t13_destroy_and_rebuild_cannot_inherit_home_or_grants(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destroy: str
 ) -> None:
+    """A same-name rebuild lands on the old home path without its secrets or grants.
+
+    Every destroy path leaves the name free (owner decision 2026-11-19).
+    """
+
+    _force_switch(destroy, monkeypatch)
     registry = _registry(tmp_path)
     resolver = SecretResolver(tmp_path / "home", registry)
     old = registry.create("worker")
     receipt = registry.home_receipt("worker")
-    legacy = Path(receipt.path) / "secrets" / "provider-demo.json"
-    legacy.parent.mkdir(mode=0o700, exist_ok=True)
-    legacy.write_text('{"key":"sentinel-old"}', encoding="utf-8")
-    legacy.chmod(0o600)
+    store = AgentSecretStore(Path(receipt.path))
+    store.set(
+        service="provider-demo.json",
+        field="KEY",
+        value="sentinel-old",
+        actor="worker",
+        via="daemon",
+        at_ms=1,
+    )
     registry.grant_secret(
         "worker",
         grant_id="provider-demo",
         source=SecretSource.AGENT_PRIVATE,
         entry_id="provider-demo.json",
-        field_name="key",
+        field_name="KEY",
         environment_names=("OPENAI_API_KEY",),
         revision=1,
     )
     assert resolver.resolve("worker", "provider-demo").value == "sentinel-old"
 
-    assert registry.destroy("worker")
+    if destroy == "compensating":
+        assert registry.destroy_landing_home(
+            "worker", expected_entity_token=old.entity_token
+        )
+    else:
+        assert registry.destroy("worker")
     assert registry.secret_inventory() == ()
     assert not Path(receipt.path).exists()
     with pytest.raises(AgentHomeError) as fenced:
@@ -60,36 +90,54 @@ def test_t13_destroy_and_rebuild_cannot_inherit_home_or_grants(
 
     rebuilt = registry.create("worker")
     assert rebuilt.entity_token != old.entity_token
+    assert registry.home_receipt("worker").path == receipt.path
+    assert not (Path(receipt.path) / "secrets.sqlite").exists()
     with pytest.raises(SecretResolutionError) as missing:
         resolver.resolve("worker", "provider-demo")
     assert missing.value.category == "grant-missing"
 
 
+@pytest.mark.parametrize("destroy", _DESTROY_PATHS)
 def test_t13_create_resumes_cleanup_after_destroy_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destroy: str
 ) -> None:
+    """Create of the same name finishes a crashed destroy's home cleanup.
+
+    Every destroy path leaves the name free (owner decision 2026-11-19).
+    """
+
+    _force_switch(destroy, monkeypatch)
     registry = _registry(tmp_path)
     original = registry.create("worker")
     receipt = registry.home_receipt("worker")
     sentinel = Path(receipt.path) / "secrets" / "old-auth.json"
     sentinel.parent.mkdir(mode=0o700, exist_ok=True)
     sentinel.write_text("NON_PRODUCTION_SENTINEL\n", encoding="utf-8")
-    cleanup = registry.cleanup_home
 
-    def crash_after_revoke(_actor: str, *, expected_token: str) -> HomeReceipt:
-        assert expected_token == receipt.resource_token
-        raise RuntimeError("simulated crash after durable revoke")
+    if destroy == "compensating":
+        disposition, reservation = registry.prepare_destroy_settlement(
+            "worker", original.entity_token
+        )
+        assert disposition is None
+        assert reservation is not None
+    else:
+        cleanup = registry.cleanup_home
 
-    monkeypatch.setattr(registry, "cleanup_home", crash_after_revoke)
-    with pytest.raises(RuntimeError, match="simulated crash"):
-        registry.destroy("worker")
+        def crash_after_revoke(_actor: str, *, expected_token: str) -> HomeReceipt:
+            assert expected_token == receipt.resource_token
+            raise RuntimeError("simulated crash after durable revoke")
+
+        monkeypatch.setattr(registry, "cleanup_home", crash_after_revoke)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            registry.destroy("worker")
+        monkeypatch.setattr(registry, "cleanup_home", cleanup)
     assert registry.get("worker") is None
     assert sentinel.exists()
 
-    monkeypatch.setattr(registry, "cleanup_home", cleanup)
     rebuilt = registry.create("worker")
     assert rebuilt.entity_token != original.entity_token
     assert not sentinel.exists()
+    assert registry.home_receipt("worker").path == receipt.path
 
 
 def test_unexpected_create_effect_error_settles_and_keeps_the_claim(
@@ -103,7 +151,7 @@ def test_unexpected_create_effect_error_settles_and_keeps_the_claim(
 
     registry = _registry(tmp_path)
     events = _AgentEvents()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     provisioner = registry._home
     assert provisioner is not None
     provision = provisioner.provision_claimed
@@ -164,13 +212,13 @@ def test_t13_partial_cleanup_keeps_receipt_for_retry(
 
     monkeypatch.setattr(provisioner, "_remove_tree_entry", interrupt_cleanup)
     with pytest.raises(DaemonRequestError, match="cleanup-not-empty"):
-        application.handle("agent.destroy", {"name": "worker"})
+        destroy_agent(application, "worker")
     assert (root / "state" / "home-receipt.json").exists()
 
     monkeypatch.setattr(provisioner, "_remove_tree_entry", remove)
     _close_application(application)
     restarted = _application(tmp_path)
-    cleaned = restarted.handle("agent.destroy", {"name": "worker"})
+    cleaned = destroy_agent(restarted, "worker")
     assert cleaned["cleanupResumed"] is True
     assert cleaned["destroyed"] is False
     assert not root.exists()
@@ -195,7 +243,7 @@ def test_t13_receipt_missing_cleanup_rejects_symlinked_agents_root(
 
     monkeypatch.setattr(provisioner, "cleanup", crash_after_revoke)
     with pytest.raises(DaemonRequestError, match="simulated crash") as rejected:
-        application.handle("agent.destroy", {"name": "worker"})
+        destroy_agent(application, "worker")
     assert rejected.value.code == "RuntimeError"
     monkeypatch.setattr(provisioner, "cleanup", cleanup)
 
@@ -217,10 +265,11 @@ def test_t13_receipt_missing_cleanup_rejects_symlinked_agents_root(
     _close_application(application)
     restarted = _application(tmp_path)
     with pytest.raises(DaemonRequestError, match="unsafe-path"):
-        restarted.handle("agent.destroy", {"name": "worker"})
+        destroy_agent(restarted, "worker")
     assert outside_victim.is_dir()
 
 
+@pytest.mark.parametrize("destroy", _DESTROY_PATHS)
 @pytest.mark.parametrize(
     "crash_boundary",
     ("receipt", "workspace", "secrets", "config", "state", "root"),
@@ -229,10 +278,18 @@ def test_t13_receipt_missing_cleanup_converges_at_every_boundary(
     crash_boundary: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    destroy: str,
 ) -> None:
+    """A cleanup interrupted at any filesystem boundary converges on a repeated destroy.
+
+    Every destroy path leaves the name free (owner decision 2026-11-19).
+    """
+
+    _force_switch(destroy, monkeypatch)
     application = _application(tmp_path)
     application.handle("agent.create", {"name": "worker"})
     registry = application._agent_registry
+    original = registry.require("worker")
     receipt = registry.home_receipt("worker")
     root = Path(receipt.path)
     receipt_path = root / "state" / "home-receipt.json"
@@ -261,20 +318,31 @@ def test_t13_receipt_missing_cleanup_converges_at_every_boundary(
 
     monkeypatch.setattr(Path, "unlink", interrupt_unlink)
     monkeypatch.setattr(Path, "rmdir", interrupt_rmdir)
-    with pytest.raises(DaemonRequestError, match="simulated crash") as rejected:
-        application.handle("agent.destroy", {"name": "worker"})
-    assert rejected.value.code == "RuntimeError"
+    if destroy == "compensating":
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            registry.destroy_landing_home(
+                "worker", expected_entity_token=original.entity_token
+            )
+    else:
+        with pytest.raises(DaemonRequestError, match="simulated crash") as rejected:
+            destroy_agent(application, "worker")
+        assert rejected.value.code == "RuntimeError"
     monkeypatch.setattr(Path, "unlink", unlink)
     monkeypatch.setattr(Path, "rmdir", rmdir)
 
     _close_application(application)
     restarted = _application(tmp_path)
-    cleaned = restarted.handle("agent.destroy", {"name": "worker"})
+    cleaned = destroy_agent(restarted, "worker")
     assert cleaned["cleanupResumed"] is True
     assert cleaned["destroyed"] is False
     assert not root.exists()
+
     recreated = restarted.handle("agent.create", {"name": "worker"})
     assert recreated["created"] is True
+    rebuilt = restarted.agents.require("worker")
+    assert rebuilt.entity_token != original.entity_token
+    assert restarted._agent_registry.home_receipt("worker").path == receipt.path
+    assert (workspace / ".git").is_dir()
 
 
 def test_t13_bad_receipt_and_foreign_uri_never_authorize_cleanup(
@@ -299,16 +367,14 @@ def test_t13_bad_receipt_and_foreign_uri_never_authorize_cleanup(
         ),
     )
     with pytest.raises(DaemonRequestError, match="simulated crash") as rejected:
-        application.handle("agent.destroy", {"name": "worker"})
+        destroy_agent(application, "worker")
     assert rejected.value.code == "RuntimeError"
     monkeypatch.setattr(provisioner, "cleanup", cleanup)
 
     _close_application(application)
     restarted = _application(tmp_path)
     with pytest.raises(DaemonRequestError) as foreign:
-        restarted.handle(
-            "agent.destroy", {"name": "agent:other:node:worker"}
-        )
+        destroy_agent(restarted, "agent:other:node:worker")
     assert foreign.value.code == "AGENT_NOT_FOUND"
     assert sentinel.exists()
     restarted_registry = restarted._agent_registry
@@ -318,9 +384,9 @@ def test_t13_bad_receipt_and_foreign_uri_never_authorize_cleanup(
             ("{}", "agent-home:worker"),
         )
     with pytest.raises(DaemonRequestError, match="invalid-registry-receipt"):
-        restarted.handle("agent.destroy", {"name": "worker"})
+        destroy_agent(restarted, "worker")
     events = _AgentEvents()
-    actor = AgentActor(restarted_registry, event_sink=events)
+    actor = AgentActor(restarted_registry, event_sink=events, actor_host=new_actor_host())
     try:
         command = CleanupRevokedAgentHomeCommand(
             "typed-invalid-registry-receipt", "worker"

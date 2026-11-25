@@ -31,7 +31,6 @@ def _create_agent(app) -> None:  # type: ignore[no-untyped-def]
             "model": "gpt-6-astra",
         },
     )
-    app.agents.pin("adapter-a", "alice")
 
 
 def _guarded_params() -> dict[str, object]:
@@ -66,7 +65,6 @@ def test_guarded_session_commit_is_atomic_and_echoes_receipt(tmp_path: Path) -> 
     assert agent.cwd == "/work/moved"
     assert agent.provider == "openai"
     assert agent.model == "gpt-5.6-luna"
-    assert agent.pinned_adapters == ("adapter-a",)
     session = app.desired_state.load().interactive_sessions[0]
     assert session.session_ref == "thread-resumed"
     assert session.cwd == "/work/moved"
@@ -251,7 +249,6 @@ def test_guarded_restore_cas_never_overwrites_later_legitimate_agent_commit(
     assert agent.cwd == "/work/later-legitimate"
     assert agent.model == "gpt-6-luna"
     assert agent.capabilities["winner"] == "later"
-    assert agent.pinned_adapters == ("adapter-a",)
     assert app.desired_state.load().interactive_sessions == ()
 
 

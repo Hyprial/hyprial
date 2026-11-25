@@ -5,11 +5,10 @@ from __future__ import annotations
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
-from collections.abc import Callable
+from hyprial.error import codes
 from hyprial.kernel import ipc_errors
 import math
 import re
-import socket
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
@@ -53,14 +52,10 @@ def _unpack_paired_gui(result: JsonObject) -> None:
 
 
 def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
-    """Upgrade, then check what got installed, then tell the owner -- every time.
+    """Upgrade, then check what got installed -- every time.
 
-    ⭐ Sending only on failure is why this channel had never delivered anything:
-    the one path that exercises it is the path where the machine is already in
-    trouble. On 2026-08-31 it was needed twice and arrived zero times -- once
-    the process died before reaching it, once the owner lookup was wrong and had
-    never been run. Both invisible for the same reason: nothing used this code
-    while things were fine.
+    R2 (owner ruling 2026-11-19): nothing is sent to any IM; the self-check is
+    part of the result.
 
     ⚠️ The report can never change the upgrade's outcome. It is written outside
     `_perform_upgrade` precisely so it cannot: whatever that raised is re-raised
@@ -71,22 +66,11 @@ def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
     from hyprial.daemon import UPGRADE_FAILED, UPGRADE_UNCONFIRMED
     services = get_services()
 
-    host = socket.gethostname()
-
     def report(*, action: str, detail: str, key: str) -> JsonObject:
-        from hyprial.daemon import notify_upgrade_outcome, run_self_check
-        services = get_services()
-        check = run_self_check()
-        alert = notify_upgrade_outcome(
-            hyprial_home=services._hyprial_home(),
-            state_dir=services._state_dir(),
-            host=host,
-            action=action,
-            upgrade_detail=detail,
-            check=check,
-            idempotency_key=key,
-        )
-        return {"selfCheck": check.to_json(), "ownerAlert": alert.to_json()}
+        from hyprial.daemon import run_self_check
+
+        del action, detail, key
+        return {"selfCheck": run_self_check().to_json()}
 
     def _action_for(result: JsonObject) -> str:
         """What the run actually did -- read off the result, never assumed.
@@ -158,22 +142,22 @@ def _resolve_upgrade_target(
 
     if source not in updates.UPGRADE_SOURCES:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"--source must be one of {', '.join(sorted(updates.UPGRADE_SOURCES))}",
         )
     if source == "forgejo" and ref is None:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "--source forgejo requires --ref with a full commit or tag",
         )
     if source == "official" and ref is not None:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "--ref is reserved for --source forgejo; use --tag for an official tag",
         )
     if tag is not None and (source != "official" or ref is not None):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "--tag cannot be combined with --source forgejo or --ref",
         )
     url = updates.UPGRADE_SOURCES[source]
@@ -216,7 +200,6 @@ def _perform_upgrade(
     source: str = "official",
     ref: str | None = None,
     restart: bool = True,
-    before_restart: Callable[[JsonObject, str, str, str], JsonObject] | None = None,
     awaiting_confirmation: bool = False,
 ) -> JsonObject:
     """Install one exact tag and restart an existing daemon when it changes.
@@ -430,50 +413,6 @@ def _perform_upgrade(
         )
         return result
 
-    notification: JsonObject | None = None
-    if before_restart is not None:
-        try:
-            notification = before_restart(
-                before,
-                installed_version,
-                resolution.tag,
-                resolution.commit,
-            )
-            if (
-                notification.get("delivered") is not True
-                or notification.get("deliveryConfirmed") is not True
-            ):
-                raise services.CliError(
-                    "AUTOUPDATE_NOTIFICATION_UNDELIVERED",
-                    "restart notification did not receive delivery confirmation",
-                )
-        except Exception as error:  # noqa: BLE001 - restart must fail closed
-            failure: JsonObject = {
-                "upgradeCompleted": True,
-                "upgraded": True,
-                **resolved,
-                "restartRequired": True,
-                "restart": {
-                    "attempted": False,
-                    "restarted": False,
-                    "supervision": "unsupervised",
-                    "reason": (
-                        "restart blocked because the pre-restart notification "
-                        "was not confirmed"
-                    ),
-                    "before": before,
-                },
-            }
-            if notification is not None:
-                failure["notification"] = notification
-            raise services.CliError(
-                "UPGRADE_NOTIFICATION_FAILED",
-                f"upgrade completed at {resolution.tag} ({installed_version}), "
-                f"but restart notification was not confirmed: {error}",
-                failure,
-            ) from error
-        result["notification"] = notification
-
     try:
         return _restart_daemon_onto_install(
             result,
@@ -615,15 +554,14 @@ def _follow_up_restore_confirmation(
 
     The first alert said "unconfirmed"; card 3c116ad2 P2 requires the same
     CLI process to settle it.  Poll until ping reports ``reconciled`` or the
-    fleet-derived budget runs out -- never longer -- then send exactly one
-    follow-up over the owner channel: 「已恢复」 flips ``confirmed`` to true,
-    「仍在启动:N」 leaves it false.  The budget is the F1 shape
+    fleet-derived budget runs out -- never longer -- then record the outcome
+    in ``restart.followUp``: recovered flips ``confirmed`` to true,
+    still-starting (with the pending connector count) leaves it false.  The budget is the F1 shape
     (``ceil(rows/width)`` rounds of one start timeout, with margin) over
     this machine's own desired-state rows, never a wall-clock guess; the
     width/timeout parameters are the production defaults and exist so
     tests can shrink them instead of sleeping minutes.
     """
-    from hyprial.daemon import notify_restore_followup
     services = get_services()
 
     from hyprial.daemon import (
@@ -653,50 +591,25 @@ def _follow_up_restore_confirmation(
     while phase != "reconciled" and services.time.monotonic() < deadline:
         services.time.sleep(poll_interval_seconds)
         phase = _poll_restore_phase()
-    host = socket.gethostname()
-    upgrade_detail = str(result.get("resolvedTag") or "upgrade completed")
-    commit = str(result.get("resolvedCommit") or "unknown")
     follow_up: JsonObject = {"phase": phase}
     if phase == "reconciled":
         restart["confirmed"] = True
         restart["reason"] = "restore settled after poll (phase reconciled)"
         follow_up["outcome"] = "recovered"
-        alert = notify_restore_followup(
-            hyprial_home=services._hyprial_home(),
-            state_dir=services._state_dir(),
-            host=host,
-            recovered=True,
-            pending_connectors=None,
-            upgrade_detail=upgrade_detail,
-            idempotency_key=f"upgrade-restore-followup:recovered:{commit}",
-        )
     else:
         pending = _pending_connector_count()
         follow_up["outcome"] = "still-starting"
         if pending is not None:
             follow_up["pendingConnectors"] = pending
-        alert = notify_restore_followup(
-            hyprial_home=services._hyprial_home(),
-            state_dir=services._state_dir(),
-            host=host,
-            recovered=False,
-            pending_connectors=pending,
-            upgrade_detail=upgrade_detail,
-            idempotency_key=f"upgrade-restore-followup:still-starting:{commit}",
-        )
-    follow_up["alert"] = alert.to_json()
     restart["followUp"] = follow_up
 
 
 def _run_upgrade_steps(services: object) -> JsonObject:
     """Run the daemon-domain step registry after a successful restart."""
 
-    from hyprial.daemon import run_upgrade_steps
+    from hyprial.shell.impl.cli.commands.common.support import request_upgrade_steps as request_steps
 
-    return run_upgrade_steps(
-        services._state_dir(),  # type: ignore[attr-defined]
-        home=services._hyprial_home(),  # type: ignore[attr-defined]
-    )
+    return request_steps(services, apply=True)
 
 
 @upgrade_app.callback(invoke_without_command=True)
@@ -748,4 +661,4 @@ def upgrade(
             result["upgradeSteps"] = _run_upgrade_steps(services)
         return result
 
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False)

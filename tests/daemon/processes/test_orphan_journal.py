@@ -19,11 +19,11 @@ class Process:
         pass
 
 
-def test_raw_owned_unidentified_share_custody_and_retire_together(tmp_path):
+def test_raw_owned_unidentified_share_custody_and_retire_together(tmp_path, actor_host):
     path = tmp_path / "orphans.json"
     registry = OrphanProcessRegistry(path, identity_reader=lambda _: None)
     raw = Process()
-    owner = own_process(raw)
+    owner = own_process(raw, actor_host=actor_host)
     try:
         first = registry.observe_start("pi:worker", raw, pid=None, marker=None)
         second = registry.observe_start("pi:worker", owner, pid=None, marker=None)

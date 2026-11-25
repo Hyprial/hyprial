@@ -24,9 +24,7 @@ turns a test red -- not "today it passes":
                           It cannot take the ownership fence -- it runs while
                           the freshly restarted daemon owns the document --
                           so the test pins that this site only ever loads.
-       - transfer/runtime_state.py: explicit offline runtime downgrade behind
-                          the same DaemonStateOwnershipFence; no process manager.
-     A fifth construction site -- or one of these losing its shared
+     A fourth construction site -- or one of these losing its shared
      instance / fence / read-only shape -- must update this test deliberately.
 """
 
@@ -79,9 +77,7 @@ def _construction_sites(call: str) -> list[tuple[Path, str]]:
         "DesiredStateStore": {
             "daemon/impl/application/__init__.py": "daemon/application.py",
             "shell/impl/cli/commands/upgrade/commands.py": "cli.py",
-            "shell/impl/cli/commands/squire/user_proxy.py": "cli.py",
             "daemon/impl/operations/management.py": "daemon/management.py",
-            "daemon/impl/transfer/landing/runtime.py": "transfer/runtime_state.py",
         },
     }.get(call, {})
     grouped: dict[Path, list[str]] = {}
@@ -170,13 +166,12 @@ def test_lifecycle_topology_guard_rejects_split_db_or_journal() -> None:
         _assert_shared_lifecycle_constructor(split_journal)
 
 
-def test_desired_state_store_has_exactly_four_construction_sites() -> None:
+def test_desired_state_store_has_exactly_three_construction_sites() -> None:
     sites = _construction_sites("DesiredStateStore")
     assert [path.name for path, _text in sites] == [
         "cli.py",
         "application.py",
         "management.py",
-        "runtime_state.py",
     ], (
         "a DesiredStateStore construction point appeared or vanished in src: "
         "the daemon's store must receive the shared StateDatabase and the "

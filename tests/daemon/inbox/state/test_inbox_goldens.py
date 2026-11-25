@@ -38,7 +38,7 @@ def message(
     recipient = envelope["to"][0].get("actorId") or envelope["to"][0]["actorKey"]
     inferred = (
         DeliveryLifecycle.DURABLE_SERVICE
-        if str(recipient).startswith("channel:")
+        if str(recipient).startswith("adapter:")
         else DeliveryLifecycle.ONLINE_ONLY
     )
     return InboxMessage(

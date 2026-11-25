@@ -21,11 +21,11 @@ import threading
 
 Spec: ``spec-provider-oauth-relogin-alert-2026-09-14.md`` (+ 追加 1).  The
 whole feature lives behind four injected seams, so tests run the real state
-machine against a real ``UserProfileStore`` on a tmp file, and only stub the
+machine against a real ``RuntimeCapabilityStore`` on a tmp file, and only stub the
 two process boundaries (helper runner, owner notifier):
 
 * classification — ``classification.py``, closed tables;
-* marking — the existing ``UserProfile.runtime_capability`` slot, now a
+* marking — the owner's ``RuntimeCapability`` record in the capability cache, a
   **diagnostic record only** (2026-09-21): ``dispatch.matrix`` no longer
   filters on it and no dispatch decision reads it, so a marked provider is
   still selected.  It is kept because the restore scan, the doctor view and

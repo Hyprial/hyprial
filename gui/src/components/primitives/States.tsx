@@ -1,9 +1,10 @@
 import { Button } from './Button';
+import { Icon, type IconName } from './Icon';
 import { cx, type UiAction } from './types';
 
 interface StateFrameProps {
   readonly tone: 'neutral' | 'info' | 'warning' | 'danger';
-  readonly mark: string;
+  readonly icon: IconName;
   readonly title: string;
   readonly description?: string;
   readonly code?: string;
@@ -15,7 +16,7 @@ interface StateFrameProps {
 
 function StateFrame({
   tone,
-  mark,
+  icon,
   title,
   description,
   code,
@@ -32,7 +33,7 @@ function StateFrame({
       aria-busy={busy || undefined}
     >
       <span className="ui-state__mark" aria-hidden="true">
-        {busy ? <span className="ui-state__spinner" /> : mark}
+        {busy ? <span className="ui-state__spinner" /> : <Icon name={icon} size="lg" />}
       </span>
       <p className="ui-state__title">{title}</p>
       {description && <p className="ui-state__description">{description}</p>}
@@ -65,7 +66,7 @@ export function LoadingState({
   return (
     <StateFrame
       tone="info"
-      mark="…"
+      icon="info"
       title={title}
       description={description}
       busy
@@ -90,37 +91,9 @@ export function EmptyState({
   return (
     <StateFrame
       tone="neutral"
-      mark="—"
+      icon="info"
       title={title}
       description={description}
-      action={action}
-      className={className}
-    />
-  );
-}
-
-export interface UnsupportedStateProps {
-  readonly title?: string;
-  readonly reason: string;
-  readonly code?: string;
-  readonly action?: UiAction;
-  readonly className?: string;
-}
-
-export function UnsupportedState({
-  title = '暂不支持',
-  reason,
-  code,
-  action,
-  className,
-}: UnsupportedStateProps) {
-  return (
-    <StateFrame
-      tone="warning"
-      mark="!"
-      title={title}
-      description={reason}
-      code={code}
       action={action}
       className={className}
     />
@@ -154,7 +127,7 @@ export function ErrorState({
   return (
     <StateFrame
       tone="danger"
-      mark="×"
+      icon="warning-circle"
       title={title}
       description={message}
       code={code}

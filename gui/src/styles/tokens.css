@@ -1,34 +1,4 @@
-:root {
-  color-scheme: light;
-  /* Shared v11/v13 prototype families. Noomo assets are not bundled here, so
-     the declared fallback is what actually renders when they are absent. */
-  --font-ui:
-    "NoomoRoman", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system,
-    BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-brand:
-    "NoomoMachina", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --ink: #17131f;
-  --ink-soft: #4d4d54;
-  --muted: #70727a;
-  --line: #d7d8d5;
-  --line-soft: #e9eae7;
-  --paper: #f5f6f3ee;
-  --card: #fcfdfa;
-  --green: #dff493;
-  --green-wash: #edf2e7;
-  --green-line: #d5e5af;
-  --selected: #f1f5ff;
-  --selected-line: #7192d8;
-  --focus: #6a91e8;
-  --shadow-window: 0 24px 70px #56627a28;
-  --shadow-menu: 0 24px 70px #56627a28;
-  --radius-xl: 30px;
-  --radius-lg: 18px;
-  --radius-md: 13px;
-}
+@import "./themes/hyprial-v5.css";
 
 * {
   box-sizing: border-box;
@@ -43,13 +13,27 @@ body,
 
 body {
   margin: 0;
-  /* ADR-GUI-004: never inherit the prototype's 980px desktop minimum. */
   min-width: 0;
-  color: var(--ink);
-  font-family: var(--font-ui);
-  background: #fff;
+  color: var(--ui-ink-1);
+  font-family: var(--ui-font-ui);
+  background: var(--ui-ground);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+strong,
+b,
+th {
+  font-weight: var(--ui-weight-semibold);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: var(--ui-weight-semibold);
 }
 
 button,
@@ -72,78 +56,71 @@ a {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: var(--ui-focus-width) solid var(--ui-focus);
   outline-offset: 2px;
 }
 
 ::selection {
-  background: #dfe9ff;
-  color: var(--ink);
+  background: var(--ui-accent-wash);
+  color: var(--ui-ink-1);
 }
 
-/* S1 additive v17 semantic layer. These tokens are consumed only by the new
-   `.ui-*` primitives; the legacy variables above keep their existing values so
-   old pages do not change until their own migration slice. */
 :root {
-  /* Raw palette */
-  --ui-blue-600: #0048a8;
-  --ui-blue-500: #1159b8;
-  --ui-blue-wash: #e7eeff;
-  --ui-jade-600: #0fa06e;
-  --ui-jade-wash: #e7f6f0;
-  --ui-red-600: #b01228;
-  --ui-red-wash: #fdecef;
-  --ui-amber-700: #9a5a00;
-  --ui-amber-wash: #fff4df;
-  --ui-yellow-500: #ffd400;
-  --ui-white: #ffffff;
-  --ui-neutral-50: #f5f5f7;
-  --ui-neutral-100: #ececef;
-  --ui-neutral-200: #e6e6ea;
-  --ui-neutral-300: #d3d3d9;
-  --ui-neutral-400: #b6b6bc;
-  --ui-neutral-600: #6e6e76;
-  --ui-neutral-800: #3a3a40;
-  --ui-neutral-900: #17171b;
-  --ui-overlay: rgb(23 23 27 / 48%);
+  --ui-ink-1: var(--foreground);
+  --ui-ink-2: var(--ink-2);
+  --ui-ink-3: var(--ink-3);
+  --ui-ink-4: var(--ink-4);
+  --ui-border: var(--border);
+  --ui-border-strong: var(--border);
+  --ui-ground: var(--background);
+  --ui-ground-2: var(--muted);
+  --ui-surface: var(--card);
+  --ui-surface-muted: var(--muted);
+  --ui-surface-hover: var(--surface-hover);
+  --ui-neutral-fill: var(--secondary);
+  --ui-neutral-fill-hover: var(--secondary-hover);
+  --ui-input-fill: var(--input);
+  --ui-edge: var(--edge);
 
-  /* Semantic text, surfaces and borders */
-  --ui-ink-1: var(--ui-neutral-900);
-  --ui-ink-2: var(--ui-neutral-800);
-  --ui-ink-3: var(--ui-neutral-600);
-  --ui-ink-4: var(--ui-neutral-400);
-  --ui-border: var(--ui-neutral-200);
-  --ui-border-strong: var(--ui-neutral-300);
-  --ui-ground: var(--ui-neutral-50);
-  --ui-ground-2: var(--ui-neutral-100);
-  --ui-surface: var(--ui-white);
-  --ui-surface-muted: #fafafb;
+  --ui-accent: var(--primary);
+  --ui-accent-hover: var(--primary-hover);
+  --ui-accent-press: var(--primary-press);
+  --ui-accent-wash: var(--accent-wash);
+  --ui-on-accent: var(--primary-foreground);
+  --ui-lime: var(--accent);
+  --ui-lime-soft: var(--accent-soft);
+  --ui-focus: var(--ring);
+  --ui-info: var(--info-foreground);
+  --ui-info-wash: var(--info-wash);
+  --ui-info-surface: var(--surface-periwinkle);
+  --ui-avatar-wash-blue: var(--avatar-wash-blue);
+  --ui-avatar-wash-lime: var(--avatar-wash-lime);
+  --ui-avatar-wash-jade: var(--avatar-wash-jade);
+  --ui-avatar-wash-red: var(--avatar-wash-red);
+  --ui-avatar-wash-grey: var(--avatar-wash-grey);
+  --ui-positive: var(--success);
+  --ui-positive-wash: var(--success-wash);
+  --ui-positive-ink: var(--success-foreground);
+  --ui-danger: var(--destructive);
+  --ui-danger-wash: var(--destructive-wash);
+  --ui-danger-wash-hover: var(--destructive-wash-hover);
+  --ui-danger-ink: var(--destructive-foreground);
+  --ui-warning: var(--warning-foreground);
+  --ui-warning-wash: var(--warning-wash);
+  --ui-highlight: var(--accent-soft);
+  --ui-overlay: var(--overlay);
+  --ui-rail: var(--sidebar);
+  --ui-rail-ink: var(--sidebar-foreground);
+  --ui-rail-ink-strong: var(--sidebar-foreground-strong);
+  --ui-rail-active: var(--sidebar-accent);
+  --ui-rail-active-ink: var(--sidebar-accent-foreground);
+  --ui-rail-hover: var(--sidebar-hover);
+  --ui-rail-focus: var(--sidebar-ring);
 
-  /* Semantic action and status colours */
-  --ui-accent: var(--ui-blue-600);
-  --ui-accent-hover: var(--ui-blue-500);
-  --ui-accent-wash: var(--ui-blue-wash);
-  --ui-on-accent: var(--ui-white);
-  --ui-focus: rgb(0 72 168 / 45%);
-  --ui-info: var(--ui-blue-600);
-  --ui-info-wash: var(--ui-blue-wash);
-  --ui-positive: var(--ui-jade-600);
-  --ui-positive-wash: var(--ui-jade-wash);
-  --ui-danger: var(--ui-red-600);
-  --ui-danger-wash: var(--ui-red-wash);
-  --ui-warning: var(--ui-amber-700);
-  --ui-warning-wash: var(--ui-amber-wash);
-  --ui-highlight: var(--ui-yellow-500);
-
-  /* Typography: local fallbacks only; no remote font request. */
-  --ui-font-ui:
-    "NoomoRoman", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system,
-    BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --ui-font-cn:
-    "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-    ui-sans-serif, system-ui, sans-serif;
-  --ui-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ui-font-ui: var(--font-sans);
+  --ui-font-brand: var(--font-sans);
+  --ui-font-cn: var(--font-cn);
+  --ui-font-mono: var(--font-mono);
   --ui-text-xs: 12px;
   --ui-text-sm: 13px;
   --ui-text-md: 14px;
@@ -151,12 +128,16 @@ input:focus-visible {
   --ui-text-xl: 20px;
   --ui-text-2xl: 24px;
   --ui-text-3xl: 30px;
+  --ui-weight-regular: 400;
+  --ui-weight-medium: 500;
+  --ui-weight-semibold: 600;
   --ui-leading-tight: 1.2;
   --ui-leading-normal: 1.5;
   --ui-leading-relaxed: 1.65;
   --ui-tracking-wide: 0.06em;
+  --ui-leading-snug: 1.35;
+  --ui-tracking-tight: -0.02em;
 
-  /* Spacing on a 4px base */
   --ui-space-1: 4px;
   --ui-space-2: 8px;
   --ui-space-3: 12px;
@@ -166,26 +147,56 @@ input:focus-visible {
   --ui-space-8: 32px;
   --ui-space-10: 40px;
   --ui-space-12: 48px;
+  --ui-space-16: 64px;
+  --ui-space-20: 80px;
+  --ui-space-24: 96px;
+  --ui-space-32: 128px;
 
-  /* Shape, elevation and motion */
+  --ui-radius-xs: 8px;
   --ui-radius-sm: 12px;
   --ui-radius-md: 20px;
   --ui-radius-lg: 28px;
   --ui-radius-xl: 40px;
+  --ui-radius-2xl: 48px;
   --ui-radius-pill: 999px;
-  --ui-shadow-sm: 0 2px 8px rgb(23 23 27 / 6%);
-  --ui-shadow-card:
-    0 12px 32px rgb(23 23 27 / 8%),
-    0 2px 6px rgb(23 23 27 / 4%);
-  --ui-shadow-dialog: 0 24px 80px rgb(23 23 27 / 24%);
+  --ui-shadow-xs: none;
+  --ui-shadow-sm: none;
+  --ui-shadow-card: none;
+  --ui-shadow-float-sm: var(--shadow-float-sm);
+  --ui-shadow-popover: var(--shadow-float);
+  --ui-shadow-dialog: var(--shadow-dialog);
   --ui-motion-fast: 120ms;
   --ui-motion-base: 180ms;
   --ui-motion-slow: 260ms;
   --ui-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ui-z-raised: 1;
+  --ui-z-sticky: 4;
+  --ui-z-sticky-header: 6;
+  --ui-z-nav: 20;
+  --ui-z-nav-mobile: 50;
+  --ui-z-popover: 60;
+  --ui-z-popover-raised: 61;
+  --ui-z-overlay: 80;
+  --ui-z-overlay-raised: 90;
+  --ui-z-modal: 100;
+  --ui-z-skip-link: 100;
+  --ui-z-toast: 1100;
   --ui-z-dialog: 1000;
+  --ui-z-dialog-popover: 1001;
 
-  /* The only component-slot tokens in S1: shared control measurements. */
-  --ui-control-height-sm: 32px;
-  --ui-control-height-md: 40px;
+  --ui-control-height-sm: 40px;
+  --ui-control-height-md: 48px;
+  --ui-control-height-lg: 56px;
+  --ui-icon-sm: 18px;
+  --ui-icon-md: 22px;
+  --ui-icon-lg: 26px;
   --ui-focus-width: 2px;
+  --ui-width-prose: 68ch;
+  --ui-width-form: 560px;
+  --ui-width-dialog: 560px;
+  --ui-measure-content: 720px;
+  --ui-measure-wide: 1080px;
+  --ui-measure-form: 480px;
+  --ui-step-current: var(--step-current);
+  --ui-step-track: var(--step-track);
 }

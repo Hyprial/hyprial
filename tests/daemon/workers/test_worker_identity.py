@@ -29,23 +29,117 @@ from hyprial.daemon.impl.harnesses import agent_sdk as agent_sdk_module
 from hyprial.daemon.impl.harnesses.agent_sdk import IsolatedAgentSdkClient, create_claude_sdk_client
 from hyprial.daemon.impl.harnesses.runtime.launcher import HarnessLauncher
 from hyprial.daemon.impl.harnesses.worker_channel import (
-    WORKER_CLI_ALLOW_TOOLS,
-    WORKER_CLI_DENY_TOOLS,
     WORKER_HARNESS_TOOLS,
+    WorkerAuthorityPolicy,
     WorkerChannel,
     build_worker_channel,
 )
+from hyprial.daemon.impl.harnesses.turn_delivery.channel.templates import (
+    load_worker_channel_template,
+)
+from hyprial.daemon.impl.harnesses.turn_delivery.channel import templates as templates_module
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 
 CANONICAL = "agent:allen:node-1:kanban-watcher"
+SEEDED_ALLOW, WORKER_CLI_DENY_TOOLS = load_worker_channel_template(
+    "managed-worker"
+).member_rules()
+WORKER_CLI_ALLOW_TOOLS = load_worker_channel_template("managed-worker").allowed_tools
+
+
+def test_managed_worker_policy_is_packaged_template_data() -> None:
+    template = load_worker_channel_template("managed-worker")
+
+    assert template.harness_tools == WORKER_HARNESS_TOOLS
+    assert template.allowed_tools == ("Bash(hyprial:*)",)
+    assert template.member_rules() == (
+        tuple(f"mcp__harness-bridge__{tool}" for tool in WORKER_HARNESS_TOOLS)
+        + template.allowed_tools,
+        template.disallowed_tools,
+    )
+
+
+def test_a_channel_without_a_document_policy_carries_only_its_bridge_tools() -> None:
+    channel = build_worker_channel(
+        actor=CANONICAL,
+        session_ref="sess-xyz",
+        hyprial_home=Path("/h/home"),
+        state_dir=Path("/h/state"),
+    )
+
+    assert channel.authority is None
+    assert channel.allowed_tools == tuple(
+        f"mcp__harness-bridge__{tool}" for tool in WORKER_HARNESS_TOOLS
+    )
+    assert channel.disallowed_tools == ()
+    assert "Bash(hyprial:*)" not in channel.allowed_tools
+
+
+def _write_worker_template(tmp_path: Path, payload: dict[str, object]) -> None:
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    (template_dir / "test.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("harnessTools", []),
+        ("allowedTools", []),
+        ("disallowedTools", []),
+        ("harnessTools", ["harness_ack", "harness_ack"]),
+        ("allowedTools", ["Bash(hyprial:*)", "Bash(hyprial:*)"]),
+        ("disallowedTools", ["Bash(hyprial daemon:*)", "Bash(hyprial daemon:*)"]),
+    ],
+)
+def test_worker_template_rejects_empty_or_duplicate_policy_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: list[str]
+) -> None:
+    payload: dict[str, object] = {
+        "version": 1,
+        "name": "test",
+        "harnessTools": ["harness_ack"],
+        "allowedTools": ["Bash(hyprial:*)"],
+        "disallowedTools": ["Bash(hyprial daemon:*)"],
+    }
+    payload[field] = value
+    _write_worker_template(tmp_path, payload)
+    monkeypatch.setattr(templates_module, "files", lambda package: tmp_path)
+
+    with pytest.raises(ValueError, match=field):
+        load_worker_channel_template("test")
+
+
+def test_worker_template_rejects_unknown_top_level_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "version": 1,
+        "name": "test",
+        "harnessTools": ["harness_ack"],
+        "allowedTools": ["Bash(hyprial:*)"],
+        "disallowedTools": ["Bash(hyprial daemon:*)"],
+        "unexpected": True,
+    }
+    _write_worker_template(tmp_path, payload)
+    monkeypatch.setattr(templates_module, "files", lambda package: tmp_path)
+
+    with pytest.raises(ValueError, match="top-level keys"):
+        load_worker_channel_template("test")
 
 
 def _worker_channel() -> WorkerChannel:
+    """The channel of a claude member whose document holds the seeded template rules."""
+
     return build_worker_channel(
         actor=CANONICAL,
         session_ref="sess-xyz",
         hyprial_home=Path("/h/home"),
         state_dir=Path("/h/state"),
+        authority=WorkerAuthorityPolicy(
+            {"allowedTools": list(SEEDED_ALLOW), "disallowedTools": list(WORKER_CLI_DENY_TOOLS)},
+            1,
+        ),
     )
 
 
@@ -108,7 +202,6 @@ def test_worker_cli_policy_allows_the_product_cli_but_denies_state_changes() -> 
     assert channel.disallowed_tools == WORKER_CLI_DENY_TOOLS
     assert set(channel.disallowed_tools) == {
         "Bash(hyprial agent destroy:*)",
-        "Bash(hyprial agent stop:*)",
         "Bash(hyprial daemon:*)",
         "Bash(hyprial init:*)",
         "Bash(hyprial org:*)",
@@ -117,12 +210,17 @@ def test_worker_cli_policy_allows_the_product_cli_but_denies_state_changes() -> 
 
 
 def test_worker_cli_policy_denies_deploy_and_destructive_commands() -> None:
-    """Agent stop/upgrade belong to the infra window; destroying an agent is
-    destructive. Both halves of the policy must reach the worker."""
+    """daemon upgrade belongs to the infra window; destroying an agent is
+    destructive. Both halves of the policy must reach the worker.
+
+    2026-11-04 ruling (Allen, relayed by hq-manager and hr-steward): the
+    2026-10-17 'infra controlled window' covered DAEMON stop, not AGENT stop;
+    ``agent stop`` left this list on that ruling. ``daemon``/``init``/``org``
+    stay denied, so a managed worker still cannot restart the daemon.
+    """
 
     channel = _worker_channel()
     deny = (
-        "Bash(hyprial agent stop:*)",
         "Bash(hyprial daemon upgrade:*)",
         "Bash(hyprial agent destroy:*)",
     )
@@ -235,7 +333,6 @@ class ResultMessage:
     # The deploy/destructive rules must survive the daemon -> worker hand-off,
     # not only exist in the constant.
     for rule in (
-        "Bash(hyprial agent stop:*)",
         "Bash(hyprial daemon upgrade:*)",
         "Bash(hyprial agent destroy:*)",
     ):
@@ -273,7 +370,7 @@ _TEST_APPLICATIONS: list[DaemonApplication] = []
 def _close_test_applications():  # type: ignore[no-untyped-def]
     yield
     while _TEST_APPLICATIONS:
-        _TEST_APPLICATIONS.pop()._agent_session_domains.close()
+        _TEST_APPLICATIONS.pop()._agent_session_domains.close(shutdown_hosts=False)
 
 
 def _daemon(tmp_path: Path) -> DaemonApplication:

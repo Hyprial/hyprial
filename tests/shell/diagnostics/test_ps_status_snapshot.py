@@ -25,7 +25,14 @@ from hyprial.identity.impl.agents import AGENT_HEARTBEAT_TTL_SECONDS
 from hyprial.kernel.impl.contracts.ports import PortAdmission
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.desired_state import DesiredStateStore
-from hyprial.kernel import HarnessLaunchSpec, LaneProjection
+from hyprial.kernel import (
+    DaemonRequestError,
+    HarnessLaunchSpec,
+    LaneProjection,
+    member_actor_parts,
+    member_actor_registry_key,
+    member_actor_uri,
+)
 from hyprial.daemon.impl.lifecycle_manager import (
     LifecycleKind,
     LifecycleOperation,
@@ -97,6 +104,26 @@ class CountingSupervisor:
 
     def projected_worker_session_refs(self) -> dict[tuple[str, str], str]:
         return dict(self.session_refs)
+
+
+class MemberScopedSupervisor(CountingSupervisor):
+    def __init__(self, refs: dict[tuple[str, str, str], str]) -> None:
+        super().__init__()
+        self.member_session_refs = refs
+
+    def projected_worker_session_refs(self) -> dict[tuple[str, str, str], str]:
+        return dict(self.member_session_refs)
+
+    def status(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "id": f"{harness}:{member}",
+                "runtime": harness,
+                "name": name,
+                "running": True,
+            }
+            for harness, name, member in self.member_session_refs
+        )
 
 
 class StubPresence:
@@ -327,10 +354,15 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
     supervisor(app).running[("codex", "dock")] = True
 
     rows = app.handle("ps", {})["agents"]
+    ids: dict[str, str] = {}
     for row in rows:
         # C adds a diagnostic object; all pre-existing fields remain frozen.
         assert row.pop("runState")["state"] == "unknown"
         row.pop("createdAtMs")
+        agent_id = row.pop("agentId", None)
+        assert agent_id is None or str(agent_id).startswith("a.")
+        ids[row["actor"]] = str(agent_id)
+        assert row.pop("displayName", None) is None
         if row["capabilities"]:
             assert isinstance(row["capabilities"].pop("updated_at_ms"), int)
 
@@ -344,7 +376,7 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
     assert rows == [
         {
             # worker 信号 False ⇒ offline
-            "uri": f"agent:{OWNER}:{NODE}:bar",
+            "uri": f"agent:{OWNER}:{NODE}:{ids['bar']}",
             "actor": "bar",
             "owner": OWNER,
             "machine": NODE,
@@ -357,7 +389,6 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
             "preferredHarness": "codex",
             "lastHarness": "codex",
             "lastSessionId": None,
-            "pinnedAdapters": [],
             "hosted": False,
             "hostedBy": None,
             "status": "offline",
@@ -368,7 +399,7 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
         },
         {
             # worker 信号 True ⇒ online
-            "uri": f"agent:{OWNER}:{NODE}:foo",
+            "uri": f"agent:{OWNER}:{NODE}:{ids['foo']}",
             "actor": "foo",
             "owner": OWNER,
             "machine": NODE,
@@ -381,7 +412,6 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
             "preferredHarness": "pi",
             "lastHarness": "pi",
             "lastSessionId": None,
-            "pinnedAdapters": [],
             "hosted": False,
             "hostedBy": None,
             "status": "online",
@@ -392,7 +422,7 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
         },
         {
             # 没有任何信号 ⇒ offline
-            "uri": f"agent:{OWNER}:{NODE}:qux",
+            "uri": f"agent:{OWNER}:{NODE}:{ids['qux']}",
             "actor": "qux",
             "owner": OWNER,
             "machine": NODE,
@@ -405,7 +435,6 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
             "preferredHarness": None,
             "lastHarness": None,
             "lastSessionId": None,
-            "pinnedAdapters": [],
             "hosted": False,
             "hostedBy": None,
             "status": "offline",
@@ -416,7 +445,7 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
         },
         {
             # 交互会话心跳新鲜 ⇒ online
-            "uri": f"agent:{OWNER}:{NODE}:tui",
+            "uri": f"agent:{OWNER}:{NODE}:{ids['tui']}",
             "actor": "tui",
             "owner": OWNER,
             "machine": NODE,
@@ -429,7 +458,6 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
             "preferredHarness": "claude",
             "lastHarness": "claude",
             "lastSessionId": "session-tui",
-            "pinnedAdapters": [],
             "hosted": False,
             "hostedBy": None,
             "status": "online",
@@ -440,7 +468,7 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
         },
         {
             # 交互会话心跳陈旧 ⇒ offline
-            "uri": f"agent:{OWNER}:{NODE}:web",
+            "uri": f"agent:{OWNER}:{NODE}:{ids['web']}",
             "actor": "web",
             "owner": OWNER,
             "machine": NODE,
@@ -453,7 +481,6 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
             "preferredHarness": "claude",
             "lastHarness": "claude",
             "lastSessionId": "session-web",
-            "pinnedAdapters": [],
             "hosted": False,
             "hostedBy": None,
             "status": "offline",
@@ -469,6 +496,9 @@ def test_ps_agent_rows_frozen_across_the_snapshot_refactor(tmp_path: Path) -> No
     for row in listed:
         assert row.pop("runState")["state"] == "unknown"
         row.pop("createdAtMs")
+        agent_id = row.pop("agentId", None)
+        assert agent_id is None or str(agent_id).startswith("a.")
+        assert row.pop("displayName", None) is None
         assert "lastActiveAtMs" in row
         assert set(row.pop("activityHints")) == {
             "createdAtMs",
@@ -607,6 +637,191 @@ def test_worker_status_snapshot_maps_pinned_owner_uri_and_session_ref(
 
     assert app._managed_worker_running(pinned) is True
     assert app._worker_session_ref(pinned) == "session-ref-1"
+
+
+def test_worker_session_ref_reads_member_scoped_projection(
+    tmp_path: Path,
+) -> None:
+    app = application(tmp_path)
+    spec = HarnessLaunchSpec(
+        harness="codex", name="shared", headless=True, member="member-a"
+    )
+    app.desired_state.upsert_harness(spec)
+    app._harnesses = MemberScopedSupervisor(
+        {("codex", "shared", "member-a"): "session-ref-a"}
+    )  # type: ignore[assignment]
+    actor = f"agent:{OWNER}:{NODE}:shared@member-a"
+
+    assert app._worker_session_ref(actor) == "session-ref-a"
+
+
+def test_worker_status_snapshot_uses_member_ref_without_setdefault_fold(
+    tmp_path: Path,
+) -> None:
+    app = application(tmp_path)
+    app.desired_state.upsert_harness(
+        HarnessLaunchSpec(
+            harness="codex", name="shared", headless=True, member="member-a"
+        )
+    )
+    app.desired_state.upsert_harness(
+        HarnessLaunchSpec(
+            harness="codex", name="shared", headless=True, member="member-b"
+        )
+    )
+    app._harnesses = MemberScopedSupervisor(
+        {
+            ("codex", "shared", "member-a"): "session-ref-a",
+            ("codex", "shared", "member-b"): "session-ref-b",
+        }
+    )  # type: ignore[assignment]
+    actor_a = f"agent:{OWNER}:{NODE}:shared@member-a"
+    actor_b = f"agent:{OWNER}:{NODE}:shared@member-b"
+
+    snapshot = app._build_worker_status_snapshot()
+
+    assert snapshot.session_ref_by_actor[actor_a] == "session-ref-a"
+    assert snapshot.session_ref_by_actor[actor_b] == "session-ref-b"
+
+
+def test_member_scoped_actor_and_status_paths_are_consistent(
+    tmp_path: Path,
+) -> None:
+    app = application(tmp_path)
+    app.desired_state.upsert_harness(
+        HarnessLaunchSpec(
+            harness="codex", name="shared", headless=True, member="member-a"
+        )
+    )
+    app.desired_state.upsert_harness(
+        HarnessLaunchSpec(
+            harness="codex", name="shared", headless=True, member="member-b"
+        )
+    )
+    app._harnesses = MemberScopedSupervisor(
+        {
+            ("codex", "shared", "member-a"): "session-ref-a",
+            ("codex", "shared", "member-b"): "session-ref-b",
+        }
+    )  # type: ignore[assignment]
+    actor_a = f"agent:{OWNER}:{NODE}:shared@member-a"
+    actor_b = f"agent:{OWNER}:{NODE}:shared@member-b"
+
+    assert app._worker_session_ref(actor_a) == "session-ref-a"
+    assert app._worker_session_ref(actor_b) == "session-ref-b"
+    with app._worker_status_snapshot() as snapshot:
+        assert app._worker_session_ref(actor_a) == snapshot.session_ref_by_actor[actor_a]
+        assert app._worker_session_ref(actor_b) == snapshot.session_ref_by_actor[actor_b]
+        assert snapshot.running_by_actor[actor_a] is True
+        assert snapshot.running_by_actor[actor_b] is True
+
+
+def test_member_worker_registry_and_session_registration_use_public_uri(
+    tmp_path: Path,
+) -> None:
+    app = application(tmp_path)
+    spec = HarnessLaunchSpec(
+        harness="codex", name="shared", headless=True, member="member-a"
+    )
+    app.desired_state.upsert_harness(spec)
+    actor = app._canonical_harness_uri(spec.name, spec)
+
+    agent = app._ensure_agent(
+        actor, harness="codex", interactive=False, cwd="/work"
+    )
+
+    assert agent is not None
+    assert app.agents.get(actor) == agent
+    registered = app.handle(
+        "session.register",
+        {
+            "actor": actor,
+            "sessionRef": "member-session-a",
+            "cwd": "/work",
+            "command": ["codex"],
+            "source": "claude-channel",
+            "channelConfirmed": True,
+        },
+    )
+    assert registered["actor"] == agent.uri
+
+
+def test_member_worker_restore_seeds_registry_from_public_uri(
+    tmp_path: Path,
+) -> None:
+    app = application(tmp_path)
+    spec = HarnessLaunchSpec(
+        harness="codex", name="shared", headless=True, member="member-a"
+    )
+    app.desired_state.upsert_harness(spec)
+    actor = app._canonical_harness_uri(spec.name, spec)
+
+    app._seed_agent_bindings()
+
+    restored = app.agents.get(actor)
+    assert restored is not None
+    assert restored.actor.startswith("m_")
+
+
+def test_member_worker_pac_remote_admission_uses_registry_codec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hyprial.daemon.impl.dispatch.remote import local_admission
+
+    app = application(tmp_path)
+    spec = HarnessLaunchSpec(
+        harness="codex", name="shared", headless=True, member="member-a"
+    )
+    app.desired_state.upsert_harness(spec)
+    actor = app._canonical_harness_uri(spec.name, spec)
+    app._ensure_agent(actor, harness="codex", interactive=False, cwd="/work")
+    monkeypatch.setattr(local_admission, "dispatch_gate", lambda **_: None)
+
+    result = local_admission.admit_local_actor(
+        app,
+        {
+            "owner": actor,
+            "role": "worker",
+            "firstOutputEta": None,
+            "humanGatesDeclared": True,
+        },
+    )
+
+    assert result["owner"] == actor
+
+
+def test_member_uri_codec_accepts_only_one_canonical_spelling() -> None:
+    canonical = member_actor_uri("shared", "member/a")
+
+    assert canonical == "shared@member%2Fa"
+    assert member_actor_parts(canonical) == ("shared", "member/a")
+    assert member_actor_registry_key(canonical).startswith("m_")
+    assert member_actor_parts("shared@member%40a") == ("shared", "member@a")
+    for alias in (
+        "shared@member/a",
+        "shared@member%2fa",
+        "shared@member@a",
+        "shared@shared",
+    ):
+        assert member_actor_parts(alias) is None
+
+
+def test_member_uri_aliases_are_rejected_by_registry_session_and_route(
+    tmp_path: Path,
+) -> None:
+    app = application(tmp_path)
+    spec = HarnessLaunchSpec(
+        harness="codex", name="shared", headless=True, member="member/a"
+    )
+    app.desired_state.upsert_harness(spec)
+    actor = app._canonical_harness_uri(spec.name, spec)
+    app._ensure_agent(actor, harness="codex", interactive=False, cwd="/work")
+    alias = f"agent:{OWNER}:{NODE}:shared@member/a"
+
+    assert app.agents.get(actor) is not None
+    assert app.agents.get(alias) is None
+    with pytest.raises(DaemonRequestError):
+        app._resolve_send_sender(alias)
 
 
 def test_worker_status_snapshot_is_scoped_to_the_request_thread(

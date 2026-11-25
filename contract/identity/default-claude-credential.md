@@ -69,8 +69,8 @@ must restart to observe rotation/revocation.
 
 ## Launch and diagnostics
 
-Managed P1 Claude SDK and workflow-owned PTY launch accept explicit auth
-environment, or their own exact
+Managed P1 Claude SDK launch accepts explicit auth
+environment, or its own exact
 verified private `secrets/native/claude` root. A credential file is not required
 (Keychain-only native login); when present, file privacy/type/nonempty checks
 still apply. No Keychain is queried. P1 Claude composition always sets
@@ -89,8 +89,8 @@ closed again. Pre-existing private roots retain file-less admission. Arbitrary
 config or transcript files do not clear negative provenance. No new CLI/IPC
 fields are introduced. The legacy no_config warning remains a warning.
 Ambient daemon/default/another agent's native root cannot authorize these launches.
-PTY includes configured command overrides. The strict PAC desired-state ownership
-marker identifies existing workflow workers; actor names do not. New records
+The strict PAC desired-state ownership marker identifies existing workflow
+workers; actor names do not. New records
 created by `_ensure_agent` or lifecycle launch store
 `capabilities.creationOrigin:"managed-launch"` in the creation transaction.
 Reuse of an operator-created record does not add this marker. An old workflow
@@ -98,18 +98,12 @@ incarnation with a matching strict PAC desired-state marker retains that fact
 in creation metadata on reuse. The complete child launch carries this non-secret
 provenance to the connector. Interactive CLI reuse also consumes the registry
 metadata: a marked P1 agent uses the existing `agent.ensure-home` receipt to
-validate its own native selector before subprocess or tmux spawn. No new secret
+validate its own native selector before subprocess spawn. No new secret
 transport is added; absent auth in that launch is still refused. Operator
 interactive CLI admission is otherwise not tightened in this round; it remains
 part of the 0.5.5.2 secrets work.
 
-Operator-created resident PTY launches are not refused this round. They report
-`env-grant`, `agent-native`, or `ambient`; the last means no admitted explicit or
-own-native source, not proof that an ambient login exists. Ambient files and
-Keychain are not inspected. Resident PTY tightening is deferred to the 0.5.5.2
-secrets work. Daemon-composed P1 resident PTY sessions now use the same own
-config/session roots, even when reporting `ambient`; that class does not imply
-an ambient selector is passed. Operator interactive CLI without a composed
+Operator interactive CLI without a composed
 agent-home launch retains round-2 admission compatibility.
 P1 explicit auth retains precedence even when its own native login exists;
 P2 native validation and explicit-auth conflict rules remain in force.
@@ -136,7 +130,6 @@ per waiting turn. Readiness does not prove provider authentication.
 
 - `tests/identity/agents/secret_storage/default_credential/test_claude.py`
 - `tests/daemon/harnesses/agent_sdk/driver/identity/test_legacy_credential.py`
-- `tests/daemon/harnesses/claude_pty/test_credentials.py`
 - `tests/shell/cli/agents/claude/test_profile.py`
 - `tests/daemon/harnesses/providers/test_default_claude_credential.py`
 - `tests/daemon/harnesses/providers/test_provider_setup_token.py`

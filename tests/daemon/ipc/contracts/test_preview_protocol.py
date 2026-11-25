@@ -42,6 +42,7 @@ def _specs() -> tuple[MethodSpec, MethodSpec]:
             "additionalProperties": False,
         },
         errors=(
+            MethodError(ipc_errors.RATE_LIMITED),
             MethodError(ipc_errors.PREVIEW_UNKNOWN),
             MethodError(ipc_errors.PREVIEW_EXPIRED),
             MethodError(ipc_errors.PREVIEW_STALE),
@@ -369,3 +370,51 @@ def test_saved_params_terminal_result_and_authorization_callback() -> None:
     assert denied.value.code == ipc_errors.CALLER_NOT_AUTHORIZED
     with pytest.raises(ValueError, match="execute method"):
         registry.claim(preview, {"operationId": other.operation_id}, caller="user:o")
+
+
+def test_capacity_pressure_cannot_evict_a_claimed_execution() -> None:
+    preview, execute = _specs()
+    registry, clock = _registry(capacity=1)
+    record = registry.issue(preview, {"target": "alice"}, caller="user:o", summary="s")
+    registry.claim(execute, {"operationId": record.operation_id}, caller="user:o")
+    clock[0] += 300_001
+    with pytest.raises(DaemonRequestError) as busy:
+        registry.issue(preview, {"target": "bob"}, caller="user:o", summary="s")
+    assert busy.value.code == ipc_errors.RATE_LIMITED
+    assert len(registry) == 1
+    completed = registry.complete(record.operation_id, {"removed": True})
+    assert completed.result == {"removed": True}
+    replacement = registry.issue(preview, {"target": "bob"}, caller="user:o", summary="s")
+    assert replacement.operation_id != record.operation_id
+    assert len(registry) == 1
+
+
+def test_expiry_or_discard_cannot_forget_a_running_execution() -> None:
+    preview, execute = _specs()
+    registry, clock = _registry()
+    record = registry.issue(preview, {}, caller="user:o", summary="s")
+    params = {"operationId": record.operation_id}
+    registry.claim(execute, params, caller="user:o")
+    clock[0] += 300_001
+    with pytest.raises(DaemonRequestError) as running:
+        registry.claim(execute, params, caller="user:o")
+    assert running.value.code == ipc_errors.OPERATION_IN_PROGRESS
+    with pytest.raises(DaemonRequestError) as discard:
+        registry.discard(record.operation_id)
+    assert discard.value.code == ipc_errors.OPERATION_IN_PROGRESS
+    registry.complete(record.operation_id, {"removed": True})
+    assert registry.claim(execute, params, caller="user:o").result == {"removed": True}
+
+
+def test_capacity_preserves_unexpired_completed_result_before_unclaimed_preview() -> None:
+    preview, execute = _specs()
+    registry, _clock = _registry(capacity=2)
+    first = registry.issue(preview, {"target": "alice"}, caller="user:o", summary="s")
+    registry.claim(execute, {"operationId": first.operation_id}, caller="user:o")
+    registry.complete(first.operation_id, {"removed": True})
+    pending = registry.issue(preview, {"target": "bob"}, caller="user:o", summary="s")
+    registry.issue(preview, {"target": "carol"}, caller="user:o", summary="s")
+    assert registry.claim(execute, {"operationId": first.operation_id}, caller="user:o").completed
+    with pytest.raises(DaemonRequestError) as evicted:
+        registry.claim(execute, {"operationId": pending.operation_id}, caller="user:o")
+    assert evicted.value.code == ipc_errors.PREVIEW_UNKNOWN

@@ -1,3 +1,7 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Delegates default slot transport selection to
+#   hyprial.kernel.loopback_inbound_supported() rather than branching on
+#   sys.platform outside manysys.
 """Slot paths, endpoints and the persisted peer→slot assignment.
 
 The zenoh connect set is fixed when the session opens: N local slot
@@ -18,10 +22,9 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 
-from hyprial.kernel import atomic_json_write
+from hyprial.kernel import atomic_json_write, loopback_inbound_supported
 from hyprial.daemon.impl.bootstrap.discovery import (  # noqa: F401  (re-exported)
     TCP_SLOT_GROW_SPEC,
     slot_locator,
@@ -68,7 +71,7 @@ def slot_transport() -> str:
 
     raw = os.environ.get(SLOT_TRANSPORT_ENV)
     if raw is None or not raw.strip():
-        return "tcp" if sys.platform == "win32" else "unix"
+        return "tcp" if loopback_inbound_supported() else "unix"
     lowered = raw.strip().lower()
     if lowered in {"unix", "tcp"}:
         return lowered

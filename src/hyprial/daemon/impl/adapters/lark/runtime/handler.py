@@ -6,6 +6,7 @@ desired adapters, process generations, retry budget, quarantine, and stable
 status projections.  Every subprocess/control-socket operation runs on the
 effect executor and returns a generation/version-fenced completion to the
 actor; no actor handler waits for a process, socket, or network call.
+Stop projections are published before completion callbacks build port receipts.
 """
 
 from __future__ import annotations
@@ -15,11 +16,12 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import Future
-from typing import Callable
+from dataclasses import replace
+from typing import Any, Callable
 
-from hyprial.kernel import SupervisionPolicy
+from hyprial.kernel import SupervisionPolicy, ipc_errors
 
-from hyprial.daemon.impl.adapters.lark.contracts.errors import AdapterStartError
+from hyprial.daemon.impl.adapters.lark.contracts.errors import AdapterStartError, AdapterRemovalError
 from hyprial.daemon.impl.adapters.lark.contracts.lifecycle import (
     ADAPTER_START_TIMEOUT,
     START_DEADLINE_SECONDS,
@@ -27,6 +29,9 @@ from hyprial.daemon.impl.adapters.lark.contracts.lifecycle import (
 from hyprial.daemon.impl.adapters.lark.runtime.commands import (
     AdapterRestoreSummary,
     _Aggregate,
+    _BeginRemoval,
+    _FinishRemoval,
+    _RemovalReservation,
     _DeliverAlarm,
     _DeliverReply,
     _DrainEvents,
@@ -83,6 +88,7 @@ class _AdapterHandler:
         self._quarantined = authority.quarantined
         self._quarantine_attempts = authority.quarantine_attempts
         self._transitions = authority.transitions
+        self._removals = authority.removals
         self._background_spawns = authority.background_spawns
         self._transition_since = authority.transition_since
         self._start_deadline = start_deadline
@@ -104,7 +110,7 @@ class _AdapterHandler:
                 set(retained),
             ))
             for name in sorted(retained):
-                self._effects.submit(
+                self._submit_effect(
                     correlation_id=correlation,
                     generation=self.generation,
                     version=self._versions.get(name, 0),
@@ -113,8 +119,15 @@ class _AdapterHandler:
                 )
 
     def __call__(self, command: object) -> None:
+        for completion in self._authority.retained_completions():
+            self._complete(replace(completion, generation=self.generation))
+            self._authority.settle_retained_completion(completion)
         if isinstance(command, _Start):
             self._start(command)
+        elif isinstance(command, _BeginRemoval):
+            self._begin_removal(command)
+        elif isinstance(command, _FinishRemoval):
+            self._finish_removal(command)
         elif isinstance(command, _Remove):
             self._remove(command)
         elif isinstance(command, _Reload):
@@ -140,6 +153,87 @@ class _AdapterHandler:
         else:
             raise TypeError(f"unsupported Lark adapter command: {type(command).__name__}")
 
+    def _submit_effect(self, **request: Any) -> None:
+        if request["operation"] in {"spawn", "activate-spawn", "stop", "deactivate-stop", "discard", "shutdown"}:
+            self._authority.lifecycle_effects.add((
+                request["correlation_id"], request["name"], request["version"], request["operation"],
+            ))
+        self._effects.submit(**request)
+
+    def _begin_removal(self, command: _BeginRemoval) -> None:
+        if command.result.done():
+            return
+        if not isinstance(command.token, str) or not command.token or len(command.token) > 128:
+            command.result.set_exception(AdapterRemovalError(
+                "adapter removal token must be non-empty and bounded", code=ipc_errors.INVALID_ARGUMENT,
+            ))
+            return
+        if self._authority.stopping:
+            command.result.set_exception(RuntimeError("adapter runtime is closing"))
+            return
+        existing = self._removals.get(command.name)
+        if existing is not None:
+            if existing.token == command.token and existing.stopped:
+                command.result.set_result(False)
+            else:
+                command.result.set_exception(RuntimeError("adapter removal is unresolved"))
+            return
+        if (
+            command.expected_generation is not None
+            and command.expected_generation != self._authority.generation
+        ) or (
+            command.expected_version is not None
+            and command.expected_version != self._versions.get(command.name, 0)
+        ):
+            command.result.set_exception(AdapterRemovalError(
+                "adapter runtime changed since preview", code=ipc_errors.PREVIEW_STALE,
+            ))
+            return
+        if command.name not in self._gateways:
+            command.result.set_exception(RuntimeError("adapter is not configured"))
+            return
+        inflight = any(
+            name in {command.name, "*"}
+            for _, name, _, _ in self._authority.lifecycle_effects
+        )
+        if command.name in self._transitions or inflight:
+            command.result.set_exception(RuntimeError("adapter lifecycle is in progress before removal"))
+            return
+        self._removals[command.name] = _RemovalReservation(
+            command.token, command.correlation_id, self._clock(),
+        )
+        self._remove(_Remove(command.correlation_id, command.name, command.result))
+
+    def _finish_removal(self, command: _FinishRemoval) -> None:
+        if command.result.done():
+            return
+        if not isinstance(command.committed, bool):
+            command.result.set_exception(AdapterRemovalError(
+                "adapter removal completion must be a boolean", code=ipc_errors.INVALID_ARGUMENT,
+            ))
+            return
+        removal = self._removals.get(command.name)
+        if removal is None or removal.token != command.token:
+            command.result.set_exception(RuntimeError("adapter removal reservation does not match"))
+            return
+        if not removal.settled:
+            command.result.set_exception(RuntimeError("adapter removal stop is unsettled"))
+            return
+        if command.committed and not removal.stopped:
+            command.result.set_exception(RuntimeError("adapter removal worker is not stopped"))
+            return
+        if command.committed:
+            self._next_version(command.name)
+            self._gateways.pop(command.name, None)
+            self._desired.discard(command.name)
+            self._observations.pop(command.name, None)
+            self._errors.pop(command.name, None)
+            self._unsettled.pop(command.name, None)
+            self._clear_failures(command.name)
+        self._removals.pop(command.name)
+        self._publish()
+        command.result.set_result(None)
+
     def _next_version(self, name: str) -> int:
         version = self._versions.get(name, 0) + 1
         self._versions[name] = version
@@ -148,6 +242,9 @@ class _AdapterHandler:
     def _start(self, command: _Start) -> None:
         if self._authority.stopping:
             command.result.set_exception(RuntimeError("adapter runtime is closing"))
+            return
+        if command.name in self._removals:
+            command.result.set_exception(RuntimeError("adapter removal is in progress"))
             return
         if command.name in self._transitions:
             command.result.set_exception(
@@ -184,7 +281,7 @@ class _AdapterHandler:
             None,
         )
         self._publish()
-        self._effects.submit(
+        self._submit_effect(
             correlation_id=command.correlation_id,
             generation=self.generation,
             version=version,
@@ -194,6 +291,10 @@ class _AdapterHandler:
         )
 
     def _remove(self, command: _Remove) -> None:
+        removal = self._removals.get(command.name)
+        if removal is not None and removal.correlation_id != command.correlation_id:
+            command.result.set_exception(RuntimeError("adapter removal is in progress"))
+            return
         held = self._transitions.get(command.name)
         # Retry identity belongs to each adapter, not to the shared caller:
         # another member's late completion may already have failed that caller.
@@ -213,16 +314,25 @@ class _AdapterHandler:
         version = self._next_version(command.name)
         self._authority.put_pending(command.correlation_id, command.result)
         self._publish()
-        self._effects.submit(
-            correlation_id=command.correlation_id,
-            generation=self.generation,
-            version=version,
-            name=command.name,
-            operation="deactivate-stop",
-            payload=existed,
-        )
+        try:
+            self._submit_effect(
+                correlation_id=command.correlation_id,
+                generation=self.generation,
+                version=version,
+                name=command.name,
+                operation="deactivate-stop",
+                payload=existed,
+            )
+        except Exception as error:
+            self._complete(_IoResult(
+                command.correlation_id, self.generation, version, command.name,
+                "deactivate-stop", False, detail=type(error).__name__,
+            ))
 
     def _reload(self, command: _Reload) -> None:
+        if self._removals:
+            command.result.set_exception(RuntimeError("adapter removal is in progress"))
+            return
         if self._transitions:
             command.result.set_exception(
                 RuntimeError("adapter lifecycle is in progress during reload")
@@ -261,6 +371,9 @@ class _AdapterHandler:
         )
 
     def _restore(self, command: _Restore) -> None:
+        if self._removals:
+            command.result.set_exception(RuntimeError("adapter removal is in progress"))
+            return
         self._authority.stopping = False
         self._desired.clear()
         self._desired.update(command.names)
@@ -287,7 +400,7 @@ class _AdapterHandler:
                 continue
             version = self._next_version(name)
             self._observations[name] = _Observation(False, STARTING, None, None)
-            self._effects.submit(
+            self._submit_effect(
                 correlation_id=correlation,
                 generation=self.generation,
                 version=version,
@@ -305,7 +418,7 @@ class _AdapterHandler:
             command.result.set_result(0)
             return
         correlation = f"reconcile:{uuid.uuid4().hex}"
-        names = set(self._desired) - set(self._transitions)
+        names = set(self._desired) - set(self._transitions) - set(self._removals)
         self._authority.put_aggregate(correlation, _Aggregate(
             "reconcile-probe",
             command.result,
@@ -315,7 +428,7 @@ class _AdapterHandler:
             self._finish_aggregate(correlation)
             return
         for name in sorted(names):
-            self._effects.submit(
+            self._submit_effect(
                 correlation_id=correlation,
                 generation=self.generation,
                 version=self._versions.get(name, 0),
@@ -335,7 +448,7 @@ class _AdapterHandler:
             set(names),
         ))
         for name in sorted(names):
-            self._effects.submit(
+            self._submit_effect(
                 correlation_id=correlation,
                 generation=self.generation,
                 version=self._versions.get(name, 0),
@@ -348,7 +461,7 @@ class _AdapterHandler:
             command.result.set_result(False)
             return
         self._authority.put_pending(command.correlation_id, command.result)
-        self._effects.submit(
+        self._submit_effect(
             correlation_id=command.correlation_id,
             generation=self.generation,
             version=self._versions.get(command.name, 0),
@@ -362,7 +475,7 @@ class _AdapterHandler:
             command.result.set_result(False)
             return
         self._authority.put_pending(command.correlation_id, command.result)
-        self._effects.submit(
+        self._submit_effect(
             correlation_id=command.correlation_id,
             generation=self.generation,
             version=self._versions.get(command.name, 0),
@@ -385,7 +498,7 @@ class _AdapterHandler:
             self._next_version(name)
         self._authority.put_pending(command.correlation_id, command.result)
         self._publish()
-        self._effects.submit(
+        self._submit_effect(
             correlation_id=command.correlation_id,
             generation=self.generation,
             version=0,
@@ -411,6 +524,8 @@ class _AdapterHandler:
 
         now = self._clock()
         for name in tuple(self._transitions):
+            if name in self._removals:
+                continue
             correlation = self._transitions.get(name)
             if correlation is None:
                 continue
@@ -465,6 +580,9 @@ class _AdapterHandler:
             self._publish()
 
     def _complete(self, result: _IoResult) -> None:
+        self._authority.lifecycle_effects.discard((
+            result.correlation_id, result.name, result.version, result.operation,
+        ))
         if self._background_spawns.get(result.name) == result.correlation_id:
             self._background_spawns.pop(result.name, None)
         # G0 (fd73140a v2): a completion that settles as failure -- stale
@@ -485,7 +603,7 @@ class _AdapterHandler:
             return
         if result.name != "*" and result.version != self._versions.get(result.name, 0):
             if result.operation == "spawn":
-                self._effects.submit(
+                self._submit_effect(
                     correlation_id=f"discard:{uuid.uuid4().hex}",
                     generation=self.generation,
                     version=self._versions.get(result.name, 0),
@@ -533,6 +651,11 @@ class _AdapterHandler:
                     "retryAttempt": self._quarantine_attempts.get(result.name, 0),
                 })
             self._clear_failures(result.name)
+        removal = self._removals.get(result.name)
+        if (removal is not None and removal.correlation_id == result.correlation_id
+                and result.operation == "deactivate-stop"):
+            removal.settled = True
+            removal.stopped = result.succeeded
         aggregate = self._authority.get_aggregate(result.correlation_id)
         if aggregate is not None:
             self._complete_aggregate(result, aggregate)
@@ -565,14 +688,17 @@ class _AdapterHandler:
                 if result.operation == "deactivate-stop":
                     self._desired.discard(result.name)
                 self._observations.pop(result.name, None)
+                self._publish()
                 if future is not None and not future.done():
                     future.set_result(bool(result.value))
             else:
                 self._errors[result.name] = result.detail or "adapter stop failed"
+                self._publish()
                 if future is not None and not future.done():
                     future.set_exception(
                         RuntimeError(result.detail or "adapter stop failed")
                     )
+            return
         elif result.operation in {"deliver-reply", "deliver-alarm"}:
             if future is not None and not future.done():
                 future.set_result(bool(result.value) if result.succeeded else False)
@@ -667,7 +793,7 @@ class _AdapterHandler:
             # the G2 fail-loud promise.  A leaked transition can no longer
             # interlock with this skip: G0 releases it on the stale early
             # return, and G2's deadline releases the never-completing one.
-            if name in self._transitions:
+            if name in self._transitions or name in self._removals:
                 continue
             if now < self._retry_after.get(name, 0.0):
                 continue
@@ -689,7 +815,7 @@ class _AdapterHandler:
             self._background_spawns[name] = correlation_id
             self._transition_since[name] = now
             version = self._next_version(name)
-            self._effects.submit(
+            self._submit_effect(
                 correlation_id=correlation_id,
                 generation=self.generation,
                 version=version,

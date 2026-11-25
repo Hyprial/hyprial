@@ -13,9 +13,8 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-CORE = ("shell.impl.cli.runtime.entry", "daemon.impl.application", "daemon.impl.owner_migration",
+CORE = ("shell.impl.cli.runtime.entry", "daemon.impl.application",
         "identity.impl.agents.registry")
-GRANTS = "identity.impl.agents.runtime.grants"
 
 
 def _load(name):
@@ -23,7 +22,7 @@ def _load(name):
     spec = importlib.util.spec_from_file_location("native_bootstrap_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.base if name == "run-capability-ledger.py" else module
+    return module
 
 
 def _run(runner, tmp_path, *, mutated=None, source_root=ROOT, import_root=ROOT):
@@ -60,18 +59,15 @@ def _run(runner, tmp_path, *, mutated=None, source_root=ROOT, import_root=ROOT):
     return subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
 
 
-@pytest.mark.parametrize("name,expected", [
-    ("run-host-invite.py", CORE), ("run-capability-ledger.py", (*CORE, GRANTS)),
-])
-def test_real_native_generated_bootstrap_imports_and_times_owned_providers(tmp_path, name, expected):
-    runner = _load(name)
+def test_real_native_generated_bootstrap_imports_and_times_owned_providers(tmp_path):
+    runner = _load("run-hosted-registry.py")
     result = _run(runner, tmp_path)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "CLI-STUB-ONLY"
     imported = json.loads((tmp_path / "imports.json").read_text())
     timing = json.loads((tmp_path / "timing.json").read_text())
-    assert tuple(imported) == expected
-    assert tuple(timing["modules"]) == expected
+    assert tuple(imported) == CORE
+    assert tuple(timing["modules"]) == CORE
     for module, record in imported.items():
         provider = Path(record["path"])
         assert provider.is_relative_to(ROOT / "src")
@@ -88,7 +84,7 @@ def test_real_native_generated_bootstrap_imports_and_times_owned_providers(tmp_p
 
 
 def test_native_bootstrap_rejects_missing_required_provider_before_cli(tmp_path):
-    runner = _load("run-host-invite.py")
+    runner = _load("run-hosted-registry.py")
     mutated = runner.BOOTSTRAP.replace("'daemon.impl.application'", "'daemon.impl.missing_application'")
     assert mutated != runner.BOOTSTRAP
     result = _run(runner, tmp_path, mutated=mutated)
@@ -100,7 +96,7 @@ def test_native_bootstrap_rejects_missing_required_provider_before_cli(tmp_path)
 
 
 def test_native_bootstrap_keeps_actual_selected_source_fence(tmp_path):
-    runner = _load("run-host-invite.py")
+    runner = _load("run-hosted-registry.py")
     result = _run(runner, tmp_path, source_root=tmp_path / "not-the-selected-tree")
     assert result.returncode != 0 and "AssertionError" in result.stderr
     assert "CLI-STUB-ONLY" not in result.stdout
@@ -108,7 +104,7 @@ def test_native_bootstrap_keeps_actual_selected_source_fence(tmp_path):
 
 
 def test_precompile_probe_selects_same_native_core_as_bootstrap():
-    runner = _load("run-host-invite.py")
+    runner = _load("run-hosted-registry.py")
     suite = _load("run-hosted-suite.py")
     assert tuple(runner.CORE_MODULES) == CORE
     assert tuple(suite.BOOTSTRAP_MODULES) == CORE
@@ -129,11 +125,8 @@ def _original_tree(root):
     return root
 
 
-@pytest.mark.parametrize("name,expected", [
-    ("run-host-invite.py", LEGACY_CORE), ("run-capability-ledger.py", (*LEGACY_CORE, "agents.grants")),
-])
-def test_selected_original_layout_preserves_actual_provider_names_and_timing(tmp_path, name, expected):
-    runner = _load(name)
+def test_selected_original_layout_preserves_actual_provider_names_and_timing(tmp_path):
+    runner = _load("run-hosted-registry.py")
     source = _original_tree(tmp_path / "original")
     output = tmp_path / "probe"
     output.mkdir()
@@ -142,7 +135,7 @@ def test_selected_original_layout_preserves_actual_provider_names_and_timing(tmp
     assert result.stdout.strip() == "CLI-STUB-ONLY"
     imported = json.loads((output / "imports.json").read_text())
     timing = json.loads((output / "timing.json").read_text())
-    assert tuple(imported) == expected and tuple(timing["modules"]) == expected
+    assert tuple(imported) == LEGACY_CORE and tuple(timing["modules"]) == LEGACY_CORE
     assert all(Path(row["path"]).is_relative_to(source / "src") for row in imported.values())
     assert timing["coreWall"] == pytest.approx(sum(timing["modules"][item]["wall"] for item in LEGACY_CORE))
     assert runner.read_import_timing(output / "timing.json", output / "imports.json")["note"] is None
@@ -150,7 +143,7 @@ def test_selected_original_layout_preserves_actual_provider_names_and_timing(tmp
 
 
 def test_selected_original_layout_missing_provider_fails_closed_before_cli(tmp_path):
-    runner = _load("run-host-invite.py")
+    runner = _load("run-hosted-registry.py")
     source = _original_tree(tmp_path / "original")
     (source / "src/hyprial/daemon/application.py").unlink()
     output = tmp_path / "probe"
@@ -162,7 +155,7 @@ def test_selected_original_layout_missing_provider_fails_closed_before_cli(tmp_p
 
 
 def test_original_provider_internal_import_error_is_not_retried_in_another_layout(tmp_path):
-    runner = _load("run-host-invite.py")
+    runner = _load("run-hosted-registry.py")
     source = _original_tree(tmp_path / "original")
     (source / "src/hyprial/daemon/application.py").write_text("raise ImportError('ORIGINAL_INNER_IMPORT_FAILED')\n")
     output = tmp_path / "probe"
@@ -173,7 +166,7 @@ def test_original_provider_internal_import_error_is_not_retried_in_another_layou
 
 
 def test_timing_reader_rejects_mixed_complete_core_layouts(tmp_path):
-    runner = _load("run-host-invite.py")
+    runner = _load("run-hosted-registry.py")
     modules = {name: {"wall": 1.0, "cpu": 0.5} for name in (*CORE, *LEGACY_CORE)}
     timing = tmp_path / "timing.json"
     timing.write_text(json.dumps({"modules": modules, "sourceCheckWall": 0.1,

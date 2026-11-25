@@ -1,3 +1,7 @@
+# Decision record (2026-11-21, W2B-2):
+# - Route native-file secret staging in _write_secret_text through
+#   hyprial.kernel.harden_private_path after closing the mkstemp stream so
+#   POSIX 0600 mode and Windows user-only DACL hardening share one kernel seam.
 """AT07 item 2: what a landing does with the bundle's credentials.
 
 Card 356 item 2 asks for four things at once -- the original owner's credentials
@@ -33,12 +37,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sqlite3
+import stat
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
-from hyprial.identity import secret_environment_name_is_allowed
+from hyprial.identity import AgentSecretStore, secret_environment_name_is_allowed
 
 from hyprial.daemon.impl.transfer.archive.bundle import (
     PAYLOAD_DIRNAME,
@@ -58,7 +66,12 @@ from hyprial.daemon.impl.transfer.archive.envelope import (
     open_envelope,
     resolve_policy,
 )
-from hyprial.daemon.impl.transfer.archive.signature import ensure_private_directory
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    harden_private_path,
+    path_is_reparse,
+    secure_private_directory,
+)
 
 __all__ = [
     "CREDENTIAL_REAUTH_REQUIRED",
@@ -435,20 +448,54 @@ def apply_credential_landing(
                 )
             )
             continue
-        target = _install_path(home_path, item.name, install)
+        field_name = (
+            "VALUE"
+            if install.kind != "env" or install.field is None
+            else _normalize_env_field(install.field)
+        )
         try:
-            _write_secret_text(target, value, field_name=install.field)
-        except OSError as error:
+            if install.kind == "native-file":
+                target = _install_path(home_path, item.name, install)
+                _prepare_private_directory(home_path / "secrets")
+                _write_secret_text(target, value, field_name=install.field)
+                written.append(target)
+            else:
+                resolved_home = _prepare_private_directory(home_path)
+                for private_path in (
+                    resolved_home / "secrets.sqlite",
+                    resolved_home / ".secret-hmac-key",
+                ):
+                    try:
+                        metadata = private_path.lstat()
+                    except FileNotFoundError:
+                        continue
+                    if (
+                        stat.S_ISLNK(metadata.st_mode)
+                        or path_is_reparse(metadata)
+                        or not stat.S_ISREG(metadata.st_mode)
+                    ):
+                        raise PrivateAccessUnsupported("unsafe-file")
+                store = AgentSecretStore(resolved_home)
+                store.set(
+                    service=item.name,
+                    field=field_name,
+                    value=value,
+                    actor="system",
+                    via="daemon",
+                    at_ms=time.time_ns() // 1_000_000,
+                )
+                if store.path not in written:
+                    written.append(store.path)
+        except (OSError, ValueError, sqlite3.Error, PrivateAccessUnsupported) as error:
             raise CredentialInstallError(
                 f"could not install credential {item.name!r}: {error}"
             ) from error
-        written.append(target)
         if install.kind == "env":
             bindings.append(
                 CredentialBinding(
                     entry_id=item.name,
                     environment=install.environment,
-                    field=install.field,
+                    field=None if install.field is None else field_name,
                 )
             )
         decided.append(replace(item, disposition=CREDENTIAL_RESTORED))
@@ -457,6 +504,19 @@ def apply_credential_landing(
         bindings=tuple(bindings),
         written=tuple(written),
     )
+
+
+def _normalize_env_field(raw_field: str) -> str:
+    """Normalize an env credential field name for AgentSecretStore."""
+
+    normalized = re.sub(r"[^A-Z0-9_]", "_", raw_field.upper())
+    if (
+        not normalized
+        or normalized[0].isdigit()
+        or not secret_environment_name_is_allowed(normalized)
+    ):
+        return "VALUE"
+    return normalized
 
 
 def _install_path(home: Path, name: str, install: CredentialInstall) -> Path:
@@ -473,6 +533,22 @@ def _install_path(home: Path, name: str, install: CredentialInstall) -> Path:
     return home / "secrets" / name
 
 
+def _prepare_private_directory(directory: Path) -> Path:
+    """Validate existing ancestors and return a secured 0700 directory."""
+
+    resolved = Path(directory).absolute()
+    for candidate in reversed((resolved, *resolved.parents)):
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata):
+            raise PrivateAccessUnsupported("unsafe-ancestry")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PrivateAccessUnsupported("unsafe-directory")
+    return secure_private_directory(resolved, create=True, mode=0o700)
+
+
 def _write_secret_text(path: Path, value: str, *, field_name: str | None) -> None:
     """Write one secret at 0600: raw text, or one named JSON field."""
 
@@ -481,16 +557,27 @@ def _write_secret_text(path: Path, value: str, *, field_name: str | None) -> Non
         if field_name is None
         else json.dumps({field_name: value}, sort_keys=True) + "\n"
     )
-    ensure_private_directory(path.parent)
+    target = Path(path).absolute()
+    _prepare_private_directory(target.parent)
+    try:
+        existing = target.lstat()
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and (
+        stat.S_ISLNK(existing.st_mode)
+        or path_is_reparse(existing)
+        or not stat.S_ISREG(existing.st_mode)
+    ):
+        raise PrivateAccessUnsupported("unsafe-file")
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
     )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(text)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        harden_private_path(temporary, mode=0o600)
+        os.replace(temporary, target)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

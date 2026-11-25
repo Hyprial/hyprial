@@ -29,7 +29,6 @@ def _environment(state_dir: Path | None = None) -> dict[str, str]:
         for name, value in os.environ.items()
         if name in {"PATH", "HOME", "LANG", "PYTHONPATH"}
     }
-    environment["HYPRIAL_SOURCE_COMMIT"] = "3137ed2ad92e5bb2c4369661d660815b63ae787b"
     if state_dir is not None:
         environment["HARNESS_STATE_DIR"] = str(state_dir)
         # The worker reads TYPESAFE_API_KEY from ~/.config/typesafe/env when the
@@ -427,3 +426,88 @@ def test_missing_typesafe_key_preserves_permanent_error_code(tmp_path: Path) -> 
         assert result and result[0].failure_code == "PROVIDER_AUTHENTICATION_FAILED"
     finally:
         process.stop()
+
+
+def test_the_jev_ready_frame_keeps_exactly_its_published_keys(tmp_path: Path) -> None:
+    """An older parent (autoupdate installed new worker scripts but held the
+    daemon restart) validates the exact key set: a new key there would fail
+    every python-worker start until the restart."""
+
+    process = _process(tmp_path)
+    try:
+        assert process.running
+        frame_keys = set(process.startup or {})
+    finally:
+        process.stop()
+    assert frame_keys == {
+        "v",
+        "type",
+        "kind",
+        "pid",
+        "effectiveConfig",
+        "typesafeSdkVersion",
+        "scriptSha256",
+        "startupHash",
+        "credentialSource",
+    }
+
+
+def _fake_jev_ready_error(tmp_path: Path, body: str):
+    from hyprial.daemon.impl.harnesses.protocol.common import HarnessStartError
+
+    fake = tmp_path / "fake_jev.py"
+    fake.write_text(body, encoding="utf-8")
+    spec = HarnessLaunchSpec(
+        "jev", "route-chooser", True, cwd=str(tmp_path), command=(sys.executable, str(fake))
+    )
+    with pytest.raises(HarnessStartError) as exc_info:
+        PythonHarnessProcess(
+            spec,
+            env={"PATH": os.environ.get("PATH", "")},
+            startup_timeout_seconds=5,
+        )
+    return exc_info.value
+
+
+def test_a_jev_ready_frame_carrying_hyprial_commit_is_refused_as_invalid_fields(
+    tmp_path: Path,
+) -> None:
+    """The key-set check must reject the deleted commit key before the script
+    hash check (a fake cannot know the real on-disk hash)."""
+
+    error = _fake_jev_ready_error(
+        tmp_path,
+        "import json, os, sys\n"
+        "print(json.dumps({'v':1,'type':'ready','kind':'jev','pid':os.getpid(),"
+        "'effectiveConfig':{'concurrency':10,'mode':'pool','protocolVersion':1},"
+        "'typesafeSdkVersion':'0.7.0','scriptSha256':'0'*64,'startupHash':'0'*64,"
+        "'credentialSource':None,"
+        "'hyprialCommit':'3137ed2ad92e5bb2c4369661d660815b63ae787b'}), flush=True)\n"
+        "sys.stdin.read()\n",
+    )
+    assert "invalid fields" in str(error)
+
+
+def test_an_early_exiting_worker_reports_its_exit_code_and_stderr_tail(
+    tmp_path: Path,
+) -> None:
+    error = _fake_jev_ready_error(
+        tmp_path,
+        "import sys\n"
+        "print('BOOM-EXIT-3', file=sys.stderr, flush=True)\n"
+        "sys.exit(3)\n",
+    )
+    assert error.returncode == 3
+    assert "BOOM-EXIT-3" in error.stderr_tail
+    assert "Recent stderr:" in str(error)
+
+
+def test_the_stderr_tail_redacts_credential_shaped_text(tmp_path: Path) -> None:
+    error = _fake_jev_ready_error(
+        tmp_path,
+        "import sys\n"
+        "print('api_key=BOOM-SECRET-SENTINEL', file=sys.stderr, flush=True)\n"
+        "sys.exit(1)\n",
+    )
+    assert "BOOM-SECRET-SENTINEL" not in str(error)
+    assert "[REDACTED]" in error.stderr_tail

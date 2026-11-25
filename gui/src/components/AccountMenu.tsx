@@ -4,14 +4,14 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { AccountIcon } from './Icon';
+import { Icon } from './primitives/Icon';
 
 interface AccountMenuProps {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onNavigateSettings: () => void;
-  readonly onNavigateConnections: () => void;
-  readonly onHelp: () => void;
-  readonly onLogout: () => void;
+  readonly onNavigateConnections?: () => void;
+  readonly onLogout?: () => void;
 }
 
 export function AccountMenu({
@@ -19,7 +19,6 @@ export function AccountMenu({
   onOpenChange,
   onNavigateSettings,
   onNavigateConnections,
-  onHelp,
   onLogout,
 }: AccountMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -98,7 +97,7 @@ export function AccountMenu({
 
   const handleConnections = () => {
     close();
-    onNavigateConnections();
+    onNavigateConnections?.();
   };
 
   const handleSettings = () => {
@@ -106,14 +105,9 @@ export function AccountMenu({
     onNavigateSettings();
   };
 
-  const handleHelp = () => {
-    close();
-    onHelp();
-  };
-
   const handleLogout = () => {
     close();
-    onLogout();
+    onLogout?.();
   };
 
   return (
@@ -122,19 +116,20 @@ export function AccountMenu({
         type="button"
         ref={triggerRef}
         className="account-trigger"
-        aria-label="我的账号与连接菜单"
+        aria-label="我的账号与 Agent 设置菜单"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? 'account-menu' : undefined}
         onClick={() => onOpenChange(!open)}
       >
-        <span className="account-avatar" aria-hidden="true" />
-        <span className="account-copy">
-          <strong>我的账号</strong>
-          <small>账号与连接</small>
+        <span className="account-avatar" aria-hidden="true">
+          <Icon name="user" size="sm" />
+        </span>
+        <span className="account-copy ui-visually-hidden">
+          <strong>我的</strong>
         </span>
         <span className="account-chevron" aria-hidden="true">
-          {open ? '▴' : '▾'}
+          <Icon name={open ? 'caret-up' : 'caret-down'} size="sm" />
         </span>
       </button>
 
@@ -153,33 +148,25 @@ export function AccountMenu({
             onClick={handleSettings}
           >
             <AccountIcon name="settings" />
-            <span>设置</span>
+            <span>用户设置</span>
           </button>
-          <button
+          {onNavigateConnections && <button
             type="button"
             role="menuitem"
             onClick={handleConnections}
           >
             <AccountIcon name="connection" />
-            <span>连接</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handleHelp}
-          >
-            <AccountIcon name="help" />
-            <span>帮助</span>
-          </button>
-          <div className="menu-separator" role="separator" />
+            <span>Agent 设置</span>
+          </button>}
+          {onLogout && <><div className="menu-separator" role="separator" />
           <button
             type="button"
             role="menuitem"
             onClick={handleLogout}
           >
             <AccountIcon name="logout" />
-            <span>登出</span>
-          </button>
+            <span>退出本机登录</span>
+          </button></>}
         </div>
       )}
     </div>

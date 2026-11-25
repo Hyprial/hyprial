@@ -112,7 +112,7 @@ func members(tn *Tailnet) []Member {
 	return out
 }
 func roster(tn *Tailnet) Roster {
-	return Roster{TailnetID: tn.TailnetID, Authority: tn.Authority, Revision: tn.Revision, Members: members(tn), LeaseSeconds: 300}
+	return Roster{TailnetID: tn.TailnetID, Authority: tn.Authority, Revision: tn.Revision, Members: members(tn), LeaseSeconds: 300, Closed: tn.Closed, ClosedAtMs: tn.ClosedAtMs}
 }
 func (m *Manager) valid(tn *Tailnet, now time.Time) bool {
 	local, ok := tn.Members[m.self.DeviceID]
@@ -173,7 +173,7 @@ func (m *Manager) statusLocked(id string) (Status, error) {
 		if id != "" && id != key {
 			continue
 		}
-		s := TailnetStatus{TailnetID: key, Role: "member", Revision: tn.Revision, AuthorityDeviceID: tn.Authority.DeviceID, MemberReady: m.valid(tn, time.Now()), Members: members(tn)}
+		s := TailnetStatus{TailnetID: key, Role: "member", Revision: tn.Revision, AuthorityDeviceID: tn.Authority.DeviceID, MemberReady: m.valid(tn, time.Now()), Closed: tn.Closed, Members: members(tn)}
 		if isAuthority(tn.Authority, m.self) {
 			s.Role = "authority"
 		} else {
@@ -258,8 +258,15 @@ func (m *Manager) applyRosterLocked(r Roster, start time.Time) error {
 	if r.Revision == old.Revision && string(marshal(members(tn))) != string(marshal(members(old))) {
 		return fail("ROSTER_ROLLBACK")
 	}
+	tn.Closed = r.Closed
+	tn.ClosedAtMs = r.ClosedAtMs
 	if err := m.commit(next); err != nil {
 		return err
+	}
+	if tn.Closed {
+		delete(m.leases, r.TailnetID)
+		delete(m.codes, r.TailnetID)
+		return nil
 	}
 	m.leases[r.TailnetID] = start.Add(Lease)
 	if old := m.timers[r.TailnetID]; old != nil {

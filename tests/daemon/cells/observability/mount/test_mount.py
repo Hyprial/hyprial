@@ -1,4 +1,10 @@
-"""Cell attachment composes existing owners without acquiring business authority."""
+"""Cell attachment composes existing owners without acquiring business authority.
+
+A cell is keyed by the agent's official address, the URI its registry record
+stores (``agent:<owner>:<node>:a.<id>`` under id-form minting).  That address
+exists only once the record does, so ``registered`` mirrors the CLI start
+path: ``agent.create`` first, then a lifecycle spec on the stored URI.
+"""
 
 import dataclasses
 from types import SimpleNamespace
@@ -65,6 +71,20 @@ def composed(tmp_path):
         _close_application(app)
 
 
+def registered(app, spec, name=None):
+    """Register ``spec``'s agent (or ``name``) and address the spec at its stored URI."""
+
+    name = name or spec.agent_name
+    agent = app.agents.get(name) or app.agents.create(name)
+    return dataclasses.replace(
+        spec,
+        agent_name=name,
+        actor=agent.uri,
+        harness=dataclasses.replace(spec.harness, name=name),
+        route=dataclasses.replace(spec.route, route_id=agent.uri),
+    )
+
+
 def settle(app, operation):
     manager = app._lifecycle_manager
     assert manager.submit(operation) is PortAdmission.ACCEPTED
@@ -73,6 +93,7 @@ def settle(app, operation):
 
 def test_mount_survives_existing_lifecycle_and_has_no_identity_or_route_effect(composed):
     app, launcher, harness, transport, delivery, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create("create", spec))
     domains = app._agent_session_domains
     before = domains.agent.read_agent("worker")
@@ -112,26 +133,37 @@ def test_mount_survives_existing_lifecycle_and_has_no_identity_or_route_effect(c
 
 def test_old_agent_and_source_cannot_update_recreated_cell(composed):
     app, launcher, harness, transport, delivery, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create("create", spec))
     cells = app._agent_session_domains.cells
     old = cells.snapshot(spec.actor)
     old_entity = app._agent_session_domains.agent.read_agent("worker").entity_token
     settle(app, LifecycleOperation.remove("remove", spec))
     assert cells.snapshot(spec.actor) is None
-    settle(app, LifecycleOperation.create("create-again", spec))
-    new = cells.snapshot(spec.actor)
-    assert new.actor == old.actor and new.diagnostic_incarnation != old.diagnostic_incarnation
-    assert cells.observe(spec.actor, epoch=old.lifecycle.epoch,
+    manager = app._lifecycle_manager
+    revive = LifecycleOperation.create("revive", spec)
+    assert manager.submit(revive) is PortAdmission.ACCEPTED
+    refused = manager.wait(revive.operation_id, TERMINAL_WAIT_SECONDS)
+    assert refused.state is LifecycleState.COMPENSATED
+    assert refused.error_code == "AGENT_NOT_FOUND"
+    assert cells.snapshot(spec.actor) is None
+    again = registered(app, spec, "worker-again")
+    settle(app, LifecycleOperation.create("create-again", again))
+    new = cells.snapshot(again.actor)
+    assert new.actor != old.actor and new.diagnostic_incarnation != old.diagnostic_incarnation
+    assert cells.observe(again.actor, epoch=old.lifecycle.epoch,
                          after_revision=old.lifecycle.revision).resync_required
-    source = harness.projection.read_observation_source("pi:worker", old_entity, new.binding_revision)
-    assert source is None
-    assert cells.snapshot(spec.actor) == new
+    for source_key in ("pi:worker", "pi:worker-again"):
+        source = harness.projection.read_observation_source(source_key, old_entity, new.binding_revision)
+        assert source is None
+    assert cells.snapshot(spec.actor) is None
+    assert cells.snapshot(again.actor) == new
 
 
 def test_registration_does_not_claim_runtime_and_read_only_port_has_no_controls(composed):
     app, launcher, *_rest = composed
-    app.agents.create("unstarted")
-    cell = app._agent_session_domains.cells.snapshot("agent:owner:node:unstarted")
+    unstarted = app.agents.create("unstarted")
+    cell = app._agent_session_domains.cells.snapshot(unstarted.uri)
     assert cell.lifecycle.state == "unknown" and not cell.lifecycle.available
     assert cell.custody == "none"
     assert launcher.starts == 0
@@ -141,6 +173,7 @@ def test_registration_does_not_claim_runtime_and_read_only_port_has_no_controls(
 
 def test_mount_rollback_restart_and_external_custody(composed, monkeypatch):
     app, launcher, harness, transport, delivery, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create("create", spec))
     domains = app._agent_session_domains
     cells = domains.cells

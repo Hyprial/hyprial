@@ -1,0 +1,305 @@
+{
+  "fixtureVersion": 1,
+  "kind": "rules",
+  "cases": [
+    {
+      "id": "valid-owner-rule",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 1
+      }
+    },
+    {
+      "id": "duplicate-version-rejected",
+      "rawJson": "{\"schemaVersion\":1,\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": false,
+        "reason": "DUPLICATE_KEY"
+      }
+    },
+    {
+      "id": "float-version-rejected",
+      "rawJson": "{\"schemaVersion\":1.0,\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": false,
+        "reason": "SCHEMA_VERSION_INVALID"
+      }
+    },
+    {
+      "id": "empty-rules",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 0
+      }
+    },
+    {
+      "id": "empty-allow",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 1
+      }
+    },
+    {
+      "id": "global-subject-rule",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"*:*:*\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 1
+      }
+    },
+    {
+      "id": "multi-resource-rules",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]},{\"resource\":\"example:resource-2\",\"action\":\"read\",\"allow\":[\"u.ou_22222222222222222222222222222222:*:*\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 2
+      }
+    },
+    {
+      "id": "duplicate-rules",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]},{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 2
+      }
+    },
+    {
+      "id": "duplicate-patterns",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\",\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 1
+      }
+    },
+    {
+      "id": "resource-length-limit",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 1
+      }
+    },
+    {
+      "id": "action-length-limit",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 1
+      }
+    },
+    {
+      "id": "bool-version-rejected",
+      "rawJson": "{\"schemaVersion\":true,\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "unknown-version-rejected",
+      "rawJson": "{\"schemaVersion\":2,\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "unknown-profile-rejected",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"future-v2\",\"rules\":[]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "missing-version-rejected",
+      "rawJson": "{\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "unknown-top-level-key",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[],\"admin\":true}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "rules-not-array",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":{}}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "rules-null",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":null}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "rule-unknown-key",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"],\"priority\":1}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "allow-not-array",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":\"*:*:*\"}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "allow-null",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":null}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "allow-non-string",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[1]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "atomic-invalid-pattern",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]},{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "resource-empty",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "resource-wildcard",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:*\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "resource-whitespace",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example: resource\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "resource-unicode",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:\\u8d44\\u6e90\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "resource-backslash",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:\\\\resource\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "resource-too-long",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "action-empty",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "action-wildcard",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"*\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "action-control",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\\n\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "action-too-long",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"allow\":[\"u.ou_11111111111111111111111111111111:*:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "top-level-not-object",
+      "rawJson": "[]",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "duplicate-rule-key",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"r\",\"resource\":\"r\",\"action\":\"write\",\"allow\":[]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "duplicate-profile-key",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "malformed-json",
+      "rawJson": "{broken",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "json-escape-decoded-before-pattern-validation",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:\\u002a:\\u002a\"]}]}",
+      "expected": {
+        "valid": true,
+        "ruleCount": 1
+      }
+    },
+    {
+      "id": "json-escaped-colon-does-not-add-segment",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:d.123\\u003a456:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "json-escaped-control-rejected",
+      "rawJson": "{\"schemaVersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[{\"resource\":\"example:resource-1\",\"action\":\"write\",\"allow\":[\"u.ou_11111111111111111111111111111111:d.123\\u000a456:*\"]}]}",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "escaped-duplicate-key-rejected",
+      "rawJson": "{\"schemaVersion\":1,\"schema\\u0056ersion\":1,\"subjectProfile\":\"stable-id-v1\",\"rules\":[]}",
+      "expected": {
+        "valid": false
+      }
+    }
+  ]
+}

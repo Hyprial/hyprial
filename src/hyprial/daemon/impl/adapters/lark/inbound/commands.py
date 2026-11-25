@@ -171,7 +171,7 @@ def _agent_directory_listing(
             status = "down"
         else:
             continue
-        adapters = ",".join(entry.pinned_adapters) or "—"
+        adapters = ",".join(entry.bound_adapters) or "—"
         preferred = entry.preferred_harness or "—"
         if not is_safe_runtime_target_field(adapters) or not is_safe_runtime_target_field(
             preferred
@@ -355,23 +355,19 @@ class _CommandResponseMixin:
             text,
             re.IGNORECASE,
         ):
-            # Read-only visibility plus the exact operator command.  Writing
-            # a pin from chat stays refused: a pin decides who receives this
-            # adapter's DMs, and Lark carries no hyprial operator identity to
-            # authorize that.
-            pinned = self._routes.pinned_actor(message.conversation_id)
+            bound = self._routes.routed_actor(message.conversation_id)
             status = (
-                f"This adapter ({self._adapter_name}) is pinned to: "
-                f"{pinned.actor_id}"
-                if pinned is not None
-                else f"This adapter ({self._adapter_name}) has no pinned agent."
+                f"This adapter ({self._adapter_name}) is bound to: "
+                f"{bound.actor_id}"
+                if bound is not None
+                else f"This adapter ({self._adapter_name}) has no bound agent."
             )
             return (
                 f"{status}\n"
-                "Changing a pin is not supported in Lark chat. An operator "
-                "can change it on the daemon machine with: "
-                f"hyprial adapter pin {self._adapter_name} <agent> "
-                f"(or: hyprial adapter unpin {self._adapter_name})."
+                "Changing the binding is not supported in Lark chat. An "
+                "operator can change it on the daemon machine with: "
+                f"hyprial agent cell show <agent> and hyprial agent cell apply "
+                "<agent> --expected-revision N --file CELL.json"
             )
         timezone = re.fullmatch(
             r"/hyprial\s+set\s+timezone=(\S+)\s*", text, re.IGNORECASE

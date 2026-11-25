@@ -26,7 +26,7 @@ def _server() -> tuple[RequestHttpServer, object]:
     config = RequestHttpConfig(
         socket_path=Path("/tmp/daemon.sock"),
         owner="h01-owner",
-        actor="agent:h01-owner:h01-node:operator",
+        actor="user:h01-owner",
         host="127.0.0.1",
         port=0,
         allowed_origins=(),
@@ -60,7 +60,7 @@ def _server() -> tuple[RequestHttpServer, object]:
     server._startup_declaration = view.declaration_digest
     server._startup_http = view.http_contract_digest
     server._snapshot_at = time.monotonic()
-    return server, view.routes["link.list"]
+    return server, view.routes["conversations.history"]
 
 
 def test_local_schema_refusal_is_not_dispatched() -> None:
@@ -77,7 +77,7 @@ def test_retry_permit_is_a_closed_set() -> None:
 def test_daemon_declared_error_is_dispatched() -> None:
     server, route = _server()
     envelope = server._daemon_failure(
-        RequestPortError("INVALID_ARGUMENT", "declared"), route, "http-1", "link.list"
+        RequestPortError("INVALID_ARGUMENT", "declared"), route, "http-1", "conversations.history"
     )
     assert envelope.status == 400
     assert envelope.payload["dispatch"] == "dispatched"
@@ -87,28 +87,40 @@ def test_daemon_declared_error_is_dispatched() -> None:
 def test_daemon_not_ready_is_dispatched_but_restore_is_not() -> None:
     server, route = _server()
     ready = server._daemon_failure(
-        RequestPortError(ipc_errors.DAEMON_NOT_READY, "not wired"), route, "http-1", "link.list"
+        RequestPortError(ipc_errors.DAEMON_NOT_READY, "not wired"), route, "http-1", "conversations.history"
     )
     assert (ready.status, ready.payload["dispatch"]) == (503, "dispatched")
     restoring = server._daemon_failure(
-        ipc_errors.DaemonRestoringError("restoring"), route, "http-1", "link.list"
+        ipc_errors.DaemonRestoringError("restoring"), route, "http-1", "conversations.history"
     )
     assert (restoring.status, restoring.payload["dispatch"]) == (503, "not-dispatched")
+
+
+def test_missing_adapter_keeps_domain_404_and_dispatched_stage() -> None:
+    server, _ = _server()
+    route = server._view.routes["adapter.status"]
+    missing = server._daemon_failure(
+        RequestPortError(ipc_errors.ADAPTER_NOT_FOUND, "not configured"),
+        route, "http-1", "adapter.status",
+    )
+    assert (missing.status, missing.payload["code"], missing.payload["dispatch"]) == (
+        404, ipc_errors.ADAPTER_NOT_FOUND, "dispatched",
+    )
 
 
 def test_timeout_and_unknown_daemon_error_are_unknown() -> None:
     server, route = _server()
     timeout = server._daemon_failure(
-        ipc_errors.IpcTimeoutError("timeout"), route, "http-1", "link.list"
+        ipc_errors.IpcTimeoutError("timeout"), route, "http-1", "conversations.history"
     )
     assert (timeout.status, timeout.payload["dispatch"]) == (504, "unknown")
     unknown = server._daemon_failure(
-        RequestPortError("SOMETHING_NEW", "unknown"), route, "http-1", "link.list"
+        RequestPortError("SOMETHING_NEW", "unknown"), route, "http-1", "conversations.history"
     )
     assert unknown.payload["code"] == "DAEMON_ERROR"
     assert unknown.payload["dispatch"] == "unknown"
     declared_error = server._daemon_failure(
-        DaemonRequestError("DAEMON_ERROR", "x"), route, "http-1", "link.list"
+        DaemonRequestError("DAEMON_ERROR", "x"), route, "http-1", "conversations.history"
     )
     assert (declared_error.status, declared_error.payload["dispatch"]) == (500, "unknown")
 
@@ -116,16 +128,16 @@ def test_timeout_and_unknown_daemon_error_are_unknown() -> None:
 def test_declared_error_data_must_match_its_schema() -> None:
     server, route = _server()
     accepted = server._daemon_failure(
-        RequestPortError("INVALID_ARGUMENT", "x", {"actor": "agent:a:b:c"}),
+        RequestPortError("INVALID_ARGUMENT", "x", {"sender": "agent:a:b:c"}),
         route,
         "http-1",
-        "link.list",
+        "conversations.history",
     )
-    assert accepted.payload["data"] == {"actor": "agent:a:b:c"}
+    assert accepted.payload["data"] == {"sender": "agent:a:b:c"}
     dropped = server._daemon_failure(
         RequestPortError("INVALID_ARGUMENT", "x", {"claimedIdentity": "secret"}),
         route,
         "http-1",
-        "link.list",
+        "conversations.history",
     )
     assert "data" not in dropped.payload

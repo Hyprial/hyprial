@@ -1,6 +1,7 @@
 """Synthetic positive/negative controls for the five-domain CI architecture gate."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -93,6 +94,30 @@ class ModuleBoundaryTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.consumer(source)
                 self.assert_kind("public-face-bypass")
+
+    def shared_error_package(self, codes_source="X = 'x'\n"):
+        self.write("src/hyprial/error/__init__.py", "")
+        self.write("src/hyprial/error/codes.py", codes_source)
+
+    def test_shared_error_package_is_importable_from_every_domain(self):
+        self.shared_error_package()
+        for domain in GATE.DOMAINS:
+            with self.subTest(domain=domain):
+                self.consumer("from hyprial.error import codes\nfrom hyprial.error.codes import X\n", domain)
+                report = self.report()
+                self.assertEqual(report["status"], "PASS", report)
+
+    def test_shared_error_package_imports_nothing_from_the_product(self):
+        for source in ["from hyprial.kernel import Thing\n", "import hyprial\n", "from hyprial import __version__\n", "from hyprial.shell.interface import Thing\n"]:
+            with self.subTest(source=source):
+                self.shared_error_package(source)
+                self.assert_kind("shared-package-imports-product-code")
+
+    def test_shared_error_package_may_import_itself(self):
+        self.shared_error_package("from . import other\nfrom hyprial.error import other as again\n")
+        self.write("src/hyprial/error/other.py", "Y = 'y'\n")
+        report = self.report()
+        self.assertEqual(report["status"], "PASS", report)
 
     def test_wildcard_import_fails_even_within_domain(self):
         self.consumer("from hyprial.daemon.interface import *\n")
@@ -310,6 +335,27 @@ class ModuleBoundaryTests(unittest.TestCase):
         self.consumer("import importlib\nimportlib.import_module('json')\nclass Tool:\n    def import_module(self, x): pass\nTool().import_module(unknown)\n")
         self.assertEqual(self.report()["status"], "PASS")
 
+    def test_native_engine_import_is_pinned_to_the_kernel_adapter(self):
+        self.write(
+            "src/hyprial/kernel/impl/actor_runtime/backends/native.py",
+            "import importlib\nnative = importlib.import_module('hyprial._core.actors')\n",
+        )
+        self.assertEqual(self.report()["status"], "PASS", self.report())
+        self.consumer("import importlib\nimportlib.import_module('hyprial._core.actors')\n")
+        self.assert_kind("native-module-import")
+
+    def test_native_engine_allowance_is_exact(self):
+        self.write(
+            "src/hyprial/kernel/impl/actor_runtime/backends/native.py",
+            "import importlib\nnative = importlib.import_module('hyprial._core.other')\n",
+        )
+        self.assert_kind("missing-internal-module")
+        self.write(
+            "src/hyprial/kernel/impl/actor_runtime/backends/native.py",
+            "from hyprial._core import actors\n",
+        )
+        self.assert_kind("missing-internal-module")
+
     def test_type_checking_third_party_class_names_are_not_internal_modules(self):
         self.consumer("from typing import TYPE_CHECKING as TC\nif TC:\n    from collections.abc import Iterator\n    from hyprial.kernel import Thing as Alias\n")
         self.assertEqual(self.report()["status"], "PASS")
@@ -442,3 +488,99 @@ class DataAreaTests(ModuleBoundaryTests):
         report = LIMITS.scan(self.root)
         kinds = [row["kind"] for row in report["violations"]]
         self.assertIn("module-file-count", kinds, report)
+
+
+class LazyFacadeBudgetTests(unittest.TestCase):
+    """The real lazy facades keep their shape and their line budget.
+
+    A merge from a branch that never received the compression can silently
+    re-expand those tables (that happened once already and pushed both facades
+    back over 1000 lines).  This reads the actual files and tables, so the
+    guard cannot pass by construction.
+    """
+
+    REPO = Path(__file__).resolve().parents[4]
+    BUDGET = 900
+    #: Names that must stay imported in the facade itself and are therefore not
+    #: part of the split's table:
+    #: * the model-vendor vocabulary below -- the terminology lint exempts only
+    #:   ``interface.py``, so copying those import lines into a new file would
+    #:   reintroduce non-whitelisted "provider" hits.
+    FACADE_KEPT = {
+        "daemon": {
+            "ModelProviderError",
+            "claude_provider_environment",
+            "codex_provider_configuration",
+            "pi_model_args",
+            "pi_provider_environment",
+            "validate_model_selection",
+            "with_reasoning_effort",
+        },
+        "identity": {"DeviceLoginRunner", "ProviderAuthAuthority"},
+    }
+
+    def _facade(self, domain: str) -> tuple[Path, ast.Module, str]:
+        path = self.REPO / "src" / "hyprial" / domain / "interface.py"
+        self.assertTrue(path.is_file(), path)
+        source = path.read_text(encoding="utf-8")
+        return path, ast.parse(source), source
+
+    def test_lazy_facades_keep_their_tables_and_stay_under_budget(self):
+        for domain in ("daemon", "identity"):
+            with self.subTest(domain=domain):
+                path, tree, source = self._facade(domain)
+                alls = [
+                    node for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    and any(getattr(t, "id", "") == "__all__" for t in node.targets)
+                ]
+                maps = [
+                    node for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    and any(getattr(t, "id", "") == "_FACADE_EXPORTS" for t in node.targets)
+                ]
+                self.assertEqual(len(alls), 1, f"{path} must declare one __all__")
+                self.assertEqual(len(maps), 1, f"{path} must declare one _FACADE_EXPORTS")
+                self.assertIsInstance(alls[0].value, ast.List, f"{path} __all__ must be literal")
+                self.assertIsInstance(maps[0].value, ast.Dict, f"{path} table must be literal")
+                names = [element.value for element in alls[0].value.elts]
+                keys = [key.value for key in maps[0].value.keys]
+                self.assertTrue(names, f"{path} __all__ is empty")
+                self.assertEqual(
+                    sorted(names), sorted(keys),
+                    f"{path} _FACADE_EXPORTS and __all__ disagree",
+                )
+                self.assertGreaterEqual(len(source.splitlines()), 100)
+                self.assertLessEqual(
+                    len(source.splitlines()), self.BUDGET,
+                    f"{path} is {len(source.splitlines())} lines; the lazy facade "
+                    f"budget is {self.BUDGET} (keep the export tables, move data out)",
+                )
+
+                types_path = self.REPO / "src" / "hyprial" / domain / "impl" / "facade" / "types.py"
+                self.assertTrue(types_path.is_file(), types_path)
+                types_tree = ast.parse(types_path.read_text(encoding="utf-8"))
+                types_all = [
+                    node for node in types_tree.body
+                    if isinstance(node, ast.Assign)
+                    and any(getattr(t, "id", "") == "__all__" for t in node.targets)
+                ]
+                self.assertEqual(len(types_all), 1, f"{types_path} must declare one __all__")
+                kept = self.FACADE_KEPT[domain]
+                split_names = {element.value for element in types_all[0].value.elts}
+                self.assertEqual(
+                    split_names | kept,
+                    set(names),
+                    f"{types_path} must re-export the facade's public names "
+                    "(minus the explicitly kept ones)",
+                )
+                self.assertTrue(
+                    split_names.isdisjoint(kept),
+                    f"{types_path} must not duplicate a facade-kept name",
+                )
+                self.assertLessEqual(
+                    len((self.REPO / "src" / "hyprial" / domain / "impl" / "facade" / "types.py")
+                        .read_text(encoding="utf-8").splitlines()),
+                    1000,
+                    f"{types_path} must stay inside the 1000-line structural limit",
+                )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from __future__ import annotations
 from __future__ import annotations
 import hashlib
+import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,9 +18,14 @@ from hyprial.kernel  import (
 from hyprial.kernel import DomainEffectClaim
 
 from .steps import (
+    CELL_MEMBER_EFFECT_NAMES,
+    CELL_MEMBER_EFFECT_PREFIX,
+    LegacyLifecycleOperationError,
     _operation_from_json,
     _operation_json,
     _plan,
+    cell_member_effect_operation_id,
+    is_cell_member_effect_operation,
 )
 from .vocabulary import (
     LifecycleOperation,
@@ -36,6 +43,7 @@ _RECOVER_FAULT_EVENT_EVERY = 50
 
 
 _RECOVER_FAULT_EVENT_MIN_INTERVAL_S = 30.0
+_LOGGER = logging.getLogger("hyprial.daemon.impl.lifecycle_manager")
 
 
 def backfill_domain_attested_effects(
@@ -232,11 +240,24 @@ class _LifecycleStore:
         return True, LifecycleState.RUNNING
 
     def pending(self) -> tuple[str, ...]:
+        """Incomplete lifecycle sagas this journal's manager drives.
+
+        Cell member reconcile effects share the table but are owned and
+        settled by the cell reconcile effect port, never by a lifecycle
+        manager, so they are not part of the manager's work.
+        """
+
         with self._state_db.read() as db:
             rows = db.execute(
                 "SELECT operation_id FROM lifecycle_operations "
-                "WHERE state IN (?, ?) ORDER BY updated_at, operation_id",
-                (LifecycleState.RUNNING.value, LifecycleState.COMPENSATING.value),
+                "WHERE state IN (?, ?) AND substr(operation_id, 1, ?) != ? "
+                "ORDER BY updated_at, operation_id",
+                (
+                    LifecycleState.RUNNING.value,
+                    LifecycleState.COMPENSATING.value,
+                    len(CELL_MEMBER_EFFECT_PREFIX),
+                    CELL_MEMBER_EFFECT_PREFIX,
+                ),
             ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
@@ -254,28 +275,44 @@ class _LifecycleStore:
         never as forward progress.  Rows already COMPENSATING keep their
         original cause -- finishing an interrupted teardown is itself
         compensation, so those operations are left exactly as they are.
+
+        A cell member reconcile effect left incomplete by a dead generation
+        is not a saga: its fence epoch died with the reconcile actor, so it
+        is failed closed here and never handed to compensation.
         """
 
+        now = time.time()
         with self._state_db.transaction() as db:
             rows = db.execute(
-                "SELECT operation_id FROM lifecycle_operations "
-                "WHERE state = ? ORDER BY updated_at, operation_id",
-                (LifecycleState.RUNNING.value,),
+                "SELECT operation_id, state FROM lifecycle_operations "
+                "WHERE state IN (?, ?) ORDER BY updated_at, operation_id",
+                (LifecycleState.RUNNING.value, LifecycleState.COMPENSATING.value),
             ).fetchall()
-            interrupted = tuple(str(row[0]) for row in rows)
-            if interrupted:
+            interrupted: list[str] = []
+            for operation_id, state in rows:
+                op_id = str(operation_id)
+                if is_cell_member_effect_operation(op_id):
+                    db.execute(
+                        "UPDATE lifecycle_operations SET state = ?, error = ?, "
+                        "error_code = ?, updated_at = ? WHERE operation_id = ?",
+                        (
+                            LifecycleState.FAILED.value,
+                            "cell reconcile effect did not finish in its daemon generation",
+                            "LIFECYCLE_FAIL_CLOSED",
+                            now,
+                            op_id,
+                        ),
+                    )
+                    continue
+                if str(state) != LifecycleState.RUNNING.value:
+                    continue
                 db.execute(
                     "UPDATE lifecycle_operations SET state = ?, error = ?, "
-                    "error_code = ?, updated_at = ? WHERE state = ?",
-                    (
-                        LifecycleState.COMPENSATING.value,
-                        cause,
-                        error_code,
-                        time.time(),
-                        LifecycleState.RUNNING.value,
-                    ),
+                    "error_code = ?, updated_at = ? WHERE operation_id = ?",
+                    (LifecycleState.COMPENSATING.value, cause, error_code, now, op_id),
                 )
-        return interrupted
+                interrupted.append(op_id)
+        return tuple(interrupted)
 
     def load(self, operation_id: str) -> LifecycleOperation:
         with self._state_db.read() as db:
@@ -505,6 +542,34 @@ class _LifecycleStore:
             ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
+    def read_start_failures(self):
+        """Project the latest reserved operation per actor; never retry from reads."""
+        with self._state_db.read() as db:
+            rows = db.execute(
+                "SELECT request_json, error, updated_at FROM ("
+                "SELECT *, ROW_NUMBER() OVER (PARTITION BY "
+                "json_extract(request_json, '$.target.actor') ORDER BY rowid DESC) AS position "
+                "FROM lifecycle_operations WHERE json_valid(request_json) = 1) WHERE position = 1 "
+                "AND state = 'compensated' AND error_code = 'HARNESS_START_FAILED' "
+                "AND json_extract(request_json, '$.kind') IN ('create', 'resume')"
+            ).fetchall()
+            result = {}
+            for payload, error, updated_at in rows:
+                try:
+                    operation = _operation_from_json(payload)
+                except LegacyLifecycleOperationError as legacy_error:
+                    _LOGGER.warning(
+                        "skipping unreadable legacy start-failure projection (%s): %s",
+                        type(legacy_error).__name__,
+                        legacy_error,
+                    )
+                    continue
+                if operation.observed_entity_token is not None:
+                    result[operation.target.actor] = (
+                        operation, str(error or ""), int(updated_at * 1000),
+                    )
+            return result
+
     def result(self, operation_id: str) -> LifecycleResult:
         with self._state_db.read() as db:
             row = db.execute(
@@ -529,6 +594,226 @@ class _LifecycleStore:
         )
 
     def close(self) -> None:
-        # Connections live one transaction/read (StateDatabase); nothing
-        # persistent to close.  Kept as a no-op for the manager's drain path.
         return None
+
+    def record_cell_member_effect(
+        self,
+        *,
+        cell_id: str,
+        epoch: str,
+        revision: int,
+        member: str,
+        effect_name: str,
+        correlation_id: str,
+        attempt_token: str,
+        ordinal: int = 0,
+    ) -> _EffectReceipt:
+        """Persist a fenced I6 cell member effect without reusing ``harness.ensure``."""
+
+        if effect_name not in CELL_MEMBER_EFFECT_NAMES:
+            raise ValueError(f"unsupported cell member effect {effect_name!r}")
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise ValueError("cell member effect requires non-empty correlation_id")
+        if not isinstance(attempt_token, str) or not attempt_token.strip():
+            raise ValueError("cell member effect requires non-empty attempt_token")
+        operation_id = cell_member_effect_operation_id(
+            cell_id, epoch, revision, member, effect_name
+        )
+        request_payload = json.dumps(
+            {
+                "cellId": cell_id,
+                "epoch": epoch,
+                "revision": revision,
+                "member": member,
+                "effectName": effect_name,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._state_db.transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO lifecycle_operations("
+                "operation_id, request_digest, request_json, state, error, "
+                "error_code, updated_at) VALUES(?, ?, ?, ?, NULL, NULL, ?)",
+                (
+                    operation_id,
+                    hashlib.sha256(operation_id.encode("utf-8")).hexdigest(),
+                    request_payload,
+                    LifecycleState.RUNNING.value,
+                    time.time(),
+                ),
+            )
+            existing = db.execute(
+                "SELECT correlation_id, attempt_token, status "
+                "FROM lifecycle_effects WHERE operation_id = ? "
+                "AND effect_name = ? AND direction = 'forward'",
+                (operation_id, effect_name),
+            ).fetchone()
+            if existing is None:
+                db.execute(
+                    "INSERT INTO lifecycle_effects("
+                    "operation_id, ordinal, effect_name, direction, correlation_id, "
+                    "attempt_token, status, changed, created_by_operation, "
+                    "resource_token, receipt_retired) "
+                    "VALUES(?, ?, ?, 'forward', ?, ?, 'prepared', 0, NULL, NULL, 0)",
+                    (
+                        operation_id,
+                        ordinal,
+                        effect_name,
+                        correlation_id,
+                        attempt_token,
+                    ),
+                )
+            elif str(existing[2]) in {"failed", "completed"} and str(existing[1]) != attempt_token:
+                db.execute(
+                    "UPDATE lifecycle_effects SET ordinal = ?, correlation_id = ?, "
+                    "attempt_token = ?, status = 'prepared', changed = 0, "
+                    "created_by_operation = NULL, resource_token = NULL "
+                    "WHERE operation_id = ? AND effect_name = ? AND direction = 'forward' "
+                    "AND status IN ('failed', 'completed')",
+                    (ordinal, correlation_id, attempt_token, operation_id, effect_name),
+                )
+                db.execute(
+                    "UPDATE lifecycle_operations SET state = ?, error = NULL, "
+                    "error_code = NULL, updated_at = ? WHERE operation_id = ?",
+                    (LifecycleState.RUNNING.value, time.time(), operation_id),
+                )
+            row = db.execute(
+                "SELECT correlation_id, attempt_token "
+                "FROM lifecycle_effects WHERE operation_id = ? "
+                "AND effect_name = ? AND direction = 'forward'",
+                (operation_id, effect_name),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("cell member effect receipt was not persisted")
+        return _EffectReceipt(str(row[0]), str(row[1]))
+
+    def complete_cell_member_effect(
+        self,
+        *,
+        cell_id: str,
+        epoch: str,
+        revision: int,
+        member: str,
+        effect_name: str,
+        correlation_id: str,
+        succeeded: bool,
+        attempt_token: str | None = None,
+        resource_token: str | None = None,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """Commit terminal outcome for one fenced cell member effect."""
+
+        if effect_name not in CELL_MEMBER_EFFECT_NAMES:
+            raise ValueError(f"unsupported cell member effect {effect_name!r}")
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise ValueError("cell member effect requires non-empty correlation_id")
+        if not isinstance(attempt_token, str) or not attempt_token.strip():
+            raise ValueError("cell member effect requires non-empty attempt_token")
+        operation_id = cell_member_effect_operation_id(
+            cell_id, epoch, revision, member, effect_name
+        )
+        token = resource_token or correlation_id
+        with self._state_db.transaction() as db:
+            receipt_row = db.execute(
+                "SELECT correlation_id, attempt_token, status "
+                "FROM lifecycle_effects WHERE operation_id = ? "
+                "AND effect_name = ? AND direction = 'forward'",
+                (operation_id, effect_name),
+            ).fetchone()
+            if receipt_row is None:
+                raise RuntimeError("cell member effect has no ownership receipt")
+            if str(receipt_row[0]) != correlation_id or str(receipt_row[1]) != attempt_token:
+                raise RuntimeError("cell member effect receipt mismatch")
+            if str(receipt_row[2]) == "completed":
+                raise RuntimeError("cell member effect is already completed")
+            if succeeded:
+                cursor = db.execute(
+                    "UPDATE lifecycle_effects SET status = 'completed', "
+                    "changed = 1, created_by_operation = 1, "
+                    "resource_token = ?, receipt_retired = 0 "
+                    "WHERE operation_id = ? AND effect_name = ? AND direction = 'forward' "
+                    "AND correlation_id = ? AND attempt_token = ? AND status != 'completed'",
+                    (token, operation_id, effect_name, correlation_id, attempt_token),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("cell member effect has no ownership receipt")
+                db.execute(
+                    "UPDATE lifecycle_operations SET state = ?, error = NULL, "
+                    "error_code = NULL, updated_at = ? WHERE operation_id = ?",
+                    (LifecycleState.COMPLETED.value, time.time(), operation_id),
+                )
+            else:
+                cursor = db.execute(
+                    "UPDATE lifecycle_effects SET status = 'failed' "
+                    "WHERE operation_id = ? AND effect_name = ? AND direction = 'forward' "
+                    "AND correlation_id = ? AND attempt_token = ? AND status != 'completed'",
+                    (operation_id, effect_name, correlation_id, attempt_token),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("cell member effect has no ownership receipt")
+                db.execute(
+                    "UPDATE lifecycle_operations SET state = ?, error = ?, "
+                    "error_code = ?, updated_at = ? WHERE operation_id = ?",
+                    (
+                        LifecycleState.FAILED.value,
+                        error,
+                        error_code,
+                        time.time(),
+                        operation_id,
+                    ),
+                )
+
+    def cell_member_effect_status(
+        self,
+        *,
+        cell_id: str,
+        epoch: str,
+        revision: int,
+        member: str,
+        effect_name: str,
+    ) -> str | None:
+        """Read the persisted status for one fenced cell member effect."""
+
+        operation_id = cell_member_effect_operation_id(
+            cell_id, epoch, revision, member, effect_name
+        )
+        with self._state_db.read() as db:
+            row = db.execute(
+                "SELECT status FROM lifecycle_effects "
+                "WHERE operation_id = ? AND effect_name = ? AND direction = 'forward'",
+                (operation_id, effect_name),
+            ).fetchone()
+        return None if row is None else str(row[0])
+
+    def fail_closed_legacy_operations(self) -> tuple[str, ...]:
+        """Mark unparseable incomplete operations failed instead of guessing."""
+
+        with self._state_db.transaction() as db:
+            rows = db.execute(
+                "SELECT operation_id, request_json FROM lifecycle_operations "
+                "WHERE state IN (?, ?)",
+                (LifecycleState.RUNNING.value, LifecycleState.COMPENSATING.value),
+            ).fetchall()
+            failed: list[str] = []
+            for operation_id, request_json in rows:
+                op_id = str(operation_id)
+                if is_cell_member_effect_operation(op_id):
+                    continue
+                try:
+                    _operation_from_json(str(request_json))
+                except LegacyLifecycleOperationError as error:
+                    db.execute(
+                        "UPDATE lifecycle_operations SET state = ?, error = ?, "
+                        "error_code = ?, updated_at = ? WHERE operation_id = ?",
+                        (
+                            LifecycleState.FAILED.value,
+                            str(error),
+                            "LEGACY_OPERATION_UNSUPPORTED",
+                            time.time(),
+                            op_id,
+                        ),
+                    )
+                    failed.append(op_id)
+        return tuple(failed)

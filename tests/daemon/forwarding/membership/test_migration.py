@@ -98,8 +98,12 @@ def test_startup_stale_redemption_recovers_with_new_invite(tmp_path, monkeypatch
     from types import SimpleNamespace
     from hyprial.daemon.impl.forwarding.membership import migration
 
-    monkeypatch.setenv('HYPRIAL_HOME', str(tmp_path))
-    monkeypatch.setattr(migration, 'read_device_record', lambda home: object())
+    device_reads = []
+    monkeypatch.setattr(
+        migration,
+        'read_device_record',
+        lambda home: device_reads.append(home) or object(),
+    )
     old_invite = {'tailnetId': 'space', 'inviteId': 'old', 'authority': {}, 'token': 'old-secret'}
     new_invite = old_invite | {'inviteId': 'new', 'token': 'new-secret'}
     pending_redemption(tmp_path, old_invite)
@@ -150,6 +154,7 @@ def test_startup_stale_redemption_recovers_with_new_invite(tmp_path, monkeypatch
         assert len(calls) - before == 0
         print(f'post_rejoin_startup_{startup}: redemption_calls_before={before}; after={len(calls)}; delta=0')
     assert [call['invite']['inviteId'] for call in calls] == ['old', 'new']
+    assert device_reads and all(home == tmp_path for home in device_reads)
     receipt = json.loads(migration.receipt_path(tmp_path, 'space').read_text())
     assert receipt['state'] == 'complete'
     assert receipt['redemption'] == {'operationId': 'redeem-new', 'invite': new_invite}
@@ -162,7 +167,12 @@ def test_failed_fresh_invite_after_stale_one_retries_with_backoff(tmp_path, monk
     from types import SimpleNamespace
     from hyprial.daemon.impl.forwarding.membership import migration
 
-    monkeypatch.setattr(migration, 'read_device_record', lambda home: object())
+    device_reads = []
+    monkeypatch.setattr(
+        migration,
+        'read_device_record',
+        lambda home: device_reads.append(home) or object(),
+    )
     old_invite = {'tailnetId': 'space', 'inviteId': 'old', 'authority': {}}
     fresh = old_invite | {'inviteId': 'fresh'}
     pending_redemption(tmp_path, old_invite)
@@ -195,6 +205,7 @@ def test_failed_fresh_invite_after_stale_one_retries_with_backoff(tmp_path, monk
     migration.atomic_json_write(migration.degraded_redemption_path(tmp_path), record)
     migration.retry_degraded_redemption(app)
     assert calls == ['old', 'fresh', 'fresh', 'fresh']
+    assert device_reads and all(home == tmp_path for home in device_reads)
     assert json.loads(migration.receipt_path(tmp_path, 'space').read_text())['state'] == 'complete'
     assert migration.read_degraded_redemption(tmp_path) is None
 
@@ -243,8 +254,12 @@ def test_failed_replacement_persists_only_fresh_request_for_restart(tmp_path, mo
     import json
     from types import SimpleNamespace
     from hyprial.daemon.impl.forwarding.membership import migration
-    monkeypatch.setenv('HYPRIAL_HOME', str(tmp_path))
-    monkeypatch.setattr(migration, 'read_device_record', lambda home: object())
+    device_reads = []
+    monkeypatch.setattr(
+        migration,
+        'read_device_record',
+        lambda home: device_reads.append(home) or object(),
+    )
     invite = {'tailnetId': 'space', 'inviteId': 'old', 'authority': {}}
     pending_redemption(tmp_path, invite)
     fresh = invite | {'inviteId': 'fresh'}
@@ -273,6 +288,7 @@ def test_failed_replacement_persists_only_fresh_request_for_restart(tmp_path, mo
                           _forwarding_supervisor=SimpleNamespace(membership_request=recovered))
     migration.migrate_for_app(app, plans=[])
     assert calls == [('invite-redeem', receipt['redemption'])] * 2
+    assert device_reads and all(home == tmp_path for home in device_reads)
     assert json.loads(migration.receipt_path(tmp_path, 'space').read_text())['state'] == 'complete'
 
 
@@ -419,3 +435,65 @@ def test_explicit_repin_rejoin_requires_each_condition(tmp_path, initialized, st
     assert path.read_bytes() == before
     assert (settings.read_bytes() if settings.exists() else None) == pin_before
     print(f'repin_fence: initialized={initialized}; state={state}; inviteId={invite_id}; has_pin={has_pin}; code={code}')
+
+
+def test_start_before_transport_refuses_private_loopback_tcp_on_posix(monkeypatch):
+    from types import SimpleNamespace
+
+    import hyprial.daemon.impl.forwarding.membership.migration as migration
+
+    app = SimpleNamespace(
+        zenoh_listen=(),
+        _start_forwarding_supervisor=lambda: None,
+    )
+    events = []
+    monkeypatch.setattr(
+        migration, 'plan_migrations', lambda app: events.append('plan') or []
+    )
+    monkeypatch.setattr(
+        migration, 'migrate_for_app', lambda app, plans: events.append('migrate')
+    )
+
+    with pytest.raises(ValueError, match='private Unix listener or a Windows loopback TCP'):
+        migration.start_before_transport(
+            app, listen=('tcp/127.0.0.1:39111',), connect=()
+        )
+    assert app.zenoh_listen == ()
+    assert events == []
+
+
+def test_start_before_transport_accepts_private_loopback_tcp_on_windows(monkeypatch):
+    from types import SimpleNamespace
+
+    import hyprial.daemon.impl.forwarding.membership.migration as migration
+    import hyprial.daemon.impl.forwarding.policy as policy
+
+    gate_calls = []
+    monkeypatch.setattr(
+        policy, 'loopback_inbound_supported', lambda: gate_calls.append(True) or True
+    )
+    events = []
+    app = SimpleNamespace(
+        zenoh_listen=(),
+        _start_forwarding_supervisor=lambda: events.append('start'),
+    )
+    monkeypatch.setattr(
+        migration, 'plan_migrations', lambda app: events.append('plan') or []
+    )
+    monkeypatch.setattr(migration, 'migrate_for_app', lambda app, plans: events.append('migrate'))
+
+    migration.start_before_transport(
+        app, listen=('tcp/127.0.0.1:39111',), connect=()
+    )
+    assert app.zenoh_listen == ('tcp/127.0.0.1:39111',)
+    assert events == ['plan', 'start', 'migrate']
+    assert gate_calls
+
+    with pytest.raises(ValueError, match='private Unix listener or a Windows loopback TCP'):
+        migration.start_before_transport(
+            app, listen=('tcp/0.0.0.0:39111',), connect=()
+        )
+    with pytest.raises(ValueError, match='sidecar slots only'):
+        migration.start_before_transport(
+            app, listen=(), connect=('tcp/127.0.0.1:39111',)
+        )

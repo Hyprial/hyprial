@@ -39,7 +39,7 @@ from hyprial.daemon.impl.inbox import (
     MemoryDeliveryTransport,
 )
 from hyprial.daemon.impl.inbox.tracking.progress import PHASE_TOOL_CALL, ProgressEvent
-from tests.support.links.gate import permissive_admission_slot
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 
 OWNER = "op"
 NODE = "node-ttl"
@@ -172,7 +172,12 @@ class _Launcher:
 
 
 def _wired_runtime(
-    tmp_path: Path, *, inbox: object, process: object, clock: _Clock | None = None
+    tmp_path: Path,
+    *,
+    inbox: object,
+    process: object,
+    clock: _Clock | None = None,
+    actor_host,
 ) -> DaemonEventBridge:
     harnesses = ManagedHarnessRuntime(_Launcher(process))  # type: ignore[arg-type]
     runtime = DaemonEventBridge(
@@ -184,7 +189,8 @@ def _wired_runtime(
         harnesses=harnesses,
         harness_actor_uri=lambda name: WORKER,
         clock_ms=None if clock is None else clock.ms,
-        hold_ttl_ms=getattr(inbox, "durable_ttl_ms", DEFAULT_HOLD_TTL_MS),
+        hold_ttl_ms=getattr(inbox, "durable_ttl_ms", DEFAULT_HOLD_TTL_MS), actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.desired_state.upsert_harness(
         HarnessLaunchSpec(harness="claude", name="worker", headless=True)
@@ -196,10 +202,12 @@ def _wired_runtime(
 # --- wiring (fast, mutation-verified) -----------------------------------------
 
 
-def test_dispatch_acceptance_refreshes_hold_exactly_once(tmp_path: Path) -> None:
+def test_dispatch_acceptance_refreshes_hold_exactly_once(
+    tmp_path: Path, *, actor_host
+) -> None:
     process = _OneShotProcess()
     inbox = _SpyInbox((_delivery_message(),))
-    runtime = _wired_runtime(tmp_path, inbox=inbox, process=process)
+    runtime = _wired_runtime(tmp_path, inbox=inbox, process=process, actor_host=actor_host)
     runtime.start()
     try:
         runtime.on_timer()
@@ -214,10 +222,12 @@ def test_dispatch_acceptance_refreshes_hold_exactly_once(tmp_path: Path) -> None
         runtime.stop()
 
 
-def test_progress_activity_refreshes_hold(tmp_path: Path, clock: _Clock) -> None:
+def test_progress_activity_refreshes_hold(
+    tmp_path: Path, clock: _Clock, *, actor_host
+) -> None:
     process = _ProgressEmittingProcess()
     inbox = _SpyInbox((_delivery_message(),))
-    runtime = _wired_runtime(tmp_path, inbox=inbox, process=process, clock=clock)
+    runtime = _wired_runtime(tmp_path, inbox=inbox, process=process, clock=clock, actor_host=actor_host)
     runtime.start()
     try:
         runtime.on_timer()  # dispatch: refresh #1
@@ -376,17 +386,16 @@ class _QueuedBehindBusyTurnProcess(_OneShotProcess):
 
 
 def test_live_busy_worker_keeps_an_accepted_queued_delivery_alive(
-    tmp_path: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch, *, actor_host
 ) -> None:
     state_dir = tmp_path / "state"
     inbox = InboxService(
         state_dir / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         node_id=NODE,
-        link_admission=permissive_admission_slot(),
     )
     process = _QueuedBehindBusyTurnProcess()
-    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock)
+    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock, actor_host=actor_host)
     original = _delivery_message("delivery-queued-behind-busy-turn")
     assert inbox.receive(original).accepted
     refresh_times: list[int] = []
@@ -428,7 +437,7 @@ def test_live_busy_worker_keeps_an_accepted_queued_delivery_alive(
 
 
 def test_activity_refresh_survives_a_turn_longer_than_the_ttl(
-    tmp_path: Path, clock: _Clock
+    tmp_path: Path, clock: _Clock, *, actor_host
 ) -> None:
     """The review's acceptance combination verbatim: TTL 5s, turn 8s.
 
@@ -443,10 +452,9 @@ def test_activity_refresh_survives_a_turn_longer_than_the_ttl(
         MemoryDeliveryTransport(),
         node_id=NODE,
         hold_policy=HoldPolicy(ttl_ms=5_000),
-        link_admission=permissive_admission_slot(),
     )
     process = _TimedTurnProcess(complete_after_s=8.0, progress_at_s=2.5, clock=clock)
-    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock)
+    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock, actor_host=actor_host)
     original = _delivery_message("delivery-ttl-e2e")
     accepted = inbox.receive(original)
     assert accepted.accepted
@@ -479,7 +487,7 @@ def test_activity_refresh_survives_a_turn_longer_than_the_ttl(
 
 
 def test_a_dead_worker_still_lets_the_row_expire_and_prune(
-    tmp_path: Path, clock: _Clock
+    tmp_path: Path, clock: _Clock, *, actor_host
 ) -> None:
     """A stopped worker gets no lease beyond its final hold refresh."""
 
@@ -489,11 +497,10 @@ def test_a_dead_worker_still_lets_the_row_expire_and_prune(
         MemoryDeliveryTransport(),
         node_id=NODE,
         hold_policy=HoldPolicy(ttl_ms=DEFAULT_HOLD_TTL_MS),
-        link_admission=permissive_admission_slot(),
     )
     # No completion or progress: the worker is explicitly removed below.
     process = _TimedTurnProcess(complete_after_s=None, progress_at_s=None, clock=clock)
-    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock)
+    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock, actor_host=actor_host)
     original = _delivery_message("delivery-dead-worker")
     accepted = inbox.receive(original)
     assert accepted.accepted
@@ -524,20 +531,19 @@ def test_a_dead_worker_still_lets_the_row_expire_and_prune(
 
 
 def test_a_delivery_the_live_worker_never_accepted_expires_unchanged(
-    tmp_path: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch, *, actor_host
 ) -> None:
     state_dir = tmp_path / "state"
     inbox = InboxService(
         state_dir / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         node_id=NODE,
-        link_admission=permissive_admission_slot(),
     )
     original = _delivery_message("delivery-refused")
     assert inbox.receive(original).accepted
     process = _OneShotProcess()
     process._known.add(original.message_id)
-    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock)
+    runtime = _wired_runtime(state_dir, inbox=inbox, process=process, clock=clock, actor_host=actor_host)
     refreshes: list[str] = []
     refresh_hold = inbox.refresh_hold
 

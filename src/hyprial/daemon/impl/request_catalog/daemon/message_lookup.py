@@ -4,7 +4,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from hyprial.identity import InvalidAgentNameError
-from hyprial.kernel import IdempotencySpec, MethodError, MethodSpec, ipc_errors
+from hyprial.kernel import HttpBinding, IdentityBinding, IdempotencySpec, MethodError, MethodSpec, ipc_errors
+
+from ..address_errors import AGENT_ADDRESS_RETIRED_ERROR
 
 _STRING = {"type": "string", "minLength": 1}
 _PARAMS = {
@@ -18,6 +20,7 @@ _PARAMS = {
     "required": ["target", "text", "conversationId", "idempotencyKey"],
     "additionalProperties": False,
 }
+_PARAMS["properties"]["sessionRef"] = {**_STRING, "x-hyprial-http-forbidden": True}
 _RESULT = {
     "type": "object",
     "properties": {
@@ -65,6 +68,7 @@ MESSAGE_SEND_LOOKUP_SPEC = MethodSpec(
     errors=(
         MethodError(ipc_errors.INVALID_ARGUMENT, _data(sender=_STRING)),
         MethodError(ipc_errors.SENDER_UNRESOLVED, _data(sender=_STRING)),
+        AGENT_ADDRESS_RETIRED_ERROR,
         MethodError(ipc_errors.SENDER_NOT_AUTHENTICATED, _data(claimedIdentity=_STRING)),
         MethodError(ipc_errors.AMBIGUOUS_TARGET, _data(
             target=_STRING, candidates={"type": "array", "items": _STRING},
@@ -78,9 +82,13 @@ MESSAGE_SEND_LOOKUP_SPEC = MethodSpec(
     mutates=False,
     retry="safe",
     audience=("local-operator", "bound-agent"),
-    http_exposed=False,
+    http_exposed=True,
+    # _actor(params) prefers actor over from. The HTTP entry binds the trusted
+    # node owner's user identity while IPC retains either legacy alias.
+    http_binding=HttpBinding(IdentityBinding("local-owner-user-selector", "actor"), readiness="inbox-service"),
     confirmation="none",
     idempotency=IdempotencySpec(mode="safe", scope="read-only-send-lookup"),
+    mock_echo={"idempotencyKey": "commandId"},
 )
 
 

@@ -1,9 +1,8 @@
 """Per-agent secret inventory and explicit-grant resolution.
 
-This module never discovers credentials.  The registry supplies one named
-binding for one current agent incarnation, and the resolver opens exactly that
-entry.  Login and adapter credentials are intentionally not representable as
-resolver sources.
+Runtime resolution opens only the entry named by an explicit registry grant.
+Operator inventory separately enumerates user-owned model-secret metadata;
+it never grants access or includes login and adapter custody.
 """
 
 from __future__ import annotations
@@ -25,8 +24,10 @@ from hyprial.kernel import (
     harden_private_path,
     ipc_errors,
     private_metadata_violation,
+    read_private_file,
 )
 from hyprial.identity.impl.agents.home.provisioner  import HomeReceipt
+from . import model_records
 
 __all__ = [
     "ResolvedSecret",
@@ -153,8 +154,13 @@ class SecretGrant:
     revision: int
     owner_actor: str | None = None
     owner_entity_token: str | None = None
+    route_required: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.route_required) is not bool or (
+            self.route_required and self.source is not SecretSource.USER_PROVIDER
+        ):
+            raise ValueError("only user-provider grants can require model service routing")
         if self.source is SecretSource.AGENT_SHARED:
             if not self.owner_actor or not self.owner_entity_token:
                 raise ValueError("shared secret grants require an owner incarnation")
@@ -188,8 +194,11 @@ class ResolvedSecret:
 
     grant: SecretGrant
     value: str = field(repr=False, compare=False)
+    route: model_records.ModelServiceRoute | model_records.ModelConnection | None = None
 
-    def environment(self) -> dict[str, str]:
+    def environment(self, *, route_admitted: bool = False) -> dict[str, str]:
+        if self.route is not None and not route_admitted:
+            raise SecretResolutionError("route-not-admitted", self.grant.entry_id, "launch")
         return {name: self.value for name in self.grant.environment_names}
 
 
@@ -218,10 +227,6 @@ class _SecretRegistry(Protocol):
     def home_receipt(self, actor: str, *, require_ready: bool = True) -> HomeReceipt: ...
 
     def secret_inventory(self, actor: str | None = None) -> tuple[SecretGrant, ...]: ...
-
-    def repoint_legacy_secret_grants(
-        self, grant: SecretGrant, values: Mapping[str, str], raw_field: str,
-    ) -> None: ...
 
 
 class SecretResolver:
@@ -287,11 +292,12 @@ class SecretResolver:
                 raise SecretResolutionError("grant-stale", grant.entry_id, "home")
             return ResolvedSecret(grant, read_shared_value(self.registry, grant))
         path = self._entry_path(actor, grant)
+        route = None
         try:
             if grant.source is SecretSource.AGENT_PRIVATE:
                 grant, value = self._read_agent_value(path, grant)
             else:
-                value = self._read_value(path, grant)
+                value, route = self._read_value(path, grant)
         except SecretResolutionError as error:
             if (
                 error.category != "missing"
@@ -302,7 +308,7 @@ class SecretResolver:
                 error.category, error.entry_id, error.phase,
                 guidance=self._agent_recovery_guidance(actor, grant),
             ) from None
-        return ResolvedSecret(grant, value)
+        return ResolvedSecret(grant, value, route)
 
     @staticmethod
     def _agent_recovery_guidance(actor: str, grant: SecretGrant) -> str:
@@ -345,46 +351,188 @@ class SecretResolver:
         directory = self.hyprial_home / "secrets" / "providers"
         self._ensure_private_directory(directory)
         path = directory / f"{entry_id}.json"
-        self._atomic_secret_write(path, json.dumps(dict(values), sort_keys=True) + "\n")
+        try:
+            model_records.write(path, values)
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "write") from None
         return path
 
+    def configure_model_service(
+        self, entry_id: str, *, field_name: str, endpoint: str, protocol: str,
+        vendor_id: str, value: str | None = None, create_only: bool = False,
+    ) -> Path:
+        """Explicitly bind one saved field to an owner-selected model service."""
+        _validate_entry(entry_id)
+        _validate_entry(field_name)
+        if type(create_only) is not bool:
+            raise ValueError("create_only must be boolean")
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError("model secret value must be a nonempty string")
+        route = model_records.ModelServiceRoute(endpoint, protocol, vendor_id)
+        directory = self.hyprial_home / "secrets" / "providers"
+        self._ensure_private_directory(directory)
+        path = directory / f"{entry_id}.json"
+        try:
+            model_records.write(path, {} if value is None else {field_name: value},
+                                route_field=field_name, route=route, create_only=create_only)
+        except FileExistsError:
+            raise SecretResolutionError("exists", entry_id, "configure") from None
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "configure") from None
+        return path
+
+    def configure_model_connection(
+        self, entry_id: str, *, field_name: str, connection: Mapping[str, object],
+        expected_revision: int, value: str | None = None, create_only: bool = False,
+    ) -> Path:
+        """Persist explicit connection metadata and its key in one existing Secret record."""
+        _validate_entry(entry_id)
+        _validate_entry(field_name)
+        model_records.configuration(connection)
+        expected_revision = model_records.integer(expected_revision)
+        if type(create_only) is not bool:
+            raise ValueError("invalid model connection revision")
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError("model secret value must be a nonempty string")
+        directory = self.hyprial_home / "secrets" / "providers"
+        self._ensure_private_directory(directory)
+        path = directory / f"{entry_id}.json"
+        try:
+            model_records.write(path, {} if value is None else {field_name: value},
+                                route_field=field_name, connection=connection,
+                                expected_revision=expected_revision, create_only=create_only)
+        except model_records.ConnectionConflict:
+            raise SecretResolutionError("revision-mismatch", entry_id, "configure") from None
+        except model_records.InvalidConnection:
+            raise ValueError("invalid model connection credential") from None
+        except FileExistsError:
+            raise SecretResolutionError("exists", entry_id, "configure") from None
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "configure") from None
+        return path
+
+    def model_connection_probe_input(
+        self, entry_id: str, *, field_name: str, connection_ref: str, config_revision: int,
+    ) -> dict[str, object]:
+        """Resolve one operator-selected connection from one private atomic read."""
+        _validate_entry(entry_id)
+        _validate_entry(field_name)
+        path = self.hyprial_home / "secrets" / "providers" / f"{entry_id}.json"
+        try:
+            self._validate_ancestors(path, entry_id)
+            record = model_records.read(path)
+        except FileNotFoundError:
+            raise SecretResolutionError("missing", entry_id, "probe") from None
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "probe") from None
+        route = record.routes.get(field_name)
+        if (not isinstance(route, model_records.ModelConnection)
+                or route.connection_ref != connection_ref or route.config_revision != config_revision):
+            raise SecretResolutionError("revision-mismatch", entry_id, "probe")
+        return {"provider": "custom", "endpoint": route.endpoint, "protocol": route.protocol,
+                "secret": record.values[field_name]}
+
+    def model_route_required(self, entry_id: str, field_name: str | None) -> bool:
+        """Derive grant metadata from saved state, never from a caller's flag."""
+        _validate_entry(entry_id)
+        path = self.hyprial_home / "secrets" / "providers" / f"{entry_id}.json"
+        try:
+            self._validate_ancestors(path, entry_id)
+            data, _ = read_private_file(path, max_bytes=model_records.LIMIT)
+            try:
+                document = json.loads(data)
+            except (UnicodeError, json.JSONDecodeError):
+                if field_name is None:
+                    return False
+                raise
+            if not isinstance(document, dict) or "$schema" not in document:
+                return False
+            record = model_records.decode(document)
+        except FileNotFoundError:
+            return False
+        except SecretResolutionError as error:
+            if error.category == "missing":
+                return False
+            raise
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "grant-route") from None
+        if record.configured and field_name is None:
+            raise SecretResolutionError("field-required", entry_id, "grant-route")
+        return field_name in record.routes
+
+    def list_user_providers(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return tuple((entry, fields) for entry, fields, _ in self.list_model_services())
+
+    def model_service_metadata(self, entry_id: str) -> dict[str, object]:
+        """Read one atomic record's non-secret configuration after a write."""
+        _validate_entry(entry_id)
+        path = self.hyprial_home / "secrets" / "providers" / f"{entry_id}.json"
+        try:
+            self._validate_ancestors(path, entry_id)
+            record = model_records.read(path)
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "inventory") from None
+        result: dict[str, object] = {"entryId": entry_id, "fieldNames": sorted(record.values)}
+        if record.configured:
+            result["routes"] = {name: route.document() for name, route in record.routes.items()
+                                if isinstance(route, model_records.ModelServiceRoute)}
+            connections = {name: route.document() for name, route in record.routes.items()
+                           if isinstance(route, model_records.ModelConnection)}
+            if connections:
+                result["connections"] = connections
+        return result
+
+    def list_model_services(self, *, include_connections: bool = False) -> tuple[tuple[str, tuple[str, ...], dict[str, dict[str, object]]], ...]:
+        """Read saved entry and field names, independently of agent grants.
+
+        Invalid private files refuse the entire observation. The read never
+        creates, hardens or repairs files, and never returns values or paths.
+        """
+
+        directory = self.hyprial_home / "secrets" / "providers"
+        try:
+            self._validate_ancestors(directory / ".inventory", "catalog")
+        except SecretResolutionError as error:
+            if error.category == "missing":
+                return ()
+            raise
+        entries = []
+        inspected = 0
+        try:
+            with os.scandir(directory) as children:
+                for child in children:
+                    if not child.name.endswith(".json"):
+                        continue
+                    entry_id = child.name[:-5]
+                    if not _ENTRY_PATTERN.fullmatch(entry_id):
+                        continue
+                    if inspected >= 1000:
+                        raise SecretResolutionError("limit", "catalog", "inventory")
+                    inspected += 1
+                    data, _ = read_private_file(Path(child.path), max_bytes=1024 * 1024)
+                    record = model_records.decode(json.loads(data))
+                    hidden = set() if include_connections else {
+                        name for name, route in record.routes.items()
+                        if isinstance(route, model_records.ModelConnection)
+                    }
+                    fields = tuple(sorted(record.values.keys() - hidden))
+                    if not fields:
+                        continue
+                    entries.append((entry_id, fields, {
+                        name: route.document() for name, route in record.routes.items()
+                        if name not in hidden
+                    }))
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", "catalog", "inventory") from None
+        return tuple(sorted(entries))
+
     def _read_agent_value(self, legacy_path: Path, grant: SecretGrant) -> tuple[SecretGrant, str]:
-        # Import lazily: the store also uses this module's environment policy.
-        from hyprial.identity.impl.agents.secret_store.legacy import migrate_entry
         from hyprial.identity.impl.agents.secret_store.store import AgentSecretStore
 
         home = legacy_path.parent.parent
         database = home / "secrets.sqlite"
         self._validate_ancestors(database, grant.entry_id)
         try:
-            # Migration commits and verifies SQLite before deleting the source.
-            # Values returned below always come from SQLite, never from a file.
-            try:
-                metadata = legacy_path.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                if not (grant.entry_id == "native" and stat.S_ISDIR(metadata.st_mode)):
-                    store = AgentSecretStore(home)
-                    fields = [
-                        item.field_name for item in self.registry.secret_inventory(grant.actor)
-                        if item.source is grant.source and item.entry_id == grant.entry_id
-                        and item.entity_token == grant.entity_token and item.field_name is not None
-                    ]
-                    migrate_entry(
-                        store, grant.entry_id, required_fields=fields,
-                        repoint=lambda values, field: self.registry.repoint_legacy_secret_grants(
-                            grant, values, field,
-                        ),
-                    )
-            # Another resolver may have migrated and removed the file since our
-            # first grant read. Never use a stale fieldless binding in that case.
-            current = self.registry.secret_grant(grant.actor, grant.grant_id)
-            if current is None or (
-                current.entity_token, current.source, current.entry_id
-            ) != (grant.entity_token, grant.source, grant.entry_id):
-                raise SecretResolutionError("grant-stale", grant.entry_id, "authorize")
-            grant = current
             try:
                 database.lstat()
             except FileNotFoundError:
@@ -392,7 +540,6 @@ class SecretResolver:
             store = AgentSecretStore(home, read_only=True)
             secret = store.get(grant.entry_id, grant.field_name or "VALUE")
         except (OSError, ValueError, sqlite3.Error):
-            # An unsafe, conflicting or unreadable store never enables fallback.
             raise SecretResolutionError(
                 "store-unavailable", grant.entry_id, "store-read"
             ) from None
@@ -412,7 +559,9 @@ class SecretResolver:
             return Path(receipt.path) / "secrets" / grant.entry_id
         raise SecretResolutionError("source-forbidden", grant.entry_id, "authorize")
 
-    def _read_value(self, path: Path, grant: SecretGrant) -> str:
+    def _read_value(
+        self, path: Path, grant: SecretGrant,
+    ) -> tuple[str, model_records.ModelServiceRoute | model_records.ModelConnection | None]:
         self._validate_ancestors(path, grant.entry_id)
         try:
             metadata = path.lstat()
@@ -430,27 +579,46 @@ class SecretResolver:
         if violation is not None:
             raise SecretResolutionError(violation, grant.entry_id, "open")
         try:
-            text = path.read_text(encoding="utf-8")
+            data, _ = read_private_file(path, max_bytes=model_records.LIMIT)
+            text = data.decode("utf-8")
         except PermissionError:
             raise SecretResolutionError("permission", grant.entry_id, "read") from None
         except UnicodeError:
             raise SecretResolutionError("invalid", grant.entry_id, "decode") from None
+        except PrivateAccessUnsupported:
+            raise SecretResolutionError("unsafe-file", grant.entry_id, "read") from None
         except OSError:
             raise SecretResolutionError("io", grant.entry_id, "read") from None
-        if grant.field_name is None:
-            if not text:
-                raise SecretResolutionError("invalid", grant.entry_id, "decode")
-            return text
         try:
             document = json.loads(text)
         except (UnicodeError, json.JSONDecodeError):
+            if grant.field_name is None and not grant.route_required and text:
+                return text, None
             raise SecretResolutionError("invalid", grant.entry_id, "decode") from None
-        if not isinstance(document, dict):
+        if not isinstance(document, dict) or "$schema" not in document:
+            if grant.route_required:
+                raise SecretResolutionError("route-mismatch", grant.entry_id, "route")
+            if grant.field_name is None and text:
+                return text, None
+            value = document.get(grant.field_name) if isinstance(document, dict) else None
+            if not isinstance(value, str) or not value:
+                raise SecretResolutionError("invalid", grant.entry_id, "select")
+            return value, None
+        try:
+            record = model_records.decode(document)
+        except ValueError:
             raise SecretResolutionError("invalid", grant.entry_id, "decode")
-        value = document.get(grant.field_name)
+        route = record.routes.get(grant.field_name)
+        if grant.route_required is not (route is not None):
+            raise SecretResolutionError("route-mismatch", grant.entry_id, "route")
+        if grant.field_name is None:
+            if record.configured:
+                raise SecretResolutionError("field-required", grant.entry_id, "select")
+            return text, None
+        value = record.values.get(grant.field_name)
         if not isinstance(value, str) or not value:
             raise SecretResolutionError("invalid", grant.entry_id, "select")
-        return value
+        return value, route
 
     def _validate_ancestors(self, path: Path, entry_id: str) -> None:
         try:
@@ -508,6 +676,8 @@ class SecretResolver:
             try:
                 path.mkdir(mode=0o700)
                 harden_private_path(path, mode=0o700)
+            except FileExistsError:
+                self._require_private_directory(path, directory.name, "write-parent")
             except PrivateAccessUnsupported:
                 raise SecretResolutionError(
                     "unsupported-private-acl", directory.name, "write-parent"

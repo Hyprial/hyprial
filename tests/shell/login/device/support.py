@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'tests/fixtures'))
@@ -12,7 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'tests/fixtures'))
 
 from hyprial.daemon.impl.configuration.network_profile import NetworkProfile
 from hyprial.shell.impl.login.flow import (
-    run_login,
+    CREDENTIAL_VERSION,
+    LoginCredential,
+    _write_credential,
+    credential_path,
 )
 
 _SRC_ROOT = Path(__file__).resolve().parents[4] / 'src'
@@ -63,21 +65,25 @@ def _snapshot(home: Path) -> dict[str, bytes | None]:
     return snap
 
 
-def _run(server, home, *, env=None, profile=None, **kwargs):
-    environ = {"HYPRIAL_HOME": str(home)}
-    if env is not None:
-        environ.update(env)
-    environ.setdefault("HYPRIAL_OWNER", "")
-    resolved_profile = profile or _profile_for(server)
-    kwargs.setdefault("binding_profile", replace(resolved_profile))
-    return run_login(
-        resolved_profile,
-        profile_source="profile.json",
-        environ=environ,
-        hyprial_home=home,
-        open_browser=False,
-        **kwargs,
+def _seed_credential(
+    home: Path,
+    issuer: str,
+    *,
+    refresh_token: str = "fake-refresh-token-1",
+    identity_generation: int = 1,
+) -> Path:
+    target = credential_path({"HYPRIAL_HOME": str(home)}, hyprial_home=home)
+    _write_credential(
+        LoginCredential(
+            version=CREDENTIAL_VERSION,
+            issuer=issuer,
+            refresh_token=refresh_token,
+            obtained_at="2026-09-01T00:00:00+00:00",
+            identity_generation=identity_generation,
+        ),
+        target,
     )
+    return target
 
 
 # -- T11: the daemon neither imports login nor reads the credential ------------------

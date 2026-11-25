@@ -30,7 +30,7 @@ def test_new_observation_modules_have_no_mailbox_or_callback_registration():
     paths = list((root / "src/hyprial/kernel/impl/observation").glob("*.py"))
     paths += list((root / "src/hyprial/daemon/impl/lifecycle/observation").glob("*.py"))
     assert paths
-    forbidden = {"ActorSpec", "ActorRuntime", "Queue", "Thread", "Timer", "Callable",
+    forbidden = {"ActorSpec", "Queue", "Thread", "Timer", "Callable",
                  "handler_factory", "event_sink", "register_handler", "trap_exit", "link"}
     for path in paths:
         tree = ast.parse(path.read_text())

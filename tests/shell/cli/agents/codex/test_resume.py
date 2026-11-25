@@ -10,6 +10,9 @@ import pytest
 from typer.testing import CliRunner
 
 from hyprial.daemon.impl.harnesses import codex
+from hyprial.shell.impl.cli.commands.agent.runtime.sessions import (
+    _codex_resume_tui_args,
+)
 
 from .support import THREAD_ID, candidate
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
@@ -25,6 +28,18 @@ def _thread(cwd: Path, *, ready: bool = True) -> dict[str, object]:
         "canAcceptDirectInput": ready,
         "turns": [{"id": "prior-turn", "items": [{"text": "before move"}]}],
     }
+
+
+def test_codex_resume_tui_args_strip_remote_permission_overrides() -> None:
+    assert _codex_resume_tui_args(
+        ("--ask-for-approval", "on-request", "--model", "gpt-6-astra")
+    ) == ("--model", "gpt-6-astra")
+    assert _codex_resume_tui_args(
+        ("-a", "on-request", "--model", "gpt-6-astra")
+    ) == ("--model", "gpt-6-astra")
+    assert _codex_resume_tui_args(
+        ("--ask-for-approval=on-request", "--approve-for-me", "--model", "gpt-6-astra")
+    ) == ("--model", "gpt-6-astra")
 
 
 def test_codex_resume_rpc_uses_exact_id_and_new_cwd_without_history_injection(
@@ -160,6 +175,7 @@ def test_interactive_codex_resume_uses_guarded_commit_without_plain_fallback(
     guard_result: str,
 ) -> None:
     daemon_calls: list[tuple[str, dict[str, object]]] = []
+    resume_calls: list[dict[str, object]] = []
     events: list[str] = []
     processes: list[Process] = []
 
@@ -194,8 +210,9 @@ def test_interactive_codex_resume_uses_guarded_commit_without_plain_fallback(
         def start(self) -> None:
             events.append("server.start")
 
-        def resume_thread(self, thread_id: str, **_kwargs: object):  # type: ignore[no-untyped-def]
+        def resume_thread(self, thread_id: str, **kwargs: object):  # type: ignore[no-untyped-def]
             assert thread_id == THREAD_ID
+            resume_calls.append({"threadId": thread_id, **kwargs})
             events.append("thread.resume")
             return thread_id, "thread/resume + thread/read"
 
@@ -286,6 +303,9 @@ def test_interactive_codex_resume_uses_guarded_commit_without_plain_fallback(
     assert registration["cwd"] == str(tmp_path.resolve())
     process = processes[0]
     assert process.argv[:3] == ["/test/bin/codex", "resume", THREAD_ID]
+    assert "--ask-for-approval" not in process.argv
+    assert "--approve-for-me" not in process.argv
+    assert resume_calls[0]["runtime_args"] == ("--ask-for-approval", "on-request")
     assert events.index("thread.resume") < events.index("tui.start")
     if guard_result != "confirmed":
         assert process.terminated is True
@@ -327,3 +347,76 @@ def test_interactive_codex_resume_requires_guard_before_spawn(
     assert result.exit_code == 1
     assert json.loads(result.stdout)["code"] == "CODEX_RESUME_GUARD_UNSUPPORTED"
     assert spawned is False
+
+
+def test_start_interactive_codex_uses_portable_temp_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import tempfile as stdlib_tempfile
+    from hyprial.daemon.impl.mcp.channel import ownership as mcp_channel
+
+    short_tmp = Path(stdlib_tempfile.mkdtemp(prefix="cx-t-"))
+    observed_sockets: list[Path] = []
+    try:
+        def daemon_request(method: str, _params=None, **_kwargs):  # type: ignore[no-untyped-def]
+            if method == "ps":
+                return {"daemon": {"owner": "op", "nodeId": "node-1"}}
+            if method == "agent.runtime-context":
+                return {"ok": True, "mode": "legacy", "environment": {}}
+            return {"ok": True}
+
+        class FakeServer:
+            pid = 4321
+
+            def __init__(self, socket_path: Path, **_kwargs: object) -> None:
+                observed_sockets.append(Path(socket_path))
+
+            def start(self) -> None:
+                return None
+
+            def discover_thread(self) -> tuple[str, str]:
+                return THREAD_ID, "thread/list"
+
+            def stop(self) -> None:
+                return None
+
+        class FakeProcess:
+            def __init__(self, _argv: list[str], **_kwargs: object) -> None:
+                self.returncode: int | None = None
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def wait(self, timeout: float | None = None) -> int:
+                del timeout
+                self.returncode = 0
+                return 0
+
+            def terminate(self) -> None:
+                self.returncode = -15
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        monkeypatch.setattr(stdlib_tempfile, "gettempdir", lambda: str(short_tmp))
+        monkeypatch.setattr(_cli_support, "_daemon_request", daemon_request)
+        monkeypatch.setattr("hyprial.daemon.CodexInteractiveAppServer", FakeServer)
+        monkeypatch.setattr(_cli_subprocess, "Popen", FakeProcess)
+        monkeypatch.setattr(mcp_channel, "_read_process_identity", lambda _pid: None)
+
+        result = _cli_get_services()._start_interactive_codex(
+            name="codex-tui",
+            nickname=None,
+            cwd=tmp_path,
+            runtime_args=(),
+            model_provider=None,
+            model=None,
+            json_output=True,
+        )
+        assert result["ok"] is True
+        assert len(observed_sockets) == 1
+        assert observed_sockets[0].parent.parent == short_tmp
+        assert not observed_sockets[0].parent.exists()
+    finally:
+        import shutil
+        shutil.rmtree(short_tmp, ignore_errors=True)

@@ -14,8 +14,12 @@ creating the ACL space. It writes `state: active` only after all applicable
 create steps have finished. The normal path includes tailnet initialization and
 the device publication attempt; the isolated path includes only local creation.
 
-`org.list` exposes lifecycle state. Only explicit `state: creating` and
-`state: partial` markers classify an otherwise bound org as incomplete. A
+`org.list` exposes lifecycle state. The method is now declared as a
+daemon-request MethodSpec and the legacy router shadow mapping is removed; the
+fields and classification below are unchanged. A row may carry `spaceId: null`
+or `role: null` when the source cannot confirm them; consumers must render an
+unknown state rather than invent a space or role. Only explicit `state: creating`
+and `state: partial` markers classify an otherwise bound org as incomplete. A
 missing marker or malformed marker uses the legacy classification: a space
 with an `aclSpaceId` binding is `legacy-active`; an unbound space is `partial`.
 Malformed means unparseable JSON, a parsed non-object, an object with absent or

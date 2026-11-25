@@ -1,0 +1,137 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "convergence",
+ "scenario": "workflow-node-context",
+ "steps": [
+  {
+   "step": 1,
+   "method": "workflow.node.context",
+   "label": "no-activation",
+   "origin": "ipc",
+   "params": {
+    "runId": "allen-example-294836d4",
+    "target": "pm-confirm-2"
+   },
+   "result": {
+    "ok": true,
+    "schemaVersion": 1,
+    "type": "context",
+    "graphId": "allen-example-294836d4",
+    "nodeId": "pm-confirm-2",
+    "version": 26,
+    "journalId": "<uuid4#1>",
+    "cursor": 27,
+    "owner": "user:pm",
+    "kind": "task",
+    "briefRef": "notes/allen-example.md#pm-confirm-2",
+    "requires": null,
+    "blockedOn": "none",
+    "flag": false,
+    "setBy": null,
+    "setAt": null,
+    "reasonRef": null,
+    "completedCount": 0,
+    "currentActivation": null,
+    "predecessors": [
+     {
+      "nodeId": "demo",
+      "owner": "user:dev",
+      "briefRef": "notes/allen-example.md#demo",
+      "flag": false,
+      "setBy": null,
+      "setAt": null,
+      "reasonRef": null
+     }
+    ],
+    "active": {
+     "at": 1800000000000,
+     "by": "user:op"
+    },
+    "closed": null
+   }
+  },
+  {
+   "step": 2,
+   "method": "workflow.node.context",
+   "label": "requested",
+   "origin": "ipc",
+   "params": {
+    "runId": "allen-example-294836d4",
+    "target": "pm-confirm-2"
+   },
+   "result": {
+    "ok": true,
+    "schemaVersion": 1,
+    "type": "context",
+    "graphId": "allen-example-294836d4",
+    "nodeId": "pm-confirm-2",
+    "version": 26,
+    "journalId": "<uuid4#1>",
+    "cursor": 48,
+    "owner": "user:pm",
+    "kind": "task",
+    "briefRef": "notes/allen-example.md#pm-confirm-2",
+    "requires": null,
+    "blockedOn": "human",
+    "flag": false,
+    "setBy": null,
+    "setAt": null,
+    "reasonRef": null,
+    "completedCount": 0,
+    "currentActivation": {
+     "activationId": "e3db516c-41be-5f3a-be67-c97a55edcd41",
+     "nodeId": "pm-confirm-2",
+     "owner": "user:pm",
+     "round": 1,
+     "requests": [
+      {
+       "eventId": "<uuid4#2>",
+       "edge": "demo -> pm-confirm-2",
+       "kind": "turn",
+       "recipient": "user:pm",
+       "node": "pm-confirm-2",
+       "round": 1,
+       "text": "轮到你:pm-confirm-2 notes/allen-example.md#pm-confirm-2 (event <uuid4#2>)",
+       "sender": "user:dev",
+       "at": 100,
+       "messageId": "null-7",
+       "deliveredAt": 100,
+       "plan": {
+        "activationId": "e3db516c-41be-5f3a-be67-c97a55edcd41",
+        "graphId": "allen-example-294836d4",
+        "nodeId": "pm-confirm-2",
+        "predecessors": [
+         {
+          "flag": true,
+          "flagReasonRef": "artifact#demo",
+          "flagSetAt": 100,
+          "flagSetBy": "user:dev",
+          "nodeId": "demo"
+         }
+        ],
+        "version": 26
+       }
+      }
+     ],
+     "blockedOn": "human"
+    },
+    "predecessors": [
+     {
+      "nodeId": "demo",
+      "owner": "user:dev",
+      "briefRef": "notes/allen-example.md#demo",
+      "flag": true,
+      "setBy": "user:dev",
+      "setAt": 100,
+      "reasonRef": "artifact#demo"
+     }
+    ],
+    "active": {
+     "at": 1800000000000,
+     "by": "user:op"
+    },
+    "closed": null
+   }
+  }
+ ]
+}

@@ -1,2 +1,6 @@
 desktop/sidecar/*.patch -whitespace
+
+# Frozen raw assertion transcripts retain reporter whitespace verbatim.
+docs/notes/daemon-request-examples-2026-11-03/integration/current-target-checks/target-packaging.log -whitespace
+docs/notes/daemon-request-examples-2026-11-03/integration/current-target-checks/target-packaging-baseline.log -whitespace
 docs/notes/orgfs-validity-from-journal-v2-2026-11-05.md whitespace=-blank-at-eol

@@ -8,7 +8,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -51,10 +50,14 @@ def test_cli_runtime_context_environment_preserves_validated_projection_mode(
     monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_args, **_kwargs: projection)
 
     environment = _cli_get_services()._runtime_context_environment(
-        name="worker", harness="pi", cwd=tmp_path
+        name="worker", harness="pi", cwd=tmp_path, json_output=False
     )
     full_projection = _cli_get_services()._runtime_context_environment(
-        name="worker", harness="pi", cwd=tmp_path, include_projection=True
+        name="worker",
+        harness="pi",
+        cwd=tmp_path,
+        json_output=False,
+        include_projection=True,
     )
 
     assert environment == projection["environment"]
@@ -76,7 +79,9 @@ def test_cli_runtime_context_environment_rejects_relative_projection_roots(
     monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_args, **_kwargs: projection)
 
     with pytest.raises(_cli_get_services().CliError, match="invalid agent runtime projectionRoot"):
-        _cli_get_services()._runtime_context_environment(name="worker", harness="pi", cwd=tmp_path)
+        _cli_get_services()._runtime_context_environment(
+            name="worker", harness="pi", cwd=tmp_path, json_output=False
+        )
 
 
 def _config(root: Path) -> Path:
@@ -360,69 +365,6 @@ def test_m12a_incomplete_generated_git_group_is_rejected() -> None:
                 "GIT_CONFIG_KEY_0": "url.ssh://git@git.internal/.insteadOf",
             },
         )
-
-
-def test_t09_pty_complete_environment_does_not_remerge_ambient(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from hyprial.daemon.impl.harnesses.protocol.common import HarnessStartError, PtyHarnessProcess
-
-    dump = tmp_path / "pty.json"
-    monkeypatch.setenv("HOME", "/ambient/home")
-    monkeypatch.setenv("SSH_AUTH_SOCK", "/ambient/sock")
-    script = f"import json,os;json.dump(dict(os.environ),open({str(dump)!r},'w'))"
-    try:
-        PtyHarnessProcess.spawn(
-            "codex",
-            (sys.executable, "-c", script),
-            env={"PATH": os.environ.get("PATH", "/bin"), "HOME": "/p22/home"},
-            complete_environment=True,
-        )
-    except HarnessStartError:
-        pass
-    observed = json.loads(dump.read_text(encoding="utf-8"))
-    assert observed["HOME"] == "/p22/home"
-    assert "SSH_AUTH_SOCK" not in observed
-
-
-def test_m09_broker_complete_handoff_does_not_remerge_ambient(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from hyprial.daemon.impl.harnesses.python_worker import _exec_env_socket
-
-    monkeypatch.setenv("HOME", "/ambient/home")
-    monkeypatch.setenv("SSH_AUTH_SOCK", "/ambient/sock")
-    observed: dict[str, str] = {}
-
-    def execvpe(_argv0: str, _argv: list[str], environment: dict[str, str]) -> None:
-        observed.update(environment)
-        raise SystemExit(0)
-
-    class Socket:
-        sent = False
-
-        def connect(self, _path: str) -> None:
-            return None
-
-        def recv(self, _size: int) -> bytes:
-            if self.sent:
-                return b""
-            self.sent = True
-            return b'{"HOME":"/p22/home","PATH":"/bin"}\n'
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(_exec_env_socket.os, "execvpe", execvpe)
-    monkeypatch.setattr(_exec_env_socket.socket, "socket", lambda *_a, **_kw: Socket())
-    monkeypatch.setattr(
-        _exec_env_socket.sys,
-        "argv",
-        ["broker", "/socket", "--complete-environment", "--", "true"],
-    )
-    with pytest.raises(SystemExit):
-        _exec_env_socket.main()
-    assert observed == {"HOME": "/p22/home", "PATH": "/bin"}
 
 
 def test_t16_daemon_runtime_context_rpc_is_nonsecret_and_legacy_is_explicit(

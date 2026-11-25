@@ -13,13 +13,16 @@ The question this module answers is "is this agent actually doing work", not
   a stranded key).
 
 Classification (stuck/spin/stalled/backlog/idle/ok) is computed here so the
-verdict is identical for the CLI, tests, and any other IPC consumer; the CLI
-only adds process sampling (``ps``) and rendering.
+verdict is identical for the CLI, tests, and any other IPC consumer. The
+daemon samples process metrics for the text inspection projection.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,11 +32,6 @@ from hyprial.identity import is_inactive
 from hyprial.kernel import route_path
 
 from hyprial.kernel import canonical_agent_uri, short_actor_name
-from hyprial.daemon.impl.links.ports import (
-    TOP_FIELD_CAPACITY_W,
-    TOP_FIELD_INBOUND_AWAITING_INJECTION,
-    TOP_FIELD_OUTBOUND_IN_FLIGHT,
-)
 
 JsonObject = dict[str, Any]
 
@@ -324,6 +322,10 @@ def classify_actor(
     return "ok", {}
 
 
+def _name_address(owner: str, node_id: str) -> Callable[[str], str]:
+    return lambda name: canonical_agent_uri(owner, node_id, name)
+
+
 def build_actor_row(
     *,
     state_dir: Path,
@@ -336,14 +338,19 @@ def build_actor_row(
     interactive_turn_stats: InteractiveTurnStats | None = None,
     inbound_awaiting_injection: int = 0,
     link_fields: dict[str, int | None] | None = None,
+    agent_address: Callable[[str], str] | None = None,
 ) -> JsonObject:
-    """Enrich one shared actor-status row for ``top.snapshot``."""
+    """Enrich one shared actor-status row for ``top.snapshot``.
+
+    A row without ``actor`` is addressed through ``agent_address`` (the
+    daemon's registry-backed resolver); without one, the name is composed.
+    """
 
     raw_actor = status.get("actor")
     actor = (
         raw_actor
         if isinstance(raw_actor, str)
-        else canonical_agent_uri(owner, node_id, str(status.get("name")))
+        else (agent_address or _name_address(owner, node_id))(str(status.get("name")))
     )
     raw_name = status.get("name")
     name = raw_name if isinstance(raw_name, str) else short_actor_name(actor)
@@ -439,13 +446,6 @@ def build_actor_row(
             if oldest_pending_at_ms is not None
             else None
         ),
-        # WP4 provides the inbound-waiting-injection count (B6); the field name
-        # is the ports constant so WP6 renders exactly one key.
-        TOP_FIELD_INBOUND_AWAITING_INJECTION: inbound_awaiting_injection,
-        TOP_FIELD_CAPACITY_W: (link_fields or {}).get(TOP_FIELD_CAPACITY_W),
-        TOP_FIELD_OUTBOUND_IN_FLIGHT: (link_fields or {}).get(
-            TOP_FIELD_OUTBOUND_IN_FLIGHT
-        ),
         "state": state,
     }
     if interactive_claude:
@@ -482,8 +482,25 @@ def build_top_snapshot(
     inbound_awaiting_injection: dict[str, int] | None = None,
     link_fields: dict[str, dict[str, int | None]] | None = None,
     batch_claims: dict[str, dict[str, object]] | None = None,
+    agent_address: Callable[[str], str] | None = None,
+    read_keys: Callable[[str], tuple[str, ...]] | None = None,
 ) -> JsonObject:
-    """The full ``top.snapshot`` IPC result."""
+    """The full ``top.snapshot`` IPC result.
+
+    ``read_keys`` answers every inbox key the actor at an address drains, so
+    its queue depth counts exactly those rows; without it the address alone
+    is counted.  A row at a name URI is no agent's (owner decision
+    2026-11-19) and joins no actor's depth.
+    """
+
+    def pending_for(actor: str) -> tuple[int, int | None]:
+        keys = (actor,) if read_keys is None else read_keys(actor)
+        found = [pending[key] for key in dict.fromkeys(keys) if key in pending]
+        oldest = [at for _count, at in found if at is not None]
+        return (
+            sum(count for count, _at in found),
+            min(oldest) if oldest else None,
+        )
 
     statuses = actor_statuses if actor_statuses is not None else connectors
     stats_by_actor = interactive_turn_stats or {}
@@ -493,7 +510,9 @@ def build_top_snapshot(
         status_actor = (
             status["actor"]
             if isinstance(status.get("actor"), str)
-            else canonical_agent_uri(owner, node_id, str(status.get("name")))
+            else (agent_address or _name_address(owner, node_id))(
+                str(status.get("name"))
+            )
         )
         actors.append(
             build_actor_row(
@@ -503,15 +522,13 @@ def build_top_snapshot(
                 status=status,
                 # Queue depth joins on the full canonical URI: same short name
                 # under another node is a different agent (a stranded key).
-                pending=pending.get(
-                    status_actor,
-                    (0, None),
-                ),
+                pending=pending_for(status_actor),
                 now_ms=now_ms,
                 thresholds=thresholds,
                 interactive_turn_stats=stats_by_actor.get(status_actor),
                 inbound_awaiting_injection=awaiting_by_actor.get(status_actor, 0),
                 link_fields=(link_fields or {}).get(status_actor),
+                agent_address=agent_address,
             )
         )
     for row in actors:
@@ -531,3 +548,110 @@ def build_top_snapshot(
         "actors": actors,
         "stranded": list(stranded),
     }
+
+
+def _parse_ps_duration(value: str) -> float | None:
+    """Parse ps ``time=``/``etime=`` values ([[dd-]hh:]mm:ss[.cc]) to seconds."""
+
+    match = re.fullmatch(
+        r"(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)(?:\.(\d+))?", value.strip()
+    )
+    if match is None:
+        return None
+    days, hours, minutes, seconds, fraction = match.groups()
+    total = int(minutes) * 60 + int(seconds)
+    total += int(hours) * 3600 if hours else 0
+    total += int(days) * 86400 if days else 0
+    if fraction:
+        total += int(fraction) / (10 ** len(fraction))
+    return float(total)
+
+
+def _sample_process_table() -> dict[int, tuple[int, float, int, float, float]]:
+    """One ``ps`` sweep: pid -> (ppid, cpu%, rss kb, cpu seconds, etime seconds).
+
+    These harnesses are I/O-bound, so instantaneous %cpu is normally 0.0 and
+    carries almost no diagnostic weight; it is sampled anyway (one fork total)
+    and only rendered under ``--wide``.
+    """
+
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,etime=,%cpu=,rss=,time="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    table: dict[int, tuple[int, float, int, float, float]] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) != 6:
+            continue
+        try:
+            pid = int(fields[0])
+            ppid = int(fields[1])
+            cpu_percent = float(fields[3])
+            rss_kb = int(fields[4])
+        except ValueError:
+            continue
+        etime = _parse_ps_duration(fields[2])
+        cputime = _parse_ps_duration(fields[5])
+        if etime is None or cputime is None:
+            continue
+        table[pid] = (ppid, cpu_percent, rss_kb, cputime, etime)
+    return table
+
+
+def _subtree_totals(
+    table: dict[int, tuple[int, float, int, float, float]], pid: int
+) -> tuple[float, int, float, float] | None:
+    """Aggregate cpu%/rss/cputime over the pid's ppid subtree.
+
+    pi workers share the daemon's process group, and codex grandchildren
+    escape the worker's own group, so per-pgid aggregation is wrong in both
+    directions; walking ppid children is correct for every runtime here.
+    """
+
+    if pid not in table:
+        return None
+    children: dict[int, list[int]] = {}
+    for child_pid, entry in table.items():
+        children.setdefault(entry[0], []).append(child_pid)
+    cpu_percent = 0.0
+    rss_kb = 0
+    cputime = 0.0
+    stack = [pid]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        entry = table.get(current)
+        if entry is not None:
+            cpu_percent += entry[1]
+            rss_kb += entry[2]
+            cputime += entry[3]
+        stack.extend(children.get(current, ()))
+    return cpu_percent, rss_kb, cputime, table[pid][4]
+
+
+def inspect_snapshot(snapshot: JsonObject) -> JsonObject:
+    """Attach daemon-observed process totals to a copy of each snapshot row."""
+    table = _sample_process_table()
+    actors = []
+    for actor in snapshot.get("actors", []):
+        row = dict(actor)
+        pid = row.get("pid")
+        totals = _subtree_totals(table, pid) if isinstance(pid, int) else None
+        row["processMetrics"] = (None if totals is None else {
+            "cpuPercent": totals[0], "rssKb": totals[1],
+            "cpuSeconds": totals[2], "elapsedSeconds": totals[3],
+        })
+        actors.append(row)
+    return {**snapshot, "actors": actors}

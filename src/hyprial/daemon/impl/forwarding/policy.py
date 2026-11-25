@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 import ipaddress
+import socket
 import stat
 from collections.abc import Mapping
 from pathlib import Path
 
-from hyprial.kernel import MEMBERSHIP_BUDGETS, private_metadata_violation
+from hyprial.kernel import (
+    MEMBERSHIP_BUDGETS,
+    loopback_inbound_supported,
+    private_metadata_violation,
+)
 
 
 FORWARD_PROTOCOL_VERSION = 6
@@ -122,6 +127,99 @@ def validate_exposure_target(target: str) -> str:
             "tcp exposure target must be an explicit loopback IP:port"
         )
     return target
+
+
+_INBOUND_TARGET_EXPECTATION = (
+    "inbound target must be unix:<absolute-path> or tcp:127.0.0.1:<port>"
+)
+
+
+def _loopback_tcp_port(address: str) -> int:
+    host, separator, raw_port = address.partition(":")
+    if (
+        not separator
+        or host != "127.0.0.1"
+        or not raw_port.isascii()
+        or not raw_port.isdigit()
+    ):
+        raise ForwardingSidecarError(_INBOUND_TARGET_EXPECTATION)
+    port = int(raw_port)
+    if not 1 <= port <= 65535:
+        raise ForwardingSidecarError(_INBOUND_TARGET_EXPECTATION)
+    return port
+
+
+def validate_inbound_target(target: str) -> str:
+    """Accept only a private unix socket or explicit loopback TCP target."""
+
+    if target.startswith("unix:"):
+        return validate_unix_exposure_target(target)
+    if target.startswith("tcp:"):
+        _loopback_tcp_port(target.removeprefix("tcp:"))
+        return target
+    raise ForwardingSidecarError(_INBOUND_TARGET_EXPECTATION)
+
+
+def inbound_target_from_listener(listener: str) -> str:
+    """Convert a managed zenoh listener into its sidecar inbound target."""
+
+    if listener.startswith("unixsock-stream/"):
+        path = listener.removeprefix("unixsock-stream/")
+        if not path or not Path(path).is_absolute():
+            raise ForwardingSidecarError(_INBOUND_TARGET_EXPECTATION)
+        return "unix:" + path
+    if listener.startswith("tcp/"):
+        address = listener.removeprefix("tcp/")
+        _loopback_tcp_port(address)
+        return "tcp:" + address
+    raise ForwardingSidecarError(_INBOUND_TARGET_EXPECTATION)
+
+
+def inbound_listener_from_target(target: str) -> str:
+    """Convert a managed sidecar inbound target into its zenoh listener."""
+
+    validate_inbound_target(target)
+    if target.startswith("unix:"):
+        return "unixsock-stream/" + target.removeprefix("unix:")
+    return "tcp/" + target.removeprefix("tcp:")
+
+
+def is_private_inbound_listener(listener: str) -> bool:
+    """Whether a listener stays on the private unix or loopback TCP channel."""
+
+    try:
+        inbound_target_from_listener(listener)
+    except ForwardingSidecarError:
+        return False
+    return True
+
+
+def validate_managed_inbound_target(target: str) -> str:
+    """Validate the managed channel grammar, then its platform capability."""
+
+    validate_inbound_target(target)
+    if target.startswith("tcp:") and not loopback_inbound_supported():
+        raise ForwardingSidecarError(
+            "managed inbound TCP is only supported on Windows; "
+            "use unix:<absolute-path>"
+        )
+    return target
+
+
+def is_managed_private_inbound_listener(listener: str) -> bool:
+    """Whether a listener passes managed-channel grammar and platform gates."""
+
+    if not is_private_inbound_listener(listener):
+        return False
+    return not listener.startswith("tcp/") or loopback_inbound_supported()
+
+
+def reserve_loopback_listener() -> str:
+    """Reserve one kernel-assigned loopback port as a zenoh listener."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return f"tcp/127.0.0.1:{probe.getsockname()[1]}"
 
 
 def validate_peer_key_address(address: str) -> str:

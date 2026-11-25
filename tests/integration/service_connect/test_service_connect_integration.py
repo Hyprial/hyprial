@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import tempfile
 import threading
 from pathlib import Path
 from uuid import uuid4
@@ -112,7 +113,7 @@ def test_unknown_service_method_uses_normal_router_unknown_method_error(tmp_path
 
 def test_real_ipc_socket_routes_service_request_to_manager(tmp_path) -> None:
     app, controller = _application(tmp_path)
-    short_socket = Path("/private/tmp") / f"hyprial-sc-{uuid4().hex}.sock"
+    short_socket = Path(tempfile.gettempdir()) / f"hyprial-sc-{uuid4().hex}.sock"
     app.socket_path = short_socket
     app._runtime = _IdleRuntime()
     app._maintenance_generation = 1

@@ -1,8 +1,8 @@
-"""WP6: the queued/hold projection and the retry guard for ``hyprial message send``.
+"""Queued/reason projection and retry guard for ``hyprial message send`` (T2b).
 
-``holdReason`` (never the legacy ``reason``) is the link hold key; the CLI
-only projects what the daemon already decided, keeps every delivery intact in
-fan-out, and never emails the caller into resending.
+The CLI projects only ``reason`` and ``queued`` from the daemon without
+``holdReason`` or ``detail``, keeps every delivery intact in fan-out, and
+keeps the ``RESEND_GUARD``/``openRequestsFrom`` hints.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from hyprial.daemon import HOLD_REASONS
 from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
@@ -49,19 +48,8 @@ def _send(*, json_output: bool = True) -> list[str]:
     return args
 
 
-def test_the_hold_reason_set_is_frozen_at_four() -> None:
-    assert len(HOLD_REASONS) == 4
-    assert HOLD_REASONS == {
-        ipc_errors.LINK_MINTING,
-        ipc_errors.LINK_PEER_FULL,
-        ipc_errors.LINK_SELF_FULL,
-        ipc_errors.LINK_WINDOW_FULL,
-    }
-
-
-@pytest.mark.parametrize("reason", sorted(HOLD_REASONS))
-def test_every_hold_reason_is_a_successful_single_call_queued_result(
-    monkeypatch: pytest.MonkeyPatch, reason: str
+def test_queued_reason_is_a_successful_single_call_queued_result(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     verdict = {
         "ok": True,
@@ -71,7 +59,7 @@ def test_every_hold_reason_is_a_successful_single_call_queued_result(
                 "messageId": "m-1",
                 "accepted": True,
                 "queued": True,
-                "holdReason": reason,
+                "reason": "target-not-visible",
             }
         ],
     }
@@ -83,8 +71,8 @@ def test_every_hold_reason_is_a_successful_single_call_queued_result(
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["queued"] is True
-    assert payload["holdReason"] == reason
-    # One operation, one send: a hold never triggers a poll, resend or mint.
+    assert payload["reason"] == "target-not-visible"
+    assert "holdReason" not in payload
     assert [method for method, _ in calls] == ["message.send"]
 
 
@@ -95,44 +83,21 @@ def test_top_level_projection_is_idempotent() -> None:
         "target": TARGET,
         "accepted": True,
         "queued": True,
-        "holdReason": ipc_errors.LINK_PEER_FULL,
+        "reason": "target-not-visible",
     }
 
     result = _lift_hold(
         {
             "ok": True,
             "queued": False,
-            "holdReason": ipc_errors.LINK_SELF_FULL,
+            "reason": "existing-reason",
             "deliveries": [delivery],
         }
     )
 
     assert result["queued"] is False
-    assert result["holdReason"] == ipc_errors.LINK_SELF_FULL
+    assert result["reason"] == "existing-reason"
     assert result["deliveries"] == [delivery]
-
-
-def test_free_text_reason_and_hold_reason_coexist() -> None:
-    from hyprial.shell.impl.cli.commands.message.send import _lift_hold
-
-    result = _lift_hold(
-        {
-            "ok": True,
-            "deliveries": [
-                {
-                    "target": TARGET,
-                    "accepted": True,
-                    "queued": True,
-                    "reason": "target-not-visible",
-                    "holdReason": ipc_errors.LINK_PEER_FULL,
-                }
-            ],
-        }
-    )
-
-    assert result["queued"] is True
-    assert result["holdReason"] == ipc_errors.LINK_PEER_FULL
-    assert result["reason"] == "target-not-visible"
 
 
 def test_multi_target_hold_does_not_generalize_one_delivery_reason() -> None:
@@ -146,7 +111,7 @@ def test_multi_target_hold_does_not_generalize_one_delivery_reason() -> None:
                     "target": TARGET,
                     "accepted": True,
                     "queued": True,
-                    "holdReason": ipc_errors.LINK_PEER_FULL,
+                    "reason": "target-not-visible",
                 },
                 {"target": OTHER, "accepted": True, "queued": False},
             ],
@@ -154,8 +119,8 @@ def test_multi_target_hold_does_not_generalize_one_delivery_reason() -> None:
     )
 
     assert result["queued"] is True
-    assert "holdReason" not in result
-    assert result["deliveries"][0]["holdReason"] == ipc_errors.LINK_PEER_FULL
+    assert "reason" not in result
+    assert result["deliveries"][0]["reason"] == "target-not-visible"
     assert result["deliveries"][1]["queued"] is False
 
 
@@ -170,7 +135,7 @@ def test_partial_hold_keeps_both_deliveries_and_their_identities(
                 "messageId": "m-held",
                 "accepted": True,
                 "queued": True,
-                "holdReason": ipc_errors.LINK_MINTING,
+                "reason": "target-not-visible",
             },
             {
                 "target": OTHER,
@@ -199,13 +164,13 @@ def test_partial_hold_keeps_both_deliveries_and_their_identities(
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     assert payload["queued"] is True
-    assert "holdReason" not in payload
+    assert "reason" not in payload
     assert [row["messageId"] for row in payload["deliveries"]] == [
         "m-held",
         "m-sent",
     ]
-    assert [row.get("holdReason") for row in payload["deliveries"]] == [
-        ipc_errors.LINK_MINTING,
+    assert [row.get("reason") for row in payload["deliveries"]] == [
+        "target-not-visible",
         None,
     ]
     assert [method for method, _ in calls] == ["message.send"]
@@ -222,8 +187,7 @@ def test_queued_human_render_names_the_reason_and_the_guard(
                 "messageId": "m-1",
                 "accepted": True,
                 "queued": True,
-                "holdReason": ipc_errors.LINK_SELF_FULL,
-                "detail": "self window full",
+                "reason": "target-not-visible",
             }
         ],
     }
@@ -235,7 +199,7 @@ def test_queued_human_render_names_the_reason_and_the_guard(
     out = result.stdout
     assert "held" in out
     assert TARGET in out
-    assert ipc_errors.LINK_SELF_FULL in out
+    assert "target-not-visible" in out
     assert GUARD in out
     assert "TTL" in out
     assert GUARD in out.rstrip().splitlines()[-1]
@@ -271,7 +235,7 @@ def test_an_expired_queued_send_is_not_advertised_as_retryable(
                 "accepted": True,
                 "queued": True,
                 "expired": True,
-                "holdReason": ipc_errors.LINK_WINDOW_FULL,
+                "reason": "target-not-visible",
             }
         ],
     }
@@ -288,14 +252,14 @@ def test_an_expired_queued_send_is_not_advertised_as_retryable(
 def test_a_refused_send_stays_ok_false_and_exits_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = _record(monkeypatch, answer={"ok": False, "code": ipc_errors.LINK_UNKNOWN})
+    calls = _record(monkeypatch, answer={"ok": False, "code": ipc_errors.TARGET_UNRESOLVED})
 
     result = _invoke(*_send())
 
     assert result.exit_code == 1, result.stdout
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
-    assert payload["code"] == ipc_errors.LINK_UNKNOWN
+    assert payload["code"] == ipc_errors.TARGET_UNRESOLVED
     assert "queued" not in payload
     assert [method for method, _ in calls] == ["message.send"]
 

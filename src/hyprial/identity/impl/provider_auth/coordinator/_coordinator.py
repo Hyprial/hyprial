@@ -9,10 +9,10 @@ from hyprial.identity.impl.provider_auth.helper import DeviceCodeAnnouncement
 from hyprial.identity.impl.provider_auth.helper import HelperOutcome
 from pathlib import Path
 from hyprial.identity.impl.provider_auth.classification import ProviderFailureClass
-from hyprial.identity.impl.users.profile import RuntimeCapability
+from hyprial.identity.impl.users.runtime_capabilities import RuntimeCapability
 from hyprial.kernel import TIERS
 from datetime import UTC
-from hyprial.identity.impl.users.profile import UserProfileStore
+from hyprial.identity.impl.users.runtime_capabilities import RuntimeCapabilityStore
 from hyprial.identity.impl.provider_auth.classification import classify_provider_failure
 from datetime import datetime
 import json
@@ -43,8 +43,8 @@ class ProviderAuthCoordinator():
     def __init__(
         self,
         *,
-        profile_store: UserProfileStore,
-        owner_key: str | None,
+        capability_store: RuntimeCapabilityStore,
+        owner_key: str,
         notifier: OwnerNotifier,
         helper_runner: HelperRunner,
         auth_path: Path,
@@ -55,7 +55,7 @@ class ProviderAuthCoordinator():
         runtime_helper_factory: RuntimeHelperFactory | None = None,
         runtime_context_validator: RuntimeContextValidator | None = None,
     ) -> None:
-        self._store = profile_store
+        self._store = capability_store
         self._owner_key = owner_key
         self._notifier = notifier
         self._runner = helper_runner
@@ -448,7 +448,7 @@ class ProviderAuthCoordinator():
             else "该 agent 的认证路由已记录失败;未写 owner-global 能力标记。"
         )
         recovery_instruction = (
-            "人工处理(账号侧)后运行 `hyprial agent tiers probe`（原 squire probe） 重新探测即可恢复。"
+            "人工处理(账号侧)后运行 `hyprial agent tiers probe` 重新探测即可恢复。"
             if mark_capabilities
             else "请修复该 agent 的账号授权后重试;不修改其他 agent 的状态。"
         )
@@ -699,17 +699,11 @@ class ProviderAuthCoordinator():
                         combos.append(combo)
         return combos
     def _mark_unavailable(self, provider: str, reason: str) -> None:
-        if self._owner_key is None:
-            self._log("provider.auth.mark.skipped", provider=provider,
-                      reason="no user profile")
-            return
         for harness, prov, model in self._combos_for_provider(provider):
             self._mark_combo_unavailable(harness, prov, model, reason)
     def _mark_combo_unavailable(
         self, harness: str, provider: str, model: str, reason: str
     ) -> None:
-        if self._owner_key is None:
-            return
         if reason == REASON_PROVIDER_AUTH_INVALID:
             existing = self._current_capability(harness, provider, model)
             if (
@@ -721,7 +715,7 @@ class ProviderAuthCoordinator():
                 # (A) mark must not overwrite it, or an A recovery would later
                 # clear a combo the account still cannot use (S3).
                 return
-        self._store.set_runtime_capability(
+        self._store.set(
             self._owner_key,
             RuntimeCapability(
                 harness=harness,
@@ -734,8 +728,6 @@ class ProviderAuthCoordinator():
             ),
         )
     def _clear_marks(self, provider: str) -> None:
-        if self._owner_key is None:
-            return
         for harness, prov, model in self._combos_for_provider(provider):
             existing = self._current_capability(harness, prov, model)
             if (
@@ -746,7 +738,7 @@ class ProviderAuthCoordinator():
                 # Recovery of the OAuth credential must not clear an account
                 # (B) mark the credential was never about (S3).
                 continue
-            self._store.set_runtime_capability(
+            self._store.set(
                 self._owner_key,
                 RuntimeCapability(
                     harness=harness,
@@ -759,19 +751,7 @@ class ProviderAuthCoordinator():
     def _current_capability(
         self, harness: str, provider: str, model: str
     ) -> RuntimeCapability | None:
-        if self._owner_key is None:
-            return None
-        profile = self._store.get(self._owner_key)
-        if profile is None:
-            return None
-        for capability in profile.runtime_capabilities:
-            if (
-                capability.harness == harness
-                and capability.provider == provider
-                and capability.model == model
-            ):
-                return capability
-        return None
+        return self._store.get(self._owner_key, harness, model, provider)
     def _combo_account_marked(
         self, harness: str, provider: str | None, model: str
     ) -> bool:
@@ -782,13 +762,8 @@ class ProviderAuthCoordinator():
             and existing.reason == REASON_PROVIDER_AUTH_ACCOUNT
         )
     def _providers_marked(self, reason: str) -> list[str]:
-        if self._owner_key is None:
-            return []
-        profile = self._store.get(self._owner_key)
-        if profile is None:
-            return []
         providers: list[str] = []
-        for capability in profile.runtime_capabilities:
+        for capability in self._store.list(self._owner_key):
             if (
                 capability.status == "unavailable"
                 and capability.reason == reason

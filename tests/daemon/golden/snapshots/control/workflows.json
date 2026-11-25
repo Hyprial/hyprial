@@ -1,0 +1,457 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "control",
+ "scenario": "workflows",
+ "steps": [
+  {
+   "step": 1,
+   "method": "workflow.plan",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: golden-flow\nnodes:\n- id: work\n  owner: agent:op:node-1:alpha\n  role: review\n  task: work\nversion: 2\n",
+    "actor": "user:op"
+   },
+   "result": {
+    "ok": true,
+    "plan": {
+     "version": 2,
+     "name": "golden-flow",
+     "summary": "",
+     "nodes": [
+      {
+       "id": "work",
+       "kind": "task",
+       "task": "work",
+       "owner": "agent:op:node-1:alpha",
+       "worker": null,
+       "launch": null,
+       "timeoutMs": 3600000,
+       "deadlineMs": null,
+       "role": "review",
+       "firstOutputEta": null,
+       "humanGates": null,
+       "ownership": "borrowed"
+      }
+     ],
+     "edges": [],
+     "onFailure": "terminate",
+     "escalateTo": null,
+     "completion": "owner flag with current request evidence",
+     "workerCleanup": "graph close; borrowed actors are never stopped"
+    }
+   }
+  },
+  {
+   "step": 2,
+   "method": "workflow.plan",
+   "label": "unknown-owner",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: golden-flow\nnodes:\n- id: work\n  owner: agent:op:node-1:nobody\n  role: review\n  task: work\nversion: 2\n",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "SENDER_UNRESOLVED",
+    "message": "sender 'agent:op:node-1:nobody' is not a registered agent on this node; an unregistered identity cannot receive replies",
+    "data": {
+     "sender": "agent:op:node-1:nobody"
+    }
+   }
+  },
+  {
+   "step": 3,
+   "method": "workflow.plan",
+   "label": "schema",
+   "origin": "ipc",
+   "params": {
+    "yaml": "version: 2\n",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "WORKFLOW_SCHEMA_ERROR",
+    "message": "workflow.name must be nonempty text (maximum 128)"
+   }
+  },
+  {
+   "step": 4,
+   "method": "workflow.start",
+   "label": "no-service",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: golden-flow\nnodes:\n- id: work\n  owner: agent:op:node-1:alpha\n  role: review\n  task: work\nversion: 2\n",
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "WORKFLOW_UNAVAILABLE",
+    "message": "workflow service is not running"
+   }
+  },
+  {
+   "step": 5,
+   "method": "workflow.list",
+   "label": "no-service",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "WORKFLOW_UNAVAILABLE",
+    "message": "workflow service is not running"
+   }
+  },
+  {
+   "step": 6,
+   "method": "workflow.status",
+   "label": "no-service",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "workflow-missing"
+   },
+   "error": {
+    "code": "WORKFLOW_UNAVAILABLE",
+    "message": "workflow service is not running"
+   }
+  },
+  {
+   "step": 7,
+   "method": "workflow.cancel",
+   "label": "no-service",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "workflow-missing"
+   },
+   "error": {
+    "code": "WORKFLOW_UNAVAILABLE",
+    "message": "workflow service is not running"
+   }
+  },
+  {
+   "step": 8,
+   "method": "workflow.node.inspect",
+   "label": "no-service",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "workflow-missing"
+   },
+   "error": {
+    "code": "WORKFLOW_UNAVAILABLE",
+    "message": "workflow service is not running"
+   }
+  },
+  {
+   "step": 9,
+   "method": "workflow.history.list",
+   "label": "legacy-history-empty",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "runs": []
+   }
+  },
+  {
+   "step": 10,
+   "method": "workflow.history.status",
+   "label": "missing-run-id",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "runId must be a non-empty string"
+   }
+  },
+  {
+   "step": 11,
+   "method": "workflow.complete",
+   "label": "no-service",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "workflowId": "workflow-missing",
+    "nodeId": "work"
+   },
+   "error": {
+    "code": "WORKFLOW_UNAVAILABLE",
+    "message": "workflow service is not running"
+   }
+  },
+  {
+   "step": 12,
+   "method": "workflow.fail",
+   "label": "no-service",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "workflowId": "workflow-missing",
+    "nodeId": "work"
+   },
+   "error": {
+    "code": "WORKFLOW_UNAVAILABLE",
+    "message": "workflow service is not running"
+   }
+  },
+  {
+   "step": 13,
+   "method": "pac.gc.preview",
+   "origin": "ipc",
+   "params": {},
+   "error": {
+    "code": "PAC_GC_UNAVAILABLE",
+    "message": "PAC GC service is unavailable"
+   }
+  },
+  {
+   "step": 14,
+   "method": "pac.graph.activate",
+   "label": "unbound",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>"
+   },
+   "error": {
+    "code": "CALLER_NOT_AUTHORIZED",
+    "message": "pac write methods require an authenticated daemon-managed session binding (actor + sessionRef)"
+   }
+  },
+  {
+   "step": 15,
+   "method": "pac.graph.activate",
+   "label": "not-owner",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   },
+   "error": {
+    "code": "PAC_GRAPH_NOT_OWNER",
+    "message": "only the graph owner can activate it"
+   }
+  },
+  {
+   "step": 16,
+   "method": "pac.graph.activate",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "graphId": "<graph:golden>",
+    "name": "golden",
+    "version": 2,
+    "createdBy": "agent:op:node-1:alpha",
+    "active": {
+     "at": 1800000000000,
+     "by": "agent:op:node-1:alpha"
+    },
+    "closed": null,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:alpha",
+      "briefRef": "r#work",
+      "kind": "task",
+      "flag": false
+     }
+    ],
+    "edges": []
+   }
+  },
+  {
+   "step": 17,
+   "method": "pac.flag.set",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "nodeId": "work",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "event": {
+     "eventId": "<uuid4#1>",
+     "graphId": "<graph:golden>",
+     "nodeId": "work",
+     "action": "set",
+     "actor": "agent:op:node-1:alpha",
+     "at": 1800000000000,
+     "version": 2
+    },
+    "notifications": [],
+    "delivered": 0,
+    "undelivered": 0
+   }
+  },
+  {
+   "step": 18,
+   "method": "pac.flag.reset",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "nodeId": "work",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "event": {
+     "eventId": "<uuid4#2>",
+     "graphId": "<graph:golden>",
+     "nodeId": "work",
+     "action": "reset",
+     "actor": "agent:op:node-1:alpha",
+     "at": 1800000000000,
+     "version": 2
+    },
+    "notifications": [],
+    "delivered": 0,
+    "undelivered": 0
+   }
+  },
+  {
+   "step": 19,
+   "method": "pac.flag.set",
+   "label": "missing-graph",
+   "origin": "ipc",
+   "params": {
+    "graphId": "no-such-graph",
+    "nodeId": "work",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "error": {
+    "code": "PAC_GRAPH_NOT_FOUND",
+    "message": "graph 'no-such-graph' not found"
+   }
+  },
+  {
+   "step": 20,
+   "method": "pac.graph.close",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "graphId": "<graph:golden>",
+    "name": "golden",
+    "version": 2,
+    "createdBy": "agent:op:node-1:alpha",
+    "active": {
+     "at": 1800000000000,
+     "by": "agent:op:node-1:alpha"
+    },
+    "closed": {
+     "at": 1800000000000,
+     "by": "agent:op:node-1:alpha"
+    },
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:alpha",
+      "briefRef": "r#work",
+      "kind": "task",
+      "flag": false
+     }
+    ],
+    "edges": []
+   }
+  },
+  {
+   "step": 21,
+   "method": "pac.graph.close",
+   "label": "repeat",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "graphId": "<graph:golden>",
+    "name": "golden",
+    "version": 2,
+    "createdBy": "agent:op:node-1:alpha",
+    "active": {
+     "at": 1800000000000,
+     "by": "agent:op:node-1:alpha"
+    },
+    "closed": {
+     "at": 1800000000000,
+     "by": "agent:op:node-1:alpha"
+    },
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:alpha",
+      "briefRef": "r#work",
+      "kind": "task",
+      "flag": false
+     }
+    ],
+    "edges": []
+   }
+  },
+  {
+   "step": 22,
+   "method": "pac.actor.stop",
+   "label": "missing-actor-name",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "nodeId": "work",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "actorName must be a non-empty string"
+   }
+  },
+  {
+   "step": 23,
+   "method": "pac.actor.stop",
+   "origin": "ipc",
+   "params": {
+    "graphId": "<graph:golden>",
+    "actorName": "wf-golden-work",
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "error": {
+    "code": "PAC_NODE_NOT_FOUND",
+    "message": "actor 'wf-golden-work' not found on '<graph:golden>'"
+   }
+  },
+  {
+   "step": 24,
+   "method": "message.pending.list",
+   "label": "pac-notifications",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "messages": [],
+    "daemonEpoch": "<uuid4#3>"
+   }
+  }
+ ]
+}

@@ -20,6 +20,8 @@ application.py builds it) so the timeout is the authority's own.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -37,7 +39,7 @@ from hyprial.daemon.impl.inbox import (
     InboxMessage,
     MemoryDeliveryTransport,
 )
-from tests.support.links.gate import permissive_admission_slot
+from tests.support.actor_hosts import new_actor_host
 
 NODE = "node-reply"
 AGENT = f"agent:op:{NODE}:sprite"
@@ -63,8 +65,8 @@ class _ScriptedHarnesses:
     def streaming_actors(self) -> tuple[str, ...]:
         return ("sprite",)
 
-    def dispatch(self, actor, delivery) -> bool:  # type: ignore[no-untyped-def]
-        self.dispatched.append(delivery.delivery_id)
+    def dispatch(self, envelope) -> bool:  # type: ignore[no-untyped-def]
+        self.dispatched.append(envelope.delivery_id)
         return True
 
 
@@ -92,9 +94,7 @@ def inbox(tmp_path: Path) -> Iterator[DeliveryCustodyFacade]:
         MemoryDeliveryTransport(),
         _Events(),
         node_id=NODE,
-        # sprite/asker are agent-to-agent; keep this suite about reply
-        # settlement with an explicit permissive premise (wp4 T13).
-        service_options={"link_admission": permissive_admission_slot()},
+        actor_host=new_actor_host(),
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     try:
@@ -104,7 +104,7 @@ def inbox(tmp_path: Path) -> Iterator[DeliveryCustodyFacade]:
 
 
 def _bridge(
-    tmp_path: Path, inbox: object
+    tmp_path: Path, inbox: object, *, actor_host
 ) -> tuple[DaemonEventBridge, _ScriptedHarnesses, _Logs]:
     harnesses = _ScriptedHarnesses()
     logs = _Logs()
@@ -116,7 +116,8 @@ def _bridge(
         inbox=inbox,  # type: ignore[arg-type]
         harnesses=harnesses,  # type: ignore[arg-type]
         harness_actor_uri=lambda name: AGENT,
-        logger=logs,
+        logger=logs, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     return bridge, harnesses, logs
 
@@ -143,11 +144,11 @@ def _pending_ids(inbox: DeliveryCustodyFacade) -> set[str]:
 
 
 def test_a_completed_result_for_a_drained_row_settles_idempotently(
-    tmp_path: Path, inbox: DeliveryCustodyFacade
+    tmp_path: Path, inbox: DeliveryCustodyFacade, *, actor_host
 ) -> None:
     """The row was acked after the answer; a late duplicate turn still settles."""
 
-    bridge, harnesses, logs = _bridge(tmp_path, inbox)
+    bridge, harnesses, logs = _bridge(tmp_path, inbox, actor_host=actor_host)
     original = _incoming("m-dm")
     assert inbox.receive(original).accepted
     assert inbox.ack(AGENT, original.message_id).acknowledged
@@ -162,11 +163,11 @@ def test_a_completed_result_for_a_drained_row_settles_idempotently(
 
 
 def test_one_deferred_settlement_does_not_discard_the_rest_of_its_batch(
-    tmp_path: Path, inbox: DeliveryCustodyFacade
+    tmp_path: Path, inbox: DeliveryCustodyFacade, *, actor_host
 ) -> None:
     """The DM's stamp timed out; the group answer behind it must still settle."""
 
-    bridge, harnesses, _logs = _bridge(tmp_path, flaky := _TimesOutFirstFetch(inbox))
+    bridge, harnesses, _logs = _bridge(tmp_path, flaky := _TimesOutFirstFetch(inbox), actor_host=actor_host)
     dm, group = _incoming("m-dm"), _incoming("m-group")
     assert inbox.receive(dm).accepted
     assert inbox.receive(group).accepted
@@ -207,10 +208,10 @@ class _TimesOutFirstFetch:
 
 
 def test_a_deferred_settlement_retries_without_rerunning_the_turn(
-    tmp_path: Path, inbox: DeliveryCustodyFacade
+    tmp_path: Path, inbox: DeliveryCustodyFacade, *, actor_host
 ) -> None:
     flaky = _TimesOutFirstFetch(inbox)
-    bridge, harnesses, logs = _bridge(tmp_path, flaky)
+    bridge, harnesses, logs = _bridge(tmp_path, flaky, actor_host=actor_host)
     assert inbox.receive(_incoming("m-dm")).accepted
     harnesses.results.append(_answer("m-dm", "the answer"))
 
@@ -233,11 +234,11 @@ def test_a_deferred_settlement_retries_without_rerunning_the_turn(
 
 
 def test_an_undeferred_pending_row_is_still_dispatched(
-    tmp_path: Path, inbox: DeliveryCustodyFacade
+    tmp_path: Path, inbox: DeliveryCustodyFacade, *, actor_host
 ) -> None:
     """Control: the dispatch skip is only for answers being held."""
 
-    bridge, harnesses, _logs = _bridge(tmp_path, inbox)
+    bridge, harnesses, _logs = _bridge(tmp_path, inbox, actor_host=actor_host)
     assert inbox.receive(_incoming("m-new")).accepted
 
     bridge._dispatch_harness_deliveries()

@@ -7,7 +7,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from pathlib import Path
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import os
 import shlex
 import subprocess
@@ -70,7 +70,7 @@ def _resolve_worktree_repository(value: Path) -> tuple[Path, Path]:
         ).strip()
     except (RuntimeError, NotADirectoryError) as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"{value} is not a git repository; pass a repository path",
         ) from error
     common_dir = Path(raw_common)
@@ -128,7 +128,7 @@ def _worktree_bases(repository: Path, requested: str | None) -> list[str]:
     if requested is not None:
         if not _worktree_ref_exists(repository, requested):
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 f"base ref {requested!r} does not exist in repository {repository}",
             )
         return [requested]

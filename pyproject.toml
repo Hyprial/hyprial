@@ -18,6 +18,7 @@ requires-python = ">=3.12"
 dependencies = [
     "cryptography",
     "eclipse-zenoh==1.9.0",
+    "httpx==0.28.1",
     "lark-oapi",
     "jsonschema>=4.26,<5",
     "mcp==2.0.0",
@@ -25,10 +26,10 @@ dependencies = [
     "PyYAML",
     "typer",
     "rich",
-    "pykka>=4.2,<5",
     "typesafe-sdk==0.7.0",
     "pycrdt==0.14.9",
     "pycasbin>=2.8,<3",
+    "websockets==15.0.1",
     "fastapi==0.162.0",
     "uvicorn==0.54.0",
     "httptools==0.9.0",
@@ -40,6 +41,9 @@ dependencies = [
 hyprial = "hyprial.cli:main"
 
 [project.optional-dependencies]
+adapter-dingtalk = ["dingtalk-stream==0.24.3"]
+adapter-matrix = ["matrix-nio[e2e]==0.26.0", "vodozemac==0.10.0"]
+adapter-wecom = ["wecom-aibot-python-sdk==1.0.2"]
 test = [
     "pytest>=8.4,<9",
     "pytest-xdist>=3.8,<4",
@@ -59,9 +63,57 @@ pattern = "^(?P<version>[^\\s]+)"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hyprial"]
+# The native actor engine enters a wheel only through the build hook's
+# force_include of a freshly compiled module.  A developer-staged
+# hyprial/_core module and its stamp (scripts/build/build_native_engine.sh)
+# are excluded explicitly, because .gitignore is absent from a Docker
+# context or a copied tree and would otherwise let a stale build ship.
+exclude = [
+    "src/hyprial/_core/*.so",
+    "src/hyprial/_core/*.dylib",
+    "src/hyprial/_core/*.pyd",
+    "src/hyprial/_core/*.stamp.json",
+]
+
+# The sdist carries crates/ (the native engine's sources) but never a cargo
+# target directory (any crates/target*, e.g. a CARGO_TARGET_DIR such as
+# crates/target-conformance) or a developer-staged module.  Hatch reads only
+# the root .gitignore, so the GUI's generated node_modules and dist (ignored
+# only by gui/.gitignore) are excluded here as well.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "crates/target*",
+    "gui/node_modules",
+    "gui/dist",
+    "src/hyprial/_core/*.so",
+    "src/hyprial/_core/*.dylib",
+    "src/hyprial/_core/*.pyd",
+    "src/hyprial/_core/*.stamp.json",
+]
 
 [tool.hatch.build.hooks.custom]
 path = "src/hyprial/gui_build_hook.py"
+
+# uv re-runs the editable build hook only when a cache key changes; the hook
+# verifies a staged hyprial._core.actors against its stamp, so the keys are
+# the cargo inputs the stamp's digest hashes (native_engine.is_cargo_input)
+# plus the staged module and stamp.  uv reduces the keyed files to their newest
+# mtime and records it before the build runs, so the tracked epoch file, which
+# the opt-in hook touches just before it builds, makes a later deletion of the
+# staged module change that value again.  Replacing the default keys means
+# pyproject.toml must stay listed.
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "crates/Cargo.toml" },
+    { file = "crates/Cargo.lock" },
+    { file = "crates/hyprial-*/**/Cargo.toml" },
+    { file = "crates/hyprial-*/**/*.rs" },
+    { file = "src/hyprial/_core/actors.*" },
+    { file = "scripts/build/native-engine.epoch" },
+    { env = "HYPRIAL_BUILD_NATIVE" },
+    { env = "HYPRIAL_BUILD_SKIP_NATIVE" },
+]
 
 [tool.pytest.ini_options]
 markers = [
@@ -80,12 +132,36 @@ target-version = "py312"
 # SHA256 the report cites.
 extend-exclude = [
     "docs/notes/repro",
+    # GUI single-launch prototypes are byte-frozen measurement scripts cited by
+    # the archived plans (#2839). Exact paths only, no rule change.
+    "docs/notes/gui-single-launch-prototypes-2026-11-15/1e-2-dump-prototype.py",
+    "docs/notes/gui-single-launch-prototypes-2026-11-15/daemon-first-prototype/measure_z.py",
+    "docs/notes/gui-single-launch-prototypes-2026-11-15/daemon-first-prototype/z_daemon_proto.py",
+    "docs/notes/gui-single-launch-prototypes-2026-11-15/daemon-lifecycle-prototype/measure_promotion_relaunch.py",
     "docs/notes/load-0551-review-2026-10-26/independent-audit.py",
     # Reviewer-owned raw evidence is kept byte-for-byte (same rationale as
     # docs/notes/repro); these scripts are not product code.
     "docs/evidence",
+    # H-02 live evidence harnesses are byte-frozen WORM artifacts cited by
+    # their logs; they are not active runners. Exact paths only, no directory
+    # scope and no rule change, so the original bytes stay verbatim.
     "docs/notes/http-h02-client-build-2026-10-31/live/harness/run-live.py",
     "docs/notes/http-h02-client-build-2026-10-31/live/postdispatch/harness/run-live.py",
+    # Frozen checkpoint evidence; preserve the verifier bytes cited by its logs.
+    "docs/notes/daemon-request-examples-2026-11-03/checkpoint-07/verify-fixed.py",
+    # Frozen full-suite and independent merge evidence; preserve recorded bytes.
+    "docs/notes/daemon-request-examples-2026-11-03/integration/agent-target-full-suite/archive.py",
+    "docs/notes/daemon-request-examples-2026-11-03/integration/agent-target-full-suite/audit.py",
+    "docs/notes/daemon-request-examples-2026-11-03/integration/independent-review/agent-target-merge/verify_merge.py",
+    "docs/notes/e2e-upgrade-canonical-identity-2026-11-08/registry_migration_control.py",
+    "docs/notes/e2e001-recipient-addresses-2026-11-08/address_probe.py",
+    "docs/notes/e2e001-recipient-addresses-2026-11-08/address_probe_no_join.py",
+    "docs/notes/e2e001-recipient-addresses-2026-11-08/run_check.py",
+    "docs/notes/e2e001-relay-ipv4-2026-11-08/public_join_hostname_probe.py",
+    "docs/notes/e2e001-relay-ipv4-2026-11-08/public_join_ipv4_probe.py",
+    "docs/notes/e2e001-relay-ipv4-2026-11-08/public_join_probe.py",
+    "docs/notes/e2e001-relay-ipv4-2026-11-08/public_join_with_links_probe.py",
+    "docs/notes/e2e001-relay-ipv4-2026-11-08/run_check.py",
 ]
 
 [tool.ruff.lint]

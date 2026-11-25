@@ -10,7 +10,6 @@ from datetime import timedelta
 
 import pytest
 
-from tests.daemon.adapters.lark.outbound.test_lark_submission_outcome_unknown import _Routes
 from tests.daemon.adapters.lark.outbound.test_lark_submission_outcome_unknown import make_rig as make_rig
 from hyprial.daemon.impl.adapters.lark import LarkAdapter, LarkStateStore
 from hyprial.daemon.impl.adapters.lark.state import store as state_module
@@ -41,7 +40,7 @@ def test_unknown_notice_attempt_survives_audit_eviction_clock_and_rebuild(make_r
     assert all(row.message_id != rig.message.message_id for row in state.dead_letters())
     later = rig.adapter._utcnow() + timedelta(hours=2)
     rig.adapter.close()
-    rig.adapter = LarkAdapter(state=LarkStateStore(rig.state_path), lark=rig.platform, harness=_Harness(rig.short_socket), routes=_Routes(), channel_actor_id="channel:lark:test", logger=rig.logs, org_context_path=rig.root / "no-context", transient_retry_budget=0, utcnow=lambda: later)
+    rig.adapter = LarkAdapter(state=LarkStateStore(rig.state_path), lark=rig.platform, harness=_Harness(rig.short_socket), routes=rig.routes, channel_actor_id="adapter:lark:test", logger=rig.logs, org_context_path=rig.root / "no-context", transient_retry_budget=0, utcnow=lambda: later)
     original_handle = rig.app._timed_handle
     def still_unknown(_method, _params):
         raise ipc_errors.DaemonRequestError(ipc_errors.DAEMON_ERROR, "still unconfirmed")

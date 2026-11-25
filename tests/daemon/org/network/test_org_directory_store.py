@@ -25,8 +25,9 @@ from hyprial.identity import protected_directory_doc_id
 from hyprial.identity.impl.org_directory import (
     DirectoryDevice,
     INVITES_DIR,
-    directory_binding_path,
+    PEOPLE_DIR,
 )
+from hyprial.identity import identity_slug
 
 
 def _device(device_id: str, owner: str = "owner@example") -> DirectoryDevice:
@@ -107,83 +108,26 @@ def test_orgs_lists_only_org_spaces(runtime: OrgFsRuntime) -> None:
     assert store.orgs() == ["group-alpha", "group-zeta"]
 
 
-def test_put_binding_refuses_a_still_live_proof_as_last_line(
+def test_raw_orgfs_write_of_a_people_row_has_no_publication_time_gate(
     runtime: OrgFsRuntime,
 ) -> None:
-    runtime.facade.create_space("group-acme")
-    store = OrgFsDirectoryStore(runtime.facade)
-    store.ensure_org_directory_roots("group-acme")
+    """R3: nothing publishes or reads a binding row any more; ``people`` stays a
+    protected section, so its author rule still holds, but a row is admitted
+    whatever its content."""
 
-    with pytest.raises(ValueError, match="not expired"):
-        store.put_binding(
-            "group-acme",
-            _binding("owner@example", expires_at=int(time.time()) + 3_600),
-        )
-
-    assert store.list_binding_rows("group-acme") == []
-
-
-def test_raw_orgfs_write_refuses_a_still_live_binding_proof(
-    runtime: OrgFsRuntime,
-) -> None:
-    space = runtime.facade.create_space("group-acme")
-    store = OrgFsDirectoryStore(runtime.facade)
-    store.ensure_org_directory_roots("group-acme")
-    path = directory_binding_path("owner@example")
-    runtime.facade.mkdir(space.space_id, path.rsplit("/", 1)[0])
-
-    with pytest.raises(OrgFsError, match="not-a-member"):
-        runtime.facade.write_text(
-            space.space_id,
-            path,
-            json.dumps(
-                _binding("owner@example", expires_at=int(time.time()) + 3_600)
-            ),
-        )
-
-    with pytest.raises(OrgFsError) as missing:
-        runtime.facade.stat(space.space_id, path)
-    assert missing.value.code == "unknown-doc"
-
-
-def test_binding_reader_requires_exact_user_author(
-    runtime: OrgFsRuntime, monkeypatch: pytest.MonkeyPatch,
-) -> None:
     space = runtime.facade.create_space("group-acme")
     runtime.facade.invite(space.space_id, "user:bob@example", "rw")
     store = OrgFsDirectoryStore(runtime.facade)
     store.ensure_org_directory_roots("group-acme")
-    with _as(runtime, "bob@example"):
-        store.put_binding("group-acme", _binding("bob@example"))
-    monkeypatch.setattr(
-        runtime.facade,
-        "document_authors",
-        lambda _space_id, _node: ("user:owner@example",),
-    )
+    path = f"{PEOPLE_DIR}/{identity_slug('owner@example')}/agents-node-1.json"
+    runtime.facade.mkdir(space.space_id, path.rsplit("/", 1)[0])
+    row = json.dumps(_binding("owner@example", expires_at=int(time.time()) + 3_600))
 
-    assert store.list_binding_rows("group-acme") == []
+    runtime.facade.write_text(space.space_id, path, row)
 
-
-def test_binding_reader_rejects_wrong_protected_document_id(
-    runtime: OrgFsRuntime, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    space = runtime.facade.create_space("group-acme")
-    store = OrgFsDirectoryStore(runtime.facade)
-    store.ensure_org_directory_roots("group-acme")
-    store.put_binding("group-acme", _binding("owner@example"))
-    path = directory_binding_path("owner@example")
-    info = runtime.facade.stat(space.space_id, path)
-    wrong_doc_id = "doc-00000000-0000-4000-8000-000000000099"
-    projection = runtime.facade._spaces[space.space_id]
-    projection.contents[wrong_doc_id] = projection.contents[info.doc_id]
-    projection.nodes[info.node_id].doc_id = wrong_doc_id
-    monkeypatch.setattr(
-        runtime.facade,
-        "document_authors",
-        lambda _space_id, _node: ("user:owner@example",),
-    )
-
-    assert store.list_binding_rows("group-acme") == []
+    assert runtime.facade.read_text(space.space_id, path)[0] == row
+    with _as(runtime, "bob@example"), pytest.raises(OrgFsError, match="not-a-member"):
+        runtime.facade.write_text(space.space_id, path, "{}")
 
 
 def test_list_devices_on_a_fresh_org_is_empty(runtime: OrgFsRuntime) -> None:

@@ -35,10 +35,10 @@ def _consumer(
     )
 
 
-def test_recap_append_never_runs_on_publisher_thread(tmp_path: Path) -> None:
+def test_recap_append_never_runs_on_publisher_thread(actor_host, tmp_path: Path) -> None:
     home = tmp_path / "home"
     write_hooks_config(home)
-    _bus, service, consumer = build_service(home)
+    _bus, service, consumer = build_service(home, actor_host=actor_host)
     appended = threading.Event()
     writer_threads: list[int] = []
     original_append = consumer._writer._append  # noqa: SLF001
@@ -99,10 +99,10 @@ def test_recap_queue_overflow_is_counted_and_rate_limited(tmp_path: Path) -> Non
     assert consumer.close(TURN_HOOK_CLOSE_TIMEOUT_SECONDS)
 
 
-def test_close_drains_every_queued_recap_and_stops_writer(tmp_path: Path) -> None:
+def test_close_drains_every_queued_recap_and_stops_writer(actor_host, tmp_path: Path) -> None:
     home = tmp_path / "home"
     write_hooks_config(home)
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
     for index in range(12):
         observe(service, f"delivery-{index}")
 
@@ -170,11 +170,11 @@ def test_writer_waiting_for_lock_drains_recaps_enqueued_before_close(
 
 
 def test_close_wakes_idle_recap_writer_without_waiting_for_poll(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     write_hooks_config(home)
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
     observe(service, "id")
     # Wait until the record is on disk: the writer is then inside its idle
     # wait window and unfinished_tasks has settled to zero.

@@ -2,28 +2,30 @@
 methods are routable.
 
 ``message.send``/``message.reply`` must not become a surface only the CLI can
-use: the Lark worker, the user-proxy relay, the forward relay and the managed
-worker channel all pass through the same boundary and must carry a summary.
+use: the Lark worker and the managed worker channel both pass through the
+same boundary and must carry a summary.  I7a (contract i7-0 v2 section 4):
+another owner's copy is posted to the user agent cell's chats and does not
+re-enter ``message.send``.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
-from hyprial.kernel import DaemonRequestError, ipc_errors
+from hyprial.kernel import (
+    DaemonRequestError,
+    IPC_MESSAGE_READ_BODY,
+    IPC_MESSAGE_SETTLE_HINT,
+    ipc_errors,
+)
 from hyprial.kernel.impl.contracts.channels import worker_channel
 from hyprial.daemon.impl.adapters.lark.contracts.wire import ActorTarget, HarnessRequest
 from hyprial.daemon.impl.adapters.lark.worker import daemon_link
-from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage
-from hyprial.daemon.impl.links.ports import (
-    IPC_MESSAGE_READ_BODY,
-    IPC_MESSAGE_SETTLE_HINT,
-)
+from hyprial.daemon.impl.inbox import InboxMessage
 from hyprial.daemon.impl.ipc.router import _IPC_STATS_METHODS
 
 from ..support import (
@@ -90,80 +92,6 @@ def test_the_lark_worker_sends_a_derived_summary(
     assert params["summary"] == summary_from_text(request.text)
 
 
-def _original(message_id: str, summary: str | None) -> InboxMessage:
-    return InboxMessage(
-        message_id=message_id,
-        conversation_id="c-1",
-        sender="agent:op:node-1:driver",
-        recipient="agent:op:node-1:proxy",
-        payload=json.dumps({"message": "relayed text"}).encode(),
-        intent="request",
-        lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
-        created_at_ms=1,
-        summary=summary,
-    )
-
-
-def test_the_forward_relay_prefers_the_original_summary(tmp_path: Path) -> None:
-    from hyprial.daemon.impl.inbox.contracts.summary import summary_from_text
-
-    app = application(tmp_path, FakeInbox(pending_message()))
-    captured: list[dict[str, object]] = []
-
-    def recorder(method, params, **kwargs):  # type: ignore[no-untyped-def]
-        captured.append(dict(params))
-        return {"deliveries": [{"accepted": True, "messageId": "m"}]}
-
-    app.handle = recorder  # type: ignore[method-assign]
-
-    assert app._forward_as_actor(_original("m-1", "ORIG"), TARGET, "text").accepted
-    assert captured[-1]["summary"] == "ORIG"
-
-    assert app._forward_as_actor(_original("m-2", None), TARGET, "short text").accepted
-    assert captured[-1]["summary"] == summary_from_text("short text")
-
-
-def test_the_user_proxy_relay_derives_a_summary(tmp_path: Path) -> None:
-    from hyprial.daemon.impl.inbox.contracts.summary import summary_from_text
-    from hyprial.daemon.impl.squire import UserDeliveryRequest
-
-    app = application(tmp_path, FakeInbox(pending_message()))
-    captured: list[dict[str, object]] = []
-    app.desired_state = SimpleNamespace(  # type: ignore[assignment]
-        load=lambda: SimpleNamespace(
-            harnesses=[SimpleNamespace(name="proxy", harness="user-proxy")]
-        )
-    )
-    app._canonical_harness_uri = lambda agent, spec, desired: "agent:op:node-1:proxy"  # type: ignore[assignment]
-    app._managed_worker_running = lambda recipient, desired: True  # type: ignore[assignment]
-
-    def refuse(_sender: str) -> str:
-        raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "attribution refused")
-
-    app._resolve_on_behalf_actor = refuse  # type: ignore[assignment]
-
-    def recorder(method, params, **kwargs):  # type: ignore[no-untyped-def]
-        captured.append(dict(params))
-        return {"deliveries": [{"accepted": True, "messageId": "m"}]}
-
-    app.handle = recorder  # type: ignore[method-assign]
-
-    result = app._deliver_to_live_user_proxy(
-        "proxy",
-        UserDeliveryRequest(
-            message_id="m-proxy",
-            idempotency_key="k-proxy",
-            owner="op",
-            sender="agent:op:node-1:driver",
-            message="a person's text",
-            conversation_id="c-proxy",
-        ),
-    )
-
-    assert result is not None and result.accepted
-    assert captured[-1]["summary"] == summary_from_text(str(captured[-1]["message"]))
-
-
 def test_the_worker_channel_admits_summary_and_the_two_new_methods() -> None:
     binding = worker_channel.WorkerBinding(
         actor="agent:op:node-1:worker",
@@ -210,9 +138,37 @@ def test_the_worker_channel_admits_summary_and_the_two_new_methods() -> None:
 
 def test_the_worker_method_names_are_the_seam_constants() -> None:
     assert worker_channel.METHOD_PARAMS["message.send"] >= {"summary"}
-    assert worker_channel.METHOD_PARAMS["message.reply"] >= {"summary"}
+    assert worker_channel.METHOD_PARAMS["message.reply"] >= {"summary", "mentions", "noMention"}
     assert worker_channel.METHOD_PARAMS[IPC_MESSAGE_READ_BODY] == {"messageId"}
     assert worker_channel.METHOD_PARAMS[IPC_MESSAGE_SETTLE_HINT] == {"messageId"}
+
+
+def test_the_worker_channel_forwards_reply_mentions_and_no_mention() -> None:
+    binding = worker_channel.WorkerBinding(
+        actor="agent:op:node-1:worker",
+        session_ref="session-worker",
+        daemon_epoch="epoch-1",
+    )
+
+    method, forwarded = worker_channel.bound_request(
+        {
+            "version": 1,
+            "id": "reply-1",
+            "method": "message.reply",
+            "params": {
+                "messageId": "m-1",
+                "message": "done",
+                "summary": "s",
+                "mentions": ["a.alphaaaaaaaaaaaaaaaaaaaa"],
+                "noMention": True,
+            },
+        },
+        binding,
+    )
+
+    assert method == "message.reply"
+    assert forwarded["mentions"] == ["a.alphaaaaaaaaaaaaaaaaaaaa"]
+    assert forwarded["noMention"] is True
 
 
 def test_the_two_new_methods_are_routed_and_counted(tmp_path: Path) -> None:
@@ -235,15 +191,11 @@ def test_the_two_new_methods_are_routed_and_counted(tmp_path: Path) -> None:
 
 
 def test_link_governed_exempts_an_internal_actor_in_both_directions() -> None:
-    """Rulings 45/51: the reserved daemon actor NAME is exempt, on any node.
+    """Rulings 45/51: reserved daemon actor names stay exempt on any node."""
 
-    The exemption is keyed on the parsed actor segment, never on a full URI
-    or on the local node, so a peer's ``dispatch-coordinator`` is exempt as
-    sender and as recipient.  A name that merely starts with ``_`` is an
-    ordinary agent and stays governed.
-    """
-
-    from hyprial.daemon.impl.dispatch.admission import link_governed
+    from hyprial.daemon.impl.application.messaging.inbox_surface.send_receipts import (
+        _is_governed_agent_pair,
+    )
     from hyprial.kernel import RESERVED_AGENT_ACTOR_NAMES
 
     worker = "agent:op:node-1:worker"
@@ -254,15 +206,14 @@ def test_link_governed_exempts_an_internal_actor_in_both_directions() -> None:
         "agent:op:node-2:_turn-hooks",
     )
     near_name = "agent:op:node-2:_named-worker"
-    internal = RESERVED_AGENT_ACTOR_NAMES
 
-    assert internal == frozenset({"dispatch-coordinator", "_turn-hooks"})
+    assert RESERVED_AGENT_ACTOR_NAMES == frozenset({"dispatch-coordinator", "_turn-hooks"})
     for internal_uri in internal_uris:
-        assert link_governed(worker, internal_uri, internal_actors=internal) is False
-        assert link_governed(internal_uri, worker, internal_actors=internal) is False
-    assert link_governed(worker, peer, internal_actors=internal) is True
-    assert link_governed(worker, near_name, internal_actors=internal) is True
-    assert link_governed(near_name, worker, internal_actors=internal) is True
+        assert _is_governed_agent_pair(worker, internal_uri) is False
+        assert _is_governed_agent_pair(internal_uri, worker) is False
+    assert _is_governed_agent_pair(worker, peer) is True
+    assert _is_governed_agent_pair(worker, near_name) is True
+    assert _is_governed_agent_pair(near_name, worker) is True
 
 
 # --- B3: the fail-loud notices are messages too; they carry a summary ------
@@ -325,8 +276,7 @@ def test_the_human_loud_path_delivers_the_notice_text_unchanged() -> None:
     delivered: list[tuple[InboxMessage, str]] = []
 
     class _HumanLoud(_BridgeForwardsMixin):
-        def _is_user_proxy(self, recipient: str) -> bool:
-            return False
+        pass
 
     stub = _HumanLoud()
     stub._in_channel_notice_keys = set()  # type: ignore[attr-defined]

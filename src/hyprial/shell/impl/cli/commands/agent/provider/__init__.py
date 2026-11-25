@@ -14,16 +14,20 @@ from .commands import (
     seed_agent,
     seed_new_agent,
 )
+from .access import agent_provider_allow, agent_provider_revoke, agent_provider_status
 from .grant_key import agent_provider_grant_key
 
 __all__ = [
     "PI_AGENT_DIR_ENV",
     "PROVIDER_SOURCE_FILES",
     "ProviderSourceError",
+    "agent_provider_allow",
     "agent_provider_default",
     "agent_provider_grant_key",
     "agent_provider_login",
     "agent_provider_logout",
+    "agent_provider_revoke",
+    "agent_provider_status",
     "provider_app",
     "read_provider_documents",
     "resolve_provider_sources",

@@ -10,8 +10,8 @@ This module adds what only the PAC boundary rules on (design
 ``design-pac-owner-full-uri`` §1):
 
 - **shape**: exactly one of the two canonical forms.  Bare short names,
-  ``agent:squire`` (two segments), hosts, and ``adapter:``/``route:``/
-  ``channel:`` addresses are NOT principals -- people and agents are
+  ``agent:squire`` (two segments), hosts, and ``adapter:`` and ``route:``
+  addresses are NOT principals -- people and agents are
   responsible parties; routes are delivery exits.
 - **character hygiene**: no control characters, no whitespace inside or
   around any segment.  The underlying agent parser only guarantees four
@@ -92,7 +92,7 @@ def parse_principal(value: str) -> Principal:
         )
     detail = "not a canonical principal URI"
     scheme = uri_scheme(value)
-    if scheme in ("host", "adapter", "route", "channel"):
+    if scheme in ("host", "adapter", "route"):
         detail = (
             "hosts, adapters, and routes are delivery exits, not responsible "
             "parties; an owner must be a person (user:) or an agent (agent:)"

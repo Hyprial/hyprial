@@ -1,3 +1,6 @@
+# Decision record (W2B-2, 2026-11-21):
+# - _atomic_write delegates temporary file hardening to
+#   hyprial.kernel.harden_private_path before atomic replacement.
 """Step 1: rewrite persisted launcher argv from the retired mcp command."""
 
 from __future__ import annotations
@@ -9,7 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from hyprial.kernel import fsync_directory
+from hyprial.kernel import fsync_directory, harden_private_path
 
 from . import UpgradeContext, UpgradeStep
 
@@ -79,11 +82,13 @@ def _atomic_write(path: Path, payload: bytes) -> None:
     )
     try:
         try:
-            os.write(descriptor, payload)
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(descriptor, view) :]
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        os.chmod(temporary, 0o600)
+        harden_private_path(temporary, mode=0o600)
         os.replace(temporary, path)
         # Capability-based (no-op where a directory cannot be opened, e.g.
         # Windows); doctor --fix hit PermissionError here (#1902).

@@ -48,15 +48,18 @@ def test_runtime_stop_delay_inside_budget_closes_successfully(
 ) -> None:
     app, events = _app(tmp_path)
     actor = app._autoupdate
-    original_stop = actor._runtime.stop
+    engine = actor._cell._engine
+    handle = actor._cell.handle
+    original_stop = engine.stop
 
-    def delayed_stop(handle: object, timeout: float) -> bool:
-        time.sleep(0.3)
-        if timeout < 1.0:
-            return False
-        return original_stop(handle, timeout)
+    def delayed_stop(candidate: object, timeout: float) -> bool:
+        if candidate is handle:
+            time.sleep(0.3)
+            if timeout < 1.0:
+                return False
+        return original_stop(candidate, timeout)
 
-    monkeypatch.setattr(actor._runtime, "stop", delayed_stop)
+    monkeypatch.setattr(engine, "stop", delayed_stop)
     _close_and_release(app)
 
     auto_events = [
@@ -70,7 +73,7 @@ def test_runtime_stop_delay_inside_budget_closes_successfully(
     ]
 
 
-@pytest.mark.parametrize("stage", ["scheduler", "queue", "effects", "runtime"])
+@pytest.mark.parametrize("stage", ["queue", "effects", "runtime"])
 def test_each_over_budget_stop_stage_is_named_and_traced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -91,19 +94,28 @@ def test_each_over_budget_stop_stage_is_named_and_traced(
         time.sleep(0.05)
         return False
 
-    if stage == "scheduler":
-        monkeypatch.setattr(actor._scheduler, "shutdown", slow_false)
-    elif stage == "queue":
-        original_snapshot = actor._runtime.snapshot
+    engine = actor._cell._engine
+    handle = actor._cell.handle
+    if stage == "queue":
+        original_snapshot = engine.snapshot
 
-        def queued_snapshot(handle: object) -> Any:
-            return replace(original_snapshot(handle), queued=1)
+        def queued_snapshot(candidate: object) -> Any:
+            snapshot = original_snapshot(candidate)
+            return replace(snapshot, queued=1) if candidate is handle else snapshot
 
-        monkeypatch.setattr(actor._runtime, "snapshot", queued_snapshot)
+        monkeypatch.setattr(engine, "snapshot", queued_snapshot)
     elif stage == "effects":
         monkeypatch.setattr(actor._effects, "close", slow_false)
     else:
-        monkeypatch.setattr(actor._runtime, "stop", slow_false)
+        original_stop = engine.stop
+
+        def stalled_stop(candidate: object, timeout: float) -> bool:
+            if candidate is handle:
+                time.sleep(0.05)
+                return False
+            return original_stop(candidate, timeout)
+
+        monkeypatch.setattr(engine, "stop", stalled_stop)
 
     try:
         with pytest.raises(
@@ -123,10 +135,17 @@ def test_each_over_budget_stop_stage_is_named_and_traced(
     assert failed[0]["error"] == f"auto-update authority did not drain: {stage}"
 
 
-def test_idle_stop_finishes_under_its_registered_budget(tmp_path: Path) -> None:
+def test_idle_stop_finishes_under_its_registered_budget(
+    tmp_path: Path, actor_host, generation_scheduler
+) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    actor = AutoUpdateAuthority(state_dir=tmp_path / "state", hyprial_home=home)
+    actor = AutoUpdateAuthority(
+        state_dir=tmp_path / "state",
+        hyprial_home=home,
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
+    )
     started = time.monotonic()
     try:
         assert actor.stop(timeout=5.0)

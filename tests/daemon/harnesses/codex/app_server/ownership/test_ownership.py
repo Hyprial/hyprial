@@ -48,10 +48,108 @@ def test_windows_codex_spawn_requires_and_uses_a_job_owned_group(
     asyncio.run(_spawn_managed_codex(("codex", "app-server"), group))
 
     assert group.spawned == (("codex", "app-server"), {})
-    with pytest.raises(ConnectionError, match="Job-owned"):
-        asyncio.run(
-            _spawn_managed_codex(("codex", "app-server"), _OwnedProcessGroup())
-        )
+
+    fallback_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> object:
+        fallback_calls.append((args, kwargs))
+        return "fallback-proc"
+
+    monkeypatch.setattr(
+        "hyprial.daemon.impl.harnesses.codex.process.asyncio.create_subprocess_exec",
+        fake_exec,
+    )
+    monkeypatch.setattr(
+        "hyprial.daemon.impl.harnesses.codex.process.spawn_kwargs",
+        lambda: {"creationflags": 512},
+        raising=False,
+    )
+    result = asyncio.run(
+        _spawn_managed_codex(("codex", "app-server"), _OwnedProcessGroup())
+    )
+    assert result == "fallback-proc"
+    assert fallback_calls == [(("codex", "app-server"), {"creationflags": 512})]
+
+
+def test_npm_platform_selects_win32_when_file_modes_are_insignificant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hyprial.daemon.impl.harnesses.codex import process as codex_process
+
+    monkeypatch.setattr(
+        "hyprial.kernel.impl.manysys.interface.file_modes_are_significant",
+        lambda: False,
+    )
+    assert codex_process._npm_platform() == "win32"
+
+
+def test_interactive_app_server_spawns_and_stops_via_manysys_seams(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import hyprial.daemon.impl.harnesses.codex.app_server as app_server_module
+
+    _fake_windows_process_group(monkeypatch)
+    popen_calls: list[dict[str, object]] = []
+    terminated_trees: list[tuple[object, int | None]] = []
+
+    class FakePopen:
+        pid = 7788
+
+        def __init__(self, _argv: object, **kwargs: object) -> None:
+            popen_calls.append(kwargs)
+            socket_path.write_text("", encoding="utf-8")
+            self._polled = 0
+
+        def poll(self) -> int | None:
+            self._polled += 1
+            return 0 if self._polled > 2 else None
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+    socket_path = tmp_path / "app.sock"
+    monkeypatch.setattr(
+        app_server_module,
+        "spawn_kwargs",
+        lambda: {"creationflags": 512},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app_server_module,
+        "terminate_process_tree",
+        lambda proc, grp, **kw: terminated_trees.append((proc, grp)),
+        raising=False,
+    )
+    monkeypatch.setattr(app_server_module.subprocess, "Popen", FakePopen)
+
+    class FakeConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def fake_connect(path: Path, timeout: float = 15.0) -> FakeConnection:
+        del path, timeout
+        return FakeConnection()
+
+    socket_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(app_server_module, "open_app_server_connection", fake_connect)
+    server = app_server_module.CodexInteractiveAppServer(socket_path, cwd=tmp_path)
+    monkeypatch.setattr(server, "request", lambda *_a, **_k: {})
+    monkeypatch.setattr(server, "notify", lambda *_a, **_k: None)
+    socket_path.write_text("", encoding="utf-8")
+    server.start()
+    try:
+        assert "start_new_session" not in popen_calls[0]
+        assert popen_calls[0].get("creationflags") == 512
+    finally:
+        server.stop()
+    assert len(terminated_trees) == 1
+    assert terminated_trees[0][1] == 7788
 
 
 def test_stop_drains_owned_group_when_clean_app_server_exit_leaves_child(

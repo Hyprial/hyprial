@@ -57,7 +57,8 @@ _SUBMISSION_PRE_ADMISSION_CODES = frozenset({
     ipc_errors.VERSION_MISMATCH, ipc_errors.UNSUPPORTED_TARGET,
     ipc_errors.TARGET_IS_NODE, ipc_errors.SENDER_UNRESOLVED,
     ipc_errors.AMBIGUOUS_TARGET, ipc_errors.DISPATCH_NO_CAPABLE_HARNESS,
-    ipc_errors.DISPATCH_ROLE_MISMATCH,
+    ipc_errors.DISPATCH_ROLE_MISMATCH, ipc_errors.AGENT_ADDRESS_RETIRED,
+    ipc_errors.TARGET_UNRESOLVED,
 })
 class TransientHarnessRetryExhausted(RuntimeError):
     """A transient daemon refusal outlived the inbound retry budget.
@@ -127,6 +128,9 @@ class _InboundPipelineMixin:
         failure is not proof that a send had no effect. Only frozen inbound
         submissions opt into unknown-outcome handling; generic daemon errors
         remain non-retried, but do not become false terminal send failures.
+        A DAEMON_NOT_READY refusal of a non-submission step (the routing
+        query while the cell runtime is unavailable) is retried like a
+        restore refusal, so a brief runtime gap never reads as "unbound".
         The budget and backoff are bounded. Restore exhaustion remains
         TransientHarnessRetryExhausted; ambiguous send exhaustion remains
         SubmitOutcomeUnknownError with its frozen request still in custody.
@@ -163,17 +167,21 @@ class _InboundPipelineMixin:
                 unknown = error
                 detail = error.code
             except (DaemonRequestError, HarnessSubmissionRejected) as error:
-                if unknown is not None:
-                    raise ipc_errors.SubmitOutcomeUnknownError(
-                        "earlier submission outcome remains unconfirmed", unknown.data
-                    ) from None
-                if (retry_submission_unknown and isinstance(error, DaemonRequestError)
-                        and error.code not in _SUBMISSION_PRE_ADMISSION_CODES):
-                    raise ipc_errors.SubmitOutcomeUnknownError(
-                        "daemon response does not establish submission rejection",
-                        {"causeCode": error.code},
-                    ) from None
-                raise
+                if not (not retry_submission_unknown and unknown is None
+                        and isinstance(error, DaemonRequestError)
+                        and error.code == ipc_errors.DAEMON_NOT_READY):
+                    if unknown is not None:
+                        raise ipc_errors.SubmitOutcomeUnknownError(
+                            "earlier submission outcome remains unconfirmed", unknown.data
+                        ) from None
+                    if (retry_submission_unknown and isinstance(error, DaemonRequestError)
+                            and error.code not in _SUBMISSION_PRE_ADMISSION_CODES):
+                        raise ipc_errors.SubmitOutcomeUnknownError(
+                            "daemon response does not establish submission rejection",
+                            {"causeCode": error.code},
+                        ) from None
+                    raise
+                detail = error.code
             except (OSError, TimeoutError) as error:
                 detail = type(error).__name__
                 if retry_submission_unknown:
@@ -440,12 +448,13 @@ class _InboundPipelineMixin:
                 "messageId": message.message_id,
                 "chatId": message.chat_id,
                 "chatType": message.chat_type,
+                "chatKind": self._chat_kind(message),
                 "rootId": message.root_id,
                 "threadId": message.thread_id,
                 "replyTo": message.reply_to,
                 "senderId": message.sender_id,
                 "senderType": message.sender_type,
-                "sender": self._resolved_sender(message),
+                "sender": self._platform_sender(message),
                 "createTime": message.create_time,
                 "messageType": message.message_type,
             },
@@ -608,13 +617,8 @@ class _InboundPipelineMixin:
                     return None, "route-unavailable"
                 return actor, "native-reply"
 
-        # An @ of this bot goes to the adapter's pinned agent, whatever the
-        # chat: the adapter binds one agent, so addressing the bot IS
-        # addressing that agent.  Mentions of anyone else fall through --
-        # in a group that means "ignored", the decided default for group
-        # traffic that never addressed us.
         if self._is_bot_mentioned(message):
-            actor = self._routes.pinned_actor(message.conversation_id)
+            actor = self._routes.routed_actor(message.conversation_id)
             if actor is not None:
                 return actor, "bot-mention"
             return None, "no-target"
@@ -622,21 +626,18 @@ class _InboundPipelineMixin:
         if message.chat_type == "unknown":
             # Recovery paths could not establish the chat type (the REST
             # models carry none and this chat never produced a live event).
-            # Do not guess "p2p" (that would misroute group traffic to a
-            # pin), but do not silently drop it either: dead-letter it so
-            # the body stays recoverable once the chat type is known.
             return None, "no-target"
         if message.chat_type == "p2p":
-            actor = self._routes.pinned_actor(message.conversation_id)
+            actor = self._routes.routed_actor(message.conversation_id)
             if actor is not None:
-                return actor, "pin-fallback" if message.reply_to else "pin"
+                return actor, "binding-fallback" if message.reply_to else "binding"
             return None, "no-target"
         return None, "ignored"
 
     def _route_guidance(
         self, message: LarkInboundMessage, route_status: str
     ) -> str | None:
-        pin_command = f"hyprial adapter pin {self._adapter_name} <agent>"
+        cell_hint = "hyprial agent cell show <agent> / hyprial agent cell apply"
         if route_status == "route-unavailable":
             return (
                 "The agent associated with this reply is offline or unavailable. "
@@ -647,12 +648,12 @@ class _InboundPipelineMixin:
         if message.reply_to:
             return (
                 "The quoted message does not resolve to an addressable Harness "
-                "agent, and this adapter has no pinned agent. An operator can "
-                f"bind one on the daemon machine with: {pin_command}"
+                "agent, and this adapter has no bound agent. An operator can "
+                f"bind one on the daemon machine with: {cell_hint}"
             )
         return (
             "No agent is bound to this adapter. An operator can bind one on "
-            f"the daemon machine with: {pin_command}"
+            f"the daemon machine with: {cell_hint}"
         )
 
     def _fallback_quote_context(
@@ -662,7 +663,7 @@ class _InboundPipelineMixin:
     ) -> str:
         # A native reply quotes one of the agent's own messages; without the
         # block the agent cannot tell which one was meant (2026-10-07).
-        if route_status not in {"pin-fallback", "native-reply"} or not message.reply_to:
+        if route_status not in {"binding-fallback", "native-reply"} or not message.reply_to:
             return message.text
         try:
             quote = self._lark.get_message(message.reply_to)

@@ -347,6 +347,19 @@ def _hook(module, root: Path, *, version: str = "9.9.9", target_name: str = "whe
     return _Hook()
 
 
+@pytest.fixture(autouse=True)
+def _without_native_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These hook tests are about the sidecar: opt out of the native stage.
+
+    The explicit ``HYPRIAL_BUILD_SKIP_NATIVE=1`` opt-out keeps the tailcat
+    stage's ``py3-none-<plat>`` tag as the final word; the native stage, its
+    ``cp312-abi3-<plat>`` tag and its fail-closed default are covered by
+    ``test_native_engine_stage.py``.
+    """
+
+    monkeypatch.setenv("HYPRIAL_BUILD_SKIP_NATIVE", "1")
+
+
 @pytest.fixture()
 def prebuilt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binary = _script(tmp_path / "prebuilt-hyprial-tailcat", "exit 0\n")

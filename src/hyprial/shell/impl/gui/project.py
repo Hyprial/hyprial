@@ -17,6 +17,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from hyprial.kernel import manysys
+
 from .errors import GuiError
 
 _NODE_ENGINE_RE = re.compile(r"(?:>=|\^|~)?\s*(\d+)")
@@ -41,25 +43,8 @@ class GuiProject:
     source_remote: str = ""
 
 
-def resolve_gui_home(
-    explicit: Path | None,
-    *,
-    environ: Mapping[str, str] | None = None,
-    cwd: Path | None = None,
-) -> Path:
-    """Resolve the npm project root from option, environment, or checkout.
-
-    The value is the directory containing ``package.json`` (normally
-    ``<worktree>/gui``), not necessarily the Git worktree root.  An explicit
-    option wins over the environment; neither is modified.
-    """
-    source = os.environ if environ is None else environ
-    if explicit is not None:
-        return explicit.expanduser().resolve()
-    configured = str(source.get("HYPRIAL_GUI_HOME") or "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-
+def resolve_gui_home(*, cwd: Path | None = None) -> Path:
+    """Resolve the source checkout's npm project root (``<checkout>/gui``) from the current directory, then from this module's checkout."""
     current = (cwd or Path.cwd()).expanduser().resolve()
     candidates: list[Path] = []
     for base in (current, *current.parents):
@@ -146,13 +131,15 @@ def inspect_project(
     if not node:
         raise GuiError(
             "GUI_NODE_MISSING",
-            "Node.js is required to run the GUI; install Node 24 or newer",
+            "Node.js is required to run the GUI from source (a source checkout, or "
+            "--live-source, which runs the GUI dev server); install Node 24 or newer with npm",
         )
     npm = which("npm")
     if not npm:
         raise GuiError(
             "GUI_NPM_MISSING",
-            "npm is required to run the GUI; install Node 24 or newer",
+            "npm is required to run the GUI from source (a source checkout, or "
+            "--live-source, which runs the GUI dev server); install Node 24 or newer with npm",
         )
     node_version = _version(node, run)
     npm_version = _version(npm, run)
@@ -172,7 +159,9 @@ def inspect_project(
 
 def _npm_prefix(npm: str) -> list[str]:
     """Make Windows ``npm.cmd`` executable without a shell on POSIX."""
-    if os.name == "nt" and Path(npm).suffix.lower() in {".cmd", ".bat"}:
+    if manysys.managed_launcher_names("npm")[0].endswith(".cmd") and Path(
+        npm
+    ).suffix.lower() in {".cmd", ".bat"}:
         command = os.environ.get("COMSPEC", "cmd.exe")
         return [command, "/d", "/s", "/c", npm]
     return [npm]

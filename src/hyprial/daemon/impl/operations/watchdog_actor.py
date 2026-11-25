@@ -1,3 +1,6 @@
+# Decision record (W2B-2, 2026-11-21):
+# - _atomic_json delegates file hardening and parent directory durability to
+#   hyprial.kernel.harden_private_path and hyprial.kernel.fsync_directory.
 """Watchdog authorities with durable notification effects off the tick.
 
 The existing watchdog policies run against in-memory state. A separate effect
@@ -19,8 +22,14 @@ from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import (
+    ActorSpec,
+    AdmissionResult,
+    EffectCompleted,
+    EffectRequest,
+    fsync_directory,
+    harden_private_path,
+)
 from hyprial.daemon.impl.inbox.tracking.watchdog import InboxWatchdog, InboxAlert as InboxAlert
 
 
@@ -92,23 +101,23 @@ def _atomic_json(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
-        with temporary.open("xb") as stream:
-            os.chmod(temporary, 0o600)
+        with open(
+            temporary, "xb", opener=lambda target, flags: os.open(target, flags, 0o600)
+        ) as stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+        harden_private_path(temporary, mode=0o600)
         os.replace(temporary, path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
 
 class _WatchdogAuthority:
-    def __init__(self, policy, deliver, *, capacity: int = 128, on_alert=None):
+    def __init__(self, policy, deliver, *, actor_host=None, capacity: int = 128, on_alert=None):
+        if actor_host is None:
+            raise ValueError("watchdog authority requires an actor host")
         self._policy = policy
         self._deliver = deliver
         self._path = policy._path
@@ -121,6 +130,10 @@ class _WatchdogAuthority:
         self._active = False
         self._alerts: tuple[Any, ...] = ()
         self._deferred: list[object] = []
+        # One automatic retry per planned batch is allowed when observations
+        # are already queued behind it; otherwise a failed completion would
+        # wait for an observation that may never arrive (lost wakeup).
+        self._deferred_retry_used = False
         self._capacity = capacity
         self._outstanding = 0
         self._active_credit = False
@@ -133,20 +146,23 @@ class _WatchdogAuthority:
                 raw["after_state"].encode(),
                 tuple(tuple(item) for item in raw["deliveries"]),
             )
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name=f"watchdog-{self._path.stem}",
                 handler_factory=lambda: self._receive,
                 mailbox_capacity=capacity,
             )
         )
-        self._effects = EffectLane(
-            name=f"{self._path.stem}-effects",
-            execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
-            capacity=1,
-        )
+        try:
+            self._effects = actor_host.effect_lane(
+                name=f"{self._path.stem}-effects",
+                execute=self._execute,
+                complete=self._cell.tell,
+                capacity=1,
+            )
+        except BaseException:
+            self._cell.stop(5.0)
+            raise
 
     def _admit(self, command) -> AdmissionResult:
         with self._guard:
@@ -155,7 +171,7 @@ class _WatchdogAuthority:
             elif self._outstanding >= self._capacity:
                 result = AdmissionResult.OVERLOADED
             else:
-                result = self._runtime.tell(self._handle, command)
+                result = self._cell.tell(command)
             if result is AdmissionResult.ACCEPTED:
                 self._outstanding += 1
             if result is not AdmissionResult.ACCEPTED:
@@ -180,7 +196,15 @@ class _WatchdogAuthority:
             if command.error or not command.result:
                 with self._guard:
                     self._failed += 1
-                return  # next observation retries the durable batch
+                if self._deferred and not self._deferred_retry_used:
+                    # Observations arrived while this attempt was in flight and
+                    # are still deferred. Queue the retry through the mailbox so
+                    # it is visible as pending work; waiting for another
+                    # observation would strand them when none follows.
+                    self._deferred_retry_used = True
+                    if self._cell.tell(RetryAlerts()) is not AdmissionResult.ACCEPTED:
+                        self._deferred_retry_used = False
+                return  # a further new observation retries the durable batch
             self._policy._state = json.loads(self._pending.after_state)
             self._pending = None
             if self._active_credit:
@@ -207,12 +231,16 @@ class _WatchdogAuthority:
                 with self._guard:
                     self._outstanding -= previous_count - len(self._deferred)
             self._deferred.append(command)
+            # A fresh observation re-arms the single failure retry.
+            self._deferred_retry_used = False
             self._start_effect()
             return
         self._plan(command)
 
     def _plan(self, command):
         self._active_credit = True
+        # Each planned batch carries its own single deferred retry.
+        self._deferred_retry_used = False
         policy = self._policy
         before = copy.deepcopy(policy._state)
         deliveries = []
@@ -316,9 +344,9 @@ class _WatchdogAuthority:
         deadline = time.monotonic() + max(0.0, timeout)
         with self._guard:
             self._closed = True
-        self._runtime.tell(self._handle, RetryAlerts())
+        self._cell.tell(RetryAlerts())
         while True:
-            state = self._runtime.snapshot(self._handle)
+            state = self._cell.snapshot()
             with self._guard:
                 outstanding = self._outstanding
             if state.queued == state.in_flight == 0 and outstanding == 0:
@@ -328,17 +356,17 @@ class _WatchdogAuthority:
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        return self._cell.stop(max(0.0, deadline - time.monotonic()))
 
 
 class AsyncQuotaWatchdog(_WatchdogAuthority):
-    def __init__(self, *, state_dir, deliver, readings, clock_ms, on_alert=None, evaluator=None):
+    def __init__(self, *, state_dir, deliver, readings, clock_ms, actor_host=None, on_alert=None, evaluator=None):
         if evaluator is None:
             raise ValueError("AsyncQuotaWatchdog requires a quota evaluator when enabled")
         self._readings_source = readings
         self._clock_source = clock_ms
         evaluator._save = lambda: None  # persistence belongs to AlertBatch effects
-        super().__init__(evaluator, deliver, on_alert=on_alert)
+        super().__init__(evaluator, deliver, actor_host=actor_host, on_alert=on_alert)
 
     def observe_readings(self):
         self._admit(UsageObserved(self._readings_snapshot(), self._clock_source()))
@@ -361,11 +389,12 @@ class AsyncQuotaWatchdog(_WatchdogAuthority):
 
 
 class AsyncInboxWatchdog(_WatchdogAuthority):
-    def __init__(self, *, state_dir, deliver, clock_ms, on_alert=None):
+    def __init__(self, *, state_dir, deliver, clock_ms, actor_host=None, on_alert=None):
         self._clock_source = clock_ms
         super().__init__(
             _InboxPolicy(state_dir=state_dir, deliver=deliver, clock_ms=clock_ms),
             deliver,
+            actor_host=actor_host,
             on_alert=on_alert,
         )
 

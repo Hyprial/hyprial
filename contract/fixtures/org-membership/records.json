@@ -1,0 +1,40 @@
+{
+  "description": "Agent membership row shapes (0.5.5.3 O1a; receivers removed by S3a).",
+  "agentMembership": {
+    "path": "agents/<owner>/<agentId>.json",
+    "record": {
+      "schemaVersion": 1,
+      "agent": "agent:alice@example.test:node-example:squire",
+      "owner": "user:alice@example.test",
+      "agentId": "a.sl7ea2hi735ybjla7kgo3r6jxe",
+      "role": "member",
+      "state": "approved",
+      "addedBy": "user:alice@example.test",
+      "addedAt": "2026-10-31T00:00:00Z"
+    },
+    "tombstone": {
+      "schemaVersion": 1,
+      "agent": "agent:alice@example.test:node-example:squire",
+      "owner": "user:alice@example.test",
+      "agentId": "a.sl7ea2hi735ybjla7kgo3r6jxe",
+      "role": "member",
+      "state": "removed",
+      "addedBy": "user:alice@example.test",
+      "addedAt": "2026-10-31T00:00:00Z",
+      "removedBy": "user:alice@example.test",
+      "removedAt": "2026-10-31T01:00:00Z"
+    },
+    "states": ["requested", "approved", "removed"],
+    "migrationOrigins": ["migrated-from-context", "migrated-personal"],
+    "keys": {
+      "required": ["schemaVersion", "agent", "owner", "agentId", "role", "state", "addedBy", "addedAt"],
+      "optional": ["removedBy", "removedAt", "origin"]
+    }
+  },
+  "personalOrgName": {
+    "short": "personal-<userKey>",
+    "long": "personal-<first 40 of userKey>-<sha256(userKey)[:8]>",
+    "maxLength": 63,
+    "userKey": "identity_slug(owner)"
+  }
+}

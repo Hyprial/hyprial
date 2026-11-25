@@ -1,5 +1,10 @@
 # Organization network status contract
 
+Membership records (`agents/<owner>/<agentId>.json`), the
+personal org naming rule and their admission rules are in
+[`membership.md`](membership.md); the frozen shapes are
+`contract/fixtures/org-membership/{records,admission}.json`.
+
 `org.network` is a best-effort view with three independent panes:
 
 - `directory`, sourced from the local OrgFS projection;
@@ -21,6 +26,36 @@ not admission or HTTP attribution authority. With stdio v6 the sidecar roster
 supplies the derived-key-to-owner mapping; absent, ambiguous, master or
 foreign-server keys fail closed. The `self` pane still exposes the local public
 `serverPublic`. Directory outages do not change sidecar membership.
+
+UUID addressing adds `deviceUid` as an output field only; no routing key
+changes. The `self` pane always carries `deviceUid`: the local device's
+immutable uid (32 lowercase hex digits of a UUID4), or `null` before the
+device identity is provisioned. Directory rows may carry an optional
+`deviceUid` of the same shape; readers accept rows with or without it, and a
+directory row view shows it when the row has one. A device publishes
+`deviceUid` in its own directory row only once id-form agent minting is
+switched on, because readers that predate the field reject a row with an
+unknown key. The local `device.json` wire record is unchanged.
+An explicit `"deviceUid": null` in a directory row is rejected; writers omit
+the key instead.
+
+Flip hazard: turning id-form minting on is therefore also a change to the
+peer-visible directory schema. On the next `publish_self` every device
+republishes its own row with `deviceUid` (turning the switch off again
+republishes it without the key). A peer still running a build that predates
+the field rejects such a row and drops that device from its directory view
+until it upgrades. Whoever flips the switch has to plan for this mixed-version
+window; the rollout order is not decided here.
+
+Not applied (explicit N/A): the forwarding membership roster observation
+(`public_observation` in `daemon/impl/forwarding/membership/projection.py`)
+gains no `deviceUid`. It copies tailnet-level rows only (`tailnetId`, `role`,
+`revision`, `authorityDeviceId`, readiness, lease and counts), never one row
+per device, and the Go sidecar's membership status carries no device uid.
+`authorityDeviceId` is a sidecar routing key, which UUID addressing leaves
+unchanged. The observation's only reader is the forwarding readiness
+projection. Adding a uid would need a sidecar change or a join with the
+OrgFS directory; that is not decided here.
 
 Protected device rows remain backward compatible with the legacy required
 shape. New writers can additionally publish `machineFingerprint` (64 lowercase

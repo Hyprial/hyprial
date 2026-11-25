@@ -18,6 +18,7 @@ from hyprial.daemon.impl.transport.zenoh.presence import LivelinessDirectory
 from tests.daemon.application.restore.test_daemon_restore_gate import _FakeHarnesses, _FakePresence, _IdleRuntime, _InboxEvents, state_root as state_root
 
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _app_injections
+from tests.support.actor_hosts import new_actor_host
 
 
 class PresenceSession:
@@ -101,7 +102,7 @@ def test_run_records_stop_or_failure_without_exception_values(state_root, monkey
     )
     app.network_isolated = True
     database = state_root / "inbox.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, MemoryDeliveryTransport(), _InboxEvents())
+    coordinator = DeliveryCustodyCoordinator(database, MemoryDeliveryTransport(), _InboxEvents(), actor_host=new_actor_host())
     app._inbox_coordinator = coordinator
     app._inbox = DeliveryCustodyFacade(coordinator, database)
     app._harnesses = _FakeHarnesses()

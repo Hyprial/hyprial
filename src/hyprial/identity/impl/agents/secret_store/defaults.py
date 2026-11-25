@@ -43,6 +43,11 @@ def initialize_shared_grants(connection: sqlite3.Connection) -> None:
             "FROM old_secret_grants"
         )
         connection.execute("DROP TABLE old_secret_grants")
+    if "route_required" not in columns:
+        connection.execute(
+            "ALTER TABLE agent_secret_grants ADD COLUMN route_required INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (route_required IN (0,1) AND (route_required=0 OR source='user-provider'))"
+        )
     connection.execute(
         "CREATE TABLE IF NOT EXISTS agent_secret_defaults ("
         "harness TEXT PRIMARY KEY CHECK(harness='claude'), owner_actor TEXT NOT NULL, "
@@ -152,7 +157,10 @@ class DefaultCredentialMixin:
                 read_native_credential_set, install_native_credential_set,
             )
             documents = read_native_credential_set(Path(self.home_receipt(owner.actor).path), "claude")
-            install_native_credential_set(Path(self.home_receipt(agent.actor).path), "claude", documents)
+            install_native_credential_set(
+                Path(self.home_receipt(agent.actor).path), "claude", documents,
+                import_record=self.native_credential_import_record(agent.actor),
+            )
             return
         self._db.execute(
             "INSERT INTO agent_secret_grants "
@@ -161,3 +169,6 @@ class DefaultCredentialMixin:
             (agent.actor, agent.entity_token, default["entryId"], OAUTH_FIELD,
              json.dumps([OAUTH_FIELD]), owner.actor, owner.entity_token),
         )
+        from hyprial.identity.impl.agents.registry.naming.id_form import stamp_agent_id
+
+        stamp_agent_id(self._db, "agent_secret_grants", agent.entity_token)

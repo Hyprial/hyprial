@@ -48,4 +48,3 @@ fi
 "$HYPRIAL_PYTHON" "$SCRIPT_DIR/http-request/validate.py"
 "$HYPRIAL_PYTHON" "$SCRIPT_DIR/mcp-tools/run.py"
 "$HYPRIAL_PYTHON" "$SCRIPT_DIR/workers/python-worker/validate.py"
-"$HYPRIAL_PYTHON" "$SCRIPT_DIR/workers/user-proxy/validate.py"

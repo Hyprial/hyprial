@@ -1,3 +1,15 @@
+# Decision record (UUID addressing, integrator ruling D5 and review finding E2,
+# docs/design/uuid-addressing-implementation-2026-11-03.md section 4):
+# - A routine binding (actor / produces) is compared with another binding
+#   through the daemon-injected binding_key, never by string: the name URI
+#   minted at routine.add and the agent's a.<id> URI written by the storage
+#   migration name the same agent.  Without an injected key (tests, tools)
+#   the comparison stays verbatim, exactly as before.  A key that raises
+#   compares unequal, so the immutability gate fails closed.
+# - routine.set keeps the requested YAML as given; only the gate changes.
+# - The last-binding count on remove and reserve-removal compares through
+#   the same key, so a routine bound to the other spelling of the same agent
+#   counts as its alternative.
 """RoutineRegistry command, timer and recovery handling (mixin).
 
 in_flight 结算的决策与根因见 docs/notes/routine-inflight-settle-2026-11-04.md。
@@ -6,7 +18,7 @@ in_flight 结算的决策与根因见 docs/notes/routine-inflight-settle-2026-11
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import replace
 from uuid import uuid4
 
@@ -42,6 +54,21 @@ from hyprial.biz.impl.routine.execution.registry.effects import (
 _SETTLED_GRAPH_STATES = frozenset({"done", "escalated"})
 
 
+def same_binding(
+    key: Callable[[str], Hashable] | None, left: str | None, right: str | None,
+) -> bool:
+    """Whether two routine binding values name the same actor."""
+
+    if left == right:
+        return True
+    if left is None or right is None or key is None:
+        return False
+    try:
+        return key(left) == key(right)
+    except Exception:  # noqa: BLE001 - an unresolvable binding compares unequal
+        return False
+
+
 class _RegistryCore:
     """Serial handler for schedule, breaker, in-flight and Store mutation."""
 
@@ -54,13 +81,19 @@ class _RegistryCore:
         clock_ms: Callable[[], int],
         migrate_address: Callable[[str], str | None] | None = None,
         graph_state: Callable[[str], str] | None = None,
+        graph_absent: Callable[[str], bool] | None = None,
         logger: Logger | None = None,
+        binding_key: Callable[[str], Hashable] | None = None,
     ) -> None:
         self._store = store
+        self._binding_key = binding_key
         self._generation = generation
         self._publish = publish
         self._clock_ms = clock_ms
         self._graph_state = graph_state
+        # Optional, and only ever consulted for the *current* persistent run: a
+        # port without this capability keeps the durable row, exactly as before.
+        self._graph_absent = graph_absent
         # Resolve one bare agent name to its canonical local URI, or None
         # when the name is not uniquely known on this node.  Used ONLY for
         # stored-spec migration; new submissions are rejected at schema load.
@@ -139,7 +172,7 @@ class _RegistryCore:
         try:
             spec = load_routine_text(command.yaml_text)
         except RoutineSchemaError as error:
-            self._reject(command.correlation_id, "ROUTINE_SCHEMA_ERROR", str(error))
+            self._reject(command.correlation_id, ipc_errors.ROUTINE_SCHEMA_ERROR, str(error))
             return
         # Admission is serialized by this actor; never turn add into an upsert.
         if self._store.snapshot(spec.name) is not None:
@@ -209,7 +242,9 @@ class _RegistryCore:
             bound = sum(
                 1
                 for name, item in self._active.items()
-                if (item.spec.actor or item.spec.produces) == binding
+                if same_binding(
+                    self._binding_key, item.spec.actor or item.spec.produces, binding
+                )
                 and name not in reserved
             )
             if bound <= 1:
@@ -218,7 +253,10 @@ class _RegistryCore:
                     ipc_errors.ROUTINE_LAST_BINDING,
                     f"routine {command.name!r} is the last routine bound to "
                     f"{binding}; bind a new one first with `hyprial routine add`, "
-                    "or modify this one with `hyprial routine set`",
+                    "or modify this one with `hyprial routine set`. If `routine "
+                    "set` answers ROUTINE_BUSY, add a short-lived placeholder "
+                    "routine first: that unbinds \"last\", so this `routine "
+                    "remove` goes through (M-hq-adjutant-0012)",
                     data=(("routine", command.name), ("actor", binding)),
                 )
                 return
@@ -267,7 +305,9 @@ class _RegistryCore:
                 for name, item in self._active.items()
                 if name != command.name
                 and name not in reserved
-                and (item.spec.actor or item.spec.produces) == binding
+                and same_binding(
+                    self._binding_key, item.spec.actor or item.spec.produces, binding
+                )
             )
             if alternatives == 0:
                 self._reject(
@@ -276,7 +316,10 @@ class _RegistryCore:
                     f"routine {command.name!r} is the last unreserved routine "
                     f"bound to {binding}; bind a new one first with "
                     "`hyprial routine add`, or modify this one with "
-                    "`hyprial routine set`",
+                    "`hyprial routine set`. If `routine set` answers "
+                    "ROUTINE_BUSY, add a short-lived placeholder routine "
+                    "first: that unbinds \"last\", so this `routine remove` "
+                    "goes through (M-hq-adjutant-0012)",
                     data=(("routine", command.name), ("actor", binding)),
                 )
                 return
@@ -334,7 +377,7 @@ class _RegistryCore:
         try:
             spec = load_routine_text(command.yaml_text)
         except RoutineSchemaError as error:
-            self._reject(command.correlation_id, "ROUTINE_SCHEMA_ERROR", str(error))
+            self._reject(command.correlation_id, ipc_errors.ROUTINE_SCHEMA_ERROR, str(error))
             return
         if spec.name != command.name:
             self._reject(
@@ -344,7 +387,10 @@ class _RegistryCore:
             )
             return
         current = self._active[command.name].spec
-        if (spec.actor, spec.produces) != (current.actor, current.produces):
+        if not (
+            same_binding(self._binding_key, spec.actor, current.actor)
+            and same_binding(self._binding_key, spec.produces, current.produces)
+        ):
             self._reject(
                 command.correlation_id,
                 ipc_errors.ROUTINE_BINDING_IMMUTABLE,
@@ -371,28 +417,63 @@ class _RegistryCore:
         active = self._active.get(routine)
         if not rows or row is None or active is None or self._graph_state is None:
             return
+        # Terminal proof and "the graph is provably gone" are different facts and
+        # only the first one is a routine outcome.  Both reclaim the durable row,
+        # so they share one ``apply``; the outcome list is widened by terminal
+        # results alone.
         settled: dict[str, str] = {}
+        absent: list[str] = []
         for item in rows:
             state = self._probe_settled(item.run_id)
             if state is not None:
                 settled[item.task_uuid] = state
-        if not settled:
+            elif self._probe_absent(item.run_id):
+                absent.append(item.task_uuid)
+        if not settled and not absent:
             return
-        outcomes = list(json.loads(row.outcomes))
-        outcomes.extend(settled.values())
-        window = active.spec.limits.circuit_breaker.window_runs
-        updated = replace(
-            row,
-            outcomes=json.dumps(outcomes[-window:]),
-            version=self._next_version(),
-        )
-        self._store.apply(
-            routine=updated,
-            remove_in_flight=tuple((routine, task_uuid) for task_uuid in settled),
-        )
-        self._log(
-            "info", "routine.in_flight_settled", routine=routine, outcomes=tuple(settled.values())
-        )
+        removed = (*settled.keys(), *absent)
+        if settled:
+            outcomes = list(json.loads(row.outcomes))
+            outcomes.extend(settled.values())
+            window = active.spec.limits.circuit_breaker.window_runs
+            updated = replace(
+                row,
+                outcomes=json.dumps(outcomes[-window:]),
+                version=self._next_version(),
+            )
+            self._store.apply(
+                routine=updated,
+                remove_in_flight=tuple((routine, task_uuid) for task_uuid in removed),
+            )
+            self._log(
+                "info",
+                "routine.in_flight_settled",
+                routine=routine,
+                outcomes=tuple(settled.values()),
+            )
+        else:
+            # No outcome is invented here: the run's settlement is unknown, and
+            # the durable row is the only thing that was proven obsolete.
+            self._store.apply(
+                remove_in_flight=tuple((routine, task_uuid) for task_uuid in removed)
+            )
+        for task_uuid in absent:
+            self._log(
+                "warn",
+                "routine.in_flight_reclaimed",
+                routine=routine,
+                task_uuid=task_uuid,
+                reason="graph-absent",
+            )
+
+    def _probe_absent(self, run_id: str) -> bool:
+        probe = self._graph_absent
+        if probe is None:
+            return False
+        try:
+            return bool(probe(run_id))
+        except Exception:  # noqa: BLE001 - a read failure is never "absent"
+            return False
 
     def _probe_settled(self, run_id: str) -> str | None:
         if self._graph_state is None:

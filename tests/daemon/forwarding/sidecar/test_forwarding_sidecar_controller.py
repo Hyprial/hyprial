@@ -598,7 +598,7 @@ def test_map_peer_slot_binds_and_reports_the_slot(tmp_path: Path) -> None:
         controller.close()
 
 
-def test_authority_map_peer_passes_the_slot_through() -> None:
+def test_authority_map_peer_passes_the_slot_through(actor_host) -> None:
     from hyprial.daemon.impl.forwarding import ForwardingControllerAuthority
 
     class _StubController:
@@ -608,7 +608,7 @@ def test_authority_map_peer_passes_the_slot_through() -> None:
         def close(self) -> None:
             return None
 
-    authority = ForwardingControllerAuthority(_StubController())
+    authority = ForwardingControllerAuthority(_StubController(), actor_host=actor_host)
     try:
         assert authority.map_peer("peer-a", "tcPeerTwo", "/tmp/slots/slot-00") == (
             "/tmp/slots/slot-00"

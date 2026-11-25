@@ -1,6 +1,7 @@
 # 命名审计:channel / adapter / route
 
 - 状态:分析文档,**不含任何重命名**;改名方案需 Allen 终审
+- **2026-11-24 状态更新(F1c)**:概念 [A] 的 `channel:` 地址写法已退役。Allen 2026-11-23(Q0-b)批准:八个通用 adapter(discord、imessage、mail、matrix、qq、slack、telegram、whatsapp)的写入改为 `adapter:<kind>:<instance>:<chat>`,Lark 早已只写 `adapter:lark:<name>`;此后删除读取侧双收——会话标识(`conversations/ids.py`、`keys.py`、`record/contracts.py`)、IPC 生命周期默认值(`ipc/wire.py`)、来源展示(`api.py`)、回复桥与回复检查(`reply_bridge.py`、`inbox_surface/reply`)、调用方分类(`visibility.py`)与 kernel `CHANNEL_URI_PREFIX` 全部只认 `adapter:`(新增 `parse_adapter_uri`)。唯一保留的读取点是 kernel `parse_channel_uri`,只供用户档案 squire 端点与 owner routing 使用,随 S3c/S3a 删除。CI 守卫 `tests/daemon/channels/adapters/test_channel_lark_prefix_guard.py` 改为禁止源码中任何 `channel:` 地址字面量。下文 §4、§8 Tier 3 的"永久双收"建议因此作废;正文其余部分保留为当时的分析记录。旧记录的会话 id 变化见 `docs/guides/cell-authority-migration.md` 第 8 节。
 - 范围:`src/hyprial`、`docs/`、`tests/`、`.agents/`(含 skills)、`.claude/`(本仓无 vendor 内容)、`contract/`、`notes/`、`scripts/`
 - 方法:只读代码阅读 + 隔离环境验证(未触碰生产 daemon PID 36687 / `~/.hyprial`)
 - 已确认的原始出现量(Allen 提供,直接引用):

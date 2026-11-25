@@ -1,1 +1,0 @@
-"""Organization binding proof tests."""

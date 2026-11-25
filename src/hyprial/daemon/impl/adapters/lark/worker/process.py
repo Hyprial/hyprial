@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from hyprial.kernel import child_state_environment
 from hyprial.kernel import Logger
@@ -22,6 +22,9 @@ from hyprial.kernel import (
 
 from hyprial.daemon.impl.adapters.lark.contracts.wire import HarnessDelivery
 from hyprial.daemon.impl.adapters.lark.contracts.errors import AdapterStartError
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 
 #: Environment variable carrying the worker's dedicated ready-signal fd.
@@ -129,6 +132,7 @@ class LarkWorkerProcess:
         drainer: threading.Thread | None = None,
         control_socket: socket.socket | None = None,
         logger: Logger | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self._process = process
         self._name = name
@@ -137,6 +141,10 @@ class LarkWorkerProcess:
         self._drainer = drainer
         self._control_socket = control_socket
         self._logger = logger
+        # P7: this handle lives in the daemon process, so its lazily created
+        # control-IO owner borrows the daemon's one host instead of starting a
+        # second engine of its own.
+        self._actor_host = actor_host
         self._exit_logged = False
         self._expected_stop = False
         self._control_lock = threading.Lock()
@@ -464,7 +472,9 @@ class LarkWorkerProcess:
         with guard:
             if self._control_owner is None:
                 from hyprial.daemon.impl.adapters.lark.worker.control import ControlIoOwner
-                self._control_owner = ControlIoOwner(self._control_delivery_owned)
+                self._control_owner = ControlIoOwner(
+                    self._control_delivery_owned, actor_host=self._actor_host
+                )
             owner = self._control_owner
         return owner.deliver(frame, delivery_id)
 
@@ -610,11 +620,13 @@ class LarkWorkerLauncher:
         command: Sequence[str] | None = None,
         env: Mapping[str, str] | None = None,
         startup_timeout: float = 20.0,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self.hyprial_home = Path(hyprial_home)
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path)
         self.config_store = config_store
+        self.actor_host = actor_host
         self.command = tuple(
             command or (sys.executable, "-m", "hyprial.daemon.impl.adapters.lark.worker.entry")
         )
@@ -624,7 +636,7 @@ class LarkWorkerLauncher:
     @classmethod
     def from_environment(
         cls, *, hyprial_home: Path, state_dir: Path, socket_path: Path,
-        config_store: PersistentConfigStore,
+        config_store: PersistentConfigStore, actor_host: ActorHost | None = None,
     ) -> LarkWorkerLauncher:
         raw = os.environ.get("HYPRIAL_LARK_WORKER_COMMAND")
         command = None
@@ -648,6 +660,7 @@ class LarkWorkerLauncher:
             socket_path=socket_path,
             config_store=config_store,
             command=command,
+            actor_host=actor_host,
         )
 
     def spawn(self, gateway: LarkGatewayConfig) -> LarkWorkerProcess:
@@ -711,6 +724,7 @@ class LarkWorkerLauncher:
             drainer=drainer,
             control_socket=control_parent,
             logger=logger,
+            actor_host=self.actor_host,
         )
 
     def start(self, gateway: LarkGatewayConfig) -> LarkWorkerProcess:

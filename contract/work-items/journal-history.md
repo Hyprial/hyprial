@@ -1,5 +1,14 @@
 # Durable work-item history and repair references
 
+> **Retired contract.** The #2214 simplification uses ordinary OrgFS text;
+> the current contract is [Work documents in ordinary OrgFS](README.md).
+> The rules below document the previous work-specific implementation. They
+> do not authorize current writes or require a journal/ledger for reading a
+> work document. `work.repair` and the other `work.*` methods are removed.
+> Existing document, history, and ledger files are retained without migration.
+
+## Historical contract
+
 Work-item validity is replayed from the existing OrgFS document journal. The
 process-local facade history is neither a source of historical identities nor
 evidence that a document was created. Reads never backfill journal rows or

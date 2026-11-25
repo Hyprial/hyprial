@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from .inventory import configuration, unknown
 from .process import AuthorizationEffect
+from .receipts import AuthorizationReceiptError, AuthorizationReceipts
+from ..scopes import CAPABILITY_IDS, LARK_GATEWAY_CAPABILITIES
 
 _ACTIVE = {"starting", "awaiting_user", "checking"}
 _TERMINAL = {"succeeded", "denied", "expired", "cancelled", "failed", "unknown"}
@@ -51,7 +53,7 @@ def _inventory(value: Any, adapter: str, app_id: str | None = None) -> dict[str,
 class LarkAuthorizationService:
     def __init__(self, home: Path, state_dir: Path, *, registrar=None, effects=None,
                  clock=time.time, inventory_timeout=8.0, startup_timeout=10.0,
-                 authorization_timeout=900.0) -> None:
+                 authorization_timeout=900.0, receipt_path: Path | None = None) -> None:
         if min(inventory_timeout, startup_timeout, authorization_timeout) <= 0:
             raise ValueError("authorization deadlines must be positive")
         self._home, self._state_dir = Path(home), Path(state_dir)
@@ -65,9 +67,44 @@ class LarkAuthorizationService:
         self._lock = threading.RLock()
         self._reserved: set[str] = set()
         self._closed = False
-        self._operations: dict[str, dict[str, Any]] = {}
+        self._receipts = AuthorizationReceipts(receipt_path)
+        self._operations = self._receipts.load()
         self._handles: dict[str, Any] = {}
         self._grants: dict[str, dict[str, Any]] = {}
+
+    def _save(self) -> None:
+        try:
+            self._receipts.save(self._operations)
+        except AuthorizationReceiptError:
+            for op in self._operations.values():
+                if op["status"] in _ACTIVE:
+                    op.update(status="unknown", errorCode="AUTHORIZATION_RECEIPT_UNCONFIRMED")
+                    op.pop("verificationUrl", None)
+                    op.pop("expiresAt", None)
+            raise
+
+    @staticmethod
+    def _satisfied(op, grant) -> bool:
+        requested = op.get("capabilities")
+        return (grant["authorization"] == "authorized"
+                and (requested is None or set(requested) <= set(grant.get("capabilities", []))))
+
+    def observe(self, adapter: str, result: dict[str, Any]) -> None:
+        """Reconcile unknown results from a fresh independent scope observation."""
+        with self._lock:
+            self._grants[adapter] = deepcopy(result)
+            changed = False
+            for op in self._operations.values():
+                if (op["adapter"] == adapter and op["appId"] == result.get("appId")
+                        and op["status"] == "unknown"
+                        and result["authorization"] in {"authorized", "unauthorized"}):
+                    op["authorization"] = deepcopy(result)
+                    if op["operationId"] not in self._reserved:
+                        op["status"] = "succeeded" if self._satisfied(op, result) else "failed"
+                        op.pop("errorCode", None)
+                    changed = True
+            if changed:
+                self._save()
 
     def _job(self, action: str, adapter: str, app_id: str | None = None) -> dict[str, Any]:
         return {"action": action, "home": str(self._home), "stateDir": str(self._state_dir),
@@ -94,6 +131,10 @@ class LarkAuthorizationService:
                     op.update(status="unknown", errorCode="WORKER_CLEANUP_UNCONFIRMED")
                     op.pop("verificationUrl", None)
                     op.pop("expiresAt", None)
+                    try:
+                        self._save()
+                    except AuthorizationReceiptError:
+                        pass
                 return False
             self._handles.pop(identity, None)
             self._reserved.discard(identity)
@@ -103,7 +144,11 @@ class LarkAuthorizationService:
         with self._lock:
             op = self._operations[identity]
             cancellable = op["status"] in _ACTIVE | {"unknown"}
-            self._settle(identity, "cancelled", error=reason)
+            try:
+                self._settle(identity, "cancelled", error=reason)
+            except AuthorizationReceiptError:
+                self._cleanup(identity)
+                raise
             if not self._cleanup(identity):
                 return False
             if cancellable:
@@ -112,6 +157,7 @@ class LarkAuthorizationService:
                 op.update(status="cancelled", errorCode=reason)
                 op.pop("verificationUrl", None)
                 op.pop("expiresAt", None)
+                self._save()
             return True
 
     def status(self, adapter: str) -> dict[str, Any]:
@@ -147,25 +193,32 @@ class LarkAuthorizationService:
         finally:
             if not self._cleanup(identity):
                 result = unknown(adapter, "WORKER_CLEANUP_UNCONFIRMED")
-        with self._lock:
-            self._grants[adapter] = deepcopy(result)
-            for op in self._operations.values():
-                if (op["adapter"] == adapter and op["appId"] == result.get("appId")
-                        and op["status"] == "unknown"
-                        and result["authorization"] in {"authorized", "unauthorized"}):
-                    op["authorization"] = deepcopy(result)
-                    if op["operationId"] not in self._reserved:
-                        op["status"] = "succeeded" if result["authorization"] == "authorized" else "failed"
-                        op.pop("errorCode", None)
+        self.observe(adapter, result)
         return deepcopy(result)
 
-    def start(self, adapter: str) -> dict[str, Any]:
+    def start(self, adapter: str, *, capabilities=None, operation_key: str | None = None) -> dict[str, Any]:
         """Start once per App/adapter; an unknown outcome requires a fresh query."""
         with self._lock:
             if self._closed:
                 raise RuntimeError("authorization service is closed")
+            if self._receipts.failed:
+                raise AuthorizationReceiptError("authorization receipt recovery required")
+            if capabilities is not None:
+                required = {item.id for item in LARK_GATEWAY_CAPABILITIES if item.requirement == "required"}
+                if (not isinstance(capabilities, (list, tuple)) or not all(isinstance(item, str) for item in capabilities)
+                        or not required <= set(capabilities) <= set(CAPABILITY_IDS)):
+                    raise ValueError("explicit required capabilities and supported optional capabilities are required")
+                capabilities = sorted(set(capabilities))
+            if operation_key is not None:
+                if not isinstance(operation_key, str) or not 1 <= len(operation_key) <= 128:
+                    raise ValueError("invalid operation key")
             configured = configuration(self._home, self._state_dir, adapter)
             app_id = configured["appId"]
+            for op in self._operations.values():
+                if operation_key is not None and op.get("operationKey") == operation_key:
+                    if (op["adapter"], op["appId"], op.get("capabilities")) != (adapter, app_id, capabilities):
+                        raise ValueError("operation key belongs to a different authorization")
+                    return deepcopy(op)
             for op in self._operations.values():
                 if op["adapter"] != adapter:
                     continue
@@ -176,19 +229,28 @@ class LarkAuthorizationService:
             for op in self._operations.values():
                 if (op["adapter"] == adapter and op["appId"] == app_id
                         and op["status"] in _ACTIVE | {"unknown"}):
+                    if op.get("capabilities") != capabilities:
+                        raise ValueError("active authorization has different capabilities")
                     return deepcopy(op)
             grant = self._grants.get(adapter, configured)
             if grant.get("appId") != app_id:
                 grant = configured
             op = {"operationId": uuid4().hex, "adapter": adapter, "appId": app_id,
                   "status": "starting", "authorization": deepcopy(grant)}
+            if capabilities is not None:
+                op["capabilities"] = capabilities
+            if operation_key is not None:
+                op["operationKey"] = operation_key
             if len(self._operations) >= 128:
                 oldest = next((key for key, value in self._operations.items()
                                if value["status"] in _TERMINAL - {"unknown"} and key not in self._reserved), None)
                 if oldest is None:
                     raise RuntimeError("authorization operation capacity reached")
+                if self._receipts.path is not None:
+                    raise RuntimeError("authorization receipt capacity reached")
                 self._operations.pop(oldest)
             self._operations[op["operationId"]] = op
+            self._save()
             if app_id is None:
                 op.update(status="failed", errorCode=configured["reason"])
             elif not self._reserve(op["operationId"]):
@@ -199,6 +261,7 @@ class LarkAuthorizationService:
                 except Exception:  # noqa: BLE001 - no worker admitted
                     self._cleanup(op["operationId"])
                     op.update(status="failed", errorCode="AUTHORIZATION_UNAVAILABLE")
+            self._save()
             return deepcopy(op)
 
     def operation(self, operation_id: str) -> dict[str, Any]:
@@ -224,6 +287,11 @@ class LarkAuthorizationService:
                 self._grants[op["adapter"]] = deepcopy(grant)
             if error is not None:
                 op["errorCode"] = error
+            try:
+                self._save()
+            except AuthorizationReceiptError:
+                op.update(status="unknown", errorCode="AUTHORIZATION_RECEIPT_UNCONFIRMED")
+                raise
 
     def _monitor(self, operation_id: str) -> None:
         terminal, grant, error = "unknown", None, "AUTHORIZATION_TIMEOUT"
@@ -233,7 +301,10 @@ class LarkAuthorizationService:
                 if self._closed or op["status"] not in _ACTIVE:
                     return
                 adapter, app_id = op["adapter"], op["appId"]
-                handle = self._registrar(self._job("authorize", adapter, app_id))
+                job = self._job("authorize", adapter, app_id)
+                if "capabilities" in op:
+                    job["capabilities"] = op["capabilities"]
+                handle = self._registrar(job)
                 self._handles[operation_id] = handle
             started = time.monotonic()
             deadline = started + self._startup_timeout
@@ -252,6 +323,8 @@ class LarkAuthorizationService:
                     grant = _inventory(value.get("authorization"), adapter, app_id)
                     terminal = {"authorized": "succeeded", "unauthorized": "failed"}.get(grant["authorization"], "unknown")
                     error = None if terminal == "succeeded" else "SCOPE_GRANTS_UNCONFIRMED"
+                    if terminal == "succeeded" and not self._satisfied(op, grant):
+                        terminal, error = "failed", "REQUESTED_SCOPES_MISSING"
                     break
                 if state in _TERMINAL - {"succeeded"}:
                     terminal, error = state, "AUTHORIZATION_" + state.upper()
@@ -293,7 +366,10 @@ class LarkAuthorizationService:
         with self._lock:
             self._closed = True
             for identity in self._operations:
-                self._settle(identity, "cancelled", error="SERVICE_CLOSED")
+                try:
+                    self._settle(identity, "unknown", error="SERVICE_CLOSED")
+                except AuthorizationReceiptError:
+                    pass
             identities = list(self._reserved)
         try:
             for identity in identities:

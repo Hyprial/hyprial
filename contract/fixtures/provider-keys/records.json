@@ -1,0 +1,79 @@
+{
+  "grantStateRecord": {
+    "payload": {
+      "agent": "12345678-1234-4234-8234-123456789abc",
+      "environmentNames": [
+        "SYNTHETIC_API_KEY"
+      ],
+      "grant": {
+        "payload": {
+          "agent": "12345678-1234-4234-8234-123456789abc",
+          "dekVersion": 1,
+          "expiresAt": 86401000,
+          "issuedAt": 1000,
+          "keyId": "pk.mfrggzdfmztwq2lknnwg23tpob",
+          "owner": "test-sub",
+          "provider": "synthetic",
+          "recipientKeyId": "x25519:a0289810032eb417274eebc4a38e6899",
+          "v": 1
+        },
+        "sealedBy": {
+          "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+          "sig": "noJrd9VPBmZESJq9a/EKXT9hajdxvL3eRnNQPX5pSjX4OrmJvnXf0Afq4rqTpNl9CeO9oah3oUtnyzy8EUIWCg=="
+        }
+      },
+      "grantId": "synthetic",
+      "keyId": "pk.mfrggzdfmztwq2lknnwg23tpob",
+      "legacyRef": null,
+      "owner": "test-sub",
+      "provider": "synthetic",
+      "seq": 1,
+      "state": "active",
+      "type": "provider-grant-state",
+      "updatedAt": 1000,
+      "v": 1
+    },
+    "sealedBy": {
+      "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+      "sig": "W4USLF2iLR01F3RL4UvFk1OY2LnO7MLLLVORQmVcXvAeGiFH/d5lUmGt1qeu8YMdfImdfBwVY6ucmxGW9lrtCg=="
+    }
+  },
+  "keyRecord": {
+    "payload": {
+      "createdAt": 1000,
+      "dekVersion": 1,
+      "envelopeDigest": "f15223f38aed499a796b973b85ef2a4365466e16b18d68917207e6eb0e752578",
+      "environmentNames": [
+        "SYNTHETIC_API_KEY"
+      ],
+      "keyId": "pk.mfrggzdfmztwq2lknnwg23tpob",
+      "kind": "api-key",
+      "label": "synthetic test key",
+      "legacyRef": null,
+      "owner": "test-sub",
+      "provider": "synthetic",
+      "recipients": [
+        {
+          "deviceUid": "device-a",
+          "recipientKeyId": "x25519:a0289810032eb417274eebc4a38e6899",
+          "role": "owner-device"
+        }
+      ],
+      "seq": 1,
+      "state": "active",
+      "type": "provider-key",
+      "updatedAt": 1000,
+      "v": 1
+    },
+    "sealedBy": {
+      "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+      "sig": "P3nhyQEiIRRCJ52aPnSjxRqg5dJA5OJ1nb82szj8ma+y4L/f9E0C0LTmJHbv1l+BINGGOiSpBpi43YHTxzOCCA=="
+    }
+  },
+  "notice": "PUBLIC SYNTHETIC TEST KEYS ONLY; never use these keys in production",
+  "owner": "test-sub",
+  "ownerKeyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
+  "ownerPrivate": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "ownerPublic": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "recordPurpose": "hyprial/provider-key/record/v1"
+}

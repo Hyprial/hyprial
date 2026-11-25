@@ -2,7 +2,6 @@
   "baseSha": "ee383f80c1505805ea1bb128157ed09896604eca",
   "evidence": "HYPRIAL_SCHEMA2_EVIDENCE=1 uv run pytest tests/daemon/desired_state/test_adapter_rollback.py tests/integration/smolvm/runtime/test_smolvm_runtime_state.py -q",
   "generate": "uv run python scripts/verify/regenerate_adapter_model_goldens.py",
-  "pinsRowsJson": "[[\"X\",\"X\"]]",
   "schema1": {
     "asMailbox": false,
     "channelPins": {

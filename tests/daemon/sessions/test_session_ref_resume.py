@@ -8,6 +8,8 @@ the legacy Pi and Codex recovery contracts below remain separate.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import json
 import subprocess
 import sys
@@ -23,6 +25,7 @@ from hyprial.daemon.impl import (
     ManagedHarnessRuntime,
 )
 from hyprial.daemon.impl.api import HarnessDelivery, HarnessResultStatus
+from hyprial.daemon.impl.application.actors.lifecycle_ops import _LifecycleOpsMixin
 from hyprial.daemon.impl.harnesses.agent_sdk import ClaudeAgentSdkProcess, IsolatedAgentSdkClient
 from hyprial.daemon.impl.harnesses.codex.client import CodexAppServerProcess
 from hyprial.daemon.impl.harnesses.pi.rpc_process import PiRpcProcess
@@ -49,7 +52,7 @@ def test_sync_session_refs_updates_only_the_ref(tmp_path: Path) -> None:
         _pi_spec(args=("--model", "gpt-5.5"), cwd="/work", nickname="brick")
     )
 
-    store.sync_harness_session_refs({("pi", "worker"): "session-1"})
+    store.sync_harness_session_refs({("pi", "worker", "worker"): "session-1"})
 
     spec = store.load().harnesses[0]
     assert spec.session_ref == "session-1"
@@ -65,7 +68,7 @@ def test_sync_session_refs_ignores_harnesses_absent_from_desired_state(
     store = DesiredStateStore(tmp_path / "desired-state.json")
     store.upsert_harness(_pi_spec())
 
-    store.sync_harness_session_refs({("codex", "ghost"): "thread-9"})
+    store.sync_harness_session_refs({("codex", "ghost", "ghost"): "thread-9"})
 
     assert store.load().harnesses[0].session_ref is None
 
@@ -77,7 +80,7 @@ def test_sync_session_refs_skips_the_write_when_nothing_changed(
 
     store = DesiredStateStore(tmp_path / "desired-state.json")
     store.upsert_harness(_pi_spec())
-    store.sync_harness_session_refs({("pi", "worker"): "session-1"})
+    store.sync_harness_session_refs({("pi", "worker", "worker"): "session-1"})
 
     # "Nothing changed => nothing written": the store's only write path is
     # the SQLite transaction, so a no-op sync must never reach it.
@@ -87,7 +90,7 @@ def test_sync_session_refs_skips_the_write_when_nothing_changed(
     original = DesiredStateSqliteShadow.write_document
     DesiredStateSqliteShadow.write_document = _boom  # type: ignore[method-assign]
     try:
-        store.sync_harness_session_refs({("pi", "worker"): "session-1"})
+        store.sync_harness_session_refs({("pi", "worker", "worker"): "session-1"})
     finally:
         DesiredStateSqliteShadow.write_document = original  # type: ignore[method-assign]
     assert store.load().harnesses[0].session_ref == "session-1"
@@ -99,7 +102,7 @@ def test_operator_restart_clears_the_persisted_ref(tmp_path: Path) -> None:
 
     store = DesiredStateStore(tmp_path / "desired-state.json")
     store.upsert_harness(_pi_spec())
-    store.sync_harness_session_refs({("pi", "worker"): "session-1"})
+    store.sync_harness_session_refs({("pi", "worker", "worker"): "session-1"})
     assert store.load().harnesses[0].session_ref == "session-1"
 
     store.upsert_harness(_pi_spec(args=("--model", "fresh")))
@@ -107,6 +110,42 @@ def test_operator_restart_clears_the_persisted_ref(tmp_path: Path) -> None:
     spec = store.load().harnesses[0]
     assert spec.session_ref is None
     assert spec.args == ("--model", "fresh")
+
+
+def test_failed_member_compensation_preserves_sibling_harness_and_resource(
+    tmp_path: Path,
+) -> None:
+    class _Liveness:
+        def release(self, actor_uri: str) -> None:
+            return None
+
+    app = object.__new__(_LifecycleOpsMixin)
+    app.desired_state = DesiredStateStore(tmp_path / "desired-state.json")
+    app._agent_liveness = _Liveness()
+    app._log = lambda *args, **kwargs: None
+    app.desired_state.upsert_harness(
+        _pi_spec(name="shared", member="member-a")
+    )
+    app.desired_state.upsert_harness(
+        _pi_spec(name="shared", member="member-b")
+    )
+
+    app._compensate_replace(
+        "agent:shared", _pi_spec(name="shared", member="member-a")
+    )
+
+    remaining = app.desired_state.load()
+    assert [(item.name, item.member) for item in remaining.harnesses] == [
+        ("shared", "member-b")
+    ]
+    assert {
+        item.resource_key: item.active
+        for item in remaining.lifecycle_resources
+        if item.domain == "harness"
+    } == {
+        "harness:pi:member-a": False,
+        "harness:pi:member-b": True,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -162,7 +201,7 @@ class _SessionLauncher:
 
 
 def _runtime(
-    tmp_path: Path, launcher: _SessionLauncher
+    tmp_path: Path, launcher: _SessionLauncher, *, actor_host
 ) -> tuple[DaemonEventBridge, DesiredStateStore]:
     store = DesiredStateStore(tmp_path / "desired-state.json")
     harnesses = ManagedHarnessRuntime(launcher, desired_state=store)
@@ -172,16 +211,17 @@ def _runtime(
         desired_state=store,
         transport=_FakeTransport(),  # type: ignore[arg-type]
         inbox=_FakeInbox(),  # type: ignore[arg-type]
-        harnesses=harnesses,
+        harnesses=harnesses, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     return runtime, store
 
 
 def test_learned_session_ref_is_persisted_and_resumed_after_restart(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     launcher = _SessionLauncher(session_ref=None)
-    runtime, store = _runtime(tmp_path, launcher)
+    runtime, store = _runtime(tmp_path, launcher, actor_host=actor_host)
     store.upsert_harness(_pi_spec())
     runtime.harnesses.restore(store.load().harnesses)
     runtime.start()
@@ -198,7 +238,7 @@ def test_learned_session_ref_is_persisted_and_resumed_after_restart(
     # Simulated daemon restart: a fresh runtime over the same state dir
     # restores the harness WITH the persisted ref on the launch spec.
     restart_launcher = _SessionLauncher(session_ref="learned-session-1")
-    restarted, _store = _runtime(tmp_path, restart_launcher)
+    restarted, _store = _runtime(tmp_path, restart_launcher, actor_host=actor_host)
     restarted.harnesses.restore(_store.load().harnesses)
     restarted.start()
     try:
@@ -209,10 +249,10 @@ def test_learned_session_ref_is_persisted_and_resumed_after_restart(
 
 
 def test_session_ref_persist_failure_does_not_break_reconcile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, actor_host
 ) -> None:
     events: list[tuple[object, ...]] = []
-    runtime, store = _runtime(tmp_path, _SessionLauncher(session_ref="s-1"))
+    runtime, store = _runtime(tmp_path, _SessionLauncher(session_ref="s-1"), actor_host=actor_host)
     runtime._logger = lambda *args, **fields: events.append(args)
     store.upsert_harness(_pi_spec())
     runtime.harnesses.restore(store.load().harnesses)
@@ -231,14 +271,14 @@ def test_session_ref_persist_failure_does_not_break_reconcile(
 
 
 def test_an_unchanged_ref_is_not_sent_to_the_state_writer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, actor_host
 ) -> None:
     # Production 2026-10-05: once any worker held a ref, every reconcile pass
     # (~0.6/s) sent SyncHarnessSessionRefs to the single state writer, which
     # loaded the whole desired state twice to find nothing changed -- ~10% of
     # the writer.  A ref already persisted must not reach the writer at all.
     launcher = _SessionLauncher(session_ref="s-1")
-    runtime, store = _runtime(tmp_path, launcher)
+    runtime, store = _runtime(tmp_path, launcher, actor_host=actor_host)
     store.upsert_harness(_pi_spec())
     runtime.harnesses.restore(store.load().harnesses)
     runtime.start()
@@ -407,7 +447,7 @@ def test_desired_state_keeps_a_colon_session_ref_byte_for_byte(
 
     store = DesiredStateStore(tmp_path / "desired-state.json")
     store.upsert_harness(_pi_spec())
-    store.sync_harness_session_refs({("pi", "worker"): "squire:alw:usrb"})
+    store.sync_harness_session_refs({("pi", "worker", "worker"): "squire:alw:usrb"})
 
     assert store.load().harnesses[0].session_ref == "squire:alw:usrb"
 

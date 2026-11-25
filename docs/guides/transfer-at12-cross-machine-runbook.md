@@ -1,3 +1,5 @@
+> **已退役。** 本文件描述的 `hyprial agent move`、隐藏的 `hyprial agent transfer *` 命令与 `transfer.*` daemon 方法（SSH 链路与 P2 custody）已移除，唯一的迁移入口是 `hyprial agent teleport`。以下正文保留为历史记录，其中的命令不再可用。
+
 # 跨机 agent 转移：支持矩阵、支持边界与回滚（AT12 / 卡 361）
 
 日期：2026-09-30。机器可读矩阵：`docs/evidence/transfer-at12-support-matrix.json`（守卫测试 `tests/test_transfer_support_matrix.py`）。

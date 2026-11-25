@@ -403,9 +403,8 @@ def test_a_worker_caller_cannot_change_the_machine_default(
 def test_a_hosted_visitor_is_not_seeded_with_this_users_login(
     provider_app: DaemonApplication, tmp_path: Path
 ) -> None:
-    provider_app.handle(
-        "agent.host-invite",
-        {"name": "guest", "owner": "visitor", "cwd": str(tmp_path / "guest")},
+    provider_app.agents.create_transfer_hosted(
+        "guest", pinned_owner="visitor", cwd=str(tmp_path / "guest")
     )
 
     with pytest.raises(DaemonRequestError) as refused:
@@ -436,9 +435,8 @@ def test_unowned_provider_methods_are_left_to_the_agent_handler(
 def test_logout_refuses_a_hosted_visitor_like_login(
     provider_app: DaemonApplication, tmp_path: Path
 ) -> None:
-    provider_app.handle(
-        "agent.host-invite",
-        {"name": "guest", "owner": "visitor", "cwd": str(tmp_path / "guest")},
+    provider_app.agents.create_transfer_hosted(
+        "guest", pinned_owner="visitor", cwd=str(tmp_path / "guest")
     )
 
     with pytest.raises(DaemonRequestError) as refused:

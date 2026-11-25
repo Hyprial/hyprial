@@ -8,10 +8,8 @@ import time
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
-from hyprial.kernel import ActorRuntime
 from hyprial.kernel import ActorSpec, AdmissionResult
-from hyprial.kernel import EffectLane, EffectRequest, EffectCompleted
-from hyprial.kernel import GenerationScheduler
+from hyprial.kernel import EffectRequest, EffectCompleted
 from hyprial.biz.impl.usage import UsageCache, SourceSnapshot, SOURCES, REFRESH_INTERVAL_SECONDS
 
 
@@ -29,7 +27,7 @@ class FrozenSource:
 class UsageAuthority:
     """One refresh lane owns collectors/backoff; one actor publishes readings."""
 
-    def __init__(self, **options):
+    def __init__(self, *, actor_host=None, scheduler=None, **options):
         self._collector = UsageCache(**options)
         self._interval = options.get(
             "refresh_interval_seconds", REFRESH_INTERVAL_SECONDS
@@ -44,21 +42,46 @@ class UsageAuthority:
         self._generation = 1
         self._sequence = 0
         self._current_operation = None
-        self._runtime = ActorRuntime()
-        self._scheduler = GenerationScheduler()
-        self._handle = self._runtime.start(
-            ActorSpec(
+        self._host = None
+        self._scheduler = None
+        self._cell = None
+        self._effects = None
+        if actor_host is not None or scheduler is not None:
+            self.bind(host=actor_host, scheduler=scheduler)
+
+    def bind(self, *, host, scheduler):
+        if host is None or scheduler is None:
+            raise ValueError("usage requires both host and scheduler")
+        with self._guard:
+            if self._host is not None:
+                if self._host is host and self._scheduler is scheduler:
+                    return
+                raise ValueError("usage is already bound")
+            if self._closed:
+                raise RuntimeError("closed usage cannot be bound")
+            cell = host.spawn(ActorSpec(
                 name="usage-cache",
                 handler_factory=lambda: self._receive,
                 mailbox_capacity=8,
-            )
-        )
-        self._effects = EffectLane(
-            name="usage-collectors",
-            execute=self._collect,
-            complete=lambda event: self._runtime.tell(self._handle, event),
-            capacity=1,
-        )
+            ))
+            try:
+                effects = host.effect_lane(
+                    name="usage-collectors",
+                    execute=self._collect,
+                    complete=cell.tell,
+                    capacity=1,
+                )
+            except BaseException:
+                cell.stop()
+                raise
+            self._host = host
+            self._scheduler = scheduler
+            self._cell = cell
+            self._effects = effects
+
+    def _require_bound(self):
+        if self._cell is None:
+            raise RuntimeError("usage must be bound before refresh")
 
     def _collect(self, request):
         self._collector.refresh_once()
@@ -132,6 +155,7 @@ class UsageAuthority:
 
     def start(self):
         with self._guard:
+            self._require_bound()
             if self._started or self._closed:
                 return
             self._started = True
@@ -139,9 +163,10 @@ class UsageAuthority:
 
     def refresh_once(self):
         with self._guard:
+            self._require_bound()
             if self._closed:
                 return AdmissionResult.CLOSED
-            return self._runtime.tell(self._handle, RefreshUsage(self._generation))
+            return self._cell.tell(RefreshUsage(self._generation))
 
     def snapshots(self):
         with self._guard:
@@ -169,10 +194,11 @@ class UsageAuthority:
         deadline = time.monotonic() + max(0.0, timeout)
         with self._guard:
             self._closed = True
-        self._scheduler.shutdown(max(0.0, deadline - time.monotonic()))
-        # A queued refresh sees closed; accepted collector effects still settle.
+        if self._cell is None:
+            return True
+        self._scheduler.cancel("usage")
         while True:
-            state = self._runtime.snapshot(self._handle)
+            state = self._cell.snapshot()
             with self._guard:
                 active = self._active
             if not active and state.queued == state.in_flight == 0:
@@ -182,4 +208,4 @@ class UsageAuthority:
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        return self._cell.stop(max(0.0, deadline - time.monotonic()))

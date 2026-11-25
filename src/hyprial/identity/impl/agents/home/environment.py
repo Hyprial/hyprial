@@ -9,14 +9,19 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hyprial.identity.impl.agents.runtime.secrets  import ResolvedSecret
 
+_LOG = logging.getLogger(__name__)
+
+OwnerSecrets = Callable[[str], "tuple[frozenset[str], tuple[Any, ...]] | None"]
+
 if TYPE_CHECKING:
+    from .native_imports.launch import NativeAuthLaunch
     from hyprial.identity.impl.agents.runtime.context  import AgentRuntimeContext
     from hyprial.identity.impl.agents.state.worker_proxy  import WorkerProxyRoute
 
@@ -45,12 +50,20 @@ def resolve_agent_secrets(
     hyprial_home: Path,
     agent_name: str,
     expected_grants: tuple[tuple[str, int], ...] | None = None,
+    owner_secrets: OwnerSecrets | None = None,
 ) -> tuple[ResolvedSecret, ...]:
     """Resolve one exact inventory through the shared grant resolver.
 
     ``expected_grants`` binds an interactive launch token to the grant
     revisions present when its runtime context was minted. A revoke or
     replacement before acquire is a refusal, not a silent secretless launch.
+
+    ``owner_secrets`` is the daemon's owner-key authority for this launch: it
+    returns None when that authority is off, else the grant slots it holds and
+    their values.  A held slot shadows the legacy grant of the same id (single
+    authority); every other legacy grant resolves exactly as before.  Every
+    held value is validated against the slots and the legacy inventory before
+    any legacy value is read, so a malformed answer fails the launch first.
     """
 
     from hyprial.identity.impl.agents.runtime.secrets import (
@@ -58,12 +71,81 @@ def resolve_agent_secrets(
         SecretResolver,
     )
 
+    held = None if owner_secrets is None else owner_secrets(agent_name)
+    slots = frozenset() if held is None else held[0]
     grants = tuple(registry.secret_inventory(agent_name))
     observed = tuple((grant.grant_id, grant.revision) for grant in grants)
     if expected_grants is not None and observed != expected_grants:
         raise SecretResolutionError("grant-changed", agent_name, "authorize")
+    kept = tuple(grant for grant in grants if grant.grant_id not in slots)
+    owned = () if held is None else _owner_held(registry, agent_name, slots, held[1], kept)
+    for grant in grants:
+        if grant.grant_id in slots:
+            _LOG.warning(
+                "legacy secret grant shadowed by the owner-key authority: agent=%s grant=%s",
+                agent_name, grant.grant_id,
+            )
     resolver = SecretResolver(Path(hyprial_home), registry)
-    return tuple(resolver.resolve(agent_name, grant.grant_id) for grant in grants)
+    return tuple(resolver.resolve(agent_name, grant.grant_id) for grant in kept) + owned
+
+
+def _owner_held(
+    registry: Any, agent_name: str, slots: frozenset[str], held: Iterable[Any], kept: Iterable[Any],
+) -> tuple[ResolvedSecret, ...]:
+    """Owner-key values as resolved secrets bound to the current incarnation.
+
+    Each held value names the entity token it was unsealed for; a rebuilt agent
+    is refused like a stale legacy grant.  Each grant id must be one of the
+    reported slots and appear once, otherwise a legacy grant of that id would
+    also be injected (two authorities for one slot).  The grant shape
+    re-validates every environment name, so reserved names fail closed; a name
+    from the base or generated child vocabulary, a name another held value or
+    a remaining legacy grant maps, also fails closed, before the composition
+    would find it.
+    """
+
+    from hyprial.identity.impl.agents.runtime.secrets import SecretResolutionError
+
+    entity_token = registry.require(agent_name).entity_token
+    claimed = {name for grant in kept for name in grant.environment_names}
+    claimed |= BASE_CHILD_ENVIRONMENT_NAMES | GENERATED_CHILD_ENVIRONMENT_NAMES
+    seen: set[str] = set()
+    resolved: list[ResolvedSecret] = []
+    for secret in held:
+        if secret.entity_token != entity_token:
+            raise SecretResolutionError("grant-stale", agent_name, "owner-key")
+        grant = _owner_grant(agent_name, entity_token, secret)
+        names = set(grant.environment_names) if grant is not None else set()
+        if (grant is None or grant.grant_id not in slots or grant.grant_id in seen
+                or names & claimed):
+            raise SecretResolutionError("invalid", agent_name, "owner-key")
+        seen.add(grant.grant_id)
+        claimed |= names
+        resolved.append(ResolvedSecret(grant, secret.value))
+    return tuple(resolved)
+
+
+def _owner_grant(agent_name: str, entity_token: str, secret: Any) -> Any:
+    """The legacy grant shape of one held value, or None when it is malformed or empty."""
+
+    from hyprial.identity.impl.agents.runtime.secrets import SecretGrant, SecretSource
+
+    if not isinstance(secret.value, str) or not secret.value:
+        return None
+    try:
+        return SecretGrant(
+            actor=agent_name,
+            entity_token=entity_token,
+            grant_id=secret.grant_id,
+            source=SecretSource.USER_PROVIDER,
+            entry_id=secret.entry_id,
+            field_name=None,
+            environment_names=tuple(secret.environment_names),
+            revision=secret.revision,
+        )
+    except (TypeError, ValueError):
+        return None
+
 
 BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
     {
@@ -290,6 +372,7 @@ class ChildEnvironmentLaunch:
     )
     # Durable creation provenance, not an inference from the actor's name.
     managed_creation: bool = False
+    native_auth_launch: NativeAuthLaunch | None = field(default=None, repr=False, compare=False)
 
 
 #: The per-scheme proxy names a catch-all proxy may stand in for.
@@ -364,6 +447,7 @@ def build_complete_child_environment(
     base: Mapping[str, str],
     generated: Mapping[str, str],
     secrets: Iterable[ResolvedSecret] = (),
+    model_service_environment: Mapping[str, str] | None = None,
 ) -> CompleteChildEnvironment:
     """Construct from approved base, daemon-generated, and granted values only.
 
@@ -389,6 +473,14 @@ def build_complete_child_environment(
         if not base["GIT_CONFIG_VALUE_0"]:
             raise ValueError("Git one-shot environment source must not be blank")
 
+    secrets = tuple(secrets)
+    route_admitted = bool(model_service_environment)
+    if model_service_environment is not None and (
+        not any(secret.route is not None for secret in secrets)
+        or any(name != "HYPRIAL_OPENAI_BASE_URL" for name in model_service_environment)
+    ):
+        raise ValueError("model service routing has no supported granted route")
+    base = {**base, **(model_service_environment or {})}
     combined: dict[str, str] = {}
     for mapping in (base, generated):
         for name, value in mapping.items():
@@ -398,7 +490,8 @@ def build_complete_child_environment(
                 raise ValueError("child environment name is mapped twice")
             combined[name] = value
     for resolved in secrets:
-        for name, value in resolved.environment().items():
+        values = resolved.environment(route_admitted=True) if route_admitted else resolved.environment()
+        for name, value in values.items():
             if name in combined:
                 raise ValueError("secret environment name conflicts with another mapping")
             combined[name] = value
@@ -419,6 +512,8 @@ def compose_worker_child_launch(
     agent_name: str,
     worker_proxy: "WorkerProxyRoute | None" = None,
     harness: str | None = None,
+    owner_secrets: OwnerSecrets | None = None,
+    model_service_admission: Callable[[tuple[ResolvedSecret, ...]], Mapping[str, str]] | None = None,
 ) -> ChildEnvironmentLaunch:
     """The daemon-side composition of one worker's complete environment (B1).
 
@@ -438,6 +533,8 @@ def compose_worker_child_launch(
     names plus the ``all_proxy`` derivation; a route replaces every proxy
     name wholesale -- the daemon's own proxy values are not consulted
     except as the ``NO_PROXY`` fallback.
+
+    ``owner_secrets`` is passed through to :func:`resolve_agent_secrets`.
     """
 
     from hyprial.identity.impl.agents.home.provisioner  import AgentHomeError
@@ -445,6 +542,7 @@ def compose_worker_child_launch(
         registry=registry,
         hyprial_home=hyprial_home,
         agent_name=agent_name,
+        owner_secrets=owner_secrets,
     )
     generated = dict(channel.identity_environment())
     claude_executable = shutil.which("claude")
@@ -504,7 +602,9 @@ def compose_worker_child_launch(
         base.update(routed_proxy_environment(environ, worker_proxy))
     generated.update(runtime_environment)
     complete = build_complete_child_environment(
-        base=base, generated=generated, secrets=resolved
+        base=base, generated=generated, secrets=resolved,
+        model_service_environment=(None if model_service_admission is None
+                                   else model_service_admission(resolved) or None),
     )
     if runtime_context is not None and runtime_context.shared_credential is not None:
         from hyprial.identity.impl.agents.runtime.context  import validate_shared_credential_environment
@@ -516,6 +616,16 @@ def compose_worker_child_launch(
                 for secret in resolved
                 for name in secret.grant.environment_names
             ),
+        )
+    from .native_imports.launch import capture_native_auth_launch
+
+    native_auth_launch = None
+    selected_harness = harness or registry.require(agent_name).preferred_harness
+    if (selected_harness in {"claude", "codex", "pi", "agy"}
+            and "HYPRIAL_AGENT_DIR" in generated):
+        native_auth_launch = capture_native_auth_launch(
+            Path(generated["HYPRIAL_AGENT_DIR"]), selected_harness,
+            import_record=registry.native_credential_import_record(agent_name),
         )
     return ChildEnvironmentLaunch(
         environment=complete,
@@ -530,6 +640,7 @@ def compose_worker_child_launch(
         ),
         runtime_context=runtime_context,
         agent_home_profile_applied=runtime_context is not None,
+        native_auth_launch=native_auth_launch,
     )
 
 

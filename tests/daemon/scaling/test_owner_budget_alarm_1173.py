@@ -47,7 +47,7 @@ class _Pre1173:
     ) -> str:
         """The network identity this daemon mints for a managed harness.
 
-        A transferred or host-invited spec carries ``pinned_owner``: the
+        A transferred spec carries ``pinned_owner``: the
         URI keeps the admitted owner instead of this daemon's ambient one,
         so hosting never silently renames the worker. The machine
         segment stays this node's id -- the worker physically lives here.

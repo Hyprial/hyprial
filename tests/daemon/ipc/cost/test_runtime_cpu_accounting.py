@@ -13,7 +13,7 @@ from hyprial.daemon.impl.ipc.ipc_stats import ipc_stats_payload
 from hyprial.daemon.impl.state_persistence.alarm import CpuOwnerBudgetAlarm
 from hyprial.kernel import (
     RUNTIME_OVERFLOW_OWNER,
-    ActorRuntime,
+    ActorEngineConfig,
     ActorSpec,
     AdmissionResult,
     CallCostCounters,
@@ -21,6 +21,7 @@ from hyprial.kernel import (
     EffectLane,
     EffectRequest,
     RuntimeCpuCounters,
+    create_engine,
     runtime_cpu_counters,
 )
 from hyprial.kernel.impl.facts.cost_counters import _RUNTIME_EXCLUDED_OWNERS
@@ -88,14 +89,14 @@ def test_effect_and_actor_choke_points_attribute_exactly_one_unit() -> None:
 
     actor_costs = RuntimeCpuCounters()
     handled = threading.Event()
-    runtime = ActorRuntime(cpu_accounting=actor_costs)
-    actor = runtime.start(
+    engine = create_engine(ActorEngineConfig(cpu_accounting=actor_costs))
+    actor = engine.spawn(
         ActorSpec(name="probe-actor", handler_factory=lambda: lambda _command: handled.set())
     )
-    assert runtime.tell(actor, ProbeCommand(1)) is AdmissionResult.ACCEPTED
+    assert engine.tell(actor, ProbeCommand(1)) is AdmissionResult.ACCEPTED
     assert handled.wait(1)
-    _wait_until(lambda: runtime.snapshot(actor).in_flight == 0)
-    assert runtime.drain(1).complete
+    _wait_until(lambda: engine.snapshot(actor).in_flight == 0)
+    assert engine.drain(None, 1).complete
     assert actor_costs.snapshot() == {
         "probe-actor/ProbeCommand": {
             "calls": 1,
@@ -185,13 +186,13 @@ def test_failing_accounting_never_changes_effect_or_dispatch_outcome() -> None:
         if len(handled) == 2:
             both.set()
 
-    runtime = ActorRuntime(cpu_accounting=counters)
-    actor = runtime.start(ActorSpec(name="probe-actor", handler_factory=lambda: handler))
-    assert runtime.tell(actor, ProbeCommand(1)) is AdmissionResult.ACCEPTED
-    assert runtime.tell(actor, ProbeCommand(2)) is AdmissionResult.ACCEPTED
+    engine = create_engine(ActorEngineConfig(cpu_accounting=counters))
+    actor = engine.spawn(ActorSpec(name="probe-actor", handler_factory=lambda: handler))
+    assert engine.tell(actor, ProbeCommand(1)) is AdmissionResult.ACCEPTED
+    assert engine.tell(actor, ProbeCommand(2)) is AdmissionResult.ACCEPTED
     assert both.wait(1)
     assert handled == [1, 2]
-    assert runtime.drain(1).complete
+    assert engine.drain(None, 1).complete
 
 
 def test_excluded_owner_names_are_declared_by_real_components() -> None:
@@ -218,14 +219,14 @@ def test_session_actor_keeps_existing_side_without_runtime_double_count() -> Non
             type(command).__name__, cpu_seconds=time.thread_time() - started
         )
 
-    runtime = ActorRuntime(cpu_accounting=runtime_cpu_counters)
-    actor = runtime.start(
+    engine = create_engine(ActorEngineConfig(cpu_accounting=runtime_cpu_counters))
+    actor = engine.spawn(
         ActorSpec(name="session-authority", handler_factory=lambda: handle)
     )
-    assert runtime.tell(actor, ProbeCommand(1)) is AdmissionResult.ACCEPTED
+    assert engine.tell(actor, ProbeCommand(1)) is AdmissionResult.ACCEPTED
     assert handled.wait(1)
-    _wait_until(lambda: runtime.snapshot(actor).in_flight == 0)
-    assert runtime.drain(1).complete
+    _wait_until(lambda: engine.snapshot(actor).in_flight == 0)
+    assert engine.drain(None, 1).complete
 
     assert explicit.snapshot()["ProbeCommand"]["calls"] == 1
     assert (

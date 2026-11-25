@@ -27,11 +27,11 @@ from hyprial.kernel.impl.actor_runtime import AdmissionResult
 WAIT_TIMEOUT_SECONDS = float(os.environ.get("HYPRIAL_TEST_WAIT_SECONDS", "5.0"))
 
 
-def test_fresh_home_switch_is_observed_off_caller_thread(tmp_path, monkeypatch) -> None:
+def test_fresh_home_switch_is_observed_off_caller_thread(tmp_path, monkeypatch, actor_host, generation_scheduler) -> None:
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps({"autoUpgrade": True}))
-    actor = AutoUpdateAuthority(state_dir=tmp_path / "state", hyprial_home=home)
+    actor = AutoUpdateAuthority(actor_host=actor_host, scheduler=generation_scheduler, state_dir=tmp_path / "state", hyprial_home=home)
     caller = threading.get_ident()
     observed: list[int] = []
     original = actor._policy._auto_upgrade_enabled
@@ -52,11 +52,11 @@ def test_fresh_home_switch_is_observed_off_caller_thread(tmp_path, monkeypatch) 
         assert actor.stop(timeout=2)
 
 
-def test_timed_out_policy_read_retains_effect_until_completion(tmp_path, monkeypatch) -> None:
+def test_timed_out_policy_read_retains_effect_until_completion(tmp_path, monkeypatch, actor_host, generation_scheduler) -> None:
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps({"autoUpgrade": True}))
-    actor = AutoUpdateAuthority(state_dir=tmp_path / "state", hyprial_home=home)
+    actor = AutoUpdateAuthority(actor_host=actor_host, scheduler=generation_scheduler, state_dir=tmp_path / "state", hyprial_home=home)
     entered, release = threading.Event(), threading.Event()
 
     def held_read() -> bool:
@@ -81,8 +81,8 @@ def test_timed_out_policy_read_retains_effect_until_completion(tmp_path, monkeyp
         actor.stop(timeout=2)
 
 
-def test_timed_out_policy_read_releases_credit_after_effect_refusal(tmp_path, monkeypatch) -> None:
-    actor = AutoUpdateAuthority(state_dir=tmp_path / "state", hyprial_home=tmp_path)
+def test_timed_out_policy_read_releases_credit_after_effect_refusal(tmp_path, monkeypatch, actor_host, generation_scheduler) -> None:
+    actor = AutoUpdateAuthority(actor_host=actor_host, scheduler=generation_scheduler, state_dir=tmp_path / "state", hyprial_home=tmp_path)
     entered, release = threading.Event(), threading.Event()
 
     def held_refusal(request):

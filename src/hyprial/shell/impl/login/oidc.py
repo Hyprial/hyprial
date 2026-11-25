@@ -8,7 +8,6 @@ narrative remain with ``flow.py``.
 """
 from __future__ import annotations
 
-import base64
 import json
 import urllib.error
 import urllib.parse
@@ -75,30 +74,6 @@ class OidcEndpoints:
     device_authorization_endpoint: str
     token_endpoint: str
     userinfo_endpoint: str
-
-
-def _lark_union_id(payload: Mapping[str, Any], access_token: str) -> str | None:
-    """Read the allowlisted Casdoor claim, preferring the issued JWT itself."""
-
-    claims: object = None
-    parts = access_token.split(".")
-    if len(parts) == 3 and len(parts[1]) <= 65_536:
-        try:
-            encoded = parts[1] + "=" * (-len(parts[1]) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(encoded))
-        except (ValueError, TypeError, json.JSONDecodeError):
-            claims = None
-    sources = (claims, payload)
-    for source in sources:
-        properties = source.get("properties") if isinstance(source, dict) else None
-        value = (
-            properties.get("oauth_Lark_unionId")
-            if isinstance(properties, dict)
-            else None
-        )
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
 
 
 def _request_json(
@@ -362,8 +337,7 @@ def _poll_device_token(
                 "DEVICE_CODE_EXPIRED",
                 "the device code expired before authorization completed"
                 f"{cause}; re-run hyprial login. If you signed in with Feishu, "
-                "that sign-in did not approve this device: choose sign in "
-                "with an existing account rather than Feishu",
+                "that sign-in now approves this device",
             )
         try:
             status, payload = _request_json(
@@ -420,10 +394,9 @@ def _poll_device_token(
             if code == "expired_token":
                 raise LoginError(
                     "DEVICE_CODE_EXPIRED",
-                    "the device code expired; re-run hyprial login. If you "
-                    "signed in with Feishu, that sign-in did not approve this "
-                    "device: choose sign in with an existing account rather "
-                    "than Feishu",
+                    "the device code expired; re-run hyprial login. If you signed "
+                    "in with Feishu, "
+                    "that sign-in now approves this device",
                     data=error.data,
                 )
             raise error
@@ -432,8 +405,8 @@ def _poll_device_token(
 
 def _fetch_userinfo(
     endpoints: OidcEndpoints, access_token: str
-) -> tuple[str, str | None, str | None]:
-    """Step 6: bearer userinfo; returns username, sub, and Lark union_id."""
+) -> tuple[str, str | None]:
+    """Step 6: bearer userinfo; returns username and sub."""
 
     status, payload = _request_json(
         endpoints.userinfo_endpoint,
@@ -483,8 +456,4 @@ def _fetch_userinfo(
             "an administrator must extend the user-id predicate before this "
             "identity can log in, and nothing was written",
         )
-    return (
-        username.strip(),
-        subject,
-        _lark_union_id(payload, access_token),
-    )
+    return username.strip(), subject

@@ -5,8 +5,7 @@
 Button/Card 与 Tailwind 已由 #2038 接入；当前实现见
 [shadcn Button / Card 示例](../../gui/docs/shadcn.md)，本文阶段 0 描述保留为迁移起点。
 
-现行前端是根目录下的 `gui/`，技术与启动边界见 [GUI README](../../gui/README.md)、
-[占位接口](../../gui/docs/stub-interface.md) 和 [GUI 开发模式](gui-dev-mode.md)；
+现行前端是根目录下的 `gui/`，技术与启动边界见 [GUI README](../../gui/README.md) 和 [GUI 开发模式](gui-dev-mode.md)；
 仓库规则见 [AGENTS.md](../../AGENTS.md)。旧 `src/gui/` 与 `app/` 已退场，
 不作为 shadcn 接入或恢复目标。
 
@@ -25,7 +24,7 @@ TSX 编译与组件测试。阶段 0 编写时 package 尚未声明 Tailwind 或
 | --- | --- | --- |
 | `gui/src/components/primitives` | Button、Card、Dialog、Field、Notice、PageHeader、Progress、States、Stepper 等 | 保持公共接口，按消费者逐项适配 |
 | `gui/src/components` | Badge、AgentAvatar、Rail、AccountMenu 等共享组合 | 复用统一基础组件，避免复制同名实现 |
-| `gui/src/styles/tokens.css` | 旧视觉变量与 S1 `--ui-*` 语义变量 | 新组件消费 S1 语义层，保留未迁移页面的旧变量 |
+| `gui/src/styles/themes/hyprial-v5.css`、`gui/src/styles/tokens.css` | 主题变量（颜色/阴影/字体族字面量的唯一来源）与 `--ui-*` 语义别名及刻度 | 组件只消费 `--ui-*`；旧变量层已退役，见 `gui/docs/theming.zh-CN.md` |
 | `gui/src/styles/primitives.css` | 现有 `.ui-*` 控件样式 | 逐组件交接样式归属，避免双重覆盖 |
 | `gui/src/pages`、`app`、`state`、`adapters` | 页面、外壳、应用状态和占位接口 | 组件替换不改变业务状态与接口边界 |
 
@@ -85,32 +84,33 @@ gui/
 
 ## 4. 主题与样式规则
 
-新组件以 `tokens.css` 的 S1 `--ui-*` 语义层为来源，集中映射到 shadcn 变量。
-保留现有视觉选择，初始化工具的默认配色不能覆盖全局主题。
+主题文件 `themes/hyprial-v5.css` 以 shadcn 标准变量名定义颜色、阴影、字体族；`tokens.css`
+把它们别名为组件消费的 `--ui-*`，`shadcn.css` 的 `@theme inline` 把 `--color-*` 映射到同一批变量。
+初始化工具的默认配色不能覆盖全局主题。`gui/tests/theme-contract.test.ts` 强制主题文件之外零字面量。
 
-| shadcn token | 项目语义来源 |
+| shadcn token | 项目语义（组件侧别名） |
 | --- | --- |
 | `background` / `foreground` | `--ui-ground` / `--ui-ink-1` |
 | `card`、`popover` 及其 foreground | `--ui-surface` / `--ui-ink-1` |
 | `primary` / `primary-foreground` | `--ui-accent` / `--ui-on-accent` |
 | `muted` / `muted-foreground` | `--ui-ground-2` / `--ui-ink-3` |
-| `border`、`input`、`ring` | `--ui-border`、经验证的输入边框、`--ui-focus` |
-| `destructive` | `--ui-danger`，另明确与之配对的可读前景色 |
+| `border`、`input`、`ring` | `--ui-border`、`--ui-input-fill`、`--ui-focus` |
+| `destructive` | `--ui-danger`，配对前景 `--ui-danger-ink` |
 
 - `secondary`、`accent`、hover、disabled 和前景配对结合现有控件样式明确。不把
   `--muted` 或 `--ui-ink-3` 这类文字色直接作为 muted 背景。
 - 页面使用语义样式；品牌色、字号、间距、圆角和状态颜色集中维护。沿用现有 4px
   间距基准、控件尺寸、字体及动效 token，不在业务页面散布覆盖值。
-- 保留 info、positive、warning、danger、unsupported 等含义，不用主色替代错误或
+- 保留 info、positive、warning、danger 等含义，不用主色替代错误或
   成功状态。新增正常文本与实际背景的对比度至少 4.5；半透明背景按合成结果检查。
-- 当前 token 声明 light，没有完整 dark/system 主题。引入组件不等于支持暗色；
-  后续增加暗色模式时，应完整定义 token 配对并验收页面和弹层。
+- 主题文件已声明深色变量，但没有切换入口，也未目检页面。引入组件不等于支持暗色；
+  后续增加暗色模式时，应验收页面和弹层。
 - Tailwind 样式限定到迁移区域，审查 Preflight 对原有页面的影响。仅给 utility
   加前缀不能隔离全局 reset；不能让未迁移页面的表单或布局意外变化。
 - Dialog、Popover、Tooltip 的 portal 必须继承所属界面的变量、字体与层级，不能
   因默认挂到 `body` 而丢失局部主题、样式范围或焦点归属。
-- 复用已有字体声明和本地回退。Noomo 的声明不表示字体文件已随包提供；不新增
-  未说明的远程字体请求，也不把字体回退造成的差异当作验收通过。
+- 字体为随包本地的 Geist 与系统中文字体（声明在主题文件）；不新增远程字体请求，
+  也不把字体回退造成的差异当作验收通过。
 
 ## 5. 首批组件与交互约定
 
@@ -127,14 +127,15 @@ gui/
   语义；中文输入法合成期间不误触发送。
 - 输入控件和图标按钮有可访问名称，字段错误与输入关联。Tooltip 不能是触屏用户
   获得必要信息的唯一方式；Dialog 验证焦点进入、约束、Esc 关闭及关闭后恢复。
-- 保留 EmptyState、LoadingState、ErrorState、UnsupportedState 的区别。Skeleton
+- 保留 EmptyState、LoadingState、ErrorState 的区别。Skeleton
   仅代表加载中，组件不能把失败、未接入或未知状态渲染为成功。
-- 当前 GUI 为 fixture/占位界面：保留 `FIXTURE · 演示数据`、演示消息标记和真实
-  HTTP 501 `BACKEND_NOT_WIRED` 结果。配置了 endpoint 不等于登录、在线或后端可用。
-- 当前占位文案为 `not implemented: hyprial backend not wired`，与
-  [占位接口契约](../../gui/docs/stub-interface.md)一致。消费者依据 HTTP 501 和
-  `BACKEND_NOT_WIRED` 判断未接线状态，不匹配面向用户的文案。组件替换不伪造
-  登录/设备状态或生成新的 Agent 回复。
+- 普通源码入口是 M1 同源宿主：同一组件经 `/daemon/*`、同一 generated client 和
+  已注册 adapter 消费所选 daemon 或 Contract Mock。fixture 只在
+  `HYPRIAL_GUI_DEV_PREVIEW=1` 或显式测试组合中保留 `FIXTURE · 演示数据`；它不能
+  成为普通入口的回退。配置 driver/endpoint 不等于 login、online 或 backend ready。
+- 未注册方法显示明确的 unavailable/unknown；登录、首次初始化和 chat send 在 M2
+  与对应契约完成前不可用。组件替换不得伪造登录/设备状态、请求成功或新的 Agent
+  回复。旧 `/api/gui/v1/not-wired` 501 的独立 Node 占位服务已删除。
 - 凭据输入继续在提交后清空，占位层继续脱敏；UI 改造不把 token 存入浏览器持久化
   或日志。未来真实后端接线属于独立接口与授权工作。
 - 官方 blocks 的样例数据和行为不能直接当作业务实现；项目明确标注的隔离 fixture

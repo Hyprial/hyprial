@@ -58,7 +58,7 @@ def _adapter_with_worker_routes(
         lark=lark,  # type: ignore[arg-type]
         harness=harness,  # type: ignore[arg-type]
         routes=routes,
-        channel_actor_id="channel:lark:lark-main",
+        channel_actor_id="adapter:lark:lark-main",
         transient_retry_budget=retry_budget,
     )
     return adapter, lark, harness
@@ -83,9 +83,8 @@ def test_worker_reads_runtime_targets_from_daemon_without_desired_state(
                     "status": "online",
                 },
                 {
-                    "targetKind": "channel_route",
-                    "targetUri": "channel:#ops",
-                    "agent": "agent:alice:mac:worker",
+                    "targetKind": "user",
+                    "targetUri": "user:alice",
                     "status": "configured",
                 },
             ]
@@ -106,12 +105,13 @@ def test_worker_reads_runtime_targets_from_daemon_without_desired_state(
     assert targets[0].status == "online"
 
 
-def test_pinned_actor_asks_the_daemon_pin_index_for_its_own_gateway(
+def test_routed_actor_asks_the_daemon_adapter_index_for_its_own_gateway(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
-    """The worker never reads desired-state: the pin comes from the daemon's
-    adapter->agent index, keyed by this worker's gateway name, and a pin is
-    per adapter -- the conversation id must not matter."""
+    """The worker never reads daemon state: the binding comes from the
+    daemon's adapter.list projection of the cell-document adapter index,
+    keyed by this worker's gateway name, and a binding is per adapter -- the
+    conversation id must not matter."""
 
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -122,10 +122,10 @@ def test_pinned_actor_asks_the_daemon_pin_index_for_its_own_gateway(
         calls.append((method, params))
         return {
             "ok": True,
-            "pins": {
-                "lark-main": "agent:alice:mac:worker",
-                "lark-other": "agent:alice:mac:other",
-            },
+            "adapters": [
+                {"name": "lark-main", "agent": "agent:alice:mac:worker"},
+                {"name": "lark-other", "agent": "agent:alice:mac:other"},
+            ],
         }
 
     monkeypatch.setattr(worker, "_ipc", fake_ipc)
@@ -134,37 +134,43 @@ def test_pinned_actor_asks_the_daemon_pin_index_for_its_own_gateway(
         socket_path=tmp_path / "daemon.sock",
     )
 
-    first = routes.pinned_actor("lark:oc_dm:oc_dm")
-    second = routes.pinned_actor("lark:oc_group:oc_group")
+    first = routes.routed_actor("lark:oc_dm:oc_dm")
+    second = routes.routed_actor("lark:oc_group:oc_group")
 
-    assert calls == [("adapter.pins", {}), ("adapter.pins", {})]
+    assert calls == [("adapter.list", {}), ("adapter.list", {})]
     assert first is not None and first.actor_id == "agent:alice:mac:worker"
     assert second is not None and second.actor_id == "agent:alice:mac:worker"
 
 
-def test_pinned_actor_is_none_when_this_gateway_has_no_pin(
+def test_routed_actor_is_none_when_this_gateway_has_no_binding(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
         worker,
         "_ipc",
-        lambda *_args, **_kwargs: {"ok": True, "pins": {"lark-other": "agent:x"}},
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "adapters": [{"name": "lark-other", "agent": "agent:x"}],
+        },
     )
     routes = worker._Routes(
         gateway_name="lark-main",
         socket_path=tmp_path / "daemon.sock",
     )
 
-    assert routes.pinned_actor("lark:oc_dm:oc_dm") is None
+    assert routes.routed_actor("lark:oc_dm:oc_dm") is None
 
 
-def test_running_worker_routes_the_next_inbound_to_a_changed_pin(
+def test_running_worker_routes_the_next_inbound_to_a_changed_binding(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
     current = {"actor": "agent:alice:mac:first"}
 
     def fake_ipc(*_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"ok": True, "pins": {"lark-main": current["actor"]}}
+        return {
+            "ok": True,
+            "adapters": [{"name": "lark-main", "agent": current["actor"]}],
+        }
 
     monkeypatch.setattr(worker, "_ipc", fake_ipc)
     routes = worker._Routes(
@@ -184,17 +190,17 @@ def test_running_worker_routes_the_next_inbound_to_a_changed_pin(
     ]
 
 
-def test_running_worker_treats_successful_unpin_as_no_target_on_next_inbound(
+def test_running_worker_treats_successful_unbind_as_no_target_on_next_inbound(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
-    current: dict[str, str] = {"lark-main": "agent:alice:mac:first"}
+    current: dict[str, object] = {"agent": "agent:alice:mac:first"}
     query_fails = False
     reports: list[dict[str, object]] = []
 
     def fake_ipc(*_args: object, **_kwargs: object) -> dict[str, object]:
         if query_fails:
             raise ConnectionRefusedError("daemon temporarily unavailable")
-        return {"ok": True, "pins": dict(current)}
+        return {"ok": True, "adapters": [{"name": "lark-main", **current}]}
 
     monkeypatch.setattr(worker, "_ipc", fake_ipc)
     routes = worker._Routes(
@@ -207,7 +213,7 @@ def test_running_worker_treats_successful_unpin_as_no_target_on_next_inbound(
     )
 
     assert adapter.handle_inbound(_inbound(1)).status == "forwarded"
-    current.clear()
+    current["agent"] = None
     outcome = adapter.handle_inbound(_inbound(2))
     query_fails = True
     failed_query = adapter.handle_inbound(_inbound(3))
@@ -224,12 +230,12 @@ def test_running_worker_treats_successful_unpin_as_no_target_on_next_inbound(
             "status": "warning",
             "event": "lark.pin.query_failed",
             "errorType": "ConnectionRefusedError",
-            "fallback": "last-successful-unpinned",
+            "fallback": "last-successful-unbound",
         }
     ]
 
 
-def test_daemon_query_failure_uses_last_successful_pin_and_reports_loudly(
+def test_daemon_query_failure_uses_last_successful_binding_and_reports_loudly(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
     calls = 0
@@ -241,7 +247,7 @@ def test_daemon_query_failure_uses_last_successful_pin_and_reports_loudly(
         if calls == 1:
             return {
                 "ok": True,
-                "pins": {"lark-main": "agent:alice:mac:cached"},
+                "adapters": [{"name": "lark-main", "agent": "agent:alice:mac:cached"}],
             }
         raise RuntimeError("daemon disconnected from Lark adapter")
 
@@ -264,7 +270,7 @@ def test_daemon_query_failure_uses_last_successful_pin_and_reports_loudly(
             "status": "warning",
             "event": "lark.pin.query_failed",
             "errorType": "RuntimeError",
-            "fallback": "last-successful-pin",
+            "fallback": "last-successful-binding",
             "cachedActor": "agent:alice:mac:cached",
         }
     ]
@@ -274,7 +280,7 @@ def test_daemon_query_failure_uses_last_successful_pin_and_reports_loudly(
 # and pytest keeps parametrize values on the callspec all session, pinning
 # every frame (and fd) the raise touched (card #77).
 @pytest.mark.parametrize("failure_type", (NameError, ImportError))
-def test_pin_query_does_not_swallow_programming_or_import_errors(
+def test_routing_query_does_not_swallow_programming_or_import_errors(
     monkeypatch: Any, tmp_path: Path, failure_type: type[Exception]
 ) -> None:
     monkeypatch.setattr(

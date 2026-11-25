@@ -1,3 +1,25 @@
+# Decision record (file header; no inline comments by repository rule):
+# - Completion re-send (D2 hazard): an owner keeps its mailbox across a
+#   restart and accepts tells while restart_pending, so re-sending every
+#   retry interval regardless of the admission result would pile duplicate
+#   completions into the kept mailbox (about 200 per completion at a 2 s
+#   backoff) until other callers saw OVERLOADED. The lane now re-sends only
+#   after a non-ACCEPTED admission, or once the accepted copy has left the
+#   owner's mailbox without an acknowledgement (consumed by a handler that
+#   did not ack, lost with a generation that crashed, or dead-lettered). The
+#   admission trace in contracts.py supplies that probe for owners whose
+#   engine records one; an owner whose complete() makes no traced admission
+#   keeps the shipped retry-every-interval behaviour.
+#   Reading "re-send on a generation change" as "re-send once the copy left
+#   the mailbox" is 待 HQ 追认: it covers the generation change and keeps the
+#   shipped retry-until-ack liveness for owners that consume without acking.
+# - Terminal delivery rows (ABI v1 9.4, EFF-07/08): a complete() callback may
+#   return OwnerGone(reason) instead of an AdmissionResult when the owner has
+#   reached stopped or quarantined. The lane then hands the completion ONCE
+#   to its dead_letter_sink with that reason and settles the token in the
+#   same step, so the worker exits once its queue is empty (9.5). The row is
+#   opt-in: a callback that only returns AdmissionResult keeps the shipped
+#   retry-until-acknowledged behaviour while business owners migrate (B*).
 """Bounded effect execution with actor-acknowledged completion custody.
 
 The handler is a fixed domain dependency. Requests contain immutable domain
@@ -15,7 +37,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from hyprial.kernel.impl.actor_runtime.contracts  import AdmissionResult
+from hyprial.kernel.impl.actor_runtime.contracts  import (
+    AdmissionResult,
+    close_admission_trace,
+    open_admission_trace,
+)
 from hyprial.kernel.impl.facts.cost_counters import (
     RuntimeCpuCounters,
     runtime_cpu_counters,
@@ -64,6 +90,13 @@ class EffectCompleted(Generic[ResultT]):
 
 
 @dataclass(frozen=True, slots=True)
+class OwnerGone:
+    """complete() result for an owner in a terminal state (9.4)."""
+
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class EffectLaneSnapshot:
     outstanding: int
     rejected: int
@@ -77,11 +110,12 @@ class EffectLane(Generic[RequestT, ResultT]):
         *,
         name: str,
         execute: Callable[[RequestT], ResultT],
-        complete: Callable[[EffectCompleted[ResultT]], AdmissionResult],
+        complete: Callable[[EffectCompleted[ResultT]], AdmissionResult | OwnerGone],
         capacity: int = 32,
         workers: int = 1,
         retry_seconds: float = 0.01,
         cpu_accounting: RuntimeCpuCounters = runtime_cpu_counters,
+        dead_letter_sink: Callable[[EffectCompleted[ResultT], str], None] | None = None,
     ) -> None:
         if capacity < 1 or workers < 1 or retry_seconds <= 0:
             raise ValueError(
@@ -89,6 +123,7 @@ class EffectLane(Generic[RequestT, ResultT]):
             )
         self._execute = execute
         self._complete = complete
+        self._dead_letter_sink = dead_letter_sink
         self._capacity = capacity
         self._retry = retry_seconds
         self._cpu_accounting = cpu_accounting
@@ -222,15 +257,55 @@ class EffectLane(Generic[RequestT, ResultT]):
                     error=type(error).__name__,
                     detail=_error_detail(error),
                 )
-            while not receipt.is_set():
-                try:
-                    self._complete(event)
-                except BaseException:
-                    pass  # owner may be restarting; custody remains here
-                if receipt.wait(self._retry):
-                    break
-                with self._condition:
-                    self._retries += 1
+            self._deliver(event, receipt, token)
+
+    def _deliver(
+        self,
+        event: EffectCompleted[ResultT],
+        receipt: threading.Event,
+        token: tuple[str, int],
+    ) -> None:
+        """Hand one completion to its owner until it is acknowledged or the owner is gone."""
+
+        queued: Callable[[], bool] | None = None
+        while not receipt.is_set():
+            if queued is None or not queued():
+                admission, queued = self._offer(event)
+                if isinstance(admission, OwnerGone):
+                    self._settle_undeliverable(event, token, admission.reason)
+                    return
+            if receipt.wait(self._retry):
+                return
+            with self._condition:
+                self._retries += 1
+
+    def _offer(
+        self, event: EffectCompleted[ResultT]
+    ) -> tuple[AdmissionResult | OwnerGone | None, Callable[[], bool] | None]:
+        open_admission_trace()
+        try:
+            admission = self._complete(event)
+        except BaseException:
+            admission = None
+        finally:
+            probe = close_admission_trace()
+        return admission, probe if admission is AdmissionResult.ACCEPTED else None
+
+    def _settle_undeliverable(
+        self, event: EffectCompleted[ResultT], token: tuple[str, int], reason: str
+    ) -> None:
+        with self._condition:
+            receipt = self._pending.pop(token, None)
+            if receipt is None:
+                return
+            self._submitted.discard(token)
+            receipt.set()
+            self._condition.notify_all()
+        if self._dead_letter_sink is not None:
+            try:
+                self._dead_letter_sink(event, reason)
+            except BaseException:
+                pass
 
     def snapshot(self) -> EffectLaneSnapshot:
         with self._condition:

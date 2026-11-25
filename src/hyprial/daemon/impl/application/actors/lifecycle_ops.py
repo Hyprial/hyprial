@@ -1,8 +1,19 @@
-"""Lifecycle manager start/step execution and the lifecycle.start/down IPC families."""
+"""Lifecycle manager start/step execution and the lifecycle.start/down IPC families.
+
+The agent.start orchestration (``_ipc_agent_start``) and its B2-2/B2-3
+decision records live in the sibling ``agent_start`` package; this mixin
+inherits it so the application keeps one lifecycle cluster.
+
+I6-5a: ``lifecycle.start`` calls ``seed_launch_policy`` once the agent record
+exists and before the launch, so a claude member's template rules are in its
+cell document when the worker-channel factory reads them.  The hook is
+bounded and never fails the start.  Once the launch settles it nudges member
+reconcile for the agent's cell (``nudge_member_reconcile``), so a member that
+failed on missing local facts adopts the harness this start just ran.
+"""
 
 from __future__ import annotations
 
-from __future__ import annotations
 import time
 from dataclasses import replace
 from typing import Any, TYPE_CHECKING
@@ -26,8 +37,13 @@ from hyprial.daemon.impl.transport import (
 )
 from hyprial.daemon.impl.transport.session_actor import TransportSessionAuthority
 from hyprial.kernel import DECLARED_HARNESSES, HarnessLaunchSpec
+from hyprial.daemon.impl.composition.cells import (
+    nudge_member_reconcile,
+    seed_launch_policy,
+)
 from hyprial.daemon.impl.composition  import (
     AgentIdentityProjectionView,
+    DomainCommandError,
     HarnessPortClient,
     harness_launch_projection,
 )
@@ -39,7 +55,6 @@ from hyprial.daemon.impl.correlation.correlation  import CorrelationEventRouter
 from hyprial.kernel import (
     LIFECYCLE_OPERATION_DEADLINE_SECONDS,
     LIFECYCLE_WAIT_MARGIN_SECONDS,
-    merge_harness_launch_args,
 )
 from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleKind,
@@ -48,6 +63,7 @@ from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleSpec,
     LifecycleState,
 )
+from hyprial.daemon.impl.lifecycle.primitives import session_ref_for
 from hyprial.daemon.impl.lifecycle.lifecycle_coordinator  import (
     LifecycleCoordinator,
     LifecycleReservationOutcomeUnknown,
@@ -64,10 +80,14 @@ if TYPE_CHECKING:
 from hyprial.daemon.impl.application.wiring.transport import (
     _HarnessActorRegistration,
 )
+
+
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
 )
+from hyprial.daemon.impl.application.actors.agent_start import _AgentStartMixin
+from hyprial.daemon.impl.application.actors.harness_args import _HarnessArgsLifecycleMixin
 
 #: How long lifecycle.start observes the harness actor after the operation
 #: commits.  A streaming harness can refuse on the next reconcile tick; a
@@ -91,8 +111,44 @@ def _visible_start_failure(
     return None
 
 
-class _LifecycleOpsMixin:
+class _LifecycleOpsMixin(_HarnessArgsLifecycleMixin, _AgentStartMixin):
     """Application cluster mixin; the state owner is DaemonApplication."""
+
+    def _record_claude_native_session(
+        self, spec: HarnessLaunchSpec, actor_uri: str, prior_agent: Any
+    ) -> None:
+        """Persist a headless Claude worker's native session ref on its agent.
+
+        Kept out of ``_ipc_lifecycle_start`` itself (release/v0.5.5.3.4 into
+        release/v0.5.5.4, per Allen 2026-11-07); it lives in this mixin again
+        since the UUID-addressing merge grew agents_registry past the
+        structural line limit.  Behaviour is the 0.5.5.3.4 one: same
+        incarnation only, compare-and-swap or refuse.
+        """
+
+        if spec.harness != "claude" or not spec.headless or self._harnesses is None:
+            return
+        native_ref = session_ref_for(
+            self._harnesses.session_refs(),
+            harness=spec.harness,
+            name=spec.name,
+            member=spec.member,
+        )
+        current_agent = self.agents.get(actor_uri)
+        if (
+            native_ref is not None and current_agent is not None
+            and current_agent.last_harness == "claude"
+            and prior_agent is not None
+            and current_agent.entity_token == prior_agent.entity_token
+        ):
+            replacement = replace(current_agent, last_session_id=native_ref)
+            if replacement != current_agent and not self.agents.compare_and_swap(
+                current_agent, replacement
+            ):
+                raise DaemonRequestError(
+                    ipc_errors.AGENT_VERSION_CONFLICT,
+                    f"Claude session {native_ref!r} could not update the agent snapshot",
+                )
 
     def _start_lifecycle_manager(
         self,
@@ -222,6 +278,7 @@ class _LifecycleOpsMixin:
             combined_shared_receipts=True,
             observation_host_id=self.node_id,
             observation_fence=self._agent_session_domains.cells.operation_fence,
+            actor_host=self._agent_session_domains.actor_hosts.host_for("lifecycle"),
         )
         self._lifecycle_router = router
         self._lifecycle_domain_ports = (agent_port, session_port, harness_port)
@@ -229,7 +286,6 @@ class _LifecycleOpsMixin:
         self._routes = RouteRegistrationClient(route_port, router)
         self._lifecycle_manager = manager
         self._agent_session_domains.cells.attach_coordinator(manager)
-        self._start_transfer_source(harnesses, manager)
 
     def _lifecycle_spec(self, spec: HarnessLaunchSpec) -> LifecycleSpec:
         if spec.harness not in DECLARED_HARNESSES:
@@ -490,7 +546,7 @@ class _LifecycleOpsMixin:
         """Best effort: remove a failed switch's headless intent/binding."""
 
         try:
-            self.desired_state.remove_harness(spec.harness, spec.name)
+            self.desired_state.remove_harness(spec.harness, spec.name, member=spec.member)
         except Exception as error:  # noqa: BLE001 - preserve the start failure
             self._log(
                 "warn",
@@ -498,18 +554,70 @@ class _LifecycleOpsMixin:
                 "agent.switch.compensation_failed",
                 actor=actor_uri,
                 harness=spec.harness,
-                name=spec.name,
+                agent_name=spec.name,
                 detail=str(error)[:300],
             )
         self._agent_liveness.release(actor_uri)
 
-    def _ipc_lifecycle_start(self, method, params) -> Any:
-        resume_preflight = method == "lifecycle.resume.preflight"
-        is_smolvm = method == "lifecycle.start-smolvm"
-        if not resume_preflight and is_smolvm != (
-            params.get("executionRuntime") is not None
+    def _create_record_before_start(
+        self, spec: HarnessLaunchSpec, *, fenced: bool = False
+    ) -> None:
+        """Create a start's own record first, so its spec names its address.
+
+        Integrator decision D11: with id-form minting on, the official
+        address of a record is its ``a.`` id URI, known only once the record
+        exists, while ``_lifecycle_spec`` derives the actor, route,
+        liveliness and inbox keys before the lifecycle's own ``agent.create``
+        step runs.  A raw ``lifecycle.start`` for a name with no record (a
+        routine coordinator's ensure, any IPC caller that skips
+        ``agent.create``) therefore creates the record here, exactly as that
+        step would (``preferred_harness`` from the launch and the step's
+        ``managed-launch`` creation origin, nothing else), and the step
+        reuses it.  As on the CLI path (A5), a failed start keeps
+        the record.  With the switch off the name URI is the official
+        address and nothing is created early.  A hosted or foreign-owner
+        spec is never created here.
+
+        The registry, not the directory projection, decides whether the
+        record exists: a transfer landing writes its record straight into
+        the registry, so the projection may not hold it yet.  The early
+        create therefore reuses an existing record exactly as the step's
+        ``reuse_existing`` create does, which also brings that record into
+        the projection; it never refuses a landed name as taken, and the
+        start plans at the landed record's own address.
+
+        A ``fenced`` start (``expected_entity_token``) names one existing
+        incarnation and never creates: if that record vanished after the
+        fence was read, the start must fail AGENT_INCARNATION_MISMATCH
+        without minting a new record behind the refusal.
+        """
+
+        from hyprial.identity import id_form_minting
+
+        if (
+            fenced
+            or not id_form_minting()
+            or spec.pinned_owner not in (None, self.owner)
+            or self.agents.get(spec.name) is not None
         ):
-            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "executionRuntime requires lifecycle.start-smolvm")
+            return
+        try:
+            self.agents.create(
+                spec.name,
+                capabilities={"creationOrigin": "managed-launch"},
+                preferred_harness=spec.harness,
+                reuse_existing=True,
+            )
+        except (AgentError, DomainCommandError) as error:
+            raise DaemonRequestError(error.code, str(error)) from error
+
+    def _ipc_lifecycle_start(self, method, params, *, expected_entity_token: str | None = None) -> Any:
+        resume_preflight = method == "lifecycle.resume.preflight"
+        if not resume_preflight and params.get("executionRuntime") is not None:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                "executionRuntime is unsupported; smolvm runtime has been retired",
+            )
         # The IPC key stays "provider" so new CLIs and old daemons can
         # mix in either direction; locally it names a harness.
         harness = _required_string(params.get("provider"), "provider")
@@ -518,15 +626,30 @@ class _LifecycleOpsMixin:
                 ipc_errors.USE_ADAPTER_COMMAND,
                 "Lark is an external-platform adapter; use 'hyprial adapter start <name>'",
             )
+        raw_name = _required_string(params.get("name"), "name")
         try:
-            name = self.agents.native_actor(
-                _required_string(params.get("name"), "name")
+            # A registered agent is started under its actor whatever spelling
+            # names it (id URI, ``a.`` id, display name), as agent.start does:
+            # the desired-state intent and workspace are keyed by the actor.
+            # Only a name with no record goes through the creation gate.
+            registered = self.agents.get(raw_name)
+            name = (
+                registered.actor
+                if registered is not None
+                else self.agents.native_actor(raw_name)
             )
         except AgentError as error:
             raise DaemonRequestError(error.code, str(error)) from error
         from hyprial.daemon.impl.bootstrap.names import require_agent_name_available
+        from hyprial.daemon.impl.cells.runtime.agents import (
+            refuse_external_launch,
+            refuse_foreign_owner_launch,
+        )
 
         require_agent_name_available(self, name)
+        registered = self.agents.get(name)
+        refuse_external_launch(registered)
+        refuse_foreign_owner_launch(registered, self.owner)
         spec = HarnessLaunchSpec.from_json(
             {**params, "provider": harness, "name": name}, "provider"
         )
@@ -552,17 +675,15 @@ class _LifecycleOpsMixin:
         # started with ``-- --approve`` starts the same way again.  This is the
         # single funnel for ``hyprial start``, daemon restore re-submission and
         # the routine coordinator's wake, which is why the merge lives here.
-        registered_agent = self.agents.current(name)
-        try:
-            spec = replace(
-                spec,
-                args=merge_harness_launch_args(
-                    () if registered_agent is None else registered_agent.args_for(harness),
-                    spec.args, harness=harness,
-                ),
-            )
-        except ValueError as error:
-            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        effective_args, registered_agent, stored_args = self._effective_harness_args(
+            name,
+            harness,
+            spec.args,
+            ignore_stored=params.get("ignoreStoredHarnessArgs") is True,
+        )
+        if expected_entity_token is not None and (registered_agent is None or registered_agent.entity_token != expected_entity_token):
+            raise DaemonRequestError(ipc_errors.AGENT_INCARNATION_MISMATCH, "Agent changed before fenced start")
+        spec = replace(spec, args=effective_args)
         if resume_preflight:
             resume_ref = _required_string(params.get("sessionRef"), "sessionRef")
             self._require_resumable_session(spec, resume_ref)
@@ -596,25 +717,7 @@ class _LifecycleOpsMixin:
             )
             if prior is not None and prior.session_ref is not None:
                 spec = replace(spec, session_ref=prior.session_ref)
-        if is_smolvm:
-            from hyprial.daemon.impl.harnesses.smolvm_runtime import validate_materials
-            assert spec.execution_runtime is not None
-            validate_materials(spec.execution_runtime)
-        hosted_owner = self._host_invited_owner(name)
-        if hosted_owner is not None:
-            if spec.pinned_owner is None:
-                spec = replace(spec, pinned_owner=hosted_owner)
-            elif spec.pinned_owner != hosted_owner:
-                raise DaemonRequestError(
-                    ipc_errors.INVALID_ARGUMENT,
-                    "start cannot re-own a host-invited agent; "
-                    f"registry row is owned by {hosted_owner}",
-                )
-        if (
-            spec.pinned_owner is not None
-            and spec.pinned_owner != self.owner
-            and spec.pinned_owner != hosted_owner
-        ):
+        if spec.pinned_owner is not None and spec.pinned_owner != self.owner:
             raise DaemonRequestError(
                 ipc_errors.INVALID_ARGUMENT,
                 "start cannot create a foreign-owner entity; use transfer receive",
@@ -628,6 +731,10 @@ class _LifecycleOpsMixin:
             )
         if resume_ref is not None:
             self._require_resumable_session(spec, resume_ref)
+        self._create_record_before_start(
+            spec, fenced=expected_entity_token is not None
+        )
+        seed_launch_policy(self, spec.name, spec.harness)
         actor_uri = self._canonical_harness_uri(spec.name, spec)
         prior_agent = self.agents.get(actor_uri)
         operation_id = str(
@@ -635,20 +742,9 @@ class _LifecycleOpsMixin:
             or f"lifecycle-start:{uuid4().hex}"
         )
         agent_for_restore = self.agents.get(spec.name)
+        if expected_entity_token is not None and (agent_for_restore is None or agent_for_restore.entity_token != expected_entity_token):
+            raise DaemonRequestError(ipc_errors.AGENT_INCARNATION_MISMATCH, "Agent changed before restore disposition update")
         if agent_for_restore is not None:
-            # This IPC caller may wait on the short journal lane; neither the
-            # harness mailbox nor eligibility publication may read SQLite.
-            # This observation does not replace the harness owner's start hold.
-            custody = self._hydrate_transfer_source(
-                spec.name, agent_for_restore.entity_token,
-            )
-            if custody is None or custody.blocks_start:
-                raise DaemonRequestError(
-                    ipc_errors.TRANSFER_STARTS_HELD
-                    if custody is not None and custody.state == "held"
-                    else ipc_errors.TRANSFER_CUSTODY_UNAVAILABLE,
-                    "source custody prevents explicit start; an authenticated override is required",
-                )
             self.agents.clear_restore_disposition(
                 spec.name,
                 expected_entity_token=agent_for_restore.entity_token,
@@ -682,12 +778,19 @@ class _LifecycleOpsMixin:
                     harness=harness,
                 )
         try:
-            result = self._run_lifecycle_operation(
-                LifecycleOperation.create(
-                    operation_id,
-                    self._lifecycle_spec(spec),
-                )
+            operation = LifecycleOperation.create(
+                operation_id,
+                self._lifecycle_spec(spec),
             )
+            if expected_entity_token is not None:
+                operation = LifecycleOperation.resume(
+                    operation_id,
+                    replace(self._lifecycle_spec(spec), expected_entity_token=expected_entity_token),
+                )
+            operation = replace(operation, observed_entity_token=(
+                prior_agent.entity_token if prior_agent is not None else None
+            ))
+            result = self._run_lifecycle_operation(operation)
         except DaemonRequestError as start_error:
             if replaced_interactive:
                 self._compensate_replace(actor_uri, spec)
@@ -711,23 +814,8 @@ class _LifecycleOpsMixin:
                     spec, resume_error, last_error=last_error
                 ) from resume_error
         readiness_confirmed = self._observe_start_readiness(spec.harness, name)
-        if spec.harness == "claude" and spec.headless and self._harnesses is not None:
-            native_ref = self._harnesses.session_refs().get((spec.harness, spec.name))
-            current_agent = self.agents.get(actor_uri)
-            if (
-                native_ref is not None and current_agent is not None
-                and current_agent.last_harness == "claude"
-                and prior_agent is not None
-                and current_agent.entity_token == prior_agent.entity_token
-            ):
-                replacement = replace(current_agent, last_session_id=native_ref)
-                if replacement != current_agent and not self.agents.compare_and_swap(
-                    current_agent, replacement
-                ):
-                    raise DaemonRequestError(
-                        "AGENT_VERSION_CONFLICT",
-                        f"Claude session {native_ref!r} could not update the agent snapshot",
-                    )
+        nudge_member_reconcile(self, spec.name)
+        self._record_claude_native_session(spec, actor_uri, prior_agent)
         handover = (
             HandoverNotice(
                 actor=prior_agent.actor,
@@ -746,10 +834,15 @@ class _LifecycleOpsMixin:
             if row.get("runtime") == spec.harness and row.get("name") == spec.name
             for warning in row.get("warnings", ())
         ]
-        if registered_agent is not None and registered_agent.args_for(harness):
+        if stored_args and params.get("ignoreStoredHarnessArgs") is True:
+            warnings.append(
+                "Ignoring stored harness_args for this start only; "
+                "the stored map is unchanged."
+            )
+        elif stored_args:
             warnings.append(
                 f"Using stored harness_args for {harness}; explicit launch options take precedence. "
-                "Persistent harness_args currently has no CLI editing option."
+                "Inspect or change them with hyprial agent args show|set|clear."
             )
         return {
             "ok": True,
@@ -757,7 +850,11 @@ class _LifecycleOpsMixin:
             "id": f"{harness}:{name}",
             "operationId": operation_id,
             "changed": bool(result.completed_effects),
-            "actor": actor_uri,
+            "actor": (
+                actor_uri
+                if prior_agent is not None
+                else self._canonical_harness_uri(spec.name, spec)
+            ),
             **(
                 {"sessionRef": established_ref}
                 if resume_ref is not None
@@ -808,7 +905,7 @@ class _LifecycleOpsMixin:
             time.sleep(0.05)
         return False
 
-    def _ipc_down(self, params) -> Any:
+    def _ipc_down(self, params, *, keep_intent: bool = False) -> Any:
         state = self.desired_state.load()
         agents_only = params.get("agentsOnly") is True
         removed: list[str] = []
@@ -839,14 +936,23 @@ class _LifecycleOpsMixin:
                         if self._lark_client is not None:
                             self._lark_client.stop(adapter.name)
                             removed.append(f"{adapter.provider}:{adapter.name}")
+            lookup: list[str | None] = []
+
+            def resolved_name() -> str | None:
+                if not lookup:
+                    lookup.append(self._agent_name_for(target))
+                return lookup[0]
+
             for spec in state.harnesses:
+                named = target == spec.name or resolved_name() == spec.name
                 if (
                     harness is None
-                    and target in {spec.name, f"{spec.harness}:{spec.name}"}
-                ) or (harness == spec.harness and target == spec.name):
+                    and (named or target == f"{spec.harness}:{spec.name}")
+                ) or (harness == spec.harness and named):
                     operation_id = f"lifecycle-down:{uuid4().hex}"
+                    target_spec = replace(self._lifecycle_spec(spec), keep_intent=keep_intent)
                     self._run_lifecycle_operation(
-                        LifecycleOperation.deactivate(operation_id, self._lifecycle_spec(spec))
+                        LifecycleOperation.deactivate(operation_id, target_spec)
                     )
                     if spec.containerized:
                         self._retire_container_artifacts(
@@ -859,7 +965,7 @@ class _LifecycleOpsMixin:
                 # binding anyway so a connector whose spec vanished
                 # without a clean stop can never strand its agent's name
                 # behind an error that tells the user to run this.
-                released = self._agent_name_for(target)
+                released = resolved_name()
                 if released is not None:
                     self._release_agent_binding(self.agents.uri_for(released))
         return {"ok": True, "removed": removed}

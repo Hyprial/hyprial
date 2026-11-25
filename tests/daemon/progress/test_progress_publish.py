@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,19 +195,22 @@ class _Inbox:
         return None
 
 
-def _runtime(tmp_path: Path, inbox: _Inbox, events: tuple[ProgressEvent, ...]) -> DaemonEventBridge:
+def _runtime(
+    tmp_path: Path, inbox: _Inbox, events: tuple[ProgressEvent, ...], *, actor_host
+) -> DaemonEventBridge:
     return DaemonEventBridge(
         state_dir=tmp_path / "state",
         node_id=NODE,
         desired_state=DesiredStateStore(tmp_path / "state" / "desired-state.json"),
         transport=_Transport(),  # type: ignore[arg-type]
         inbox=inbox,  # type: ignore[arg-type]
-        harnesses=_Harnesses(events),  # type: ignore[arg-type]
+        harnesses=_Harnesses(events), actor_host=actor_host,  # type: ignore[arg-type]
+        cell_delivery=AdmittingCellDelivery(),
     )
 
 
 def test_runtime_publishes_coalesced_progress_to_the_original_sender(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _Inbox(_request())
     runtime = _runtime(
@@ -216,7 +221,7 @@ def test_runtime_publishes_coalesced_progress_to_the_original_sender(
             _event(1, "thinking"),
             _event(2, "tool-result"),
             _event(3, "thinking"),
-        ),
+        ), actor_host=actor_host,
     )
     runtime.start()
     try:
@@ -235,9 +240,11 @@ def test_runtime_publishes_coalesced_progress_to_the_original_sender(
         runtime.stop()
 
 
-def test_runtime_drops_progress_whose_original_request_is_gone(tmp_path: Path) -> None:
+def test_runtime_drops_progress_whose_original_request_is_gone(
+    tmp_path: Path, *, actor_host
+) -> None:
     inbox = _Inbox(None)
-    runtime = _runtime(tmp_path, inbox, (_event(0, "thinking"),))
+    runtime = _runtime(tmp_path, inbox, (_event(0, "thinking"),), actor_host=actor_host)
     runtime.start()
     try:
         summary = runtime.on_timer()
@@ -249,7 +256,7 @@ def test_runtime_drops_progress_whose_original_request_is_gone(tmp_path: Path) -
 
 
 def test_terminal_result_still_uses_the_authoritative_reply_path(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """Progress publication must not consume or replace the request's reply."""
 
@@ -285,7 +292,8 @@ def test_terminal_result_still_uses_the_authoritative_reply_path(
         desired_state=DesiredStateStore(tmp_path / "state" / "desired-state.json"),
         transport=_Transport(),  # type: ignore[arg-type]
         inbox=inbox,  # type: ignore[arg-type]
-        harnesses=ResultHarness((_event(0, "turn-end"),)),  # type: ignore[arg-type]
+        harnesses=ResultHarness((_event(0, "turn-end"),)), actor_host=actor_host,  # type: ignore[arg-type]
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:

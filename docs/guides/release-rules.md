@@ -1,89 +1,101 @@
-# 发布规则（唯一事实源）
+# 发布规则
 
-Allen 于 2026-10-28 确认以下四条规则。从 0.5.5.2 起执行；工作流、操作手册
-和发布验收均引用本文，不各自维护另一套规则。
+分支、候选和轨道角色的机器可读规定见
+[`.forgejo/git-flow.json`](../../.forgejo/git-flow.json)；CI planner 实际读取该配置，
+本文定义对应的发布操作、验收和冻结规则。
 
-以 `release/**` 为目标的 PR 与 dev PR 一样触发 `tests`/`gui`/`desktop-check` 的 PR CI（按 audited scope 选择套件），不因 base 是 release 线而跳过。
+Allen 于 2026-11-08 确认改为 dev-first：所有完成的修改先经 PR 进入 `dev`，
+再从已验证的固定提交发布。本文取代 2026-10-28 的 main-push 发布入口及
+2026-10-31 的 release-first 集成要求。旧发布记录保留，不作为继续旧流程的依据。
 
-## 1. 四条规则与执行机制
+## 1. 单一集成主线与发布候选
 
-> 1. internal track总是跟随dev,dev更新即全网更新
+- `dev` 接受完成的 feature、fix、docs、ci、hotfix 与 integration PR；WIP 保持 Draft，
+  目标可以改为 dev，但 retarget 不等于已审查或可合并。
+- `intg/*` 可以暂时承载有依赖的开发；不再要求先进入长期 `release/v*` 集成分支。
+  现存 release/main 的独有功能、修复及祖先历史须在收敛时保留，不以覆盖分支代替合并。
+- `release/v<版本>` 可以作为发布准备 WIP，目标仍为 dev；说明、升级安排和修复先进入
+  dev，再选择候选。该分支不承接另一条功能集成流程，也不自动触发发布。
+- 发布候选必须是受保护 dev 历史中的完整 40 位 SHA，可以落后于持续前进的 dev tip。
+  证据绑定该 SHA；后续修改产生新候选，不能沿用旧 SHA 的通过结论。
+- `v<VERSION>` 是不可变版本锚点，`stable` 是正式分发轨道；不新增名为 `release` 或
+  `releases/v<VERSION>` 的发布 tag。源仓 main 不再触发正式发布；公网 GitHub main
+  仍由发布器维护快照，两者不是同一提交历史。
 
-精确定义：仅在 **dev push 的 `unit` 汇总门通过**后，
-`gate-python.yml::unit` 的 `Move the track tags to the unit-green dev head` 步把
-`internal` 原位移到该次测试的完整 SHA。不接受 PR、main、release/* push 或
-手动 dispatch；失败或取消不移动。旧运行不得覆盖已前进的指针。
-随后的 dispatch 步分别启动 `wheel-release.yml` 和 `github-publish.yml`。
-“全网更新”指发布到所有分发面，不绕过客户端的自动升级开关或升级周期。
+## 2. 轨道与发布链
 
-> 2. nightly track 总是指向最后一次通过E2E的internal tag
+### internal
 
-`release-nightly-promote.yml::promote` 读取 `ci/gate-status` 上两份 marker：
-`e2e-macos-isolated.yml` 与 `e2e-macos-credentialed.yml` 必须在定时运行中全绿，SHA 相同且均在
-4 小时内。候选固定为 marker SHA，不重新解析已经移动的 internal/dev。
-单边绿、不同 SHA、过期或缺失 marker 不产生候选。
-保留 10-26 的 **stable 保底**：没有新双绿时 nightly 跟随 stable；若 nightly
-已经领先则保留，不回滚。正式发布与 nightly 晋升共用
-`scripts/ci/release_tracks.py::Tracks.nightly`，移动后显式派发两条发布流水线。
+正常启用时，只有 dev push 的 `gate-python.yml::unit` 汇总门通过才能推进 internal。
+候选必须在当前 dev 祖先链中，并且是原 internal 的后代；旧运行不得覆盖新指针。
+使用 lease 原位移动，随后显式 dispatch `wheel-release.yml` 与 `github-publish.yml`。
+PR、main、release push、手动测试 dispatch 均不推进 internal。
 
-> 3. dev 合入main的时候,更新stable track,tag打上最新的version号(这和当前的流程不一样,本次豁免,但从0.5.5.2 开始执行。后续当release/v* 合入dev的时候,不更新stable)
+**0.5.5.4 收敛期间冻结 internal**：`gate-python.yml::unit` 的
+`INTERNAL_PUBLICATION_ENABLED` 固定为字符串 `"false"`；移动和 dispatch 两步都只接受
+精确 `"true"`。缺失值同样不发布。测试继续执行，安装脚本的独立发布路径保持原规则。
+解除冻结必须是经过审查的单独修改，并以候选验收和升级准备为依据。
+这不是仓库变量开关；发布分支不能仅因合并成功就宣称冻结已在线生效。
 
-独立 `release-main-dispatch.yml` 只监听 main push，从 **pushed SHA** 读取 `VERSION`。
-若 `v<VERSION>` 已存在，记录 no-op；否则显式 dispatch `release-tag.yml`，
-输入为 `tag=v<VERSION>`、`sha=<pushed SHA 的完整 40 位>`、`dry_run=false`。
-不依据 dev 的当前版本猜测，也不在 dev 或 release/* push 上运行。
-`release-tag.yml` 保留独立锚点职责和目标提交的 CHANGELOG 门；祖先门只接受
-main 历史（支持 dev→main 的 merge commit，拒绝 dev-only 提交），创建不可变 tag
-后显式启动 `github-publish.yml`。后者的 `Advance and verify release tracks`
-步仅在真实 v* 发布通过后调用 `release_tracks.py`，推进 stable 并应用 nightly 保底。
-**release/v* 合入 dev 只走 internal 链，绝不更新 stable。**
+### nightly
 
-> 4. forgejo\github\R2 三方的release产物总是保持一致
+`release-nightly-promote.yml` 沿用两份定时 E2E marker：isolated 与 credentialed
+必须同 SHA、均通过且在四小时内。候选固定为 marker SHA，不重新解析移动中的
+internal/dev。无新双绿时应用 stable 保底，已领先的 nightly 不回滚。
 
-`wheel-release.yml` 在固定 source SHA 构建五平台 wheel，验证后直接写 R2 并做
-匿名回读，再上传 Forgejo PyPI registry。`github-publish.yml` 的
-`Attach wheels to the public release` 步等待该精确版本的五个 wheel，附加到对应
-track 的 GitHub Release，并写 `SHA256SUMS`。
-`ATTACH_WHEEL_ASSETS` 和 `MIRROR_WHEELS_TO_R2` **不是可选开关**；三轨均必发。
-缺凭据、缺 wheel、校验或派发失败必须使流水线失败，不能静默跳过后报成功。
-三方非跨服务原子事务；部分完成是 FAIL，必须修复并重新验收，不称为发布完成。
-正式 v* 是源码发布锚点；五平台 wheel 附件归对应 track Release，不另建 v* wheel 线。
+本轮只清理 PR 和代码，`release-nightly-promote.yml` 的
+`NIGHTLY_PUBLICATION_ENABLED: "false"` 同时阻止 nightly writer 和发布派发；
+定时验收标记仍可读取。解除这一临时冻结须单独审查，不随代码合入自动解除。
 
-## 2. 完整发布链
+### 正式版本与 stable
+
+`release-main-dispatch.yml` 已退为仅可手动查看的无写入诊断，不再监听 main push。
+正式入口为 `release-tag.yml`，显式输入 `tag=v<VERSION>`、完整 `sha`、`dry_run`。
+默认 dry-run；从 dev 获取工具和祖先边界，目标 VERSION 与 CHANGELOG 从候选对象读取。
+创建不可变 tag 后，显式启动该 tag 的 `github-publish.yml`；正式发布成功路径是
+stable 的唯一 writer，并应用 nightly stable 保底。不能另行手动移动 stable。
+
+**本次仅准备发布，正式写入保持关闭**：`release-tag.yml` 的
+`FORMAL_PUBLICATION_ENABLED` 为字符串 `"false"`。dry-run 可验证静态门；真实 tag
+写入必须在候选验收、五平台构建和发布决定完成后单独解除此 hold。
+当前静态门（tag 未存在、VERSION、dev 祖先、CHANGELOG）不自动证明测试通过；
+PR edited 产生的轻量绿也不是完整候选证据，不用自报 PASS 字段代替真实记录。
 
 ```text
-dev push → unit green → internal tag
-  ├─ wheel-release(internal) → R2 + Forgejo registry
-  └─ github-publish(internal) → GitHub mirror + 精确 wheel 附件
-
-main push（VERSION 尚无 v<VERSION> 锚点）→ main-release → release-tag
-  → v<VERSION> → github-publish 正式发布 → stable + nightly 原位更新
-  ├─ wheel-release(stable, nightly) → R2 + Forgejo registry
-  └─ github-publish(stable, nightly) → GitHub Release + wheel 附件
+完成的 PR → dev → 精确 SHA 的集成验证
+  ├─ internal（仅在解除冻结后）→ wheel / registry / R2 / GitHub
+  └─ 固定发布候选 → 完整验证和发布决定 → release-tag(v<VERSION>, SHA)
+       → github-publish 正式发布 → stable + nightly
+       → wheel-release 与对应 GitHub track 发布
 ```
 
-只有实际移动的轨道才派发新 wheel 构建；已有且领先的 nightly 不重建。
-Actions token 推 tag 不触发后续 workflow，所以各写入方必须显式 dispatch。
-派发被接受不等于作业启动，更不等于三方发布完成。
-
-## 3. 不变量与红线
+## 3. 不变量与分发一致性
 
 - `v*` 不可变；已存在不能覆盖、删除重建或借重跑替换内容。
-- 每个 tag 只有一个写入权威：internal 为 `gate-python.yml::unit`；stable 为
-  `github-publish.yml` 的正式发布步；nightly 为共享 `Tracks.nightly` writer。
-- 可移动 tag 原位更新，绝不先删再建；使用 lease 防并发覆盖。
-- stable 只接受当前 stable 的后代（或首次创建）；旧候选不能回滚轨道。
-- 不取消自动触发的发布，除非 **Allen 明确批准**；发布并发队列不能启用
-  `cancel-in-progress`。半途取消可能留下已上传但未完成的产物。
-- 版本戳 `<VERSION>+g<source short7>` 标识来源，不用于比较提交新旧。
-  公网快照 commit 与源仓 commit 不同，验收须分别记录，不能直接比较两者 SHA。
+- stable 只接受现有 stable 的后代。首次切换 dev-first 时必须保留旧 main/stable
+  的祖先历史；相同文件树或 cherry-pick 等价不能替代祖先关系。
+- 每个轨道保留单一 writer，使用 lease 防并发覆盖；可移动 tag 绝不先删再建。
+- wheel 构建使用显式 source SHA，并在对象/清单写入前复核远端轨道仍指向它。
+  发布串行、`cancel-in-progress: false`；不取消自动发布，除非 Allen 明确批准。
+- Actions token 推 tag 不触发下一条 workflow，因此显式 dispatch 及启动回读必须保留。
+  HTTP 204 不代表任务启动，任务启动不代表完成。
+- Forgejo registry、GitHub Release、R2 三方的五平台 wheel 和 SHA256SUMS 必须一致。
+  正式 v* 为源码锚点，wheel 附件仍归对应 track Release；没有新建 v* wheel 通道。
+  三方不是跨服务原子事务，部分完成是 FAIL，不能称为发布成功。
+- `<VERSION>+g<source short7>` 标识构建来源，不用于比较提交新旧。
+  公网快照与源仓 commit 不同，分别记录，不能直接比较两者 SHA。
 
-## 4. 过渡记录
+## 4. 0.5.5.4 发布前的边界
 
-0.5.5.1 通过人工 `release-tag` dispatch 发布，属于 Allen 对规则 3 的本次豁免。
-从 **0.5.5.2** 开始使用 main push 自动锚定；release/v* 合入 dev 不再触发 stable。
-10-26 原话及当时补齐记录保留在 [升级轨道历史](upgrade-tracks.md)，不能当作
-继续手动打 tag 或绕过 main 的授权。本文记录规则，不声称已完成线上发布验收。
+冻结的候选必须完成 Python/Go/GUI/契约及相关真实 E2E 验证，不能用某个 PR 的绿
+替代合并结果。Rust native engine 随候选进入后，五平台 wheel 需要各自可运行的
+构建工具链和真实构建记录，不能假设 Tailcat 的交叉编译能力等于 native engine
+也支持跨宿主构建；缺平台为 BLOCKED，不能编造 runner label 或省略平台。
+
+UUID P4 寻址和 PAC schema 迁移为单向升级。`daemon upgrade`/自动升级不会在 P4
+前自动备份；保留迁移后的数据直接运行旧版本不受支持。解除 internal 冻结之前就须
+明确备份、验证过的恢复步骤和升级安排，不能等 stable 发布时才处理。
+详见 0.5.5.4 CHANGELOG 的 Upgrade notes、发布检查模板及 ROADMAP 的真实 Lark 义务。
 
 ## 5. 操作员验收清单
 

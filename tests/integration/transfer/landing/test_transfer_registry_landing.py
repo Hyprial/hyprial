@@ -3,8 +3,8 @@
 The unit half drives ``land_bundle_into_registry`` against a real
 ``AgentRegistry`` (the seam that owns incarnation rotation and the home
 custody receipt).  The daemon half drives the same path through
-``DaemonApplication.handle("transfer.land", ...)`` -- the production entry
-point card 356 asks to run.
+the daemon application's own registry through ``land_in_daemon`` -- the call
+the teleport target makes.
 """
 
 from __future__ import annotations
@@ -18,21 +18,27 @@ from pathlib import Path
 import pytest
 
 from hyprial.identity.impl.agents.registry._core import AgentRegistry
-from hyprial.daemon.impl.application import DaemonApplication, DaemonRequestError
+from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.transfer.archive.bundle import export_bundle
 from hyprial.daemon.impl.transfer.archive.envelope import (
     CredentialPolicy,
     CredentialRecord,
     generate_keypair,
     seal_envelope)
-from hyprial.daemon.impl.transfer.landing.owner import LandingFailed, LandingNameTaken
+from hyprial.daemon.impl.transfer.landing.credentials import CredentialHostKeyRefused
 from hyprial.daemon.impl.transfer.landing.registry import (
     CUSTODY_RECEIPT,
+    LandingActorMismatch,
+    LandingFailed,
+    LandingNameTaken,
     LandingOwnerMismatch,
     land_bundle_into_registry)
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.transfer.rehearsal import UNSIGNED_REHEARSAL
-from tests.support.transfer.signed import sign_bundle_for_target
+from tests.support.transfer.daemon_land import (
+    LANDING_REFUSALS,
+    land_in_daemon,
+    staging_root as daemon_staging_root,
+)
 
 OWNER = "alice"
 MACHINE = "server"
@@ -75,12 +81,6 @@ def _bundle(
         grants=grants,
         credential_envelope=credential_envelope,
     )
-    # Slice 2b: sign with the source's key and enroll it in the home ``_daemon``
-    # builds (``state_dir=tmp_path``); the direct-call suites keep the rehearsal.
-    sign_bundle_for_target(
-        bundle_dir, actor=actor, source_machine="laptop", target_home=tmp_path,
-        credential_envelope=credential_envelope or None,
-    )
     return bundle_dir
 
 
@@ -107,6 +107,17 @@ def _registry(tmp_path: Path) -> AgentRegistry:
     )
 
 
+def _settle_away(registry, actor: str = ACTOR, token: str | None = None) -> bool:
+    """End the live incarnation the only way that leaves its name free.
+
+    Ruling X freezes a forward-destroyed name, so a same-name replacement can
+    follow only a settled create rollback (``destroy_landing_home``).
+    """
+
+    token = registry.require(actor).entity_token if token is None else token
+    return registry.destroy_landing_home(actor, expected_entity_token=token)
+
+
 def _land(
     tmp_path: Path,
     bundle_dir: Path,
@@ -124,7 +135,6 @@ def _land(
         granted_by=f"user:{OWNER}",
         expected_actor=expected_actor,
         dry_run=dry_run,
-        signature=UNSIGNED_REHEARSAL,
     )
 
 
@@ -338,8 +348,6 @@ def test_dry_run_touches_neither_registry_nor_disk(tmp_path: Path) -> None:
 
 
 def test_expected_actor_mismatch_is_a_landing_actor_error(tmp_path: Path) -> None:
-    from hyprial.daemon.impl.transfer.landing.owner import LandingActorMismatch
-
     home = _source_home(tmp_path)
     bundle_dir = _bundle(tmp_path, home)
     registry = _registry(tmp_path)
@@ -371,14 +379,12 @@ def _daemon(tmp_path: Path) -> DaemonApplication:
     return app
 
 
-def test_daemon_transfer_land_round_trip(tmp_path: Path) -> None:
+def test_daemon_landing_round_trip(tmp_path: Path) -> None:
     home = _source_home(tmp_path)
     bundle_dir = _bundle(tmp_path, home)
     app = _daemon(tmp_path)
     try:
-        result = app.handle(
-            "transfer.land", {"bundleDir": str(bundle_dir), "actor": ACTOR}
-        )
+        result = land_in_daemon(app, str(bundle_dir), actor=ACTOR)
 
         assert result["ok"] is True
         assert result["actor"] == ACTOR
@@ -389,22 +395,20 @@ def test_daemon_transfer_land_round_trip(tmp_path: Path) -> None:
         app.agents.close()
 
 
-def test_daemon_transfer_land_reports_a_name_conflict(tmp_path: Path) -> None:
+def test_daemon_landing_reports_a_name_conflict(tmp_path: Path) -> None:
     home = _source_home(tmp_path)
     bundle_dir = _bundle(tmp_path, home)
     app = _daemon(tmp_path)
     try:
         app.agents.create(ACTOR)
 
-        with pytest.raises(DaemonRequestError) as caught:
-            app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
-
-        assert caught.value.code == "TRANSFER_CONFLICT"
+        with pytest.raises(LandingNameTaken):
+            land_in_daemon(app, str(bundle_dir))
     finally:
         app.agents.close()
 
 
-def test_daemon_transfer_land_refuses_a_host_key_policy_without_a_grant(
+def test_daemon_landing_refuses_a_host_key_policy_without_a_grant(
     tmp_path: Path,
 ) -> None:
     """Card 356 item 2 on the production entry point, not just the unit one."""
@@ -423,12 +427,11 @@ def test_daemon_transfer_land_refuses_a_host_key_policy_without_a_grant(
         credential_envelope="config/credential-envelope.json",
     )
     app = _daemon(tmp_path)
-    staging_root = app.state_dir / "transfer-landing"
+    staging_root = daemon_staging_root(app)
     try:
-        with pytest.raises(DaemonRequestError) as caught:
-            app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
+        with pytest.raises(CredentialHostKeyRefused):
+            land_in_daemon(app, str(bundle_dir))
 
-        assert caught.value.code == "CREDENTIAL_HOST_KEY_REFUSED"
         # Refused in the pre-write phase: no row, no home, no staging tree.
         assert app.agents.exists(ACTOR) is False
         assert not (tmp_path / "agents" / ACTOR).exists()
@@ -437,7 +440,7 @@ def test_daemon_transfer_land_refuses_a_host_key_policy_without_a_grant(
         app.agents.close()
 
 
-def test_daemon_transfer_land_reports_credentials_as_reauth_required(
+def test_daemon_landing_reports_credentials_as_reauth_required(
     tmp_path: Path,
 ) -> None:
     """The receipt, not the log, is what an operator reads after a landing."""
@@ -459,7 +462,7 @@ def test_daemon_transfer_land_reports_credentials_as_reauth_required(
     )
     app = _daemon(tmp_path)
     try:
-        result = app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
+        result = land_in_daemon(app, str(bundle_dir))
 
         assert result["credentialPolicy"] == "original-user"
         by_name = {item["name"]: item for item in result["credentials"]}
@@ -471,13 +474,12 @@ def test_daemon_transfer_land_reports_credentials_as_reauth_required(
         app.agents.close()
 
 
-def test_daemon_transfer_land_refuses_a_bad_bundle(tmp_path: Path) -> None:
+def test_daemon_landing_refuses_a_bad_bundle(tmp_path: Path) -> None:
     app = _daemon(tmp_path)
     try:
-        with pytest.raises(DaemonRequestError) as caught:
-            app.handle("transfer.land", {"bundleDir": str(tmp_path / "nope")})
+        with pytest.raises(LANDING_REFUSALS):
+            land_in_daemon(app, str(tmp_path / "nope"))
 
-        assert caught.value.code == "TRANSFER_LANDING_FAILED"
         assert app.agents.exists(ACTOR) is False
     finally:
         app.agents.close()
@@ -507,9 +509,9 @@ def test_landing_create_race_preserves_the_other_creator(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(registry, "create", competing_create)
     try:
-        with pytest.raises((LandingFailed, DaemonRequestError)):
+        with pytest.raises((LandingFailed, *LANDING_REFUSALS)):
             if app is not None:
-                app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
+                land_in_daemon(app, str(bundle_dir))
             else:
                 _land(tmp_path, bundle_dir, registry)
         assert len(winners) == 1
@@ -534,7 +536,7 @@ def test_landing_rollback_fences_incarnation_after_replacement_or_restore(tmp_pa
     def fail_after_interleaving(authority, staged, destination):
         original(authority, staged, destination)
         if mode != "restore-owned":
-            assert active[0].destroy(ACTOR)
+            assert _settle_away(active[0])
             replacement.append(active[0].create(ACTOR))
             (destination / "config" / "winner.txt").write_text("must survive")
         if mode.startswith("restore-"):
@@ -560,12 +562,12 @@ def test_landing_rollback_fences_incarnation_after_replacement_or_restore(tmp_pa
         active[0].close()
 
 
-def test_daemon_transfer_land_materialises_private_grants_via_agent_owner(tmp_path):
+def test_daemon_landing_materialises_private_grants_via_agent_owner(tmp_path):
     home = _source_home(tmp_path)
     grant = json.dumps({"capability": "see-actors", "scope": json.dumps(["user:alice"])})
     bundle_dir = _bundle(tmp_path, home, grants=[grant])
     app = _daemon(tmp_path)
-    result = app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
+    result = land_in_daemon(app, str(bundle_dir))
     assert result["ok"] is True
     grants = app._agent_session_domains.agent.read_capability_grants(ACTOR)
     assert len(grants) == 1
@@ -588,7 +590,7 @@ def test_landing_grant_undo_cannot_touch_replacement_incarnation(tmp_path, produ
     try:
         authority.adopt_agent(ACTOR, owner=OWNER, home=_source_home(tmp_path), source_machine="source")
         grant_id = authority.materialise_grant(ACTOR, grant)
-        assert registry.destroy(ACTOR)
+        assert _settle_away(registry)
         replacement = registry.create(ACTOR)
         registry.grant_capability(
             ACTOR, grant_id=grant_id, capability="see-actors", scope=json.dumps(["user:alice"]),
@@ -623,16 +625,16 @@ def test_landing_payload_never_enters_a_replacement_home(tmp_path, monkeypatch, 
     winners = []
 
     def replace_before_materialisation(authority, staged, destination):
-        assert registry.destroy(ACTOR)
+        assert _settle_away(registry)
         winners.append(registry.create(ACTOR))
         (destination / "config" / "agent.json").write_text("replacement-owned bytes")
         original(authority, staged, destination)
 
     monkeypatch.setattr(RegistryLandingAuthority, "_materialise", replace_before_materialisation)
     try:
-        with pytest.raises((LandingFailed, DaemonRequestError)):
+        with pytest.raises((LandingFailed, *LANDING_REFUSALS)):
             if app is not None:
-                app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
+                land_in_daemon(app, str(bundle_dir))
             else:
                 _land(tmp_path, bundle_dir, registry)
         assert registry.require(ACTOR).entity_token == winners[0].entity_token
@@ -669,13 +671,13 @@ def test_home_owner_serializes_payload_against_destroy_and_recreate(tmp_path, mo
 
     def land():
         try:
-            results.append(app.handle("transfer.land", {"bundleDir": str(bundle_dir)}))
+            results.append(land_in_daemon(app, str(bundle_dir)))
         except BaseException as error:
             errors.append(error)
 
     def replace():
         try:
-            assert app.agents.destroy(ACTOR, expected_entity_token=receipts[0].entity_token)
+            assert _settle_away(app.agents, token=receipts[0].entity_token)
             winners.append(app.agents.create(ACTOR))
             (tmp_path / "agents" / ACTOR / "config" / "agent.json").write_text("winner")
         except BaseException as error:
@@ -696,8 +698,7 @@ def test_home_owner_serializes_payload_against_destroy_and_recreate(tmp_path, mo
         replacing.join(5.0)
         assert not landing.is_alive() and not replacing.is_alive()
         assert results == []
-        assert len(errors) == 1 and isinstance(errors[0], DaemonRequestError)
-        assert errors[0].code == "TRANSFER_LANDING_FAILED"
+        assert len(errors) == 1 and isinstance(errors[0], LANDING_REFUSALS)
         assert replacement_errors == []
         assert winners[0].entity_token != receipts[0].entity_token
         assert app.agents.require(ACTOR).entity_token == winners[0].entity_token
@@ -719,15 +720,14 @@ def test_final_landing_confirmation_refuses_a_replacement(tmp_path, monkeypatch)
     winners = []
 
     def replace_before_confirmation(authority, actor):
-        assert app.agents.destroy(actor)
+        assert _settle_away(app.agents, actor)
         winners.append(app.agents.create(actor))
         (tmp_path / "agents" / actor / "config" / "agent.json").write_text("final winner")
         original(authority, actor)
 
     monkeypatch.setattr(RegistryLandingAuthority, "confirm_landing", replace_before_confirmation)
-    with pytest.raises(DaemonRequestError) as caught:
-        app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
-    assert caught.value.code == "TRANSFER_LANDING_FAILED"
+    with pytest.raises(LANDING_REFUSALS):
+        land_in_daemon(app, str(bundle_dir))
     assert app.agents.require(ACTOR).entity_token == winners[0].entity_token
     assert (tmp_path / "agents" / ACTOR / "config" / "agent.json").read_text() == "final winner"
 
@@ -743,14 +743,13 @@ def test_landing_checks_incarnation_after_staging_cleanup(tmp_path, monkeypatch)
 
     def cleanup_then_replace(staged):
         original(staged)
-        assert app.agents.destroy(ACTOR)
+        assert _settle_away(app.agents)
         winners.append(app.agents.create(ACTOR))
         (tmp_path / "agents" / ACTOR / "config" / "agent.json").write_text("cleanup winner")
 
     monkeypatch.setattr(registry_landing, "_prune", cleanup_then_replace)
-    with pytest.raises(DaemonRequestError) as caught:
-        app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
-    assert caught.value.code == "TRANSFER_LANDING_FAILED"
+    with pytest.raises(LANDING_REFUSALS):
+        land_in_daemon(app, str(bundle_dir))
     assert app.agents.require(ACTOR).entity_token == winners[0].entity_token
     assert (tmp_path / "agents" / ACTOR / "config" / "agent.json").read_text() == "cleanup winner"
 
@@ -781,9 +780,8 @@ def test_admitted_landing_rechecks_frozen_manifest_payload(tmp_path, monkeypatch
         return original(provisioner, receipt, staged, expected_files)
 
     monkeypatch.setattr(AgentHomeProvisioner, "materialise_payload", mutate_after_admission)
-    with pytest.raises(DaemonRequestError) as caught:
-        app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
-    assert caught.value.code == "TRANSFER_LANDING_FAILED"
+    with pytest.raises(LANDING_REFUSALS):
+        land_in_daemon(app, str(bundle_dir))
     assert not app.agents.exists(ACTOR)
     assert not (tmp_path / "agents" / ACTOR).exists()
     assert len(stages) == 1 and not stages[0].exists()
@@ -815,7 +813,7 @@ def test_timed_out_landing_retains_stage_and_owner_until_io_settles(tmp_path, mo
 
     def land():
         try:
-            results.append(app.handle("transfer.land", {"bundleDir": str(bundle_dir)}))
+            results.append(land_in_daemon(app, str(bundle_dir)))
         except BaseException as error:
             errors.append(error)
 
@@ -830,8 +828,7 @@ def test_timed_out_landing_retains_stage_and_owner_until_io_settles(tmp_path, mo
         landing.join(2.0)
         assert not landing.is_alive()
         assert not results and len(errors) == 1
-        assert isinstance(errors[0], DaemonRequestError)
-        assert errors[0].code == "TRANSFER_LANDING_FAILED"
+        assert isinstance(errors[0], LANDING_REFUSALS)
         assert stages[0].exists()  # Caller rollback must not retire in-use input.
         assert len(lane._pending) == 1
         assert actor._home_calls.pending_count == 1  # Accepted I/O retains custody.
@@ -872,7 +869,7 @@ def test_landing_rejects_completion_from_retired_generation(tmp_path, monkeypatc
 
     def land():
         try:
-            results.append(app.handle("transfer.land", {"bundleDir": str(bundle_dir)}))
+            results.append(land_in_daemon(app, str(bundle_dir)))
         except BaseException as error:
             errors.append(error)
 
@@ -892,8 +889,7 @@ def test_landing_rejects_completion_from_retired_generation(tmp_path, monkeypatc
         landing.join(5.0)
         assert not landing.is_alive()
         assert results == [] and len(errors) == 1
-        assert isinstance(errors[0], DaemonRequestError)
-        assert errors[0].code == "TRANSFER_LANDING_FAILED"
+        assert isinstance(errors[0], LANDING_REFUSALS)
         assert not app.agents.exists(ACTOR)
         assert not stages[0].exists()
         assert actor._home_calls.pending_count == 0
@@ -914,9 +910,8 @@ def test_landing_rechecks_bytes_after_payload_copy(tmp_path, monkeypatch):
         target.write(b"changed during I/O")
 
     monkeypatch.setattr(home_module.shutil, "copyfileobj", copy_then_mutate)
-    with pytest.raises(DaemonRequestError) as caught:
-        app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
-    assert caught.value.code == "TRANSFER_LANDING_FAILED"
+    with pytest.raises(LANDING_REFUSALS):
+        land_in_daemon(app, str(bundle_dir))
     assert not app.agents.exists(ACTOR)
     assert not (tmp_path / "agents" / ACTOR).exists()
 
@@ -970,14 +965,12 @@ def test_landing_cannot_move_files_through_a_replaced_stage_parent(tmp_path, mon
             registry.close()
 
 
-def test_landing_refuses_missing_safe_source_descriptor_capability(tmp_path, monkeypatch):
+def test_landing_succeeds_without_source_descriptor_capability(tmp_path, monkeypatch):
     import os
 
     bundle_dir = _bundle(tmp_path, _source_home(tmp_path))
     app = _daemon(tmp_path)
     monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd - {os.open})
-    with pytest.raises(DaemonRequestError) as caught:
-        app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
-    assert caught.value.code == "TRANSFER_LANDING_FAILED"
-    assert not app.agents.exists(ACTOR)
-    assert not (tmp_path / "agents" / ACTOR).exists()
+    land_in_daemon(app, str(bundle_dir))
+    assert app.agents.exists(ACTOR)
+    assert (tmp_path / "agents" / ACTOR / "config" / "agent.json").read_text() == '{"model": "x"}\n'

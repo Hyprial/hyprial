@@ -21,13 +21,14 @@ import pytest
 
 from hyprial.identity.impl.agents.registry._core import AgentRegistry
 from hyprial.daemon.impl.application import DaemonApplication
-from hyprial.daemon.impl.transfer.agent_home_chain import _launch_wiring_identity
+from hyprial.daemon.impl.teleport.wiring.source_ops import launch_wiring_identity as _launch_wiring_identity
 from hyprial.daemon.impl.transfer.archive.bundle import export_bundle
-from hyprial.daemon.impl.transfer.landing.owner import LandingError
-from hyprial.daemon.impl.transfer.landing.registry import land_bundle_into_registry
+from hyprial.daemon.impl.transfer.landing.registry import (
+    LandingError,
+    land_bundle_into_registry,
+)
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.transfer.rehearsal import UNSIGNED_REHEARSAL
-from tests.support.transfer.signed import sign_bundle_for_target
+from tests.support.transfer.daemon_land import land_in_daemon
 
 OWNER = "alice"
 MACHINE = "server"
@@ -72,7 +73,6 @@ def _land(tmp_path: Path, bundle_dir: Path, registry: AgentRegistry, **overrides
         "home_root": tmp_path / "agents",
         "staging": tmp_path / "staging" / "landing-1",
         "granted_by": f"user:{OWNER}",
-        "signature": UNSIGNED_REHEARSAL,
     }
     arguments.update(overrides)
     return land_bundle_into_registry(bundle_dir, **arguments)
@@ -192,9 +192,6 @@ def test_the_landed_row_is_resolved_into_a_launch_without_explicit_flags(
             }
         },
     )
-    sign_bundle_for_target(
-        bundle_dir, actor=ACTOR, source_machine="laptop", target_home=tmp_path
-    )
     app = DaemonApplication(
         state_dir=tmp_path,
         socket_path=tmp_path / "daemon.sock",
@@ -206,7 +203,7 @@ def test_the_landed_row_is_resolved_into_a_launch_without_explicit_flags(
     app._presence = object()  # type: ignore[assignment]
     app._harnesses = object()  # type: ignore[assignment]
     try:
-        assert app.handle("transfer.land", {"bundleDir": str(bundle_dir)})["ok"] is True
+        assert land_in_daemon(app, bundle_dir)["ok"] is True
 
         agent = app._ensure_agent(ACTOR, harness="pi", interactive=False)
 

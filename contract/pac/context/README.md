@@ -37,15 +37,16 @@ is read-only, does not contact the daemon/inbox, and never dereferences a brief
 or result reference. A caller may separately resolve a reference through its
 own authorized document tooling; PAC does not read or interpret that body.
 
-## Delivery carries a summary (send-links WP5-D)
+## Delivery carries a summary
 
 PAC notices, routine tasks and remote offers are delivered to workers through
 `InboxDeliveryIoAdapter.deliver`, which requires a `summary`: the notification
 row and the zenoh frame carry it, and the worker context sees only the summary
 plus `bodyBytes`.  A local `workflow-request` summary is derived from the stored
 event text before the task is rebuilt; a remote node derives it from the
-rebuilt full text, so the two are not guaranteed to agree (still pending an
-Allen ruling).  See `../wire/send-links.md` §11.
+rebuilt full text, so the two are not guaranteed to agree.  The summary/body
+split and delivery fields are defined in
+[`design-send-links-2026-10-14.md`](../../../docs/design/design-send-links-2026-10-14.md) §7.
 
 ## Completed count is not current activation
 

@@ -30,6 +30,7 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
 from hyprial.kernel import LifecycleMutationCompleted
 from hyprial.kernel import LifecycleMutationRequest
 from hyprial.daemon.impl.operations.session_ports  import RegisterSessionCommand, UnregisterSessionCommand
+from hyprial.kernel import ipc_errors
 
 
 class AtomicLifecycleDomainPort:
@@ -163,7 +164,7 @@ class AtomicLifecycleDomainPort:
                     domain=self.domain,
                     generation=self.generation,
                     version=self.version,
-                    code=str(getattr(error, "code", "LIFECYCLE_DOMAIN_FAILED")),
+                    code=str(getattr(error, "code", ipc_errors.LIFECYCLE_DOMAIN_FAILED)),
                     detail=str(error),
                 ),
                 attempt_token=request.attempt_token,

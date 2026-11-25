@@ -9,6 +9,7 @@ import type {
   CatalogMethod,
   CatalogSnapshot,
   DispatchState,
+  HttpTransportAuth,
   HttpTransportConfig,
   InvocationResult,
   RequestDiagnostics,
@@ -51,6 +52,7 @@ function isAbortError(error: unknown): boolean {
 export class HttpTransport {
   readonly #config: HttpTransportConfig;
   readonly #baseUrl: string;
+  readonly #auth: HttpTransportAuth;
   #lastDiagnostics: RequestDiagnostics | null = null;
 
   constructor(config: HttpTransportConfig) {
@@ -60,6 +62,16 @@ export class HttpTransport {
     }
     this.#config = config;
     this.#baseUrl = baseUrl;
+    if (config.auth !== undefined && config.token !== undefined) {
+      throw new TypeError('choose either auth or token, not both');
+    }
+    if (config.auth !== undefined) {
+      this.#auth = config.auth;
+    } else if (config.token !== undefined) {
+      this.#auth = { mode: 'bearer', token: config.token };
+    } else {
+      throw new TypeError('an auth mode or bearer token is required');
+    }
   }
 
   /** Diagnostics of the most recent invocation (success or failure). */
@@ -142,11 +154,12 @@ export class HttpTransport {
     let response: Response;
     let text: string;
     try {
-      let token: string;
+      let authHeaders: Readonly<Record<string, string>>;
       let body: string;
       let fetchImpl: typeof fetch;
       try {
-        token = await this.#untilAborted(this.#resolveToken(), controller.signal, () =>
+        const includeCsrf = this.#auth.mode === 'same-origin-session' && this.#auth.mutates(method);
+        authHeaders = await this.#untilAborted(this.#resolveAuthHeaders(includeCsrf), controller.signal, () =>
           this.#beforeDispatchFailure(caller, timedOut, budgetMs, diagnostics()),
         );
         fetchImpl = this.#resolveFetch();
@@ -174,8 +187,12 @@ export class HttpTransport {
         headers.set(name, value);
       }
       // Transport-owned headers always win over caller-supplied values.
+      headers.delete('authorization');
+      headers.delete('x-hyprial-view');
+      headers.delete('x-hyprial-generation');
+      headers.delete('x-hyprial-csrf');
       headers.delete('x-hyprial-catalog-digest');
-      headers.set('authorization', `Bearer ${token}`);
+      for (const [name, value] of Object.entries(authHeaders)) headers.set(name, value);
       if (expectedDigest) headers.set('x-hyprial-catalog-digest', expectedDigest);
 
       try {
@@ -184,7 +201,7 @@ export class HttpTransport {
           headers,
           body,
           signal: controller.signal,
-          credentials: 'omit',
+          credentials: this.#credentials(),
           redirect: 'error',
           cache: 'no-store',
         });
@@ -292,7 +309,7 @@ export class HttpTransport {
       if (expectedDigest && actualDigest !== null && actualDigest !== expectedDigest) {
         throw this.#remember(new CatalogDriftError(expectedDigest, actualDigest, base));
       }
-      if (expectedDigest && (status === 409 || code === 'CATALOG_MISMATCH')) {
+      if (expectedDigest && code === 'CATALOG_MISMATCH') {
         throw this.#remember(new CatalogDriftError(expectedDigest, actualDigest, base));
       }
       const errorDiagnostics = { ...base, dispatch: reportedDispatch };
@@ -396,10 +413,10 @@ export class HttpTransport {
     let response: Response;
     let text: string;
     try {
-      let token: string;
+      let authHeaders: Readonly<Record<string, string>>;
       let fetchImpl: typeof fetch;
       try {
-        token = await this.#untilAborted(this.#resolveToken(), controller.signal, () =>
+        authHeaders = await this.#untilAborted(this.#resolveAuthHeaders(false), controller.signal, () =>
           this.#beforeDispatchFailure(caller, timedOut, budgetMs, catalogDiagnostics(), 'the catalog request'),
         );
         fetchImpl = this.#resolveFetch();
@@ -420,14 +437,14 @@ export class HttpTransport {
 
       const headers = new Headers();
       headers.set('accept', 'application/json');
-      headers.set('authorization', `Bearer ${token}`);
+      for (const [name, value] of Object.entries(authHeaders)) headers.set(name, value);
 
       try {
         response = await fetchImpl(`${this.#baseUrl}/daemon/request`, {
           method: 'GET',
           headers,
           signal: controller.signal,
-          credentials: 'omit',
+          credentials: this.#credentials(),
           redirect: 'error',
           cache: 'no-store',
         });
@@ -593,12 +610,33 @@ export class HttpTransport {
     return value;
   }
 
-  async #resolveToken(): Promise<string> {
-    const token = typeof this.#config.token === 'function' ? await this.#config.token() : this.#config.token;
-    if (typeof token !== 'string' || token.length === 0) {
-      throw new Error('the configured token provider returned no bearer token');
+  async #credential(source: string | (() => string | Promise<string>), label: string): Promise<string> {
+    const value = typeof source === 'function' ? await source() : source;
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(`the configured ${label} provider returned no value`);
     }
-    return token;
+    return value;
+  }
+
+  async #resolveAuthHeaders(includeCsrf: boolean): Promise<Readonly<Record<string, string>>> {
+    if (this.#auth.mode === 'bearer') {
+      const token = await this.#credential(this.#auth.token, 'bearer token');
+      return { authorization: `Bearer ${token}` };
+    }
+    const [view, generation, csrf] = await Promise.all([
+      this.#credential(this.#auth.view, 'view proof'),
+      this.#credential(this.#auth.generation, 'generation'),
+      includeCsrf ? this.#credential(this.#auth.csrf, 'CSRF') : Promise.resolve(''),
+    ]);
+    return {
+      'x-hyprial-view': view,
+      'x-hyprial-generation': generation,
+      ...(includeCsrf ? { 'x-hyprial-csrf': csrf } : {}),
+    };
+  }
+
+  #credentials(): RequestCredentials {
+    return this.#auth.mode === 'same-origin-session' ? 'include' : 'omit';
   }
 
   #resolveFetch(): typeof fetch {
@@ -616,6 +654,7 @@ export class HttpTransport {
 
 export type {
   DispatchState,
+  HttpTransportAuth,
   HttpTransportConfig,
   InvocationResult,
   RequestDiagnostics,

@@ -5,7 +5,6 @@ from __future__ import annotations
 from __future__ import annotations
 import os
 import shlex
-import socket
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -41,7 +40,7 @@ from hyprial.kernel import (
     TEARDOWN_BUDGETED_SECONDS,
 )
 if TYPE_CHECKING:
-    pass
+    from hyprial.kernel import ActorHost
 
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
@@ -96,20 +95,27 @@ def compose_daemon_worker_launch(
     spec: HarnessLaunchSpec,
     channel: Any,
     environ: Mapping[str, str],
+    app: Any = None,
 ) -> Any:
     """The daemon's child-environment factory body, one call per worker launch.
 
-    Every managed carrier -- pi, codex app-server, the Claude agent SDK,
-    jev and the PTY connectors -- receives its environment from here, so
+    Every managed carrier -- pi, codex app-server, the Claude agent SDK
+    and jev -- receives its environment from here, so
     this is the one place the ``workerProxy`` route is decided.  It is read
     per launch, never at startup: ``hyprial config set workerProxy.*``
     applies to the next worker without a daemon restart, and a damaged
     setting fails THIS start loudly.  Module level so the wiring itself is
     testable without building a daemon.
+
+    ``app`` is the daemon that owns this launch; with it, the owner-key
+    authority (read per launch behind its settings gate) supplies the slots it
+    holds.  Without it the composition is the legacy one.
     """
 
     from hyprial.identity import compose_worker_child_launch
     from hyprial.identity import launch_worker_proxy_route
+    from hyprial.daemon.impl.provider_keys.launch import launch_resolver
+    from hyprial.daemon.impl.harnesses.model_routes import route_environment
 
     return compose_worker_child_launch(
         registry=registry,
@@ -119,6 +125,8 @@ def compose_daemon_worker_launch(
         agent_name=spec.name,
         harness=spec.harness,
         worker_proxy=launch_worker_proxy_route(hyprial_home, spec),
+        owner_secrets=None if app is None else launch_resolver(app, registry=registry),
+        model_service_admission=lambda secrets: route_environment(spec, secrets),
     )
 
 def _resolve_forwarding(
@@ -161,10 +169,11 @@ def _resolve_forwarding(
         hyprial_home, os.environ, node_id=node_id
     )
     if automatic is not None and zenoh_listen:
-        if any(not endpoint.startswith('unixsock-stream/') for endpoint in zenoh_listen):
+        from hyprial.daemon.impl.forwarding.policy import inbound_target_from_listener, is_managed_private_inbound_listener
+        if any(not is_managed_private_inbound_listener(endpoint) for endpoint in zenoh_listen):
             raise ForwardingConfigurationError('FORWARDING_TARGET_INVALID',
-                'Managed networking requires private Unix listeners; use forwarding=off for an isolated TCP lab.')
-        target = 'unix:' + zenoh_listen[0].removeprefix('unixsock-stream/')
+                'Managed networking requires a private Unix listener or a Windows loopback TCP listener; use forwarding=off for an isolated TCP lab.')
+        target = inbound_target_from_listener(zenoh_listen[0])
         return policy, automatic.environment(target), None, None
     if automatic is None and policy.mode == "on":
         raise ValueError(
@@ -180,9 +189,8 @@ def _reserve_loopback_endpoint() -> str:
     between raises at session open and ``_open_transport`` picks again.
     """
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return f"tcp/127.0.0.1:{probe.getsockname()[1]}"
+    from hyprial.daemon.impl.forwarding.policy import reserve_loopback_listener
+    return reserve_loopback_listener()
 
 def _open_transport(
     config: ZenohConfig,
@@ -190,6 +198,7 @@ def _open_transport(
     *,
     derived_listen: str | None = None,
     event_sink: Callable[[str, dict[str, object]], None] | None = None,
+    actor_host: ActorHost | None = None,
 ) -> tuple[TransportSessionAuthority, tuple[str, ...], str | None]:
     """Open the session; re-pick ONLY the forwarding loopback port on a bind
     collision on that exact endpoint. A best-effort derived listener gets one
@@ -201,7 +210,9 @@ def _open_transport(
     derived_error: str | None = None
     while True:
         try:
-            native = ZenohTransport(config, event_sink=event_sink)
+            native = ZenohTransport(
+                config, event_sink=event_sink, actor_host=actor_host
+            )
         except Exception as error:
             error_text = str(error)
             if (
@@ -239,7 +250,11 @@ def _open_transport(
         # Only native-open errors can justify removing a derived listener.
         # Actor construction is a separate acquisition and keeps its error.
         try:
-            return TransportSessionAuthority(native), forwarding_listen, derived_error
+            return (
+                TransportSessionAuthority(native, actor_host=actor_host),
+                forwarding_listen,
+                derived_error,
+            )
         except BaseException as error:
             try:
                 native.close()

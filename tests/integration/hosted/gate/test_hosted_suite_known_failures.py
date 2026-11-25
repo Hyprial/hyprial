@@ -76,9 +76,9 @@ def test_unexpected_pass_is_red_until_the_entry_is_removed(
 
 
 def test_unlisted_scenarios_keep_the_plain_rule(suite: Any) -> None:
-    assert suite.classify_known_failure("host-invite", _row("PASS", 0), {}) is False
+    assert suite.classify_known_failure("hosted-registry", _row("PASS", 0), {}) is False
     assert suite.classify_known_failure(
-        "host-invite", _row("FAIL", 1), {"traceback": "MEMBERSHIP_NOT_INITIALIZED"}
+        "hosted-registry", _row("FAIL", 1), {"traceback": "MEMBERSHIP_NOT_INITIALIZED"}
     ) is True
 
 

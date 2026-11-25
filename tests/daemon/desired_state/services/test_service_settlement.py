@@ -13,9 +13,13 @@ from hyprial.daemon.impl.state_persistence import StatePersistenceAuthority
 from hyprial.kernel.impl.actor_runtime import AdmissionResult
 
 
-def test_authority_normal_and_settled_service_ports_share_one_state(tmp_path: Path) -> None:
+def test_authority_normal_and_settled_service_ports_share_one_state(
+    tmp_path: Path, actor_host
+) -> None:
     authority = StatePersistenceAuthority(
-        DesiredStateStore(tmp_path / "desired.json"), call_timeout=1.0
+        DesiredStateStore(tmp_path / "desired.json"),
+        actor_host=actor_host,
+        call_timeout=1.0,
     )
     try:
         normal = authority.desired.set_service_connection("api", 0)
@@ -35,7 +39,7 @@ def test_authority_normal_and_settled_service_ports_share_one_state(tmp_path: Pa
         assert authority.close()
 
 
-def test_desired_state_io_uses_typed_service_operation_and_acknowledges(tmp_path: Path) -> None:
+def test_desired_state_io_uses_typed_service_operation_and_acknowledges(tmp_path: Path, actor_host) -> None:
     store = DesiredStateStore(tmp_path / "desired.json")
     completed = []
     ready = threading.Event()
@@ -44,6 +48,7 @@ def test_desired_state_io_uses_typed_service_operation_and_acknowledges(tmp_path
         complete=lambda event: (completed.append(event), ready.set(), AdmissionResult.ACCEPTED)[2],
         capacity=1,
         retry_seconds=0.001,
+        actor_host=actor_host,
     )
     request = DesiredStateIoRequest(
         "service-connection",

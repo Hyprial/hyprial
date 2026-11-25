@@ -25,6 +25,8 @@ def build_probe_command(
         return ("claude", "-p", "--model", model, "hello")
     if harness == "codex":
         return ("codex", "exec", "--skip-git-repo-check", "--model", model, "hello")
+    if harness == "agy":
+        return ("agy", "-p", "--output-format", "stream-json", "--model", model, "hello")
     raise ValueError(f"unsupported harness {harness!r}")
 
 

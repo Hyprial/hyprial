@@ -770,6 +770,12 @@ def test_check_config_reports_cert_key_and_listen_problems(tmp_path: Path):
 def test_fs_web_check_cli(tmp_path: Path):
     from typer.testing import CliRunner
 
+    # Compose the process root app the way the installed entry point does:
+    # command families register as import side effects of runtime.entry.
+    # Importing only the empty root module makes this test pass or fail based
+    # on whether an earlier test happened to import the entry.
+    import hyprial.shell.impl.cli.runtime.entry  # noqa: F401
+
     from hyprial.shell.impl.cli.commands.common.root import app
 
     cert_path, key_path = _write_self_signed_cert(tmp_path / "ok")

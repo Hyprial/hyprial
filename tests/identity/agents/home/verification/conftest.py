@@ -6,6 +6,7 @@ import pytest
 
 from hyprial.identity.impl.agents.actor._core import AgentActor
 from hyprial.identity.impl.agents.registry import AgentRegistry
+from tests.support.actor_hosts import new_actor_host
 
 
 @pytest.fixture
@@ -28,7 +29,7 @@ def home_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         agent = registry.create("worker", cwd=str(tmp_path / "work"), config=config)
         actor = AgentActor(
             registry, event_sink=event_sink or (lambda _event: None),
-            home_runtime_preparers={"pi": preparer} if preparer else None,
+            home_runtime_preparers={"pi": preparer} if preparer else None, actor_host=new_actor_host(),
         )
         actors.append(actor)
         return registry, actor, agent

@@ -54,15 +54,11 @@ def _state(row: Mapping[str, Any], *, now_ms: int) -> str:
 def _render_outbox_list(data: Mapping[str, Any]) -> str:
     """Queue wait reason and wait duration, one row per outbox entry."""
 
-    from hyprial.daemon import HOLD_REASON_KEY
-
     now_ms = _now_ms()
     cells: list[list[str]] = []
     for row in _rows(data.get("entries")):
         wait = _wait_ms(row, now_ms=now_ms)
-        reason = row.get(HOLD_REASON_KEY)
-        if not isinstance(reason, str) or not reason:
-            reason = row.get("reason")
+        reason = row.get("reason")
         cells.append(
             [
                 _text(row.get("messageId")),

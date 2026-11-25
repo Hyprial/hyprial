@@ -1,0 +1,1 @@
+{"schemaVersion":1,"caseId":"UA-155:a0-config-fence","phase":"M1","expected":{"startup":"AGENT_REGISTRY_A0_FENCED","newAuthorityRows":0}}

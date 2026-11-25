@@ -9,6 +9,7 @@ import sqlite3
 from typing import Any
 
 from hyprial.identity import PacError
+from hyprial.daemon.impl.pac.storage.agent_uris import node_owner_matches
 from hyprial.daemon.impl.pac.graphs.reactor  import PacReactor, permanent_delivery_failure
 from hyprial.daemon.impl.pac.storage.store import (
     PacGraphStore, pending_notification, projection_revision, record_projection,
@@ -646,9 +647,10 @@ class _GraphWorkflowServiceOps:
                         )
                     elif meta["on_failure"] == "hold":
                         store._db.execute(
-                            "UPDATE workflow_graphs SET state='held',reason_ref=? "
+                            "UPDATE workflow_graphs SET state='held',reason_ref=?,"
+                            "held_at_ms=CASE WHEN state='held' THEN held_at_ms ELSE ? END "
                             "WHERE graph_id=?",
-                            (reason, graph_id),
+                            (reason, self.clock(), graph_id),
                         )
                 store._db.commit()
             store.flush_graph_closed()
@@ -692,7 +694,8 @@ class _GraphWorkflowServiceOps:
                     (graph_id, worker.node_id),
                 )
                 store._db.execute(
-                    "UPDATE workflow_graphs SET state='running',reason_ref=NULL WHERE graph_id=?",
+                    "UPDATE workflow_graphs SET state='running',reason_ref=NULL,"
+                    "held_at_ms=NULL WHERE graph_id=?",
                     (graph_id,),
                 )
                 store._db.commit()
@@ -773,7 +776,7 @@ class _GraphWorkflowServiceOps:
                         "PAC_EXPANSION_SYSTEM_NODE",
                         "expansion placeholders cannot accept public failure",
                     )
-                if graph is None or node is None or node.owner != actor:
+                if graph is None or not node_owner_matches(store, node, actor, self._agent_reader):
                     raise WorkflowServiceError(
                         "WORKFLOW_NOT_OWNER", "only the node owner can report failure"
                     )

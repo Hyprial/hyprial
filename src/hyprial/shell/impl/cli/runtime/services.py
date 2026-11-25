@@ -44,20 +44,8 @@ def initialize_hyprial_home() -> Path:
 
 # Late-bound daemon/gui capabilities: importing the composition root must not
 # import hyprial.daemon or the GUI runtime until a command actually uses them.
-def notify_upgrade_failure(*args, **kwargs):
-    from hyprial.daemon import notify_upgrade_failure as _real
-
-    return _real(*args, **kwargs)
-
-
 def process_cpu_seconds(*args, **kwargs):
     from hyprial.daemon import process_cpu_seconds as _real
-
-    return _real(*args, **kwargs)
-
-
-def record_alert_outcome(*args, **kwargs):
-    from hyprial.daemon import record_alert_outcome as _real
 
     return _real(*args, **kwargs)
 
@@ -80,12 +68,6 @@ def write_failure_marker(*args, **kwargs):
     return _real(*args, **kwargs)
 
 
-def start_gui_background(*args, **kwargs):
-    from hyprial.shell.impl.gui.runtime import start_gui_background as _real
-
-    return _real(*args, **kwargs)
-
-
 def assemble_services(runtime: CliRuntime) -> CliServices:
     """Import owning helpers and build the one explicit service instance."""
 
@@ -95,16 +77,9 @@ def assemble_services(runtime: CliRuntime) -> CliServices:
         require_initialized_hyprial_home,
     )
     from hyprial.shell.impl.cli.commands.adapter.lark_auth import _lark_auth_timer_check
-    from hyprial.shell.impl.cli.commands.adapter.routes import (
-        _route_candidates,
-        _route_operation,
-    )
     from hyprial.shell.impl.cli.commands.agent.create import _create_agent_for_start
     from hyprial.shell.impl.cli.commands.agent.runtime.claude import (
         _start_interactive_claude,
-    )
-    from hyprial.shell.impl.cli.commands.agent.runtime.dsh import (
-        _start_interactive_dsh,
     )
     from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
         _runtime_context_environment,
@@ -119,7 +94,6 @@ def assemble_services(runtime: CliRuntime) -> CliServices:
     )
     from hyprial.shell.impl.cli.commands.common.daemon_stop import (
         _describe_survivor,
-        _stop_daemon_for_identity_switch,
         _stop_daemon_gracefully,
         _stopped_process,
     )
@@ -134,24 +108,15 @@ def assemble_services(runtime: CliRuntime) -> CliServices:
         _wait_for_daemon,
     )
     from hyprial.shell.impl.cli.commands.daemon.restart import _restart_is_interactive
-    from hyprial.shell.impl.cli.commands.daemon.top import _sample_process_table
-    from hyprial.shell.impl.cli.commands.doctor.commands import _dsh_host_describe
     from hyprial.shell.impl.cli.commands.init.init import (
         _complete_initialization,
         _initialize_org_context,
     )
-    from hyprial.shell.impl.cli.commands.init.onboarding import (
-        _onboarding_apply_actions,
-        _onboarding_snapshot,
-    )
-    from hyprial.shell.impl.cli.commands.login.flow import _run_login_cli_flow
     from hyprial.shell.impl.cli.commands.routine.commands import _routine_identity
     from hyprial.shell.impl.cli.commands.socialware.commands import (
         _prime_post_install_restart_imports,
         _running_daemon_before_upgrade,
     )
-    from hyprial.shell.impl.cli.commands.squire.squire import _squire_setup_operation
-    from hyprial.shell.impl.cli.commands.squire.user_proxy import _stored_user_proxy_route
     from hyprial.shell.impl.cli.commands.upgrade.commands import (
         _perform_upgrade,
         _perform_upgrade_and_report,
@@ -171,48 +136,34 @@ def assemble_services(runtime: CliRuntime) -> CliServices:
         _daemon_probe=_daemon_probe,
         _daemon_ready_for_process=_daemon_ready_for_process,
         _describe_survivor=_describe_survivor,
-        _dsh_host_describe=_dsh_host_describe,
         _hyprial_home=_hyprial_home,
         _initialize_org_context=_initialize_org_context,
         _lark_auth_timer_check=_lark_auth_timer_check,
         _launch_daemon_process=_launch_daemon_process,
         _launch_daemon_process_locked=_launch_daemon_process_locked,
-        _onboarding_apply_actions=_onboarding_apply_actions,
-        _onboarding_snapshot=_onboarding_snapshot,
         _perform_upgrade=_perform_upgrade,
         _perform_upgrade_and_report=_perform_upgrade_and_report,
         _prime_post_install_restart_imports=_prime_post_install_restart_imports,
         _restart_is_interactive=_restart_is_interactive,
-        _route_operation=_route_operation,
-        _route_candidates=_route_candidates,
         _routine_identity=_routine_identity,
-        _run_login_cli_flow=_run_login_cli_flow,
         _run_worktree_git=_run_worktree_git,
         _running_daemon_before_upgrade=_running_daemon_before_upgrade,
         _runtime_context_environment=_runtime_context_environment,
-        _sample_process_table=_sample_process_table,
         _socket_path=_socket_path,
         _start_interactive_claude=_start_interactive_claude,
         _start_interactive_codex=_start_interactive_codex,
-        _start_interactive_dsh=_start_interactive_dsh,
         _start_interactive_pi=_start_interactive_pi,
         _state_dir=_state_dir,
         _stdin_isatty=_stdin_isatty,
-        _stop_daemon_for_identity_switch=_stop_daemon_for_identity_switch,
         _stop_daemon_gracefully=_stop_daemon_gracefully,
         _stopped_process=_stopped_process,
-        _stored_user_proxy_route=_stored_user_proxy_route,
-        _squire_setup_operation=_squire_setup_operation,
         _wait_for_daemon=_wait_for_daemon,
         configured_hyprial_home=configured_hyprial_home,
         default_hyprial_home=default_hyprial_home,
         initialize_hyprial_home=initialize_hyprial_home,
-        notify_upgrade_failure=notify_upgrade_failure,
         process_cpu_seconds=process_cpu_seconds,
-        record_alert_outcome=record_alert_outcome,
         require_initialized_hyprial_home=require_initialized_hyprial_home,
         resolve_profile=resolve_profile,
-        start_gui_background=start_gui_background,
         tcp_probe=tcp_probe,
         write_failure_marker=write_failure_marker,
     )

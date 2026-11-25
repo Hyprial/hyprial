@@ -1,3 +1,4 @@
+# Decision record (W2B-2, 2026-11-21): projection staging/parent hardening uses harden_private_path; whitelists unchanged.
 """Single-source agent config and content-addressed native projections.
 
 The public identity contract stops at :class:`AgentConfig`: one explicit C
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Self
 
-from hyprial.kernel import ipc_errors, path_is_reparse, private_metadata_violation
+from hyprial.kernel import harden_private_path, ipc_errors, path_is_reparse, private_metadata_violation
 
 __all__ = [
     "NATIVE_CONFIG_MAPPING_VERSION",
@@ -39,14 +40,13 @@ __all__ = [
 ]
 
 NATIVE_CONFIG_MAPPING_VERSION = "agent-home-p2-native-v1"
-_SUPPORTED_HARNESSES = frozenset({"claude", "codex", "pi"})
+_SUPPORTED_HARNESSES = frozenset({"claude", "codex", "pi", "agy"})
 _PROJECTION_RECEIPT_SCHEMA = 1
 _PROJECTION_FILE_MODE = 0o600
 _DIGEST_LENGTH = hashlib.sha256().digest_size * 2
 _KNOWN_NATIVE_CREDENTIAL_PATHS = {
-    "claude": frozenset({".credentials.json"}),
-    "codex": frozenset({"auth.json"}),
-    "pi": frozenset({"auth.json", "models.json", "models-store.json"}),
+    "claude": frozenset({".credentials.json"}), "codex": frozenset({"auth.json"}),
+    "pi": frozenset({"auth.json", "models.json", "models-store.json"}), "agy": frozenset({"antigravity-oauth-token"}),
 }
 
 
@@ -634,7 +634,7 @@ def materialize_native_projection(
         )
 
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=parent))
-    os.chmod(stage, 0o700)
+    harden_private_path(stage, mode=0o700)
     published = False
     try:
         source_root = Path(config.source)
@@ -854,7 +854,7 @@ def _mkdir_projection_parents(root: Path, directory: Path) -> None:
                 raise AgentConfigError(
                     f"native projection parent {current.name} must be a real directory"
                 ) from None
-        os.chmod(current, 0o700)
+        harden_private_path(current, mode=0o700)
 
 
 def _projection_receipt(
@@ -889,29 +889,13 @@ def _new_manifest(
 def _manifest_digest(
     source: str, items: tuple[ConfigManifestItem, ...], missing: bool
 ) -> str:
-    return _digest_json(
-        {
-            "source": source,
-            "items": [item.to_json() for item in items],
-            "missing": missing,
-        }
-    )
+    return _digest_json({"source": source, "items": [item.to_json() for item in items], "missing": missing})
 
 
 def _projection_digest(
-    harness: str,
-    source_digest: str,
-    mapping_version: str,
-    items: tuple[NativeProjectionItem, ...],
+    harness: str, source_digest: str, mapping_version: str, items: tuple[NativeProjectionItem, ...]
 ) -> str:
-    return _digest_json(
-        {
-            "harness": harness,
-            "sourceDigest": source_digest,
-            "mappingVersion": mapping_version,
-            "items": [item.to_json() for item in items],
-        }
-    )
+    return _digest_json({"harness": harness, "sourceDigest": source_digest, "mappingVersion": mapping_version, "items": [item.to_json() for item in items]})
 
 
 def _digest_json(value: object) -> str:

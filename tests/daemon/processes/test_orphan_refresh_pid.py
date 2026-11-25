@@ -54,7 +54,7 @@ def test_refresh_pid_ignores_unknown_processes_and_known_pids(tmp_path) -> None:
     assert row["marker"] == "origin"
 
 
-def test_authority_refresh_pid_end_to_end(tmp_path) -> None:
+def test_authority_refresh_pid_end_to_end(tmp_path, actor_host) -> None:
     """The production composition (Authority lane) must backfill too.
 
     Pins the exact bug the #1370 verdict caught: the authority's
@@ -66,7 +66,7 @@ def test_authority_refresh_pid_end_to_end(tmp_path) -> None:
     from hyprial.daemon.impl.processes.orphan_processes import OrphanProcessAuthority
 
     authority = OrphanProcessAuthority(
-        tmp_path / "orphan-processes.json", identity_reader=lambda _pid: None
+        tmp_path / "orphan-processes.json", identity_reader=lambda _pid: None, actor_host=actor_host
     )
     process = SimpleNamespace(running=True, pid=None)
     authority.observe_start("pi:worker", process, pid=None, marker=None)

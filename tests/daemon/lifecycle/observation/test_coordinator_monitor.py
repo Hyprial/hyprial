@@ -9,11 +9,12 @@ from hyprial.daemon.impl.lifecycle.lifecycle_coordinator import LifecycleCoordin
 from hyprial.daemon.impl.lifecycle_manager import LifecyclePorts
 
 
-def test_recovery_thread_crash_is_dependency_failure_not_child_exit(tmp_path, monkeypatch):
+def test_recovery_thread_crash_is_dependency_failure_not_child_exit(tmp_path, monkeypatch, actor_host):
     port = SimpleNamespace()
     coordinator = LifecycleCoordinator(
         tmp_path / "lifecycle.sqlite3", LifecyclePorts(port, port, port, port),
         CorrelationEventRouter(), observation_host_id="test-host",
+        actor_host=actor_host,
     )
     projection = HarnessProjection()
     process = SimpleNamespace(running=True)

@@ -8,7 +8,8 @@ from hyprial.identity import RuntimeCapability
 from .support import (
     _EXPECTED_SELECTION_CALL_SITES,
     _dead_run,
-    _profile_store,
+    _owner_key,
+    _capability_store,
     _selection_call_sites,
 )
 
@@ -26,7 +27,7 @@ def test_pc1_every_selection_reader_is_covered():
 
 @pytest.mark.parametrize("tier", ["fast", "strong", "super"])
 def test_pc1_selection_reads_no_runtime_fact(monkeypatch, tier):
-    """No probe, no profile read, and the declared head wins every time.
+    """No probe, no capability read, and the declared head wins every time.
 
     Mutation contract: restoring the old ``if observed.status ==
     "unavailable": continue`` / first-live branch makes this red on the spy
@@ -35,11 +36,11 @@ def test_pc1_selection_reads_no_runtime_fact(monkeypatch, tier):
 
     monkeypatch.setattr(
         matrix,
-        "active_profile",
-        lambda: pytest.fail("selection read the runtime profile"),
+        "recorded_capabilities",
+        lambda: pytest.fail("selection read the recorded capabilities"),
     )
     monkeypatch.setattr(
-        "hyprial.daemon.impl.squire.probe._subprocess_runner",
+        "hyprial.daemon.impl.harnesses.probe._subprocess_runner",
         lambda *_: pytest.fail("selection probed a harness"),
     )
     choice = matrix.resolve(tier)
@@ -75,10 +76,10 @@ def test_pc3_marked_head_is_still_selected_and_mark_survives(tier, monkeypatch):
     the bytes assertion proves the mark was not deleted to make it pass.
     """
 
-    store = _profile_store()
+    store = _capability_store()
     head = matrix.TIERS[tier][0]
-    store.set_runtime_capability(
-        "owner-key",
+    store.set(
+        _owner_key(),
         RuntimeCapability(
             harness=head.harness,
             provider=head.provider,
@@ -91,7 +92,7 @@ def test_pc3_marked_head_is_still_selected_and_mark_survives(tier, monkeypatch):
     )
     before = store.path.read_bytes()
     monkeypatch.setattr(
-        "hyprial.daemon.impl.squire.probe._subprocess_runner",
+        "hyprial.daemon.impl.harnesses.probe._subprocess_runner",
         lambda *_: pytest.fail("selection probed a harness"),
     )
 
@@ -101,7 +102,7 @@ def test_pc3_marked_head_is_still_selected_and_mark_survives(tier, monkeypatch):
     # not a gate, and deleting it is not how this contract is satisfied.
     assert store.path.read_bytes() == before
     readings = matrix.diagnose(
-        tier, profile=store.get("owner-key"), runner=lambda *_: _dead_run()
+        tier, capabilities=store.list(_owner_key()), runner=lambda *_: _dead_run()
     )
     assert readings[0].diagnostic_mark is not None
     # No probe happened above, so the diagnosis is the only thing that talked
@@ -112,11 +113,11 @@ def test_pc3_marked_head_is_still_selected_and_mark_survives(tier, monkeypatch):
 def test_pc3_all_marked_pool_still_resolves():
     """A fully marked pool has no fallback to reach: the head is launched."""
 
-    store = _profile_store()
+    store = _capability_store()
     tier = "super"
     for candidate in matrix.TIERS[tier]:
-        store.set_runtime_capability(
-            "owner-key",
+        store.set(
+            _owner_key(),
             RuntimeCapability(
                 harness=candidate.harness,
                 provider=candidate.provider,

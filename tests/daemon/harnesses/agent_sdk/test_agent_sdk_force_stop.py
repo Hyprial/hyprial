@@ -10,13 +10,15 @@ this card reproduces).
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 from collections.abc import AsyncIterator
 
 import pytest
 
-from hyprial.kernel import HarnessLaunchSpec
+import hyprial.daemon.impl.harnesses.agent_sdk as agent_sdk_module
+from hyprial.kernel import HarnessLaunchSpec, OwnedProcessGroup
 from hyprial.daemon.impl.harnesses.agent_sdk import ClaudeAgentSdkProcess, IsolatedAgentSdkClient
 from hyprial.daemon.impl.harnesses.codex.process import PROCESS_FORCE_JOIN_SECONDS, _OwnedProcessGroup
 
@@ -58,18 +60,82 @@ def _spec() -> HarnessLaunchSpec:
 
 
 def test_claude_wrapper_wires_force_stop_to_its_process_group() -> None:
-    # Drive the pump with an in-memory client so no real worker is spawned; the
-    # wiring under test is entirely in the constructor.
     proc = ClaudeAgentSdkProcess(_spec(), client_factory=_IdleClient)
     try:
-        assert isinstance(proc._process_group, _OwnedProcessGroup)
-        # The base pump can force-kill by PID group, not merely raise on a
-        # stuck graceful stop.
+        assert isinstance(proc._process_group, OwnedProcessGroup)
+        assert proc._process_group._label == "Claude SDK"
         assert proc._force_stop == proc._process_group.force_close
         assert proc._force_stopped == proc._process_group.stopped
         assert proc._force_stop_join_seconds == PROCESS_FORCE_JOIN_SECONDS
     finally:
         proc.stop()
+
+
+@pytest.mark.anyio
+async def test_sdk_client_uses_job_group_and_portable_spawn_without_windows_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+    released: list[int] = []
+
+    class FakeJobGroup(OwnedProcessGroup):
+        def __init__(self) -> None:
+            super().__init__(label="Claude SDK")
+            self.spawned = False
+
+        async def spawn(self, command: tuple[str, ...], **options: object):
+            self.spawned = True
+            return await asyncio.create_subprocess_exec(
+                *command, start_new_session=True, **options
+            )
+
+        def register(self, pid: int) -> None:
+            self._pid = pid
+
+        def exists(self, pid: int) -> bool:
+            return self._pid == pid
+
+        def signal(self, pid: int, signum: int) -> None:
+            signals.append((pid, int(signum)))
+            self._pid = None
+
+        def release_if_gone(self, pid: int) -> None:
+            released.append(pid)
+
+    job_group = FakeJobGroup()
+    monkeypatch.setattr(
+        agent_sdk_module,
+        "is_windows_owned_process_group",
+        lambda group: group is job_group,
+    )
+    client = IsolatedAgentSdkClient(
+        _spec(),
+        worker_command=(sys.executable, "-c", _READY_WORKER),
+        startup_timeout_seconds=5.0,
+        process_group=job_group,
+    )
+    async with client:
+        observed_pid = client.pid
+        assert observed_pid is not None
+        assert job_group.spawned is True
+    assert signals == [(observed_pid, 9)]
+    assert released == [observed_pid]
+
+    fallback_client = IsolatedAgentSdkClient(
+        _spec(),
+        worker_command=(sys.executable, "-c", _READY_WORKER),
+        startup_timeout_seconds=5.0,
+        process_group=_OwnedProcessGroup(),
+    )
+    class _WindowsOs:
+        name = "nt"
+
+        def __getattr__(self, attr: str) -> object:
+            return getattr(__import__("os"), attr)
+
+    monkeypatch.setattr(agent_sdk_module, "os", _WindowsOs())
+    async with fallback_client:
+        assert fallback_client.pid is not None
 
 
 @pytest.mark.anyio

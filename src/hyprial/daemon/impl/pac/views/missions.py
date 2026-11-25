@@ -1,506 +1,99 @@
-"""Work-item associations: which PAC graphs belong to which task line.
+"""Read ordinary OrgFS documents for the optional PAC overview projection.
 
-A work item is one file ``work/M-<owner>-NNNN.md`` in an org directory space.
-Its first ```yaml block is machine-readable
-(``id``, ``status``, ``owner``, ``keywords``, ``pacs``); the rest is prose.
-
-This module is the deterministic half of the association.  A squire's
-scheduled routine runs, in one ``work`` node:
-
-1. :func:`collect` - read the missions, read the previous round's state
-   (``asked``/``declined``) from that round's ``outputText``, pick this node's
-   new graphs, pre-filter at most :data:`TOP_CANDIDATES` missions for each,
-   and build one jev payload per graph that has candidates;
-2. the squire sends each payload to the jev with ``hyprial message send`` and reads
-   the replies from its inbox;
-3. :func:`finish` - fold the replies into one result per graph and the state
-   the squire completes the node with (``--output-text``).
-
-Nothing here writes to orgfs: every write stays with the squire.
+Every readable document remains available by node with its current source and
+parse diagnostics. A usable id/pacs view may group existing PAC graphs; this
+module has no association-round state, task transitions, writes or approvals.
 """
 
 from __future__ import annotations
 
-import json
-import re
-from collections.abc import Mapping, Sequence
+from collections import Counter
 from typing import Any
 
-from hyprial.daemon.impl.pac.views.overview import DAY_MS, DEFAULT_WINDOW_DAYS, Request, _signature
-from hyprial.daemon.impl.pac.views.work_items import (
-    WORK_STATUSES,
-    WorkItemError,
-    parse_work_item,
-    validate_work_item_state,
-)
+from hyprial.daemon.impl.pac.views.overview import Request
+from hyprial.daemon.impl.pac.views.work_items import WorkItem, parse_work_item
 
 WORK_DIR = "work"
-WORK_NODE = "work"
-TOP_CANDIDATES = 5
-GRAPHS_PER_ROUND = 20
-LIST_LIMIT = 500  # workflow.list returns at most this many, newest first
-PAYLOAD_LIMIT = 32 * 1024
-STATE_LIMIT = 60 * 1024  # under the 64 KiB workflow output cap
-STATUSES = WORK_STATUSES
-_TERMINAL = {"completed", "failed", "cancelled"}
-SKIPPED_STATE = {"skipped": True}  # the output of a round that did nothing
-_MISSION_FILE = re.compile(r"M-[A-Za-z0-9._-]+-\d{4,}\.md")
 
 
 class MissionParseError(ValueError):
-    """A mission file whose YAML block cannot be used; the squire repairs it."""
-
-
-class PreviousRoundUnreadable(RuntimeError):
-    """The previous round exists but cannot be read (e.g. the routine changed actor).
-
-    Treating it as "no previous round" would ask the owner again about every
-    graph already asked, so the squire must fail its node instead.
-    """
+    """Optional graph-grouping metadata is unavailable; the source is readable."""
 
 
 def parse_mission(text: str) -> dict[str, Any]:
-    """One work-item file as the full :meth:`WorkItem.to_dict` projection.
+    """Project only current id/pacs metadata for read-only graph grouping."""
 
-    The line view reads id/title/status/owner/pacs; the work-items page
-    (``model["workItems"]``) reads the rest (checklist, depends, acceptance,
-    log, opened/closed, assignee) straight from the same projection.
-    """
-
-    try:
-        item = parse_work_item(text)
-        validate_work_item_state(item)
-    except WorkItemError as error:
-        if str(error).startswith(("keywords must be", "pacs must be")):
-            raise MissionParseError("keywords and pacs must be lists") from error
-        raise MissionParseError(str(error)) from error
-    projected = item.to_dict()
-    return {
-        **projected,
-        # The heading is the title; a stray YAML ``title:`` key must not
-        # override it (to_dict spreads the head after its own ``title``).
-        "title": item.title,
-        "pacs": [str(graph).strip() for graph in projected["pacs"] if str(graph).strip()],
-    }
+    item = parse_work_item(text)
+    if item.diagnostics:
+        raise MissionParseError("; ".join(item.diagnostics))
+    if not item.id.strip():
+        raise MissionParseError("optional graph grouping needs a non-empty text id")
+    pacs = item.head.get("pacs", [])
+    if not isinstance(pacs, list) or any(not isinstance(graph, str) for graph in pacs):
+        raise MissionParseError("optional graph grouping needs pacs as a list of strings")
+    return {**item.to_dict(), "pacs": [graph.strip() for graph in pacs if graph.strip()], "associationEligible": True}
 
 
-def load_missions(
-    request: Request, space_id: str, *, base: str = WORK_DIR
-) -> dict[str, Any]:
-    """Every mission file in the space, with those that need a squire's repair.
+def load_missions(request: Request, space_id: str, *, base: str = WORK_DIR) -> dict[str, Any]:
+    """Read each current document, including conflicting and malformed files."""
 
-    ``unparseable`` and ``conflicts`` are never skipped silently: a merge that
-    garbled a line, or two files created under one name, is the squire's to fix.
-    """
-
-    listing = request("orgfs.ls", {"spaceId": space_id, "path": base})
+    listing = request("orgfs.ls", {"spaceId": space_id, "path": base, "recursive": True})
     missions: list[dict[str, Any]] = []
-    unparseable: list[dict[str, str]] = []
+    documents: list[dict[str, Any]] = []
     conflict_nodes: dict[str, list[str]] = {}
-    for item in listing.get("nodes") or []:
-        if not isinstance(item, dict) or item.get("deleted"):
+    for node in listing.get("nodes") or []:
+        if not isinstance(node, dict) or node.get("deleted") or node.get("kind") not in (None, "doc"):
             continue
-        name = str(item.get("name") or "")
-        if not _MISSION_FILE.fullmatch(name):
+        name, node_id = node.get("name"), node.get("node_id")
+        if not isinstance(name, str) or not name or not isinstance(node_id, str) or not node_id:
             continue
-        path = f"{base}/{name}"
-        if item.get("name_conflict"):
-            node_id = item.get("node_id")
-            if isinstance(node_id, str) and node_id:
-                conflict_nodes.setdefault(path, []).append(node_id)
-            continue
+        path = node.get("path")
+        if not isinstance(path, str) or not path:
+            path = f"{base}/{name}"
+        conflict = bool(node.get("name_conflict"))
+        if conflict:
+            conflict_nodes.setdefault(path, []).append(node_id)
+        text = ""
+        version = None
         try:
-            read = request(
-                "orgfs.read",
-                {"spaceId": space_id, "path": f"id:{item.get('node_id')}", "waitSeconds": 10},
-            )
-            mission = parse_mission(str(read.get("text") or ""))
-        except MissionParseError as error:
-            unparseable.append({"path": path, "reason": str(error)})
-            continue
-        except Exception as error:  # noqa: BLE001 - one unreadable file is reported, not fatal
-            unparseable.append({"path": path, "reason": f"unreadable: {error}"})
-            continue
-        missions.append(
-            {
-                **mission,
-                "path": path,
-                "version": read.get("version"),
-                "modifiedBy": item.get("modified_by"),
-            }
-        )
-    missions.sort(key=lambda mission: mission["id"])
-    conflicts = [
-        {"path": path, "nodeIds": sorted(set(node_ids))}
-        for path, node_ids in sorted(conflict_nodes.items())
-    ]
-    return {"missions": missions, "unparseable": unparseable, "conflicts": conflicts}
-
-
-def previous_state(
-    request: Request, runs: Sequence[Mapping[str, Any]], routine: str
-) -> dict[str, Any]:
-    """The ``asked``/``declined`` state the last completed round of ``routine`` wrote.
-
-    Rounds that failed or were cancelled wrote nothing, and rounds that
-    skipped (see :data:`SKIPPED_STATE`) carried nothing: both are passed
-    over for the round before them, since every round writes the whole set.
-    A completed round without readable state stops the search instead.
-    """
-
-    rounds = sorted(
-        (
-            run
-            for run in runs
-            if run.get("routineName") == routine and run.get("state") == "completed"
-        ),
-        key=lambda run: (int(run.get("createdAtMs") or 0), str(run.get("graphId"))),
-        reverse=True,
-    )
-    for run in rounds:
-        graph_id = str(run.get("graphId"))
-        try:
-            detail = request("workflow.node.inspect", {"runId": graph_id, "target": WORK_NODE})
-        except Exception as error:  # noqa: BLE001 - CALLER_NOT_AUTHORIZED among others
-            raise PreviousRoundUnreadable(f"{graph_id}: {error}") from error
-        node = detail.get("node") if isinstance(detail, dict) else None
-        text = node.get("outputText") if isinstance(node, dict) else None
-        try:
-            state = json.loads(text) if isinstance(text, str) else None
-        except json.JSONDecodeError:
-            state = None
-        if not isinstance(state, dict):
-            raise PreviousRoundUnreadable(f"{graph_id}: outputText is not a state object")
-        if state.get("skipped"):
-            continue
-        return {
-            "from": graph_id,
-            "asked": [str(g) for g in state.get("asked") or []],
-            "declined": [str(g) for g in state.get("declined") or []],
-        }
-    return {"asked": [], "declined": []}
-
-
-def new_graphs(
-    runs: Sequence[Mapping[str, Any]],
-    missions: Sequence[Mapping[str, Any]],
-    state: Mapping[str, Any],
-    *,
-    now_ms: int,
-    window_days: int = DEFAULT_WINDOW_DAYS,
-    limit: int = GRAPHS_PER_ROUND,
-) -> tuple[Sequence[Mapping[str, Any]], int]:
-    """Graphs created here in the window that no mission, question or refusal covers.
-
-    Routine graphs (this routine's rounds included) are never candidates.
-    Oldest first, at most ``limit``; the rest wait for the next round.
-    """
-
-    since = now_ms - window_days * DAY_MS
-    known = {graph for mission in missions for graph in mission.get("pacs") or []}
-    known |= set(state.get("asked") or []) | set(state.get("declined") or [])
-    fresh = sorted(
-        (
-            run
-            for run in runs
-            if not run.get("routineName")
-            and int(run.get("createdAtMs") or 0) >= since
-            and str(run.get("graphId")) not in known
-        ),
-        key=lambda run: (int(run.get("createdAtMs") or 0), str(run.get("graphId"))),
-    )
-    return fresh[:limit], max(0, len(fresh) - limit)
-
-
-def candidates(
-    run: Mapping[str, Any],
-    missions: Sequence[Mapping[str, Any]],
-    runs_by_id: Mapping[str, Mapping[str, Any]],
-    *,
-    top: int = TOP_CANDIDATES,
-) -> list[dict[str, Any]]:
-    """At most ``top`` missions this graph may belong to, strongest evidence first.
-
-    The same relations the overview infers task lines from (a shared PR
-    number, a slug bigram, a rerun), plus the mission's keywords and whether
-    the graph's sender already has graphs in that mission.
-    """
-
-    base, prs, bigrams = _signature(str(run.get("name") or ""))
-    name = str(run.get("name") or "").lower()
-    sender = run.get("sender")
-    scored: list[tuple[int, str, dict[str, Any]]] = []
-    for mission in missions:
-        if mission.get("status") in {"done", "dropped"}:
-            continue
-        reasons: list[str] = []
-        score = 0
-        words = {str(word).lower() for word in mission.get("keywords") or []}
-        for number in sorted(prs):
-            if f"#{number}" in words or number in words:
-                score += 8
-                reasons.append(f"pr #{number}")
-        hits = sorted(word for word in words if word.lstrip("#") and word in name)
-        if hits:
-            score += 4 * len(hits)
-            reasons.append("keywords " + ", ".join(hits))
-        members = [runs_by_id[g] for g in mission.get("pacs") or [] if g in runs_by_id]
-        for member in members:
-            other_base, other_prs, other_bigrams = _signature(str(member.get("name") or ""))
-            if other_base == base:
-                score += 6
-                reasons.append(f"rerun of {member.get('graphId')}")
-                break
-            if prs & other_prs or bigrams & other_bigrams:
-                score += 3
-                reasons.append(f"related to {member.get('graphId')}")
-                break
-        if score and sender and any(m.get("sender") == sender for m in members):
-            score += 1
-            reasons.append("same sender")
-        if score:
-            scored.append((score, str(mission["id"]), {"id": mission["id"], "score": score, "reasons": reasons}))
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [entry for _, _, entry in scored[:top]]
-
-
-def _question_name(index: int) -> str:
-    return f"c{index}"
-
-
-def jev_payload(
-    run: Mapping[str, Any],
-    found: Sequence[Mapping[str, Any]],
-    missions_by_id: Mapping[str, Mapping[str, Any]],
-    *,
-    limit: int = PAYLOAD_LIMIT,
-) -> dict[str, Any] | None:
-    """The {state, questions} the squire sends to the jev, or None when too large.
-
-    One ``noul`` question per candidate ("does this graph belong to it?").
-    Missions carry only id, title, keywords and status, and the graph only
-    its id and name: the payload leaves the organisation, so no sender URI
-    (it names a person) goes with it.  A payload over
-    ``limit`` is never replaced by a reference, which the jev cannot follow:
-    the caller treats that graph as low confidence and asks the owner.
-    """
-
-    state = {
-        "pac": {
-            "graphId": run.get("graphId"),
-            "name": run.get("name"),
-        },
-        "candidates": [
-            {
-                key: missions_by_id[str(entry["id"])].get(key)
-                for key in ("id", "title", "keywords", "status")
-            }
-            for entry in found
-        ],
-    }
-    questions = {
-        _question_name(index): {
-            "type": "noul",
-            "instructions": (
-                f"Probability that PAC graph {run.get('graphId')} ({run.get('name')}) "
-                f"is work toward mission {entry['id']}, given the mission's title and keywords."
-            ),
-        }
-        for index, entry in enumerate(found)
-    }
-    payload = {"state": state, "questions": questions}
-    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > limit:
-        return None
-    return payload
-
-
-def collect(
-    request: Request,
-    space_id: str,
-    *,
-    routine: str,
-    current: str,
-    now_ms: int,
-    window_days: int = DEFAULT_WINDOW_DAYS,
-) -> dict[str, Any]:
-    """Step 1 of a round: what the squire must ask the jev, and what is already decided.
-
-    ``current`` is this round's own graph.  While another round of the same
-    routine is still running, its ``asked`` set is not written yet, so this
-    round would ask the same graphs again: it skips instead.
-    """
-
-    runs = [
-        row
-        for row in request("workflow.list", {"limit": LIST_LIMIT, "all": True}).get("runs") or []
-        if isinstance(row, dict)
-    ]
-    # A full page means older graphs were cut off.  Each graph is first seen
-    # by the round after it was created, long before it can fall off, so
-    # this only matters after a long pause or backlog; it is reported.
-    covered_since = (
-        min(int(run.get("createdAtMs") or 0) for run in runs)
-        if len(runs) >= LIST_LIMIT
-        else None
-    )
-    overlapping = sorted(
-        str(run.get("graphId"))
-        for run in runs
-        if run.get("routineName") == routine
-        and run.get("state") not in _TERMINAL
-        and str(run.get("graphId")) != current
-    )
-    if overlapping:
-        return {
-            "routine": routine,
-            "skipped": {"running": overlapping},
-            "graphs": [],
-            "state": SKIPPED_STATE,
-        }
-    loaded = load_missions(request, space_id)
-    state = previous_state(request, runs, routine)
-    fresh, deferred = new_graphs(
-        runs, loaded["missions"], state, now_ms=now_ms, window_days=window_days
-    )
-    # Carry forward only what still matters: graphs in the window that no
-    # mission has taken since (the owner answered and the squire linked it).
-    since = now_ms - window_days * DAY_MS
-    linked = {graph for mission in loaded["missions"] for graph in mission["pacs"]}
-    live = {
-        str(run.get("graphId"))
-        for run in runs
-        if int(run.get("createdAtMs") or 0) >= since
-    } - linked
-    state = {
-        **state,
-        "asked": [graph for graph in state["asked"] if graph in live],
-        "declined": [graph for graph in state["declined"] if graph in live],
-    }
-    by_id = {str(run.get("graphId")): run for run in runs}
-    missions_by_id = {str(m["id"]): m for m in loaded["missions"]}
-    graphs = []
-    for run in fresh:
-        found = candidates(run, loaded["missions"], by_id)
-        payload = jev_payload(run, found, missions_by_id) if found else None
-        graphs.append(
-            {
-                "graphId": run.get("graphId"),
-                "name": run.get("name"),
-                "sender": run.get("sender"),
-                "candidates": found,
-                "jev": payload,
-                **({"tooLarge": True} if found and payload is None else {}),
-            }
-        )
+            read = request("orgfs.read", {"spaceId": space_id, "path": f"id:{node_id}", "waitSeconds": 10})
+            if not isinstance(read.get("text"), str):
+                raise ValueError("document content is not available as text")
+            text, version = read["text"], read.get("version")
+            document = parse_work_item(text).to_dict()
+            try:
+                mission = parse_mission(text)
+            except MissionParseError as error:
+                problem = str(error)
+                if problem not in document["diagnostics"]:
+                    document["diagnostics"].append(problem)
+            else:
+                if not conflict:
+                    document = mission
+                    missions.append({**mission, "path": path, "nodeId": node_id, "version": version})
+        except MemoryError:
+            raise
+        except Exception as error:
+            document = WorkItem(text, {}, name, (), (f"unreadable: {error}",)).to_dict()
+        if conflict:
+            document["diagnostics"].append("name conflict: showing this node's current document; graph grouping is unavailable")
+        document.setdefault("associationEligible", False)
+        document.update(path=path, nodeId=node_id, version=version, modifiedBy=node.get("modified_by"))
+        if not document["id"] or conflict:
+            document["id"] = f"document:{space_id}:{node_id}"
+        document["title"] = document["title"] or name
+        documents.append(document)
+    ids = Counter(document["id"] for document in documents)
+    duplicate_nodes = set()
+    for document in documents:
+        if ids[document["id"]] > 1:
+            duplicate_nodes.add(document["nodeId"])
+            document["id"] = f"document:{space_id}:{document['nodeId']}"
+            document["associationEligible"] = False
+            document["diagnostics"].append("duplicate metadata id: showing this node's current document; graph grouping is unavailable")
     return {
-        "spaceId": space_id,
-        "routine": routine,
-        "observedAt": now_ms,
-        "previous": state,
-        "graphs": graphs,
-        "deferred": deferred,
-        **({"coveredSinceMs": covered_since} if covered_since else {}),
-        "unparseable": loaded["unparseable"],
-        "conflicts": loaded["conflicts"],
+        "missions": sorted((item for item in missions if item["nodeId"] not in duplicate_nodes), key=lambda item: item["id"]),
+        "documents": sorted(documents, key=lambda item: (item["path"], item["nodeId"])),
+        "unparseable": [{"path": item["path"], "reason": "; ".join(item["diagnostics"])} for item in documents if item["diagnostics"]],
+        "conflicts": [{"path": path, "nodeIds": sorted(set(ids))} for path, ids in sorted(conflict_nodes.items())],
     }
-
-
-def _answers(reply: object) -> dict[str, float] | None:
-    """Candidate-question probabilities from one jev reply, or None if it is not one."""
-
-    if isinstance(reply, str):
-        try:
-            reply = json.loads(reply)
-        except json.JSONDecodeError:
-            return None
-    if isinstance(reply, dict) and isinstance(reply.get("output"), dict):
-        reply = reply["output"]
-    answers = reply.get("answers") if isinstance(reply, dict) else None
-    if not isinstance(answers, dict):
-        return None
-    result: dict[str, float] = {}
-    for name, answer in answers.items():
-        value = answer.get("noul") if isinstance(answer, dict) else None
-        if isinstance(value, (int, float)) and 0 <= value <= 1:
-            result[str(name)] = float(value)
-    return result
-
-
-def finish(
-    collected: Mapping[str, Any],
-    replies: Mapping[str, Any],
-    *,
-    declined: Sequence[str] = (),
-) -> dict[str, Any]:
-    """Step 3: one result per graph, and the ``state`` for ``--output-text``.
-
-    ``replies`` maps graphId to the jev's reply (its JSON text or object).
-    A graph with candidates but no usable reply is ``failed`` and comes back
-    next round; the auto-link decision itself stays with the squire.
-    Every graph with a result joins ``asked``: the squire either links it now
-    (and the mission file covers it from then on) or asks its owner.
-    ``declined`` are graphs the owner said belong to no mission.
-    """
-
-    results = []
-    failed = []
-    for graph in collected.get("graphs") or []:
-        graph_id = str(graph.get("graphId"))
-        found = graph.get("candidates") or []
-        result: dict[str, Any] = {
-            "graphId": graph_id,
-            "match": None,
-            "confidence": 0.0,
-            "candidates": [entry["id"] for entry in found],
-        }
-        if not found:
-            result["reason"] = "no candidate"
-        elif graph.get("tooLarge"):
-            result["reason"] = "payload over limit; ask the owner"
-        else:
-            answers = _answers(replies.get(graph_id))
-            if answers is None:
-                failed.append(graph_id)
-                continue
-            scored = [
-                (answers[_question_name(index)], str(entry["id"]))
-                for index, entry in enumerate(found)
-                if _question_name(index) in answers
-            ]
-            if not scored:
-                failed.append(graph_id)
-                continue
-            confidence, match = max(scored, key=lambda item: (item[0], item[1]))
-            result.update(match=match, confidence=round(confidence, 4), reason="jev")
-        results.append(result)
-    previous = collected.get("previous") or {}
-    return {
-        "results": results,
-        "state": bounded_state(
-            asked=[
-                graph
-                for graph in [*(previous.get("asked") or []), *(r["graphId"] for r in results)]
-                if graph not in set(declined)
-            ],
-            declined=[*(previous.get("declined") or []), *declined],
-            failed=failed,
-        ),
-    }
-
-
-def bounded_state(*, asked: list[str], declined: list[str], failed: list[str]) -> dict[str, Any]:
-    """The round's output state, oldest entries dropped first to fit the output cap.
-
-    A dropped graph re-enters the candidates next round; at worst the owner
-    is asked about it once more.
-    """
-
-    asked, declined = list(dict.fromkeys(asked)), list(dict.fromkeys(declined))
-    while True:
-        state = {"asked": asked, "declined": declined, "failed": failed}
-        if len(json.dumps(state).encode("utf-8")) <= STATE_LIMIT or not (asked or declined):
-            return state
-        if len(asked) >= len(declined):
-            asked = asked[1:]
-        else:
-            declined = declined[1:]

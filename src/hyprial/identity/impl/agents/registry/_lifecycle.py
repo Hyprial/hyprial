@@ -74,7 +74,7 @@ class _RegistryLifecycleMixin:
         if isinstance(payload, (CreateAgentCommand, DestroyAgentCommand)):
             agent_name = (
                 self.native_actor(payload.name) if isinstance(payload, CreateAgentCommand)
-                else self.normalize_actor(payload.name)
+                else self.actor_key(payload.name)
             )
             key = f"agent-record:{agent_name}"
             operation = "create" if isinstance(payload, CreateAgentCommand) else "destroy"
@@ -126,9 +126,7 @@ class _RegistryLifecycleMixin:
                 ).fetchone()
                 if agent_row is not None:
                     actual_active = True
-                    actual_agent = self._row_agent(
-                        agent_row, self._pinned_adapters_locked(str(agent_row["actor"]))
-                    )
+                    actual_agent = self._row_agent(agent_row)
                     actual_payload = actual_agent.to_json()
             elif row is not None and bool(row["active"]):
                 actual_active = True
@@ -182,6 +180,7 @@ class _RegistryLifecycleMixin:
 
             if changed and operation == "create":
                 agent = Agent.from_json(stored_payload, "lifecycle.agent")
+                self._refuse_taken_name_locked(agent)
                 home_attempt = self._provision_home_locked(
                     agent, allow_revoked=expected is not None
                 )
@@ -191,11 +190,6 @@ class _RegistryLifecycleMixin:
                 if home_attempt is not None:
                     self._record_home_resource_locked(home_attempt.receipt, True)
                 self._grant_default_claude_locked(agent)
-                for adapter in agent.pinned_adapters:
-                    self._db.execute(
-                        "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
-                        (adapter, agent.actor),
-                    )
             elif changed and operation == "destroy":
                 assert agent_name is not None
                 prior_agent = self.require(agent_name)
@@ -289,7 +283,7 @@ class _RegistryLifecycleMixin:
         name = (
             self.native_actor(payload.name)
             if operation == "create"
-            else self.normalize_actor(payload.name)
+            else self.actor_key(payload.name)
         )
         key = f"agent-record:{name}"
         effect_key = f"agent-home-effect:{request.attempt_token}"
@@ -345,9 +339,7 @@ class _RegistryLifecycleMixin:
             actual_active = agent_row is not None
             actual_payload: dict[str, object] = {}
             if agent_row is not None:
-                actual_payload = self._row_agent(
-                    agent_row, self._pinned_adapters_locked(name)
-                ).to_json()
+                actual_payload = self._row_agent(agent_row).to_json()
             if row is None or bool(row["active"]) != actual_active or (
                 actual_active and json.loads(str(row["payload"])) != actual_payload
             ):
@@ -394,6 +386,7 @@ class _RegistryLifecycleMixin:
             if operation == "create":
                 assert self._home is not None
                 desired_agent = Agent.from_json(stored_payload, "lifecycle.agent")
+                self._refuse_taken_name_locked(desired_agent)
                 home_row = self._db.execute(
                     "SELECT active, payload FROM lifecycle_resources "
                     "WHERE resource_key = ?",
@@ -425,9 +418,7 @@ class _RegistryLifecycleMixin:
                     )
             if operation == "destroy":
                 assert agent_row is not None
-                prior_agent = self._row_agent(
-                    agent_row, self._pinned_adapters_locked(name)
-                )
+                prior_agent = self._row_agent(agent_row)
                 revoked_home = self._revoke_home_locked(prior_agent)
                 self._db.execute("DELETE FROM agents WHERE actor = ?", (name,))
             self._db.execute(
@@ -609,11 +600,6 @@ class _RegistryLifecycleMixin:
                 self._db.execute(*self._insert_statement(agent))
                 self._record_home_resource_locked(receipt, True)
                 self._grant_default_claude_locked(agent)
-                for adapter in agent.pinned_adapters:
-                    self._db.execute(
-                        "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
-                        (adapter, agent.actor),
-                    )
             elif incumbent is not None:
                 raise AgentHomeError("cleanup-fenced", actor, "lifecycle-commit")
             elif isinstance(reservation.plan, CleanupHome):
@@ -685,8 +671,7 @@ class _RegistryLifecycleMixin:
                 return old
         if isinstance(payload, CreateAgentCommand):
             name = self.normalize_actor(payload.name)
-            return Agent(
-                uri=self.uri_for(name),
+            return Agent.minted(
                 actor=name,
                 owner=self.owner,
                 machine=self.machine,

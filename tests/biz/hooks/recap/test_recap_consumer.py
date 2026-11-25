@@ -35,12 +35,12 @@ from .support import (
 
 
 def test_recap_is_append_only_survives_restart_and_redacts_machine_data(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     write_hooks_config(home)
 
-    bus, first, first_consumer = build_service(home)
+    bus, first, first_consumer = build_service(home, actor_host=actor_host)
     observe(
         first,
         "id-1",
@@ -54,7 +54,7 @@ def test_recap_is_append_only_survives_restart_and_redacts_machine_data(
     assert bus.close(TURN_HOOK_CLOSE_TIMEOUT_SECONDS)
     assert first_consumer.close(TURN_HOOK_CLOSE_TIMEOUT_SECONDS)
 
-    bus2, second, second_consumer = build_service(home)
+    bus2, second, second_consumer = build_service(home, actor_host=actor_host)
     observe(second, "id-2", HarnessResultStatus.INTERRUPTED)
 
     assert path.read_bytes().startswith(first_bytes)
@@ -70,11 +70,11 @@ def test_recap_is_append_only_survives_restart_and_redacts_machine_data(
 
 
 def test_one_record_per_turn_for_completed_and_failed_turns(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     write_hooks_config(home)
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
 
     observe(service, "ok", HarnessResultStatus.COMPLETED, tool_names=("reader",))
     observe(
@@ -95,7 +95,7 @@ def test_one_record_per_turn_for_completed_and_failed_turns(
     assert consumer.close(TURN_HOOK_CLOSE_TIMEOUT_SECONDS)
 
 
-def test_recap_excerpt_follows_the_versioned_payload_bound(tmp_path: Path) -> None:
+def test_recap_excerpt_follows_the_versioned_payload_bound(actor_host, tmp_path: Path) -> None:
     """The record copies the payload's redacted excerpt (≤1000, design §2.2).
 
     v1 kept the pre-redaction truncation quirk (redaction could expand the
@@ -105,7 +105,7 @@ def test_recap_excerpt_follows_the_versioned_payload_bound(tmp_path: Path) -> No
 
     home = tmp_path / "home"
     write_hooks_config(home)
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
     observe(service, "id", HarnessResultStatus.COMPLETED, output=" /a" * 400)
 
     [record] = read_records(home / "state" / "recaps.jsonl", 1)
@@ -117,7 +117,7 @@ def test_recap_excerpt_follows_the_versioned_payload_bound(tmp_path: Path) -> No
 
 
 def test_default_off_writes_no_recap_and_prompt_is_unchanged(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """No hooks.json: the delivery prompt is byte-identical and no file appears."""
 
@@ -128,7 +128,7 @@ def test_default_off_writes_no_recap_and_prompt_is_unchanged(
     expected = (
         "[Harness Network message from agent:owner:node:sender to " + RECIPIENT + "]\nbody"
     )
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
 
     assert delivery_prompt(delivery).encode() == expected.encode()
     observe(service, "id", HarnessResultStatus.COMPLETED, output="ok")
@@ -138,11 +138,11 @@ def test_default_off_writes_no_recap_and_prompt_is_unchanged(
 
 
 def test_no_route_keeps_recap_off_when_other_consumers_are_registered(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     write_hooks_config(home, events=())  # schema v2 present, no entries
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
     prime_configuration(service)
 
     observe(service, "id", HarnessResultStatus.COMPLETED)
@@ -168,11 +168,11 @@ def test_unresolvable_home_is_logged_and_skipped(tmp_path: Path) -> None:
 
 
 def test_recent_recaps_serves_the_intercept_reader_and_skips_torn_lines(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     write_hooks_config(home)
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
     observe(service, "one", HarnessResultStatus.COMPLETED)
     observe(service, "two", HarnessResultStatus.COMPLETED)
     path = home / "state" / "recaps.jsonl"
@@ -248,13 +248,13 @@ class _HeldTurnClient(_TurnClient):
 
 
 def test_completed_observer_writes_the_turn_without_delaying_results(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """A slow recap append never delays drain_results (§7: never delays a turn)."""
 
     home = tmp_path / "home"
     write_hooks_config(home)
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
     append_entered = threading.Event()
     release_append = threading.Event()
     original_append = consumer._writer._append  # noqa: SLF001
@@ -309,13 +309,13 @@ def _wait_two(path: Path) -> list[str]:
 
 
 def test_reoffer_during_a_live_turn_writes_exactly_one_record(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """A second offer of the still-pending row must not duplicate the recap."""
 
     home = tmp_path / "home"
     write_hooks_config(home)
-    bus, service, consumer = build_service(home)
+    bus, service, consumer = build_service(home, actor_host=actor_host)
     prime_configuration(service)
     started = threading.Event()
     release = threading.Event()

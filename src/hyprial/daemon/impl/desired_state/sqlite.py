@@ -53,6 +53,20 @@ from .services import (
 )
 
 SHADOW_SCHEMA_VERSION = 1
+_MEMBER_PRIMARY_KEY = {"harness", "name", "member"}
+_HARNESS_COLUMN_ORDER = "harness name member headless args_json ownership nickname cwd endpoint session_ref command_json turn_timeout_seconds idle_timeout_seconds containerized pinned_owner container_image model_vendor model status".split()
+_HARNESS_COLUMNS = set(_HARNESS_COLUMN_ORDER)
+
+_HARNESS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS harnesses (
+    harness TEXT NOT NULL, name TEXT NOT NULL, member TEXT NOT NULL DEFAULT '',
+    headless INTEGER NOT NULL, args_json TEXT NOT NULL, ownership TEXT NOT NULL,
+    nickname TEXT, cwd TEXT, endpoint TEXT, session_ref TEXT, command_json TEXT NOT NULL,
+    turn_timeout_seconds REAL, idle_timeout_seconds REAL, containerized INTEGER NOT NULL,
+    pinned_owner TEXT, container_image TEXT, model_vendor TEXT, model TEXT,
+    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'failed')), PRIMARY KEY (harness, name, member)
+);
+"""
 
 _SCHEMA = HARNESS_SETTLEMENT_SCHEMA + """
 CREATE TABLE IF NOT EXISTS desired_state_meta (
@@ -64,28 +78,7 @@ CREATE TABLE IF NOT EXISTS root_state (
     schema_version INTEGER NOT NULL,
     as_mailbox INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS harnesses (
-    harness TEXT NOT NULL,
-    name TEXT NOT NULL,
-    headless INTEGER NOT NULL,
-    args_json TEXT NOT NULL,
-    ownership TEXT NOT NULL,
-    nickname TEXT,
-    cwd TEXT,
-    endpoint TEXT,
-    session_ref TEXT,
-    command_json TEXT NOT NULL,
-    turn_timeout_seconds REAL,
-    idle_timeout_seconds REAL,
-    containerized INTEGER NOT NULL,
-    pinned_owner TEXT,
-    container_image TEXT,
-    execution_runtime_json TEXT,
-    model_vendor TEXT,
-    model TEXT,
-    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'failed')),
-    PRIMARY KEY (harness, name)
-);
+""" + _HARNESS_SCHEMA + """
 CREATE TABLE IF NOT EXISTS interactive_sessions (
     actor TEXT PRIMARY KEY,
     cwd TEXT NOT NULL,
@@ -137,10 +130,6 @@ CREATE TABLE IF NOT EXISTS lifecycle_receipts (
     version INTEGER,
     PRIMARY KEY (domain, attempt_token)
 );
-CREATE TABLE IF NOT EXISTS channel_pins (
-    channel TEXT PRIMARY KEY,
-    agent TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS deprecated_shared_channels (
     channel TEXT PRIMARY KEY
 );
@@ -152,9 +141,8 @@ CREATE TABLE IF NOT EXISTS zenoh_endpoints (
 );
 """ + _SERVICE_SCHEMA + ADAPTER_SCHEMA
 
-
 def _journal_proved_running(db: sqlite3.Connection) -> set[tuple[str, str]]:
-    """(harness, name) pairs the durable journal proves were up once.
+    """(harness, member) pairs the durable journal proves were up once.
 
     ``lifecycle_effects`` is never pruned (⚠️ this rescue DEPENDS on
     that -- see POSITIONAL DEPENDENCY below), and an effect only reaches
@@ -195,22 +183,24 @@ def _journal_proved_running(db: sqlite3.Connection) -> set[tuple[str, str]]:
             continue
         try:
             target = json.loads(request_json)["target"]["harness"]
-            proved.add((str(target["provider"]), str(target["name"])))
+            proved.add(
+                (
+                    str(target["provider"]),
+                    str(target.get("member", target["name"])),
+                )
+            )
         except (KeyError, TypeError, ValueError):
             continue
     return proved
-
 
 def _json_text(value: object) -> str:
     """Canonical compact JSON encoding used for every composite column."""
 
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
-
 def _items(document: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
     value = document.get(key, [])
     return [item for item in value if isinstance(item, dict)]
-
 
 class DesiredStateSqliteShadow:
     """Field-level SQLite representation of one desired-state document.
@@ -234,12 +224,13 @@ class DesiredStateSqliteShadow:
         """
 
         with self._state_db.transaction(schema=_SCHEMA) as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(harnesses)")}
+            if "member" not in columns:
+                db.execute("ALTER TABLE harnesses ADD COLUMN member TEXT NOT NULL DEFAULT ''")
+                db.execute("UPDATE harnesses SET member=name WHERE member='' ")
             receipt_columns = {row[1] for row in db.execute("PRAGMA table_info(lifecycle_receipts)")}
             if "expected_entity_token" not in receipt_columns:
                 db.execute("ALTER TABLE lifecycle_receipts ADD COLUMN expected_entity_token TEXT")
-            columns = {row[1] for row in db.execute("PRAGMA table_info(harnesses)")}
-            if "execution_runtime_json" not in columns:
-                db.execute("ALTER TABLE harnesses ADD COLUMN execution_runtime_json TEXT")
             previous = db.execute("SELECT schema_version FROM root_state WHERE id=1").fetchone()
             if previous is not None:
                 document = {**document, "schemaVersion": max(previous[0], document["schemaVersion"])}
@@ -318,7 +309,7 @@ class DesiredStateSqliteShadow:
         self,
         resource: Mapping[str, Any],
         receipt: Mapping[str, Any],
-        removed_harness: tuple[str, str] | None,
+        removed_harness: tuple[str, str, str] | None,
     ) -> bool:
         """Commit one lifecycle admission without replacing unrelated rows."""
 
@@ -358,7 +349,7 @@ class DesiredStateSqliteShadow:
             )
             if removed_harness is not None:
                 db.execute(
-                    "DELETE FROM harnesses WHERE harness=? AND name=?",
+                    "DELETE FROM harnesses WHERE harness=? AND name=? AND member=?",
                     removed_harness,
                 )
         return True
@@ -485,12 +476,6 @@ class DesiredStateSqliteShadow:
             ]
             if receipts:
                 document["lifecycleReceipts"] = receipts
-            document["channelPins"] = {
-                row["channel"]: row["agent"]
-                for row in db.execute(
-                    "SELECT channel, agent FROM channel_pins ORDER BY rowid"
-                )
-            }
             document["deprecatedSharedChannels"] = [
                 row["channel"]
                 for row in db.execute(
@@ -505,7 +490,6 @@ class DesiredStateSqliteShadow:
             document["zenoh"] = zenoh
             read_service_state(db, document)
             return document
-
     def migrate_harness_status(self) -> None:
         """U0b column migration + one-shot ghost-row resolution.
 
@@ -574,48 +558,55 @@ class DesiredStateSqliteShadow:
             ).fetchone()
             if table is None:
                 return
-            columns = {
-                row[1] for row in db.execute("PRAGMA table_info(harnesses)")
-            }
-        if "status" in columns:
+            info = list(db.execute("PRAGMA table_info(harnesses)"))
+            columns = {row[1] for row in info}
+            primary_key = {row[1] for row in info if row[5]}
+        if _HARNESS_COLUMNS.issubset(columns) and primary_key == _MEMBER_PRIMARY_KEY:
             return
         with self._state_db.transaction(schema=_SCHEMA) as db:
             # Re-check under the write lock: another process may have run
             # the migration between our read and this transaction.
-            columns = {
-                row[1] for row in db.execute("PRAGMA table_info(harnesses)")
-            }
-            if "status" in columns:
+            info = list(db.execute("PRAGMA table_info(harnesses)"))
+            columns = {row[1] for row in info}
+            primary_key = {row[1] for row in info if row[5]}
+            if _HARNESS_COLUMNS.issubset(columns) and primary_key == _MEMBER_PRIMARY_KEY:
                 return
-            db.execute(
-                "ALTER TABLE harnesses ADD COLUMN status TEXT NOT NULL "
-                "DEFAULT 'running' "
-                "CHECK (status IN ('running', 'failed'))"
-            )
+            if not _HARNESS_COLUMNS.issubset(columns) or primary_key != _MEMBER_PRIMARY_KEY:
+                db.execute("ALTER TABLE harnesses RENAME TO harnesses_legacy_member_migration")
+                db.execute(_HARNESS_SCHEMA)
+                defaults = {"member": "name", "headless": "0", "args_json": "'[]'", "ownership": "'managed'", "command_json": "'[]'", "containerized": "0", "status": "'running'"}
+                expressions = {column: "COALESCE(NULLIF(member, ''), name)" if column == "member" else column for column in _HARNESS_COLUMN_ORDER}
+                select = ", ".join(expression if column in columns else defaults.get(column, "NULL") for column, expression in expressions.items())
+                target = ", ".join(_HARNESS_COLUMN_ORDER)
+                db.execute("INSERT INTO harnesses (" + target + ") SELECT " + select + " FROM harnesses_legacy_member_migration")
+                db.execute("DROP TABLE harnesses_legacy_member_migration")
             proved_running = _journal_proved_running(db)
             candidates = db.execute(
-                "SELECT harness, name FROM harnesses WHERE "
+                "SELECT harness, name, member FROM harnesses WHERE "
                 "NOT EXISTS ("
                 "  SELECT 1 FROM lifecycle_receipts r "
                 "  WHERE r.domain = 'harness' "
                 "  AND r.resource_key = "
-                "      'harness:' || harnesses.harness || ':' || harnesses.name "
+                "      'harness:' || harnesses.harness || ':' || "
+                "COALESCE(NULLIF(harnesses.member, ''), harnesses.name) "
                 "  AND r.completed = 1) "
                 "AND EXISTS ("
                 "  SELECT 1 FROM lifecycle_receipts r "
                 "  WHERE r.domain = 'harness' "
                 "  AND r.resource_key = "
-                "      'harness:' || harnesses.harness || ':' || harnesses.name "
+                "      'harness:' || harnesses.harness || ':' || "
+                "COALESCE(NULLIF(harnesses.member, ''), harnesses.name) "
                 "  AND r.completed = 0)"
             ).fetchall()
             ghosts = [
-                (harness, name)
-                for harness, name in candidates
+                (harness, name, member)
+                for harness, name, member in candidates
                 if str(harness) in DECLARED_HARNESSES
-                and (str(harness), str(name)) not in proved_running
+                and (str(harness), str(member)) not in proved_running
             ]
             db.executemany(
-                "DELETE FROM harnesses WHERE harness = ? AND name = ?", ghosts
+                "DELETE FROM harnesses WHERE harness = ? AND name = ? AND member = ?",
+                ghosts,
             )
 
     def migrate_interactive_process_identity(self) -> None:
@@ -656,6 +647,11 @@ class DesiredStateSqliteShadow:
             **({"executionRuntime": json.loads(row["execution_runtime_json"])}
                if "execution_runtime_json" in row.keys() and row["execution_runtime_json"] is not None else {}),
             "name": row["name"],
+            **(
+                {"member": row["member"]}
+                if "member" in row.keys() and row["member"] != row["name"]
+                else {}
+            ),
             "headless": bool(row["headless"]),
             "args": json.loads(row["args_json"]),
             "ownership": row["ownership"],
@@ -818,7 +814,6 @@ class DesiredStateSqliteShadow:
             "pending_session_agent_effects",
             "lifecycle_resources",
             "lifecycle_receipts",
-            "channel_pins",
             "deprecated_shared_channels",
             "zenoh_endpoints",
         ):
@@ -841,15 +836,16 @@ class DesiredStateSqliteShadow:
         )
         db.executemany(
             "INSERT INTO harnesses("
-            "harness, name, headless, args_json, ownership, nickname, cwd, "
+            "harness, name, member, headless, args_json, ownership, nickname, cwd, "
             "endpoint, session_ref, command_json, turn_timeout_seconds, "
             "idle_timeout_seconds, containerized, pinned_owner, "
-            "container_image, model_vendor, model, status, execution_runtime_json) "
+            "container_image, model_vendor, model, status) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     spec["provider"],
                     spec["name"],
+                    spec.get("member", spec["name"]),
                     int(bool(spec["headless"])),
                     _json_text(spec.get("args", [])),
                     spec["ownership"],
@@ -866,7 +862,6 @@ class DesiredStateSqliteShadow:
                     spec.get("modelProvider"),
                     spec.get("model"),
                     spec.get("status", "running"),
-                    _json_text(spec["executionRuntime"]) if spec.get("executionRuntime") is not None else None,
                 )
                 for spec in _items(document, "providers")
             ],
@@ -957,14 +952,6 @@ class DesiredStateSqliteShadow:
                 )
                 for receipt in _items(document, "lifecycleReceipts")
             ],
-        )
-        channel_pins = document.get("channelPins", {})
-        pin_items = (
-            channel_pins.items() if isinstance(channel_pins, dict) else []
-        )
-        db.executemany(
-            "INSERT INTO channel_pins(channel, agent) VALUES(?, ?)",
-            [(str(channel), str(agent)) for channel, agent in pin_items],
         )
         db.executemany(
             "INSERT INTO deprecated_shared_channels(channel) VALUES(?)",

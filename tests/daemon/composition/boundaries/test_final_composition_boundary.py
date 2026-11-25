@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.daemon.impl.application import DaemonApplication
+from hyprial.daemon.impl.teleport.wiring import source_ops
 from hyprial.daemon.impl.runtime import DaemonEventBridge
 
 
@@ -214,11 +215,8 @@ def test_legacy_daemon_runtime_and_supervisor_names_are_gone() -> None:
 
 def test_managed_lifecycle_paths_never_write_harness_state_directly() -> None:
     methods = (
-        DaemonApplication._transfer_quiesce,
-        DaemonApplication._transfer_receive,
-        DaemonApplication._transfer_undo_receive,
-        DaemonApplication._transfer_resume,
-        DaemonApplication._transfer_complete,
+        source_ops.quiesce,
+        source_ops.restart,
         DaemonApplication._stop_agent_runtime,
     )
     source = "\n".join(inspect.getsource(method) for method in methods)

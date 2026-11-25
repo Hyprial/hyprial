@@ -8,6 +8,12 @@ binding (actor + sessionRef naming a live interactive/worker session) and
 apply the owner-only comparison against THAT identity -- a presented actor
 without the binding is a claim, never a credential (T12), and the matrix's
 every rejection direction is asserted through the real handler (T13).
+
+The verified principal is the address the registry record stores, the
+``a.`` id URI under id-form minting, so the graph fixture registers kanban
+first and authors the permitted cell under that official address
+(``_official``); the callers keep presenting the name-composed ``KANBAN``,
+which the daemon canonicalizes at the boundary.
 """
 
 from __future__ import annotations
@@ -67,7 +73,15 @@ def app(tmp_path: Path) -> DaemonApplication:
     yield application
     # close the daemon-held stores so per-test fd hygiene sees a clean slate
     application._inbox.close()
-    application._agent_session_domains.close()
+    application._agent_session_domains.close(shutdown_hosts=False)
+
+
+def _official(app: DaemonApplication, actor: str) -> str:
+    """The stored URI of the registered local agent ``actor`` names."""
+
+    agent = app.agents.get(actor)
+    assert agent is not None, actor
+    return agent.uri
 
 
 def _register_session(app: DaemonApplication, actor: str, ref: str) -> None:
@@ -102,10 +116,12 @@ def graph(app: DaemonApplication) -> tuple[DaemonApplication, PacGraphStore, str
 
     store = PacGraphStore(default_database_path(app.state_dir))
     try:
-        graph_id = create_graph(store, name="fence", created_by=KANBAN)["graphId"]
+        _register_session(app, KANBAN, "session-1")
+        kanban = _official(app, KANBAN)
+        graph_id = create_graph(store, name="fence", created_by=kanban)["graphId"]
         version = 1
         for node_id, owner in (
-            ("own", KANBAN),  # the one permitted cell
+            ("own", kanban),  # the one permitted cell
             ("sibling", SIBLING),  # same owner, different actor
             ("cross-machine", KANBAN_ELSEWHERE),  # same name, foreign machine
             ("human", HUMAN),  # a person's node
@@ -129,8 +145,7 @@ def graph(app: DaemonApplication) -> tuple[DaemonApplication, PacGraphStore, str
             kind="forward",
             expect_version=version,
         )
-        _register_session(app, KANBAN, "session-1")
-        activate_graph(store, graph_id, actor=KANBAN)
+        activate_graph(store, graph_id, actor=kanban)
         yield app, store, graph_id
     finally:
         store.close()
@@ -206,8 +221,8 @@ def test_workflow_rejects_registered_session_after_liveness_release(
 def test_workflow_keeps_managed_worker_session_authority(
     app: DaemonApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker = f"agent:{OWNER}:{MACHINE}:managed"
     app.handle("agent.create", {"name": "managed"})
+    worker = _official(app, "managed")
     monkeypatch.setattr(
         app,
         "_worker_session_ref",
@@ -287,7 +302,7 @@ def test_the_verified_exact_uri_is_the_only_permitted_cell(graph) -> None:
     )
     assert isinstance(outcome, dict) and outcome.get("ok") is True
     node = store.node(graph_id, "own")
-    assert node.flag is True and node.flag_set_by == KANBAN
+    assert node.flag is True and node.flag_set_by == _official(app, KANBAN)
     # reset is the same rule
     outcome = _call(
         app,

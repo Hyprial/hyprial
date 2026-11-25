@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import time
 import uuid
 import weakref
+from typing import TYPE_CHECKING
 
 from hyprial.daemon.impl.transport.session_actor import TransportSessionAuthority
 from hyprial.daemon.impl.transport import (
@@ -26,10 +27,12 @@ from hyprial.kernel import (
     ActorEvent,
     ActorEventKind,
     ActorHandle,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
 
 from hyprial.daemon.impl.org.document  import OrgDocumentError, parse_document, serialize_document
 from hyprial.daemon.impl.org.store  import OrgContextStore, OrgStoreError, OrgVersionError, PendingRecord
@@ -105,11 +108,14 @@ class OrgContextMesh:
         store: OrgContextStore,
         node_id: str,
         *,
+        actor_host=None,
         logger: MeshLogger | None = None,
         keys: KeySpace | None = None,
     ) -> None:
         if not node_id or any(character in node_id for character in "\r\n"):
             raise ValueError("org-context source node must be a non-empty single line")
+        if actor_host is None:
+            raise ValueError("org context mesh requires an actor host")
         self._session = session
         self._store = store
         self.node_id = node_id
@@ -151,18 +157,19 @@ class OrgContextMesh:
             owner = owner_ref()
             if owner is None:
                 return AdmissionResult.CLOSED
-            return owner._runtime.tell(owner._authority, completion)
+            return owner._cell.tell(completion)
 
-        self._runtime = ActorRuntime(event_sink=actor_event)
-        self._authority: ActorHandle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 "org-context-authority",
                 lambda: handle_command,
                 mailbox_capacity=_ORG_CONTEXT_CAPACITY,
                 supervision_profile="state_authority",
+                event_sink=actor_event,
             )
         )
-        self._effects: EffectLane[_OrgContextCommand, _OrgContextEffectResult] = EffectLane(
+        self._authority: ActorHandle = self._cell.handle
+        self._effects: EffectLane[_OrgContextCommand, _OrgContextEffectResult] = actor_host.effect_lane(
             name="org-context-effects",
             execute=execute_effect,
             complete=complete_effect,
@@ -303,7 +310,7 @@ class OrgContextMesh:
         for call in replay:
             if call.operation_id in deferred_ids:
                 continue
-            admission = self._runtime.tell(self._authority, call)
+            admission = self._cell.tell(call)
             if admission is not AdmissionResult.ACCEPTED:
                 with self._lock:
                     if all(
@@ -362,7 +369,7 @@ class OrgContextMesh:
                 self._waiters[operation_id] = waiter
             self._calls[operation_id] = command
         while True:
-            admission = self._runtime.tell(self._authority, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 break
             with self._lock:
@@ -602,7 +609,7 @@ class OrgContextMesh:
             self._closing = True
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
-            snapshot = self._runtime.snapshot(self._authority)
+            snapshot = self._cell.snapshot()
             if snapshot.queued == 0 and snapshot.in_flight == 0 and not self._deferred:
                 break
             time.sleep(0.005)
@@ -611,8 +618,8 @@ class OrgContextMesh:
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             raise TimeoutError("org-context effects did not drain")
         self._generation += 1
-        if not self._runtime.stop(
-            self._authority, timeout=max(0.0, deadline - time.monotonic())
+        if not self._cell.stop(
+            timeout=max(0.0, deadline - time.monotonic())
         ):
             raise TimeoutError("org-context authority did not stop")
         self._closed = True

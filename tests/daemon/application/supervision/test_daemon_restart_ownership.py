@@ -14,6 +14,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports import HarnessRestoreProjection
 
 
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _app_injections
+from tests.support.runtime.environment import UNIT_USER_ID
 
 NODE = "ownership-node"
 OWNER = "tester"
@@ -263,7 +264,7 @@ def _application(tmp_path: Path, providers: list[dict[str, Any]]) -> DaemonAppli
         socket_path=state_dir / "daemon.sock",
         node_id=NODE,
         hyprial_home=home,
-        owner=OWNER,
+        owner=OWNER, user_id=UNIT_USER_ID,
         **_app_injections(),
     )
 

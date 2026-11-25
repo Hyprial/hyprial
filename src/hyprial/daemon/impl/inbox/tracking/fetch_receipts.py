@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 from hyprial.daemon.impl.transport import KeySpace
 
 
@@ -29,15 +29,16 @@ class FetchReceiptProjection:
 
 
 class FetchReceiptPublisher:
-    def __init__(self, session, *, capacity=128, keys=None, logger=None):
+    def __init__(self, session, *, actor_host=None, capacity=128, keys=None, logger=None):
+        if actor_host is None:
+            raise ValueError("fetch receipt publisher requires an actor host")
         self._session = session
         self._logger = logger
         self._keys = keys or KeySpace()
         self._guard = threading.Lock()
         self._closed = False
         self._accepted = self._published = self._failed = self._rejected = 0
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="fetch-receipt-io",
                 handler_factory=lambda: self._publish,
@@ -52,7 +53,7 @@ class FetchReceiptPublisher:
             result = (
                 AdmissionResult.CLOSED
                 if self._closed
-                else self._runtime.tell(self._handle, command)
+                else self._cell.tell(command)
             )
             if result is AdmissionResult.ACCEPTED:
                 self._accepted += 1
@@ -93,4 +94,4 @@ class FetchReceiptPublisher:
     def close(self, timeout=1.0):
         with self._guard:
             self._closed = True
-        return self._runtime.stop(self._handle, timeout)
+        return self._cell.drain(timeout).complete

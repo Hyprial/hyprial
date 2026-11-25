@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 import pytest
 
+from hyprial.kernel import LocalIpcPeer
+
 from ..support import (
     _IdleRuntime,
     _app,
@@ -277,13 +279,15 @@ def test_accept_completed_after_ipc_closing_is_closed_without_worker(
     class ClosingAfterAcceptServer:
         attempts = 0
 
-        def accept(self) -> tuple[socket.socket, object]:
+        def accept(self) -> tuple[socket.socket, LocalIpcPeer]:
             self.attempts += 1
             if self.attempts == 1:
                 # Deterministic accept -> admission race: shutdown linearizes
                 # after the kernel returned a peer but before registration.
                 app.stop_event.set()
-                return server_side, object()
+                return server_side, LocalIpcPeer(
+                    pid=None, uid=None, same_user_enforced=False
+                )
             raise OSError(errno.EBADF, "stopped")
 
     app._server = ClosingAfterAcceptServer()  # type: ignore[assignment]

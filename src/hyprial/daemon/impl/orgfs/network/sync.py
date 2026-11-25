@@ -1,3 +1,6 @@
+# Decision record (W1E-2, 2026-11-21):
+# - _save_sync_cursor flushes the cursor parent directory through
+#   manysys.fsync_directory instead of raw os.open + os.fsync.
 from __future__ import annotations
 
 
@@ -32,6 +35,7 @@ from hyprial.daemon.impl.orgfs.storage.blobs  import (
 from hyprial.daemon.impl.orgfs.storage.store  import (
     ORGFS_PAGE_BYTES,
     StoreError)
+from hyprial.kernel import fsync_directory
 
 
 if TYPE_CHECKING:
@@ -272,11 +276,7 @@ class MeshSync:
                 os.replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        fsync_directory(path.parent)
 
 
     @staticmethod

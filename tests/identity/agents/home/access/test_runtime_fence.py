@@ -8,7 +8,7 @@ from hyprial.identity.impl.agents.registry import AgentEntityConflict
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
 
 
-@pytest.mark.parametrize("configured,harness", [(True, "pi"), (False, "pi"), (True, "dsh")])
+@pytest.mark.parametrize("configured,harness", [(True, "pi"), (False, "pi"), (True, "jev")])
 @pytest.mark.parametrize("expected", ["old-incarnation", ""])
 def test_stale_runtime_request_rejected_before_filesystem_or_legacy(
     home_owner, monkeypatch: pytest.MonkeyPatch, configured: bool, harness: str, expected: str,

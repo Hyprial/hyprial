@@ -115,6 +115,13 @@ class _ReconcileBehavior:
                                 False,
                             )
                         ),
+                        suppress_alarm=bool(
+                            getattr(
+                                completed.error,
+                                "suppress_retry_alarm",
+                                False,
+                            )
+                        ),
                     )
                     self._report_readiness(
                         key,
@@ -133,7 +140,7 @@ class _ReconcileBehavior:
                     record.restore_failed_terminal = False
                     self._report_readiness(key, "ready")
                     restarted += 1
-                self._transfer_finish_start(completed.correlation_id)
+                self._finish_start(completed.correlation_id)
             if self._is_failed(record):
                 # Failed is terminal: nothing in reconcile ever puts the
                 # harness back into the start queue.  The only ways out are
@@ -178,6 +185,17 @@ class _ReconcileBehavior:
                         )
                     )
                 )
+                suppress_retry_alarm = bool(
+                    getattr(process, "suppress_retry_alarm", False)
+                    or (
+                        runtime_failure is not None
+                        and getattr(
+                            runtime_failure,
+                            "suppress_retry_alarm",
+                            False,
+                        )
+                    )
+                )
                 early_exit = (
                     record.started_at is not None
                     and now - record.started_at < 60.0
@@ -197,6 +215,7 @@ class _ReconcileBehavior:
                         record.last_error or "harness start failed",
                         permanent=True,
                         consume_budget=not start_precondition_failure,
+                        suppress_alarm=suppress_retry_alarm,
                     )
                     record.early_exits = record.failures
                 elif early_exit:
@@ -246,10 +265,12 @@ class _ReconcileBehavior:
                     continue
             if record.restart_after is not None and now < record.restart_after:
                 continue
-            eligibility = self._restore_eligibility.get(record.spec.name)
+            member_key = record.spec.member or record.spec.name
+            eligibility = self._restore_eligibility.get(member_key) or self._restore_eligibility.get(record.spec.name)
             if eligibility is not None and not self._restore_entity_current(
                 eligibility
             ):
+                self._restore_eligibility.pop(member_key, None)
                 self._restore_eligibility.pop(record.spec.name, None)
                 self._version += 1
                 eligibility = None
@@ -301,11 +322,11 @@ class _ReconcileBehavior:
             (
                 key, record.incarnation, record.generation,
                 getattr(record.process, "process_token", None),
-                record.spec.harness, record.spec.name, record.process,
+                record.spec.harness, record.spec.name, record.spec.member or record.spec.name, record.process,
             )
             for key, record in sorted(self._records.items())
         )
-        if not any(entry[6] is not None for entry in captured):
+        if not any(entry[7] is not None for entry in captured):
             self._publish()
             if publish_only:
                 self._emit_event(HarnessProjectionsRefreshed(
@@ -316,7 +337,7 @@ class _ReconcileBehavior:
 
         def observe() -> tuple[_SessionRefObservation, ...]:
             observed = []
-            for key, incarnation, generation, token, harness, name, process in captured:
+            for key, incarnation, generation, token, harness, name, member, process in captured:
                 if isinstance(process, ProcessOwner):
                     value = process.observe_facts().session_ref
                 else:
@@ -325,7 +346,7 @@ class _ReconcileBehavior:
                     value = getattr(process, "session_ref", None) if process else None
                 observed.append(
                     _SessionRefObservation(
-                        key, incarnation, generation, token, harness, name,
+                        key, incarnation, generation, token, harness, name, member,
                         value if isinstance(value, str) and value else None,
                     )
                 )
@@ -351,12 +372,12 @@ class _ReconcileBehavior:
             # a turn on the single state writer.  The projection read stays
             # off the writer; a write still in flight is seen next pass.
             persisted = {
-                (spec.harness, spec.name): spec.session_ref
+                (spec.harness, spec.name, spec.member or spec.name): spec.session_ref
                 for spec in self._desired_state.load().harnesses
             }
             refs_changed = any(
-                (item.harness, item.name) in persisted
-                and persisted[(item.harness, item.name)] != item.session_ref
+                (item.harness, item.name, item.member or item.name) in persisted
+                and persisted[(item.harness, item.name, item.member or item.name)] != item.session_ref
                 for item in refs
             )
         else:
@@ -374,7 +395,7 @@ class _ReconcileBehavior:
                 )
             else:
                 pairs = tuple(
-                    ((item.harness, item.name), item.session_ref) for item in refs
+                    ((item.harness, item.name, item.member or item.name), item.session_ref) for item in refs
                 )
                 self._persist_desired(
                     DesiredStateOperation.SYNC_HARNESS_SESSION_REFS,
@@ -428,7 +449,8 @@ class _ReconcileBehavior:
                 (
                     item
                     for item in store.load().harnesses
-                    if (item.harness, item.name) == (spec.harness, spec.name)
+                    if (item.harness, item.name, item.member or item.name)
+                    == (spec.harness, spec.name, spec.member or spec.name)
                 ),
                 None,
             )
@@ -450,11 +472,10 @@ class _ReconcileBehavior:
                     ),
                     None,
                 )
-                legacy_pin = dict(state.channel_pins).get(command.name)
                 adapter = HarnessAdapterRegistrationProjection(
                     command.name,
                     spec,
-                    legacy_pin,
+                    None,
                 )
                 error = None
             except Exception as caught:  # noqa: BLE001 - typed actor result
@@ -490,21 +511,18 @@ class _ReconcileBehavior:
             adapter = HarnessAdapterRegistrationProjection(
                 command.name,
                 command.expected_spec,
-                command.expected_legacy_pin,
+                None,
             )
             self._persist_desired(
                 DesiredStateOperation.REMOVE_ADAPTER_REGISTRATION,
                 command,
                 (command.name,),
-                kwargs=(
-                    ("expected_spec", expected),
-                    ("expected_legacy_pin", command.expected_legacy_pin),
-                ),
+                kwargs=(("expected_spec", expected),),
                 context=(
                     "manage",
                     command,
                     operation,
-                    expected is not None or command.expected_legacy_pin is not None,
+                    expected is not None,
                     adapter,
                 ),
             )
@@ -512,26 +530,39 @@ class _ReconcileBehavior:
         assert isinstance(command, RestoreAdapterRegistrationCommand)
         restored = command.spec
         adapter = HarnessAdapterRegistrationProjection(
-            command.name, command.spec, command.legacy_pin
+            command.name, command.spec, None
         )
         self._persist_desired(
             DesiredStateOperation.RESTORE_ADAPTER_REGISTRATION,
             command,
             (command.name,),
-            kwargs=(("spec", restored), ("legacy_pin", command.legacy_pin)),
+            kwargs=(("spec", restored),),
             context=(
                 "manage",
                 command,
                 operation,
-                restored is not None or command.legacy_pin is not None,
+                restored is not None,
                 adapter,
             ),
         )
 
 
     def _on_wait_ready(self, command: WaitHarnessReadyCommand) -> None:
-        harness_id = f"{command.harness}:{command.name}"
+        member = getattr(command, "member", None)
+        harness_id = f"{command.harness}:{member or command.name}"
         record = self._records.get(harness_id)
+        if record is None and member is None:
+            matched = next(
+                (
+                    (key, item)
+                    for key, item in sorted(self._records.items())
+                    if item.spec.harness == command.harness
+                    and item.spec.name == command.name
+                ),
+                None,
+            )
+            if matched is not None:
+                harness_id, record = matched
         process = record.process if record else None
         if process is None:
             self._emit_event(

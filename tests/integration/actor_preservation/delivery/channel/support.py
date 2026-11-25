@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import json
 import socket
 import threading
@@ -10,7 +12,6 @@ import pytest
 import hyprial.daemon.impl.ipc.server as ipc_server
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 
-from tests.support.links.gate import PermissiveLinkGate
 
 from hyprial.daemon.impl.application import DaemonApplication,_LocalPresence
 from hyprial.daemon.impl.correlation.correlation import CompletionReceipt, CorrelationEventRouter
@@ -26,11 +27,36 @@ from hyprial.daemon.impl.inbox import (
     InboxAuthorityUnavailable,
     SubmissionResult,
 )
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+from tests.support.runtime.environment import UNIT_USER_ID
 
 CANONICAL = "agent:op:node-1:alice"
 
 
+def official_address(app: DaemonApplication, name: str = "alice") -> str:
+    """The address registered local agent ``name`` is reached at: its record's URI.
+
+    Once id-form minting is on this is the agent's ``a.`` id URI, not the
+    name URI ``CANONICAL`` spells.  No agent reads rows at ``CANONICAL``, so
+    ``register`` moves the ``FakeInbox`` rows queued there to this address.
+    """
+
+    agent = app.agents.get(name)
+    assert agent is not None, f"no agent record for {name!r}"
+    return agent.uri
+
+
 class FakeInbox:
+    def address_rows_to(self, old: str, new: str) -> None:
+        """Queue the rows held at ``old`` at ``new`` (the agent's official address)."""
+
+        if self.pending.recipient == old:
+            self.pending = replace(self.pending, recipient=new)
+        self.notices = tuple(
+            replace(item, recipient=new) if item.recipient == old else item
+            for item in self.notices
+        )
+
     def __init__(
         self, pending: InboxMessage, notices: tuple[InboxMessage, ...] = ()
     ) -> None:
@@ -104,14 +130,16 @@ class _RouteTransport:
 
 
 class _FailOnceCloseRouteTransport(_RouteTransport):
-    def __init__(self) -> None:
+    """Fail the first close of the first queryable declared for ``target``."""
+
+    def __init__(self, target: str = "alice") -> None:
+        self.target = target
         self.failed_registration: _RouteRegistration | None = None
 
     def declare_queryable(self, key: str, _handler: object) -> _RouteRegistration:
-        item = _RouteRegistration(
-            close_failures=(1 if "alice" in key and self.failed_registration is None else 0)
-        )
-        if "alice" in key and self.failed_registration is None:
+        hit = self.target in key and self.failed_registration is None
+        item = _RouteRegistration(close_failures=1 if hit else 0)
+        if hit:
             self.failed_registration = item
         return item
 
@@ -263,7 +291,7 @@ def application(tmp_path: Path, inbox: FakeInbox) -> DaemonApplication:
         state_dir=tmp_path,
         socket_path=tmp_path / "daemon.sock",
         node_id="node-1",
-        owner="op",
+        owner="op", user_id=UNIT_USER_ID,
     **_deep_module_daemon_dependencies())
     app._inbox = inbox
     class Providers:
@@ -272,10 +300,10 @@ def application(tmp_path: Path, inbox: FakeInbox) -> DaemonApplication:
 
     app._harnesses = Providers()  # type: ignore[assignment]
     app._presence = _StubPresence()  # type: ignore[assignment]
+    app._cell_delivery = AdmittingCellDelivery()
     # Explicit premise (wp2.md §4.9 option a): these reply-settlement
     # scenarios are not about links, so a permissive gate keeps agent replies
     # delivering instead of holding on the unbound slot (ruling 54).
-    app.link_admission.bind(PermissiveLinkGate())
     _TEST_APPLICATIONS.append(app)
     return app
 
@@ -318,6 +346,8 @@ def register(app: DaemonApplication, session_ref: str = "session-1") -> None:
             "channelConfirmed": True,
         },
     )
+    if isinstance(app._inbox, FakeInbox):
+        app._inbox.address_rows_to(CANONICAL, official_address(app))
 
 
 #: Budget for waiting on a state these tests EXPECT to arrive.  ⛔ Not a

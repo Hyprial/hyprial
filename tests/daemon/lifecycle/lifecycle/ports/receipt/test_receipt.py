@@ -32,6 +32,7 @@ from ..support import (
     _agent_request,
     _request,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_agent_lifecycle_receipt_retirement_is_actor_owned(tmp_path: Path) -> None:
@@ -43,7 +44,7 @@ def test_agent_lifecycle_receipt_retirement_is_actor_owned(tmp_path: Path) -> No
 
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner="owner", machine="node")
     events = _Events()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     try:
         request = _agent_request("receipt-owner", 0, CreateAgentCommand)
         assert actor.submit(request) is PortAdmission.ACCEPTED
@@ -73,7 +74,7 @@ def test_agent_binding_receipt_replays_after_process_rebuild(tmp_path: Path) -> 
     registry = AgentRegistry(database, owner="owner", machine="node")
     registry.create("foo")
     events = _Events()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     actor_uri = registry.require("foo").uri
     correlation = "lifecycle:bind:forward:0"
     request = _request(
@@ -88,7 +89,7 @@ def test_agent_binding_receipt_replays_after_process_rebuild(tmp_path: Path) -> 
 
     rebuilt_registry = AgentRegistry(database, owner="owner", machine="node")
     rebuilt_events = _Events()
-    rebuilt = AgentActor(rebuilt_registry, event_sink=rebuilt_events)
+    rebuilt = AgentActor(rebuilt_registry, event_sink=rebuilt_events, actor_host=new_actor_host())
     assert rebuilt.submit(request) is PortAdmission.ACCEPTED
     replay = rebuilt_events.wait(correlation, DOMAIN_EVENT_WAIT_SECONDS)
     assert replay.provenance.resource_token == token
@@ -127,7 +128,7 @@ def test_receipt_retire_is_idempotent_across_process_crash(tmp_path: Path) -> No
     database = tmp_path / "agents.sqlite3"
     registry = AgentRegistry(database, owner="owner", machine="node")
     events = _Events()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     request = _agent_request("create", 0, CreateAgentCommand)
     assert actor.submit(request) is PortAdmission.ACCEPTED
     completed = events.wait(request.correlation_id, DOMAIN_EVENT_WAIT_SECONDS)
@@ -147,7 +148,7 @@ def test_legacy_agent_resource_key_migrates_with_receipt_fence(tmp_path: Path) -
     database = tmp_path / "agents.sqlite3"
     registry = AgentRegistry(database, owner="owner", machine="node")
     events = _Events()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     request = _agent_request("legacy-key", 0, CreateAgentCommand)
     assert actor.submit(request) is PortAdmission.ACCEPTED
     first = events.wait(request.correlation_id, DOMAIN_EVENT_WAIT_SECONDS)
@@ -175,7 +176,7 @@ def test_legacy_agent_resource_key_migrates_with_receipt_fence(tmp_path: Path) -
             (request.attempt_token,),
         ).fetchone() == ("agent-record:foo",)
     rebuilt_events = _Events()
-    rebuilt = AgentActor(rebuilt_registry, event_sink=rebuilt_events)
+    rebuilt = AgentActor(rebuilt_registry, event_sink=rebuilt_events, actor_host=new_actor_host())
     assert rebuilt.submit(request) is PortAdmission.ACCEPTED
     replay = rebuilt_events.wait(request.correlation_id, DOMAIN_EVENT_WAIT_SECONDS)
     assert replay.provenance.resource_token == first.provenance.resource_token

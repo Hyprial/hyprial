@@ -13,6 +13,7 @@ from ..support import (
     FakeInbox,
     _close_application_domains as _close_application_domains,
     application,
+    official_address,
     pending_message,
     register,
     system_notice,
@@ -173,7 +174,7 @@ def test_different_text_retry_reports_already_submitted_without_ack_while_pendin
     }
     assert len(inbox.submitted) == 1
     assert inbox.acks == []
-    assert inbox.pending_messages(CANONICAL) != ()
+    assert inbox.pending_messages(official_address(app)) != ()
 
 
 def test_targets_preserve_canonical_interactive_actor_uri(tmp_path: Path) -> None:
@@ -259,7 +260,7 @@ def test_ps_exposes_interactive_channel_registration(tmp_path: Path) -> None:
 
     assert status["interactiveSessions"] == [
         {
-            "actor": "agent:op:node-1:worker-node",
+            "actor": official_address(app, "worker-node"),
             "sessionRef": "session-1",
             "cwd": str(tmp_path),
             "command": ["claude"],
@@ -473,24 +474,28 @@ def test_expired_operational_channel_withdraws_route_but_keeps_offline_actor(
 
     class Presence:
         def online_actors(self) -> tuple[str, ...]:
-            return (CANONICAL,) if routes.active else ()
+            return (official_address(app),) if routes.active else ()
 
     app._presence = Presence()  # type: ignore[assignment]
-    assert app.handle("targets", {})["targets"][0]["actor"] == CANONICAL
+    assert app.handle("targets", {})["targets"][0]["actor"] == official_address(app)
 
     now += CHANNEL_LIVENESS_TTL_SECONDS + 0.1
     # Status reads are projection-only (f4a9e5f16); route expiry is owned by
     # the maintenance tick (messaging/maintenance.py), so run that step here.
     app._expire_stale_channel_routes(now)
-    assert app.handle("targets", {})["targets"] == [
+    listed = app.handle("targets", {})["targets"]
+    for row in listed:
+        assert str(row.pop("agentId", "a.")).startswith("a.")
+    assert listed == [
         {
             "targetKind": "agent",
-            "targetUri": CANONICAL,
-            "actor": CANONICAL,
+            "targetUri": official_address(app),
+            "actor": official_address(app),
             "status": "offline",
             "deliverable": True,
             "hosted": False,
             "hostedBy": None,
+            "displayName": "alice",
         }
     ]
     assert endpoint.closed is True

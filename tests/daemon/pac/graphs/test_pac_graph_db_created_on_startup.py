@@ -137,12 +137,11 @@ def test_normal_startup_records_actor_runtime_substeps_in_order(
     # This fixture explicitly isolates networking: no early forwarding work
     # and no obsolete late forwarding-reconfigure checkpoint are emitted.
     assert DaemonStartupPhase.ACTOR_RUNTIME_FORWARDING_RECONFIGURE not in phases
-    assert phases[:8] == [
+    assert phases[:7] == [
         DaemonStartupPhase.ACTOR_RUNTIME,
         DaemonStartupPhase.ACTOR_RUNTIME_AGENTS_STORE,
         DaemonStartupPhase.ACTOR_RUNTIME_TRANSPORT,
         DaemonStartupPhase.ACTOR_RUNTIME_ORGFS_TRANSPORT,
-        DaemonStartupPhase.ACTOR_RUNTIME_IDENTITY_BINDINGS,
         DaemonStartupPhase.ACTOR_RUNTIME_CASDOOR_SYNC,
         DaemonStartupPhase.ACTOR_RUNTIME_INBOX_STORE,
         DaemonStartupPhase.ACTOR_RUNTIME_LIFECYCLE_STORE,

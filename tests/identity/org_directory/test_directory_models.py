@@ -341,3 +341,22 @@ def test_org_acl_space_is_distinct_from_the_directory(space: str) -> None:
     assert is_org_acl_space(space)
     assert not is_org_directory_space(space)
     assert org_from_space_name(space) is None
+
+
+def test_agent_membership_rows_are_protected_under_the_immutable_agent_id() -> None:
+    """Membership rows key on ``a.<id>`` (kernel ``_AGENT_ID_SEGMENT``), never a name."""
+
+    agent_id = "a." + "c" * 26
+    doc_id = protected_directory_doc_id(
+        "space:acme", f"agents/owner@x/{agent_id}.json", space_owner="user:owner@x"
+    )
+    assert doc_id is not None
+    assert parse_protected_directory_doc_id(doc_id) == (
+        "space:acme", "agents", "user:owner@x", f"{agent_id}.json",
+    )
+    for leaf in ("c" * 32, "adjutant", "a." + "C" * 26):
+        refused = protected_directory_doc_id(
+            "space:acme", f"agents/owner@x/{leaf}.json", space_owner="user:owner@x"
+        )
+        with pytest.raises(ValueError):
+            parse_protected_directory_doc_id(refused)

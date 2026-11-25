@@ -1,0 +1,1351 @@
+{
+  "baseline": "533ef27ca42e53230224d55e58ba074f93d0eb15",
+  "status": "review-proposals-only; does not modify CI manifests",
+  "existingExceptions": [
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "module": "hyprial.daemon",
+      "symbol": "downgrade_adapter_state_result",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "adapter downgrade-state; offline direct state rollback while the daemon ownership fence is held; result boundary maps the public refusal (no preview/commit)"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "module": "hyprial.daemon",
+      "symbol": "validate_legacy_claude_auth",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "legacy PTY launch admits only the auth sources this launch already has; no new secret transport is opened"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "module": "hyprial.kernel",
+      "symbol": "Logger",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "single launch-path credential-source telemetry helper shared by both runtime modes; never a transport"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.identity",
+      "symbol": "PAC_PRINCIPAL_UNVERIFIED",
+      "count": 1,
+      "category": "protocol",
+      "condition": "identity error vocabulary used by the worker-binding refusal mapping"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.identity",
+      "symbol": "PacError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "identity error vocabulary used by the worker-binding refusal mapping"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "wait_for_state_ownership",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "daemon run: the bounded first lock attempt loses to a live daemon, then the CLI waits while a serving daemon answers and takes the state lock when it exits (Allen 2026-10-29) instead of exiting into launchd KeepAlive; public fence+probe ports, no direct state write"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "module": "hyprial.daemon",
+      "symbol": "USER_BUS_ADDRESS_UNREACHABLE_REASON",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public diagnostic reason vocabulary for the per-user systemd bus, mapped into `daemon service` output"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "module": "hyprial.daemon",
+      "symbol": "USER_BUS_UNAVAILABLE_REASON",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public diagnostic reason vocabulary for the per-user systemd bus, mapped into `daemon service` output"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.identity",
+      "symbol": "AgentRegistry",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "B06 only after agent.list/adapter.list raise DAEMON_UNAVAILABLE; no online direct store read"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.kernel",
+      "symbol": "ChannelConfiguration",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "B06 only after agent.list/adapter.list raise DAEMON_UNAVAILABLE; offline channels.json read"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "official public request/transport error vocabulary used to distinguish DaemonUnavailableError from permission/timeouts; no other kernel helper"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_agent_uri",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical agent URI parser for online/offline doctor name collision names; no bare split"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/org_metadata.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "org-metadata check reads `org.network`; on CliError/TransientDaemonError it omits the row (returns None) instead of reporting a pass. `ipc_errors.TransientDaemonError` is the public transport error vocabulary for that distinction, same as before the extraction"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/start_failures.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_start_failures",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "doctor reads the persisted state/daemon-start-failures.json unconditionally (read-only local file, no daemon round-trip); the daemon start path writes it, so a restart loop stays visible from the product surface"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/redemption.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_degraded_redemption",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "doctor reads the persisted tailnet/redemption-degraded.json unconditionally (read-only local file, no daemon round-trip); the daemon start path writes it, so a degraded pending redemption stays visible even when the daemon is not running"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/route_session.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "doctor route-session reads persisted lifecycle errorCode and compares canonical ipc_errors.ROUTE_IO_FAILED only; no backend business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/message/threads/history.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical public IPC error vocabulary for message history argument validation; no backend business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/message/threads/reader.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical public IPC error vocabulary and typed transient transport error for thread target resolution and legacy alias fallback; no backend business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/org/authority.py",
+      "module": "hyprial.daemon",
+      "symbol": "OfflineMembership",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "only the existing `org pin-authority` and `org migration-status` maintenance commands: the former previews and confirms a settings-only pin (forwarding.tailnet.authorities[<spaceId>]) and refuses an already initialized membership table or a replacement of a different pin; the latter reports local migration state. The context manager acquires NO ownership fence and both commands explicitly allow a running daemon; this is not the stopped-daemon/fence guarantee of TailnetMaintenance and not a general online store fallback (org repin stays the post-import tool)"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/org/maintenance.py",
+      "module": "hyprial.daemon",
+      "symbol": "TailnetMaintenance",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "org repin; daemon stopped; ownership fence/preview/commit"
+    }
+  ],
+  "existingCount": 20,
+  "proposedCount": 52,
+  "note": "b is not automatically eligible. Existing OfflineMembership permits an online daemon without an ownership fence; two doctor persisted diagnostic reads are unconditional in the current ledger.",
+  "proposals": [
+    {
+      "id": "I078",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_process_identity",
+      "count": 1,
+      "group": "agent",
+      "reason": "读取本地进程身份以核对启动/恢复进程；仅为本地候选，待 owner 逐项裁定",
+      "proposedCategory": "terminal-local-resource",
+      "approvalStatus": "owner-pending",
+      "condition": "仅现有调用点的本机终端进程身份、包定位、静态插件写入或 session 展示名；launch plan、会话选择、权限和恢复由 daemon 决定。跨进程身份规则仍须复核。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 284,
+          "scope": "_start_interactive_claude",
+          "source": "owner_identity = _read_process_identity(owner_pid)"
+        }
+      ]
+    },
+    {
+      "id": "I079",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "module": "hyprial.daemon",
+      "symbol": "session_name_for_actor",
+      "count": 1,
+      "group": "agent",
+      "reason": "为本机 tmux session 命名；若该名称承载跨进程身份约束须再审；仅为本地候选，待 owner 逐项裁定",
+      "proposedCategory": "terminal-local-resource",
+      "approvalStatus": "owner-pending",
+      "condition": "仅现有调用点的本机终端进程身份、包定位、静态插件写入或 session 展示名；launch plan、会话选择、权限和恢复由 daemon 决定。跨进程身份规则仍须复核。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 274,
+          "scope": "_start_interactive_claude",
+          "source": "tmux_session_name = session_name_for_actor(actor)"
+        }
+      ]
+    },
+    {
+      "id": "I095",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/dsh/launch.py",
+      "module": "hyprial.daemon",
+      "symbol": "process_identity_for_tui",
+      "count": 1,
+      "group": "agent",
+      "reason": "读取本地 TUI PID 的进程身份并校验预期；仅为本地候选，待 owner 逐项裁定",
+      "proposedCategory": "terminal-local-resource",
+      "approvalStatus": "owner-pending",
+      "condition": "仅现有调用点的本机终端进程身份、包定位、静态插件写入或 session 展示名；launch plan、会话选择、权限和恢复由 daemon 决定。跨进程身份规则仍须复核。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 324,
+          "scope": "_terminate_owned_tui",
+          "source": "observed = process_identity_for_tui(pid)"
+        }
+      ]
+    },
+    {
+      "id": "I096",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/dsh/launch.py",
+      "module": "hyprial.daemon",
+      "symbol": "write_dsh_tui_plugin",
+      "count": 1,
+      "group": "agent",
+      "reason": "向启动目录写入 DSH TUI 桥接业务插件，服务于本机 TUI 启动，但不是普通文件输出；本地候选待 owner 按插件行为、路径和运行条件逐项裁定。",
+      "proposedCategory": "terminal-local-resource",
+      "approvalStatus": "owner-pending",
+      "condition": "仅现有调用点的本机终端进程身份、包定位、静态插件写入或 session 展示名；launch plan、会话选择、权限和恢复由 daemon 决定。跨进程身份规则仍须复核。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 459,
+          "scope": "_start_interactive_dsh",
+          "source": "write_dsh_tui_plugin(launch_dir)"
+        }
+      ]
+    },
+    {
+      "id": "I117",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "module": "hyprial.daemon",
+      "symbol": "find_pi_package_root",
+      "count": 1,
+      "group": "agent",
+      "reason": "按 Pi 可执行命令和环境定位本机安装包根目录；仅为本地候选，待 owner 逐项裁定",
+      "proposedCategory": "terminal-local-resource",
+      "approvalStatus": "owner-pending",
+      "condition": "仅现有调用点的本机终端进程身份、包定位、静态插件写入或 session 展示名；launch plan、会话选择、权限和恢复由 daemon 决定。跨进程身份规则仍须复核。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 307,
+          "scope": "_start_interactive_pi",
+          "source": "pi_package_root=find_pi_package_root(pi_command, environment),"
+        }
+      ]
+    },
+    {
+      "id": "I123",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_process_identity",
+      "count": 1,
+      "group": "agent",
+      "reason": "读取本地进程身份以核对启动/恢复进程；仅为本地候选，待 owner 逐项裁定",
+      "proposedCategory": "terminal-local-resource",
+      "approvalStatus": "owner-pending",
+      "condition": "仅现有调用点的本机终端进程身份、包定位、静态插件写入或 session 展示名；launch plan、会话选择、权限和恢复由 daemon 决定。跨进程身份规则仍须复核。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 832,
+          "scope": "_start_interactive_codex",
+          "source": "_read_process_identity(process_pid)"
+        }
+      ]
+    },
+    {
+      "id": "I126",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "module": "hyprial.daemon",
+      "symbol": "session_name_for_actor",
+      "count": 2,
+      "group": "agent",
+      "reason": "为本机 tmux session 命名；若该名称承载跨进程身份约束须再审；仅为本地候选，待 owner 逐项裁定",
+      "proposedCategory": "terminal-local-resource",
+      "approvalStatus": "owner-pending",
+      "condition": "仅现有调用点的本机终端进程身份、包定位、静态插件写入或 session 展示名；launch plan、会话选择、权限和恢复由 daemon 决定。跨进程身份规则仍须复核。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 327,
+          "scope": "_start_interactive_pi",
+          "source": "session_name = session_name_for_actor(actor)"
+        },
+        {
+          "line": 506,
+          "scope": "_codex_tmux_session_name",
+          "source": "return session_name_for_actor(actor)"
+        }
+      ]
+    },
+    {
+      "id": "I165",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_process_identity",
+      "count": 1,
+      "group": "common",
+      "reason": "启动后读取所启动进程身份以监测子进程。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 523,
+          "text": "process_identity = _read_process_identity(process.pid)",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py"
+        }
+      ]
+    },
+    {
+      "id": "I169",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "module": "hyprial.kernel",
+      "symbol": "lock_exclusive",
+      "count": 1,
+      "group": "common",
+      "reason": "启动锁阻止并发进程启动。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 416,
+          "text": "lock_exclusive(launch_lock.fileno())",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py"
+        }
+      ]
+    },
+    {
+      "id": "I170",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "module": "hyprial.kernel",
+      "symbol": "resolve_node_id",
+      "count": 1,
+      "group": "common",
+      "reason": "启动时解析子进程环境中的 node id。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 475,
+          "text": "node_id=resolve_node_id(environment),",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py"
+        }
+      ]
+    },
+    {
+      "id": "I173",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "module": "hyprial.daemon",
+      "symbol": "owner_process_status",
+      "count": 2,
+      "group": "common",
+      "reason": "重启时核验进程是否仍存活。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 370,
+          "text": "return _owner_process_status(pid, identity).value in {",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py"
+        },
+        {
+          "line": 400,
+          "text": "status = _owner_process_status(pid, identity).value",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py"
+        }
+      ]
+    },
+    {
+      "id": "I174",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_process_identity",
+      "count": 1,
+      "group": "common",
+      "reason": "停止及重启前读取目标进程身份。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 108,
+          "text": "read_identity=_read_process_identity,",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py"
+        },
+        {
+          "line": 132,
+          "text": "old_identity = _read_process_identity(old_pid)",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py"
+        }
+      ]
+    },
+    {
+      "id": "I176",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "module": "hyprial.kernel",
+      "symbol": "lock_exclusive",
+      "count": 1,
+      "group": "common",
+      "reason": "停止时获取进程管理锁。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 283,
+          "text": "lock_exclusive(stream.fileno(), blocking=False)",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py"
+        }
+      ]
+    },
+    {
+      "id": "I177",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "module": "hyprial.kernel",
+      "symbol": "probe_process",
+      "count": 1,
+      "group": "common",
+      "reason": "探测被停止进程是否存在。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 375,
+          "text": "probe_process(pid)",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py"
+        }
+      ]
+    },
+    {
+      "id": "I178",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "module": "hyprial.kernel",
+      "symbol": "unlock",
+      "count": 1,
+      "group": "common",
+      "reason": "释放进程管理锁。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 287,
+          "text": "unlock(stream.fileno())",
+          "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py"
+        }
+      ]
+    },
+    {
+      "id": "I182",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "module": "hyprial.daemon",
+      "symbol": "updates",
+      "count": 1,
+      "group": "common",
+      "reason": "导出约束、执行安装并记录升级锁收据，属于外部升级阶段；线上状态不自动豁免。",
+      "proposedCategory": "installation-restart",
+      "approvalStatus": "owner-pending",
+      "condition": "仅安装替换、安装锁/收据和进程重启阶段；逐个 updates 子调用复核，不包括在线 autoupdate scheduler 与业务状态写入。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 76,
+          "text": "updates.export_locked_constraints(url, resolution.commit, constraints)",
+          "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py"
+        },
+        {
+          "line": 77,
+          "text": "except updates.UpdateProbeError as error:",
+          "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py"
+        },
+        {
+          "line": 98,
+          "text": "env=updates.git_env(),",
+          "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py"
+        },
+        {
+          "line": 99,
+          "text": "timeout=updates.UV_INSTALL_TIMEOUT,",
+          "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py"
+        },
+        {
+          "line": 104,
+          "text": "f\"uv tool install timed out after {updates.UV_INSTALL_TIMEOUT:g}s; \"",
+          "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py"
+        },
+        {
+          "line": 123,
+          "text": "installed = updates.read_installation()",
+          "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py"
+        },
+        {
+          "line": 126,
+          "text": "updates.write_lock_receipt(",
+          "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py"
+        }
+      ]
+    },
+    {
+      "id": "I191",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "canonical_user_uri",
+      "count": 1,
+      "group": "common",
+      "reason": "纯身份 URI 格式化；基于给定字符串。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 525,
+          "text": "f\"{canonical_user_uri(owner)} yet. Set it up with: hyprial squire setup\"",
+          "path": "src/hyprial/shell/impl/cli/commands/common/support.py"
+        },
+        {
+          "line": 768,
+          "text": "return canonical_user_uri(resolve_node_owner(hyprial_home=home))",
+          "path": "src/hyprial/shell/impl/cli/commands/common/support.py"
+        }
+      ]
+    },
+    {
+      "id": "I192",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "daemon_request",
+      "count": 1,
+      "group": "common",
+      "reason": "CLI 使用标准 IPC 客户端接缝发送 daemon request，不持有业务状态。",
+      "proposedCategory": "standard-ipc",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "唯一标准本地 IPC 传输入口；只发送 method/params 与接收响应，不新增领域 helper。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 205,
+          "text": "return daemon_request(",
+          "path": "src/hyprial/shell/impl/cli/commands/common/support.py"
+        }
+      ]
+    },
+    {
+      "id": "I193",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "daemon_socket_path",
+      "count": 1,
+      "group": "common",
+      "reason": "根据本地环境与 state 路径构建客户端 socket 地址。",
+      "proposedCategory": "endpoint-selection",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "仅按显式参数/环境选择本地 home 和 IPC endpoint，检查连接所需最低前提；不能据此读取或修复业务配置。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 142,
+          "text": "return daemon_socket_path(services._state_dir, env=os.environ)",
+          "path": "src/hyprial/shell/impl/cli/commands/common/support.py"
+        }
+      ]
+    },
+    {
+      "id": "I195",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_agent_uri",
+      "count": 1,
+      "group": "common",
+      "reason": "从给定 actor/peer 文本解析协议 URI。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 707,
+          "text": "parsed = parse_agent_uri(worker_actor) if worker_actor else None",
+          "path": "src/hyprial/shell/impl/cli/commands/common/support.py"
+        },
+        {
+          "line": 759,
+          "text": "parsed = parse_agent_uri(peer)",
+          "path": "src/hyprial/shell/impl/cli/commands/common/support.py"
+        }
+      ]
+    },
+    {
+      "id": "I196",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "short_actor_name",
+      "count": 1,
+      "group": "common",
+      "reason": "对已给定 actor 字符串做显示缩写。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 666,
+          "text": "return short_actor_name(str(value or \"-\"))",
+          "path": "src/hyprial/shell/impl/cli/commands/common/support.py"
+        }
+      ]
+    },
+    {
+      "id": "I207",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "DaemonApplication",
+      "count": 1,
+      "group": "daemon",
+      "reason": "daemon 进程启动入口构造运行时、取得状态所有权或身份启动锁；冷启动必须在 daemon 可用前完成。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 363,
+          "text": "runtime = DaemonApplication.from_environment("
+        }
+      ]
+    },
+    {
+      "id": "I209",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "DaemonStateOwnershipFence",
+      "count": 1,
+      "group": "daemon",
+      "reason": "daemon 进程启动入口构造运行时、取得状态所有权或身份启动锁；冷启动必须在 daemon 可用前完成。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 176,
+          "text": "return DaemonStateOwnershipFence.acquire(state_dir, timeout=timeout)"
+        },
+        {
+          "line": 189,
+          "text": "return DaemonStateOwnershipFence.acquire(state_dir, timeout=0.0)"
+        },
+        {
+          "line": 213,
+          "text": "acquire=lambda path: DaemonStateOwnershipFence.acquire(path, timeout=0.0),"
+        }
+      ]
+    },
+    {
+      "id": "I210",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "application_lock_wait_timeout",
+      "count": 1,
+      "group": "daemon",
+      "reason": "daemon 进程启动入口构造运行时、取得状态所有权或身份启动锁；冷启动必须在 daemon 可用前完成。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 336,
+          "text": "return IdentityTransactionLock.acquire(home, timeout=_lock_wait_timeout())"
+        },
+        {
+          "line": 351,
+          "text": "timeout=_lock_wait_timeout(),"
+        }
+      ]
+    },
+    {
+      "id": "I212",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "module": "hyprial.identity",
+      "symbol": "IdentityTransactionLock",
+      "count": 1,
+      "group": "daemon",
+      "reason": "daemon 进程启动入口构造运行时、取得状态所有权或身份启动锁；冷启动必须在 daemon 可用前完成。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 336,
+          "text": "return IdentityTransactionLock.acquire(home, timeout=_lock_wait_timeout())"
+        },
+        {
+          "line": 344,
+          "text": "legacy = IdentityTransactionLock.adopt_legacy(home, os.environ)"
+        }
+      ]
+    },
+    {
+      "id": "I218",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "module": "hyprial.daemon",
+      "symbol": "ServiceManager",
+      "count": 1,
+      "group": "daemon",
+      "reason": "构造本机服务管理器以安装、启动或停止外部 supervisor 管理的 daemon；需要 daemon 离线时可操作。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 69,
+          "text": "return ServiceManager("
+        }
+      ]
+    },
+    {
+      "id": "I228",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "verify_tailcat_sidecar",
+      "count": 1,
+      "group": "doctor",
+      "reason": "本机校验已安装的 tailcat sidecar，用于无 daemon 时诊断部署，候选需核对是否已有精确离线维护许可。",
+      "proposedCategory": "installation-diagnostic",
+      "approvalStatus": "owner-pending",
+      "condition": "仅校验本机已安装 sidecar 的部署事实；不取代在线 daemon 状态、不修复业务数据。若批准离线用途须测试 daemon 不可用条件。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 50,
+          "text": "record = verify_tailcat_sidecar(home)"
+        }
+      ]
+    },
+    {
+      "id": "I242",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_orgfs_uri",
+      "count": 1,
+      "group": "fs",
+      "reason": "仅解析用户给出的 URI，daemon 重新校验 owner/space 绑定。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 87,
+          "text": "parsed = parse_orgfs_uri(target)",
+          "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py"
+        }
+      ]
+    },
+    {
+      "id": "I244",
+      "path": "src/hyprial/shell/impl/cli/commands/init/init.py",
+      "module": "hyprial.daemon",
+      "symbol": "node_owner_or_none",
+      "count": 1,
+      "group": "init",
+      "reason": "启动前检查及解析持久 owner，以决定首次登录和校验启动前提；仅离线 bootstrap 必要部分候选，已有 daemon 情况需拆开。",
+      "proposedCategory": "first-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "只在目标 daemon 尚不存在/已证实停止时建立启动必需前提或取得身份/状态锁；在线身份切换和后续组织/onboarding 业务迁入 daemon。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 134,
+          "text": "if node_owner_or_none() is None and login_when_missing is not None:"
+        }
+      ]
+    },
+    {
+      "id": "I245",
+      "path": "src/hyprial/shell/impl/cli/commands/init/init.py",
+      "module": "hyprial.daemon",
+      "symbol": "resolve_node_owner",
+      "count": 1,
+      "group": "init",
+      "reason": "启动前检查及解析持久 owner，以决定首次登录和校验启动前提；仅离线 bootstrap 必要部分候选，已有 daemon 情况需拆开。",
+      "proposedCategory": "first-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "只在目标 daemon 尚不存在/已证实停止时建立启动必需前提或取得身份/状态锁；在线身份切换和后续组织/onboarding 业务迁入 daemon。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 157,
+          "text": "resolve_node_owner()"
+        }
+      ]
+    },
+    {
+      "id": "I267",
+      "path": "src/hyprial/shell/impl/cli/commands/login/flow.py",
+      "module": "hyprial.daemon",
+      "symbol": "DaemonStateOwnershipFence",
+      "count": 1,
+      "group": "login",
+      "reason": "登录身份变更前在锁内确认 daemon 进程不存在，或在首次设备阶段准备设备密钥；限无 daemon 的必要部分候选，身份迁移在线流程须拆分。",
+      "proposedCategory": "first-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "只在目标 daemon 尚不存在/已证实停止时建立启动必需前提或取得身份/状态锁；在线身份切换和后续组织/onboarding 业务迁入 daemon。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 924,
+          "text": "with DaemonStateOwnershipFence.acquire(state_dir):"
+        }
+      ]
+    },
+    {
+      "id": "I271",
+      "path": "src/hyprial/shell/impl/cli/commands/login/flow.py",
+      "module": "hyprial.daemon",
+      "symbol": "live_daemon_pid",
+      "count": 1,
+      "group": "login",
+      "reason": "登录身份变更前在锁内确认 daemon 进程不存在，或在首次设备阶段准备设备密钥；限无 daemon 的必要部分候选，身份迁移在线流程须拆分。",
+      "proposedCategory": "first-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "只在目标 daemon 尚不存在/已证实停止时建立启动必需前提或取得身份/状态锁；在线身份切换和后续组织/onboarding 业务迁入 daemon。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 367,
+          "text": "pid = live_daemon_pid(home)"
+        }
+      ]
+    },
+    {
+      "id": "I273",
+      "path": "src/hyprial/shell/impl/cli/commands/login/flow.py",
+      "module": "hyprial.daemon",
+      "symbol": "owner_process_status",
+      "count": 1,
+      "group": "login",
+      "reason": "登录身份变更前在锁内确认 daemon 进程不存在，或在首次设备阶段准备设备密钥；限无 daemon 的必要部分候选，身份迁移在线流程须拆分。",
+      "proposedCategory": "first-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "只在目标 daemon 尚不存在/已证实停止时建立启动必需前提或取得身份/状态锁；在线身份切换和后续组织/onboarding 业务迁入 daemon。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 956,
+          "text": "status = _owner_process_status(heartbeat_pid, heartbeat_identity)"
+        }
+      ]
+    },
+    {
+      "id": "I279",
+      "path": "src/hyprial/shell/impl/cli/commands/login/flow.py",
+      "module": "hyprial.kernel",
+      "symbol": "probe_process",
+      "count": 1,
+      "group": "login",
+      "reason": "登录身份变更前在锁内确认 daemon 进程不存在，或在首次设备阶段准备设备密钥；限无 daemon 的必要部分候选，身份迁移在线流程须拆分。",
+      "proposedCategory": "first-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "只在目标 daemon 尚不存在/已证实停止时建立启动必需前提或取得身份/状态锁；在线身份切换和后续组织/onboarding 业务迁入 daemon。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 985,
+          "text": "probe_process(marker_pid)"
+        }
+      ]
+    },
+    {
+      "id": "I282",
+      "path": "src/hyprial/shell/impl/cli/commands/message/observe/trajectory.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_agent_uri",
+      "count": 1,
+      "group": "message",
+      "reason": "从已返回 sender 字符串判定 URI 形态。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 209,
+          "text": "if parse_agent_uri(sender) is not None",
+          "path": "src/hyprial/shell/impl/cli/commands/message/observe/trajectory.py"
+        }
+      ]
+    },
+    {
+      "id": "I283",
+      "path": "src/hyprial/shell/impl/cli/commands/message/observe/trajectory.py",
+      "module": "hyprial.kernel",
+      "symbol": "short_actor_name",
+      "count": 1,
+      "group": "message",
+      "reason": "对已返回 actor 名称做展示缩写。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 314,
+          "text": "actor_names = {short_actor_name(actor) for actor in actors}",
+          "path": "src/hyprial/shell/impl/cli/commands/message/observe/trajectory.py"
+        }
+      ]
+    },
+    {
+      "id": "I290",
+      "path": "src/hyprial/shell/impl/cli/commands/meta/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "updates",
+      "count": 1,
+      "group": "meta",
+      "reason": "读取当前安装包来源、版本、依赖锁及 retired track 警告；本机安装诊断候选，需审查其中读取 home 设置的部分。",
+      "proposedCategory": "local-installation",
+      "approvalStatus": "owner-pending",
+      "condition": "仅 version 的安装来源/版本/依赖锁展示；updates 模块中读取业务设置的子调用须拆出，此条不授权整个模块。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 33,
+          "text": "installation = updates.read_installation()"
+        },
+        {
+          "line": 36,
+          "text": "update_source = updates.installation_git_url(installation)"
+        },
+        {
+          "line": 43,
+          "text": "\"installOrigin\": updates.installation_origin(installation),"
+        },
+        {
+          "line": 44,
+          "text": "\"dependencyLock\": updates.dependency_lock_report("
+        },
+        {
+          "line": 48,
+          "text": "warning = updates.retired_track_warning(services._hyprial_home())"
+        }
+      ]
+    },
+    {
+      "id": "I306",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_profile",
+      "count": 3,
+      "group": "profile",
+      "reason": "列出、校验或创建独立 home 的网络 profile；profile 选择/创建可先于该 home 的 daemon，候选须确认现有 daemon 场景是否需 request。",
+      "proposedCategory": "bootstrap-profile",
+      "approvalStatus": "owner-pending",
+      "condition": "仅 profile list/show/use/create 的独立 home 网络入口信息；create 不覆盖既有 profile，不修改业务 settings，不建立第二份 selector。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 61,
+          "text": "default_profile = read_profile(default_record)"
+        },
+        {
+          "line": 71,
+          "text": "rows.append(row(entry.name, read_profile(record), entry))"
+        },
+        {
+          "line": 158,
+          "text": "\"profile\": read_profile(record).as_record(),"
+        },
+        {
+          "line": 224,
+          "text": "existing = read_profile(record)  # loud when the file is broken"
+        }
+      ]
+    },
+    {
+      "id": "I307",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "validate_profile",
+      "count": 1,
+      "group": "profile",
+      "reason": "列出、校验或创建独立 home 的网络 profile；profile 选择/创建可先于该 home 的 daemon，候选须确认现有 daemon 场景是否需 request。",
+      "proposedCategory": "bootstrap-profile",
+      "approvalStatus": "owner-pending",
+      "condition": "仅 profile list/show/use/create 的独立 home 网络入口信息；create 不覆盖既有 profile，不修改业务 settings，不建立第二份 selector。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 241,
+          "text": "validate_profile(profile, source=record)  # loud before any mkdir"
+        }
+      ]
+    },
+    {
+      "id": "I308",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "write_profile",
+      "count": 1,
+      "group": "profile",
+      "reason": "列出、校验或创建独立 home 的网络 profile；profile 选择/创建可先于该 home 的 daemon，候选须确认现有 daemon 场景是否需 request。",
+      "proposedCategory": "bootstrap-profile",
+      "approvalStatus": "owner-pending",
+      "condition": "仅 profile list/show/use/create 的独立 home 网络入口信息；create 不覆盖既有 profile，不修改业务 settings，不建立第二份 selector。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 243,
+          "text": "write_profile(profile, hyprial_home=home)"
+        }
+      ]
+    },
+    {
+      "id": "I314",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "module": "hyprial.biz",
+      "symbol": "template_text",
+      "count": 1,
+      "group": "routine",
+      "reason": "templates show 展示内置模板文本，不依赖 daemon。",
+      "proposedCategory": "local-template-display",
+      "approvalStatus": "owner-pending",
+      "condition": "仅展示已安装的静态模板文本；不编译 routine、不应用默认值、不作计划校验或调用 daemon 状态。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 68,
+          "text": "text = template_text(name)",
+          "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py"
+        }
+      ]
+    },
+    {
+      "id": "I327",
+      "path": "src/hyprial/shell/impl/cli/commands/squire/squire.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_channel_uri",
+      "count": 1,
+      "group": "squire",
+      "reason": "解析用户提供 channel URI；纯协议文本处理。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 268,
+          "text": "parsed_channel = parse_channel_uri(channel)",
+          "path": "src/hyprial/shell/impl/cli/commands/squire/squire.py"
+        }
+      ]
+    },
+    {
+      "id": "I339",
+      "path": "src/hyprial/shell/impl/cli/commands/squire/user_proxy.py",
+      "module": "hyprial.kernel",
+      "symbol": "agent_uri_actor",
+      "count": 1,
+      "group": "squire",
+      "reason": "从 response 中的 URI 提取 actor 供显示匹配。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 193,
+          "text": "and agent_uri_actor(candidate[\"uri\"]) == proxy_name",
+          "path": "src/hyprial/shell/impl/cli/commands/squire/user_proxy.py"
+        }
+      ]
+    },
+    {
+      "id": "I341",
+      "path": "src/hyprial/shell/impl/cli/commands/squire/user_proxy.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_channel_uri",
+      "count": 1,
+      "group": "squire",
+      "reason": "解析 receivers 返回的 channel URI。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 151,
+          "text": "parse_channel_uri(squire_adapter)",
+          "path": "src/hyprial/shell/impl/cli/commands/squire/user_proxy.py"
+        }
+      ]
+    },
+    {
+      "id": "I342",
+      "path": "src/hyprial/shell/impl/cli/commands/squire/user_proxy.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_route_uri",
+      "count": 1,
+      "group": "squire",
+      "reason": "验证用户拼接的 route URI 格式。 已核实实现仅处理传入字符串与静态语法，无状态；用于参数或呈现。",
+      "proposedCategory": "protocol-or-render",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "只对已给定字符串做协议语法解析或展示缩写；不读 home/store/网络，不判断授权，不复制 kernel 权威实现。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 112,
+          "text": "if parse_route_uri(route_uri) is None:",
+          "path": "src/hyprial/shell/impl/cli/commands/squire/user_proxy.py"
+        }
+      ]
+    },
+    {
+      "id": "I344",
+      "path": "src/hyprial/shell/impl/cli/commands/transfer/runtime.py",
+      "module": "hyprial.daemon",
+      "symbol": "probe_smolvm",
+      "count": 1,
+      "group": "transfer",
+      "reason": "显式输入本地二进制、rootfs、resize2fs 与输出目录，运行隔离 VM 探测，不需要 daemon home。",
+      "proposedCategory": "isolated-local-probe",
+      "approvalStatus": "owner-pending",
+      "condition": "仅用户显式指定二进制/rootfs/输出目录的隔离 smolvm 探测，不读写 daemon home、durable runtime intent 或远端状态。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 59,
+          "text": "lambda: probe_smolvm(binary=smolvm, rootfs=rootfs, output=output, resize2fs=resize2fs),",
+          "path": "src/hyprial/shell/impl/cli/commands/transfer/runtime.py"
+        }
+      ]
+    },
+    {
+      "id": "I376",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "module": "hyprial.daemon",
+      "symbol": "follow_lifetime",
+      "count": 1,
+      "group": "workflow",
+      "reason": "管理本地事件流消费者的生命周期；不自行读取状态，数据查询需迁至 daemon。",
+      "proposedCategory": "stream-presentation",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "仅处理 stdout EOF、信号和前端观察者终止；业务事件查询须经 request。可将真实前端职责移入 CLI output，不保留 daemon store 访问。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 142,
+          "text": "with follow_lifetime(follow) as output:",
+          "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py"
+        }
+      ]
+    },
+    {
+      "id": "I409",
+      "path": "src/hyprial/shell/impl/cli/runtime/services.py",
+      "module": "hyprial.daemon",
+      "symbol": "process_cpu_seconds",
+      "count": 1,
+      "group": "runtime",
+      "reason": "读取启动子进程 CPU 耗时供本地启动诊断。",
+      "proposedCategory": "daemon-process-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "仅管理本命令启动/停止的 daemon 或 supervisor，锁和 PID/进程身份必须对应；不作业务 runtime 决策或从本地 store 回退在线查询。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 54,
+          "text": "from hyprial.daemon import process_cpu_seconds as _real",
+          "path": "src/hyprial/shell/impl/cli/runtime/services.py"
+        },
+        {
+          "line": 56,
+          "text": "return _real(*args, **kwargs)",
+          "path": "src/hyprial/shell/impl/cli/runtime/services.py"
+        }
+      ]
+    },
+    {
+      "id": "I414",
+      "path": "src/hyprial/shell/impl/cli/runtime/services.py",
+      "module": "hyprial.kernel",
+      "symbol": "configured_hyprial_home",
+      "count": 1,
+      "group": "runtime",
+      "reason": "选择 CLI 当前 home 路径，供 bootstrap 和 socket 定位；不得扩至读取业务状态。",
+      "proposedCategory": "endpoint-selection",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "仅按显式参数/环境选择本地 home 和 IPC endpoint，检查连接所需最低前提；不能据此读取或修复业务配置。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 207,
+          "text": "configured_hyprial_home=configured_hyprial_home,",
+          "path": "src/hyprial/shell/impl/cli/runtime/services.py"
+        }
+      ]
+    },
+    {
+      "id": "I415",
+      "path": "src/hyprial/shell/impl/cli/runtime/services.py",
+      "module": "hyprial.kernel",
+      "symbol": "default_hyprial_home",
+      "count": 1,
+      "group": "runtime",
+      "reason": "选择默认 CLI home 路径，供 bootstrap。",
+      "proposedCategory": "endpoint-selection",
+      "approvalStatus": "task-authorized-client-duty; exact-ledger-registration-pending",
+      "condition": "仅按显式参数/环境选择本地 home 和 IPC endpoint，检查连接所需最低前提；不能据此读取或修复业务配置。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 208,
+          "text": "default_hyprial_home=default_hyprial_home,",
+          "path": "src/hyprial/shell/impl/cli/runtime/services.py"
+        }
+      ]
+    },
+    {
+      "id": "I416",
+      "path": "src/hyprial/shell/impl/cli/runtime/services.py",
+      "module": "hyprial.kernel",
+      "symbol": "initialize_hyprial_home",
+      "count": 1,
+      "group": "runtime",
+      "reason": "初始化 home 目录，外部 bootstrap 候选；实际注入 ensure_dispatch_policy 另列 a。",
+      "proposedCategory": "first-bootstrap",
+      "approvalStatus": "owner-pending",
+      "condition": "只在目标 daemon 尚不存在/已证实停止时建立启动必需前提或取得身份/状态锁；在线身份切换和后续组织/onboarding 业务迁入 daemon。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 40,
+          "text": "return _kernel_initialize(",
+          "path": "src/hyprial/shell/impl/cli/runtime/services.py"
+        }
+      ]
+    },
+    {
+      "id": "I417",
+      "path": "src/hyprial/shell/impl/cli/runtime/services.py",
+      "module": "hyprial.kernel",
+      "symbol": "require_initialized_hyprial_home",
+      "count": 1,
+      "group": "runtime",
+      "reason": "CLI 确认 home 已初始化以定位本地连接，具体调用范围待核。",
+      "proposedCategory": "shared-initialization-precondition",
+      "approvalStatus": "owner-pending",
+      "condition": "该公共装配项被 fs、upgrade、login、daemon、org maintenance/authority、common support 消费。须逐消费者证明只检查连接/启动最低前提；任何业务初始化、状态补写或在线fallback须拆到 daemon；本设计不预先批准整个共享端口。",
+      "exitCriterion": "引用消失则删除登记；用途超出上述条件立即按业务迁移，不增加 count、不扩路径。",
+      "owner": "Allen",
+      "evidence": [
+        {
+          "line": 213,
+          "text": "require_initialized_hyprial_home=require_initialized_hyprial_home,",
+          "path": "src/hyprial/shell/impl/cli/runtime/services.py"
+        }
+      ]
+    }
+  ]
+}

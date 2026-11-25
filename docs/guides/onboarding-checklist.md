@@ -4,12 +4,88 @@
 顺序执行;每项都有验证动作,验证不过不要继续下一项。
 (2026-08-17 初版,源自 devusr-dev 入网实战的全部踩坑。)
 
+## 0. 快速上手:第一个 agent 与飞书接入
+
+首次运行(`hyprial init`、`hyprial login`)只创建 home、启动 daemon 并登录本机用户,
+**不会创建任何 agent,也不会配置飞书**。下面每一步都由显式命令发起;没有一条命令会
+替你决定 agent 名、adapter、route 或 pin 目标。
+
+1. 初始化并登录(见[运维指南](operator-guide.md)):
+
+   ```bash
+   hyprial init
+   hyprial login
+   ```
+
+2. 选择名字,创建第一个 agent。`--provider`、`--model`、`--preferred-harness` 可省略,
+   省略时才使用该 agent 的默认值;名字在本机唯一,只有 `hyprial agent destroy` 能释放。
+
+   ```bash
+   hyprial agent create --name <name> --provider <provider> --model <model> --preferred-harness <harness>
+   ```
+
+   `--json` 输出里的 `agent.uri` 是权威地址 `agent:<owner>:<machine>:<actor>`,第 7 步要用。
+
+3. 用你选定的 harness、cwd、provider/model 与 Pi approve 设置启动它:
+
+   ```bash
+   hyprial agent start <harness> --name <name> --headless
+   ```
+
+4. 接入飞书 App。已有 App 用 `--app-id` 与 `--secret-file` 注册;没有 App 时
+   `adapter add` 走官方的人工创建流程:
+
+   ```bash
+   hyprial adapter add <adapter> [--app-id <id> --secret-file <path>]
+   ```
+
+5. 授权租户 scope,然后检查:
+
+   ```bash
+   hyprial adapter scopes authorize <adapter> --interactive
+   hyprial adapter scopes check <adapter>
+   ```
+
+6. 让机器人收到一条真实消息,用 `adapter route candidates` 观察入站 chat;native id 必须由
+   你确认,然后添加出站 route:
+
+   ```bash
+   hyprial adapter route candidates <adapter>
+   hyprial adapter route add <adapter> <route>=<native-chat-id> --default
+   ```
+
+7. 把 adapter 绑定到这个 agent(agent 必须已存在):在它的 cell 文档里加一个 adapter 成员。
+   先读出 cell 与 revision,在 `members` 加 `{"ref": "<adapter>", "role": "adapter"}`,在
+   `params."cell.members"."<adapter>"` 写 `{"adapter": "<adapter>"}`,再按 revision 写回。一个 agent
+   可以绑定多个 adapter;同一个 adapter 只能出现在一个 agent 的 cell 里,否则入站路由失败关闭:
+
+   ```bash
+   hyprial agent cell show <agent> --json
+   hyprial agent cell apply <agent> --expected-revision <N> --file CELL.json
+   ```
+
+8. 用 `hyprial message send` 与真实飞书消息验证入站、回复与重启后的行为:
+
+   ```bash
+   hyprial message send --from <agent-uri> --to <route-or-user> --summary <nonce> "<text>"
+   ```
+
+需要人工、脚本无法代替的步骤:
+
+- 真实飞书 App 的创建与租户 scope 授权仍需在平台上由人确认;未完成时按 `BLOCKED` 记录,
+  不要用 mock 结果代替真实往返。
+- `adapter route candidates` 只能列出已观察到的 chat;选择哪个 native id 由你决定。
+- 没有一条通用命令会把上面五步打包成无人值守动作;需要自动化时,由调用方按上面的通用命令
+  自行编排,不要恢复首启编排。
+
 ## 1. 网络层:tailscale
 
 - [ ] 加入 tailnet,设备名用**表意名**(如 `devusr-dev`),不要用默认
-      主机名 —— 设备名会渗入全网 agent URI,改名是全节点身份变更;
-      名字异常(如 `localhost-0`)先修再入网:控制台改,或
+      主机名;名字异常(如 `localhost-0`)先修再入网:控制台改,或
       `tailscale set --hostname=<name>`。
+      (2026-11-20 起 node id 不再取主机名:新 home 由 `hyprial init` 写入
+      随机的 `<home>/node-id`,改主机名不再改变 agent URI;已有安装见
+      `docs/guides/migration-im-push-by-agent-binding.md` 第 13 节。)
 - [ ] 验证:`tailscale status` 双向可见、`ping` hq 节点通。
 
 ## 2. 传输层:zenoh 对等连接
@@ -61,34 +137,27 @@
 - [ ] `hyprial daemon upgrade` 到最新 tag(升级自动重启 daemon)。
 - [ ] 验证:版本号与发版通告一致。
 
-## 5. 身份层:平台身份绑定
+## 5. 身份层:人员登记
 
-- [ ] 每个会经聊天通道下指令的人,用以下两种互斥形式之一
-      `hyprial user bind <KEY> --union-id <UNION_ID> --confirmed-by <WHO>`
-      或 `hyprial user bind <KEY> --adapter <ADAPTER> --open-id <OPEN_ID> --confirmed-by <WHO>`
-      把其平台身份绑定到 hyprial 身份 —— **授权白名单的键必须是
-      经绑定核验的平台身份,绝不能是"某个群/某个通道"**(通道面所有
-      发言者共用一张脸;把群当人 = 任何入群者都能冒充 owner)。
-- [ ] 绑定完成前,来自未绑定账号的放开权限类指令(授权/改身份/不可逆
-      动作)一律按未授权处理。
-- [ ] 验证:`hyprial user show <KEY>` 确认绑定事件；必要时用
+- [ ] hyprial 不把人和 IM 账号绑在一起:经 adapter 来的消息,说话人就是拥有该平台
+      账号的人,hyprial 不判定他是不是 owner;owner 的指令以 `user:<owner>` 的身份
+      到达(GUI、CLI)。需要时用 `hyprial user add` 登记人员(只有名字)。
+- [ ] 放开权限类指令(授权/改身份/不可逆动作)只认 `user:<owner>`;经聊天通道来的
+      一律不当作 owner 的授权。
+- [ ] 验证:`hyprial user show <KEY>` 显示登记的人;需要时用
       `hyprial adapter identities find <ADAPTER> --id <OPEN_ID>` 查看平台身份记录。
-- [ ] 侍从(squire)：`hyprial init` 和 `hyprial daemon restart` 如果提示 `SQUIRE_NOT_CONFIGURED`，
-      说明这台机器的 owner 还没有侍从，别人发给 `user:<owner>` 的消息送不到。
-      用 `hyprial squire setup` 配置；`data.missing` 列出还缺哪一步。
-      先配侍从，user-proxy 由侍从引导配置。网络隔离的 daemon 不会出这条提示。
-- [ ] user-proxy：侍从配好之后，同一个检查如果提示 `SQUIRE_USER_PROXY_NOT_CONFIGURED`，
-      说明发给 `user:<owner>` 的消息还混在侍从的对话里。先给自己单独建一个飞书 adapter
-      （不能用侍从的），再到 `data.machine` 那台机器上运行
-      `hyprial user proxy setup --adapter <你的 adapter> --route <route>`；
-      用 `hyprial user proxy status` 确认 configured 和 live 都是 true。
+- [ ] 飞书副本(可选):发给 `user:<owner>` 的消息默认只留在 GUI 与 CLI，不会同步到飞书。
+      需要飞书副本时，给这个 owner 单独建一个飞书 adapter(不要复用其他用途的 adapter)，
+      把本机用户 agent(`hyprial-user`)的 cell 绑定到它和目标聊天，见
+      `docs/guides/migration-im-push-by-agent-binding.md` 第 4 节；
+      用 `hyprial agent cell show hyprial-user` 确认绑定。
 
 ## 6. 组织层:org-context 采信
 
 - [ ] `hyprial init` 会建槽并提示 `ORG_CONTEXT_ABSENT`;经 `hyprial org context fetch`
       (或收到 mesh 传播的候选)后,由**节点 owner** 审阅 version/
       publisher/密钥指纹/diff 并 `hyprial org context import` 采信 —— 采信永远是
-      owner 的本地决定,有 squire 的节点走 squire 呈批。
+      owner 的本地决定。
 - [ ] 采信的名册即身份层(第 5 项)的校验源:绑定谁、信谁的签发,
       对照名册核。
 - [ ] 验证:`hyprial org context show` 显示已采信版本。

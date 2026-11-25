@@ -66,15 +66,12 @@ from .commands import (
     RecordHarnessRestoreSettlement,
     RecordSessionAgentEffects,
     RemoveAdapterRegistration, SetAdapterIntent,
-    RemoveChannelPin,
     RemoveHarness,
-    RemoveMigratedChannelPins,
     ReserveLifecycle,
     RestoreAdapterRegistration,
     RetireDomainReceipt,
     RetireSharedDomainReceipt,
     RollbackHarnessLifecycle,
-    SetChannelPin,
     SetLifecycleState,
     SetMailboxRole,
     StateCommand,
@@ -148,10 +145,10 @@ class _Projection:
     ) -> HarnessLaunchSpec | None:
         """Copy one unambiguous worker row; adapters never match.
 
-        ``HarnessLaunchSpec`` and its optional ``SmolvmRuntimeSpec`` are
-        frozen and contain only scalars or tuples.  A shallow dataclass copy
-        therefore isolates the returned row (including against deliberate
-        ``object.__setattr__``) without serializing unrelated desired state.
+        ``HarnessLaunchSpec`` is frozen and contains only scalars or tuples.
+        A shallow dataclass copy therefore isolates the returned row (including
+        against deliberate ``object.__setattr__``) without serializing unrelated
+        desired state.
         """
 
         from hyprial.daemon.impl.harnesses.capabilities import worker_spec
@@ -169,16 +166,14 @@ class _Projection:
 
 
 def run_journal_query(journal: _LifecycleStore, command: ReadJournalQuery) -> Any:
-    """Answer one read-only journal query.
-
-    Shared by the writer's handler and by callers that read directly: every
-    ``journal`` read opens its own short-lived SQLite connection, so a read
-    needs no turn on the single writer's mailbox.
+    """Answer a read-only query on its own connection, without a writer turn.
     """
 
     op_id = command.operation_id
     if command.operation is JournalQuery.PENDING:
         result = journal.pending()
+    elif command.operation is JournalQuery.START_FAILURES:
+        result = journal.read_start_failures()
     else:
         assert op_id is not None
         if command.operation is JournalQuery.LOAD:
@@ -243,16 +238,10 @@ class _Generation:
                 elif command.operation is DesiredQuery.HARNESS_LIFECYCLE_RECEIPT:
                     assert command.key is not None
                     result = self.desired.harness_lifecycle_receipt(command.key)
-                elif command.operation is DesiredQuery.ADAPTER_REGISTRATION:
-                    assert command.key is not None
-                    result = self.desired.adapter_registration(command.key)
                 else:
                     raise TypeError("unsupported desired query")
             elif isinstance(command, ReadJournalQuery):
                 result = run_journal_query(self.journal, command)
-            elif isinstance(command, RemoveMigratedChannelPins):
-                result = self.desired.remove_matching_channel_pins(command.matches)
-                self.projection.publish(self.desired.published_state())
             elif isinstance(command, NormalizeInteractiveSessions):
                 result = self.desired.normalize_interactive_sessions(
                     rewrites=command.rewrites
@@ -314,12 +303,6 @@ class _Generation:
             elif isinstance(command, CompleteSessionAgentEffect):
                 result = self.desired.complete_session_agent_effect(command.effect_id)
                 self.projection.publish(self.desired.published_state())
-            elif isinstance(command, SetChannelPin):
-                result = self.desired.set_channel_pin(command.channel, command.agent)
-                self.projection.publish(self.desired.published_state())
-            elif isinstance(command, RemoveChannelPin):
-                result = self.desired.remove_channel_pin(command.channel)
-                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ConfirmHarnessLifecycle):
                 result = self.desired.confirm_harness_lifecycle(
                     command.attempt_token, command.resource_token, command.spec,
@@ -348,13 +331,13 @@ class _Generation:
                 )
                 self.projection.publish(self.desired.published_state())
             elif isinstance(command, MarkHarnessFailed):
-                result = self.desired.mark_harness_failed(command.harness, command.name)
+                result = self.desired.mark_harness_failed(command.harness, command.name, command.member)
                 self.projection.publish(self.desired.published_state())
             elif isinstance(command, UpsertHarness):
                 result = self.desired.upsert_harness(command.spec)
                 self.projection.publish(self.desired.published_state())
             elif isinstance(command, RemoveHarness):
-                result = self.desired.remove_harness(command.harness, command.name)
+                result = self.desired.remove_harness(command.harness, command.name, command.member)
                 self.projection.publish(self.desired.published_state())
             elif isinstance(command, ExpireInterruptedReceipts):
                 result = self.desired.expire_interrupted_lifecycle_receipts()
@@ -365,13 +348,11 @@ class _Generation:
             elif isinstance(command, RemoveAdapterRegistration):
                 result = self.desired.remove_adapter_registration(
                     command.name, expected_spec=command.expected_spec,
-                    expected_legacy_pin=command.expected_legacy_pin,
                 )
                 self.projection.publish(self.desired.published_state())
             elif isinstance(command, RestoreAdapterRegistration):
                 result = self.desired.restore_adapter_registration(
                     command.name, spec=command.spec,
-                    legacy_pin=command.legacy_pin,
                 )
                 self.projection.publish(self.desired.published_state())
             elif isinstance(command, SyncHarnessSessionRefs):
@@ -479,14 +460,13 @@ class _Generation:
             else:
                 raise TypeError("unsupported state persistence command")
         except Exception as error:
-            if isinstance(command, (RemoveMigratedChannelPins,
-                                    NormalizeInteractiveSessions, CompareAndSaveDesired,
+            if isinstance(command, (NormalizeInteractiveSessions, CompareAndSaveDesired,
                                     ApplySessionLifecycle, ApplyHarnessLifecycle,
                                     RetireDomainReceipt, ConfirmDomainReceipt,
                                     ClaimInteractiveSession, ClaimInteractiveWithAgentEffects,
                                     UnregisterInteractiveSession, RecordSessionAgentEffects,
-                                    CompleteSessionAgentEffect, SetChannelPin,
-                                    RemoveChannelPin, ConfirmHarnessLifecycle,
+                                    CompleteSessionAgentEffect,
+                                    ConfirmHarnessLifecycle,
                                     CompleteHarnessLifecycle,
                                     RecordHarnessLifecycleFailure,
                                     RollbackHarnessLifecycle, FailHarnessRemoval,
@@ -584,19 +564,6 @@ class _DesiredPort(ServiceDesiredPortMixin):
             raise completion.error
         return completion.result
 
-    def remove_channel_pin_settled(
-        self, channel: str
-    ) -> tuple[DesiredState, str | None]:
-        """Internal I/O-worker port that joins an accepted late mutation."""
-
-        try:
-            return self.remove_channel_pin(channel)
-        except StatePersistenceTimeout as error:
-            result = self.settled_result(error.correlation_id)
-            if not isinstance(result, tuple) or len(result) != 2:
-                raise RuntimeError("channel-pin retirement returned an invalid receipt")
-            return result  # type: ignore[return-value]
-
     def compare_and_save(self, state: DesiredState, *, expected_version: int) -> DesiredState:
         return self._owner._call(
             CompareAndSaveDesired(
@@ -604,14 +571,6 @@ class _DesiredPort(ServiceDesiredPortMixin):
                 _snapshot_payload(state),  # type: ignore[arg-type]
             )
         )
-
-    def remove_matching_channel_pins(
-        self, matches: tuple[tuple[str, str], ...]
-    ) -> DesiredState:
-        command = RemoveMigratedChannelPins(
-            f"state-pins-{uuid4().hex}", tuple(matches)
-        )
-        return self._owner._call(command)
 
     def normalize_interactive_sessions(
         self, *, rewrites: tuple[tuple[str, str | None, str], ...]
@@ -754,16 +713,6 @@ class _DesiredPort(ServiceDesiredPortMixin):
             )
         )
 
-    def set_channel_pin(self, channel: str, agent: str) -> object:
-        return self._owner._call(
-            SetChannelPin(f"state-pin-{uuid4().hex}", channel, agent)
-        )
-
-    def remove_channel_pin(self, channel: str) -> object:
-        return self._owner._call(
-            RemoveChannelPin(f"state-unpin-{uuid4().hex}", channel)
-        )
-
     def confirm_harness_lifecycle(
         self, attempt_token: str, resource_token: str, spec: HarnessLaunchSpec,
         *, generation: int | None = None, version: int | None = None,
@@ -817,10 +766,10 @@ class _DesiredPort(ServiceDesiredPortMixin):
             )
         )
 
-    def mark_harness_failed(self, harness: str, name: str) -> bool:
+    def mark_harness_failed(self, harness: str, name: str, member: str | None = None) -> bool:
         return self._owner._call(
             MarkHarnessFailed(
-                f"state-harness-failed-{uuid4().hex}", harness, name,
+                f"state-harness-failed-{uuid4().hex}", harness, name, member,
             )
         )
 
@@ -832,9 +781,9 @@ class _DesiredPort(ServiceDesiredPortMixin):
             )
         )
 
-    def remove_harness(self, harness: str, name: str) -> DesiredState:
+    def remove_harness(self, harness: str, name: str, member: str | None = None) -> DesiredState:
         return self._owner._call(
-            RemoveHarness(f"state-harness-remove-{uuid4().hex}", harness, name)
+            RemoveHarness(f"state-harness-remove-{uuid4().hex}", harness, name, member)
         )
 
     def expire_interrupted_lifecycle_receipts(self) -> tuple[int, int]:
@@ -847,30 +796,26 @@ class _DesiredPort(ServiceDesiredPortMixin):
 
     def remove_adapter_registration(
         self, name: str, *, expected_spec: AdapterSpec | None,
-        expected_legacy_pin: str | None,
     ) -> DesiredState:
         return self._owner._call(
             RemoveAdapterRegistration(
                 f"state-adapter-remove-{uuid4().hex}", name,
                 _snapshot_payload(expected_spec),  # type: ignore[arg-type]
-                expected_legacy_pin,
             )
         )
 
     def restore_adapter_registration(
         self, name: str, *, spec: AdapterSpec | None,
-        legacy_pin: str | None,
     ) -> DesiredState:
         return self._owner._call(
             RestoreAdapterRegistration(
                 f"state-adapter-restore-{uuid4().hex}", name,
                 _snapshot_payload(spec),  # type: ignore[arg-type]
-                legacy_pin,
             )
         )
 
     def sync_harness_session_refs(
-        self, refs: Mapping[tuple[str, str], str]
+        self, refs: Mapping[tuple[str, str, str], str]
     ) -> DesiredState:
         copied = tuple(sorted((tuple(key), value) for key, value in refs.items()))
         return self._owner._call(

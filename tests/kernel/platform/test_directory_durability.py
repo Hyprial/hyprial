@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.kernel import fsync_directory
-from hyprial.kernel.impl.platform.filesystem import durability
+from hyprial.kernel.impl.manysys.fs import durability
 
 
 def test_flushes_a_directory_that_can_be_opened(

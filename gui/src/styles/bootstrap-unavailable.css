@@ -1,0 +1,71 @@
+.bootstrap-page {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: calc(var(--ui-space-10) * 2) var(--ui-space-8) var(--ui-space-12);
+  background: var(--ui-ground);
+}
+
+.bootstrap-card {
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--ui-space-8);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface);
+}
+
+.bootstrap-card__mark {
+  display: block;
+  width: var(--ui-space-10);
+  height: var(--ui-space-10);
+  margin: 0 0 var(--ui-space-6);
+}
+
+.bootstrap-card__title {
+  margin: 0 0 var(--ui-space-3);
+  color: var(--ui-ink-1);
+  font-family: var(--ui-font-ui);
+  font-size: var(--ui-text-3xl);
+  font-weight: 600;
+  letter-spacing: var(--ui-tracking-tight);
+  line-height: var(--ui-leading-tight);
+}
+
+.bootstrap-card__body {
+  margin: 0 0 var(--ui-space-6);
+  max-width: 68ch;
+  color: var(--ui-ink-2);
+  font-size: var(--ui-text-lg);
+  line-height: var(--ui-leading-relaxed);
+}
+
+.bootstrap-card__code {
+  margin: var(--ui-space-6) 0 0;
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-xs);
+  line-height: var(--ui-leading-normal);
+}
+
+.bootstrap-card__code code {
+  color: inherit;
+  font-family: var(--ui-font-mono);
+  font-size: var(--ui-text-xs);
+}
+
+.bootstrap-primary-layout {
+  justify-self: start;
+}
+
+@media (max-width: 640px) {
+  .bootstrap-primary-layout {
+    width: 100%;
+  }
+
+  .bootstrap-page {
+    padding: var(--ui-space-8) var(--ui-space-4);
+  }
+}

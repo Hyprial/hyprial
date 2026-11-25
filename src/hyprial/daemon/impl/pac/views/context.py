@@ -31,7 +31,10 @@ def _local_identity() -> tuple[str | None, str]:
     return owner, machine
 
 
-def node_context(database: Path, graph_id: str, node_id: str) -> dict[str, Any]:
+def node_context(
+    database: Path, graph_id: str, node_id: str, *,
+    local_identity: tuple[str | None, str] | None = None,
+) -> dict[str, Any]:
     """Separate completed facts from the current recorded request/activation.
 
     All predecessors, references, assignments and the cursor come from the SAME
@@ -52,7 +55,7 @@ def node_context(database: Path, graph_id: str, node_id: str) -> dict[str, Any]:
     # must not associate with this runtime), and never a same-owner
     # different-actor URI.  Without a resolvable local owner there is no
     # binding to match against, so association stays empty.
-    local_owner, local_machine = _local_identity()
+    local_owner, local_machine = _local_identity() if local_identity is None else local_identity
     actor = next(
         (
             item

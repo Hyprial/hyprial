@@ -1,0 +1,49 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "request_methods",
+ "scenario": "pac-gc-preview",
+ "steps": [
+  {
+   "step": 1,
+   "method": "pac.gc.preview",
+   "label": "empty",
+   "origin": "ipc",
+   "params": {},
+   "result": {
+    "ok": true,
+    "dryRun": true,
+    "selected": [],
+    "selectedCount": 0,
+    "removableBacklog": 0,
+    "skipped": {},
+    "errors": []
+   }
+  },
+  {
+   "step": 2,
+   "method": "pac.gc.preview",
+   "label": "populated",
+   "origin": "ipc",
+   "params": {
+    "ignored": {
+     "nested": true
+    }
+   },
+   "result": {
+    "ok": true,
+    "dryRun": true,
+    "selected": [
+     {
+      "graphId": "wf-<uuid4#1>",
+      "actor": "agent:test:machine:wf-<uuid4#1>-00e13ed7af55",
+      "agent": "wf-<uuid4#1>-00e13ed7af55"
+     }
+    ],
+    "selectedCount": 1,
+    "removableBacklog": 1,
+    "skipped": {},
+    "errors": []
+   }
+  }
+ ]
+}

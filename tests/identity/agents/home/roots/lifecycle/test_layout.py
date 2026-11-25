@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 import json
+import shutil
+import sqlite3
 import threading
 from pathlib import Path
 import pytest
@@ -10,7 +12,6 @@ from hyprial.identity.impl.agents import (
     Agent,
     AgentExistsError,
     AgentHomeError,
-    AgentNotFoundError,
     AgentRegistry,
 )
 from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
@@ -23,9 +24,6 @@ from hyprial.identity.impl.agents.actor.ports import (
     CreateAgentCommand,
 )
 from hyprial.kernel.impl.actor_runtime import AdmissionResult
-from hyprial.daemon.impl.owner_migration import (
-    migrate_owner,
-)
 
 from .support import (
     _isolated_environment as _isolated_environment,
@@ -151,34 +149,6 @@ def test_create_completion_cannot_overwrite_a_replaced_home_claim(
     assert registry.get("worker") is None
 
 
-def test_t01_home_key_survives_alias_harness_and_cwd_but_not_foreign_uri(
-    tmp_path: Path,
-) -> None:
-    registry = _registry(tmp_path, owner="old-owner")
-    agent = registry.create("Alpha", cwd="/first", preferred_harness="pi")
-    receipt = registry.home_receipt("Alpha")
-    registry.record_session("Alpha", harness="claude", session_id="session-1")
-    registry.update("Alpha", cwd="/second")
-    assert registry.home_receipt("Alpha") == receipt
-    assert registry.require("Alpha").entity_token == agent.entity_token
-    registry.close()
-
-    state = tmp_path / "state"
-    assert migrate_owner(
-        state_dir=state,
-        hyprial_home=tmp_path / "home",
-        old="old-owner",
-        new="alias-owner",
-    ) > 0
-    reopened = _registry(tmp_path, owner="alias-owner")
-    assert reopened.home_receipt("Alpha") == receipt
-    assert reopened.require("Alpha").entity_token == agent.entity_token
-    foreign = "agent:other-owner:other-node:Alpha"
-    assert reopened.local_actor(foreign) is None
-    with pytest.raises(AgentNotFoundError):
-        reopened.home_receipt(foreign)
-
-
 def test_t02_provisioned_layout_has_private_modes_and_registry_receipt(
     tmp_path: Path,
 ) -> None:
@@ -238,6 +208,7 @@ def test_agent_destroy_cli_prompts_with_workspace_inventory_before_delete(
         if method == "agent.destroy.preview":
             return {
                 "ok": True,
+                "operationId": "destroy-test",
                 "workspace": {
                     "path": "/isolated/agents/worker/workspace",
                     "exists": True,
@@ -246,6 +217,7 @@ def test_agent_destroy_cli_prompts_with_workspace_inventory_before_delete(
                     "unreadableEntries": 0,
                 },
             }
+        assert _params == {"operationId": "destroy-test"}
         return {
             "ok": True,
             "destroyed": True,
@@ -291,6 +263,10 @@ def test_agent_destroy_cli_yes_skips_prompt_and_reports_deleted_workspace(
 
     def request(method: str, _params: object = None) -> dict[str, object]:
         calls.append(method)
+        if method == "agent.destroy.preview":
+            assert _params == {"name": "worker"}
+            return {"ok": True, "operationId": "destroy-test", "workspace": {"files": 3, "bytes": 21}}
+        assert _params == {"operationId": "destroy-test"}
         return {
             "ok": True,
             "destroyed": True,
@@ -309,7 +285,7 @@ def test_agent_destroy_cli_yes_skips_prompt_and_reports_deleted_workspace(
         "deleted": True,
     }
     assert "将删除" not in result.output
-    assert calls == ["agent.destroy"]
+    assert calls == ["agent.destroy.preview", "agent.destroy"]
 
 
 def test_t02_rejects_unowned_symlink_and_non_directory_before_registry_insert(
@@ -538,3 +514,114 @@ def test_t02_sql_failure_compensates_an_empty_optional_workspace(
         registry._create_record(forged)
 
     assert not (tmp_path / "home" / "agents" / "candidate").exists()
+
+
+def test_t02_compensation_removes_a_materialised_secret_store(
+    tmp_path: Path,
+) -> None:
+    """A store created during the provisioning effect is part of the home."""
+
+    registry = _registry(tmp_path)
+    provisioner = registry._home
+    assert provisioner is not None
+    receipt = provisioner.claim_receipt(actor="candidate", entity_token="entity")
+    attempt = provisioner.provision_claimed(receipt)
+    root = Path(receipt.path)
+    store = root / "secrets.sqlite"
+    store.write_bytes(b"SQLite format 3\x00synthetic")
+    store.chmod(0o600)
+
+    assert provisioner.compensate(attempt) is True
+    assert not root.exists()
+    assert not (tmp_path / "home" / "agents" / "candidate").exists()
+
+
+def test_ensure_home_rolls_back_a_failed_secret_store_and_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store failure must not leave active=ready pointing at a removed home.
+
+    The lifecycle row is only activated after the store exists, so the
+    compensation branch sees an inactive claim and downgrades it to cleaned;
+    a cleaned row is retryable, the same way the create path treats it, so
+    the operator's repair path self-heals instead of failing forever.
+    """
+
+    registry = _registry(tmp_path)
+    registry.create("candidate")
+    provisioner = registry._home
+    assert provisioner is not None
+    home = tmp_path / "home" / "agents" / "candidate"
+    with registry._lock, registry._db:
+        registry._db.execute(
+            "DELETE FROM lifecycle_resources WHERE resource_key = ?",
+            ("agent-home:candidate",),
+        )
+    shutil.rmtree(home)
+
+    real_ensure_store = provisioner.ensure_secret_store
+    calls: list[int] = []
+
+    def fail_first(receipt: HomeReceipt) -> Path:
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_ensure_store(receipt)
+
+    monkeypatch.setattr(provisioner, "ensure_secret_store", fail_first)
+
+    with pytest.raises(sqlite3.OperationalError):
+        registry.ensure_home("candidate")
+
+    assert not home.exists()
+    row = registry._db.execute(
+        "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+        ("agent-home:candidate",),
+    ).fetchone()
+    assert row is not None
+    assert bool(row["active"]) is False
+    assert HomeReceipt.from_json(json.loads(str(row["payload"]))).status == "cleaned"
+
+    receipt = registry.ensure_home("candidate")
+
+    assert receipt.status == "ready"
+    assert (home / "secrets.sqlite").is_file()
+    assert registry.home_receipt("candidate") == receipt
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (sqlite3.OperationalError("database is locked"), "io"),
+        (OSError("no space left on device"), "io"),
+        (ValueError("agent home is not private"), "unsafe-path"),
+    ],
+)
+def test_ensure_secret_store_reports_store_failures_as_home_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    category: str,
+) -> None:
+    """The ensure-home path must answer with a home stage code, not a raw error."""
+
+    import hyprial.identity.impl.agents.secret_store.store as store_module
+
+    registry = _registry(tmp_path)
+    provisioner = registry._home
+    assert provisioner is not None
+    receipt = provisioner.claim_receipt(actor="candidate", entity_token="entity")
+    provisioner.provision_claimed(receipt)
+
+    class BrokenStore:
+        def __init__(self, home: Path) -> None:
+            raise error
+
+    monkeypatch.setattr(store_module, "AgentSecretStore", BrokenStore)
+
+    with pytest.raises(AgentHomeError) as caught:
+        provisioner.ensure_secret_store(receipt)
+
+    assert caught.value.category == category
+    assert caught.value.actor == "candidate"
+    assert caught.value.phase == "ensure-secret-store"

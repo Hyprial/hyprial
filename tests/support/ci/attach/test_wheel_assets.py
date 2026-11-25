@@ -147,11 +147,29 @@ def test_credentials_are_read_from_the_environment() -> None:
     assert "WHEEL_REGISTRY_USER" not in done.stderr
 
 
-def test_internal_plan_selects_exactly_five_wheels_and_sums() -> None:
+@pytest.mark.parametrize("abi", ["py3-none", "cp312-abi3"])
+def test_internal_plan_selects_exactly_five_wheels_and_sums(abi) -> None:
     module = _module()
     version = "0.5.5+g1234567"
-    names = [f"hyprial-{version}-py3-none-{tag}.whl" for tag in module.PLATFORM_TAGS]
+    names = [f"hyprial-{version}-{abi}-{tag}.whl" for tag in module.PLATFORM_TAGS]
     assert module.asset_plan(names, version) == (*sorted(names), "SHA256SUMS")
+
+
+@pytest.mark.parametrize("problem", ["mixed", "unsupported", "duplicate", "unsafe"])
+def test_asset_plan_refuses_abi_or_name_ambiguity(problem) -> None:
+    module = _module()
+    version = "0.5.5+g1234567"
+    names = [f"hyprial-{version}-cp312-abi3-{tag}.whl" for tag in module.PLATFORM_TAGS]
+    if problem == "mixed":
+        names[0] = names[0].replace("cp312-abi3", "py3-none")
+    elif problem == "unsupported":
+        names = [name.replace("cp312-abi3", "cp313-abi3") for name in names]
+    elif problem == "duplicate":
+        names[-1] = names[0]
+    else:
+        names[0] = "../" + names[0]
+    with pytest.raises(module.WheelSetError):
+        module.asset_plan(names, version)
 
 
 def test_incomplete_candidate_never_reaches_release_mutation(monkeypatch, tmp_path: Path) -> None:
@@ -506,3 +524,52 @@ def test_lists_and_downloads_through_the_forgejo_pypi_routes(monkeypatch, tmp_pa
         path, digest = module._download(registry, ("u", "t"), name, str(tmp_path))
         assert Path(path).read_bytes() == name.encode()
         assert digest == module.hashlib.sha256(name.encode()).hexdigest()
+
+
+def _remote_wheel(path: Path, remote: str) -> None:
+    import json
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("hyprial/_gui/release.json", json.dumps({"sourceRemote": remote}))
+
+
+def test_wheel_with_a_non_public_source_remote_is_never_attached(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    module = _module()
+    version = "0.5.5+g1234567"
+    names = [f"hyprial-{version}-py3-none-{tag}.whl" for tag in module.PLATFORM_TAGS]
+    uploads: list[str] = []
+
+    def download(_registry, _auth, name, dest_dir):
+        path = Path(dest_dir) / name
+        _remote_wheel(path, "ssh://git@git.internal.invalid/org/repo.git")
+        return str(path), "0" * 64
+
+    monkeypatch.setattr(module, "_release", lambda *a, **k: {"id": 1, "upload_url": "u", "assets": []})
+    monkeypatch.setattr(module, "_repair_missing_manifest", lambda *a, **k: True)
+    monkeypatch.setattr(module, "_wait_for_registry", lambda *a: names)
+    monkeypatch.setattr(module, "_download", download)
+    monkeypatch.setattr(module, "_upload", lambda *a, **k: uploads.append(a[2]))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT), "--tag", "internal", "--version", version,
+            "--source-sha", "1234567" + "0" * 33,
+            "--registry-url", "https://registry.invalid", "--user", "u", "--token", "t",
+            "--github-repo", "Hyprial/hyprial", "--gh-token", "g",
+            "--workdir", str(tmp_path),
+        ],
+    )
+    assert module.main() == 1
+    assert "sourceRemote is not the public repository" in capsys.readouterr().err
+    assert uploads == []
+
+
+def test_attach_guard_accepts_the_public_source_remote(tmp_path: Path) -> None:
+    module = _module()
+    path = tmp_path / "hyprial-0.5.5+g1234567-py3-none-win_amd64.whl"
+    _remote_wheel(path, "https://github.com/Hyprial/hyprial.git")
+    module._SOURCE_REMOTE["check_wheel"](path)

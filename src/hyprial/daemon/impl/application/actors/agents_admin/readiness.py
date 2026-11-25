@@ -40,7 +40,7 @@ class _AgentReadinessMixin:
     """Registry-facing readiness handler; reads state, never materializes it."""
 
     def _agent_readiness(self, params: JsonObject) -> dict[str, Any]:
-        name = self.agents.normalize_actor(
+        name = self.agents.actor_key(
             _required_string(params.get("name"), "name")
         )
         agent = self.agents.require(name)

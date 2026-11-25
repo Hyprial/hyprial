@@ -9,17 +9,12 @@ from hyprial.kernel import ipc_errors
 import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
-from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _INIT_READY_TIMEOUT_ENV, _announce_setup_guidance, _fail
-from hyprial.shell.impl.cli.output import CliResult, confirm
+from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _INIT_READY_TIMEOUT_ENV
+from hyprial.shell.impl.cli.output import CliResult
 
 
 @app.command()
 def login(
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Re-authenticate even when this home already has a coherent user login.",
-    ),
     no_open: bool = typer.Option(
         False,
         "--no-open",
@@ -28,205 +23,71 @@ def login(
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-    switch_account: bool = typer.Option(
-        False,
-        "--switch-account",
-        help=(
-            "Allow switching to a different account than settings.owner "
-            "(an explicit one-time switch). By default login stops the old "
-            "daemon, proves exit, and starts the verified replacement. With "
-            "--no-daemon the daemon must already be stopped. With --json the "
-            "flag is the confirmation; otherwise you are asked to type yes."
-        ),
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help=(
-            "Authenticate the candidate and preview owner migration from "
-            "SQLite backup copies. Requires --switch-account; writes no "
-            "credential/settings/state and does not stop, provision, or start."
-        ),
-    ),
-    no_daemon: bool = typer.Option(
-        False,
-        "--no-daemon",
-        help=(
-            "Do not stop or start a daemon. An identity change is refused "
-            "while the daemon is live or cannot be proven stopped."
-        ),
-    ),
     ready_timeout: float = typer.Option(
-        # Init's progress-idle budget, not a second one: same default, same
-        # environment variable, same Click parsing. Only a login that finds
-        # the home missing starts a daemon, and then it finishes init.
         DAEMON_START_IDLE_BUDGET_SECONDS,
         "--ready-timeout",
         envvar=_INIT_READY_TIMEOUT_ENV,
         hidden=True,
         help=(
             "Seconds allowed without daemon startup phase progress when login "
-            "initializes a missing home (env: HYPRIAL_INIT_READY_TIMEOUT)."
+            "starts the daemon for login "
+            "(env: HYPRIAL_INIT_READY_TIMEOUT)."
         ),
     ),
 ) -> None:
     """Log in this home's user identity and provision the device key.
 
-    A home is already logged in when it has a valid secrets/login.json
-    credential, settings.json has a Casdoor owner, the credential, settings,
-    and selected profile issuers match, and the device key stage is complete.
-    When only the device stage is incomplete, the default command resumes it
-    without authenticating again. Otherwise the default command reports
-    that local session (token expiry is
-    unknown because the stored refresh token has no expiry field) and changes
-    nothing. Use --force to authenticate again.
+    The daemon owns the login flow end to end. On a home with no account yet,
+    login starts the bootstrap daemon when none runs, shows the verification
+    URL and user code, opens the browser (not with --no-open), and waits for
+    that one daemon operation until it reaches serving. On a home that already
+    has an owner, login starts the serving daemon if needed and runs one
+    daemon-driven reauthentication until serving; logging in with a different
+    account when local business data exists is refused. A device that cannot be
+    registered never rolls the identity back: login still succeeds and reports
+    ``device.ready: false`` with ``retry: serving-start``.
 
-    Since the tailnet cutover there is no sidecar install step and no
-    control-plane join: the identity stage (U2) lands the owner in
-    settings.json and the refresh token in secrets/login.json (0600), and
-    the device stage asks the ``hyprial-tailcat`` sidecar to ensure this
-    machine's device key exists (``genkey``), writing the public device
-    record.  A missing or failing sidecar never rolls the identity back
-    (D12): login still succeeds and reports ``device.ready: false`` with a
-    next step — re-running login retries the device stage alone.  A
-    different existing owner is switched only with --switch-account. By
-    default login stops the old generation, proves exit, reclassifies
-    stopped state, commits, and starts and verifies the replacement.
-    ``--no-daemon`` preserves the explicit identity-only path and refuses a
-    live identity change.  A home with no owner yet (neither settings.owner
-    nor HYPRIAL_OWNER; a missing home always counts) is first-time setup
-    instead: login commits the identity, then init's shared setup and
-    daemon-start path starts the daemon once.
+    After a new login, confirm organization invitations one at a time on a
+    TTY. Non-TTY and --json runs only report pending invitations. To accept
+    all invitations explicitly, use org pending --accept-all.
     """
     services = get_services()
 
-    if dry_run and not switch_account:
-        _fail(
-            services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
-                "--dry-run requires --switch-account",
-                {"requiredFlag": "--switch-account"},
-            ),
-            json_output=json_output,
-        )
-
     def operation() -> CliResult:
         services = get_services()
-        if not force and not switch_account and not dry_run:
-            from hyprial.shell.impl.cli.commands.login.flow import (
-                _login_device_id,
-                _resume_login_cli_flow,
-            )
-            from hyprial.shell.impl.login.session import (
-                inspect_login_session,
-                login_device_stage_complete,
-            )
-
-            from hyprial.daemon import node_owner_or_none
-
-            profile, _source = services.resolve_profile()
-            home = services._hyprial_home()
-            existing = inspect_login_session(home, expected_issuer=profile.issuer)
-            try:
-                effective_owner = node_owner_or_none(hyprial_home=home)
-            except ValueError:
-                effective_owner = None
-            if existing is not None and existing["owner"] == effective_owner:
-                device_id = _login_device_id()
-                if login_device_stage_complete(
-                    home, owner=existing["owner"], device_id=device_id
-                ):
-                    return CliResult(existing)
-                return CliResult(
-                    _resume_login_cli_flow(
-                        existing,
-                        expected_issuer=profile.issuer,
-                        json_output=json_output,
-                    )
+        route = _login_route(services)
+        if route in {_FIRST, _LAUNCH}:
+            started = False
+            if route == _LAUNCH:
+                _initialize_missing_home(services)
+                launched = services._launch_daemon_process(
+                    ready_timeout=ready_timeout, autoinstall=False
                 )
-        if dry_run:
-            # A preview writes nothing, so it must not create a missing home.
-            try:
-                services.require_initialized_hyprial_home()
-            except HYPRIALHomeNotInitialized as error:
-                raise services.CliError(
-                    error.code,
-                    f"{error}; --dry-run previews an existing home's account "
-                    "switch and writes nothing, so it does not create one",
-                    data=error.data,
-                ) from error
-        if dry_run or not _login_route_is_first_time_setup():
+                started = not launched.already_running
             return CliResult(
-                services._run_login_cli_flow(
+                _first_login(
+                    services,
+                    started=started,
                     no_open=no_open,
                     json_output=json_output,
-                    switch_account=switch_account,
-                    dry_run=dry_run,
-                    no_daemon=no_daemon,
                 )
             )
-
-        try:
-            services.require_initialized_hyprial_home()
-        except HYPRIALHomeNotInitialized:
-            home_was_missing = True
-            services.initialize_hyprial_home()
-            org_warning = services._initialize_org_context()
-        else:
-            home_was_missing = False
-            org_warning = None
-
-        committed_identity_generation: list[int] = []
-        try:
-            response = services._run_login_cli_flow(
+        started = False
+        if route == _LAUNCH_RELOGIN:
+            launched = services._launch_daemon_process(
+                ready_timeout=ready_timeout, autoinstall=False
+            )
+            started = not launched.already_running
+        return CliResult(
+            _serving_relogin(
+                services,
+                started=started,
                 no_open=no_open,
                 json_output=json_output,
-                switch_account=switch_account,
-                no_daemon=True,
-                first_time_setup=True,
-                committed_identity_generation=committed_identity_generation,
             )
-        except KeyboardInterrupt as error:
-            if not home_was_missing:
-                raise
-            raise services.CliError(
-                "INTERRUPTED",
-                "login was interrupted after home initialization; rerun `hyprial login`",
-                data={"nextSteps": ["hyprial login"]},
-            ) from error
-        except services.CliError as error:
-            if not home_was_missing:
-                raise
-            data = dict(error.data) if isinstance(error.data, dict) else {}
-            data["nextSteps"] = ["hyprial login"]
-            raise services.CliError(
-                error.code,
-                f"{error}; home is initialized, rerun `hyprial login`",
-                data=data,
-            ) from error
-        if not no_daemon:
-            response["daemon"] = services._complete_initialization(
-                ready_timeout=ready_timeout,
-                listen=None,
-                connect=None,
-                org_warning=org_warning,
-                login_when_missing=None,
-                committed_identity_generation=committed_identity_generation,
-            )
-            migration = response["daemon"].get("migration")
-            if isinstance(migration, dict):
-                response["migration"] = migration
-            # First login is the moment a new member has no squire and
-            # is watching the terminal: say it on stderr, not only in
-            # the nested JSON.
-            if not json_output:
-                _announce_setup_guidance(response["daemon"])
-        steps = _organization_next_steps(services)
-        if steps is not None:
-            response["nextSteps"] = steps
-        return CliResult(response)
+        )
 
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False)
 
 
 @app.command()
@@ -238,12 +99,12 @@ def logout(
 ) -> None:
     """Remove this home's user login without removing machine or agent keys.
 
-    Logout removes secrets/login.json plus the Casdoor identity fields that
-    login wrote in settings.json. It never removes agent credentials, Tailcat
-    device keys, or unrelated settings. A running daemon is stopped and its
-    exit proved before its persisted identity is removed. When no user-login
-    artifacts exist, the command reports not-logged-in and succeeds without a
-    confirmation.
+    Logout is one daemon request: the daemon removes secrets/login.json plus
+    the Casdoor identity fields that login wrote in settings.json. It never
+    removes agent credentials, Tailcat device keys, or unrelated settings. The
+    command starts the daemon when none runs; a serving daemon then returns to
+    the no-account phase in the same process, and the command does not wait for
+    that. A home with no user login reports not-logged-in.
 
     It does not revoke already-issued access tokens at the issuer.
     Such tokens can remain valid until expiry.
@@ -251,80 +112,18 @@ def logout(
     services = get_services()
 
     def operation() -> CliResult:
-        from hyprial.identity import IdentityTransactionBusy, IdentityTransactionLock
-        from hyprial.shell.impl.cli.commands.login.flow import _prove_daemon_absent
-        from hyprial.shell.impl.login.session import (
-            inspect_login_artifacts,
-            remove_login_artifacts,
+        from hyprial.shell.impl.cli.commands.login.logout import run_logout
+
+        return CliResult(
+            run_logout(get_services(), yes=yes, json_output=json_output)
         )
 
-        services = get_services()
-        home = services._hyprial_home()
-        artifacts = inspect_login_artifacts(home)
-        if not artifacts.present:
-            return CliResult(
-                {
-                    "status": "not-logged-in",
-                    "home": str(home),
-                    "removed": [],
-                }
-            )
-        if not yes:
-            if json_output or not services._stdin_isatty():
-                raise services.CliError(
-                    "CONFIRMATION_REQUIRED",
-                    "logout from a non-interactive command requires --yes",
-                )
-            if not confirm(f"Remove the user login from {home}?"):
-                raise services.CliError("CANCELLED", "logout cancelled")
-
-        try:
-            transaction = IdentityTransactionLock.acquire(home)
-        except IdentityTransactionBusy as error:
-            raise services.CliError(error.code, str(error)) from error
-        try:
-            # Re-read under the identity fence so a concurrent login cannot
-            # land between the preview/confirmation and removal.
-            artifacts = inspect_login_artifacts(home)
-            if not artifacts.present:
-                return CliResult(
-                    {
-                        "status": "not-logged-in",
-                        "home": str(home),
-                        "removed": [],
-                    }
-                )
-            daemon: JsonObject = {"state": "not-affected"}
-            if artifacts.casdoor_identity_present:
-                try:
-                    probe = services._daemon_probe(timeout=0.5)
-                except ipc_errors.DaemonUnavailableError:
-                    daemon = _prove_daemon_absent(
-                        home,
-                        services._state_dir(),
-                        lambda phase, **details: {
-                            "failedPhase": phase,
-                            **details,
-                        },
-                    )
-                else:
-                    daemon = services._stop_daemon_for_identity_switch()
-                    daemon["state"] = "stopped"
-                    if isinstance(probe, dict):
-                        daemon.setdefault("previousEpoch", probe.get("epoch"))
-            removed = remove_login_artifacts(home)
-            return CliResult(
-                {
-                    "status": "logged-out" if removed else "not-logged-in",
-                    "home": str(home),
-                    "removed": removed,
-                    "daemon": daemon,
-                }
-            )
-        finally:
-            transaction.close()
-
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(
+        operation,
+        json_output=json_output,
+        allow_missing_home=True,
+        ensure_daemon=False,
+    )
 
 
 _ORG_LIST_HINT_SECONDS = 2.0
@@ -373,32 +172,108 @@ def _organization_next_steps(services) -> list[str] | None:
         ),
     ]
 
-def _login_route_is_first_time_setup() -> bool:
-    """Whether ``hyprial login`` takes the first-time setup route.
+_OWNED = "owned"
+_FIRST = "first-login"
+_LAUNCH = "launch-first-login"
+_LAUNCH_RELOGIN = "launch-relogin"
 
-    First-time setup means exactly "init would run login":
-    ``node_owner_or_none()`` finds no owner in settings.json and no
-    ``HYPRIAL_OWNER``.  A home directory without an owner is first-time
-    setup: the identity step commits, then init's start path starts the
-    daemon once, under the identity step's held transaction lock.  A
-    missing home is always first-time setup -- it has no settings to switch
-    away from, and the missing-home bootstrap creates it even when
-    ``HYPRIAL_OWNER`` is set.  This is the one cell where the route differs
-    from ``node_owner_or_none()`` alone.  Any owner on an existing home --
-    including an older settings owner whose ``identityIssuer`` is empty, or
-    only ``HYPRIAL_OWNER`` -- takes the orchestrated-switch path.  Malformed
-    settings are not provably ownerless, so they also stay on that path,
-    which reports them.
+
+def _login_route(services) -> str:
+    """Which route ``hyprial login`` takes, decided before anything is locked.
+
+    One ``ping`` (``_daemon_probe`` never starts a daemon) and the local owner
+    decide.  A bootstrap daemon, or a serving daemon while this home has no
+    owner, means the daemon runs the login: the second case reaches the
+    daemon's own ``IDENTITY_CONFLICT``, which is surfaced and not re-implemented
+    here.  A serving daemon with a local owner, and a home with an owner (or
+    ``HYPRIAL_OWNER``, or malformed settings) and no daemon, keep the owned
+    route and start nothing; so does a probe that fails transiently (timeout,
+    disconnect, a ping error) while an owner is resolvable, exactly as before
+    the probe existed.  With no owner such a probe error is surfaced, never
+    answered by launching a second daemon.  No daemon and no owner starts the
+    bootstrap daemon.  A missing home counts as ownerless unless
+    ``HYPRIAL_OWNER`` is set.  This must run before the
+    resume shortcut: a bootstrap daemon holds the identity transaction lock.
     """
-    services = get_services()
+    probe_error: Exception | None = None
+    try:
+        probe = services._daemon_probe(timeout=0.5)
+    except ipc_errors.DaemonUnavailableError:
+        probe = None
+    except (
+        ipc_errors.IpcTimeoutError,
+        ipc_errors.DaemonDisconnectedError,
+        services.CliError,
+    ) as error:
+        probe = None
+        probe_error = error
 
     from hyprial.daemon import node_owner_or_none
 
     home = services._hyprial_home()
-    if not home.is_dir():
-        return True
+    if isinstance(probe, dict) and probe.get("phase") == "bootstrap":
+        return _FIRST
     try:
         owner = node_owner_or_none(hyprial_home=home)
     except ValueError:
-        return False
-    return owner is None
+        return _OWNED
+    if owner is not None:
+        if probe is None and probe_error is None:
+            return _LAUNCH_RELOGIN
+        return _OWNED
+    if probe_error is not None:
+        raise probe_error
+    if probe is None and not home.is_dir():
+        return _LAUNCH
+    return _FIRST if probe is not None else _LAUNCH
+
+
+def _initialize_missing_home(services) -> None:
+    """A login on a home directory that does not exist yet creates it."""
+    try:
+        services.require_initialized_hyprial_home()
+    except HYPRIALHomeNotInitialized:
+        services.initialize_hyprial_home()
+        services._initialize_org_context()
+
+
+def _finalize_daemon_login(
+    services, response: JsonObject, *, json_output: bool
+) -> JsonObject:
+    daemon = response["daemon"]
+    if daemon.get("running") is True:
+        from hyprial.shell.impl.cli.commands.login.aftercare import (
+            _pickup_org_invites_after_login,
+        )
+
+        response["pending"] = _pickup_org_invites_after_login(
+            services._hyprial_home(), json_output=json_output, services=services
+        )
+    steps = _organization_next_steps(services)
+    if steps is not None:
+        response["nextSteps"] = steps
+    return response
+
+
+def _first_login(
+    services, *, started: bool, no_open: bool, json_output: bool
+) -> JsonObject:
+    """The daemon-run first login, then the same follow-ups as every login."""
+    from hyprial.shell.impl.cli.commands.login.first_login import run_first_login
+
+    response = run_first_login(
+        no_open=no_open, json_output=json_output, started=started
+    )
+    return _finalize_daemon_login(services, response, json_output=json_output)
+
+
+def _serving_relogin(
+    services, *, started: bool, no_open: bool, json_output: bool
+) -> JsonObject:
+    """The daemon-run serving relogin, then the same follow-ups as every login."""
+    from hyprial.shell.impl.cli.commands.login.relogin import run_serving_relogin
+
+    response = run_serving_relogin(
+        no_open=no_open, json_output=json_output, started=started
+    )
+    return _finalize_daemon_login(services, response, json_output=json_output)

@@ -13,6 +13,7 @@ from .support import (
     URI,
     _close_test_applications as _close_test_applications,
     _scheduled_routine,
+    address,
     application,
     enable_routine_coordinator,
     enable_routines,
@@ -40,7 +41,7 @@ def test_new_agent_gets_one_default_routine_and_reuse_does_not_duplicate(
     assert created["created"] is True
     assert reused["created"] is False
     assert len(first) == len(second) == 1
-    assert first[0]["actor"] == URI
+    assert first[0]["actor"] == address(app, "foo")
     assert first[0]["actorOwnership"] == "borrowed"
     assert first[0]["mode"] == "scheduled"
     assert first[0]["role"] == "dispatch"
@@ -68,21 +69,6 @@ def test_pac_lifecycle_agent_creation_seam_gets_no_default_routine(
 
     assert worker.actor == "wf-example-worker"
     assert app.handle("routine.list", {"actor": "user:op"})["routines"] == []
-
-
-def test_host_invited_resident_gets_default_routine(tmp_path: Path) -> None:
-    app = application(tmp_path)
-    enable_routines(app, tmp_path)
-
-    created = app.handle(
-        "agent.host-invite",
-        {"name": "visitor", "owner": "remote-owner"},
-    )
-    routines = app.handle("routine.list", {"actor": "user:op"})["routines"]
-
-    assert created["created"] is True
-    assert len(routines) == 1
-    assert routines[0]["actor"] == "agent:remote-owner:node-1:visitor"
 
 
 def test_agent_create_rolls_back_when_default_routine_registration_fails(
@@ -117,7 +103,7 @@ def test_agent_create_reports_missing_default_when_routines_are_unavailable(
 
     assert created["created"] is True
     assert created["routineWarning"]["code"] == "AGENT_DEFAULT_ROUTINE_UNAVAILABLE"
-    assert listed["agentsWithoutRoutine"] == [URI]
+    assert listed["agentsWithoutRoutine"] == [address(app, "foo")]
 
 
 def test_last_routine_cannot_be_removed_but_one_of_two_can(tmp_path: Path) -> None:
@@ -129,14 +115,14 @@ def test_last_routine_cannot_be_removed_but_one_of_two_can(tmp_path: Path) -> No
     with pytest.raises(DaemonRequestError) as failure:
         app.handle("routine.remove", {"name": default, "actor": "user:op"})
     assert failure.value.code == "ROUTINE_LAST_BINDING"
-    assert failure.value.data == {"routine": default, "actor": URI}
+    assert failure.value.data == {"routine": default, "actor": address(app, "foo")}
     assert "hyprial routine add" in str(failure.value)
     assert "hyprial routine set" in str(failure.value)
 
     app.handle(
         "routine.add",
         {
-            "yaml": _scheduled_routine("replacement", URI),
+            "yaml": _scheduled_routine("replacement", address(app, "foo")),
             "actor": "user:op",
         },
     )
@@ -165,7 +151,7 @@ def test_last_routine_rejection_data_survives_typed_coordinator(
             {"name": name, "actor": "user:op", "operationId": "last-binding-data"},
         )
     assert failure.value.code == "ROUTINE_LAST_BINDING"
-    assert failure.value.data == {"routine": name, "actor": URI}
+    assert failure.value.data == {"routine": name, "actor": address(app, "foo")}
     assert "hyprial routine add" in str(failure.value)
 
 
@@ -183,14 +169,14 @@ def test_routine_set_keeps_name_and_binding_and_is_atomic_on_failure(
         {
             "name": name,
             "yaml": _scheduled_routine(
-                name, URI, interval="30m", task="new scheduled task"
+                name, address(app, "foo"), interval="30m", task="new scheduled task"
             ),
             "actor": "user:op",
         },
     )
     after = app.handle("routine.status", {"name": name, "actor": "user:op"})
     assert changed["name"] == name
-    assert after["actor"] == URI
+    assert after["actor"] == address(app, "foo")
     assert after["actorOwnership"] == "borrowed"
     from hyprial.biz.impl.routine.storage.store import RoutineStore
     import yaml
@@ -210,7 +196,9 @@ def test_routine_set_keeps_name_and_binding_and_is_atomic_on_failure(
             "routine.set",
             {
                 "name": name,
-                "yaml": _scheduled_routine(name, URI, interval="1s", task="bad"),
+                "yaml": _scheduled_routine(
+                    name, address(app, "foo"), interval="1s", task="bad"
+                ),
                 "actor": "user:op",
             },
         )
@@ -335,8 +323,7 @@ def test_agent_list_reports_shared_credential_divergence(tmp_path: Path) -> None
     assert diverged["code"] == "SHARED_CREDENTIAL_DIVERGED"
 
 
-@pytest.mark.parametrize("tmux", [False, True], ids=["mcp-interactive", "tmux"])
-def test_capmx_interactive_registration_refreshes_capabilities(tmp_path, tmux):
+def test_capmx_interactive_registration_refreshes_capabilities(tmp_path):
     app = application(tmp_path)
     app.handle("agent.create", {"name": "foo"})
     assert app.agents.require("foo").capabilities == {}  # old rows remain unknown
@@ -344,7 +331,6 @@ def test_capmx_interactive_registration_refreshes_capabilities(tmp_path, tmux):
         "actor": URI, "sessionRef": "capmx-session", "cwd": "/work",
         "command": ["claude", "--model", "fable"],
         "source": "claude-channel", "runtime": "claude_interactive",
-        **({"tmuxSession": "capmx-tmux"} if tmux else {}),
     }
     app.handle("session.register", params)
     caps = app.agents.require("foo").capabilities

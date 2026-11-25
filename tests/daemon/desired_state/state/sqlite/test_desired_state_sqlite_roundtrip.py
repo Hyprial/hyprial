@@ -232,8 +232,6 @@ def populate(store: DesiredStateStore) -> None:
             ),
         )
     )
-    store.set_channel_pin("chan-2", "agent-2")
-    store.set_channel_pin("chan-1", "agent-1")
     store.update_zenoh_endpoints(
         listen=("tcp://127.0.0.1:9001", "quic://127.0.0.1:9002"),
         connect=("tcp://peer.example:9003",),
@@ -296,3 +294,22 @@ def test_receipt_rowid_order_equals_document_order(tmp_path: Path) -> None:
     assert rowid_order == document_order
     # ...and the fixture really does have order teeth (PK order differs):
     assert sorted(rowid_order) != rowid_order
+
+
+def test_member_scoped_harnesses_survive_json_and_sqlite_round_trip(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "desired-state.json"
+    store = DesiredStateStore(path)
+    first = HarnessLaunchSpec("codex", "shared", True, member="member-a")
+    second = HarnessLaunchSpec("codex", "shared", True, member="member-b")
+
+    store.upsert_harness(first)
+    store.upsert_harness(second)
+
+    restored = DesiredStateStore(path).load()
+
+    assert {(item.name, item.member) for item in restored.harnesses} == {
+        ("shared", "member-a"),
+        ("shared", "member-b"),
+    }

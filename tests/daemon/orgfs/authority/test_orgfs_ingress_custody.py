@@ -17,8 +17,8 @@ def wait_for(predicate):
         time.sleep(0.005)
 
 
-def idle(runtime, handle):
-    snapshot = runtime.snapshot(handle)
+def idle(cell):
+    snapshot = cell.snapshot()
     return snapshot.queued == snapshot.in_flight == 0
 
 
@@ -47,7 +47,7 @@ def test_directory_bounds_total_custody_and_drains_deferred_effect(tmp_path):
             runtime._admit_directory_sample(
                 "announce", TransportSample(str(index), b"")
             )
-            wait_for(lambda: idle(runtime._directory_runtime, runtime._directory_actor))
+            wait_for(lambda: idle(runtime._directory_cell))
         assert len(runtime._directory_deferred) == 1
         assert runtime.directory_ingress_pending == 2
         assert runtime.directory_ingress_dropped == 8
@@ -62,19 +62,17 @@ def test_directory_bounds_total_custody_and_drains_deferred_effect(tmp_path):
 
 def test_directory_mailbox_preserves_the_reserved_overflow_envelope(tmp_path, monkeypatch):
     import hyprial.daemon.impl.orgfs.composition.directory as runtime_module
-    from hyprial.kernel.impl.actor_runtime.backends import pykka as pykka_backend
 
     monkeypatch.setattr(runtime_module, "ORGFS_ANNOUNCE_BUFFER_LIMIT", 3)
     entered, release = threading.Event(), threading.Event()
-    original_receive = pykka_backend._RuntimeActor.on_receive
+    original_receive = OrgFsRuntime._on_directory_command
 
-    def before_dequeue(actor, message):
-        if actor._handle.name == "orgfs-directory-ingress":
-            entered.set()
-            assert release.wait(3)
-        return original_receive(actor, message)
+    def before_dequeue(runtime, command):
+        entered.set()
+        assert release.wait(3)
+        return original_receive(runtime, command)
 
-    monkeypatch.setattr(pykka_backend._RuntimeActor, "on_receive", before_dequeue)
+    monkeypatch.setattr(OrgFsRuntime, "_on_directory_command", before_dequeue)
     events = []
     runtime = OrgFsRuntime(
         tmp_path, node_id="reader", author="user:reader",
@@ -106,20 +104,18 @@ def test_directory_mailbox_preserves_the_reserved_overflow_envelope(tmp_path, mo
 
 
 def test_full_directory_mailbox_retains_rebuild_catchup(tmp_path, monkeypatch):
-    from hyprial.kernel.impl.actor_runtime.backends import pykka as pykka_backend
-
     entered, release, scheduled = (
         threading.Event(), threading.Event(), threading.Event()
     )
-    original_receive = pykka_backend._RuntimeActor.on_receive
+    original_receive = OrgFsRuntime._on_directory_command
 
-    def before_dequeue(actor, message):
-        if actor._handle.name == "orgfs-directory-ingress" and not entered.is_set():
+    def before_dequeue(runtime, command):
+        if not entered.is_set():
             entered.set()
             assert release.wait(3)
-        return original_receive(actor, message)
+        return original_receive(runtime, command)
 
-    monkeypatch.setattr(pykka_backend._RuntimeActor, "on_receive", before_dequeue)
+    monkeypatch.setattr(OrgFsRuntime, "_on_directory_command", before_dequeue)
     runtime = OrgFsRuntime(
         tmp_path, node_id="reader", author="user:reader"
     )

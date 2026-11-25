@@ -1,6 +1,6 @@
 """One bounded authority for blob references shared by every orgfs space.
 
-The ActorRuntime child owns command admission. A single bounded effect worker
+The blob-authority actor child owns command admission. A single bounded effect worker
 owns the underlying BlobStore connection and filesystem operations, keeping SQL
 and fsync away from transport callbacks and facade transactions.
 """
@@ -14,16 +14,19 @@ import threading
 import time
 import uuid
 import weakref
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from hyprial.kernel import (
     ActorEvent,
     ActorEventKind,
-    ActorHandle,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
+
+from hyprial.daemon.impl.orgfs.composition.vocabulary import OrgFsActorHostCustody
 
 from hyprial.daemon.impl.orgfs.storage.blobs  import (
     BlobError,
@@ -160,7 +163,10 @@ class _Waiter:
 class BlobAuthority:
     """Shared blob facade with bounded admission and one storage owner."""
 
-    def __init__(self, state_root: Path | str) -> None:
+    def __init__(
+        self, state_root: Path | str, *, actor_host: ActorHost | None = None
+    ) -> None:
+        self._actor_hosts = OrgFsActorHostCustody(actor_host)
         self._store = BlobStore(state_root)
         self.state_root = self._store.state_root
         self.blob_root = self._store.blob_root
@@ -179,7 +185,7 @@ class BlobAuthority:
             if owner is not None:
                 owner._on_actor_event(event)
 
-        self._runtime = ActorRuntime(event_sink=actor_event)
+        host = self._actor_hosts.host
 
         def handle_command(command: object) -> None:
             owner = owner_ref()
@@ -204,15 +210,16 @@ class BlobAuthority:
                 else AdmissionResult.CLOSED
             )
 
-        self._handle: ActorHandle = self._runtime.start(
+        self._cell = host.spawn(
             ActorSpec(
                 "orgfs-blob-authority",
                 lambda: handle_command,
                 mailbox_capacity=_BLOB_QUEUE_CAPACITY,
                 supervision_profile="state_authority",
+                event_sink=actor_event,
             )
         )
-        self._effects: EffectLane[_BlobCommand, _BlobExecution] = EffectLane(
+        self._effects: EffectLane[_BlobCommand, _BlobExecution] = host.effect_lane(
             name="orgfs-blob-effects",
             execute=execute_call,
             complete=complete_call,
@@ -290,7 +297,7 @@ class BlobAuthority:
         # Commands already admitted to the effect lane retain their original
         # token and completion; their I/O is never repeated after a restart.
         for call in replay:
-            if self._runtime.tell(self._handle, call) is AdmissionResult.CLOSED:
+            if self._cell.tell(call) is AdmissionResult.CLOSED:
                 return
 
     def _execute(self, call: _BlobCommand) -> _BlobExecution:
@@ -386,8 +393,7 @@ class BlobAuthority:
         self, completion: EffectCompleted[_BlobExecution]
     ) -> AdmissionResult:
         execution = completion.result
-        return self._runtime.tell(
-            self._handle,
+        return self._cell.tell(
             _BlobResult(
                 completion.operation_id,
                 completion.generation,
@@ -419,7 +425,7 @@ class BlobAuthority:
             command = _BlobCommand(call_id, generation, operation)
             self._calls[call_id] = command
         while True:
-            admitted = self._runtime.tell(self._handle, command)
+            admitted = self._cell.tell(command)
             if admitted is AdmissionResult.ACCEPTED:
                 break
             with self._lock:
@@ -536,11 +542,13 @@ class BlobAuthority:
                 self._drained.wait(remaining)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        if not self._runtime.stop(
-            self._handle, timeout=max(0.0, deadline - time.monotonic())
+        if not self._cell.stop(
+            timeout=max(0.0, deadline - time.monotonic())
         ):
             return False
         self._store.close()
+        if not self._actor_hosts.shutdown(max(0.0, deadline - time.monotonic())):
+            return False
         with self._lock:
             self._generation += 1
             self._closed = True

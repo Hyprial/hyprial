@@ -12,12 +12,15 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.kernel import ActorSpec, AdmissionResult
-from hyprial.kernel import GenerationScheduler
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, GenerationScheduler
 from hyprial.daemon.impl.transport.api  import TransportSample
 from hyprial.daemon.impl.transport.session_recovery import SessionRecoveryMixin
 
@@ -180,6 +183,7 @@ class _CallbackPool:
         outstanding: int,
         per_token: int,
         workers: int,
+        actor_host=None,
     ) -> None:
         self._invoke = invoke
         self._invalidate = invalidate
@@ -195,7 +199,8 @@ class _CallbackPool:
         # Every accepted item owns a reservation, including a queued item.
         # The lane capacity therefore covers all coordinator credits, and a
         # token's next head cannot be refused after its predecessor ACK.
-        self._lane: EffectLane[_CallbackWork, None] = EffectLane(
+        self._hosts = ActorHostCustody(actor_host, owner="transport")
+        self._lane = self._hosts.host.effect_lane(
             name="transport-callback",
             execute=self._execute,
             complete=self._complete,
@@ -320,7 +325,9 @@ class _CallbackPool:
             # owner. No accepted callback remains, so release every metadata
             # cell as well as the four workers.
             self._slots.clear()
-        return self._lane.close(max(0.0, deadline - time.monotonic()))
+        closed = self._lane.close(max(0.0, deadline - time.monotonic()))
+        self._hosts.shutdown(max(0.0, deadline - time.monotonic()))
+        return closed
 
     def snapshot(self) -> CallbackPoolSnapshot:
         with self._guard:
@@ -351,6 +358,8 @@ class TransportSessionAuthority(SessionRecoveryMixin):
         callback_registration_capacity=DEFAULT_CALLBACK_REGISTRATION_CAPACITY,
         callback_outstanding_capacity=DEFAULT_CALLBACK_OUTSTANDING_CAPACITY,
         callback_workers=DEFAULT_CALLBACK_WORKERS,
+        scheduler: GenerationScheduler | None = None,
+        actor_host: ActorHost | None = None,
     ):
         if min(
             capacity, callback_capacity, declaration_capacity,
@@ -392,33 +401,43 @@ class TransportSessionAuthority(SessionRecoveryMixin):
         self._generation_rejected = False
         self._native_overflow_seen = 0
         self._recover_after = 0.0
-        self._recovery_scheduler = GenerationScheduler()
-        self._runtime = ActorRuntime()
+        if scheduler is None:
+            from hyprial.daemon.impl.composition.actors import (
+                create_generation_scheduler,
+            )
+
+            self._recovery_scheduler = create_generation_scheduler()
+            self._owns_scheduler = True
+        else:
+            self._recovery_scheduler = scheduler
+            self._owns_scheduler = False
+        self._hosts = ActorHostCustody(actor_host, owner="transport")
+        host = self._hosts.host
         handle = None
         data = None
         control = None
         callback_pool = None
         try:
-            handle = self._runtime.start(
+            handle = host.spawn(
                 ActorSpec(
                     name="transport-session",
                     handler_factory=lambda: self._receive,
                     mailbox_capacity=capacity,
                 )
             )
-            self._handle = handle
-            data = EffectLane(
+            self._cell = handle
+            data = host.effect_lane(
                 name="transport-data",
                 execute=self._execute,
-                complete=lambda event: self._runtime.tell(self._handle, event),
+                complete=lambda event: self._cell.tell(event),
                 capacity=capacity,
                 workers=4,
             )
             self._data = data
-            control = EffectLane(
+            control = host.effect_lane(
                 name="transport-lifetime",
                 execute=self._execute,
-                complete=lambda event: self._runtime.tell(self._handle, event),
+                complete=lambda event: self._cell.tell(event),
                 capacity=1,
             )
             self._control = control
@@ -428,6 +447,7 @@ class TransportSessionAuthority(SessionRecoveryMixin):
                 outstanding=callback_outstanding_capacity,
                 per_token=callback_capacity,
                 workers=callback_workers,
+                actor_host=host,
             )
             self._callback_pool = callback_pool
         except BaseException as error:
@@ -439,11 +459,12 @@ class TransportSessionAuthority(SessionRecoveryMixin):
                 ("data lane", None if data is None else data.close),
                 (
                     "transport actor",
-                    None if handle is None else lambda: self._runtime.stop(handle, 5.0),
+                    None if handle is None else lambda: handle.drain(5.0).complete,
                 ),
+                ("actor host", lambda: self._hosts.shutdown(5.0)),
                 (
                     "recovery scheduler",
-                    lambda: self._recovery_scheduler.shutdown(5.0),
+                    None if not self._owns_scheduler else lambda: self._recovery_scheduler.shutdown(5.0),
                 ),
             ):
                 if close is None:
@@ -496,7 +517,7 @@ class TransportSessionAuthority(SessionRecoveryMixin):
                 self._rejected += 1
                 raise RuntimeError("transport authority closed or overloaded")
             self._pending[command.operation_id] = reply
-            result = self._runtime.tell(self._handle, command)
+            result = self._cell.tell(command)
             if result is not AdmissionResult.ACCEPTED:
                 self._pending.pop(command.operation_id)
                 self._rejected += 1
@@ -515,9 +536,9 @@ class TransportSessionAuthority(SessionRecoveryMixin):
             raise reply.error
         return reply.result
 
-    def _call(self, payload):
+    def _call(self, payload, wait=None):
         command = SessionCommand(uuid4().hex, payload)
-        return self._wait(command, self._admit(command), self._timeout)
+        return self._wait(command, self._admit(command), wait or self._timeout)
 
     def _receive(self, event):
         if isinstance(event, SessionCommand):
@@ -597,7 +618,7 @@ class TransportSessionAuthority(SessionRecoveryMixin):
             "callback-history",
             generation,
             1.0,
-            lambda _generation: self._runtime.tell(self._handle, RecoverCallbacks()),
+            lambda _generation: self._cell.tell(RecoverCallbacks()),
         )
 
     def _pump(self):
@@ -833,7 +854,7 @@ class TransportSessionAuthority(SessionRecoveryMixin):
         return self._query(Query(str(key_expr), payload, timeout, all_replies), errors)
 
     def _query(self, command, errors):
-        result = self._call(command)
+        result = self._call(command, max(self._timeout, command.timeout + 5.0))
         if errors is not None:
             errors.extend(result.errors)
         return list(result.samples)
@@ -963,12 +984,15 @@ class TransportSessionAuthority(SessionRecoveryMixin):
                 reply = self._admit(command, close_retry=True)
             else:
                 command, reply = existing
-        self._recovery_scheduler.shutdown(max(0.0, deadline - time.monotonic()))
+        if self._owns_scheduler:
+            self._recovery_scheduler.shutdown(max(0.0, deadline - time.monotonic()))
         self._wait(command, reply, max(0.0, deadline - time.monotonic()))
         if not self._callback_pool.close(max(0.0, deadline - time.monotonic())):
             raise TimeoutError("transport callback workers still draining")
         for lane in (self._data, self._control):
             if not lane.close(max(0.0, deadline - time.monotonic())):
                 raise TimeoutError("transport accepted effects still draining")
-        if not self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic())):
+        if not self._cell.drain(max(0.0, deadline - time.monotonic())).complete:
             raise TimeoutError("transport authority still draining")
+        if not self._hosts.shutdown(max(0.0, deadline - time.monotonic())):
+            raise TimeoutError("transport actor host still draining")

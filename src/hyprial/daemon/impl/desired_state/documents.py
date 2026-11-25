@@ -16,12 +16,12 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
     StoredLifecycleResource,
 )
 from hyprial.kernel import DesiredStateError, HarnessLaunchSpec  # canonical defs (MP-1)
-from hyprial.kernel import has_execution_runtime
 from .services import ServiceConnection, ServiceRegistry
 
 
 from hyprial.daemon.impl.adapters.spec import AdapterSpec, split_legacy_launch_rows
 from hyprial.kernel import DECLARED_HARNESSES
+from hyprial.kernel import MemberLaunchKey
 
 SCHEMA_VERSION = 3
 
@@ -243,12 +243,9 @@ class ZenohEndpoints:
 class DesiredState:
     """Per-machine reconciliation target for one daemon.
 
-    ``channel_pins`` is legacy staging only: adapter pins live in the agents
-    database (``~/.hyprial/state/agents.sqlite3``, ``pins`` table).  Entries remaining here are pins
-    the startup migration could not resolve yet; nothing reads them for
-    routing.  The field (and its on-disk ``channelPins`` key) is kept so an
-    unresolved pin is never silently dropped and a pre-rework daemon can still
-    read the file after a rollback.
+    Adapter bindings live only in agent cell documents (I6-4).  The retired
+    ``channelPins`` key of older documents is neither read nor written back
+    (F1b); like any unknown key it is ignored.
     """
 
     schema_version: int = SCHEMA_VERSION
@@ -259,7 +256,6 @@ class DesiredState:
     pending_session_agent_effects: tuple[PendingSessionAgentEffect, ...] = ()
     lifecycle_resources: tuple[StoredLifecycleResource, ...] = ()
     lifecycle_receipts: tuple[StoredLifecycleReceipt, ...] = ()
-    channel_pins: tuple[tuple[str, str], ...] = ()
     deprecated_shared_channels: tuple[str, ...] = ()
     zenoh: ZenohEndpoints = ZenohEndpoints()
     service_connections: tuple[ServiceConnection, ...] = ()
@@ -279,8 +275,6 @@ class DesiredState:
             raise DesiredStateError(
                 f"unsupported desired-state schema version {version!r}"
             )
-        if version == 1 and has_execution_runtime(record):
-            raise DesiredStateError("executionRuntime requires desired-state schema 2")
         harnesses = record.get("providers")
         sessions = record.get("interactiveSessions")
         if not isinstance(harnesses, list) or not isinstance(sessions, list):
@@ -303,7 +297,10 @@ class DesiredState:
             HarnessLaunchSpec.from_json(item, f"providers[{index}]")
             for index, item in enumerate(harnesses)
         )
-        harness_keys = [(item.harness, item.name) for item in parsed_harnesses]
+        harness_keys = [
+            MemberLaunchKey(item.member or item.name, item.harness)
+            for item in parsed_harnesses
+        ]
         if len(set(harness_keys)) != len(harness_keys):
             raise DesiredStateError(
                 "desired state contains duplicate managed harnesses"
@@ -359,7 +356,6 @@ class DesiredState:
         # Python side never had a writer, production carried an empty map, and
         # nothing reads it.  A file that still contains the key parses fine --
         # unknown keys are ignored -- and the key is simply not written back.
-        channel_pins = _string_map(record.get("channelPins", {}), "channelPins")
         deprecated_channels = record.get("deprecatedSharedChannels", [])
         if not isinstance(deprecated_channels, list) or any(
             not isinstance(item, str) or not item for item in deprecated_channels
@@ -397,7 +393,6 @@ class DesiredState:
             pending_session_agent_effects=pending_effects,
             lifecycle_resources=lifecycle_resources,
             lifecycle_receipts=lifecycle_receipts,
-            channel_pins=channel_pins,
             deprecated_shared_channels=tuple(sorted(deprecated_channels)),
             zenoh=zenoh,
             service_connections=service_connections,
@@ -440,7 +435,6 @@ class DesiredState:
                 if self.lifecycle_receipts
                 else {}
             ),
-            "channelPins": dict(self.channel_pins),
             "deprecatedSharedChannels": list(self.deprecated_shared_channels),
             "zenoh": self.zenoh.to_json(),
             **(
@@ -512,14 +506,6 @@ def _endpoint_list(value: object, label: str) -> tuple[str, ...]:
     if len(set(value)) != len(value):
         raise DesiredStateError(f"{label} contains duplicate endpoints")
     return tuple(value)
-
-
-def _string_map(value: object, label: str) -> tuple[tuple[str, str], ...]:
-    record = _record(value, f"desired state {label}")
-    parsed: list[tuple[str, str]] = []
-    for key, item in record.items():
-        parsed.append((_string(key, f"{label} key"), _string(item, f"{label}.{key}")))
-    return tuple(sorted(parsed))
 
 
 def _merge_session_effects(

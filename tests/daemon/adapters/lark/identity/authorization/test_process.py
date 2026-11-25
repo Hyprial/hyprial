@@ -147,7 +147,12 @@ def test_worker_environment_excludes_ambient_credentials(home, tmp_path, standin
     original = subprocess.Popen
 
     def spawn(*args, **kwargs):
-        captured.append(kwargs["env"])
+        # Patching subprocess.Popen on the shared module also intercepts
+        # subprocess.run: on Darwin the owned-process liveness probe runs
+        # ``ps`` through it without an env kwarg.  Only the authorization
+        # worker passes an explicit env, which is the call under test.
+        if "env" in kwargs:
+            captured.append(kwargs["env"])
         return original(*args, **kwargs)
 
     monkeypatch.setattr("hyprial.daemon.impl.adapters.lark.credentials.authorization.process.subprocess.Popen", spawn)

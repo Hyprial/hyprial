@@ -26,8 +26,7 @@ def isolated(tmp_path, monkeypatch):
 @pytest.mark.parametrize("ended", [False, True])
 def test_verified_external_exit_is_not_idle(composed, monkeypatch, ended):
     app, *_ = composed
-    app.agents.create('terminal')
-    actor = 'agent:owner:node:terminal'
+    actor = app.agents.create('terminal').uri
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
     try:
         identity = process_birth_identity(child.pid)

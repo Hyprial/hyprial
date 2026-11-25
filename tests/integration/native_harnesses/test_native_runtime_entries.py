@@ -194,7 +194,7 @@ def test_real_routine_adapter_preserves_generation_fenced_timer_admission(tmp_pa
             return submit(command)
 
         monkeypatch.setattr(service, "submit", observe)
-        generation = service._runtime.snapshot(service._handle).generation
+        generation = service._handle.snapshot().generation
         assert isinstance(adapter, RoutineServicePort)
         assert adapter.submit_timer(123) is PortAdmission.ACCEPTED
         assert adapter.submit_timer() is PortAdmission.ACCEPTED
@@ -218,7 +218,7 @@ def test_upgrade_primer_loads_actual_alert_provider_in_fresh_process():
         "_prime_post_install_restart_imports()\n"
         "alert = sys.modules.get('hyprial.daemon.impl.autoupdate.alert')\n"
         "assert alert is not None, 'alert provider absent before tool replacement'\n"
-        "assert callable(alert.notify_upgrade_outcome) and callable(alert.run_self_check)\n"
+        "assert callable(alert.write_failure_marker) and callable(alert.run_self_check)\n"
     )
     completed = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=10,
@@ -264,18 +264,3 @@ def test_upgrade_provider_selection_is_version_bound_and_fail_closed(tmp_path, m
     else:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == layout + "-123"
-
-
-def test_generated_autoupdate_receiver_imports_resolve_native_providers(tmp_path):
-    runner = _load("contract/e2e/run-inprocess-autoupdate.py")
-    path = tmp_path / "receiver.py"
-    runner.write_bus_receiver(path)
-    imports = [node for node in ast.parse(path.read_text()).body
-               if isinstance(node, (ast.Import, ast.ImportFrom))]
-    namespace = {}
-    exec(compile(ast.Module(body=imports, type_ignores=[]), "receiver-imports", "exec"), namespace)
-    from hyprial.daemon.impl.squire import UserDeliveryResult
-    from hyprial.daemon.impl.transport import ZenohTransport
-
-    assert namespace["UserDeliveryResult"] is UserDeliveryResult
-    assert namespace["ZenohTransport"] is ZenohTransport

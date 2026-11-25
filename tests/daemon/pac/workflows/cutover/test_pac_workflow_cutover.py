@@ -129,16 +129,3 @@ def test_cutover_failure_rolls_back_termination_and_can_be_retried(legacy):
     finally:
         db.close()
     assert cutover(legacy)["terminated"] == 1
-
-
-def test_account_switch_does_not_rewrite_a_sealed_legacy_archive(legacy):
-    from hyprial.daemon.impl.owner_migration import MigrationPlan, plan_database, apply_plan
-
-    cutover(legacy, at=100)
-    plan = MigrationPlan()
-    plan_database(legacy / "workflows.sqlite3", "test", "next-owner", plan)
-    assert plan.writes == []
-    assert plan.unclassified == []
-    assert plan.skipped_archival_columns
-    assert apply_plan(plan) == 0
-    assert LegacyWorkflowHistory(legacy).status("active")["sender"] == "user:test"

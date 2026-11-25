@@ -5,42 +5,30 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TypeVar
 from hyprial.daemon.impl.inbox.contracts.api  import (
     DeliveryLifecycle,
     HarnessFailureAttempt,
     HarnessFailureSettlement,
     InboxMessage,
-    LinkInboundRow,
-    LinkLedgerRow,
     OutboxItem,
     SubmissionResult,
 )
 from hyprial.daemon.impl.inbox.history import (
+    HistoryHydrator,
     conversation_messages as _conversation_messages,
 )
-from hyprial.daemon.impl.inbox.send_lookup import lookup_send
+from hyprial.daemon.impl.inbox.send_lookup import key_lookup_send, lookup_send
+from hyprial.daemon.impl.inbox.correlation import (
+    CorrelatedReply, CorrelatedRequest, correlated_reply, correlated_request,
+)
+from hyprial.daemon.impl.inbox.envelope.columns import stored_message
 from hyprial.daemon.impl.inbox.links.pull  import DEFAULT_HOLD_TTL_MS, DeliveryStatus, TerminalState
 from hyprial.daemon.impl.inbox.service.state  import ConsumptionState
 from hyprial.daemon.impl.inbox.service.delivery.system_notices import system_notice_counts
 
-from hyprial.daemon.impl.inbox.authority.rows import ledger_row as _ledger_row
-
 _REPLY_COMPLETION_HANDOFF_GRACE_SECONDS = 0.5
-
-def _inbound_row(row: sqlite3.Row) -> LinkInboundRow:
-    fetched = row["fetched_at_ms"]
-    return LinkInboundRow(
-        message_id=str(row["message_id"]),
-        sender=str(row["sender"]),
-        recipient=str(row["recipient"]),
-        intent=str(row["intent"]),
-        reply_to=_payload_reply_to(row["payload"]),
-        received_at_ms=int(row["received_at_ms"]),
-        fetched_at_ms=int(fetched) if fetched is not None else None,
-        injected=fetched is not None,
-        state=str(row["link_state"]),
-        expires_at_ms=int(row["expires_at_ms"]),
-    )
+_T = TypeVar("_T")
 
 
 def _payload_reply_to(payload: object) -> str | None:
@@ -87,11 +75,18 @@ def delivery_pending(
 
 class InboxReadProjection:
     """Stable read-only SQLite face; every connection is opened ``mode=ro``."""
-
+    def correlated_request(self, **selectors: str) -> CorrelatedRequest | None:
+        with self._connect() as connection:
+            return correlated_request(connection, **selectors)
+    def correlated_reply(self, **selectors: str) -> CorrelatedReply | None:
+        with self._connect() as connection:
+            return correlated_reply(connection, **selectors)
     def lookup_send(self, **selectors: str) -> dict[str, str]:
         with self._connect() as connection:
             return lookup_send(connection, **selectors)
-
+    def key_lookup_send(self, **selectors: str) -> dict[str, str]:
+        with self._connect() as connection:
+            return key_lookup_send(connection, **selectors)
     def __init__(self, database: Path) -> None:
         self._database = database
 
@@ -109,36 +104,15 @@ class InboxReadProjection:
         finally:
             connection.close()
 
+    def read(self, query: Callable[[sqlite3.Connection], _T]) -> _T:
+        """Run one read-only *query* on a fresh ``mode=ro`` connection."""
+
+        with self._connect() as connection:
+            return query(connection)
+
     @staticmethod
     def _message(row: sqlite3.Row) -> InboxMessage:
-        return InboxMessage(
-            message_id=str(row["message_id"]),
-            conversation_id=str(row["conversation_id"]),
-            sender=str(row["sender"]),
-            recipient=str(row["recipient"]),
-            payload=(row["payload"].encode("utf-8")
-                     if isinstance(row["payload"], str) else bytes(row["payload"])),
-            intent=str(row["intent"]),
-            lifecycle=DeliveryLifecycle(str(row["lifecycle"])),
-            created_at_ms=int(row["created_at_ms"]),
-            idempotency_key=row["idempotency_key"],
-            expires_at_ms=(
-                int(row["message_expires_at_ms"])
-                if "message_expires_at_ms" in row.keys()
-                and row["message_expires_at_ms"] is not None
-                else None
-            ),
-            origin_node=(
-                str(row["origin_node"])
-                if "origin_node" in row.keys() and row["origin_node"] is not None
-                else None
-            ),
-            summary=(
-                str(row["summary"])
-                if "summary" in row.keys() and row["summary"] is not None
-                else None
-            ),
-        )
+        return stored_message(row)
 
     def pending_all(self) -> tuple[InboxMessage, ...]:
         return self._messages(
@@ -430,6 +404,7 @@ class InboxReadProjection:
         before: tuple[int, str] | None = None,
         limit: int = 50,
         newest_first: bool = False,
+        hydrate: HistoryHydrator | None = None,
     ) -> tuple[InboxMessage, ...]:
         with self._connect() as connection:
             return _conversation_messages(
@@ -440,6 +415,7 @@ class InboxReadProjection:
                 before=before,
                 limit=limit,
                 newest_first=newest_first,
+                hydrate=hydrate,
             )
 
     def outbox_items(self) -> tuple[OutboxItem, ...]:
@@ -464,11 +440,6 @@ class InboxReadProjection:
                     else None
                 ),
                 confirmation_attempts=int(row["confirmation_attempts"]),
-                link_hold=(
-                    str(row["link_hold"])
-                    if "link_hold" in row.keys() and row["link_hold"] is not None
-                    else None
-                ),
             )
             for row in rows
         )
@@ -582,113 +553,6 @@ class InboxReadProjection:
             ),
         )
 
-    # -- send-link ledger (WP2 §3.9) ------------------------------------
-
-    def link_ledger_snapshot(self, now_ms: int) -> tuple[LinkLedgerRow, ...]:
-        """Every unexpired ledger row, both directions (B14)."""
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM link_ledger WHERE expires_at_ms > ? "
-                "ORDER BY opened_at_ms, rowid",
-                (now_ms,),
-            ).fetchall()
-        return tuple(_ledger_row(row) for row in rows)
-
-    def link_outbound_row(self, actor: str, message_id: str) -> LinkLedgerRow | None:
-        """One outbound ledger row by (actor, message id), or None (B6).
-
-        The send boundary reads this to recognise a replayed ``user:`` send
-        before it asks the gate again.
-        """
-
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM link_ledger "
-                "WHERE actor = ? AND message_id = ? AND direction = 'out'",
-                (actor, message_id),
-            ).fetchone()
-        return None if row is None else _ledger_row(row)
-
-    def link_held_outbox(self) -> tuple[OutboxItem, ...]:
-        """Only the parked outbox rows, with their hold reason (B15)."""
-
-        return tuple(
-            item for item in self.outbox_items() if item.link_hold is not None
-        )
-
-    def link_inbound_live(
-        self, actor: str, peer: str | None = None
-    ) -> tuple[LinkInboundRow, ...]:
-        """Live inbound rows for one actor, injected or still waiting (B10)."""
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT inbox.message_id, inbox.sender, inbox.recipient,
-                          inbox.intent, inbox.payload, inbox.received_at_ms,
-                          inbox.fetched_at_ms,
-                          COALESCE(inbox.expires_at_ms,
-                                   inbox.received_at_ms) AS expires_at_ms,
-                          COALESCE(link_ledger.state, 'open') AS link_state
-                     FROM inbox
-                     LEFT JOIN link_ledger
-                       ON link_ledger.actor = inbox.recipient
-                      AND link_ledger.message_id = inbox.message_id
-                      AND link_ledger.direction = 'in'
-                    WHERE inbox.recipient = ?
-                      AND inbox.consumed = 0
-                      AND (? IS NULL OR inbox.sender = ?)
-                      AND NOT EXISTS (
-                          SELECT 1 FROM harness_failure_settlements
-                           WHERE harness_failure_settlements.message_id
-                                 = inbox.message_id
-                             AND harness_failure_settlements.terminal = 1
-                      )
-                    ORDER BY inbox.arrival_id""",
-                (actor, peer, peer),
-            ).fetchall()
-        return tuple(_inbound_row(row) for row in rows)
-
-    def link_inbound_row(
-        self, actor: str, message_id: str
-    ) -> LinkInboundRow | None:
-        """One live inbound row by (actor, message id), or None."""
-
-        with self._connect() as connection:
-            row = connection.execute(
-                """SELECT inbox.message_id, inbox.sender, inbox.recipient,
-                          inbox.intent, inbox.payload, inbox.received_at_ms,
-                          inbox.fetched_at_ms,
-                          COALESCE(inbox.expires_at_ms,
-                                   inbox.received_at_ms) AS expires_at_ms,
-                          COALESCE(link_ledger.state, 'open') AS link_state
-                     FROM inbox
-                     LEFT JOIN link_ledger
-                       ON link_ledger.actor = inbox.recipient
-                      AND link_ledger.message_id = inbox.message_id
-                      AND link_ledger.direction = 'in'
-                    WHERE inbox.recipient = ? AND inbox.message_id = ?
-                      AND inbox.consumed = 0""",
-                (actor, message_id),
-            ).fetchone()
-        return None if row is None else _inbound_row(row)
-
-    def link_task_bindings(self) -> tuple[tuple[str, str, str, int], ...]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT actor, peer, task_id, bound_at_ms FROM link_task_bindings"
-                " ORDER BY bound_at_ms, actor, peer, task_id"
-            ).fetchall()
-        return tuple(
-            (
-                str(row["actor"]),
-                str(row["peer"]),
-                str(row["task_id"]),
-                int(row["bound_at_ms"]),
-            )
-            for row in rows
-        )
-
     def outbox_item_for_message(self, message_id: str) -> OutboxItem | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -701,11 +565,6 @@ class InboxReadProjection:
             attempts=int(row["attempts"]),
             next_attempt_ms=int(row["next_attempt_ms"]),
             expires_at_ms=int(row["expires_at_ms"]),
-            link_hold=(
-                str(row["link_hold"])
-                if "link_hold" in row.keys() and row["link_hold"] is not None
-                else None
-            ),
         )
 
     def dlq_count(self) -> int:

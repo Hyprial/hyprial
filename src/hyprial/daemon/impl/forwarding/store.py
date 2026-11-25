@@ -1,11 +1,13 @@
+# Decision record (W1E-2, 2026-11-21):
+# - ExposureStore writes inside the guarded daemon state directory via
+#   tempfile.mkstemp + os.replace instead of temporary.chmod(0o600).
 """The durable network exposure store."""
 
 from __future__ import annotations
 
-from __future__ import annotations
-from __future__ import annotations
 import json
 import os
+import tempfile
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -72,21 +74,18 @@ class ExposureStore:
             "version": 1,
             "exposures": [dict(exposures[port]) for port in sorted(exposures)],
         }
-        temporary = self._path.with_name(
-            f".{self._path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{self._path.name}.", suffix=".tmp", dir=self._path.parent
         )
+        temporary = Path(temporary_name)
         try:
-            temporary.write_text(
-                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-                encoding="utf-8",
-            )
-            temporary.chmod(0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+                )
             os.replace(temporary, self._path)
         finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+            temporary.unlink(missing_ok=True)
 
     def list(self) -> list[dict[str, object]]:
         with self._lock:

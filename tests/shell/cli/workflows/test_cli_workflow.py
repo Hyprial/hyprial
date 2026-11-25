@@ -241,34 +241,17 @@ def test_status_history_cancel_and_outcomes_use_graph_methods(monkeypatch):
     assert "outputText" not in calls[-2][1]
 
 
-def test_inspect_context_reads_the_local_snapshot_without_ipc(monkeypatch, tmp_path):
-    import hyprial.daemon as daemon
-
-    seen = {}
-
-    def fake_node_context(path, graph_id, node_id):
-        seen.update(path=path, graph_id=graph_id, node_id=node_id)
-        return {
-            "version": 3,
-            "cursor": 7,
-            "briefRef": "brief:x",
-            "completedCount": 2,
-            "currentActivation": {"round": 1},
-        }
-
-    monkeypatch.setattr(daemon, "node_context", fake_node_context)
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *a, **k: pytest.fail("context used IPC"))
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
-
-    result = CliRunner().invoke(
-        _cli_root_app,
-        ["workflow", "inspect", "g-1", "--node", "n-1", "--context", "--json"],
-    )
-
+def test_inspect_context_requests_the_daemon_snapshot(monkeypatch):
+    seen = []
+    expected = {"ok": True, "version": 3, "cursor": 7, "briefRef": "brief:x",
+                "completedCount": 2, "currentActivation": {"round": 1}}
+    monkeypatch.setattr(_cli_support, "_daemon_request",
+        lambda method, params=None, **kwargs: seen.append((method, params)) or expected)
+    result = CliRunner().invoke(_cli_root_app,
+        ["workflow", "inspect", "g-1", "--node", "n-1", "--context", "--json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["completedCount"] == 2
-    assert seen["graph_id"] == "g-1" and seen["node_id"] == "n-1"
-    assert seen["path"] == tmp_path / "pac-graph.sqlite3"
+    assert json.loads(result.stdout) == expected
+    assert seen == [("workflow.node.context", {"runId": "g-1", "target": "n-1"})]
 
 
 def test_inspect_context_requires_node_without_ipc(monkeypatch):

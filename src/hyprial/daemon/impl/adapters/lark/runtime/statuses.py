@@ -21,7 +21,9 @@ from hyprial.kernel import LarkGatewayConfig
 
 from hyprial.daemon.impl.adapters.lark.runtime.commands import (
     _Aggregate,
+    _IoResult,
     _Observation,
+    _RemovalReservation,
 )
 from hyprial.daemon.impl.adapters.lark.worker.process import (
     ERROR,
@@ -126,6 +128,10 @@ def _build_statuses(
                 statuses[name]["lifecycleAgeSeconds"] = max(
                     0, int(now - written)
                 )
+        removal = authority.removals.get(name)
+        if removal is not None:
+            statuses[name]["lifecycleCorrelationId"] = removal.correlation_id
+            statuses[name]["lifecycleAgeSeconds"] = max(0, int(now - removal.since))
     return statuses
 
 
@@ -179,7 +185,9 @@ class _ProjectionStore:
 class _Authority:
     """Generation-stable actor state.
 
-    Only the current actor handler mutates these containers.  The factory reads
+    Only the current actor handler mutates lifecycle containers. Completion
+    workers may retain immutable, undelivered receipts under the custody lock;
+    only the actor reconciles them. The factory reads
     them after the guardian has stopped the failed generation, so reload and
     desired-state decisions survive an actor restart without a second owner.
     """
@@ -200,6 +208,9 @@ class _Authority:
         self.quarantined: set[str] = set()
         self.quarantine_attempts: dict[str, int] = {}
         self.transitions: dict[str, str] = {}
+        self.removals: dict[str, _RemovalReservation] = {}
+        self.lifecycle_effects: set[tuple[str, str, int, str]] = set()
+        self._retained_completions: dict[tuple[str, str, int, str], _IoResult] = {}
         #: Per-member retry identity outlives failure of the shared caller/aggregate.
         #: Values fence cleanup against a newer transition for the same adapter.
         self.background_spawns: dict[str, str] = {}
@@ -227,6 +238,21 @@ class _Authority:
                 aggregate.future.set_exception(failure)
         self.generation += 1
         return self.generation
+
+    def retain_completion(self, result: _IoResult) -> None:
+        key = (result.correlation_id, result.name, result.version, result.operation)
+        with self._custody_lock:
+            self._retained_completions.setdefault(key, result)
+
+    def retained_completions(self) -> tuple[_IoResult, ...]:
+        with self._custody_lock:
+            return tuple(self._retained_completions.values())
+
+    def settle_retained_completion(self, result: _IoResult) -> None:
+        key = (result.correlation_id, result.name, result.version, result.operation)
+        with self._custody_lock:
+            if self._retained_completions.get(key) is result:
+                self._retained_completions.pop(key)
 
     def fail_correlation(self, correlation_id: str, error: BaseException) -> None:
         """Last-resort custody cleanup after bounded completion handoff fails."""

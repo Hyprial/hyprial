@@ -3,294 +3,81 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from hyprial.identity.impl.agents.actor._home_calls import HomeOperationConflict as HomeOperationConflict
-    from hyprial.identity.impl.agents.actor._home_calls import HomeOperationUnknown as HomeOperationUnknown
-    from hyprial.identity.impl.agents.actor._base import AgentHomeAccessPending as AgentHomeAccessPending
-    from hyprial.identity.impl.agents.actor._base import AgentHomeAccessError as AgentHomeAccessError
-    from hyprial.identity.impl.org_directory import ACTION_INVITE as ACTION_INVITE
-    from hyprial.identity.impl.org_directory import ACTION_LEAVE as ACTION_LEAVE
-    from hyprial.identity.impl.org_directory import ACTION_READ as ACTION_READ
-    from hyprial.identity.impl.org_directory import ACTION_REMOVE as ACTION_REMOVE
-    from hyprial.identity.impl.org_directory import ACTION_WRITE as ACTION_WRITE
-    from hyprial.identity.impl.device import ADDRESS_RELPATH as ADDRESS_RELPATH
-    from hyprial.identity.impl.agents.state.liveness import AGENT_HEARTBEAT_TTL_SECONDS as AGENT_HEARTBEAT_TTL_SECONDS
-    from hyprial.identity.impl.agents.actor.ports import AcquireAgentRuntimeLaunchCommand as AcquireAgentRuntimeLaunchCommand
-    from hyprial.identity.impl.agents.registry._base import Agent as Agent
-    from hyprial.identity.impl.agents.actor._core import AgentActor as AgentActor
-    from hyprial.identity.impl.agents.state.liveness import AgentAlreadyRunning as AgentAlreadyRunning
-    from hyprial.identity.impl.agents.state.liveness import AgentBinding as AgentBinding
-    from hyprial.identity.impl.agents.actor.ports import AgentCapabilityGrantCompleted as AgentCapabilityGrantCompleted
-    from hyprial.identity.impl.agents.actor.ports import AgentCommand as AgentCommand
-    from hyprial.identity.impl.agents.home.config import AgentConfig as AgentConfig
-    from hyprial.identity.impl.agents.registry.config_binding import AgentConfigCasMismatch as AgentConfigCasMismatch
-    from hyprial.identity.impl.agents.home.config import AgentConfigError as AgentConfigError
-    from hyprial.identity.impl.agents.registry.config_binding import AgentIncarnationMismatch as AgentIncarnationMismatch
-    from hyprial.identity.impl.agents.actor.ports import AgentDestroyReservationCompleted as AgentDestroyReservationCompleted
-    from hyprial.identity.impl.agents.actor.ports import AgentDestroySettled as AgentDestroySettled
-    from hyprial.identity.impl.agents.registry._base import AgentError as AgentError
-    from hyprial.identity.impl.agents.registry._base import HOSTED_BY_VALUES as HOSTED_BY_VALUES
-    from hyprial.identity.impl.agents.actor.ports import AgentEvent as AgentEvent
-    from hyprial.identity.impl.agents.home.provisioner import AgentHomeError as AgentHomeError
-    from hyprial.identity.impl.agents.actor.ports import AgentLifecycleReceiptCompleted as AgentLifecycleReceiptCompleted
-    from hyprial.identity.impl.agents.migration.coordinator import AgentMigrationCoordinator as AgentMigrationCoordinator
-    from hyprial.identity.impl.agents.actor.ports import AgentMutationCompleted as AgentMutationCompleted
-    from hyprial.identity.impl.agents.actor.ports import AgentProjection as AgentProjection
-    from hyprial.identity.impl.agents.registry._core import AgentRegistry as AgentRegistry
-    from hyprial.identity.impl.agents.runtime.context import AgentRuntimeContext as AgentRuntimeContext
-    from hyprial.identity.impl.agents.runtime.context import AgentRuntimeNotice as AgentRuntimeNotice
-    from hyprial.identity.impl.agents.runtime.context import AgentRuntimeError as AgentRuntimeError
-    from hyprial.identity.impl.agents.actor.ports import AgentRuntimeLaunchLeaseCompleted as AgentRuntimeLaunchLeaseCompleted
-    from hyprial.identity.impl.agents.migration._bindings import AgentRuntimeMigrationBindings as AgentRuntimeMigrationBindings
-    from hyprial.identity.impl.agents.actor.ports import AgentSecretGrantCompleted as AgentSecretGrantCompleted
-    from hyprial.identity.impl.agents.runtime.context import AgentToolProfile as AgentToolProfile
-    from hyprial.identity.impl.agents.runtime.tool_profile import GitAuthorUnresolvedError as GitAuthorUnresolvedError
-    from hyprial.identity.impl.org_directory import AllowAllPolicy as AllowAllPolicy
-    from hyprial.identity.impl.users.store._base import Ambiguous as Ambiguous
-    from hyprial.identity.impl.org_directory import BOOTSTRAP_STEP_KINDS as BOOTSTRAP_STEP_KINDS
-    from hyprial.identity.impl.agents.actor.ports import BindAgentCommand as BindAgentCommand
-    from hyprial.identity.impl.agents.actor.ports import BlockAgentCommand as BlockAgentCommand
-    from hyprial.identity.impl.agents.state.worker_state import BlockingFailureAuthority as BlockingFailureAuthority
-    from hyprial.identity.impl.org_directory import BootstrapStep as BootstrapStep
-    from hyprial.identity.impl.agents.runtime.enforcement import CAPABILITY_ENTRY_POINTS as CAPABILITY_ENTRY_POINTS
-    from hyprial.identity.impl.agents.runtime.visibility import CallerIdentity as CallerIdentity
-    from hyprial.identity.impl.agents.runtime.enforcement import CapabilityRecord as CapabilityRecord
-    from hyprial.identity.impl.org_directory import CasbinOrgPolicy as CasbinOrgPolicy
-    from hyprial.identity.impl.agents.home.environment import ChildEnvironmentLaunch as ChildEnvironmentLaunch
-    from hyprial.identity.impl.agents.actor.ports import CleanupRevokedAgentHomeCommand as CleanupRevokedAgentHomeCommand
-    from hyprial.identity.impl.agents.actor.ports import ClearRestoreDispositionCommand as ClearRestoreDispositionCommand
-    from hyprial.identity.impl.agents.home.config import ConfigProjectionReceipt as ConfigProjectionReceipt
-    from hyprial.identity.impl.agents.actor.ports import ConfirmAgentLifecycleReceiptCommand as ConfirmAgentLifecycleReceiptCommand
-    from hyprial.identity.impl.agents.actor.ports import CreateAgentCommand as CreateAgentCommand
-    from hyprial.identity.impl.agents.actor.ports import CreateHostInvitedAgentCommand as CreateHostInvitedAgentCommand
-    from hyprial.identity.impl.agents.actor.ports import CreateTransferHostedAgentCommand as CreateTransferHostedAgentCommand
-    from hyprial.identity.impl.device import DEVICE_KEY_RELPATH as DEVICE_KEY_RELPATH
-    from hyprial.identity.impl.device import DEVICE_RECORD_RELPATH as DEVICE_RECORD_RELPATH
-    from hyprial.identity.impl.org_directory import DIRECTORY_DIR as DIRECTORY_DIR
-    from hyprial.identity.impl.org_directory import BINDING_ASSERTION_CLIENT_ID as BINDING_ASSERTION_CLIENT_ID
-    from hyprial.identity.impl.org_directory import BINDING_ASSERTION_OWNER as BINDING_ASSERTION_OWNER
-    from hyprial.identity.impl.org_directory import binding_assertion_audience_matches as binding_assertion_audience_matches
-    from hyprial.identity.impl.org_directory import binding_assertion_claims_unverified as binding_assertion_claims_unverified
-    from hyprial.identity.impl.org_directory import binding_assertion_publish_after as binding_assertion_publish_after
-    from hyprial.identity.impl.org_directory import binding_numeric_date as binding_numeric_date
-    from hyprial.identity.impl.org_directory import PEOPLE_DIR as PEOPLE_DIR
-    from hyprial.identity.impl.agents.actor.ports import DestroyAgentCommand as DestroyAgentCommand
     from hyprial.identity.impl.provider_auth.helper import DeviceLoginRunner as DeviceLoginRunner
-    from hyprial.identity.impl.device import DeviceRecord as DeviceRecord
-    from hyprial.identity.impl.device import MachineBinding as MachineBinding
-    from hyprial.identity.impl.device import consume_rotation_event as consume_rotation_event
-    from hyprial.identity.impl.org_directory import DirectoryDevice as DirectoryDevice
-    from hyprial.identity.impl.org_directory import DirectoryStore as DirectoryStore
-    from hyprial.identity.impl.org_directory import directory_device_path as directory_device_path
-    from hyprial.identity.impl.org_directory import directory_binding_path as directory_binding_path
-    from hyprial.identity.impl.org_directory import directory_owner_principal as directory_owner_principal
-    from hyprial.identity.impl.org_directory import ProtectedDocIdTooLongError as ProtectedDocIdTooLongError
-    from hyprial.identity.impl.org_directory import parse_protected_directory_node_id as parse_protected_directory_node_id
-    from hyprial.identity.impl.org_directory import parse_protected_directory_doc_id as parse_protected_directory_doc_id
-    from hyprial.identity.impl.org_directory import protected_directory_node_id as protected_directory_node_id
-    from hyprial.identity.impl.org_directory import protected_directory_doc_id as protected_directory_doc_id
-    from hyprial.identity.impl.org_directory import protected_directory_author_allowed as protected_directory_author_allowed
-    from hyprial.identity.impl.agents.runtime.enforcement import EnforcementError as EnforcementError
-    from hyprial.identity.impl.agents.runtime.enforcement import GRANTABLE_CAPABILITIES as GRANTABLE_CAPABILITIES
-    from hyprial.identity.impl.agents.actor.ports import GrantAgentCapabilityCommand as GrantAgentCapabilityCommand
-    from hyprial.identity.impl.agents.actor.ports import DefaultClaudeCredentialCommand as DefaultClaudeCredentialCommand
-    from hyprial.identity.impl.agents.actor.ports import DefaultClaudeCredentialCompleted as DefaultClaudeCredentialCompleted
-    from hyprial.identity.impl.agents.actor.ports import GrantAgentSecretCommand as GrantAgentSecretCommand
-    from hyprial.identity.impl.agents.runtime.visibility import GrantRecord as GrantRecord
-    from hyprial.identity.impl.agents.registry._base import HandoverNotice as HandoverNotice
-    from hyprial.identity.impl.agents.home.provisioner import HomePayloadFile as HomePayloadFile
-    from hyprial.identity.impl.agents.home.effects import HomeRuntimePreparer as HomeRuntimePreparer
-    from hyprial.identity.impl.identity_transaction import EXPECTED_IDENTITY_GENERATION_ENV as EXPECTED_IDENTITY_GENERATION_ENV
-    from hyprial.identity.impl.org_directory import INVITES_DIR as INVITES_DIR
-    from hyprial.identity.impl.org_directory import INVITE_SCHEME as INVITE_SCHEME
-    from hyprial.identity.impl.identity_transaction import IdentityTransactionBusy as IdentityTransactionBusy
-    from hyprial.identity.impl.identity_transaction import IdentityTransactionLock as IdentityTransactionLock
-    from hyprial.identity.impl.agents.registry._base import InvalidAgentNameError as InvalidAgentNameError
-    from hyprial.identity.impl.org_directory import InviteError as InviteError
-    from hyprial.identity.impl.org_directory import InviteLink as InviteLink
-    from hyprial.identity.impl.org_directory import LEAVES_DIR as LEAVES_DIR
-    from hyprial.identity.impl.users.store._lazy import LazyUserStore as LazyUserStore
-    from hyprial.identity.impl.agents.migration.entry import MigrationAuthorizationWindow as MigrationAuthorizationWindow
-    from hyprial.identity.impl.agents.migration.entry import MigrationPreflightManifest as MigrationPreflightManifest
-    from hyprial.identity.impl.users.profile import NotificationRule as NotificationRule
-    from hyprial.identity.impl.org_directory import ORG_META_DOC as ORG_META_DOC
-    from hyprial.identity.impl.org_directory import ORG_SPACE_PREFIX as ORG_SPACE_PREFIX
-    from hyprial.identity.impl.org_directory import OrgPolicy as OrgPolicy
-    from hyprial.identity.impl.users.profile import OwnerOpenId as OwnerOpenId
-    from hyprial.identity.impl.pac_errors import PAC_EDGE_EXISTS as PAC_EDGE_EXISTS
-    from hyprial.identity.impl.pac_errors import PAC_EDGE_INVALID as PAC_EDGE_INVALID
-    from hyprial.identity.impl.pac_errors import PAC_EXPANSION_ALREADY_BOUND as PAC_EXPANSION_ALREADY_BOUND
-    from hyprial.identity.impl.pac_errors import PAC_EXPANSION_INVALID as PAC_EXPANSION_INVALID
-    from hyprial.identity.impl.pac_errors import PAC_EXPANSION_POLICY_UNAVAILABLE as PAC_EXPANSION_POLICY_UNAVAILABLE
-    from hyprial.identity.impl.pac_errors import PAC_EXPANSION_SYSTEM_NODE as PAC_EXPANSION_SYSTEM_NODE
-    from hyprial.identity.impl.pac_errors import PAC_EVENTS_RESYNC as PAC_EVENTS_RESYNC
-    from hyprial.identity.impl.pac_errors import PAC_EVENT_ENVELOPE_INVALID as PAC_EVENT_ENVELOPE_INVALID
-    from hyprial.identity.impl.pac_errors import PAC_EVENT_TYPE_UNKNOWN as PAC_EVENT_TYPE_UNKNOWN
-    from hyprial.identity.impl.pac_errors import PAC_FLAG_ALREADY_SET as PAC_FLAG_ALREADY_SET
-    from hyprial.identity.impl.pac_errors import PAC_FLAG_NOT_OWNER as PAC_FLAG_NOT_OWNER
-    from hyprial.identity.impl.pac_errors import PAC_FLAG_NOT_SET as PAC_FLAG_NOT_SET
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_CLOSED as PAC_GRAPH_CLOSED
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_EXISTS as PAC_GRAPH_EXISTS
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_FORWARD_CYCLE as PAC_GRAPH_FORWARD_CYCLE
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_FROZEN as PAC_GRAPH_FROZEN
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_NOT_ACTIVE as PAC_GRAPH_NOT_ACTIVE
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_NOT_FOUND as PAC_GRAPH_NOT_FOUND
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_NOT_OWNER as PAC_GRAPH_NOT_OWNER
-    from hyprial.identity.impl.pac_errors import PAC_GRAPH_VERSION_CONFLICT as PAC_GRAPH_VERSION_CONFLICT
-    from hyprial.identity.impl.pac_errors import PAC_MIGRATION_SOURCE_UNREADABLE as PAC_MIGRATION_SOURCE_UNREADABLE
-    from hyprial.identity.impl.pac_errors import PAC_NODE_EXISTS as PAC_NODE_EXISTS
-    from hyprial.identity.impl.pac_errors import PAC_NODE_NOT_FOUND as PAC_NODE_NOT_FOUND
-    from hyprial.identity.impl.pac_errors import PAC_NODE_SHAPE_INVALID as PAC_NODE_SHAPE_INVALID
-    from hyprial.identity.impl.pac_errors import PAC_NOTIFY_DELIVERY_FAILED as PAC_NOTIFY_DELIVERY_FAILED
-    from hyprial.identity.impl.pac_errors import PAC_OPERATION_KEY_CONFLICT as PAC_OPERATION_KEY_CONFLICT
-    from hyprial.identity.impl.pac_errors import PAC_OWNER_AMBIGUOUS as PAC_OWNER_AMBIGUOUS
-    from hyprial.identity.impl.pac_errors import PAC_OWNER_UNKNOWN as PAC_OWNER_UNKNOWN
-    from hyprial.identity.impl.pac_errors import PAC_OWNER_UNRESOLVED as PAC_OWNER_UNRESOLVED
-    from hyprial.identity.impl.pac_errors import PAC_PRINCIPAL_SHAPE_INVALID as PAC_PRINCIPAL_SHAPE_INVALID
-    from hyprial.identity.impl.pac_errors import PAC_PRINCIPAL_UNVERIFIED as PAC_PRINCIPAL_UNVERIFIED
-    from hyprial.identity.impl.pac_errors import PAC_RESOLUTION_UNAVAILABLE as PAC_RESOLUTION_UNAVAILABLE
-    from hyprial.identity.impl.pac_errors import PAC_WORKTREE_CLEANUP_FAILED as PAC_WORKTREE_CLEANUP_FAILED
-    from hyprial.identity.impl.pac_errors import PAC_WORKTREE_IDENTITY_MISMATCH as PAC_WORKTREE_IDENTITY_MISMATCH
-    from hyprial.identity.impl.pac_errors import PAC_WORKTREE_PREPARE_FAILED as PAC_WORKTREE_PREPARE_FAILED
-    from hyprial.identity.impl.pac_errors import PacError as PacError
-    from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand as PinAgentAdapterCommand
-    from hyprial.identity.impl.agents.registry._base import PinConflictError as PinConflictError
-    from hyprial.identity.impl.agents.registry._base import PinStateConflictError as PinStateConflictError
-    from hyprial.identity.impl.users.profile import PreferredReceiver as PreferredReceiver
-    from hyprial.identity.impl.agents.runtime.enforcement import Principal as Principal
     from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAuthority as ProviderAuthAuthority
-    from hyprial.identity.impl.org_directory import RESOURCE_DIRECTORY_ALL as RESOURCE_DIRECTORY_ALL
-    from hyprial.identity.impl.org_directory import RESOURCE_ORG_MEMBERS as RESOURCE_ORG_MEMBERS
-    from hyprial.identity.impl.org_directory import RESOURCE_ORG_SELF as RESOURCE_ORG_SELF
-    from hyprial.identity.impl.org_directory import ROLE_ADMIN as ROLE_ADMIN
-    from hyprial.identity.impl.org_directory import ROLE_MEMBER as ROLE_MEMBER
-    from hyprial.identity.impl.org_directory import ROLE_OWNER as ROLE_OWNER
-    from hyprial.identity.impl.agents.state.liveness import RUNTIME_HEADLESS as RUNTIME_HEADLESS
-    from hyprial.identity.impl.agents.state.liveness import RUNTIME_INTERACTIVE as RUNTIME_INTERACTIVE
-    from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityCommand as RecordAgentActivityCommand
-    from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityIfBindingCommand as RecordAgentActivityIfBindingCommand
-    from hyprial.identity.impl.agents.actor.ports import RecordAgentSessionRefCommand as RecordAgentSessionRefCommand
-    from hyprial.identity.impl.agents.actor.ports import ReleaseAgentCommand as ReleaseAgentCommand
-    from hyprial.identity.impl.agents.actor.ports import ReleaseAgentDestroyReservationCommand as ReleaseAgentDestroyReservationCommand
-    from hyprial.identity.impl.agents.actor.ports import ReleaseAgentRuntimeLaunchCommand as ReleaseAgentRuntimeLaunchCommand
-    from hyprial.identity.impl.agents.actor.ports import ReserveAgentDestroyCommand as ReserveAgentDestroyCommand
-    from hyprial.identity.impl.users.store._base import ResolvedUser as ResolvedUser
-    from hyprial.identity.impl.agents.state.worker_state import RestorePolicyAuthority as RestorePolicyAuthority
-    from hyprial.identity.impl.agents.state.worker_state import RestorePolicyError as RestorePolicyError
-    from hyprial.identity.impl.agents.state.worker_state import is_inactive as is_inactive
-    from hyprial.identity.impl.agents.state.restore_migration import migrate_legacy_agent_keep_list as migrate_legacy_agent_keep_list
-    from hyprial.identity.impl.agents.actor.ports import RetireAgentLifecycleReceiptCommand as RetireAgentLifecycleReceiptCommand
-    from hyprial.identity.impl.agents.actor.ports import RetireAgentSessionRefsCommand as RetireAgentSessionRefsCommand
-    from hyprial.identity.impl.agents.actor.ports import RollbackRetiredAgentSessionRefsCommand as RollbackRetiredAgentSessionRefsCommand
-    from hyprial.identity.impl.agents.actor.ports import RevokeAgentCapabilityCommand as RevokeAgentCapabilityCommand
-    from hyprial.identity.impl.agents.actor.ports import RevokeAgentSecretCommand as RevokeAgentSecretCommand
-    from hyprial.identity.impl.users.profile import RuntimeCapability as RuntimeCapability
-    from hyprial.identity.impl.agents.home.effects import RuntimeHomePreparers as RuntimeHomePreparers
-    from hyprial.identity.impl.agents.runtime.visibility import SEE_ACTORS as SEE_ACTORS
-    from hyprial.identity.impl.agents.runtime.visibility import SEND_TO as SEND_TO
-    from hyprial.identity.impl.agents.runtime.secrets import SecretResolver as SecretResolver
-    from hyprial.identity.impl.agents.runtime.secrets import SecretResolutionError as SecretResolutionError
-    from hyprial.identity.impl.agents.runtime.secrets import SecretSource as SecretSource
-    from hyprial.identity.impl.agents.secret_store import AgentSecretStore as AgentSecretStore
-    from hyprial.identity.impl.agents.secret_store import FingerprintUnavailable as FingerprintUnavailable
-    from hyprial.identity.impl.agents.secret_store import SecretEvent as SecretEvent
-    from hyprial.identity.impl.agents.secret_store import StoredSecret as StoredSecret
-    from hyprial.identity.impl.agents.secret_store import agent_secret_store_exists as agent_secret_store_exists
-    from hyprial.identity.impl.agents.runtime.secrets import secret_environment_name_is_allowed as secret_environment_name_is_allowed
-    from hyprial.identity.impl.agents.secret_store import secret_fingerprint as secret_fingerprint
-    from hyprial.identity.impl.agents.actor.ports import SetRestoreDispositionCommand as SetRestoreDispositionCommand
-    from hyprial.identity.impl.agents.actor.ports import SettleAgentDestroyCommand as SettleAgentDestroyCommand
-    from hyprial.identity.impl.agents.runtime.context import SharedCredentialBinding as SharedCredentialBinding
-    from hyprial.identity.impl.users.store._base import USER_NOT_FOUND as USER_NOT_FOUND
-    from hyprial.identity.impl.agents.actor.ports import UnblockAgentCommand as UnblockAgentCommand
-    from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand as UnpinAgentAdapterCommand
-    from hyprial.identity.impl.agents.actor.ports import BindAgentConfigCommand as BindAgentConfigCommand
-    from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest as agent_config_digest
-    from hyprial.identity.impl.agents.actor.ports import UpdateAgentCommand as UpdateAgentCommand
-    from hyprial.identity.impl.users.home import UserHomeError as UserHomeError
-    from hyprial.identity.impl.users.profile import UserProfile as UserProfile
-    from hyprial.identity.impl.users.profile import UserProfileError as UserProfileError
-    from hyprial.identity.impl.users.profile import UserProfileStore as UserProfileStore
-    from hyprial.identity.impl.users.store._store import UserStore as UserStore
-    from hyprial.identity.impl.users.store._base import UserStoreError as UserStoreError
-    from hyprial.identity.impl.agents.runtime.visibility import VisibilityError as VisibilityError
-    from hyprial.identity.impl.agents.state.worker_proxy import WORKER_PROXY_FIELDS as WORKER_PROXY_FIELDS
-    from hyprial.identity.impl.agents.state.worker_proxy import WORKER_PROXY_SETTINGS_KEY as WORKER_PROXY_SETTINGS_KEY
-    from hyprial.identity.impl.pac_errors import WORKFLOW_REMOTE_OWNER_UNSUPPORTED as WORKFLOW_REMOTE_OWNER_UNSUPPORTED
-    from hyprial.identity.impl.pac_errors import WORKFLOW_WORKER_RECEIPT_MISMATCH as WORKFLOW_WORKER_RECEIPT_MISMATCH
-    from hyprial.identity.impl.agents.state.worker_proxy import WorkerProxyError as WorkerProxyError
-    from hyprial.identity.impl.device import address_path as address_path
-    from hyprial.identity.impl.agents.runtime.context import agent_home_mode as agent_home_mode
-    from hyprial.identity.impl.agents.state.worker_proxy import ambient_proxy_absent as ambient_proxy_absent
-    from hyprial.identity.impl.agents.home.environment import apply_runtime_environment_profile as apply_runtime_environment_profile
-    from hyprial.identity.impl.agents.home.readiness import ReadinessError as ReadinessError
-    from hyprial.identity.impl.agents.home.readiness import ToolDeclaration as ToolDeclaration
-    from hyprial.identity.impl.agents.home.readiness import assess_agent_readiness as assess_agent_readiness
-    from hyprial.identity.impl.agents.home.readiness import parse_tool_declaration as parse_tool_declaration
-    from hyprial.identity.impl.agents.runtime.context import resolve_agent_runtime_context as resolve_agent_runtime_context
-    from hyprial.identity.impl.agents.runtime.tool_profile import resolve_agent_tool_profile as resolve_agent_tool_profile
-    from hyprial.identity.impl.agents.home.environment import resolve_agent_secrets as resolve_agent_secrets
-    from hyprial.identity.impl.agents.home.native_credential import NativeCredentialError as NativeCredentialError
-    from hyprial.identity.impl.agents.home.native_credential import NATIVE_CREDENTIAL_FILES as NATIVE_CREDENTIAL_FILES
-    from hyprial.identity.impl.agents.home.native_credential import install_native_credential as install_native_credential
-    from hyprial.identity.impl.agents.home.native_credential import install_native_credential_set as install_native_credential_set
-    from hyprial.identity.impl.agents.home.native_credential import remove_native_credentials as remove_native_credentials
-    from hyprial.identity.impl.agents.home.native_credential import native_secrets_root as native_secrets_root
-    from hyprial.identity.impl.agents.home.native_credential import prepare_legacy_claude_native_root as prepare_legacy_claude_native_root
-    from hyprial.identity.impl.org_directory import bootstrap_yaml as bootstrap_yaml
-    from hyprial.identity.impl.agents.runtime.enforcement import check_channel as check_channel
-    from hyprial.identity.impl.agents.runtime.enforcement import check_org_context as check_org_context
-    from hyprial.identity.impl.agents.runtime.enforcement import check_shared_path as check_shared_path
-    from hyprial.identity.impl.agents.home.environment import compose_worker_child_launch as compose_worker_child_launch
-    from hyprial.identity.impl.org_directory import decode_invite as decode_invite
-    from hyprial.identity.impl.org_directory import default_bootstrap as default_bootstrap
-    from hyprial.identity.impl.org_directory import default_role_grants_document as default_role_grants_document
-    from hyprial.identity.impl.agents.home.environment import derived_proxy_environment as derived_proxy_environment
-    from hyprial.identity.impl.agents.state.worker_state import desired_generation as desired_generation
-    from hyprial.identity.impl.device import device_key_path as device_key_path
-    from hyprial.identity.impl.device import device_record_path as device_record_path
-    from hyprial.identity.impl.device import machine_binding_path as machine_binding_path
-    from hyprial.identity.impl.device import machine_fingerprint as machine_fingerprint
-    from hyprial.identity.impl.device import mark_first_published as mark_first_published
-    from hyprial.identity.impl.org_directory import encode_invite as encode_invite
-    from hyprial.identity.impl.agents.runtime.enforcement import explain as explain
-    from hyprial.identity.impl.agents.runtime.visibility import explain_target as explain_target
-    from hyprial.identity.impl.identity_slug import identity_slug as identity_slug
-    from hyprial.identity.impl.org_directory import invite_deep_link as invite_deep_link
-    from hyprial.identity.impl.org_directory import invite_https_url as invite_https_url
-    from hyprial.identity.impl.org_directory import is_org_acl_space as is_org_acl_space
-    from hyprial.identity.impl.org_directory import is_org_directory_space as is_org_directory_space
-    from hyprial.identity.impl.agents.state.worker_proxy import launch_worker_proxy_route as launch_worker_proxy_route
-    from hyprial.identity.impl.agents.migration.entry import load_packaged_support_matrix as load_packaged_support_matrix
-    from hyprial.identity.impl.agents.runtime.visibility import may_send as may_send
-    from hyprial.identity.impl.agents.registry._base import normalize_capabilities as normalize_capabilities
-    from hyprial.identity.impl.agents.registry._base import normalize_harness_args as normalize_harness_args
-    from hyprial.identity.impl.agents.runtime.capabilities import option_value as option_value
-    from hyprial.identity.impl.org_directory import org_from_space_name as org_from_space_name
-    from hyprial.identity.impl.org_directory import org_space_name as org_space_name
-    from hyprial.identity.impl.org_directory import parse_bootstrap_yaml as parse_bootstrap_yaml
-    from hyprial.identity.impl.agents.runtime.context import preflight_codex_credential as preflight_codex_credential
-    from hyprial.identity.impl.org_directory import role_grants_from_document as role_grants_from_document
-    from hyprial.identity.impl.principal import parse_principal as parse_principal
-    from hyprial.identity.impl.principal import principal_kind as principal_kind
-    from hyprial.identity.impl.principal import principal_matches_local_actor as principal_matches_local_actor
-    from hyprial.identity.impl.device import read_device_record as read_device_record
-    from hyprial.identity.impl.device import read_machine_binding as read_machine_binding
-    from hyprial.identity.impl.agents.state.worker_proxy import read_worker_proxy as read_worker_proxy
-    from hyprial.identity.impl.agents.runtime.capabilities import runtime_capabilities as runtime_capabilities
-    from hyprial.identity.impl.agents.runtime.context import shared_credential_status as shared_credential_status
-    from hyprial.identity.impl.agents.home.provisioner import snapshot_home_payload as snapshot_home_payload
-    from hyprial.identity.impl.agents.runtime.context import validate_shared_credential_binding as validate_shared_credential_binding
-    from hyprial.identity.impl.worker_session import WorkerSessionBinding as WorkerSessionBinding
-    from hyprial.identity.impl.worker_session import worker_session_binding as worker_session_binding
-    from hyprial.identity.impl.agents.runtime.context import validate_shared_credential_environment as validate_shared_credential_environment
-    from hyprial.identity.impl.agents.home.config import verify_native_projection as verify_native_projection
-    from hyprial.identity.impl.agents.runtime.visibility import visible_targets as visible_targets
-    from hyprial.identity.impl.agents.home.environment import whitelist_replacement_environment as whitelist_replacement_environment
-    from hyprial.identity.impl.device import write_device_record as write_device_record
-    from hyprial.identity.impl.device import write_machine_binding as write_machine_binding
-    from hyprial.identity.impl.agents.state.worker_proxy import write_worker_proxy_field as write_worker_proxy_field
-
+    from hyprial.identity.impl.agents.actor.ports import AgentHarnessArgsUpdated as AgentHarnessArgsUpdated
+    from hyprial.identity.impl.agents.actor.ports import SetHarnessArgsCommand as SetHarnessArgsCommand
+    from hyprial.identity.impl.facade.types import (
+        AgentIdentitySnapshot as AgentIdentitySnapshot, AuthorizationMechanism as AuthorizationMechanism, BINDING_URI_NAMESPACE as BINDING_URI_NAMESPACE, BINDING_URI_PREFIX as BINDING_URI_PREFIX,
+        CLAIM_FIELDS as CLAIM_FIELDS, ClaimReceiptV1 as ClaimReceiptV1, ClientTlsMaterial as ClientTlsMaterial, DEVICE_CERTIFICATE_ROUTE as DEVICE_CERTIFICATE_ROUTE,
+        DeviceAuthorityConfig as DeviceAuthorityConfig, DeviceTransportClient as DeviceTransportClient, ENVELOPE_VERSION as ENVELOPE_VERSION, EncryptionKey as EncryptionKey,
+        InviteSelection as InviteSelection, InviteView as InviteView, JoinIdentityError as JoinIdentityError, JoinTokenLedger as JoinTokenLedger, MAX_REQUEST_BYTES as MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES,
+        ManagementAuthorizationRefV1 as ManagementAuthorizationRefV1, OUTCOME_NOT_SENT as OUTCOME_NOT_SENT, OUTCOME_REJECTED as OUTCOME_REJECTED, OUTCOME_UNKNOWN as OUTCOME_UNKNOWN,
+        OrgMembership as OrgMembership, OrgRef as OrgRef, OrganizationAuthorizationLeaseV1 as OrganizationAuthorizationLeaseV1, PROFILE as PROFILE,
+        ProviderKeys as ProviderKeys, RETIRE_BINDING_ROUTE as RETIRE_BINDING_ROUTE, StagedTransportCredential as StagedTransportCredential, TailnetAuthorityBinding as TailnetAuthorityBinding,
+        TailnetAuthorityPin as TailnetAuthorityPin, TailnetCredentialAssociation as TailnetCredentialAssociation, TailnetCredentialContext as TailnetCredentialContext, TailnetCredentialError as TailnetCredentialError,
+        TailnetCredentialOperation as TailnetCredentialOperation, TailnetCredentialWorkflow as TailnetCredentialWorkflow, TailnetCredentials as TailnetCredentials, TailnetMember as TailnetMember,
+        TailnetMembership as TailnetMembership, TransportClientError as TransportClientError, TransportCredential as TransportCredential, TransportCredentialError as TransportCredentialError,
+        UserKey as UserKey, binding_claims as binding_claims, binding_digest as binding_digest, binding_uri as binding_uri,
+        canonical_binding_bytes as canonical_binding_bytes, commit_transport_credential as commit_transport_credential, invite_identifier as invite_identifier, invite_link as invite_link,
+        invite_view as invite_view, invite_views as invite_views, load_client_tls_material as load_client_tls_material, protected_section_for_path as protected_section_for_path,
+        read_transport_credential as read_transport_credential, retire_transport_credential as retire_transport_credential, select_invites as select_invites, stage_transport_credential as stage_transport_credential,
+        transport_credential_status as transport_credential_status, validate_enrollment_response as validate_enrollment_response, validate_oidc_join as validate_oidc_join, verify_certificate_binding as verify_certificate_binding,
+    )
+    from hyprial.identity.impl.facade.types import (
+        ACTION_INVITE as ACTION_INVITE, ACTION_LEAVE as ACTION_LEAVE, ACTION_READ as ACTION_READ, ACTION_REMOVE as ACTION_REMOVE, ACTION_WRITE as ACTION_WRITE, ADDRESS_RELPATH as ADDRESS_RELPATH, AGENT_HEARTBEAT_TTL_SECONDS as AGENT_HEARTBEAT_TTL_SECONDS, AcquireAgentRuntimeLaunchCommand as AcquireAgentRuntimeLaunchCommand,
+        Agent as Agent, AgentActor as AgentActor, AgentAlreadyRunning as AgentAlreadyRunning, AgentBinding as AgentBinding, AgentCapabilityGrantCompleted as AgentCapabilityGrantCompleted, AgentCommand as AgentCommand, AgentConfig as AgentConfig, AgentConfigCasMismatch as AgentConfigCasMismatch,
+        AgentConfigError as AgentConfigError, AgentDestroyReservationCompleted as AgentDestroyReservationCompleted, AgentDestroySettled as AgentDestroySettled, AgentError as AgentError, AgentEvent as AgentEvent, AgentHomeAccessError as AgentHomeAccessError, AgentHomeAccessPending as AgentHomeAccessPending, AgentHomeError as AgentHomeError,
+        AgentIncarnationMismatch as AgentIncarnationMismatch, AgentLifecycleReceiptCompleted as AgentLifecycleReceiptCompleted, AgentMigrationCoordinator as AgentMigrationCoordinator, AgentMutationCompleted as AgentMutationCompleted, AgentProjection as AgentProjection, AgentRegistry as AgentRegistry, NativeImportRecord as NativeImportRecord, capture_native_auth_launch as capture_native_auth_launch, AgentRuntimeContext as AgentRuntimeContext, AgentRuntimeError as AgentRuntimeError,
+        AgentRuntimeLaunchLeaseCompleted as AgentRuntimeLaunchLeaseCompleted, AgentRuntimeMigrationBindings as AgentRuntimeMigrationBindings, AgentRuntimeNotice as AgentRuntimeNotice, AgentSecretGrantCompleted as AgentSecretGrantCompleted, AgentSecretStore as AgentSecretStore, AgentToolProfile as AgentToolProfile, AllowAllPolicy as AllowAllPolicy,
+        AuthProfile as AuthProfile, BOOTSTRAP_STEP_KINDS as BOOTSTRAP_STEP_KINDS, BindAgentCommand as BindAgentCommand, BindAgentConfigCommand as BindAgentConfigCommand, BlockAgentCommand as BlockAgentCommand, BlockingFailureAuthority as BlockingFailureAuthority,
+        BootstrapStep as BootstrapStep, CAPABILITY_ENTRY_POINTS as CAPABILITY_ENTRY_POINTS, CREDENTIAL_ARTIFACT_LABEL as CREDENTIAL_ARTIFACT_LABEL, CREDENTIAL_VERSION as CREDENTIAL_VERSION, CallerIdentity as CallerIdentity, CapabilityRecord as CapabilityRecord, CasbinOrgPolicy as CasbinOrgPolicy, ChildEnvironmentLaunch as ChildEnvironmentLaunch,
+        CleanupRevokedAgentHomeCommand as CleanupRevokedAgentHomeCommand, ClearRestoreDispositionCommand as ClearRestoreDispositionCommand, CommitPermit as CommitPermit, ConfigProjectionReceipt as ConfigProjectionReceipt, ConfirmAgentLifecycleReceiptCommand as ConfirmAgentLifecycleReceiptCommand, CreateAgentCommand as CreateAgentCommand, CreateTransferHostedAgentCommand as CreateTransferHostedAgentCommand,
+        DEVICE_KEY_RELPATH as DEVICE_KEY_RELPATH, DEVICE_RECORD_RELPATH as DEVICE_RECORD_RELPATH, DIFFERENT_ACCOUNT_REASON as DIFFERENT_ACCOUNT_REASON, DIRECTORY_DIR as DIRECTORY_DIR, DefaultClaudeCredentialCommand as DefaultClaudeCredentialCommand, DefaultClaudeCredentialCompleted as DefaultClaudeCredentialCompleted, DestroyAgentCommand as DestroyAgentCommand, DeviceRecord as DeviceRecord, DirectoryDevice as DirectoryDevice,
+        DirectoryStore as DirectoryStore, EXPECTED_IDENTITY_GENERATION_ENV as EXPECTED_IDENTITY_GENERATION_ENV, EnforcementError as EnforcementError, FingerprintUnavailable as FingerprintUnavailable, GRANTABLE_CAPABILITIES as GRANTABLE_CAPABILITIES, GitAuthorUnresolvedError as GitAuthorUnresolvedError, GrantAgentCapabilityCommand as GrantAgentCapabilityCommand, GrantAgentSecretCommand as GrantAgentSecretCommand,
+        GrantRecord as GrantRecord, HOME_ACCOUNT_MIGRATION_GUIDE as HOME_ACCOUNT_MIGRATION_GUIDE, HOSTED_BY_VALUES as HOSTED_BY_VALUES, HandoverNotice as HandoverNotice, HomeBinding as HomeBinding, HomeOperationConflict as HomeOperationConflict, HomeOperationUnknown as HomeOperationUnknown, HomePayloadFile as HomePayloadFile, HomeRuntimePreparer as HomeRuntimePreparer, HttpTransport as HttpTransport,
+        IDENTITY_RESIDUE_FIELDS as IDENTITY_RESIDUE_FIELDS, INVITES_DIR as INVITES_DIR, INVITE_SCHEME as INVITE_SCHEME, IdentityAdmission as IdentityAdmission, IdentityBegin as IdentityBegin, IdentityCredential as IdentityCredential, IdentityCredentialPort as IdentityCredentialPort, IdentityCredentialService as IdentityCredentialService,
+        IdentityError as IdentityError, IdentityPublicState as IdentityPublicState, IdentityRecordError as IdentityRecordError, IdentitySnapshot as IdentitySnapshot, IdentityTransactionBusy as IdentityTransactionBusy, IdentityTransactionLock as IdentityTransactionLock, IdentityWorkerError as IdentityWorkerError, IdentityWorkerProtocolError as IdentityWorkerProtocolError,
+        IdentityWorkerUnavailable as IdentityWorkerUnavailable, InvalidAgentNameError as InvalidAgentNameError, InviteError as InviteError, InviteLink as InviteLink, LEAVES_DIR as LEAVES_DIR, LEGACY_BUSINESS_DATABASES as LEGACY_BUSINESS_DATABASES, LEGACY_BUSINESS_TEXT_FILES as LEGACY_BUSINESS_TEXT_FILES, LEGACY_DEVICE_STATE_FILES as LEGACY_DEVICE_STATE_FILES, LEGACY_UNBOUND_REASON as LEGACY_UNBOUND_REASON, LEGACY_USER_KEYS_DIR as LEGACY_USER_KEYS_DIR, LOGIN_ARTIFACT_LABELS as LOGIN_ARTIFACT_LABELS, LOGIN_FILENAME as LOGIN_FILENAME, LOGIN_SETTINGS_FIELDS as LOGIN_SETTINGS_FIELDS, OnboardingSubject as OnboardingSubject,
+        LogoutArtifacts as LogoutArtifacts, LogoutCredentialUnreadable as LogoutCredentialUnreadable, LogoutError as LogoutError, LogoutPartialRemoval as LogoutPartialRemoval, LogoutPermissionDenied as LogoutPermissionDenied, LogoutSettingsUnreadable as LogoutSettingsUnreadable, MachineBinding as MachineBinding,
+        MigrationAuthorizationWindow as MigrationAuthorizationWindow, MigrationPreflightManifest as MigrationPreflightManifest, NATIVE_CREDENTIAL_FILES as NATIVE_CREDENTIAL_FILES, NativeCredentialError as NativeCredentialError, ORG_META_DOC as ORG_META_DOC, ORG_SPACE_PREFIX as ORG_SPACE_PREFIX, OrgPolicy as OrgPolicy,
+        PAC_EDGE_EXISTS as PAC_EDGE_EXISTS, PAC_EDGE_INVALID as PAC_EDGE_INVALID, PAC_EVENTS_RESYNC as PAC_EVENTS_RESYNC, PAC_EVENT_ENVELOPE_INVALID as PAC_EVENT_ENVELOPE_INVALID, PAC_EVENT_TYPE_UNKNOWN as PAC_EVENT_TYPE_UNKNOWN, PAC_EXPANSION_ALREADY_BOUND as PAC_EXPANSION_ALREADY_BOUND, PAC_EXPANSION_INVALID as PAC_EXPANSION_INVALID,
+        PAC_EXPANSION_POLICY_UNAVAILABLE as PAC_EXPANSION_POLICY_UNAVAILABLE, PAC_EXPANSION_SYSTEM_NODE as PAC_EXPANSION_SYSTEM_NODE, PAC_FLAG_ALREADY_SET as PAC_FLAG_ALREADY_SET, PAC_FLAG_NOT_OWNER as PAC_FLAG_NOT_OWNER, PAC_FLAG_NOT_SET as PAC_FLAG_NOT_SET, PAC_GRAPH_CLOSED as PAC_GRAPH_CLOSED, PAC_GRAPH_EXISTS as PAC_GRAPH_EXISTS, PAC_GRAPH_FORWARD_CYCLE as PAC_GRAPH_FORWARD_CYCLE,
+        PAC_GRAPH_FROZEN as PAC_GRAPH_FROZEN, PAC_GRAPH_NOT_ACTIVE as PAC_GRAPH_NOT_ACTIVE, PAC_GRAPH_NOT_FOUND as PAC_GRAPH_NOT_FOUND, PAC_GRAPH_NOT_OWNER as PAC_GRAPH_NOT_OWNER, PAC_GRAPH_VERSION_CONFLICT as PAC_GRAPH_VERSION_CONFLICT, PAC_MIGRATION_SOURCE_UNREADABLE as PAC_MIGRATION_SOURCE_UNREADABLE, PAC_NODE_EXISTS as PAC_NODE_EXISTS, PAC_NODE_NOT_FOUND as PAC_NODE_NOT_FOUND,
+        PAC_NODE_SHAPE_INVALID as PAC_NODE_SHAPE_INVALID, PAC_NOTIFY_DELIVERY_FAILED as PAC_NOTIFY_DELIVERY_FAILED, PAC_OPERATION_KEY_CONFLICT as PAC_OPERATION_KEY_CONFLICT, PAC_OWNER_AMBIGUOUS as PAC_OWNER_AMBIGUOUS, PAC_OWNER_UNKNOWN as PAC_OWNER_UNKNOWN, PAC_OWNER_UNRESOLVED as PAC_OWNER_UNRESOLVED, PAC_PRINCIPAL_SHAPE_INVALID as PAC_PRINCIPAL_SHAPE_INVALID, PAC_PRINCIPAL_UNVERIFIED as PAC_PRINCIPAL_UNVERIFIED,
+        PAC_RESOLUTION_UNAVAILABLE as PAC_RESOLUTION_UNAVAILABLE, PAC_WORKTREE_CLEANUP_FAILED as PAC_WORKTREE_CLEANUP_FAILED, PAC_WORKTREE_IDENTITY_MISMATCH as PAC_WORKTREE_IDENTITY_MISMATCH, PAC_WORKTREE_PREPARE_FAILED as PAC_WORKTREE_PREPARE_FAILED, PEOPLE_DIR as PEOPLE_DIR, PUBLIC_STATE_FIELDS as PUBLIC_STATE_FIELDS, PacError as PacError,
+        Principal as Principal, ProtectedDocIdTooLongError as ProtectedDocIdTooLongError, RESOURCE_DIRECTORY_ALL as RESOURCE_DIRECTORY_ALL, RESOURCE_ORG_MEMBERS as RESOURCE_ORG_MEMBERS, RESOURCE_ORG_SELF as RESOURCE_ORG_SELF,
+        ROLE_ADMIN as ROLE_ADMIN, ROLE_MEMBER as ROLE_MEMBER, ROLE_OWNER as ROLE_OWNER, RUNTIME_HEADLESS as RUNTIME_HEADLESS, RUNTIME_INTERACTIVE as RUNTIME_INTERACTIVE, ReadinessError as ReadinessError, RecordAgentActivityCommand as RecordAgentActivityCommand, RecordAgentActivityIfBindingCommand as RecordAgentActivityIfBindingCommand,
+        RecordAgentSessionRefCommand as RecordAgentSessionRefCommand, ReleaseAgentCommand as ReleaseAgentCommand, ReleaseAgentDestroyReservationCommand as ReleaseAgentDestroyReservationCommand, ReleaseAgentRuntimeLaunchCommand as ReleaseAgentRuntimeLaunchCommand, RenameAgentCommand as RenameAgentCommand, ReserveAgentDestroyCommand as ReserveAgentDestroyCommand, RestorePolicyAuthority as RestorePolicyAuthority, RestorePolicyError as RestorePolicyError,
+        RetireAgentLifecycleReceiptCommand as RetireAgentLifecycleReceiptCommand, RetireAgentSessionRefsCommand as RetireAgentSessionRefsCommand, RevokeAgentCapabilityCommand as RevokeAgentCapabilityCommand, RevokeAgentSecretCommand as RevokeAgentSecretCommand, RollbackRetiredAgentSessionRefsCommand as RollbackRetiredAgentSessionRefsCommand, RuntimeCapability as RuntimeCapability, RuntimeCapabilityError as RuntimeCapabilityError, RuntimeCapabilityStore as RuntimeCapabilityStore, RuntimeHomePreparers as RuntimeHomePreparers, SECRETS_DIRNAME as SECRETS_DIRNAME,
+        SEE_ACTORS as SEE_ACTORS, SEND_TO as SEND_TO, SecretEvent as SecretEvent, SecretResolutionError as SecretResolutionError, SecretResolver as SecretResolver, SecretSource as SecretSource, SetRestoreDispositionCommand as SetRestoreDispositionCommand, SettleAgentDestroyCommand as SettleAgentDestroyCommand,
+        SharedCredentialBinding as SharedCredentialBinding, StoredSecret as StoredSecret, ToolDeclaration as ToolDeclaration, USER_NOT_FOUND as USER_NOT_FOUND, UnblockAgentCommand as UnblockAgentCommand, UpdateAgentCommand as UpdateAgentCommand, UserHomeError as UserHomeError,
+        UserStore as UserStore, UserStoreError as UserStoreError, VisibilityError as VisibilityError, WORKER_COMMANDS as WORKER_COMMANDS, WORKER_PROXY_FIELDS as WORKER_PROXY_FIELDS,
+        WORKER_PROXY_SETTINGS_KEY as WORKER_PROXY_SETTINGS_KEY, WORKFLOW_REMOTE_OWNER_UNSUPPORTED as WORKFLOW_REMOTE_OWNER_UNSUPPORTED, WORKFLOW_WORKER_RECEIPT_MISMATCH as WORKFLOW_WORKER_RECEIPT_MISMATCH, WorkerProxyError as WorkerProxyError, WorkerSessionBinding as WorkerSessionBinding, address_path as address_path, agent_config_digest as agent_config_digest, agent_home_mode as agent_home_mode, agent_id_for_entity_token as agent_id_for_entity_token,
+        agent_secret_store_exists as agent_secret_store_exists, ambient_proxy_absent as ambient_proxy_absent, apply_runtime_environment_profile as apply_runtime_environment_profile, assess_agent_readiness as assess_agent_readiness,
+        bootstrap_yaml as bootstrap_yaml, check_org_context as check_org_context, check_shared_path as check_shared_path, compose_worker_child_launch as compose_worker_child_launch, consume_rotation_event as consume_rotation_event, decode_invite as decode_invite, default_bootstrap as default_bootstrap,
+        default_role_grants_document as default_role_grants_document, derived_proxy_environment as derived_proxy_environment, desired_generation as desired_generation, device_key_path as device_key_path, device_record_path as device_record_path, directory_device_path as directory_device_path, directory_owner_principal as directory_owner_principal,
+        encode_invite as encode_invite, explain as explain, explain_target as explain_target, id_form_minting as id_form_minting, identity_credential_path as identity_credential_path, identity_slug as identity_slug, inspect_logout_artifacts as inspect_logout_artifacts, install_native_credential as install_native_credential, install_native_credential_set as install_native_credential_set, inspect_native_credentials as inspect_native_credentials,
+        invite_deep_link as invite_deep_link, invite_https_url as invite_https_url, is_inactive as is_inactive, is_org_acl_space as is_org_acl_space, is_org_directory_space as is_org_directory_space, launch_worker_proxy_route as launch_worker_proxy_route, home_account_conflict_message as home_account_conflict_message, legacy_business_data_present as legacy_business_data_present, legacy_receivers_node_id as legacy_receivers_node_id, load_packaged_support_matrix as load_packaged_support_matrix, machine_binding_path as machine_binding_path,
+        machine_fingerprint as machine_fingerprint, mark_first_published as mark_first_published, may_send as may_send, migrate_legacy_agent_keep_list as migrate_legacy_agent_keep_list, name_taken_remedy as name_taken_remedy, native_secrets_root as native_secrets_root, node_owner_or_none as node_owner_or_none, normalize_capabilities as normalize_capabilities, normalize_harness_args as normalize_harness_args, normalize_issuer as normalize_issuer,
+        official_agent_uri as official_agent_uri, option_value as option_value, org_from_space_name as org_from_space_name, org_space_name as org_space_name, parse_bootstrap_yaml as parse_bootstrap_yaml, parse_principal as parse_principal, parse_protected_directory_doc_id as parse_protected_directory_doc_id, parse_protected_directory_node_id as parse_protected_directory_node_id, parse_tool_declaration as parse_tool_declaration,
+        preflight_codex_credential as preflight_codex_credential, prepare_legacy_claude_native_root as prepare_legacy_claude_native_root, principal_kind as principal_kind, principal_matches_local_actor as principal_matches_local_actor, protected_directory_author_allowed as protected_directory_author_allowed, protected_directory_doc_id as protected_directory_doc_id, protected_directory_node_id as protected_directory_node_id, read_device_record as read_device_record,
+        read_home_binding as read_home_binding, read_identity_admission as read_identity_admission, read_identity_credential as read_identity_credential, read_identity_snapshot as read_identity_snapshot, read_login_generation as read_login_generation, read_machine_binding as read_machine_binding, read_onboarding_identity as read_onboarding_identity, read_onboarding_subject as read_onboarding_subject, read_settings_identity as read_settings_identity, read_settings_identity_metadata as read_settings_identity_metadata, read_settings_username as read_settings_username, read_worker_proxy as read_worker_proxy, remove_logout_artifacts as remove_logout_artifacts,
+        remove_native_credentials as remove_native_credentials, reserve_identity_generation as reserve_identity_generation, resolve_agent_runtime_context as resolve_agent_runtime_context, resolve_agent_secrets as resolve_agent_secrets, resolve_agent_tool_profile as resolve_agent_tool_profile, resolve_local_actor as resolve_local_actor, resolve_node_owner as resolve_node_owner, resolve_node_user_id as resolve_node_user_id, role_grants_from_document as role_grants_from_document, runtime_capabilities as runtime_capabilities,
+        secret_environment_name_is_allowed as secret_environment_name_is_allowed, secret_fingerprint as secret_fingerprint, settings_path as settings_path, shared_credential_status as shared_credential_status, snapshot_home_payload as snapshot_home_payload, validate_shared_credential_binding as validate_shared_credential_binding, validate_shared_credential_environment as validate_shared_credential_environment, verify_native_projection as verify_native_projection,
+        visible_targets as visible_targets, whitelist_replacement_environment as whitelist_replacement_environment, worker_session_binding as worker_session_binding, write_device_record as write_device_record, write_identity_credential as write_identity_credential, write_machine_binding as write_machine_binding, write_settings_identity as write_settings_identity, write_settings_owner as write_settings_owner,
+        write_worker_proxy_field as write_worker_proxy_field,
+    )
 _FACADE_EXPORTS = {
+    'ProviderKeys': ('hyprial.identity.impl.provider_keys', 'ProviderKeys'),
+    'UserKey': ('hyprial.identity.impl.user_key', 'UserKey'),
+    'EncryptionKey': ('hyprial.identity.impl.user_key.encryption', 'EncryptionKey'),
+    'AgentIdentitySnapshot': ('hyprial.identity.impl.adapter_contracts', 'AgentIdentitySnapshot'),
+    'ClaimReceiptV1': ('hyprial.identity.impl.adapter_contracts', 'ClaimReceiptV1'),
+    'ManagementAuthorizationRefV1': ('hyprial.identity.impl.adapter_contracts', 'ManagementAuthorizationRefV1'),
+    'OrganizationAuthorizationLeaseV1': ('hyprial.identity.impl.adapter_contracts', 'OrganizationAuthorizationLeaseV1'),
+    'OrgRef': ('hyprial.identity.impl.adapter_contracts', 'OrgRef'),
+
     'ACTION_INVITE': ('hyprial.identity.impl.org_directory', 'ACTION_INVITE'),
     'ACTION_LEAVE': ('hyprial.identity.impl.org_directory', 'ACTION_LEAVE'),
     'ACTION_READ': ('hyprial.identity.impl.org_directory', 'ACTION_READ'),
@@ -322,8 +109,15 @@ _FACADE_EXPORTS = {
     'AgentLifecycleReceiptCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentLifecycleReceiptCompleted'),
     'AgentMigrationCoordinator': ('hyprial.identity.impl.agents.migration.coordinator', 'AgentMigrationCoordinator'),
     'AgentMutationCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentMutationCompleted'),
+    'AgentHarnessArgsUpdated': ('hyprial.identity.impl.agents.actor.ports', 'AgentHarnessArgsUpdated'),
     'AgentProjection': ('hyprial.identity.impl.agents.actor.ports', 'AgentProjection'),
     'AgentRegistry': ('hyprial.identity.impl.agents.registry._core', 'AgentRegistry'),
+    'NativeImportRecord': ('hyprial.identity.impl.agents.home.native_imports', 'NativeImportRecord'), 'capture_native_auth_launch': ('hyprial.identity.impl.agents.home.native_imports.launch', 'capture_native_auth_launch'),
+    'official_agent_uri': ('hyprial.identity.impl.agents.addressing', 'official_agent_uri'),
+    'id_form_minting': ('hyprial.identity.impl.agents.addressing', 'id_form_minting'),
+    'name_taken_remedy': ('hyprial.identity.impl.agents.addressing', 'name_taken_remedy'),
+    'resolve_local_actor': ('hyprial.identity.impl.agents.addressing', 'resolve_local_actor'),
+    'agent_id_for_entity_token': ('hyprial.identity.impl.agents.registry._base', 'agent_id_for_entity_token'),
     'AgentRuntimeContext': ('hyprial.identity.impl.agents.runtime.context', 'AgentRuntimeContext'),
     'AgentRuntimeNotice': ('hyprial.identity.impl.agents.runtime.context', 'AgentRuntimeNotice'),
     'AgentRuntimeError': ('hyprial.identity.impl.agents.runtime.context', 'AgentRuntimeError'),
@@ -333,7 +127,6 @@ _FACADE_EXPORTS = {
     'AgentToolProfile': ('hyprial.identity.impl.agents.runtime.context', 'AgentToolProfile'),
     'GitAuthorUnresolvedError': ('hyprial.identity.impl.agents.runtime.tool_profile', 'GitAuthorUnresolvedError'),
     'AllowAllPolicy': ('hyprial.identity.impl.org_directory', 'AllowAllPolicy'),
-    'Ambiguous': ('hyprial.identity.impl.users.store._base', 'Ambiguous'),
     'BOOTSTRAP_STEP_KINDS': ('hyprial.identity.impl.org_directory', 'BOOTSTRAP_STEP_KINDS'),
     'BindAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'BindAgentCommand'),
     'BlockAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'BlockAgentCommand'),
@@ -349,17 +142,10 @@ _FACADE_EXPORTS = {
     'ConfigProjectionReceipt': ('hyprial.identity.impl.agents.home.config', 'ConfigProjectionReceipt'),
     'ConfirmAgentLifecycleReceiptCommand': ('hyprial.identity.impl.agents.actor.ports', 'ConfirmAgentLifecycleReceiptCommand'),
     'CreateAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'CreateAgentCommand'),
-    'CreateHostInvitedAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'CreateHostInvitedAgentCommand'),
     'CreateTransferHostedAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'CreateTransferHostedAgentCommand'),
     'DEVICE_KEY_RELPATH': ('hyprial.identity.impl.device', 'DEVICE_KEY_RELPATH'),
     'DEVICE_RECORD_RELPATH': ('hyprial.identity.impl.device', 'DEVICE_RECORD_RELPATH'),
     'DIRECTORY_DIR': ('hyprial.identity.impl.org_directory', 'DIRECTORY_DIR'),
-    'BINDING_ASSERTION_CLIENT_ID': ('hyprial.identity.impl.org_directory', 'BINDING_ASSERTION_CLIENT_ID'),
-    'BINDING_ASSERTION_OWNER': ('hyprial.identity.impl.org_directory', 'BINDING_ASSERTION_OWNER'),
-    'binding_assertion_audience_matches': ('hyprial.identity.impl.org_directory', 'binding_assertion_audience_matches'),
-    'binding_assertion_claims_unverified': ('hyprial.identity.impl.org_directory', 'binding_assertion_claims_unverified'),
-    'binding_assertion_publish_after': ('hyprial.identity.impl.org_directory', 'binding_assertion_publish_after'),
-    'binding_numeric_date': ('hyprial.identity.impl.org_directory', 'binding_numeric_date'),
     'PEOPLE_DIR': ('hyprial.identity.impl.org_directory', 'PEOPLE_DIR'),
     'DestroyAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'DestroyAgentCommand'),
     'DeviceLoginRunner': ('hyprial.identity.impl.provider_auth.helper', 'DeviceLoginRunner'),
@@ -369,9 +155,9 @@ _FACADE_EXPORTS = {
     'DirectoryDevice': ('hyprial.identity.impl.org_directory', 'DirectoryDevice'),
     'DirectoryStore': ('hyprial.identity.impl.org_directory', 'DirectoryStore'),
     'directory_device_path': ('hyprial.identity.impl.org_directory', 'directory_device_path'),
-    'directory_binding_path': ('hyprial.identity.impl.org_directory', 'directory_binding_path'),
     'directory_owner_principal': ('hyprial.identity.impl.org_directory', 'directory_owner_principal'),
     'ProtectedDocIdTooLongError': ('hyprial.identity.impl.org_directory', 'ProtectedDocIdTooLongError'),
+    'legacy_receivers_node_id': ('hyprial.identity.impl.org_directory', 'legacy_receivers_node_id'),
     'parse_protected_directory_node_id': ('hyprial.identity.impl.org_directory', 'parse_protected_directory_node_id'),
     'parse_protected_directory_doc_id': ('hyprial.identity.impl.org_directory', 'parse_protected_directory_doc_id'),
     'protected_directory_node_id': ('hyprial.identity.impl.org_directory', 'protected_directory_node_id'),
@@ -392,18 +178,72 @@ _FACADE_EXPORTS = {
     'INVITE_SCHEME': ('hyprial.identity.impl.org_directory', 'INVITE_SCHEME'),
     'IdentityTransactionBusy': ('hyprial.identity.impl.identity_transaction', 'IdentityTransactionBusy'),
     'IdentityTransactionLock': ('hyprial.identity.impl.identity_transaction', 'IdentityTransactionLock'),
+    'AuthProfile': ('hyprial.identity.impl.onboarding', 'AuthProfile'),
+    'CommitPermit': ('hyprial.identity.impl.onboarding', 'CommitPermit'),
+    'CREDENTIAL_ARTIFACT_LABEL': ('hyprial.identity.impl.onboarding.ports', 'CREDENTIAL_ARTIFACT_LABEL'),
+    'DIFFERENT_ACCOUNT_REASON': ('hyprial.identity.impl.onboarding', 'DIFFERENT_ACCOUNT_REASON'),
+    'HOME_ACCOUNT_MIGRATION_GUIDE': ('hyprial.identity.impl.onboarding', 'HOME_ACCOUNT_MIGRATION_GUIDE'),
+    'HomeBinding': ('hyprial.identity.impl.onboarding', 'HomeBinding'),
+    'HttpTransport': ('hyprial.identity.impl.onboarding', 'HttpTransport'),
+    'IdentityAdmission': ('hyprial.identity.impl.onboarding', 'IdentityAdmission'),
+    'IdentityBegin': ('hyprial.identity.impl.onboarding', 'IdentityBegin'),
+    'IdentityCredentialPort': ('hyprial.identity.impl.onboarding', 'IdentityCredentialPort'),
+    'IdentityCredentialService': ('hyprial.identity.impl.onboarding', 'IdentityCredentialService'),
+    'IdentityError': ('hyprial.identity.impl.onboarding', 'IdentityError'),
+    'IdentityPublicState': ('hyprial.identity.impl.onboarding', 'IdentityPublicState'),
+    'IdentityRecordError': ('hyprial.identity.impl.onboarding', 'IdentityRecordError'),
+    'IdentitySnapshot': ('hyprial.identity.impl.onboarding', 'IdentitySnapshot'),
+    'IdentityWorkerError': ('hyprial.identity.impl.onboarding', 'IdentityWorkerError'),
+    'IdentityWorkerProtocolError': ('hyprial.identity.impl.onboarding', 'IdentityWorkerProtocolError'),
+    'IdentityWorkerUnavailable': ('hyprial.identity.impl.onboarding', 'IdentityWorkerUnavailable'), 'LEGACY_BUSINESS_DATABASES': ('hyprial.identity.impl.onboarding', 'LEGACY_BUSINESS_DATABASES'), 'LEGACY_BUSINESS_TEXT_FILES': ('hyprial.identity.impl.onboarding', 'LEGACY_BUSINESS_TEXT_FILES'), 'LEGACY_DEVICE_STATE_FILES': ('hyprial.identity.impl.onboarding', 'LEGACY_DEVICE_STATE_FILES'), 'LEGACY_UNBOUND_REASON': ('hyprial.identity.impl.onboarding', 'LEGACY_UNBOUND_REASON'), 'LEGACY_USER_KEYS_DIR': ('hyprial.identity.impl.onboarding', 'LEGACY_USER_KEYS_DIR'), 'OnboardingSubject': ('hyprial.identity.impl.onboarding', 'OnboardingSubject'),
+    'home_account_conflict_message': ('hyprial.identity.impl.onboarding', 'home_account_conflict_message'),
+    'legacy_business_data_present': ('hyprial.identity.impl.onboarding', 'legacy_business_data_present'),
+    'normalize_issuer': ('hyprial.identity.impl.onboarding', 'normalize_issuer'),
+    'read_home_binding': ('hyprial.identity.impl.onboarding', 'read_home_binding'),
+    'LOGIN_ARTIFACT_LABELS': ('hyprial.identity.impl.onboarding.logout', 'LOGIN_ARTIFACT_LABELS'),
+    'LOGIN_SETTINGS_FIELDS': ('hyprial.identity.impl.onboarding.logout', 'LOGIN_SETTINGS_FIELDS'),
+    'LogoutArtifacts': ('hyprial.identity.impl.onboarding.logout', 'LogoutArtifacts'),
+    'LogoutCredentialUnreadable': ('hyprial.identity.impl.onboarding.logout', 'LogoutCredentialUnreadable'),
+    'LogoutError': ('hyprial.identity.impl.onboarding.logout', 'LogoutError'),
+    'LogoutPartialRemoval': ('hyprial.identity.impl.onboarding.logout', 'LogoutPartialRemoval'),
+    'LogoutPermissionDenied': ('hyprial.identity.impl.onboarding.logout', 'LogoutPermissionDenied'),
+    'LogoutSettingsUnreadable': ('hyprial.identity.impl.onboarding.logout', 'LogoutSettingsUnreadable'),
+    'PUBLIC_STATE_FIELDS': ('hyprial.identity.impl.onboarding', 'PUBLIC_STATE_FIELDS'),
+    'WORKER_COMMANDS': ('hyprial.identity.impl.onboarding', 'WORKER_COMMANDS'),
+    'inspect_logout_artifacts': ('hyprial.identity.impl.onboarding.logout', 'inspect_logout_artifacts'),
+    'remove_logout_artifacts': ('hyprial.identity.impl.onboarding.logout', 'remove_logout_artifacts'),
+    'CREDENTIAL_VERSION': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'CREDENTIAL_VERSION'),
+    'LOGIN_FILENAME': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'LOGIN_FILENAME'),
+    'SECRETS_DIRNAME': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'SECRETS_DIRNAME'),
+    'IdentityCredential': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'IdentityCredential'),
+    'identity_credential_path': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'credential_path'),
+    'read_identity_credential': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'read_login_credential'),
+    'write_identity_credential': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'write_login_credential'),
+    'read_login_generation': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'read_login_generation'),
+    'reserve_identity_generation': ('hyprial.identity.impl.onboarding.credentials.credential_store', 'reserve_identity_generation'),
+    'IDENTITY_RESIDUE_FIELDS': ('hyprial.identity.impl.onboarding.identity_record', 'IDENTITY_RESIDUE_FIELDS'),
+    'node_owner_or_none': ('hyprial.identity.impl.onboarding.identity_record', 'node_owner_or_none'),
+    'read_identity_admission': ('hyprial.identity.impl.onboarding.identity_record', 'read_identity_admission'),
+    'read_identity_snapshot': ('hyprial.identity.impl.onboarding.identity_record', 'read_identity_snapshot'), 'read_onboarding_identity': ('hyprial.identity.impl.onboarding.identity_record', 'read_onboarding_identity'), 'read_onboarding_subject': ('hyprial.identity.impl.onboarding.identity_record', 'read_onboarding_subject'),
+    'read_settings_identity': ('hyprial.identity.impl.onboarding.identity_record', 'read_settings_identity'),
+    'read_settings_identity_metadata': ('hyprial.identity.impl.onboarding.identity_record', 'read_settings_identity_metadata'),
+    'read_settings_username': ('hyprial.identity.impl.onboarding.identity_record', 'read_settings_username'),
+    'resolve_node_owner': ('hyprial.identity.impl.onboarding.identity_record', 'resolve_node_owner'),
+    'resolve_node_user_id': ('hyprial.identity.impl.onboarding.identity_record', 'resolve_node_user_id'),
+    'settings_path': ('hyprial.identity.impl.onboarding.identity_record', 'settings_path'),
+    'write_settings_identity': ('hyprial.identity.impl.onboarding.identity_record', 'write_settings_identity'),
+    'write_settings_owner': ('hyprial.identity.impl.onboarding.identity_record', 'write_settings_owner'),
     'InvalidAgentNameError': ('hyprial.identity.impl.agents.registry._base', 'InvalidAgentNameError'),
     'InviteError': ('hyprial.identity.impl.org_directory', 'InviteError'),
     'InviteLink': ('hyprial.identity.impl.org_directory', 'InviteLink'),
+    'JoinIdentityError': ('hyprial.identity.impl.org_directory', 'JoinIdentityError'),
+    'JoinTokenLedger': ('hyprial.identity.impl.org_directory', 'JoinTokenLedger'),
     'LEAVES_DIR': ('hyprial.identity.impl.org_directory', 'LEAVES_DIR'),
-    'LazyUserStore': ('hyprial.identity.impl.users.store._lazy', 'LazyUserStore'),
     'MigrationAuthorizationWindow': ('hyprial.identity.impl.agents.migration.entry', 'MigrationAuthorizationWindow'),
     'MigrationPreflightManifest': ('hyprial.identity.impl.agents.migration.entry', 'MigrationPreflightManifest'),
-    'NotificationRule': ('hyprial.identity.impl.users.profile', 'NotificationRule'),
     'ORG_META_DOC': ('hyprial.identity.impl.org_directory', 'ORG_META_DOC'),
     'ORG_SPACE_PREFIX': ('hyprial.identity.impl.org_directory', 'ORG_SPACE_PREFIX'),
     'OrgPolicy': ('hyprial.identity.impl.org_directory', 'OrgPolicy'),
-    'OwnerOpenId': ('hyprial.identity.impl.users.profile', 'OwnerOpenId'),
     'PAC_EDGE_EXISTS': ('hyprial.identity.impl.pac_errors', 'PAC_EDGE_EXISTS'),
     'PAC_EDGE_INVALID': ('hyprial.identity.impl.pac_errors', 'PAC_EDGE_INVALID'),
     'PAC_EXPANSION_ALREADY_BOUND': ('hyprial.identity.impl.pac_errors', 'PAC_EXPANSION_ALREADY_BOUND'),
@@ -440,10 +280,6 @@ _FACADE_EXPORTS = {
     'PAC_WORKTREE_IDENTITY_MISMATCH': ('hyprial.identity.impl.pac_errors', 'PAC_WORKTREE_IDENTITY_MISMATCH'),
     'PAC_WORKTREE_PREPARE_FAILED': ('hyprial.identity.impl.pac_errors', 'PAC_WORKTREE_PREPARE_FAILED'),
     'PacError': ('hyprial.identity.impl.pac_errors', 'PacError'),
-    'PinAgentAdapterCommand': ('hyprial.identity.impl.agents.actor.ports', 'PinAgentAdapterCommand'),
-    'PinConflictError': ('hyprial.identity.impl.agents.registry._base', 'PinConflictError'),
-    'PinStateConflictError': ('hyprial.identity.impl.agents.registry._base', 'PinStateConflictError'),
-    'PreferredReceiver': ('hyprial.identity.impl.users.profile', 'PreferredReceiver'),
     'Principal': ('hyprial.identity.impl.agents.runtime.enforcement', 'Principal'),
     'ProviderAuthAuthority': ('hyprial.identity.impl.provider_auth.actor._authority', 'ProviderAuthAuthority'),
     'RESOURCE_DIRECTORY_ALL': ('hyprial.identity.impl.org_directory', 'RESOURCE_DIRECTORY_ALL'),
@@ -461,7 +297,6 @@ _FACADE_EXPORTS = {
     'ReleaseAgentDestroyReservationCommand': ('hyprial.identity.impl.agents.actor.ports', 'ReleaseAgentDestroyReservationCommand'),
     'ReleaseAgentRuntimeLaunchCommand': ('hyprial.identity.impl.agents.actor.ports', 'ReleaseAgentRuntimeLaunchCommand'),
     'ReserveAgentDestroyCommand': ('hyprial.identity.impl.agents.actor.ports', 'ReserveAgentDestroyCommand'),
-    'ResolvedUser': ('hyprial.identity.impl.users.store._base', 'ResolvedUser'),
     'RestorePolicyAuthority': ('hyprial.identity.impl.agents.state.worker_state', 'RestorePolicyAuthority'),
     'RestorePolicyError': ('hyprial.identity.impl.agents.state.worker_state', 'RestorePolicyError'),
     'is_inactive': ('hyprial.identity.impl.agents.state.worker_state', 'is_inactive'),
@@ -471,7 +306,9 @@ _FACADE_EXPORTS = {
     'RollbackRetiredAgentSessionRefsCommand': ('hyprial.identity.impl.agents.actor.ports', 'RollbackRetiredAgentSessionRefsCommand'),
     'RevokeAgentCapabilityCommand': ('hyprial.identity.impl.agents.actor.ports', 'RevokeAgentCapabilityCommand'),
     'RevokeAgentSecretCommand': ('hyprial.identity.impl.agents.actor.ports', 'RevokeAgentSecretCommand'),
-    'RuntimeCapability': ('hyprial.identity.impl.users.profile', 'RuntimeCapability'),
+    'RuntimeCapability': ('hyprial.identity.impl.users.runtime_capabilities', 'RuntimeCapability'),
+    'RuntimeCapabilityError': ('hyprial.identity.impl.users.runtime_capabilities', 'RuntimeCapabilityError'),
+    'RuntimeCapabilityStore': ('hyprial.identity.impl.users.runtime_capabilities', 'RuntimeCapabilityStore'),
     'RuntimeHomePreparers': ('hyprial.identity.impl.agents.home.effects', 'RuntimeHomePreparers'),
     'SEE_ACTORS': ('hyprial.identity.impl.agents.runtime.visibility', 'SEE_ACTORS'),
     'SEND_TO': ('hyprial.identity.impl.agents.runtime.visibility', 'SEND_TO'),
@@ -486,18 +323,16 @@ _FACADE_EXPORTS = {
     'secret_environment_name_is_allowed': ('hyprial.identity.impl.agents.runtime.secrets', 'secret_environment_name_is_allowed'),
     'secret_fingerprint': ('hyprial.identity.impl.agents.secret_store', 'secret_fingerprint'),
     'SetRestoreDispositionCommand': ('hyprial.identity.impl.agents.actor.ports', 'SetRestoreDispositionCommand'),
+    'SetHarnessArgsCommand': ('hyprial.identity.impl.agents.actor.ports', 'SetHarnessArgsCommand'),
     'SettleAgentDestroyCommand': ('hyprial.identity.impl.agents.actor.ports', 'SettleAgentDestroyCommand'),
     'SharedCredentialBinding': ('hyprial.identity.impl.agents.runtime.context', 'SharedCredentialBinding'),
     'USER_NOT_FOUND': ('hyprial.identity.impl.users.store._base', 'USER_NOT_FOUND'),
     'UnblockAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'UnblockAgentCommand'),
-    'UnpinAgentAdapterCommand': ('hyprial.identity.impl.agents.actor.ports', 'UnpinAgentAdapterCommand'),
     'BindAgentConfigCommand': ('hyprial.identity.impl.agents.actor.ports', 'BindAgentConfigCommand'),
     'agent_config_digest': ('hyprial.identity.impl.agents.registry.config_binding', 'agent_config_digest'),
     'UpdateAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'UpdateAgentCommand'),
+    'RenameAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'RenameAgentCommand'),
     'UserHomeError': ('hyprial.identity.impl.users.home', 'UserHomeError'),
-    'UserProfile': ('hyprial.identity.impl.users.profile', 'UserProfile'),
-    'UserProfileError': ('hyprial.identity.impl.users.profile', 'UserProfileError'),
-    'UserProfileStore': ('hyprial.identity.impl.users.profile', 'UserProfileStore'),
     'UserStore': ('hyprial.identity.impl.users.store._store', 'UserStore'),
     'UserStoreError': ('hyprial.identity.impl.users.store._base', 'UserStoreError'),
     'VisibilityError': ('hyprial.identity.impl.agents.runtime.visibility', 'VisibilityError'),
@@ -521,11 +356,11 @@ _FACADE_EXPORTS = {
     'NATIVE_CREDENTIAL_FILES': ('hyprial.identity.impl.agents.home.native_credential', 'NATIVE_CREDENTIAL_FILES'),
     'install_native_credential': ('hyprial.identity.impl.agents.home.native_credential', 'install_native_credential'),
     'install_native_credential_set': ('hyprial.identity.impl.agents.home.native_credential', 'install_native_credential_set'),
+    'inspect_native_credentials': ('hyprial.identity.impl.agents.home.native_credential', 'inspect_native_credentials'),
     'remove_native_credentials': ('hyprial.identity.impl.agents.home.native_credential', 'remove_native_credentials'),
     'native_secrets_root': ('hyprial.identity.impl.agents.home.native_credential', 'native_secrets_root'),
     'prepare_legacy_claude_native_root': ('hyprial.identity.impl.agents.home.native_credential', 'prepare_legacy_claude_native_root'),
     'bootstrap_yaml': ('hyprial.identity.impl.org_directory', 'bootstrap_yaml'),
-    'check_channel': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_channel'),
     'check_org_context': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_org_context'),
     'check_shared_path': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_shared_path'),
     'compose_worker_child_launch': ('hyprial.identity.impl.agents.home.environment', 'compose_worker_child_launch'),
@@ -545,6 +380,7 @@ _FACADE_EXPORTS = {
     'identity_slug': ('hyprial.identity.impl.identity_slug', 'identity_slug'),
     'invite_deep_link': ('hyprial.identity.impl.org_directory', 'invite_deep_link'),
     'invite_https_url': ('hyprial.identity.impl.org_directory', 'invite_https_url'),
+    'validate_oidc_join': ('hyprial.identity.impl.org_directory', 'validate_oidc_join'),
     'is_org_acl_space': ('hyprial.identity.impl.org_directory', 'is_org_acl_space'),
     'is_org_directory_space': ('hyprial.identity.impl.org_directory', 'is_org_directory_space'),
     'launch_worker_proxy_route': ('hyprial.identity.impl.agents.state.worker_proxy', 'launch_worker_proxy_route'),
@@ -577,6 +413,57 @@ _FACADE_EXPORTS = {
     'write_device_record': ('hyprial.identity.impl.device', 'write_device_record'),
     'write_machine_binding': ('hyprial.identity.impl.device', 'write_machine_binding'),
     'write_worker_proxy_field': ('hyprial.identity.impl.agents.state.worker_proxy', 'write_worker_proxy_field'),
+    'AuthorizationMechanism': ('hyprial.identity.impl.authorization', 'AuthorizationMechanism'),
+    'BINDING_URI_NAMESPACE': ('hyprial.identity.impl.device', 'BINDING_URI_NAMESPACE'),
+    'BINDING_URI_PREFIX': ('hyprial.identity.impl.device', 'BINDING_URI_PREFIX'),
+    'CLAIM_FIELDS': ('hyprial.identity.impl.device', 'CLAIM_FIELDS'),
+    'DEVICE_CERTIFICATE_ROUTE': ('hyprial.identity.impl.device', 'DEVICE_CERTIFICATE_ROUTE'),
+    'ENVELOPE_VERSION': ('hyprial.identity.impl.device', 'ENVELOPE_VERSION'),
+    'MAX_REQUEST_BYTES': ('hyprial.identity.impl.device', 'MAX_REQUEST_BYTES'),
+    'MAX_RESPONSE_BYTES': ('hyprial.identity.impl.device', 'MAX_RESPONSE_BYTES'),
+    'OUTCOME_NOT_SENT': ('hyprial.identity.impl.device', 'OUTCOME_NOT_SENT'),
+    'OUTCOME_REJECTED': ('hyprial.identity.impl.device', 'OUTCOME_REJECTED'),
+    'OUTCOME_UNKNOWN': ('hyprial.identity.impl.device', 'OUTCOME_UNKNOWN'),
+    'PROFILE': ('hyprial.identity.impl.device', 'PROFILE'),
+    'RETIRE_BINDING_ROUTE': ('hyprial.identity.impl.device', 'RETIRE_BINDING_ROUTE'),
+    'ClientTlsMaterial': ('hyprial.identity.impl.device', 'ClientTlsMaterial'),
+    'DeviceAuthorityConfig': ('hyprial.identity.impl.device', 'DeviceAuthorityConfig'),
+    'DeviceTransportClient': ('hyprial.identity.impl.device', 'DeviceTransportClient'),
+    'TransportClientError': ('hyprial.identity.impl.device', 'TransportClientError'),
+    'binding_claims': ('hyprial.identity.impl.device', 'binding_claims'),
+    'binding_digest': ('hyprial.identity.impl.device', 'binding_digest'),
+    'binding_uri': ('hyprial.identity.impl.device', 'binding_uri'),
+    'canonical_binding_bytes': ('hyprial.identity.impl.device', 'canonical_binding_bytes'),
+    'load_client_tls_material': ('hyprial.identity.impl.device', 'load_client_tls_material'),
+    'verify_certificate_binding': ('hyprial.identity.impl.device', 'verify_certificate_binding'),
+    'TailnetAuthorityBinding': ('hyprial.identity.impl.device.tailnet', 'TailnetAuthorityBinding'),
+    'TailnetCredentials': ('hyprial.identity.impl.device.tailnet.runtime', 'TailnetCredentials'),
+    'TailnetAuthorityPin': ('hyprial.identity.impl.device.tailnet', 'TailnetAuthorityPin'),
+    'TailnetCredentialAssociation': ('hyprial.identity.impl.device.tailnet', 'TailnetCredentialAssociation'),
+    'TailnetCredentialContext': ('hyprial.identity.impl.device.tailnet', 'TailnetCredentialContext'),
+    'TailnetCredentialError': ('hyprial.identity.impl.device.tailnet', 'TailnetCredentialError'),
+    'TailnetMember': ('hyprial.identity.impl.device.tailnet', 'TailnetMember'),
+    'TailnetMembership': ('hyprial.identity.impl.device.tailnet', 'TailnetMembership'),
+    'TailnetCredentialOperation': ('hyprial.identity.impl.device.tailnet', 'TailnetCredentialOperation'),
+    'TailnetCredentialWorkflow': ('hyprial.identity.impl.device.tailnet', 'TailnetCredentialWorkflow'),
+    'StagedTransportCredential': ('hyprial.identity.impl.device', 'StagedTransportCredential'),
+    'TransportCredential': ('hyprial.identity.impl.device', 'TransportCredential'),
+    'TransportCredentialError': ('hyprial.identity.impl.device', 'TransportCredentialError'),
+    'read_transport_credential': ('hyprial.identity.impl.device', 'read_transport_credential'),
+    'retire_transport_credential': ('hyprial.identity.impl.device', 'retire_transport_credential'),
+    'stage_transport_credential': ('hyprial.identity.impl.device', 'stage_transport_credential'),
+    'transport_credential_status': ('hyprial.identity.impl.device', 'transport_credential_status'),
+    'validate_enrollment_response': ('hyprial.identity.impl.device', 'validate_enrollment_response'),
+    'commit_transport_credential': ('hyprial.identity.impl.device', 'commit_transport_credential'),
+    'protected_section_for_path': ('hyprial.identity.impl.org_directory', 'protected_section_for_path'),
+    'InviteSelection': ('hyprial.identity.impl.org_membership.invites', 'InviteSelection'),
+    'InviteView': ('hyprial.identity.impl.org_membership.invites', 'InviteView'),
+    'invite_identifier': ('hyprial.identity.impl.org_membership.invites', 'invite_identifier'),
+    'invite_link': ('hyprial.identity.impl.org_membership.invites', 'invite_link'),
+    'invite_view': ('hyprial.identity.impl.org_membership.invites', 'invite_view'),
+    'invite_views': ('hyprial.identity.impl.org_membership.invites', 'invite_views'),
+    'select_invites': ('hyprial.identity.impl.org_membership.invites', 'select_invites'),
+    'OrgMembership': ('hyprial.identity.impl.org_membership', None),
 }
 
 
@@ -598,6 +485,15 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    'ProviderKeys',
+    'UserKey',
+    'EncryptionKey',
+    'AgentIdentitySnapshot',
+    'ClaimReceiptV1',
+    'ManagementAuthorizationRefV1',
+    'OrganizationAuthorizationLeaseV1',
+    'OrgRef',
+
     'ACTION_INVITE',
     'ACTION_LEAVE',
     'ACTION_READ',
@@ -608,10 +504,6 @@ __all__ = [
     'AcquireAgentRuntimeLaunchCommand',
     'Agent',
     'AgentActor',
-    'HomeOperationConflict',
-    'HomeOperationUnknown',
-    'AgentHomeAccessPending',
-    'AgentHomeAccessError',
     'AgentAlreadyRunning',
     'AgentBinding',
     'AgentCapabilityGrantCompleted',
@@ -619,107 +511,131 @@ __all__ = [
     'AgentConfig',
     'AgentConfigCasMismatch',
     'AgentConfigError',
-    'AgentIncarnationMismatch',
     'AgentDestroyReservationCompleted',
     'AgentDestroySettled',
     'AgentError',
-    'HOSTED_BY_VALUES',
     'AgentEvent',
+    'AgentHomeAccessError',
+    'AgentHomeAccessPending',
     'AgentHomeError',
+    'AgentIncarnationMismatch',
     'AgentLifecycleReceiptCompleted',
     'AgentMigrationCoordinator',
     'AgentMutationCompleted',
+    'AgentHarnessArgsUpdated',
     'AgentProjection',
     'AgentRegistry',
+    'NativeImportRecord', 'capture_native_auth_launch',
     'AgentRuntimeContext',
-    'AgentRuntimeNotice',
     'AgentRuntimeError',
     'AgentRuntimeLaunchLeaseCompleted',
     'AgentRuntimeMigrationBindings',
+    'AgentRuntimeNotice',
     'AgentSecretGrantCompleted',
+    'AgentSecretStore',
     'AgentToolProfile',
-    'GitAuthorUnresolvedError',
     'AllowAllPolicy',
-    'Ambiguous',
+    'AuthProfile',
     'BOOTSTRAP_STEP_KINDS',
     'BindAgentCommand',
+    'BindAgentConfigCommand',
     'BlockAgentCommand',
     'BlockingFailureAuthority',
     'BootstrapStep',
     'CAPABILITY_ENTRY_POINTS',
+    'CREDENTIAL_ARTIFACT_LABEL',
+    'CREDENTIAL_VERSION',
     'CallerIdentity',
     'CapabilityRecord',
     'CasbinOrgPolicy',
     'ChildEnvironmentLaunch',
     'CleanupRevokedAgentHomeCommand',
     'ClearRestoreDispositionCommand',
+    'CommitPermit',
     'ConfigProjectionReceipt',
     'ConfirmAgentLifecycleReceiptCommand',
     'CreateAgentCommand',
-    'CreateHostInvitedAgentCommand',
     'CreateTransferHostedAgentCommand',
     'DEVICE_KEY_RELPATH',
     'DEVICE_RECORD_RELPATH',
+    'DIFFERENT_ACCOUNT_REASON',
     'DIRECTORY_DIR',
-    'BINDING_ASSERTION_CLIENT_ID',
-    'BINDING_ASSERTION_OWNER',
-    'binding_assertion_audience_matches',
-    'binding_assertion_claims_unverified',
-    'binding_assertion_publish_after',
-    'binding_numeric_date',
-    'PEOPLE_DIR',
+    'DefaultClaudeCredentialCommand',
+    'DefaultClaudeCredentialCompleted',
     'DestroyAgentCommand',
     'DeviceLoginRunner',
     'DeviceRecord',
-    'MachineBinding',
-    'consume_rotation_event',
     'DirectoryDevice',
     'DirectoryStore',
-    'directory_device_path',
-    'directory_binding_path',
-    'directory_owner_principal',
-    'ProtectedDocIdTooLongError',
-    'parse_protected_directory_node_id',
-    'parse_protected_directory_doc_id',
-    'protected_directory_node_id',
-    'protected_directory_doc_id',
-    'protected_directory_author_allowed',
+    'EXPECTED_IDENTITY_GENERATION_ENV',
     'EnforcementError',
+    'FingerprintUnavailable',
     'GRANTABLE_CAPABILITIES',
+    'GitAuthorUnresolvedError',
     'GrantAgentCapabilityCommand',
-    'DefaultClaudeCredentialCommand',
-    'DefaultClaudeCredentialCompleted',
     'GrantAgentSecretCommand',
     'GrantRecord',
+    'HOME_ACCOUNT_MIGRATION_GUIDE',
+    'HOSTED_BY_VALUES',
     'HandoverNotice',
+    'HomeBinding',
+    'HomeOperationConflict',
+    'HomeOperationUnknown',
     'HomePayloadFile',
     'HomeRuntimePreparer',
-    'EXPECTED_IDENTITY_GENERATION_ENV',
+    'HttpTransport',
+    'IDENTITY_RESIDUE_FIELDS',
     'INVITES_DIR',
     'INVITE_SCHEME',
+    'IdentityAdmission',
+    'IdentityBegin',
+    'IdentityCredential',
+    'IdentityCredentialPort',
+    'IdentityCredentialService',
+    'IdentityError',
+    'IdentityPublicState',
+    'IdentityRecordError',
+    'IdentitySnapshot',
     'IdentityTransactionBusy',
     'IdentityTransactionLock',
+    'IdentityWorkerError',
+    'IdentityWorkerProtocolError',
+    'IdentityWorkerUnavailable', 'LEGACY_BUSINESS_DATABASES', 'LEGACY_BUSINESS_TEXT_FILES', 'LEGACY_DEVICE_STATE_FILES', 'LEGACY_UNBOUND_REASON', 'LEGACY_USER_KEYS_DIR', 'OnboardingSubject',
     'InvalidAgentNameError',
     'InviteError',
     'InviteLink',
+    'JoinIdentityError',
+    'JoinTokenLedger',
+    'InviteSelection',
+    'InviteView',
     'LEAVES_DIR',
-    'LazyUserStore',
+    'LOGIN_ARTIFACT_LABELS',
+    'LOGIN_FILENAME',
+    'LOGIN_SETTINGS_FIELDS',
+    'LogoutArtifacts',
+    'LogoutCredentialUnreadable',
+    'LogoutError',
+    'LogoutPartialRemoval',
+    'LogoutPermissionDenied',
+    'LogoutSettingsUnreadable',
+    'MachineBinding',
     'MigrationAuthorizationWindow',
     'MigrationPreflightManifest',
-    'NotificationRule',
+    'NATIVE_CREDENTIAL_FILES',
+    'NativeCredentialError',
     'ORG_META_DOC',
     'ORG_SPACE_PREFIX',
+    'OrgMembership',
     'OrgPolicy',
-    'OwnerOpenId',
     'PAC_EDGE_EXISTS',
     'PAC_EDGE_INVALID',
+    'PAC_EVENTS_RESYNC',
+    'PAC_EVENT_ENVELOPE_INVALID',
+    'PAC_EVENT_TYPE_UNKNOWN',
     'PAC_EXPANSION_ALREADY_BOUND',
     'PAC_EXPANSION_INVALID',
     'PAC_EXPANSION_POLICY_UNAVAILABLE',
     'PAC_EXPANSION_SYSTEM_NODE',
-    'PAC_EVENTS_RESYNC',
-    'PAC_EVENT_ENVELOPE_INVALID',
-    'PAC_EVENT_TYPE_UNKNOWN',
     'PAC_FLAG_ALREADY_SET',
     'PAC_FLAG_NOT_OWNER',
     'PAC_FLAG_NOT_SET',
@@ -746,12 +662,11 @@ __all__ = [
     'PAC_WORKTREE_CLEANUP_FAILED',
     'PAC_WORKTREE_IDENTITY_MISMATCH',
     'PAC_WORKTREE_PREPARE_FAILED',
+    'PEOPLE_DIR',
+    'PUBLIC_STATE_FIELDS',
     'PacError',
-    'PinAgentAdapterCommand',
-    'PinConflictError',
-    'PinStateConflictError',
-    'PreferredReceiver',
     'Principal',
+    'ProtectedDocIdTooLongError',
     'ProviderAuthAuthority',
     'RESOURCE_DIRECTORY_ALL',
     'RESOURCE_ORG_MEMBERS',
@@ -761,81 +676,66 @@ __all__ = [
     'ROLE_OWNER',
     'RUNTIME_HEADLESS',
     'RUNTIME_INTERACTIVE',
+    'ReadinessError',
     'RecordAgentActivityCommand',
     'RecordAgentActivityIfBindingCommand',
     'RecordAgentSessionRefCommand',
     'ReleaseAgentCommand',
     'ReleaseAgentDestroyReservationCommand',
     'ReleaseAgentRuntimeLaunchCommand',
+    'RenameAgentCommand',
     'ReserveAgentDestroyCommand',
-    'ResolvedUser',
     'RestorePolicyAuthority',
     'RestorePolicyError',
-    'is_inactive',
-    'migrate_legacy_agent_keep_list',
     'RetireAgentLifecycleReceiptCommand',
     'RetireAgentSessionRefsCommand',
-    'RollbackRetiredAgentSessionRefsCommand',
     'RevokeAgentCapabilityCommand',
     'RevokeAgentSecretCommand',
+    'RollbackRetiredAgentSessionRefsCommand',
     'RuntimeCapability',
+    'RuntimeCapabilityError',
+    'RuntimeCapabilityStore',
     'RuntimeHomePreparers',
+    'SECRETS_DIRNAME',
     'SEE_ACTORS',
     'SEND_TO',
-    'SecretResolver',
-    'SecretResolutionError',
-    'SecretSource',
-    'AgentSecretStore',
-    'FingerprintUnavailable',
     'SecretEvent',
-    'StoredSecret',
-    'agent_secret_store_exists',
-    'secret_environment_name_is_allowed',
-    'secret_fingerprint',
+    'SecretResolutionError',
+    'SecretResolver',
+    'SecretSource',
     'SetRestoreDispositionCommand',
+    'SetHarnessArgsCommand',
     'SettleAgentDestroyCommand',
     'SharedCredentialBinding',
+    'StoredSecret',
+    'ToolDeclaration',
     'USER_NOT_FOUND',
     'UnblockAgentCommand',
-    'UnpinAgentAdapterCommand',
-    'BindAgentConfigCommand',
-    'agent_config_digest',
     'UpdateAgentCommand',
     'UserHomeError',
-    'UserProfile',
-    'UserProfileError',
-    'UserProfileStore',
     'UserStore',
     'UserStoreError',
     'VisibilityError',
-    'ReadinessError',
-    'ToolDeclaration',
+    'WORKER_COMMANDS',
     'WORKER_PROXY_FIELDS',
     'WORKER_PROXY_SETTINGS_KEY',
     'WORKFLOW_REMOTE_OWNER_UNSUPPORTED',
     'WORKFLOW_WORKER_RECEIPT_MISMATCH',
     'WorkerProxyError',
+    'WorkerSessionBinding',
     'address_path',
+    'agent_config_digest',
     'agent_home_mode',
+    'agent_id_for_entity_token',
+    'agent_secret_store_exists',
     'ambient_proxy_absent',
     'apply_runtime_environment_profile',
     'assess_agent_readiness',
-    'parse_tool_declaration',
-    'resolve_agent_runtime_context',
-    'resolve_agent_tool_profile',
-    'resolve_agent_secrets',
-    'NativeCredentialError',
-    'NATIVE_CREDENTIAL_FILES',
-    'install_native_credential',
-    'install_native_credential_set',
-    'remove_native_credentials',
-    'native_secrets_root',
-    'prepare_legacy_claude_native_root',
     'bootstrap_yaml',
-    'check_channel',
     'check_org_context',
     'check_shared_path',
     'compose_worker_child_launch',
+    'consume_rotation_event',
     'decode_invite',
     'default_bootstrap',
     'default_role_grants_document',
@@ -843,45 +743,134 @@ __all__ = [
     'desired_generation',
     'device_key_path',
     'device_record_path',
-    'machine_binding_path',
-    'machine_fingerprint',
-    'mark_first_published',
+    'directory_device_path',
+    'directory_owner_principal',
     'encode_invite',
     'explain',
     'explain_target',
+    'id_form_minting',
+    'identity_credential_path',
     'identity_slug',
+    'inspect_logout_artifacts',
+    'install_native_credential',
+    'install_native_credential_set',
+    'inspect_native_credentials',
     'invite_deep_link',
     'invite_https_url',
+    'validate_oidc_join',
+    'invite_identifier',
+    'invite_link',
+    'invite_view',
+    'invite_views',
+    'home_account_conflict_message',
+    'is_inactive',
     'is_org_acl_space',
     'is_org_directory_space',
     'launch_worker_proxy_route',
+    'legacy_business_data_present',
+    'legacy_receivers_node_id',
     'load_packaged_support_matrix',
+    'machine_binding_path',
+    'machine_fingerprint',
+    'mark_first_published',
     'may_send',
+    'migrate_legacy_agent_keep_list',
+    'name_taken_remedy',
+    'native_secrets_root',
+    'node_owner_or_none',
     'normalize_capabilities',
     'normalize_harness_args',
+    'normalize_issuer',
+    'official_agent_uri',
     'option_value',
     'org_from_space_name',
     'org_space_name',
     'parse_bootstrap_yaml',
-    'preflight_codex_credential',
-    'role_grants_from_document',
     'parse_principal',
+    'parse_protected_directory_doc_id',
+    'parse_protected_directory_node_id',
+    'parse_tool_declaration',
+    'preflight_codex_credential',
+    'prepare_legacy_claude_native_root',
     'principal_kind',
     'principal_matches_local_actor',
-    'read_device_record',
-    'read_machine_binding',
+    'protected_directory_author_allowed',
+    'protected_directory_doc_id',
+    'protected_directory_node_id',
+    'protected_section_for_path',
+    'read_device_record', 'read_home_binding', 'read_identity_admission', 'read_identity_credential',
+    'read_identity_snapshot', 'read_login_generation', 'read_onboarding_identity', 'read_onboarding_subject',
+    'read_machine_binding', 'read_settings_identity', 'read_settings_identity_metadata', 'read_settings_username',
     'read_worker_proxy',
+    'remove_logout_artifacts',
+    'remove_native_credentials',
+    'reserve_identity_generation',
+    'resolve_agent_runtime_context',
+    'resolve_agent_secrets',
+    'resolve_agent_tool_profile',
+    'resolve_local_actor',
+    'resolve_node_owner',
+    'resolve_node_user_id',
+    'role_grants_from_document',
     'runtime_capabilities',
+    'secret_environment_name_is_allowed',
+    'secret_fingerprint',
+    'select_invites',
+    'settings_path',
     'shared_credential_status',
     'snapshot_home_payload',
     'validate_shared_credential_binding',
-    'WorkerSessionBinding',
-    'worker_session_binding',
     'validate_shared_credential_environment',
     'verify_native_projection',
     'visible_targets',
     'whitelist_replacement_environment',
+    'worker_session_binding',
     'write_device_record',
+    'write_identity_credential',
     'write_machine_binding',
+    'write_settings_identity',
+    'write_settings_owner',
     'write_worker_proxy_field',
+    'AuthorizationMechanism',
+    'BINDING_URI_NAMESPACE',
+    'BINDING_URI_PREFIX',
+    'CLAIM_FIELDS',
+    'DEVICE_CERTIFICATE_ROUTE',
+    'ENVELOPE_VERSION',
+    'MAX_REQUEST_BYTES',
+    'MAX_RESPONSE_BYTES',
+    'OUTCOME_NOT_SENT',
+    'OUTCOME_REJECTED',
+    'OUTCOME_UNKNOWN',
+    'PROFILE',
+    'RETIRE_BINDING_ROUTE',
+    'ClientTlsMaterial',
+    'DeviceAuthorityConfig',
+    'DeviceTransportClient',
+    'TransportClientError',
+    'binding_claims',
+    'binding_digest',
+    'binding_uri',
+    'canonical_binding_bytes',
+    'load_client_tls_material',
+    'verify_certificate_binding',
+    'TailnetAuthorityBinding',
+    'TailnetCredentials',
+    'TailnetAuthorityPin',
+    'TailnetCredentialAssociation',
+    'TailnetCredentialContext',
+    'TailnetCredentialError',
+    'TailnetMember',
+    'TailnetMembership',
+    'TailnetCredentialOperation',
+    'TailnetCredentialWorkflow',
+    'StagedTransportCredential',
+    'TransportCredential',
+    'TransportCredentialError',
+    'read_transport_credential',
+    'retire_transport_credential',
+    'stage_transport_credential',
+    'transport_credential_status',
+    'validate_enrollment_response',
+    'commit_transport_credential',
 ]

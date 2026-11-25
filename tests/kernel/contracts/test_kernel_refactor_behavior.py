@@ -8,7 +8,7 @@ import threading
 import pytest
 
 from hyprial.kernel import (
-    ActorRuntime,
+    ActorEngineConfig,
     ActorSpec,
     AdmissionResult,
     CallCostCounters,
@@ -18,6 +18,7 @@ from hyprial.kernel import (
     OwnedProcessGroup,
     ProcessLivenessProbeError,
     ProcessLivenessState,
+    create_engine,
 )
 
 
@@ -86,21 +87,22 @@ def test_relocated_actor_backend_retains_admission_and_drain() -> None:
             entered.set()
             assert release.wait(2.0)
 
-    runtime = ActorRuntime()
-    actor = runtime.start(
+    engine = create_engine(ActorEngineConfig())
+    actor = engine.spawn(
         ActorSpec(name="kernel-bounded", handler_factory=lambda: handle, mailbox_capacity=1)
     )
     try:
-        assert runtime.tell(actor, "first") is AdmissionResult.ACCEPTED
+        assert engine.tell(actor, "first") is AdmissionResult.ACCEPTED
         assert entered.wait(2.0)
-        assert runtime.tell(actor, "second") is AdmissionResult.ACCEPTED
-        assert runtime.tell(actor, "third") is AdmissionResult.OVERLOADED
+        assert engine.tell(actor, "second") is AdmissionResult.ACCEPTED
+        assert engine.tell(actor, "third") is AdmissionResult.OVERLOADED
     finally:
         release.set()
-        report = runtime.drain(2.0)
+        report = engine.drain(None, 2.0)
     assert report.complete is True
     assert handled == ["first", "second"]
-    assert runtime.tell(actor, "after-drain") is AdmissionResult.CLOSED
+    assert engine.tell(actor, "after-drain") is AdmissionResult.CLOSED
+    assert engine.shutdown(1.0) is True
 
 
 def test_cost_counters_retain_bounded_unknown_bucket_and_wall_observations() -> None:

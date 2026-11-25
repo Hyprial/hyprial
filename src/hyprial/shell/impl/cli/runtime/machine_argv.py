@@ -19,7 +19,6 @@ _LEGACY_MCP_SUBCOMMANDS = frozenset(
         "agent-channel",
         "claude-channel",
         "claude-channel-recover",
-        "dsh-carrier",
     }
 )
 

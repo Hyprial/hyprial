@@ -9,6 +9,7 @@ waits until timeout (#2035 0407fbd1e).  The nonce is used everywhere -- no
 
 from __future__ import annotations
 
+from tests.support.runtime.environment import home_with_node_id
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,7 +52,10 @@ def test_an_older_generation_without_a_nonce_never_passes_a_nonce_fence(
 
 def test_daemon_marker_records_the_launch_id_it_was_given(tmp_path: Path) -> None:
     app = SimpleNamespace(
-        state_dir=tmp_path, node_id="audit-node", socket_path=tmp_path / "daemon.sock"
+        state_dir=tmp_path,
+        node_id="audit-node",
+        socket_path=tmp_path / "daemon.sock",
+        epoch="4b825dc642cb6eb9a060e54bf8d69288fbee4904",
     )
     app._launch_id = "this-launch"
     _StartupMixin._write_pid_file(app)
@@ -82,7 +86,7 @@ def test_launcher_sets_a_fresh_nonce_on_every_platform_and_waits_on_it(
     from hyprial.shell.impl.cli.commands.common.services import get_services
 
     services = get_services()
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HYPRIAL_HOME", str(home_with_node_id(tmp_path / "home")))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv(DAEMON_LAUNCH_ID_ENV, "inherited-from-an-ancestor")
     monkeypatch.setattr(mcp_channel, "_read_process_identity", lambda _pid: None)

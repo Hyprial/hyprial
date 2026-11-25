@@ -14,7 +14,7 @@ from hyprial.daemon.impl.pac.actors.coordinator.core import _CoordinatorCore
 from hyprial.daemon.impl.pac.actors.coordinator.stop import _CoordinatorDown
 from hyprial.daemon.impl.pac.actors.coordinator.start import _CoordinatorUp
 from hyprial.daemon.impl.pac.actors.coordinator.types import (
-    ActorRuntime,
+    PacWorkerRuntime,
     CLEANUP_ATTEMPT_LIMIT,
     CLEANUP_RETRIES_PER_SWEEP,
     CLEANUP_RETRY_BASE_MS,
@@ -47,7 +47,7 @@ __all__ = [
     "ResolvedLaunch",
     "RuntimeObservation",
     "FileLaunchResolver",
-    "ActorRuntime",
+    "PacWorkerRuntime",
     "LaunchResolver",
     "WORKER_IN_USE",
     "worker_in_use",

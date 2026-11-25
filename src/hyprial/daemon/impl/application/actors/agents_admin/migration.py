@@ -40,6 +40,9 @@ class _AgentMigrationMixin:
         from hyprial.identity import AgentRuntimeMigrationBindings
 
         harnesses = tuple(dict.fromkeys(key.harness for key in support))
+        from hyprial.daemon.impl.harnesses.agy import (
+            prepare_agy_runtime_context,
+        )
         from hyprial.daemon.impl.harnesses.claude.runtime import (
             prepare_claude_runtime_context,
         )
@@ -56,6 +59,7 @@ class _AgentMigrationMixin:
             runtime_preparers={
                 "claude": prepare_claude_runtime_context,
                 "codex": prepare_codex_runtime_context,
+                "agy": prepare_agy_runtime_context,
             },
         )
 

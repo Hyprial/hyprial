@@ -1,0 +1,44 @@
+.secret-field__reveal {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: calc(-1 * var(--ui-space-2));
+}
+
+.ui-field .secret-field-inline {
+  position: relative;
+  min-width: 0;
+}
+
+.ui-field .secret-field-inline input {
+  width: 100%;
+  min-height: var(--ui-space-12);
+  padding-right: var(--ui-space-12);
+  box-sizing: border-box;
+}
+
+.secret-field-inline__reveal {
+  position: absolute;
+  right: var(--ui-space-1);
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: var(--ui-space-10);
+  height: var(--ui-space-10);
+  padding: 0;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--ui-ink-3);
+  cursor: pointer;
+}
+
+.secret-field-inline__reveal:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-focus);
+  outline-offset: -3px;
+}
+
+.secret-field-inline__reveal:disabled {
+  cursor: default;
+  opacity: 0.5;
+}

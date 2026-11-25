@@ -6,7 +6,6 @@ export type AsyncView<T> =
   | { readonly status: 'loading' }
   | { readonly status: 'ready'; readonly data: T }
   | { readonly status: 'empty'; readonly title?: string; readonly description?: string }
-  | { readonly status: 'unsupported'; readonly reason: string; readonly code?: string }
   | {
       readonly status: 'error';
       readonly message: string;
@@ -27,8 +26,6 @@ export function statusToTone(status: AsyncView<unknown>['status']): UiTone {
       return 'positive';
     case 'loading':
       return 'info';
-    case 'unsupported':
-      return 'warning';
     case 'error':
       return 'danger';
     case 'empty':

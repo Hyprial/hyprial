@@ -256,7 +256,6 @@ class Identity:
     #: this column (or a human).  Stored when a source carries it (live
     #: message events do); never required.
     union_id: str | None = None
-    hyprial_owner: str | None = None
     standing: str = "observed"
     source: str = ""
     first_seen_ms: int | None = None
@@ -266,7 +265,7 @@ class Identity:
 #: Identity fields in declaration order, so a row selected with these columns
 #: constructs the dataclass directly.
 _IDENTITY_COLUMNS = (
-    "kind, platform_id, display_name, union_id, hyprial_owner, standing, source,"
+    "kind, platform_id, display_name, union_id, standing, source,"
     " first_seen_ms, last_seen_ms"
 )
 

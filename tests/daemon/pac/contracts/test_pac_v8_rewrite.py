@@ -25,7 +25,6 @@ from hyprial.daemon.impl.pac.graphs.edits import activate_graph, add_node, close
 from hyprial.daemon.impl.pac.actors.coordinator import request_actor_stop
 from hyprial.daemon.impl.pac.graphs.reactor import NullSender, PacReactor
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore, default_database_path
-from hyprial.identity import UserProfileStore
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
@@ -42,15 +41,8 @@ def state(tmp_path: Path) -> Path:
     registry = AgentRegistry(state / "agents.sqlite3", owner=OWNER, machine=MACHINE)
     registry.create("helper")
     registry.create("both")
+    registry.create("allen")
     registry.close()
-    UserProfileStore(state / "users.json").ensure(
-        owner="allen", owner_key="allen", login_name="allen",
-        machine=MACHINE, machine_key=MACHINE,
-    )
-    UserProfileStore(state / "users.json").ensure(
-        owner="both", owner_key="both", login_name="both",
-        machine=MACHINE, machine_key=MACHINE,
-    )
     return state
 
 
@@ -140,6 +132,16 @@ def _pin_to_v7(db: sqlite3.Connection) -> None:
     db.execute("PRAGMA user_version = 7")
 
 
+def _registered(state: Path, name: str) -> str:
+    """The URI the registry stores for ``name``: its official (id) address."""
+
+    registry = AgentRegistry(state / "agents.sqlite3", owner=OWNER, machine=MACHINE)
+    try:
+        return registry.require(name).uri
+    finally:
+        registry.close()
+
+
 def _owners(store: PacGraphStore, graph_id: str) -> dict[str, str]:
     return {node.node_id: node.owner for node in store.nodes(graph_id)}
 
@@ -148,38 +150,14 @@ def test_upgrade_rewrites_unique_owners_and_keeps_the_rest(state: Path) -> None:
     path = _build_v7_database(state)
     store = PacGraphStore(path)
     try:
-        assert store._db.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert store._db.execute("PRAGMA user_version").fetchone()[0] == 20
         graph_id = store.graph_ids()[0]
         owners = _owners(store, graph_id)
-        assert owners["human-work"] == "user:allen"  # profile-resolved person
-        assert owners["helper-work"] == HELPER_URI  # registry-resolved agent
-        assert owners["both-work"] == "both"  # agent AND person share the name
+        assert owners["human-work"] == _registered(state, "allen")
+        assert owners["helper-work"] == _registered(state, "helper")
+        assert owners["both-work"] == _registered(state, "both")
         assert owners["ghost-work"] == "ghost"  # no source knows it
-        assert store.graph(graph_id)["created_by"] == "user:allen"
-    finally:
-        store.close()
-
-
-def test_upgrade_preserves_legacy_user_uri_output_for_colon_owner(state: Path) -> None:
-    path = _build_v7_database(state)
-    UserProfileStore(state / "users.json").ensure(
-        owner="legacy:owner",
-        owner_key="legacy-owner",
-        login_name="legacy-owner",
-        machine=MACHINE,
-        machine_key=MACHINE,
-    )
-    db = sqlite3.connect(path)
-    with db:
-        db.execute("UPDATE graphs SET created_by='legacy:owner'")
-        db.execute("UPDATE nodes SET owner='legacy:owner' WHERE node_id='human-work'")
-    db.close()
-
-    store = PacGraphStore(path)
-    try:
-        graph_id = store.graph_ids()[0]
-        assert store.graph(graph_id)["created_by"] == "user:legacy:owner"
-        assert _owners(store, graph_id)["human-work"] == "user:legacy:owner"
+        assert store.graph(graph_id)["created_by"] == _registered(state, "allen")
     finally:
         store.close()
 
@@ -191,18 +169,18 @@ def test_rewritten_graphs_stay_operable_flag_close_stop(state: Path) -> None:
         graph_id = store.graph_ids()[0]
         # the person flags their own node again after the upgrade
         PacReactor(store, sender=NullSender()).set_flag(
-            graph_id, "human-work", actor="user:allen"
+            graph_id, "human-work", actor=_registered(state, "allen")
         )
         assert store.node(graph_id, "human-work").flag is True
         # the agent flags its own node through the same exact equality
         PacReactor(store, sender=NullSender()).set_flag(
-            graph_id, "helper-work", actor=HELPER_URI
+            graph_id, "helper-work", actor=_registered(state, "helper")
         )
         assert store.node(graph_id, "helper-work").flag is True
         # graph lifecycle: the rewritten creator closes their graph
         from hyprial.daemon.impl.pac.graphs.edits import close_graph
 
-        close_graph(store, graph_id, actor="user:allen")
+        close_graph(store, graph_id, actor=_registered(state, "allen"))
         assert store.graph(graph_id)["closed_at"] is not None
     finally:
         store.close()
@@ -216,7 +194,9 @@ def test_owner_gate_on_stop_uses_the_rewritten_creator(state: Path) -> None:
         # the owner gate passes for the rewritten creator (the stop itself
         # runs against a never-launched actor: NOT_FOUND is the expected
         # terminal, PAC_GRAPH_NOT_OWNER would be the B2 lockout)
-        request_actor_stop(store, graph_id, "never-launched", actor="user:allen")
+        request_actor_stop(
+            store, graph_id, "never-launched", actor=_registered(state, "allen")
+        )
     except PacError as error:
         assert error.code == "PAC_NODE_NOT_FOUND"
         assert "PAC_GRAPH_NOT_OWNER" not in error.code
@@ -233,16 +213,16 @@ def test_kept_owners_are_listed_and_refusals_point_at_the_report(state: Path) ->
             "SELECT graphs_total, owners_rewritten, owners_kept, report_json "
             "FROM schema_era WHERE id=1"
         ).fetchone()
-        assert row[0] == 1 and row[1] == 4 and row[2] == 2
+        assert row[0] == 1 and row[1] == 5 and row[2] == 1
         report = json.loads(row[3])
         [graph_report] = report["graphs"]
         assert graph_report["graphId"] == graph_id
         kept = {(item["value"], item["reason"]) for item in graph_report["kept"]}
-        assert kept == {("both", "ambiguous"), ("ghost", "unresolvable")}
+        assert kept == {("ghost", "unresolvable")}
         # the refusal on a kept node names the report, not just NOT_OWNER
         with pytest.raises(PacError) as raised:
             PacReactor(store, sender=NullSender()).set_flag(
-                graph_id, "ghost-work", actor="user:allen"
+                graph_id, "ghost-work", actor=_registered(state, "allen")
             )
         assert raised.value.code == "PAC_FLAG_NOT_OWNER"
         assert "hyprial workflow migration status" in str(raised.value)
@@ -268,10 +248,9 @@ def test_migration_status_cli_lists_the_kept_owners(
     # the era report is labelled by the schema-8 step that wrote it, not by
     # the head version the ladder went on to reach
     assert document["schemaVersion"] == 8
-    assert document["ownersRewritten"] == 4 and document["ownersKept"] == 2
+    assert document["ownersRewritten"] == 5 and document["ownersKept"] == 1
     [graph_report] = document["report"]["graphs"]
     assert {(item["value"], item["reason"]) for item in graph_report["kept"]} == {
-        ("both", "ambiguous"),
         ("ghost", "unresolvable"),
     }
 
@@ -322,26 +301,8 @@ def test_unreadable_source_aborts_the_whole_migration(state: Path) -> None:
     # with the source restored the same upgrade completes
     store = PacGraphStore(path)
     store.close()
-    assert PacGraphStore(path)._db.execute("PRAGMA user_version").fetchone()[0] == 19
+    assert PacGraphStore(path)._db.execute("PRAGMA user_version").fetchone()[0] == 20
     PacGraphStore(path).close()
-
-
-def test_malformed_profiles_abort_like_a_corrupt_registry(state: Path) -> None:
-    path = _build_v7_database(state)
-    profiles = state / "users.json"
-    real = profiles.read_text(encoding="utf-8")
-    profiles.write_text('{"version": 2, "users": {}}', encoding="utf-8")
-    try:
-        with pytest.raises(PacError) as raised:
-            PacGraphStore(path)
-        assert raised.value.code == "PAC_MIGRATION_SOURCE_UNREADABLE"
-        db = sqlite3.connect(path)
-        try:
-            assert db.execute("PRAGMA user_version").fetchone()[0] == 7
-        finally:
-            db.close()
-    finally:
-        profiles.write_text(real, encoding="utf-8")
 
 
 def test_absent_sources_are_legitimately_empty_not_an_abort(tmp_path: Path) -> None:

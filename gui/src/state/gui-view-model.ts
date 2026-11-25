@@ -11,9 +11,9 @@
 export type GuiPage =
   | 'start'
   | 'chat'
-  | 'tasks'
   | 'contacts'
   | 'org'
+  | 'device'
   | 'connections'
   | 'settings'
   | 'first-run';
@@ -25,13 +25,23 @@ export type TargetAvailability =
 
 export interface SessionTarget {
   readonly id: string;
-  readonly kind: 'agent' | 'human';
+  readonly agentId?: string | null;
+  readonly kind: 'agent' | 'human' | 'group';
   readonly displayName: string;
   readonly role: string;
   readonly availability: TargetAvailability;
   readonly avatarTone: 'green' | 'lilac' | 'peach' | 'grey';
   readonly modelServiceId?: string;
   readonly capabilities: readonly string[];
+}
+
+/**
+ * Neutral agent view model: a session target plus the model-service label the
+ * shared chat/agent views render. Product state carries this view; fixture
+ * instances live under `dev/fixtures/`.
+ */
+export interface SessionAgent extends SessionTarget {
+  readonly modelLabel: string;
 }
 
 /**
@@ -48,6 +58,12 @@ export type MessageDeliveryState =
   | 'failed'
   | 'unknown';
 
+export interface MessageReplyReference {
+  readonly messageId: string;
+  readonly authorName: string;
+  readonly excerpt: string;
+}
+
 export interface ConversationMessage {
   readonly id: string;
   readonly targetId: string;
@@ -56,6 +72,13 @@ export interface ConversationMessage {
   readonly createdAt?: string;
   /** Absent for seeded fixture history; local sends use `not-sent`. */
   readonly delivery?: MessageDeliveryState;
+  /** The conversation holds this message without its body; `text` is empty. */
+  readonly bodyNotRecorded?: boolean;
+  readonly authorId?: string;
+  readonly authorName?: string;
+  readonly replyTo?: MessageReplyReference;
+  readonly mentions?: readonly string[];
+  readonly membershipEvent?: boolean;
 }
 
 export interface ConnectionSummary {

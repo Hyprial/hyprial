@@ -1,18 +1,25 @@
-"""Operator status views: ps/top/targets/hosts/org/whoami projections."""
+"""Operator status views: ps/top/targets/hosts/org/whoami projections.
+
+Decision (UA2, 2026-11-18): ``targets`` lists ``user:<owner>`` with status
+``user-agent`` while this node holds the owner's user agent (a message to it
+is queued and recorded here); user agent addresses stay hidden (UA1b).
+
+Decision (T1b, 2026-11-21): ``top`` keeps reading the link service's window
+fields (``capacityW``, ``outboundInFlight``) through ``link_top_fields``, a
+read of service state that never asks the gate; the fields stay published
+until T1c.  ``inboundAwaitingInjection`` is no longer computed: it counted
+governed rows the gate had not yet admitted, and with dispatch no longer
+asking the gate no row is held, so the field reports 0.
+"""
 
 from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
 from typing import Any, TYPE_CHECKING
 from hyprial import __version__
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
-from hyprial.daemon.impl.identity import IdentityResolverError
-from hyprial.daemon.impl.transport import (
-    LivelinessDirectory,
-)
 from hyprial.daemon.impl.configuration.identity import (
     DELIVERABLE_TARGET_KINDS,
     classify_target_identity,
@@ -23,15 +30,16 @@ from hyprial.identity import (
 )
 from hyprial.kernel import (
     TARGET_KIND_AGENT,
-    TARGET_KIND_CHANNEL_ROUTE,
     TARGET_KIND_HOST,
-    TARGET_KIND_USER,
-    canonical_agent_uri,
-    legacy_user_uri,
     parse_agent_uri,
 )
 from hyprial.daemon.impl.ipc.ipc_stats  import ipc_stats_payload
 from hyprial.daemon.impl.operations.top  import build_top_snapshot
+from hyprial.daemon.impl.user_agent.runtime import (
+    listed_agents,
+    user_agent_status,
+    without_user_agents,
+)
 if TYPE_CHECKING:
     pass
 
@@ -39,6 +47,7 @@ from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
 )
+from hyprial.daemon.impl.application.messaging.status.presence import _LocalPresence as _LocalPresence
 from hyprial.daemon.impl.application.messaging.status.refresh import (
     refresh_response_fields,
     request_status_refresh,
@@ -48,80 +57,6 @@ from hyprial.daemon.impl.application.messaging.status.refresh import (
 )
 
 
-class _LocalPresence:
-    """Presence for ps/targets/delivery, all sharing this one judgment call.
-
-    Raw zenoh liveliness is trusted as-is for this node's own identity, for
-    daemon-managed harness workers (their token tracks a real supervised
-    subprocess -- see ``_reconcile_harness_actors``), and for genuinely remote
-    peers. For a daemon-owned interactive-session route, the raw token alone
-    cannot tell a dead connector from a live one (see the TTL constant's
-    docstring), so ``interactive_liveness`` -- when it recognizes the actor --
-    overrides the raw token with a real heartbeat-freshness verdict.
-    """
-
-    def __init__(
-        self,
-        inner: LivelinessDirectory,
-        actor: str,
-        *,
-        interactive_liveness: Callable[[str], bool | None] | None = None,
-    ) -> None:
-        self.inner = inner
-        self.actor = actor
-        self._interactive_liveness = interactive_liveness
-
-    def actor_online(self, actor: str) -> bool:
-        if actor == self.actor:
-            return True
-        if not self.inner.actor_online(actor):
-            return False
-        if self._interactive_liveness is not None:
-            verdict = self._interactive_liveness(actor)
-            if verdict is not None:
-                return verdict
-        return True
-
-    def online_mailboxes(self) -> tuple[str, ...]:
-        return self.inner.online_mailboxes()
-
-    def online_actors(self) -> tuple[str, ...]:
-        candidates = self.raw_online_actors()
-        if self._interactive_liveness is None:
-            return candidates
-        return tuple(sorted(actor for actor in candidates if self.liveness_keeps(actor)))
-
-    def liveness_keeps(self, actor: str) -> bool:
-        """The interactive-liveness half of ``online_actors``, for one candidate.
-
-        Identity-first batch paths (``hosts``, ``org.fetch``) reuse exactly
-        this predicate on the host-kind survivors of their filter, so their
-        output stays byte-identical to ``online_actors()``-then-filter --
-        including the name-collision case where a local worker's bare name
-        equals a remote node id and a stopped worker answers False
-        (hyprial-developer 2026-09-15 批复①:逐字保真,不依赖「病态配置不会
-        出现」).  Inside a request snapshot the verdict is table lookups --
-        no store lock, no SQLite -- so the recheck costs nothing per host.
-        """
-
-        if actor == self.actor or self._interactive_liveness is None:
-            return True
-        return self._interactive_liveness(actor) is not False
-
-    def raw_online_actors(self) -> tuple[str, ...]:
-        """The candidate set ``online_actors`` starts from, before any liveness.
-
-        Host-identity batch paths (``hosts`` rows, ``org.fetch`` candidate
-        enumeration) filter on identity first and only then pay the per-actor
-        interactive-liveness verdict for the host-kind survivors: a bare
-        node id normally carries no local verdict (``AgentLiveness.verdict``
-        answers None for one), and the survivors' recheck is what keeps the
-        name-collision case byte-faithful.  Same union as ``online_actors``
-        -- this node's own token plus the raw directory -- so the two views
-        cannot drift apart on the candidate set itself.
-        """
-
-        return tuple(sorted({self.actor, *self.inner.online_actors()}))
 
 
 class _StatusViewsMixin:
@@ -165,6 +100,7 @@ class _StatusViewsMixin:
         # Status is observational. Recovery and route expiry are maintenance
         # responsibilities and must never run under an IPC read owner.
         interactive_sessions = self._agent_session_domains.session.read_sessions()
+        local_agents = self.agents.list()
         # Node-wide pending: rows wait under agent URIs, not the node
         # id, so scoping this to the node inbox would report an empty
         # node with a full one (the runner-observation blind spot).
@@ -180,7 +116,7 @@ class _StatusViewsMixin:
                 for spec in (worker_status.desired.harnesses if worker_status.desired else ())
             }
             for row in connector_statuses:
-                if row.get("runtime") not in {"jev", "user-proxy"}:
+                if row.get("runtime") != "jev":
                     continue
                 spec = desired_by_key.get((row.get("runtime"), row.get("name")))
                 actor = (
@@ -414,6 +350,7 @@ class _StatusViewsMixin:
                     "isolation": self._network_isolation_status(),
                 },
                 "duplicateInstance": self._duplicate_instance_payload(),
+                "userAgent": user_agent_status(self, local_agents),
                 "maintenance": self._maintenance_watchdog.status(),
                 "storageHealth": self._storage_health_status(),
                 "orphanPersistence": (
@@ -461,7 +398,7 @@ class _StatusViewsMixin:
                         else {}
                     ),
                 },
-                "executionRuntimes": ["smolvm-v1"],
+                "executionRuntimes": [],
                 "orphanProcesses": list(self._orphan_process_status()),
                 "adapters": (
                     [item.to_payload() for item in self._lark_client.read_adapters()]
@@ -473,7 +410,8 @@ class _StatusViewsMixin:
                 # stay as the per-runtime detail they always were, but they no
                 # longer each answer "is it alive" their own way.
                 "agents": [
-                    self._agent_status_json(agent) for agent in self.agents.list()
+                    self._agent_status_json(agent)
+                    for agent in listed_agents(local_agents)
                 ],
                 "interactiveSessions": [
                     self._interactive_session_status_projection(session, now)
@@ -508,54 +446,7 @@ class _StatusViewsMixin:
                 "mailboxes": list(self._presence.online_mailboxes()),
             }
 
-    def _inbound_awaiting_injection(
-        self, actor_statuses: tuple[JsonObject, ...] | list[JsonObject]
-    ) -> dict[str, int]:
-        """Per-canonical-recipient held-row count for ``top`` (review B6).
-
-        The candidate set comes from inbox ROWS plus the read-only
-        ``governs`` predicate, so a bound gate no longer needs a prior list or
-        tick to make waiting mail visible; the admission state only subtracts
-        rows the gate already admitted.  It never calls ``admit_dispatch``
-        (no W reservation), stamps ``fetched`` or drains notices, so repeated
-        top queries are inert.
-        """
-
-        governs = getattr(self.link_admission, "governs", None)
-        pending = getattr(self._inbox, "pending_messages", None)
-        counter = getattr(self._inbox, "inbound_awaiting_injection", None)
-        admitted_reader = getattr(
-            self.link_admission, "admitted_message_ids", None
-        )
-        if not (callable(governs) and callable(pending) and callable(counter)):
-            return {}
-        awaiting: dict[str, int] = {}
-        for status in actor_statuses:
-            raw_actor = status.get("actor")
-            actor = (
-                raw_actor
-                if isinstance(raw_actor, str)
-                else canonical_agent_uri(
-                    self.owner, self.node_id, str(status.get("name"))
-                )
-            )
-            candidates = frozenset(
-                message.message_id
-                for message in pending(actor)
-                if governs(message.sender, actor)
-            )
-            if callable(admitted_reader):
-                candidates = candidates - admitted_reader(actor)
-            if not candidates:
-                continue
-            count = counter(actor, candidates)
-            if count:
-                awaiting[actor] = count
-        return awaiting
-
     def _ipc_top_snapshot(self) -> Any:
-        from hyprial.daemon.impl.composition.links import link_top_fields
-
         now_ms = int(time.time() * 1000)
         # A batch path like ps: without the request snapshot every online
         # actor's liveness probe falls back to one supervisor round trip
@@ -564,7 +455,7 @@ class _StatusViewsMixin:
         # reads for 77 actors and `hyprial agent top` timed out at 15 s every
         # time while `ps`, which installs the snapshot, answered.
         with self._worker_status_snapshot():
-            actor_statuses = self._actor_status_snapshot()
+            actor_statuses = without_user_agents(self._actor_status_snapshot(), self.agents.list())
         current_session_refs = {
             session.actor: session.session_ref
             for session in self._agent_session_domains.session.read_sessions()
@@ -585,14 +476,12 @@ class _StatusViewsMixin:
             actor_statuses=actor_statuses,
             interactive_turn_stats=interactive_turn_stats,
             pending=self._pending_recipient_stats(),
+            agent_address=self._agent_address,
+            read_keys=self._consumer_read_keys,
             stranded=self._historical_inbox_recipients(),
             now_ms=now_ms,
             dispatch_without_pac_count=self._dispatch_without_pac_snapshot(),
             dispatch_conversation_count=self._dispatch_conversation_snapshot(),
-            inbound_awaiting_injection=self._inbound_awaiting_injection(
-                actor_statuses
-            ),
-            link_fields=link_top_fields(self, actor_statuses),
             batch_claims=(self._runtime.batch_claim_details(now_ms) if self._runtime else {}),
         )
         result["quota"] = (
@@ -760,21 +649,14 @@ class _StatusViewsMixin:
     def _ipc_targets(self, params) -> Any:
         with self._worker_status_snapshot():
             kind = params.get("kind")
-            # targets answers "what can I deliver a message to?" (Allen's
-            # definition).  Agents, users, and channel routes are the three
-            # deliverable kinds this generation: user:<owner> lands in the
-            # owner's squire DM with the sender attributed in the text, and
-            # route:<adapter>:<route> posts to the configured chat with the
-            # same 转述自 marker — both legs of the promise (deliverable,
-            # and the receiver can tell who sent it) hold.  host never
-            # appears here at all -- a node is announced on the network but
-            # is not a delivery target; node visibility lives in the
-            # "hosts" method below.
             if kind is not None and kind not in DELIVERABLE_TARGET_KINDS:
                 raise DaemonRequestError(
                     ipc_errors.INVALID_ARGUMENT,
-                    "kind must be agent, user, or channel_route",
+                    "kind must be agent or user",
                 )
+            from hyprial.daemon.impl.user_agent.local_target import own_user_target_rows
+            from hyprial.daemon.impl.user_agent.naming import is_user_agent, is_user_agent_address
+
             rows: dict[str, JsonObject] = {}
             local_agents = {agent.uri: agent for agent in self.agents.list()}
             # Agent rows are a projection of the same canonical snapshot top
@@ -783,6 +665,8 @@ class _StatusViewsMixin:
             # source snapshot instead of being invented as a stopped process.
             for actor_status in self._actor_status_snapshot():
                 actor = str(actor_status["actor"])
+                if is_user_agent_address(actor) or is_user_agent(local_agents.get(actor)):
+                    continue
                 rows[actor] = {
                     "targetKind": TARGET_KIND_AGENT,
                     "targetUri": actor,
@@ -795,55 +679,23 @@ class _StatusViewsMixin:
                     rows[actor].update(
                         hosted=agent.hosted_by is not None,
                         hostedBy=agent.hosted_by,
+                        agentId=agent.to_json()["agentId"],
+                        displayName=agent.display,
                     )
-            # Users: an owner with a completed squire profile (adapter +
-            # open_id binding) is deliverable via receiver-owned DM; the
-            # delivery text already carries the sender attribution marker.
-            for profile in self.user_profiles.list():
-                if profile.squire_adapter is None:
-                    continue
-                try:
-                    open_id = self._identity_resolver.profile_open_id(
-                        profile, profile.squire_adapter
-                    )
-                except IdentityResolverError as error:
-                    # Unknown, not deliverable: one conflicted owner leaves
-                    # the rest of the listing intact.
-                    self._log(
-                        "warn",
-                        "daemon",
-                        "targets.owner_account_unresolved",
-                        code=error.code,
-                    )
-                    continue
-                if open_id is None:
-                    continue
-                uri = legacy_user_uri(profile.owner)
-                if uri in rows:
-                    continue
-                rows[uri] = {
-                    "targetKind": TARGET_KIND_USER,
-                    "targetUri": uri,
-                    "actor": uri,
-                    "status": "configured",
-                    "deliverable": True,
-                }
-            # Channel routes: sender-local configured outbound routes.  The
-            # sender-attribution marker is applied at post time, so a listed
-            # route keeps both legs of the targets promise.
-            configuration = self.load_persistent_configuration()
-            for gateway_config in configuration.channels.gateways:
-                for route in gateway_config.routes:
-                    uri = f"route:{gateway_config.name}:{route.name}"
+            if kind in (None, TARGET_KIND_AGENT):
+                from hyprial.daemon.impl.org.network.member_agents import chat_directory_for_app
+
+                chat_directory = chat_directory_for_app(self)
+                for row in chat_directory["targets"]:
+                    uri = str(row["targetUri"])
                     if uri in rows:
-                        continue
-                    rows[uri] = {
-                        "targetKind": TARGET_KIND_CHANNEL_ROUTE,
-                        "targetUri": uri,
-                        "actor": uri,
-                        "status": "configured",
-                        "deliverable": True,
-                    }
+                        rows[uri]["orgs"] = row["orgs"]
+                        for field in ("agentId", "displayName"):
+                            if not rows[uri].get(field) and row.get(field):
+                                rows[uri][field] = row[field]
+                    else:
+                        rows[uri] = row
+            rows.update(own_user_target_rows(self))
             targets = [rows[uri] for uri in sorted(rows)]
             if kind is not None:
                 targets = [item for item in targets if item["targetKind"] == kind]
@@ -857,7 +709,16 @@ class _StatusViewsMixin:
                     caller=caller,
                     grants=self._visibility_grants(caller.uri),
                 )
-            return {"targets": targets}
+            return {
+                "targets": targets,
+                **(
+                    {"orgDirectoryStatus": chat_directory["orgDirectoryStatus"]}
+                    if kind in (None, TARGET_KIND_AGENT)
+                    and chat_directory["orgDirectoryStatus"]
+                    and (caller is None or not caller.hosted)
+                    else {}
+                ),
+            }
 
     def _ipc_hosts(self, params) -> Any:
         with self._worker_status_snapshot():
@@ -963,7 +824,7 @@ class _StatusViewsMixin:
             ):
                 continue
             actor = parsed_recipient[2]
-            current = canonical_agent_uri(self.owner, self.node_id, actor)
+            current = self._agent_address(actor)
             try:
                 resolved = self._resolve_agent_alias(actor)
             except DaemonRequestError:

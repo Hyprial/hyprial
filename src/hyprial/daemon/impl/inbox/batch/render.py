@@ -4,6 +4,14 @@ Connectors pass ``delivery.text`` through byte for byte.  Everything a model
 reads about a batch -- headings, labels, action guidance, spill instructions --
 is decided here, and every sender-controlled region is delimited as untrusted
 data.  No body or summary is ever interpolated into a trusted instruction line.
+
+Decision note (slice GC4, group chat draft §4): an item whose conversation id
+is a group id gets one more trusted line, ``group:``, naming the group and
+saying how to answer in it and where the rest of it is.  Only daemon-set
+values (the group id) are interpolated; direct items render as before.
+Slice GH: the line names the harness tool that reads the group's earlier
+messages (``harness_read`` with the group id as ``conversationId``) and the
+request behind it, for an agent that has only the CLI.
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from hyprial.daemon.impl.api import describe_sender
+from hyprial.kernel import is_group_id_segment
 from hyprial.daemon.impl.inbox.batch.contract import (
     FORMAT,
     BatchItem,
@@ -68,8 +77,8 @@ def _created_at(created_at_ms: int) -> str:
 
 def _origin_lines(item: BatchItem) -> list[str]:
     if not item.origin:
-        return ["origin: (unrecorded; NOT verified)"]
-    sender_description = describe_sender(item.origin)
+        return ["origin: (unrecorded)"]
+    sender_description = describe_sender(item.origin, item.sender)
     parts: list[str] = []
     for key in sorted(item.origin):
         value = item.origin[key]
@@ -80,10 +89,7 @@ def _origin_lines(item: BatchItem) -> list[str]:
         else:
             parts.append(f"{key}={_escape(str(value))}")
     rendered = ", ".join(parts)
-    standing = item.origin.get("standing")
-    if sender_description is None and standing != "verified" and rendered:
-        rendered += " (NOT verified)"
-    return ["origin: " + (rendered or "(unrecorded; NOT verified)")]
+    return ["origin: " + (rendered or "(unrecorded)")]
 
 
 def _item_header(item: BatchItem, index: int, total: int) -> list[str]:
@@ -100,6 +106,17 @@ def _item_header(item: BatchItem, index: int, total: int) -> list[str]:
         f"bodyBytes: {item.body_bytes}",
         *_origin_lines(item),
     ]
+    if is_group_id_segment(item.conversation_id):
+        lines.append(
+            f"group: posted in group conversation {item.conversation_id}, which "
+            "all its members read; harness_reply answers in the group and "
+            "mentions/wakes the replied-to author by default when that author "
+            "is another current agent member (pass mentions=[...] to add "
+            "members or noMention=true / --no-mention to omit the default @; "
+            "replying to the human owner adds no mention); earlier messages: "
+            f"harness_read with conversationId {item.conversation_id} "
+            "(the conversations.history request)."
+        )
     if item.cls == "workflow":
         lines.append(
             "action: a workflow command/tool completes its graph node; this "

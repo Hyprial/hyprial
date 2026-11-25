@@ -5,6 +5,7 @@ from __future__ import annotations
 from __future__ import annotations
 import os
 import signal
+from types import SimpleNamespace
 import sys
 import threading
 import time
@@ -14,7 +15,12 @@ from typing import Any, TYPE_CHECKING
 from hyprial.daemon.impl.transport import (
     KeySpace,
 )
-from hyprial.daemon.impl.bootstrap.exit_independence  import do_not_exit, finish_shutdown
+from hyprial.daemon.impl.bootstrap.exit_independence  import (
+    do_not_exit,
+    exit_guards_wanted,
+    finish_shutdown,
+    process_exit_owned,
+)
 from hyprial.daemon.impl.processes.shutdown_stall  import (
     dump_live_threads,
     live_thread_summary,
@@ -30,12 +36,7 @@ from hyprial.daemon.impl.configuration.identity import (
     classify_target_identity,
 )
 from hyprial.kernel import (
-    ADAPTER_URI_PREFIX,
-    ROUTE_URI_PREFIX,
     TARGET_KIND_HOST,
-    canonical_agent_uri,
-    canonical_user_uri,
-    parse_channel_uri,
 )
 if TYPE_CHECKING:
     pass
@@ -66,11 +67,15 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("routine-service", "joins a queue the step before it drained"),
     ("workflow-service", "same shape as routine-service"),
     (
-        "link-service",
-        "close_link_service rejects new passes, joins the link-service thread and "
-        "flushes its orgfs intents; the close has its own 5s deadline but is not "
-        "registered in the kernel aggregate (wp2-composition §11 G5)",
+        "pac-held-reminder",
+        "cancels one scheduler key and flips a closed flag; no I/O, no thread join",
     ),
+    ("conversation-recorder", "close_conversation_recorder marks the app closed and joins the "
+     "conversation-recorder thread, which may be inside one OrgFS append; "
+     "the join has its own 5s deadline, same shape as cell-runtime"),
+    ("cell-runtime", "close_cell_runtime marks the app closed (no late composition) and stops the "
+     "cell-runtime thread, which may be inside one OrgFS flush/refresh pass; the close has its "
+     "own 5s deadline but is not registered in the kernel aggregate, same shape as conversation-recorder"),
     (
         "degraded-workflow-component",
         "retries close() on workflow/remote/PAC-actor handles that already failed "
@@ -80,6 +85,7 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("remote-workflow-registrations", "Zenoh subscriber undeclare; no Python worker join, native transport has no deadline"),
     ("route-registrations", "in-memory unregister; observed 16ms"),
     ("adapters", "signals workers; observed 24ms"),
+    ("adapter-operations", "at most eight bounded owned effects; receipt/config fsync has no filesystem deadline"),
     (
         "agent-activity",
         "drains an in-memory queue, then at most one conditional UPDATE per actor "
@@ -104,7 +110,13 @@ _CLOSE_UNBUDGETED_STEPS = (
         "drains only finite blob recoveries; each network query has a 3s timeout, "
         "but total time scales with finite blob size, so there is no honest fixed budget",
     ),
-    ("actor-runtime", "pykka stop; its actors are daemon threads"),
+    (
+        "teleport-target",
+        "closed FIRST, before any domain it uses: undeclares one query handler, "
+        "refuses new work, then waits at most the service's own 5s for a receive "
+        "already in flight; not registered in the kernel aggregate",
+    ),
+    ("actor-runtime", "actor engine stop; its actors are daemon threads"),
     # ⚠️ The one that is not fine. No timeout, and 5.437s in the 2026-08-31
     # shutdown -- the largest unbudgeted contributor, and the reason this file
     # no longer claims a guarantee.
@@ -114,6 +126,8 @@ _CLOSE_UNBUDGETED_STEPS = (
         "UNBOUNDED after protocol/terminate deadlines: final killed-process wait has no timeout",
     ),
     ("home-lock", "closes the lock stream"),
+    ("onboarding-port", "ServingOnboardingGateway.close joins relogin driver threads (5s each) "
+     "and recovery (2s) with no kernel aggregate budget; _relogin_lock may wait on OIDC begin"),
 )
 
 _EXIT_CODE_STUCK = 75
@@ -142,6 +156,19 @@ class _StopRequestTrace:
 
 class _ShutdownMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
+
+    @property
+    def stop_policy(self) -> Any:
+        from hyprial.daemon.impl.application.onboarding.lifecycle.stop_reason import StopFlags
+
+        flags = self.__dict__.get("_stop_flags")
+        return flags if flags is not None else self.__dict__.setdefault("_stop_flags", StopFlags())
+
+    @property
+    def stop_reason(self) -> str:
+        """Why ``run`` returned: ``logout`` only if no other stop was requested."""
+
+        return self.stop_policy.reason
 
     def _finish_shutdown_and_leave(
         self, previous_handlers: Any, *, failed: bool = False
@@ -187,7 +214,7 @@ class _ShutdownMixin:
                 "info",
                 "daemon.exiting",
                 nodeId=self.node_id,
-                owned=self._owns_process_exit,
+                owned=process_exit_owned(self),
                 threads=list(live_thread_summary()),
             )
 
@@ -222,13 +249,13 @@ class _ShutdownMixin:
                 flush_records,
             ),
             exit_process=(
-                self._exit_process if self._owns_process_exit else do_not_exit
+                self._exit_process if process_exit_owned(self) else do_not_exit
             ),
             failed=failed,
         )
 
     def _close_home_lease(self) -> None:
-        if not self._home_guard.close(5.0):
+        if not self._home_guard.close(dict(_CLOSE_STEP_BUDGETS)["home-lease"]):
             raise RuntimeError("home lease authority did not release before deadline")
 
     def _arm_exit_backstop(self, seconds: float | None = None) -> None:
@@ -260,7 +287,7 @@ class _ShutdownMixin:
         this is that it holds for the thread nobody has written yet.
         """
 
-        if not self._owns_process_exit:
+        if not exit_guards_wanted(self):
             # Embedded in somebody else's interpreter; their exit is theirs.
             return
 
@@ -280,7 +307,7 @@ class _ShutdownMixin:
             # Expiry commits only if this is still the active timer. A later
             # arm replaces a pending deadline, not an already committed exit.
             with lock:
-                if self._exit_backstop_cancel is not cancel:
+                if self._exit_backstop_cancel is not cancel or cancel.is_set():
                     return
             # Reached when close or interpreter shutdown is still parked --
             # the state nobody has managed to observe, because by the time an
@@ -384,6 +411,10 @@ class _ShutdownMixin:
         # From here on a missing user transport is teardown, not configuration:
         # workflow alerts drained during shutdown retry after restart.
         self._user_delivery_settled = False
+        if self._teleport_target is not None:
+            teleport_target = self._teleport_target
+            self._teleport_target = None
+            attempt(teleport_target.close, "teleport-target")
         def close_autoupdate() -> None:
             if not self._autoupdate.stop(
                 timeout=dict(_CLOSE_STEP_BUDGETS)["autoupdate"]
@@ -412,6 +443,11 @@ class _ShutdownMixin:
             reserve_fd = self._accept_reserve_fd
             self._accept_reserve_fd = None
             attempt(lambda: os.close(reserve_fd), "reserve-fd")
+        onboarding_port = getattr(self, "_onboarding_port", None)
+        if onboarding_port is not None:
+            close_onboarding = getattr(onboarding_port, "close", None)
+            if callable(close_onboarding):
+                attempt(close_onboarding, "onboarding-port")
         # A socket close cannot interrupt a handler already inside a domain
         # wait. If any worker remains, keep every domain it may still touch
         # alive and let a later close retry after the worker settles.
@@ -537,6 +573,10 @@ class _ShutdownMixin:
             if not remote_workflow.shutdown(5.0):
                 raise RuntimeError("remote workflow handlers did not drain before deadline")
             self._remote_workflow = None
+        if self._held_reminder is not None:
+            held_reminder = self._held_reminder
+            self._held_reminder = None
+            attempt(held_reminder.close, "pac-held-reminder")
         if self._workflow_service is not None:
             workflow_service = self._workflow_service
             workflow_service.close()
@@ -556,14 +596,10 @@ class _ShutdownMixin:
                     "PAC graph authority did not drain before sender teardown"
                 )
             self._pac_graph_authority = None
-        if getattr(self, "_link_service", None) is not None:
-            from hyprial.daemon.impl.composition.links import close_link_service
-
-            attempt(lambda: close_link_service(self), "link-service")
-        if self._transfer_source is not None:
-            if not self._transfer_source.close(timeout=5.0):
-                raise RuntimeError("P2 source effects did not drain before lifecycle teardown")
-            self._transfer_source = None
+        from hyprial.daemon.impl.composition.conversations import close_conversation_recorder
+        attempt(lambda: close_conversation_recorder(self), "conversation-recorder")
+        from hyprial.daemon.impl.composition.cells import close_cell_runtime
+        attempt(lambda: close_cell_runtime(self), "cell-runtime")
         if self._lifecycle_manager is not None:
             lifecycle_manager = self._lifecycle_manager
             if not lifecycle_manager.drain(5.0):
@@ -634,6 +670,7 @@ class _ShutdownMixin:
                         raise RuntimeError(f"hook consumer {name!r} did not drain")
 
             attempt(close_hook_consumers, "hooks-consumers")
+        attempt(self._close_adapter_operations, "adapter-operations")
         if self._adapters is not None:
             adapters = self._adapters
             self._adapters = None
@@ -670,10 +707,6 @@ class _ShutdownMixin:
             self._usage_cache = None
             if usage_cache.stop(timeout=2.0) is False:
                 errors.append(RuntimeError("usage authority did not drain"))
-        if self._org_identity_binding_projector is not None:
-            projector = self._org_identity_binding_projector
-            self._org_identity_binding_projector = None
-            attempt(projector.close, "org-binding-cache")
         if getattr(self, "_casdoor_membership_sync", None) is not None:
             from hyprial.daemon.impl.org.network import stop_casdoor_membership_sync
 
@@ -699,8 +732,6 @@ class _ShutdownMixin:
                 else:
                     resource.close()
                 setattr(self, resource_name, None)
-        if not self.user_adapters.close(5.0):
-            raise RuntimeError("user adapter gateways did not drain")
         if not self._route_gateway_cache.close(5.0):
             raise RuntimeError("outbound route gateways did not drain")
         for gateway_owner in tuple(self._outbound_gateway_owners):
@@ -735,10 +766,6 @@ class _ShutdownMixin:
             lock_stream = self._lock_stream
             self._lock_stream = None
             attempt(lock_stream.close, "home-lock")
-        if not self.user_profiles.close(5.0):
-            errors.append(RuntimeError("user profile authority did not drain"))
-        if not self._transfer_p2.close(timeout=5.0):
-            errors.append(RuntimeError("P2 journal authority did not drain"))
         if not self._state_persistence.close(5.0):
             errors.append(RuntimeError("state persistence authority did not drain"))
         if not self._maintenance_watchdog.close(timeout=5.0):
@@ -747,6 +774,25 @@ class _ShutdownMixin:
             errors.append(RuntimeError("gateway log writer did not drain"))
         if not self._logger.close(timeout=5.0):
             errors.append(RuntimeError("daemon log writer did not drain"))
+        # The lease releases while its actor host is still alive. Releasing it
+        # later (the final exit steps) would find the host already stopped and
+        # leave the ownership marker behind. The final step stays as an
+        # idempotent confirmation.
+        attempt(self._close_home_lease, "home-lease")
+        # Actor hosts are the last shared resource: every consumer that borrows
+        # one (usage, hooks, log writers and the later B4 owners) has closed by
+        # now, so stopping the hosts here cannot pull a lane out from under a
+        # close that still needs it.  A partial/synthetic application without a
+        # registry owns no hosts, so there is nothing to stop.
+        actor_hosts = getattr(self, "_actor_hosts", None)
+        if actor_hosts is not None:
+            try:
+                hosts_stopped = actor_hosts.shutdown(5.0)
+            except BaseException as error:
+                errors.append(error)
+            else:
+                if not hosts_stopped:
+                    errors.append(RuntimeError("actor hosts did not shut down"))
         if len(errors) == 1:
             raise errors[0]
         if errors:
@@ -770,7 +816,7 @@ class _ShutdownMixin:
             self._provider_auth = None
         if self._agent_session_domains is not None:
             agent_session_domains = self._agent_session_domains
-            if not agent_session_domains.close():
+            if not agent_session_domains.close(shutdown_hosts=False):
                 raise RuntimeError(
                     "session/agent domains did not drain before deadline"
                 )
@@ -843,6 +889,7 @@ class _ShutdownMixin:
             pass
 
     def _request_stop(self, source: str, signal_number: int | None = None) -> None:
+        self.stop_policy.note(source)
         trace = getattr(self, "_stop_request_trace", None)
         if trace is None:
             self.stop_event.set()
@@ -866,80 +913,13 @@ class _ShutdownMixin:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
 
-    def _owner_alert_notifier(self, text: str, *, idempotency_key: str):
-        """The owner-DM channel for alerts (autoupdate.alert.notify_owner)."""
+    def _agent_blocked_notifier(self, text: str, *, idempotency_key: str) -> Any:
+        self._log("warn", "daemon", "agent.blocked.notice", idempotencyKey=idempotency_key, text=text)
+        return SimpleNamespace(delivered=True)
 
-        from hyprial.daemon.impl.autoupdate.alert import notify_owner
-
-        return notify_owner(
-            hyprial_home=self.hyprial_home,
-            state_dir=self.state_dir,
-            text=text,
-            idempotency_key=idempotency_key,
-        )
-
-    def _owner_requester_addresses(self) -> frozenset[str]:
-        """Addresses whose fail-loud notices already reach this owner.
-
-        A notice diverted away from a person's chat is handed to the owner
-        instead.  When the waiting sender IS the owner -- their squire adapter,
-        one of its routes, or their ``user:`` address -- the hand-off puts the
-        same machine text in front of the same person, one wrapper deeper, so
-        the runtime logs those instead (observed 2026-09-26).
-
-        Degrades to the ``user:`` addresses when the profile or its gateway
-        cannot be read; the degradation is logged, not silent.
-        """
-
-        addresses: set[str] = set()
-        try:
-            addresses.add(canonical_user_uri(self.owner))
-            profile = self.user_profiles.resolve(self.owner)
-            if profile is None:
-                return frozenset(addresses)
-            addresses.add(canonical_user_uri(profile.owner_key))
-            adapter_names: set[str] = set()
-            squire_adapter = profile.squire_adapter
-            if squire_adapter:
-                parsed = parse_channel_uri(squire_adapter)
-                adapter_names.add(
-                    parsed[2] if parsed is not None else squire_adapter
-                )
-            if profile.delivery_agent is not None:
-                agent = self.agents.get(profile.delivery_agent)
-                agent_uri = (
-                    agent.uri
-                    if agent is not None
-                    else canonical_agent_uri(
-                        self.owner, self.node_id, profile.delivery_agent
-                    )
-                )
-                addresses.add(agent_uri)
-                adapter_names.update(
-                    adapter
-                    for adapter, pinned in self._adapter_pins().items()
-                    if pinned == agent_uri
-                )
-            if not adapter_names:
-                return frozenset(addresses)
-            for gateway in self.load_persistent_configuration().channels.gateways:
-                if gateway.name not in adapter_names:
-                    continue
-                # The gateway model is Lark-only, so this is the same
-                # ``adapter:lark:<name>`` shape an inbound notice carries.
-                addresses.add(f"{ADAPTER_URI_PREFIX}lark:{gateway.name}")
-                addresses.update(
-                    f"{ROUTE_URI_PREFIX}{gateway.name}:{route.name}"
-                    for route in gateway.routes
-                )
-        except Exception as error:  # noqa: BLE001 -- degraded, and it says so
-            self._log(
-                "warn",
-                "daemon",
-                "availability_loud.owner_addresses_degraded",
-                detail=str(error) or type(error).__name__,
-            )
-        return frozenset(addresses)
+    def _provider_auth_notifier(self, text: str, *, idempotency_key: str) -> Any:
+        self._log("warn", "daemon", "provider_auth.notice", idempotencyKey=idempotency_key, text=text)
+        return SimpleNamespace(delivered=True)
 
     def _report_legacy_agent_home(self, actor: str, reason: str) -> None:
         """Emit the legacy fallback once for each actor in this daemon epoch."""

@@ -161,7 +161,7 @@ class FakeRoutes:
     def __init__(self) -> None:
         self.actors: dict[str, ActorTarget] = {}
         self.mentions: dict[str, ActorTarget] = {}
-        self.pins: dict[str, ActorTarget] = {}
+        self.bindings: dict[str, ActorTarget] = {}
         self.runtime_targets: tuple[RuntimeTarget, ...] = ()
         self.agent_entries: tuple[AgentDirectoryEntry, ...] = ()
 
@@ -174,8 +174,8 @@ class FakeRoutes:
     def resolve_mention(self, name: str) -> ActorTarget | None:
         return self.mentions.get(name)
 
-    def pinned_actor(self, conversation_id: str) -> ActorTarget | None:
-        return self.pins.get(conversation_id)
+    def routed_actor(self, conversation_id: str) -> ActorTarget | None:
+        return self.bindings.get(conversation_id)
 
     def list_runtime_targets(self) -> tuple[RuntimeTarget, ...]:
         return self.runtime_targets
@@ -225,13 +225,13 @@ def make_adapter(
     routes = FakeRoutes()
     routes.actors[actor.actor_id] = actor
     routes.mentions[actor.display_name] = actor
-    routes.pins["lark:oc_dm:oc_dm"] = actor
+    routes.bindings["lark:oc_dm:oc_dm"] = actor
     adapter = LarkAdapter(
         state=LarkStateStore(tmp_path / "lark-state.sqlite3"),
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:tenant:bot",
+        channel_actor_id="adapter:lark:tenant:bot",
         org_context_path=tmp_path / "org-context.md",
         logger=logger,
     )
@@ -476,7 +476,7 @@ def forwarded_quote(shell_id: str) -> QuotedMessage:
 
 
 def _pin_group(routes: FakeRoutes, actor: ActorTarget, chat_id: str) -> None:
-    routes.pins[f"lark:{chat_id}:{chat_id}"] = actor
+    routes.bindings[f"lark:{chat_id}:{chat_id}"] = actor
 
 
 

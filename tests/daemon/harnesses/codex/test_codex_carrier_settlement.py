@@ -472,11 +472,12 @@ def test_transient_daemon_errors_never_settle_terminally(tmp_path: Path, run_car
     rows = _store_rows(state_path)
     assert rows and rows[0][0:2] == ("m-transient", "FINAL_OBSERVED")
     assert rows[0][2] >= 2
-    # The retry must walk the existing backoff: attempts climb one by one
-    # and the next-attempt delay never shrinks and never drops to zero
-    # (no immediate retry), per the CHECKPOINT ruling.
+    # A poll may observe the same pending attempt before its fact is applied.
+    # Distinct attempts must still climb one by one, and retry delays must
+    # never shrink or drop to zero, per the CHECKPOINT ruling.
     attempts = [int(fields["attempt"]) for _, fields in pending]
-    assert attempts == list(range(1, len(attempts) + 1))
+    distinct_attempts = list(dict.fromkeys(attempts))
+    assert distinct_attempts == list(range(1, len(distinct_attempts) + 1))
     delays = [float(fields["retryInSeconds"]) for _, fields in pending]
     assert all(delay >= 0.01 for delay in delays)
     assert delays == sorted(delays)

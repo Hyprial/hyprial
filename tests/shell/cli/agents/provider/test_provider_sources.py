@@ -42,14 +42,19 @@ def test_resolves_the_documented_source_for_each_provider(tmp_path: Path) -> Non
     codex = _write(home, ".codex/auth.json")
     pi_auth = _write(home, ".pi/agent/auth.json")
     pi_store = _write(home, ".pi/agent/models-store.json")
+    agy = _write(home, ".gemini/antigravity-cli/antigravity-oauth-token")
 
     assert resolve_provider_sources("claude", home=home) == (claude,)
     assert resolve_provider_sources("codex", home=home) == (codex,)
+    assert resolve_provider_sources("agy", home=home) == (agy,)
     # pi needs both files: an empty pair was the 2026-10-13 autodl failure.
     assert resolve_provider_sources("pi", home=home) == (pi_auth, pi_store)
     assert PROVIDER_SOURCE_FILES["pi"] == (
         ".pi/agent/auth.json",
         ".pi/agent/models-store.json",
+    )
+    assert PROVIDER_SOURCE_FILES["agy"] == (
+        ".gemini/antigravity-cli/antigravity-oauth-token",
     )
 
 

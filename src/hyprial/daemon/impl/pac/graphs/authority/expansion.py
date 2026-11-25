@@ -20,6 +20,7 @@ from hyprial.daemon.impl.pac.contracts.expansion import (
 )
 from hyprial.daemon.impl.pac.contracts.expansion.types import PreparedExpansion
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore
+from hyprial.daemon.impl.pac.storage.agent_uris import AgentReader, node_owner_matches
 from hyprial.daemon.impl.pac.workflows.expansion.transactions import (
     child_graph_id,
     expansion_deadline_ms,
@@ -70,7 +71,7 @@ def _current_limits(snapshot: dict[str, Any], current: dict[str, Any]) -> dict[s
     }
 
 
-def _parent_facts(store: PacGraphStore, graph_id: str, node_id: str, actor: str):
+def _parent_facts(store: PacGraphStore, graph_id: str, node_id: str, actor: str, agent_reader: AgentReader | None = None):
     graph = store.graph(graph_id)
     meta = store._db.execute(
         "SELECT * FROM workflow_graphs WHERE graph_id=?", (graph_id,)
@@ -82,7 +83,7 @@ def _parent_facts(store: PacGraphStore, graph_id: str, node_id: str, actor: str)
     ).fetchone()
     if graph is None or meta is None or graph["closed_at"] is not None:
         raise PacError("PAC_GRAPH_CLOSED", "the parent workflow is unavailable or closed")
-    if planner is None or planner["owner"] != actor:
+    if planner is None or not node_owner_matches(store, store.node(graph_id, node_id), actor, agent_reader):
         raise PacError("WORKFLOW_NOT_OWNER", "only the current planner owner may expand")
     specification = read_specification(meta)
     planner_spec = next(
@@ -123,13 +124,14 @@ def prepare_expansion(
     local_owner: str,
     persist_artifacts: bool = True,
     git_timeout_s: float = PAC_WORKTREE_GIT_TIMEOUT_SECONDS,
+    agent_reader: AgentReader | None = None,
 ) -> PreparedExpansion:
     """Validate and resolve one current planner completion outside the writer."""
 
     store = PacGraphStore(Path(database), read_only=True)
     try:
         graph, planner, placeholder, document, placeholder_spec, placeholder_id = (
-            _parent_facts(store, graph_id, node_id, actor)
+            _parent_facts(store, graph_id, node_id, actor, agent_reader)
         )
         captured = input_token_from_connection(store._db, graph_id, node_id)
         if (

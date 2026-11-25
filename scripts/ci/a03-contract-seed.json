@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "acceptedSha": "20269c960c98ba5def5abe65d3948a60ea8f8550",
+  "acceptedSource": "2d217e207ee4c4df327778b4f3705b71a05f0d48",
+  "importRatchet": {
+    "path": "scripts/ci/import-ratchet-baseline.json",
+    "sha256": "5b220a29cb1ad95f95d8b63ec2aafb746320f28287c90fd19e334236075eb4e5"
+  },
+  "legacyMethods": {
+    "path": "scripts/ci/legacy-method-baseline.json",
+    "sha256": "46357f8d4da53bc13b122c3717de8b7fe0c3db1ba5f236ea5d1f970473ef10ae"
+  },
+  "openapi": {
+    "path": "contract/daemon-request/openapi.json",
+    "sha256": "8b8a83ba3e1a5365f102e242589f79bfef4489ad3d9c1540913cebed0d174a81"
+  }
+}

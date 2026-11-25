@@ -17,7 +17,8 @@ ReadinessProbe = Callable[[Any], bool]
 
 READINESS_PROBES: MappingProxyType[str, ReadinessProbe] = MappingProxyType(
     {
-        "link-service": lambda app: getattr(app, "_link_service", None) is not None,
+        "lark-service": lambda app: getattr(app, "_lark_client", None) is not None,
+        "inbox-service": lambda app: getattr(app, "_inbox", None) is not None,
     }
 )
 

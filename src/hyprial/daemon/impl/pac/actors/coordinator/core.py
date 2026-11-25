@@ -41,7 +41,7 @@ from hyprial.kernel import (
 from hyprial.daemon.impl.pac.graphs.reactor  import NullSender, PacReactor
 from hyprial.daemon.impl.pac.storage.store  import NodeRow, PacGraphStore
 from hyprial.daemon.impl.pac.actors.coordinator.types import (
-    ActorRuntime,
+    PacWorkerRuntime,
     LaunchResolver,
     RuntimeObservation,
     WorkerCleanupComplete,
@@ -62,7 +62,7 @@ class _CoordinatorCore:
     def __init__(
         self,
         store: PacGraphStore,
-        runtime: ActorRuntime,
+        runtime: PacWorkerRuntime,
         *,
         daemon_epoch: str,
         resolver: LaunchResolver,

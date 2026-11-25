@@ -18,10 +18,8 @@ from hyprial.identity.impl.agents.migration.actor import MigrationOutcome
 from hyprial.identity.impl.agents.migration.actor import MigrationRequest
 from collections import OrderedDict
 from contextlib import AbstractContextManager
-from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand
 from typing import Protocol
 from hyprial.identity.impl.agents.actor.ports import RestoreDispositionProjection
-from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand
 from dataclasses import dataclass
 from hyprial.kernel import ipc_errors
 from dataclasses import replace
@@ -31,9 +29,9 @@ from uuid import uuid4
 
 """Actor-owned agent registry mutations and public projections.
 
-SQLite remains the final authority for identity and pin uniqueness.  This
-actor adds serialized mutation, correlated events, runtime bindings and
-restart recovery without weakening the database constraints or reaching into
+SQLite remains the final authority for identity uniqueness.  This actor
+adds serialized mutation, correlated events, runtime bindings and restart
+recovery without weakening the database constraints or reaching into
 Harness/Adapter implementations.
 """
 class _DesiredStatePort(Protocol):
@@ -41,33 +39,29 @@ class _DesiredStatePort(Protocol):
 
     def config_rebind_fence(self) -> AbstractContextManager[object]: ...
 
-    def remove_channel_pin(self, channel: str) -> tuple[object, str | None]: ...
-
-    def remove_channel_pin_settled(
-        self, channel: str
-    ) -> tuple[object, str | None]: ...
 class SenderIdentityError(AgentError):
     code = ipc_errors.SENDER_UNRESOLVED
 class AgentUpdateConflict(AgentError):
-    code = "AGENT_VERSION_CONFLICT"
+    code = ipc_errors.AGENT_VERSION_CONFLICT
 class AgentHomeAccessError(AgentError):
-    code = "AGENT_HOME_ACCESS_FAILED"
+    code = ipc_errors.AGENT_HOME_ACCESS_FAILED
 class AgentHomeAccessPending(AgentHomeAccessError):
     home_io_pending = True
 class AgentRuntimeContextStale(AgentError):
-    code = "AGENT_RUNTIME_CONTEXT_STALE"
+    code = ipc_errors.AGENT_RUNTIME_CONTEXT_STALE
 class AgentRuntimeLaunchMismatch(AgentError):
-    code = "AGENT_RUNTIME_LAUNCH_MISMATCH"
+    code = ipc_errors.AGENT_RUNTIME_LAUNCH_MISMATCH
 class AgentMigrationBusy(AgentError):
     code = ipc_errors.AGENT_MIGRATION_BUSY
 class AgentLaunchInProgress(AgentError):
-    code = "AGENT_LAUNCH_IN_PROGRESS"
+    code = ipc_errors.AGENT_LAUNCH_IN_PROGRESS
 _AGENT_COST_TYPES = (
     "LifecycleMutationRequest",
     "CreateAgentCommand",
-    "CreateHostInvitedAgentCommand",
     "CreateTransferHostedAgentCommand",
     "UpdateAgentCommand",
+    "SetHarnessArgsCommand",
+    "RenameAgentCommand",
     "BindAgentConfigCommand",
     "DestroyAgentCommand",
     "SettleAgentDestroyCommand",
@@ -80,8 +74,6 @@ _AGENT_COST_TYPES = (
     "ClearRestoreDispositionCommand",
     "BlockAgentCommand",
     "UnblockAgentCommand",
-    "PinAgentAdapterCommand",
-    "UnpinAgentAdapterCommand",
     "AcquireAgentRuntimeLaunchCommand",
     "ReleaseAgentRuntimeLaunchCommand",
     "ReserveAgentDestroyCommand",
@@ -136,7 +128,13 @@ class _AgentProjectionState:
         binding_revisions: dict[str, int],
     ) -> None:
         keyed_agents = {agent.actor: agent for agent in agents}
-        agent_uris = {agent.uri: agent.actor for agent in agents}
+        agent_uris = {
+            agent.display_name: agent.actor for agent in agents if agent.display_name
+        }
+        agent_uris.update({agent.uri: agent.actor for agent in agents})
+        agent_uris.update(
+            {agent.agent_id: agent.actor for agent in agents if agent.agent_id}
+        )
         keyed_bindings = {binding.actor: binding for binding in bindings}
         with self._lock:
             self._version = version
@@ -150,10 +148,16 @@ class _AgentProjectionState:
 
         with self._lock:
             previous = self._agents.get(agent.actor)
-            if previous is not None and previous.uri != agent.uri:
-                self._agent_uris.pop(previous.uri, None)
+            if previous is not None:
+                for key in (previous.uri, previous.agent_id, previous.display_name):
+                    if key and self._agent_uris.get(key) == previous.actor:
+                        self._agent_uris.pop(key, None)
             self._agents[agent.actor] = agent
+            if agent.display_name:
+                self._agent_uris[agent.display_name] = agent.actor
             self._agent_uris[agent.uri] = agent.actor
+            if agent.agent_id:
+                self._agent_uris[agent.agent_id] = agent.actor
             self._version = version
 
     def read_agent(self, name: str) -> AgentProjection | None:
@@ -163,6 +167,12 @@ class _AgentProjectionState:
             if agent is None or agent.version == self._version:
                 return agent
             return replace(agent, version=self._version)
+
+    def actor_key(self, name: str) -> str:
+        """The actor behind a bare name, mapping a live display name (U2)."""
+
+        agent = self.read_agent(name)
+        return name if agent is None else agent.actor
 
     def read_agents(self) -> tuple[AgentProjection, ...]:
         with self._lock:
@@ -429,23 +439,6 @@ class _RuntimeLaunchState:
                 if remaining <= 0:
                     return False
                 self.condition.wait(min(remaining, 0.05))
-@dataclass(frozen=True, slots=True)
-class _PinStateRequest:
-    adapter: str
-@dataclass(frozen=True, slots=True)
-class _PinStateResult:
-    legacy_actor: str | None
-@dataclass(frozen=True, slots=True)
-class _AgentStateEffectCompleted:
-    correlation_id: str
-    generation: int
-    result: _PinStateResult | None = None
-    error_code: str | None = None
-@dataclass(frozen=True, slots=True)
-class _PendingPinMutation:
-    command: PinAgentAdapterCommand | UnpinAgentAdapterCommand
-    before: str | None
-    actor: str | None
 def _agent_projection(
     agent: Agent, version: int, registry: AgentRegistry
 ) -> AgentProjection:
@@ -471,9 +464,9 @@ def _agent_projection(
         last_harness=agent.last_harness,
         last_session_id=agent.last_session_id,
         last_active_at_ms=agent.last_active_at_ms,
-        pinned_adapters=agent.pinned_adapters,
         created_at_ms=agent.created_at_ms,
         hosted_by=agent.hosted_by,
+        display_name=agent.display_name,
         restore_disposition=(
             None
             if disposition is None

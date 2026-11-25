@@ -11,7 +11,7 @@ from hyprial.identity import parse_principal
 
 CAPABILITY_VALUES = (
     "agent-home", "see-actors", "send-to", "tool-surface",
-    "channel", "shared-path", "org-context", "isolation",
+    "shared-path", "org-context", "isolation",
 )
 
 

@@ -68,7 +68,7 @@ def autoupdate_status(
                 )
             scheduler = scheduler_result
 
-        from hyprial.daemon import upgrade_step_status
+        from hyprial.shell.impl.cli.commands.common.support import request_upgrade_steps as request_steps
 
         auto_upgrade_enabled = updates.auto_upgrade_enabled(services._hyprial_home())
         pending = _read_pending_restart()
@@ -89,13 +89,13 @@ def autoupdate_status(
             "pendingRestart": pending,
             "pendingRestartState": _pending_restart_state(pending),
             "scheduler": scheduler,
-            "upgradeSteps": upgrade_step_status(services._state_dir()),
+            "upgradeSteps": request_steps(services),
         }
 
     def operation() -> CliResult:
         return CliResult(collect(), render=_render_autoupdate_status)
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 def _pending_restart_state(pending: JsonObject | None) -> str | None:
@@ -303,7 +303,7 @@ def autoupdate_restart(
         _clear_pending_restart()
         return with_steps(result)
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 @upgrade_app.command("run", hidden=True)
@@ -424,12 +424,10 @@ def autoupdate_run(
             record["warning"] = result["warning"]
         if "restart" in result:
             record["restart"] = result["restart"]
-        if "notification" in result:
-            record["notification"] = result["notification"]
         from hyprial.shell.impl.cli.commands.upgrade.commands import _run_upgrade_steps
 
         record["upgradeSteps"] = _run_upgrade_steps(services)
         write_last_run(services._state_dir(), record)
         return record
 
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False)

@@ -88,7 +88,7 @@ def _index_of(carrier: Carrier, method: str, nth: int = 0) -> int:
 def test_session_ref_file_registers_the_interactive_carrier(tmp_path: Path) -> None:
     binding = tmp_path / "session-ref"
     binding.write_text(SESSION_REF + "\n", encoding="utf-8")
-    binding.chmod(0o600)
+    binding.chmod(0o666)
     rig = Carrier(
         tmp_path,
         managed=False,
@@ -105,6 +105,50 @@ def test_session_ref_file_registers_the_interactive_carrier(tmp_path: Path) -> N
         assert registration["sessionRef"] == SESSION_REF
     finally:
         rig.stop()
+
+
+def test_session_ref_file_refuses_symlinks_and_socket_path_uses_homedir(
+    tmp_path: Path,
+) -> None:
+    import json
+    import subprocess
+    from tests.daemon.harnesses.pi.extension._pi_attach_support import DAEMON_IPC, NODE
+
+    assert NODE is not None
+    real_ref = tmp_path / "real-ref"
+    real_ref.write_text(SESSION_REF + "\n", encoding="utf-8")
+    linked_ref = tmp_path / "linked-ref"
+    linked_ref.symlink_to(real_ref)
+    fake_profile = tmp_path / "win-profile"
+    fake_profile.mkdir()
+
+    script = f"""
+import {{ daemonSocketPath, identityFromEnv }} from {json.dumps(DAEMON_IPC.as_uri())};
+process.env.HYPRIAL_WORKER_ACTOR = {json.dumps(ACTOR)};
+delete process.env.HYPRIAL_WORKER_SESSION_REF;
+process.env.HYPRIAL_WORKER_SESSION_REF_FILE = {json.dumps(str(linked_ref))};
+const linkedIdentity = identityFromEnv();
+process.env.HYPRIAL_WORKER_SESSION_REF_FILE = {json.dumps(str(real_ref))};
+const validIdentity = identityFromEnv();
+delete process.env.HARNESS_STATE_DIR;
+delete process.env.HYPRIAL_HOME;
+delete process.env.HARNESS_SOCKET_PATH;
+delete process.env.HOME;
+process.env.USERPROFILE = {json.dumps(str(fake_profile))};
+const fallbackSocket = daemonSocketPath();
+process.stdout.write(JSON.stringify({{ linkedIdentity, validIdentity, fallbackSocket }}));
+"""
+    completed = subprocess.run(
+        [NODE, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(completed.stdout)
+    assert payload["linkedIdentity"] is None
+    assert payload["validIdentity"] == {"actor": ACTOR, "sessionRef": SESSION_REF}
+    assert payload["fallbackSocket"].endswith("/.hyprial/state/daemon.sock")
+    assert "undefined" not in payload["fallbackSocket"]
 
 
 # --------------------------------------------------------------------------- #

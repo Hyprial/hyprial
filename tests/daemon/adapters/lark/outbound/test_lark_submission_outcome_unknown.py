@@ -35,6 +35,7 @@ from hyprial.daemon.impl.inbox.actor.errors import InboxAuthorityUnavailable
 from hyprial.daemon.impl.inbox.contracts.ports import SubmissionCompleted, SubmitMessageCommand
 from hyprial.daemon.impl.inbox.service import InboxService
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.actor_hosts import new_actor_host
 
 
 class _Logs:
@@ -75,7 +76,7 @@ class _Rig:
         self.transport = _LoopbackTransport()
         self.recipient = InboxService(root / "recipient.sqlite3", self.transport)
         self.transport.service = self.recipient
-        self.coordinator = DeliveryCustodyCoordinator(root / "sender.sqlite3", self.transport, Gate(), node_id="lark-idempotency-node")
+        self.coordinator = DeliveryCustodyCoordinator(root / "sender.sqlite3", self.transport, Gate(), node_id="lark-idempotency-node", actor_host=new_actor_host())
         self.facade = DeliveryCustodyFacade(self.coordinator, root / "sender.sqlite3")
         assert self.facade._timeout == 2.0
         if phase == "before-commit":
@@ -98,6 +99,7 @@ class _Rig:
         self.app._harnesses = object()
         self.app._adapters = None
         self.app.handle("agent.create", {"name": "target-agent"})
+        self.routes = _Routes(self.app.agents.get("target-agent").uri)
         self.responses = []
         original_response = self.app._response
         def response(line):
@@ -117,7 +119,7 @@ class _Rig:
         self.state_path = root / "lark.sqlite3"
         self.logs = _Logs()
         self.platform = _Platform(self.message)
-        self.adapter = LarkAdapter(state=LarkStateStore(self.state_path), lark=self.platform, harness=_Harness(self.short_socket), routes=_Routes(), channel_actor_id="channel:lark:test", logger=self.logs, org_context_path=root / "no-org-context", transient_retry_budget=budget, transient_retry_backoff_initial=.001, transient_retry_backoff_max=.002)
+        self.adapter = LarkAdapter(state=LarkStateStore(self.state_path), lark=self.platform, harness=_Harness(self.short_socket), routes=self.routes, channel_actor_id="adapter:lark:test", logger=self.logs, org_context_path=root / "no-org-context", transient_retry_budget=budget, transient_retry_backoff_initial=.001, transient_retry_backoff_max=.002)
 
     def close(self):
         self.release.set()
@@ -170,7 +172,7 @@ def test_precommit_timeout_is_unknown_then_same_frozen_retry_converges(make_rig)
     assert first["data"]["outcomeKnown"] is False
     assert len(rig.server.requests) == 2
     assert rig.server.requests[0]["params"] == rig.server.requests[1]["params"]
-    assert len(rig.recipient.pending_messages(_Routes.target.actor_id)) == 1
+    assert len(rig.recipient.pending_messages(rig.routes.target.actor_id)) == 1
     assert rig.platform.replies == [] and rig.adapter.dead_letters() == ()
 
 
@@ -179,7 +181,7 @@ def test_unknown_exhaustion_survives_process_rebuild_and_pin_change(make_rig):
     outcome = rig.adapter.handle_inbound(rig.message)
     assert outcome.status == "error" and outcome.ack_error == "SubmitOutcomeUnknownError"
     assert rig.entered.is_set()
-    assert rig.recipient.pending_messages(_Routes.target.actor_id) == ()
+    assert rig.recipient.pending_messages(rig.routes.target.actor_id) == ()
     [letter] = rig.adapter.dead_letters()
     assert letter.reason == "forward-outcome-unknown"
     assert not rig.adapter._state.seen(rig.message.event_id)
@@ -193,12 +195,12 @@ def test_unknown_exhaustion_survives_process_rebuild_and_pin_change(make_rig):
     rig.release.set()
     assert rig.settled.wait(3)
     # Real process reconstruction: no parent adapter/request object survives.
-    script = "\nimport json,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\nfrom tests.daemon.adapters.lark.outbound.test_lark_submission_outcome_unknown import _Platform,_Routes\nfrom hyprial.daemon.impl.adapters.lark import LarkAdapter,LarkInboundMessage,LarkStateStore,ActorTarget\nfrom hyprial.daemon.impl.adapters.lark.worker.daemon_link import _Harness\nclass ChangedRoutes(_Routes):\n    target=ActorTarget('agent:test-owner:lark-idempotency-node:new-target','new-target','new-target')\n    def pinned_actor(self,conversation_id):\n        raise AssertionError('recovery must not resolve a changed pin')\nmessage=LarkInboundMessage(**json.loads(sys.argv[4]))\nadapter=LarkAdapter(state=LarkStateStore(Path(sys.argv[2])),lark=_Platform(message),harness=_Harness(Path(sys.argv[3])),routes=ChangedRoutes(),channel_actor_id='channel:lark:test',org_context_path=Path(sys.argv[2]).parent/'no-context')\ntry:\n    result=adapter.recover_message(message.message_id)\n    print(json.dumps({'status':result.status,'messageId':result.harness_message_id,'pending':adapter._state.pending_inbound_submission(message.message_id),'deadLetters':len(adapter.dead_letters())}))\nfinally:adapter.close()\n"
+    script = "\nimport json,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\nfrom tests.daemon.adapters.lark.outbound.test_lark_submission_outcome_unknown import _Platform,_Routes\nfrom hyprial.daemon.impl.adapters.lark import LarkAdapter,LarkInboundMessage,LarkStateStore,ActorTarget\nfrom hyprial.daemon.impl.adapters.lark.worker.daemon_link import _Harness\nclass ChangedRoutes(_Routes):\n    target=ActorTarget('agent:test-owner:lark-idempotency-node:new-target','new-target','new-target')\n    def routed_actor(self,conversation_id):\n        raise AssertionError('recovery must not resolve a changed binding')\nmessage=LarkInboundMessage(**json.loads(sys.argv[4]))\nadapter=LarkAdapter(state=LarkStateStore(Path(sys.argv[2])),lark=_Platform(message),harness=_Harness(Path(sys.argv[3])),routes=ChangedRoutes(),channel_actor_id='adapter:lark:test',org_context_path=Path(sys.argv[2]).parent/'no-context')\ntry:\n    result=adapter.recover_message(message.message_id)\n    print(json.dumps({'status':result.status,'messageId':result.harness_message_id,'pending':adapter._state.pending_inbound_submission(message.message_id),'deadLetters':len(adapter.dead_letters())}))\nfinally:adapter.close()\n"
     changed = replace(rig.message, text="changed platform text", event_id="new-event", content_status="unsupported")
     completed = subprocess.run([sys.executable, "-c", script, str(Path(__file__).resolve().parents[5] / 'tests'), str(rig.state_path), str(rig.short_socket), json.dumps(asdict(changed))], text=True, capture_output=True, check=True, timeout=15)
     recovered = json.loads(completed.stdout)
     assert recovered == {"status": "forwarded", "messageId": rig.message_id, "pending": None, "deadLetters": 0}
-    assert len(rig.recipient.pending_messages(_Routes.target.actor_id)) == 1
+    assert len(rig.recipient.pending_messages(rig.routes.target.actor_id)) == 1
     assert len(rig.server.requests) == 2
     assert rig.server.requests[0]["params"] == rig.server.requests[1]["params"]
     assert rig.server.requests[-1]["params"]["message"] == rig.message.text
@@ -228,7 +230,7 @@ def test_committed_request_with_unusable_reply_remains_unknown(make_rig, failure
     assert not any(event == "terminal.failure" for event, _ in rig.logs.events)
     assert len(rig.server.requests) == 1  # No blanket retry of DAEMON_ERROR.
     assert rig.adapter.recover_message(rig.message.message_id).status == "forwarded"
-    assert len(rig.recipient.pending_messages(_Routes.target.actor_id)) == 1
+    assert len(rig.recipient.pending_messages(rig.routes.target.actor_id)) == 1
 
 
 def test_definitive_rejection_releases_request_and_keeps_failure_alarm(make_rig):
@@ -238,7 +240,7 @@ def test_definitive_rejection_releases_request_and_keeps_failure_alarm(make_rig)
     rig.app._timed_handle = rejected
     outcome = rig.adapter.handle_inbound(rig.message)
     assert outcome.status == "error"
-    assert rig.recipient.pending_messages(_Routes.target.actor_id) == ()
+    assert rig.recipient.pending_messages(rig.routes.target.actor_id) == ()
     assert rig.adapter._state.pending_inbound_submission(rig.message.message_id) is None
     assert len(rig.server.requests) == 1
     assert any(event == "terminal.failure" for event, _ in rig.logs.events)
@@ -360,7 +362,7 @@ def test_unadmitted_inbox_command_does_not_claim_submission_unknown(make_rig, mo
         with pytest.raises(InboxAuthorityUnavailable) as error:
             rig.facade.submit(InboxMessage("not-admitted", "conversation", "sender", "recipient", b"body", "request", DeliveryLifecycle.DURABLE_SERVICE, 1))
     assert getattr(error.value, "code", None) != ipc_errors.SUBMIT_OUTCOME_UNKNOWN
-    assert rig.recipient.pending_messages(_Routes.target.actor_id) == ()
+    assert rig.recipient.pending_messages(rig.routes.target.actor_id) == ()
 
 
 def test_corrupt_frozen_identity_never_reroutes_or_sends(make_rig):
@@ -392,7 +394,7 @@ def test_explicit_negative_submission_result_releases_pending_custody(make_rig):
     assert rig.adapter.handle_inbound(rig.message).status == "error"
     assert rig.adapter._state.pending_inbound_submission(rig.message.message_id) is None
     assert any(event == "terminal.failure" for event, _ in rig.logs.events)
-    assert rig.recipient.pending_messages(_Routes.target.actor_id) == ()
+    assert rig.recipient.pending_messages(rig.routes.target.actor_id) == ()
 
 
 def test_unknown_code_is_explicitly_not_a_generic_transient():

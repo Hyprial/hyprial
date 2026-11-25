@@ -636,7 +636,7 @@ restoreStatus: idle-suppressed
 lastActiveAtMs: <value or null>
 idleAgeMs: <value or null>
 restoreThresholdMs: 43200000
-restoreOverride: none | pending-work | per-agent
+restoreOverride: none | pending-work | per-agent | pac-held-idle
 activityUnknown: true | false
 ```
 

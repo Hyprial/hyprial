@@ -1,0 +1,266 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "message",
+ "scenario": "operator",
+ "steps": [
+  {
+   "step": 1,
+   "method": "message.send",
+   "label": "on-behalf-of",
+   "origin": "ipc",
+   "params": {
+    "from": "user:op",
+    "onBehalfOf": "agent:op:node-1:alpha",
+    "to": [
+     "agent:op:node-1:beta"
+    ],
+    "summary": "operator",
+    "message": "operator body",
+    "conversationId": "conv-operator",
+    "idempotencyKey": "key-operator"
+   },
+   "result": {
+    "ok": true,
+    "actingPrincipal": "user:op",
+    "operationId": "key-operator",
+    "conversationId": "conv-operator",
+    "deliveries": [
+     {
+      "target": "agent:op:node-1:beta",
+      "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d",
+      "accepted": true,
+      "queued": false,
+      "conversationId": "conv-operator"
+     }
+    ],
+    "replyPathUnavailable": true,
+    "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d"
+   }
+  },
+  {
+   "step": 2,
+   "method": "message.send",
+   "label": "as-owner",
+   "origin": "ipc",
+   "params": {
+    "from": "user:op",
+    "to": [
+     "agent:op:node-1:beta"
+    ],
+    "summary": "owner",
+    "message": "owner body",
+    "conversationId": "conv-owner",
+    "idempotencyKey": "key-owner"
+   },
+   "result": {
+    "ok": true,
+    "actingPrincipal": "user:op",
+    "operationId": "key-owner",
+    "conversationId": "conv-owner",
+    "deliveries": [
+     {
+      "target": "agent:op:node-1:beta",
+      "messageId": "ded8440d-ad53-5af4-9c32-32eb62f95cc3",
+      "accepted": true,
+      "queued": false,
+      "conversationId": "conv-owner"
+     }
+    ],
+    "replyPathUnavailable": true,
+    "messageId": "ded8440d-ad53-5af4-9c32-32eb62f95cc3"
+   }
+  },
+  {
+   "step": 3,
+   "method": "message.pending.list",
+   "label": "unfenced",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta"
+   },
+   "error": {
+    "code": "SENDER_NOT_AUTHENTICATED",
+    "message": "identity 'agent:op:node-1:beta' was claimed, but no matching session was presented; the operator form is --from user:<owner> --on-behalf-of <actor>",
+    "data": {
+     "claimedIdentity": "agent:op:node-1:beta"
+    }
+   }
+  },
+  {
+   "step": 4,
+   "method": "message.pending.list",
+   "label": "on-behalf-of",
+   "origin": "ipc",
+   "params": {
+    "from": "user:op",
+    "onBehalfOf": "agent:op:node-1:beta"
+   },
+   "result": {
+    "ok": true,
+    "messages": [
+     {
+      "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d",
+      "deliveryId": "8afb626a-28c4-5bbc-96da-c2639797a05d",
+      "conversationId": "conv-operator",
+      "from": "user:op",
+      "to": "agent:op:node-1:beta",
+      "intent": "request",
+      "kind": "message",
+      "summary": "operator",
+      "bodyBytes": 13,
+      "origin": {
+       "via": "operator",
+       "onBehalfOf": "agent:op:node-1:alpha"
+      }
+     },
+     {
+      "messageId": "ded8440d-ad53-5af4-9c32-32eb62f95cc3",
+      "deliveryId": "ded8440d-ad53-5af4-9c32-32eb62f95cc3",
+      "conversationId": "conv-owner",
+      "from": "user:op",
+      "to": "agent:op:node-1:beta",
+      "intent": "request",
+      "kind": "message",
+      "summary": "owner",
+      "bodyBytes": 10,
+      "origin": {
+       "via": "operator"
+      }
+     }
+    ],
+    "daemonEpoch": "<uuid4#1>"
+   }
+  },
+  {
+   "step": 5,
+   "method": "message.query",
+   "label": "bare-name",
+   "origin": "ipc",
+   "params": {
+    "from": "beta",
+    "view": "inbox"
+   },
+   "result": {
+    "ok": true,
+    "actor": "agent:op:node-1:beta",
+    "view": "inbox",
+    "entries": [
+     {
+      "kind": "message",
+      "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d",
+      "conversationId": "conv-operator",
+      "from": "user:op",
+      "to": "agent:op:node-1:beta",
+      "intent": "request",
+      "createdAtMs": 1800000000000,
+      "message": "operator body",
+      "origin": {
+       "via": "operator",
+       "onBehalfOf": "agent:op:node-1:alpha"
+      }
+     },
+     {
+      "kind": "message",
+      "messageId": "ded8440d-ad53-5af4-9c32-32eb62f95cc3",
+      "conversationId": "conv-owner",
+      "from": "user:op",
+      "to": "agent:op:node-1:beta",
+      "intent": "request",
+      "createdAtMs": 1800000000000,
+      "message": "owner body",
+      "origin": {
+       "via": "operator"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step": 6,
+   "method": "message.status",
+   "origin": "ipc",
+   "params": {
+    "from": "user:op",
+    "onBehalfOf": "agent:op:node-1:alpha",
+    "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d"
+   },
+   "result": {
+    "ok": true,
+    "from": "agent:op:node-1:alpha",
+    "records": [],
+    "diagnostics": {
+     "localRecords": 0,
+     "meshReplies": 0,
+     "meshRecords": 0,
+     "meshHolders": [],
+     "meshResponders": [],
+     "undecodableReplies": 0,
+     "undecodableHolders": [],
+     "replyErrors": 0,
+     "meshError": null,
+     "holders": [],
+     "missingRecipientHolders": [],
+     "conflictingMessageIds": [],
+     "duplicateHolderRecords": [],
+     "noKnownLoss": true
+    },
+    "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d",
+    "state": "unknown"
+   }
+  },
+  {
+   "step": 7,
+   "method": "message.ack",
+   "origin": "ipc",
+   "params": {
+    "from": "user:op",
+    "onBehalfOf": "agent:op:node-1:beta",
+    "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d"
+   },
+   "result": {
+    "ok": true,
+    "messageId": "8afb626a-28c4-5bbc-96da-c2639797a05d",
+    "acknowledged": true
+   }
+  },
+  {
+   "step": 8,
+   "method": "message.history",
+   "origin": "ipc",
+   "params": {
+    "from": "user:op",
+    "onBehalfOf": "agent:op:node-1:alpha",
+    "conversationId": "conv-operator"
+   },
+   "result": {
+    "ok": true,
+    "conversationId": "conv-operator",
+    "entries": [],
+    "nextCursor": null
+   }
+  },
+  {
+   "step": 9,
+   "method": "message.send",
+   "label": "bare-claim-without-session",
+   "origin": "ipc",
+   "params": {
+    "from": "alpha",
+    "to": [
+     "agent:op:node-1:beta"
+    ],
+    "summary": "s",
+    "message": "m",
+    "conversationId": "conv-bare",
+    "idempotencyKey": "key-bare"
+   },
+   "error": {
+    "code": "SENDER_NOT_AUTHENTICATED",
+    "message": "identity 'agent:op:node-1:alpha' was claimed, but no matching session was presented; the operator form is --from user:<owner> --on-behalf-of <actor>",
+    "data": {
+     "claimedIdentity": "agent:op:node-1:alpha"
+    }
+   }
+  }
+ ]
+}

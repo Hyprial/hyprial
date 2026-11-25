@@ -160,7 +160,7 @@ pending ──send──► dispatched ──reply/ack 匹配──► done
 
 ### 4.5 超时提醒(escalate)投递
 
-复用 `hyprial/alarm.py` 的 `AlarmEmitter`(:43;已支持 human/agent 双通道 + claim 语义):`escalate_to: user:<owner>` 走 human 通道(经接收方 Squire adapter),`agent:...` 走 agent 通道(daemon 系统通知入目标 inbox)。**不新造提醒机制**。
+复用 `hyprial/alarm.py` 的 `AlarmEmitter`(:43;已支持 human/agent 双通道 + claim 语义):`escalate_to: user:<owner>` 走 human 通道（**送达路径由接收侧决定**，本文不承诺具体通道）,`agent:...` 走 agent 通道(daemon 系统通知入目标 inbox)。**不新造提醒机制**。
 
 ### 4.6 护栏
 

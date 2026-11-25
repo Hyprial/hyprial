@@ -9,7 +9,7 @@ from hyprial.kernel.impl.actor_runtime import AdmissionResult
 from hyprial.kernel.impl.log.writer import LogWriter
 
 
-def test_exact_prefix_completes_before_later_blocked_write() -> None:
+def test_exact_prefix_completes_before_later_blocked_write(actor_host) -> None:
     first_entered = threading.Event()
     second_entered = threading.Event()
     release_first = threading.Event()
@@ -23,7 +23,7 @@ def test_exact_prefix_completes_before_later_blocked_write() -> None:
             second_entered.set()
             assert release_second.wait(3)
 
-    writer = LogWriter(append, capacity=2)
+    writer = LogWriter(append, capacity=2, actor_host=actor_host)
     try:
         assert writer.submit(b"first") is AdmissionResult.ACCEPTED
         assert first_entered.wait(1)
@@ -47,12 +47,12 @@ def test_exact_prefix_completes_before_later_blocked_write() -> None:
         assert writer.close(2)
 
 
-def test_later_failure_or_refusal_does_not_rewrite_completed_prefix() -> None:
+def test_later_failure_or_refusal_does_not_rewrite_completed_prefix(actor_host) -> None:
     def append(payload: bytes) -> None:
         if payload == b"later":
             raise OSError("private path must not escape")
 
-    writer = LogWriter(append, capacity=2)
+    writer = LogWriter(append, capacity=2, actor_host=actor_host)
     try:
         assert writer.submit(b"first") is AdmissionResult.ACCEPTED
         assert writer.wait_for_writes(target=1, rejected_at_capture=0, timeout=2)
@@ -68,3 +68,6 @@ def test_later_failure_or_refusal_does_not_rewrite_completed_prefix() -> None:
     assert writer.wait_for_writes(target=1, rejected_at_capture=0, timeout=0)
     assert not writer.wait_for_writes(target=1, rejected_at_capture=1, timeout=0)
     assert writer.status().rejected == 1
+    second = LogWriter(lambda payload: None, actor_host=actor_host)
+    assert second.submit(b"still usable") is AdmissionResult.ACCEPTED
+    assert second.close()

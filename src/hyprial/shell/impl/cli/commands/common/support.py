@@ -1,18 +1,21 @@
-"""Shared CLI runtime: error envelope, daemon IPC, home/socket selection."""
+"""Shared CLI runtime: error envelope, daemon IPC, home/socket selection.
+
+The implicit daemon start and the login next step live in ``common/ensure``.
+"""
 
 from __future__ import annotations
 
-from hyprial.shell.impl.cli.output.channels import warn
-
 from hyprial.shell.impl.cli.commands.common.services import get_services
+from hyprial.shell.impl.cli.commands.common.ensure import JSON_OUTPUT, OFF, ON, SCOPE, ensure_listening, with_next_step
 from hyprial.shell.impl.cli.output import emit_error, emit_value, json_failure, run_command, tables
 
 from typing import Any, NoReturn
 from collections.abc import Callable
-from hyprial.kernel import RequestPortError, daemon_request, daemon_socket_path
+from hyprial.kernel import RequestPortError, daemon_request, daemon_socket_absent, daemon_socket_path
 from pathlib import Path
 from datetime import UTC, datetime
 from hyprial.kernel import canonical_user_uri, parse_agent_uri
+from hyprial.error import codes
 from hyprial.kernel import ipc_errors
 import json
 import os
@@ -20,6 +23,16 @@ import subprocess
 import sys
 
 JsonObject = dict[str, Any]
+
+
+def request_upgrade_steps(services: Any, *, apply: bool = False) -> JsonObject:
+    """Use the daemon port; transport absence never executes a local migration."""
+    method = "upgrade.steps.run" if apply else "upgrade.steps.status"
+    try:
+        return services.runtime.request(method, {"apply": True} if apply else {}, timeout=120.0)
+    except (RequestPortError, ipc_errors.TransientDaemonError) as error:
+        return {"steps": [], "pending": ["daemon-unavailable"], "unavailable": True,
+                "code": error.code, "error": "daemon upgrade steps unavailable; no local migration was run"}
 
 
 _INIT_READY_TIMEOUT_ENV = "HYPRIAL_INIT_READY_TIMEOUT"
@@ -150,14 +163,20 @@ def _execute(
     json_output: bool,
     json_indent: int | None = None,
     allow_missing_home: bool = False,
+    ensure_daemon: bool = True,
 ) -> None:
     services = get_services()
-    run_command(
-        operation,
-        json_output=json_output,
-        json_indent=json_indent,
-        require_home=None if allow_missing_home else services.require_initialized_hyprial_home,
-    )
+    scope, output = SCOPE.set(ON if ensure_daemon else OFF), JSON_OUTPUT.set(json_output)
+    try:
+        run_command(
+            operation,
+            json_output=json_output,
+            json_indent=json_indent,
+            require_home=None if allow_missing_home else services.require_initialized_hyprial_home,
+        )
+    finally:
+        JSON_OUTPUT.reset(output)
+        SCOPE.reset(scope)
 
 
 _RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS = 2.0
@@ -168,6 +187,7 @@ def _daemon_request(
     params: JsonObject | None = None,
     *,
     timeout: float | None = None,
+    timeout_allowance: float = 0.0,
     restore_wait: float | None = None,
 ) -> Any:
     """Call the kernel client through the CLI's request port.
@@ -185,6 +205,7 @@ def _daemon_request(
     out the budget just to swallow or re-render the same error.
     """
     services = get_services()
+    ensure_listening(services, method, daemon_socket_absent)
     try:
         # ``socket_path`` and ``clock`` are passed as CALLABLES: the kernel
         # client re-resolves both on every restore-wait retry, so a daemon
@@ -200,8 +221,12 @@ def _daemon_request(
             restore_wait=restore_wait,
             clock=_service_clock,
             uuid4=_service_uuid4,
+            **({"timeout_allowance": timeout_allowance} if timeout_allowance else {}),
         )
     except RequestPortError as error:
+        with_step = with_next_step(services, error)
+        if with_step is not None:
+            raise with_step
         # The cause shape is per code, because the base client raised the two
         # paths differently: a malformed frame chained the decode error
         # (``from error``), every other refusal was raised bare. A single
@@ -236,6 +261,15 @@ def _service_uuid4() -> Any:
     return get_services().uuid4()
 
 
+def is_start_verdict(error: BaseException) -> bool:
+    """Whether ``_wait_for_daemon`` ended by its own idle/hard-cap/exit verdict."""
+
+    return getattr(error, "code", None) in (
+        codes.DAEMON_START_TIMEOUT,
+        codes.DAEMON_START_FAILED,
+    )
+
+
 def _wait_for_daemon(
     *,
     timeout: float,
@@ -243,6 +277,7 @@ def _wait_for_daemon(
     startup_progress: Callable[[], JsonObject] | None = None,
     hard_cap: float = DAEMON_START_HARD_CAP_SECONDS,
     launch_id: str | None = None,
+    job_exited: Callable[[], bool] | None = None,
 ) -> JsonObject:
     """Wait for phase ① with a progress-reset idle budget and hard cap.
 
@@ -253,7 +288,9 @@ def _wait_for_daemon(
     for whoever needs it.  ``timeout`` is the maximum silence between startup
     phase observations; ``hard_cap`` is the absolute ceiling even while phases
     continue to advance. An explicit idle value can widen the silence window,
-    but it never widens that absolute ceiling.
+    but it never widens that absolute ceiling.  ``job_exited`` lets a
+    supervisor-launched caller (service install, N2) report that its job ran
+    and is gone; the budgets stay defined here and only here.
     """
     services = get_services()
 
@@ -295,9 +332,14 @@ def _wait_for_daemon(
             break
         if now >= idle_deadline:
             break
+        if job_exited is not None and job_exited():
+            raise services.CliError(
+                codes.DAEMON_START_FAILED,
+                "supervised daemon exited during startup",
+            )
         if process is not None and process.poll() is not None:
             raise services.CliError(
-                ipc_errors.DAEMON_START_FAILED,
+                codes.DAEMON_START_FAILED,
                 f"daemon exited during startup with status {process.returncode}",
             )
         if process is not None and not (
@@ -345,7 +387,7 @@ def _wait_for_daemon(
             health = result.get("storageHealth")
             if isinstance(health, dict) and health.get("healthy") is False:
                 raise services.CliError(
-                    ipc_errors.DAEMON_START_FAILED,
+                    codes.DAEMON_START_FAILED,
                     "daemon is reachable but its database health check failed",
                     {"storageHealth": health},
                 )
@@ -362,7 +404,7 @@ def _wait_for_daemon(
         else f"{timeout:g}s without startup progress"
     )
     raise services.CliError(
-        ipc_errors.DAEMON_START_TIMEOUT,
+        codes.DAEMON_START_TIMEOUT,
         f"daemon did not become ready within {limit_detail}{phase_detail}"
         + (f" ({last_error})" if last_error is not None else ""),
     )
@@ -404,7 +446,7 @@ def _daemon_probe(timeout: float = 0.5) -> JsonObject:
     try:
         result = services.runtime.request("ping", timeout=budget)
     except services.CliError as error:
-        if error.code != ipc_errors.METHOD_NOT_FOUND:
+        if error.code != codes.METHOD_NOT_FOUND:
             raise
         remaining = deadline - services.time.monotonic()
         if remaining <= 0:
@@ -427,13 +469,6 @@ def _probe_reports_running(probe: JsonObject) -> bool:
     return isinstance(daemon, dict) and daemon.get("running") is True
 
 
-_SQUIRE_SETUP_PARTS = (
-    ("profile", "no squire profile yet"),
-    ("channel", "no Feishu channel bound to your squire"),
-    ("ownerOpenId", "your Feishu account is not bound to your squire"),
-)
-
-
 def device_sign_in_hint(issuer: str) -> str:
     """The device-flow hint, including where a person without an account goes.
 
@@ -446,157 +481,10 @@ def device_sign_in_hint(issuer: str) -> str:
 
     signup_url = f"{issuer}/signup/app-hyprial"
     return (
-        "on the sign-in page choose \"sign in with an existing account\" "
-        "(使用已有账户登录); signing in with Feishu (使用飞书登录) currently does not "
-        "approve this device, and this command would wait until the code expires. "
+        "on the sign-in page choose \"sign in with Feishu\" "
+        "(使用飞书登录); that sign-in now approves this device. "
         f"No account yet? Create one first: {signup_url}"
     )
-
-
-def _squire_setup_warning() -> JsonObject | None:
-    """Guide the owner to set up their squire when the daemon (re)starts.
-
-    Allen 2026-09-26: on daemon start/restart/init, check that the owner's
-    squire and user-proxy are configured, and guide setup in that order --
-    squire first, then squire guides the user-proxy setup.  Without a squire
-    nothing reaches this person through ``user:<owner>``; delivery fails with
-    TARGET_SQUIRE_UNCONFIGURED only when someone first tries.
-
-    ⚠️ Local files only (settings.json for the owner, users.json for the
-    profile): no daemon call, no network, never a write.  It runs inside the
-    commands that start the daemon, whose budgets are tight.  "Configured" is
-    the daemon's own test for a user target (a profile with a channel and an
-    owner open_id, daemon/application.py `_user_targets`).
-
-    Silent when there is no owner yet (login's own next steps cover that) and
-    for an isolated daemon, which cannot reach Feishu at all.
-    """
-    services = get_services()
-
-    if os.environ.get("HYPRIAL_NETWORK_ISOLATED", "").strip() not in ("", "0"):
-        return None
-    from hyprial.daemon import node_owner_or_none
-    from hyprial.identity import UserProfileError, UserProfileStore
-
-    owner = node_owner_or_none()
-    if owner is None:
-        return None
-    try:
-        profile = UserProfileStore(services._state_dir() / "users.json").resolve(owner)
-    except (UserProfileError, OSError) as error:
-        return {
-            "code": "SQUIRE_PROFILE_UNREADABLE",
-            "message": (
-                f"cannot read the squire profiles ({error}); messages to user:{owner} "
-                "will fail until it is fixed. Check state/users.json, then run: hyprial squire setup"
-            ),
-            "data": {"owner": owner, "nextStep": "hyprial squire setup"},
-        }
-    if profile is None:
-        missing = [name for name, _ in _SQUIRE_SETUP_PARTS]
-    else:
-        missing = [
-            name
-            for name, present in (
-                ("channel", profile.squire_adapter is not None),
-                ("ownerOpenId", profile.owner_open_id is not None),
-            )
-            if not present
-        ]
-    if not missing:
-        return _user_proxy_setup_warning(owner, profile)
-    first = dict(_SQUIRE_SETUP_PARTS)[missing[0]]
-    return {
-        "code": "SQUIRE_NOT_CONFIGURED",
-        "message": (
-            f"your squire is not set up ({first}), so nobody can reach you through "
-            f"{canonical_user_uri(owner)} yet. Set it up with: hyprial squire setup"
-        ),
-        "data": {"owner": owner, "missing": missing, "nextStep": "hyprial squire setup"},
-    }
-
-
-def _user_proxy_setup_warning(owner: str, profile: Any) -> JsonObject | None:
-    """The second step of the startup guidance, once the squire is complete.
-
-    Without a user-proxy (users.json ``deliveryAgent``), messages to
-    ``user:<owner>`` arrive through the squire's chat, mixed in with the
-    squire's own traffic.  Setup needs a Feishu app of the person's own (the
-    squire's adapter is refused), and it must run on the preferred-receiver
-    node, so the message says both before the command.
-    """
-
-    if profile.delivery_agent is not None or not _setup_hint_enabled("userProxy"):
-        return None
-    machine = profile.preferred_receiver.machine
-    next_step = "hyprial user proxy setup --adapter <your-adapter> --route <route>"
-    return {
-        "code": "SQUIRE_USER_PROXY_NOT_CONFIGURED",
-        "message": (
-            f"your squire is set up, but messages to user:{owner} still arrive in the "
-            "squire's chat, mixed with its own. For a separate channel, add a Feishu "
-            f"adapter of your own (not the squire's), then on {machine} run: {next_step}"
-            ". To stop this reminder: hyprial config set hints.userProxy off"
-        ),
-        "data": {"owner": owner, "machine": machine, "nextStep": next_step},
-    }
-
-
-#: Optional setup reminders the owner can turn off (settings.json ``hints``).
-_SETUP_HINTS = ("userProxy",)
-
-
-def _setup_hint_enabled(name: str) -> bool:
-    """False only when settings.json says ``hints.<name>`` is ``off``.
-
-    Local file read inside a tight start budget: any read problem keeps the
-    reminder on rather than failing the command.
-    """
-
-    try:
-        home = get_services()._hyprial_home()
-        record = json.loads((home / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return True
-    hints = record.get("hints") if isinstance(record, dict) else None
-    return not (isinstance(hints, dict) and hints.get(name) == "off")
-
-
-def _write_setup_hint(name: str, value: str, hyprial_home: Path) -> Path:
-    """Persist ``hints.<name>`` (on|off), keeping every other settings key."""
-
-    normalized = value.strip().lower()
-    if normalized not in ("on", "off"):
-        raise ValueError(f"hints.{name} accepts on|off; got {value!r}")
-    path = Path(hyprial_home) / "settings.json"
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        record = {}
-    except (OSError, ValueError) as error:
-        raise ValueError(f"cannot parse {path}: {error}") from error
-    if not isinstance(record, dict):
-        raise ValueError(f"cannot parse {path}: top level is not an object")
-    section = record.get("hints")
-    section = dict(section) if isinstance(section, dict) else {}
-    section[name] = normalized
-    record["hints"] = section
-    path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    staging.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    os.replace(staging, path)
-    return path
-
-
-def _announce_setup_guidance(result: JsonObject) -> None:
-    """One stderr line per setup warning, for a person reading the terminal.
-
-    The human output of init/restart is the whole result dict, where a
-    warning sits among forty fields.  Same shape as the plugin-skip lines.
-    """
-    for warning in result.get("warnings") or []:
-        if isinstance(warning, dict) and str(warning.get("code", "")).startswith("SQUIRE_"):
-            warn(f"hyprial: {warning['message']}", json_output=False)
 
 
 def _overview_duration(milliseconds: int) -> str:
@@ -641,15 +529,11 @@ def _message_claim_params(
     *,
     on_behalf_of: str | None = None,
     binding: object = _UNRESOLVED_BINDING,
-    query: bool = False,
 ) -> JsonObject:
     """Attach an agent session's opaque fence only to its own actor claim.
 
     Callers that already resolved the one per-operation binding pass it in;
     other callers retain the lazy read.  No process-wide cache is used.
-    ``query=True`` serves read-only queries: their strict schemas declare
-    ``from`` alone, so the mutation-only ``sessionRef`` fence is not sent and
-    an actor mismatch is refused as ``SENDER_NOT_AUTHENTICATED``.
     """
 
     if binding is _UNRESOLVED_BINDING:
@@ -670,30 +554,16 @@ def _message_claim_params(
             f"--from {source!r} disagrees with the verified acting principal "
             f"{worker_actor!r}"
         )
-        if query:
-            raise get_services().CliError(
-                ipc_errors.SENDER_NOT_AUTHENTICATED,
-                message,
-                {"claimedIdentity": source},
-            )
         raise PacError(
             PAC_PRINCIPAL_UNVERIFIED,
             message,
             {"claimed": source, "verified": worker_actor},
         )
-    if query:
-        return params
     if same_actor:
         params["sessionRef"] = worker_session
     if on_behalf_of is not None:
         params["onBehalfOf"] = on_behalf_of
     return params
-
-
-def _message_query_params(source: str) -> JsonObject:
-    """The actor-checked ``{"from": ...}`` params of a read-only query."""
-
-    return _message_claim_params(source, query=True)
 
 
 def _local_operator_identity() -> str:
@@ -715,29 +585,6 @@ def _append_warning(result: JsonObject, warning: JsonObject | None) -> None:
     if not isinstance(warnings, list):
         raise services.CliError("INVALID_RESPONSE", "warnings must be an array")
     warnings.append(warning)
-
-
-
-def _user_proxy_launch_params(
-    name: str, route_uri: str, *, cwd: Path | None = None
-) -> JsonObject:
-    resolved_cwd = _resolved_agent_cwd(name, cwd)
-    return {
-        "provider": "user-proxy",
-        "name": name,
-        "headless": True,
-        "args": [],
-        "cwd": str(resolved_cwd),
-        "command": [
-            os.path.abspath(sys.executable),
-            "-m",
-            "hyprial.daemon.impl.harnesses.python_worker._user_proxy_worker",
-            "--kind",
-            "user-proxy",
-            "--route",
-            route_uri,
-        ],
-    }
 
 
 

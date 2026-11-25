@@ -1,3 +1,9 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Removes the POSIX-only hard refusal (H10) and hardcoded dir='/tmp' in
+#   TailnetMaintenance._start_controller; uses the system temporary directory
+#   and reserves an unused loopback TCP target when loopback_inbound_supported()
+#   is True so Go sidecar validateInboundTarget (which requires non-zero port on
+#   127.0.0.1) succeeds on Windows without opening any real listener.
 """Offline re-pin: hold daemon ownership until sidecar exit and durable pin commit."""
 from __future__ import annotations
 
@@ -9,11 +15,15 @@ import uuid
 from pathlib import Path
 
 from hyprial.identity import read_device_record
-from hyprial.kernel import FORWARDING_UP_ENV
+from hyprial.kernel import FORWARDING_UP_ENV, loopback_inbound_supported
 from ...configuration.ownership import DaemonOwnershipBusy, DaemonStateOwnershipFence
 from ...forwarding_config import FORWARDING_TARGET_ENV, daemon_forwarding_environment
 from ..controller import ForwardingSidecarController
-from ..policy import ForwardingSidecarError
+from ..policy import (
+    ForwardingSidecarError,
+    inbound_target_from_listener,
+    reserve_loopback_listener,
+)
 from .settings import _settings_record, durable_json_write
 
 
@@ -54,16 +64,17 @@ class TailnetMaintenance:
                     self._fence = None
 
     def _start_controller(self):
-        if os.name != 'posix':
-            raise ForwardingSidecarError('Managed private Unix maintenance is unsupported on this platform.', code='FORWARDING_TARGET_INVALID')
         record = read_device_record(self.home)
         if record is None:
             raise ForwardingSidecarError('Device identity is required.', code='MEMBERSHIP_NOT_INITIALIZED')
-        # No listener exists at this unique backend path. The maintenance process
-        # owns no Zenoh session, mapped slots, services or exposures.
-        self._temporary = tempfile.TemporaryDirectory(prefix='hr-repin-', dir='/tmp')
+        self._temporary = tempfile.TemporaryDirectory(prefix='hr-repin-')
         root = Path(self._temporary.name)
-        environment = self.environ | {FORWARDING_TARGET_ENV: 'unix:' + str(root / 'absent.sock')}
+        inbound_target = (
+            inbound_target_from_listener(reserve_loopback_listener())
+            if loopback_inbound_supported()
+            else 'unix:' + str(root / 'absent.sock')
+        )
+        environment = self.environ | {FORWARDING_TARGET_ENV: inbound_target}
         launch = daemon_forwarding_environment(self.home, environment, node_id=record.device_id)
         up = json.loads(launch[FORWARDING_UP_ENV])
         up['slots'] = []

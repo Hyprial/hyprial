@@ -2,6 +2,26 @@
 
 Callers hand this layer opaque encoded bytes.  This keeps the daemon and proto
 packages dependent on a small stable seam and avoids a transport/proto cycle.
+
+Envelope decisions (cell model phase A, slice S2, executor decision Q1):
+
+* ``InboxMessage.thread_id``, ``conversation_cell_id`` and ``message_class``
+  are local fields.  ``None`` keeps the old semantics: no thread, no
+  conversation cell, and a class the single rulebook
+  (``inbox.envelope.message_class_of``) derives from local signals.
+* They are never written to ``hyprial-delivery-frame/v1`` and never decoded
+  from it, and the submission digest never includes them.  Same-node
+  delivery hands the ``InboxMessage`` object over in process, so it keeps its
+  stamps.  Across the wire (phase B, option B) the network transport writes
+  them into the payload's inner schema (``inbox.envelope.payload``) and the
+  receiving inbox strips and adopts them; without that object the receiving
+  daemon derives its own.
+* ``with_envelope`` is the one way to stamp them; it refuses a value the
+  kernel ``t.``/``c.`` grammar or ``MessageClass`` refuses, so a malformed
+  stamp fails at its producer instead of reaching storage.  It only sets:
+  a ``None`` argument keeps the current value, so it cannot clear a stamp.
+  Phase A has no producer that needs to; one that does builds the message
+  with ``dataclasses.replace``.
 """
 
 from __future__ import annotations
@@ -10,6 +30,8 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from hyprial.kernel import MessageClass, is_cell_id_segment, is_thread_id_segment
 
 
 class DeliveryLifecycle(StrEnum):
@@ -46,9 +68,54 @@ class InboxMessage:
     # pre-summary peers and on rows written before the column existed; the
     # send boundary refuses a new send without one (SUMMARY_REQUIRED).
     summary: str | None = None
+    thread_id: str | None = None
+    conversation_cell_id: str | None = None
+    message_class: MessageClass | None = None
 
     def with_payload(self, payload: bytes) -> InboxMessage:
         return replace(self, payload=payload)
+
+    @property
+    def thread_key(self) -> str | None:
+        """The thread this message belongs to; None for an unthreaded message."""
+
+        return self.thread_id
+
+    def with_envelope(
+        self,
+        *,
+        thread_id: str | None = None,
+        conversation_cell_id: str | None = None,
+        message_class: MessageClass | None = None,
+    ) -> InboxMessage:
+        """Stamp the local envelope; a ``None`` argument keeps the current value.
+
+        It cannot clear a stamp that is already set.
+        """
+
+        if thread_id is not None and not (
+            isinstance(thread_id, str) and is_thread_id_segment(thread_id)
+        ):
+            raise ValueError("thread_id must be a t. stable id")
+        if conversation_cell_id is not None and not (
+            isinstance(conversation_cell_id, str)
+            and is_cell_id_segment(conversation_cell_id)
+        ):
+            raise ValueError("conversation_cell_id must be a c. stable id")
+        if message_class is not None and not isinstance(message_class, MessageClass):
+            raise ValueError("message_class must be a MessageClass")
+        return replace(
+            self,
+            thread_id=self.thread_id if thread_id is None else thread_id,
+            conversation_cell_id=(
+                self.conversation_cell_id
+                if conversation_cell_id is None
+                else conversation_cell_id
+            ),
+            message_class=(
+                self.message_class if message_class is None else message_class
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,95 +189,9 @@ class OutboxItem:
     attempts: int
     next_attempt_ms: int
     expires_at_ms: int
-    # TODO(PR 3): remove legacy retry/confirmation fields after atomic row migration.
     retry_started_at_ms: int | None = None
     confirmation_started_at_ms: int | None = None
     confirmation_attempts: int = 0
-    #: Send-link hold reason (WP2).  Non-None means the row is parked until
-    #: the link gate releases it or its TTL expires; the retry pump must not
-    #: attempt it.  Published on ``outbox list`` as ``holdReason``.
-    link_hold: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class LinkLedgerOpen:
-    """One outbound ledger row written in the submit transaction (§3.9)."""
-
-    actor: str
-    message_id: str
-    peer: str
-    intent: str
-    reply_to: str | None
-    state: str
-    opened_at_ms: int
-    expires_at_ms: int
-
-
-@dataclass(frozen=True, slots=True)
-class LinkLedgerRow:
-    """One durable link-ledger row (§1.2, §3.9)."""
-
-    actor: str
-    message_id: str
-    direction: str
-    peer: str
-    intent: str
-    reply_to: str | None
-    state: str
-    opened_at_ms: int
-    sent_at_ms: int | None = None
-    event_at_ms: int | None = None
-    threshold_ms: int | None = None
-    sample_pending: bool = False
-    expires_at_ms: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class LinkInboundRow:
-    """One live inbound row with its ledger state, injected or not (B10)."""
-
-    message_id: str
-    sender: str
-    recipient: str
-    intent: str
-    reply_to: str | None
-    received_at_ms: int
-    fetched_at_ms: int | None
-    injected: bool
-    state: str
-    expires_at_ms: int
-
-
-@dataclass(frozen=True, slots=True)
-class LinkLedgerCensor:
-    """An inbound row this node stopped waiting for but may still answer (B9)."""
-
-    actor: str
-    message_id: str
-    threshold_ms: int
-    expires_at_ms: int
-
-
-@dataclass(frozen=True, slots=True)
-class LinkLedgerResult:
-    """What the durable update actually did, so memory merges only facts (B15)."""
-
-    released: tuple[str, ...] = ()
-    expired: tuple[str, ...] = ()
-    failed: tuple[str, ...] = ()
-    drained: tuple[tuple[str, str], ...] = ()
-    cancelled: tuple[str, ...] = ()
-
-    def as_mapping(self) -> dict[str, object]:
-        """The wire shape the composition adapter hands back to the engine."""
-
-        return {
-            "released": self.released,
-            "expired": self.expired,
-            "failed": self.failed,
-            "drained": self.drained,
-            "cancelled": self.cancelled,
-        }
 
 
 @dataclass(frozen=True, slots=True)

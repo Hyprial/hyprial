@@ -50,7 +50,9 @@ def require_space_owner(author: str, space: SpaceInfo) -> None:
 #: be registered here or CI is red.  Proto-facing codes come from ipc_errors.
 ORGFS_ERROR_CODES = frozenset(
     {
+        "already-exists",
         "ambiguous-path",
+        "ambiguous-space",
         "blob-unavailable",
         "checkout-io",
         "closed",
@@ -129,6 +131,7 @@ class TextReadSnapshot:
     content: str
     version: str
     node: NodeInfo
+    content_revision: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +241,7 @@ class Registration(Protocol):
 
 
 class OrgFs(Protocol):
-    def create_space(self, name: str) -> SpaceInfo: ...
+    def create_space(self, name: str, *, space_id: str | None = None) -> SpaceInfo: ...
 
     def spaces(self) -> tuple[SpaceInfo, ...]: ...
 
@@ -262,7 +265,9 @@ class OrgFs(Protocol):
 
     def stat(self, space_id: str, node: NodeRef) -> NodeInfo: ...
 
-    def listdir(self, space_id: str, node: NodeRef) -> tuple[NodeInfo, ...]: ...
+    def listdir(
+        self, space_id: str, node: NodeRef, *, recursive: bool = False
+    ) -> tuple[NodeInfo, ...]: ...
 
     def read_text(self, space_id: str, node: NodeRef) -> tuple[str, str]: ...
 

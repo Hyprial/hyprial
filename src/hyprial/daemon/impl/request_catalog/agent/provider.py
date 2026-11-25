@@ -1,8 +1,9 @@
 """``agent.provider.*`` declarations over the existing provider handler.
 
-GRS integration decision: H-03 (#2200, a03a2ef75) implements write admission
-but is not included in this slice. Login/logout HTTP exposure is disabled by
-this integration configuration; the next H-03 integration can enable it.
+Round-2 integration decision (implG2, 2026-11-01): H-03 (#2200, a03a2ef75)
+write admission is merged, so the read-only HTTP stopgap is gone and all three
+methods ride the H-03 write profile over HTTP.  Reads over IPC are
+unchanged.
 
 Decision record (M-02, 2026-10-31): the three provider methods stay one wire
 method each.  ``agent.provider.default`` keeps its read, legacy provider-write
@@ -17,6 +18,16 @@ before calling it; the daemon method receives only the already-collected
 documents or token and never returns them.  ``agent.provider.logout`` removes
 only the current agent's provider files and keeps the upstream-token semantics
 owned by the provider CLI.
+
+Round-2 write path (H-03 integration, 2026-11-01): all three methods here
+are exposed over HTTP through H's write admission only — the transport admits
+a write solely under the never-retry profile with the bearer token, the
+Host/Origin allowlist and no Idempotency-Key (replays cannot be made safe).
+The binding is ``IdentityBinding("none")``: the body's ``actor`` is the
+business recipient, never a caller credential, and daemon authorization stays
+authoritative (the IPC peer identity gates operator mutations).  The round-1
+``readOnlyParamsSchema`` projection is retired together with the kernel field:
+its own description deferred default writes to exactly this integration.
 
 The shared Agent registry aggregation is deliberately not modified here.
 M-01 owns the partial-registration hook and M-03 combines the accepted slices;
@@ -151,7 +162,9 @@ _LOGIN_PARAMS = {
             **_COMPAT_VALUE,
             "description": (
                 "Legacy native-file document list; the handler checks its "
-                "shape after the target and makeDefault checks."
+                "shape after the target and makeDefault checks. Import provenance "
+                "is recorded only when each decoded file is at most 1 MiB; larger "
+                "files keep the existing import behavior with importedAt=null."
             ),
         },
         "force": {
@@ -262,10 +275,7 @@ AGENT_PROVIDER_DEFAULT_SPEC = MethodSpec(
     retry="never",
     audience=("local-operator", "bound-agent"),
     http_exposed=True,
-    http_binding=HttpBinding(IdentityBinding("none"), read_only_params_schema={
-        "type": "object", "properties": {}, "additionalProperties": False,
-        "description": "Read-only HTTP projection; default writes require integration of H-03 (#2200).",
-    }),
+    http_binding=HttpBinding(IdentityBinding("none")),
     confirmation="none",
     idempotency=IdempotencySpec(mode="never", scope="provider-default-read-write"),
 )
@@ -275,14 +285,15 @@ AGENT_PROVIDER_LOGIN_SPEC = MethodSpec(
     owner="daemon.agents",
     params_schema=_LOGIN_PARAMS,
     result_schema=_LOGIN_RESULT,
-    errors=_LOGIN_ERRORS,
+    errors=(*_LOGIN_ERRORS, MethodError(ipc_errors.USER_AGENT_IMMUTABLE, description="The named agent is the owner's user agent, which is never administered; no data payload.")),
     mode="unary",
     mutates=True,
     retry="never",
     audience=("local-operator", "bound-agent"),
-    http_exposed=False,
+    http_exposed=True,
+    http_binding=HttpBinding(IdentityBinding("none")),
     confirmation="none",
-    idempotency=IdempotencySpec(mode="never", scope="provider-credential-install-H-03-not-integrated"),
+    idempotency=IdempotencySpec(mode="never", scope="provider-credential-install"),
 )
 
 AGENT_PROVIDER_LOGOUT_SPEC = MethodSpec(
@@ -290,14 +301,15 @@ AGENT_PROVIDER_LOGOUT_SPEC = MethodSpec(
     owner="daemon.agents",
     params_schema=_LOGOUT_PARAMS,
     result_schema=_LOGOUT_RESULT,
-    errors=_LOGOUT_ERRORS,
+    errors=(*_LOGOUT_ERRORS, MethodError(ipc_errors.USER_AGENT_IMMUTABLE, description="The named agent is the owner's user agent, which is never administered; no data payload.")),
     mode="unary",
     mutates=True,
     retry="never",
     audience=("local-operator", "bound-agent"),
-    http_exposed=False,
+    http_exposed=True,
+    http_binding=HttpBinding(IdentityBinding("none")),
     confirmation="none",
-    idempotency=IdempotencySpec(mode="never", scope="provider-credential-revoke-H-03-not-integrated"),
+    idempotency=IdempotencySpec(mode="never", scope="provider-credential-revoke"),
 )
 
 AGENT_PROVIDER_SPECS = (

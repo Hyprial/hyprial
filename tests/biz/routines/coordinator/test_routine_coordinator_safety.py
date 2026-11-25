@@ -225,6 +225,8 @@ def test_routine_coordinator_uses_shared_matrix_resolver(monkeypatch) -> None:
 
 def test_missing_coordinator_is_not_reported_retired() -> None:
     app = object.__new__(DaemonApplication)
+    app.owner = "test"
+    app.node_id = "isolated"
     app.desired_state = SimpleNamespace(
         load=lambda: SimpleNamespace(harnesses=())
     )

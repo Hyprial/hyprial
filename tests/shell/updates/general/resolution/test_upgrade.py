@@ -338,20 +338,14 @@ def test_upgrade_reports_uv_failure(
     # this payload is that a failure names what it was trying to install.
     assert payload["data"]["resolvedTag"] == "v0.5.0-rc.1"
     assert payload["data"]["resolvedCommit"] == remote.tagged_commit
-    # ⭐ And it now also carries the post-upgrade report. This is an addition,
-    # not a relaxation: a failed upgrade reports too, because a channel that
-    # only carries bad news is a channel nobody has seen work. Asserting the
-    # keys are present keeps a future change from silently dropping them.
     assert set(payload["data"]) == {
         "resolvedTag",
         "resolvedCommit",
         "source",
         "persistentUpdateSource",
         "selfCheck",
-        "ownerAlert",
     }
     assert payload["data"]["selfCheck"]["ok"] in (True, False)
-    assert "attempted" in payload["data"]["ownerAlert"]
     assert "resolvedTag=v0.5.0-rc.1" in payload["error"]
     assert f"resolvedCommit={remote.tagged_commit}" in payload["error"]
 

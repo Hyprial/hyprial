@@ -87,12 +87,14 @@ def _app(tmp_path: Path, inbox: InboxService) -> DaemonApplication:
     return app
 
 
-def _request(inbox: InboxService, message_id: str = "r1") -> InboxMessage:
+def _request(
+    inbox: InboxService, message_id: str = "r1", recipient: str = A_URI
+) -> InboxMessage:
     message = InboxMessage(
         message_id=message_id,
         conversation_id="conv-wp7",
         sender=X_URI,
-        recipient=A_URI,
+        recipient=recipient,
         payload=b'{"message":"please answer"}',
         intent="request",
         lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -131,18 +133,19 @@ def _run_turn(
     delivery_id: str,
     started_at_ms: int,
     ended_at_ms: int,
+    recipient: str = A_URI,
 ) -> None:
     projection = TurnDeliveryProjection(
         delivery_id=delivery_id,
         conversation_id="conv-wp7",
         sender=X_URI,
-        recipient=A_URI,
+        recipient=recipient,
         message="req",
     )
     daemon_hooks.observe_started(projection, started_at_ms=started_at_ms)
     daemon_hooks.observe_turn(
-        HarnessDelivery(delivery_id, "conv-wp7", X_URI, A_URI, "req"),
-        HarnessResult(delivery_id, A_URI, HarnessResultStatus.COMPLETED, output="ok"),
+        HarnessDelivery(delivery_id, "conv-wp7", X_URI, recipient, "req"),
+        HarnessResult(delivery_id, recipient, HarnessResultStatus.COMPLETED, output="ok"),
         started_at_ms=started_at_ms,
         ended_at_ms=ended_at_ms,
     )
@@ -155,21 +158,25 @@ def _wait_for(predicate: Any, *, timeout: float = 3.0) -> None:
     assert predicate()
 
 
-def test_w1_turn_completion_writes_one_reminder_notice(tmp_path: Path) -> None:
+def test_w1_turn_completion_writes_one_reminder_notice(actor_host, tmp_path: Path) -> None:
     inbox = _inbox(tmp_path)
     app = _app(tmp_path, inbox)
-    _request(inbox)
+    a_uri = app.agents.require(A_NAME).uri
+    _request(inbox, recipient=a_uri)
     assert app._reply_reminder_consumer_factory is not None
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     daemon_hooks = _hook_service(tmp_path, bus)
     app._daemon_hooks = daemon_hooks
     _wire(app, daemon_hooks)
     try:
-        _run_turn(daemon_hooks, delivery_id="r1", started_at_ms=100, ended_at_ms=200)
-        _wait_for(lambda: len(inbox.system_notices(A_URI)) == 1)
+        _run_turn(
+            daemon_hooks, delivery_id="r1", started_at_ms=100, ended_at_ms=200,
+            recipient=a_uri,
+        )
+        _wait_for(lambda: len(inbox.system_notices(a_uri)) == 1)
 
-        notices = inbox.system_notices(A_URI)
+        notices = inbox.system_notices(a_uri)
         assert len(notices) == 1
         notice = notices[0]
         assert notice.intent == "system"
@@ -187,7 +194,7 @@ def test_w1_turn_completion_writes_one_reminder_notice(tmp_path: Path) -> None:
         assert bus.close(5.0)
 
 
-def test_w2_notice_does_not_trigger_another_notice(tmp_path: Path) -> None:
+def test_w2_notice_does_not_trigger_another_notice(actor_host, tmp_path: Path) -> None:
     import hyprial.biz as biz
     from hyprial.daemon.impl.application.wiring.reply_reminder_hooks import (
         REPLY_REMINDER_EVENT_NAMES,
@@ -199,7 +206,7 @@ def test_w2_notice_does_not_trigger_another_notice(tmp_path: Path) -> None:
     app = _app(tmp_path, inbox)
     _request(inbox)
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     daemon_hooks = _hook_service(tmp_path, bus)
     _wire(app, daemon_hooks)
     try:
@@ -221,12 +228,12 @@ def test_w2_notice_does_not_trigger_another_notice(tmp_path: Path) -> None:
         assert bus.close(5.0)
 
 
-def test_w3_without_a_factory_nothing_is_registered(tmp_path: Path) -> None:
+def test_w3_without_a_factory_nothing_is_registered(actor_host, tmp_path: Path) -> None:
     inbox = _inbox(tmp_path)
     app = _app(tmp_path, inbox)
     _request(inbox)
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     daemon_hooks = _hook_service(tmp_path, bus)
     try:
         from hyprial.daemon.impl.application.wiring.reply_reminder_hooks import (
@@ -278,3 +285,4 @@ def test_composition_wires_the_reminder_lane() -> None:
     assert keywords["node_id"] == "self.node_id"
     assert keywords["consumer_factory"] == "self._reply_reminder_consumer_factory"
     assert keywords["daemon_hooks"] == "daemon_hooks"
+    assert keywords["read_keys"] == "self._consumer_read_keys"

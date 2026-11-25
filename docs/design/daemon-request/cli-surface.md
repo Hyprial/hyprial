@@ -78,7 +78,7 @@ A 不发布尚未实现的 move 命令为可用能力；新命令的接线与对
 
 共同规则：资源组 → 动作 → MOVE_ID，agent 一律显式 `--agent`。
 不让同一位置同时解释 agent 名与动作/单号；不另开独立 `agent invite`。
-现有 `agent host-invite` 创建空白访客身份，与 move 接纳不同，须单独列消费者和处置。
+`agent host-invite`（2026-11-21 已整条删除：不再使用，teleport 仅允许同一用户 host 间迁移）。
 按交接新增的 host 术语约定，运行 daemon 的环境统一称 host；用户最新零兼容要求优先于
 该历史交接的“保留一版别名”。A-04 梳理对应参数/帮助/字段的目标映射，实际改名随 B/C 各组迁移
 同步契约与消费者，不单开全仓改名 PR，也不将旧盘点中的原始名称改成已经实现的新名称。
@@ -161,7 +161,7 @@ cancel 请求被受理、尚在取消、已安全停止必须区分；retry 不�
 | 可信调用与能力探测 | identity/ACL/network 给出实例证明、角色/host 绑定及认证能力端口；A/B 固定 MethodSpec 上下文与拒绝结果。设备凭据不自动替代 agent 实例授权，方法名不代替端口交付 |
 | 状态、错误与输出 | B 把 R4 §7.4 阶段表落实成参数/结果/错误 schema、权限和正反例；A 映射唯一输出层。保留受理/完成、离线/陈旧、终态/可恢复的机器可判区别 |
 | 跨权威竞争与恢复 | B 协同 ACL/identity/runtime 给 start/cancel/grant/revoke 的排序、围栏、迟到收据与死目标停止证明；包括孤儿 grant、执行超时和非 move 操作争用。不可变计划没有自动解决这些问题 |
-| 旧入口与实际消费者 | B 补 R4 §10.5 的 18 个旧协议入口逐文件 argv/hooks/skills/tests/生成清单和替代方法；A 统一共享注册。host-invite、离线 downgrade-state 和 smolvm probe 独立判归属，不按名字误删 |
+| 旧入口与实际消费者 | B 补 R4 §10.5 的 18 个旧协议入口逐文件 argv/hooks/skills/tests/生成清单和替代方法；A 统一共享注册。离线 downgrade-state 和 smolvm probe 独立判归属，不按名字误删 |
 
 R4 的 G2/G3/G4、O5–O10、M1–M8 等开发前置及独立复审仍保留；本表不是全部门已关闭的声明。
 其中 B 的业务/运行门不阻止 A 在用户批准范围内先交公共基础；A 不能用占位 handler 宣称 B 已可用。

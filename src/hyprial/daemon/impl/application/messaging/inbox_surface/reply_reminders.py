@@ -18,6 +18,7 @@ exception into the caller.
 
 from __future__ import annotations
 
+import heapq
 import json
 import sqlite3
 from collections.abc import Callable, Collection, Sequence
@@ -69,11 +70,13 @@ class InboxReplyReminders:
         node_id: str,
         clock_ms: Callable[[], int],
         logger: Callable[..., None] | None = None,
+        read_keys: Callable[[str], Sequence[str]] | None = None,
     ) -> None:
         self._inbox = inbox
         self._node_id = node_id
         self._clock_ms = clock_ms
         self._logger = logger
+        self._read_keys = read_keys
 
     def unreplied_requests(
         self,
@@ -84,19 +87,39 @@ class InboxReplyReminders:
         fetched_until_ms: int,
         since_inclusive: bool,
     ) -> tuple[str, ...]:
-        """Turn-injected requests that are still pending, in arrival order."""
+        """Turn-injected requests that are still pending, in arrival order.
+
+        Integrator decision D9: with ``read_keys`` wired, every consumer
+        read key of ``actor`` is read.  The keys' rows are merged into one
+        arrival order by
+        ``created_at_ms``, each key keeping its own arrival order, the same
+        order the runtime batches them in.  Read-only.
+        """
 
         now_ms = self._clock_ms()
+        keys = (actor,) if self._read_keys is None else tuple(self._read_keys(actor))
         try:
-            pending = self._inbox.pending_messages(actor, now_ms=now_ms)
+            pending = tuple(
+                heapq.merge(
+                    *(
+                        self._inbox.pending_messages(key, now_ms=now_ms)
+                        for key in keys
+                    ),
+                    key=lambda message: message.created_at_ms,
+                )
+            )
             fetched = (
                 ()
                 if fetched_since_ms is None
-                else self._inbox.fetched_between(
-                    actor,
-                    since_ms=fetched_since_ms,
-                    until_ms=fetched_until_ms,
-                    since_inclusive=since_inclusive,
+                else tuple(
+                    message_id
+                    for key in keys
+                    for message_id in self._inbox.fetched_between(
+                        key,
+                        since_ms=fetched_since_ms,
+                        until_ms=fetched_until_ms,
+                        since_inclusive=since_inclusive,
+                    )
                 )
             )
         except sqlite3.OperationalError as error:

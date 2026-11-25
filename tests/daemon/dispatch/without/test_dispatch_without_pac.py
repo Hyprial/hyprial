@@ -53,6 +53,7 @@ from hyprial.daemon.impl.inbox.links.io import (
     InboxDeliveryIoAdapter as WorkflowInboxIoAdapter,
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.actor_hosts import new_actor_host
 
 NODE = "gate-node"
 PI_NAME = "pi-worker"
@@ -190,10 +191,26 @@ def _register_driver(app: DaemonApplication) -> None:
         app.handle("agent.create", {"name": DRIVER})
 
 
+def _pi_worker(app: DaemonApplication) -> str:
+    """The local pi worker's official address, registering it on first use.
+
+    A dispatch goes to a local agent this node claims; a registered agent is
+    reached at its record's ``a.`` id URI, never at the name URI ``PI_URI``,
+    which nothing claims once id-form addressing is on.
+    """
+
+    if app.agents.get(PI_NAME) is None:
+        app.handle("agent.create", {"name": PI_NAME})
+    address = app.agents.require(PI_NAME).uri
+    app._inbox._transport.online.add(address)
+    return address
+
+
 def _send(app: DaemonApplication, **extra) -> dict:
+    if "to" not in extra:
+        extra["to"] = [_pi_worker(app)]
     params = {
         "actor": DRIVER,
-        "to": [PI_URI],
         "message": TRUE_DISPATCH_TEXT,
         "conversationId": "conv-gate",
         "idempotencyKey": "op-gate-1",
@@ -230,8 +247,8 @@ def test_adjudication_notice_is_not_counted(harness) -> None:
     logged = conv_events()
     assert len(logged) == 1
     assert logged[0]["reason"] == "no-dispatch-feature"
-    assert logged[0]["sender"] == DRIVER_URI
-    assert logged[0]["recipient"] == PI_URI
+    assert logged[0]["sender"] == app.agents.require(DRIVER).uri
+    assert logged[0]["recipient"] == _pi_worker(app)
     assert logged[0]["messageId"] == sent["deliveries"][0]["messageId"]
 
 
@@ -307,8 +324,8 @@ def test_true_dispatch_is_counted_and_pinned(harness) -> None:
     logged = gate_events()
     assert len(logged) == 1
     event = logged[0]
-    assert event["sender"] == DRIVER_URI
-    assert event["recipient"] == PI_URI
+    assert event["sender"] == app.agents.require(DRIVER).uri
+    assert event["recipient"] == _pi_worker(app)
     assert event["messageId"] == sent["deliveries"][0]["messageId"]
     assert event["level"] == "info"
     assert event["component"] == "daemon"
@@ -376,7 +393,7 @@ def test_pac_dispatch_leaves_no_gate_event(tmp_path: Path) -> None:
         transport,
         router,
         node_id=NODE,
-        service_options={"logger": daemon_logger},
+        service_options={"logger": daemon_logger}, actor_host=new_actor_host(),
     )
     try:
         adapter = WorkflowInboxIoAdapter(
@@ -419,8 +436,25 @@ def test_reply_is_not_a_dispatch(harness) -> None:
 
     app, _events, gate_events, conv_events, ps = harness
     _register_driver(app)
+    worker = _pi_worker(app)
+    awaited = app._inbox.receive(
+        InboxMessage(
+            message_id="wf-msg-the-run-awaited",
+            conversation_id="conv-gate",
+            sender=worker,
+            recipient=app.agents.require(DRIVER).uri,
+            payload=json.dumps({"message": "需要你确认交付物"}).encode(),
+            intent="request",
+            lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
+            created_at_ms=1,
+            summary=summary_from_text("需要你确认交付物"),
+        )
+    )
+    assert awaited.accepted is True
 
-    _send(app, replyTo="wf-msg-the-run-awaited")
+    result = _send(app, replyTo="wf-msg-the-run-awaited")
+
+    assert result["ok"] is True, result
 
     assert gate_events() == []
     assert conv_events() == []

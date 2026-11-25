@@ -12,6 +12,8 @@ ending :0: and :1:).
 """
 
 from __future__ import annotations
+
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
 
 import json
@@ -29,7 +31,6 @@ from hyprial.kernel import canonical_agent_uri
 from hyprial.daemon.impl.inbox.contracts.api import InboxMessage
 from hyprial.daemon.impl.inbox.service import InboxService
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate, permissive_admission_slot
 
 NODE = "resident-probe-node"
 PI_NAME = "resident-pi-worker"
@@ -66,12 +67,9 @@ class LoopbackTransport:
 
 def _inbox(tmp_path: Path) -> InboxService:
     transport = LoopbackTransport()
-    # Explicit permissive premise: this test drives an agent→agent probe
-    # through a slot with no real gate yet (review item 3).
     service = InboxService(
         tmp_path / "inbox.sqlite3",
         transport,
-        link_admission=permissive_admission_slot(),
     )
     transport.bind(service)
     # The bare CLI-style sender canonicalizes at the daemon send boundary
@@ -92,7 +90,6 @@ def _application(tmp_path: Path, inbox: InboxService) -> DaemonApplication:
     # The application surfaces read their own slot for pending.list/wait; bind
     # the same explicit permissive premise so no test relies on the fail-closed
     # default (review item 3).
-    app.link_admission.bind(PermissiveLinkGate())
     app._presence = object()
     app._harnesses = object()
     app._adapters = None
@@ -210,7 +207,7 @@ def _write_desired_state(path: Path) -> None:
 
 
 def test_retried_send_lands_one_probe_and_never_auto_replies(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path)
     app = _application(tmp_path, inbox)
@@ -232,7 +229,8 @@ def test_retried_send_lands_one_probe_and_never_auto_replies(
         transport=_FakeTransport(),
         inbox=inbox,
         harnesses=harnesses,
-        harness_actor_uri=lambda name: canonical_agent_uri("allen", NODE, name),
+        harness_actor_uri=lambda name: canonical_agent_uri("allen", NODE, name), actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:

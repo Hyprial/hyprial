@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,7 @@ from hyprial.biz.impl.hooks.quota.policy import (
     QuotaWatchdog,
 )
 from hyprial.biz.impl.usage import QuotaWindow, SourceSnapshot, UsageCache
+from tests.support.runtime.environment import UNIT_USER_ID
 
 NOW_MS = 1_787_043_000_000
 RESET_A = NOW_MS + 3 * 3_600_000
@@ -317,16 +319,16 @@ def test_usage_cache_runs_the_observer_after_each_refresh_and_survives_its_failu
     assert [snapshot.source for snapshot in cache.snapshots()] == ["claude", "codex", "kimi"]
 
 
-def test_the_daemon_tells_its_owner_through_squire(tmp_path: Path) -> None:
+def test_the_daemon_logs_its_quota_notices_once_and_sends_nothing(actor_host, tmp_path: Path, monkeypatch) -> None:
     """Wiring: a daemon built with a usage cache owns a watchdog whose alerts
-    are Squire user deliveries to the daemon owner.  Unified hooks H4: the
-    watchdog is driven by bus events (usage.refreshed + usage-limit
-    turn.failed), not by the two deleted callbacks."""
+    are logged as ``quota_watchdog.notice`` with their full text and key, once
+    per alert, and never sent to the owner (R2, owner ruling 2026-11-19).
+    Unified hooks H4: the watchdog is driven by bus events (usage.refreshed +
+    usage-limit turn.failed), not by the two deleted callbacks."""
 
     from hyprial.daemon.impl.api import HarnessDelivery, HarnessResult, HarnessResultStatus
     from hyprial.daemon.impl.application import DaemonApplication
     from hyprial.daemon.impl.hooks import DaemonHookService
-    from hyprial.daemon.impl.squire.addressing import UserDeliveryRequest, UserDeliveryResult
     from hyprial.kernel import HookBus
     from hyprial.shell.impl.daemon_wiring import daemon_dependencies
 
@@ -343,28 +345,34 @@ def test_the_daemon_tells_its_owner_through_squire(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    cache = UsageCache(home=tmp_path / "home", fetcher=lambda *_args: {})
+    from hyprial.biz.impl.usage_actor import UsageAuthority
+
+    cache = UsageAuthority(home=tmp_path / "home", fetcher=lambda *_args: {})
+    monkeypatch.setattr(cache._collector, "refresh_once", lambda: None)
     app = DaemonApplication(
         state_dir=state_dir,
         socket_path=state_dir / "daemon.sock",
         node_id="node-1",
-        owner="op",
+        owner="op", user_id=UNIT_USER_ID,
         usage_cache=cache,
         zenoh_listen=("tcp/127.0.0.1:0",), zenoh_connect=(),
         **daemon_dependencies(),
     )
     app.network_isolated = True
-    requests: list[UserDeliveryRequest] = []
+    logged: list[tuple[str, str, dict[str, Any]]] = []
+    real_log = app._log
 
-    class _Squire:
-        def deliver(self, request: UserDeliveryRequest) -> UserDeliveryResult:
-            requests.append(request)
-            return UserDeliveryResult(
-                message_id=request.message_id,
-                accepted=True,
-                code=None,
-                message=None,
-            )
+    def record(level: str, component: str, event: str, **fields: Any) -> None:
+        if event == "quota_watchdog.notice":
+            logged.append((level, component, dict(fields)))
+        real_log(level, component, event, **fields)
+
+    class _NoUserDelivery:
+        def deliver(self, request: Any) -> Any:
+            pytest.fail(f"a quota notice was sent to the user: {request}")
+
+    app._log = record  # type: ignore[method-assign]
+    app._user_delivery = _NoUserDelivery()
 
     def wait_for(predicate):
         deadline = time.monotonic() + 2
@@ -378,7 +386,7 @@ def test_the_daemon_tells_its_owner_through_squire(tmp_path: Path) -> None:
     # to_the_bus below).
     from hyprial.daemon.impl.application.wiring.quota_hooks import wire_quota_hooks
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     daemon_hooks = DaemonHookService(
         bus=bus,
         config_path_for_agent=lambda _actor: tmp_path / "absent" / "hooks.json",
@@ -395,19 +403,11 @@ def test_the_daemon_tells_its_owner_through_squire(tmp_path: Path) -> None:
     )
 
     try:
-        # Wait for the asynchronous refusal before installing the Squire path.
-        cache._snapshots = {"claude": _snapshot("claude", 100.0, RESET_A)}
+        cache._collector._snapshots = {"claude": _snapshot("claude", 100.0, RESET_A)}
+        cache.refresh_once()
+        wait_for(lambda: bool(cache.snapshots()))
         daemon_hooks.observe_usage_refreshed()
-        wait_for(lambda: app._quota_watchdog.status().failed >= 1
-                 and not app._quota_watchdog._active
-                 and app._quota_watchdog._runtime.snapshot(app._quota_watchdog._handle).queued == 0
-                 and app._quota_watchdog._runtime.snapshot(app._quota_watchdog._handle).in_flight == 0)
-        assert requests == []
-        outbox = json.loads(app._quota_watchdog._outbox.read_text())
-        scope, attempt = outbox["key_scope"], outbox["attempt"]
-        assert attempt >= 1
-
-        app._user_delivery = _Squire()
+        wait_for(lambda: len(logged) == 1 and not app._quota_watchdog.status().pending)
         daemon_hooks.observe_usage_refreshed()
         agent = "agent:op:node-1:worker"
         daemon_hooks.observe_turn(
@@ -422,19 +422,90 @@ def test_the_daemon_tells_its_owner_through_squire(tmp_path: Path) -> None:
             started_at_ms=1,
             ended_at_ms=2,
         )
-        wait_for(lambda: len(requests) == 2 and not app._quota_watchdog.status().pending)
+        wait_for(lambda: len(logged) == 2 and not app._quota_watchdog.status().pending)
 
-        assert [(request.owner, request.sender) for request in requests] == [
-            ("op", "quota-watchdog"), ("op", "quota-watchdog"),
+        assert [(level, component, fields["source"]) for level, component, fields in logged] == [
+            ("warn", "daemon", "quota-watchdog"), ("warn", "daemon", "quota-watchdog"),
         ]
-        assert requests[0].idempotency_key == (
-            f"quota-watchdog:claude/five_hour:{RESET_A}:exhausted:batch:{scope}:actor-retry-{attempt}"
+        first, second = (fields for _level, _component, fields in logged)
+        assert first["idempotencyKey"].startswith(
+            f"quota-watchdog:claude/five_hour:{RESET_A}:exhausted:"
         )
-        assert agent in requests[1].message
+        assert first["text"] and first["idempotencyKey"] != second["idempotencyKey"]
+        assert agent in second["text"]
+        assert app._quota_watchdog.status().failed == 0
         assert (state_dir / STATE_FILE_NAME).exists()
     finally:
         app._close()
         assert bus.close(5.0)
+
+
+def test_a_failed_attempt_retries_observations_deferred_behind_it(
+    actor_host, tmp_path: Path
+) -> None:
+    """A failure completion must not strand observations queued behind the batch.
+
+    The first attempt fails while another observation is already deferred.  No
+    further observation will arrive, so the authority must retry the durable
+    batch itself instead of waiting for the next one.
+    """
+
+    from hyprial.daemon.impl.operations.watchdog_actor import (
+        AlertDeliveryOutcome,
+        AsyncQuotaWatchdog,
+    )
+
+    now = NOW_MS
+    readings = (
+        _snapshot("claude", 100.0, RESET_A),
+        _snapshot("codex", 20.0, RESET_B),
+    )
+    policy = QuotaWatchdog(
+        state_dir=tmp_path,
+        deliver=lambda _key, _text: False,
+        readings=lambda: readings,
+        clock_ms=lambda: now,
+    )
+    blocked = threading.Event()
+    release = threading.Event()
+    delivered: list[tuple[str, str]] = []
+    attempts: list[str] = []
+
+    def deliver(key: str, text: str) -> AlertDeliveryOutcome:
+        attempts.append(key)
+        if len(attempts) == 1:
+            blocked.set()
+            assert release.wait(5.0)
+            # The first attempt never reached the native send boundary.
+            return AlertDeliveryOutcome(False, definitely_not_sent=True)
+        delivered.append((key, text))
+        return AlertDeliveryOutcome(True)
+
+    watchdog = AsyncQuotaWatchdog(
+        state_dir=tmp_path,
+        deliver=deliver,
+        readings=lambda: readings,
+        clock_ms=lambda: now,
+        evaluator=policy,
+        actor_host=actor_host,
+    )
+    try:
+        watchdog.observe_readings()
+        assert blocked.wait(5.0)
+        # This observation is deferred behind the in-flight batch.
+        watchdog.observe_readings()
+        release.set()
+        deadline = time.monotonic() + 5.0
+        while not (delivered and not watchdog.status().pending):
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"deferred observation stranded: attempts={attempts!r} "
+                    f"delivered={delivered!r} status={watchdog.status()!r}"
+                )
+            time.sleep(0.005)
+    finally:
+        release.set()
+        assert watchdog.close(5.0)
 
 
 def test_the_composition_hands_both_signals_to_the_bus() -> None:

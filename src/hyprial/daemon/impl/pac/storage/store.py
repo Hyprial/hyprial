@@ -623,6 +623,19 @@ class PacGraphStore:
             )
         }
         facts: dict[str, PacRestoreFacts] = {}
+        # Every graph state per actor, including graphs with no workflow
+        # projection row (pre-v10 slice-1 graphs).  A missing row is not
+        # ``held``: only a graph this actor fully sits in as held may suppress
+        # its restore (#1803 item 5).
+        graph_states: dict[str, set[str]] = {}
+        for row in self._db.execute(
+            "SELECT n.actor_name,COALESCE(w.state,'') AS state FROM nodes n "
+            "LEFT JOIN workflow_graphs w ON w.graph_id=n.graph_id "
+            "WHERE n.kind='actor' AND n.actor_name IS NOT NULL"
+        ):
+            graph_states.setdefault(str(row["actor_name"]), set()).add(
+                str(row["state"])
+            )
         for actor, actor_rows in grouped.items():
             terminal = all(
                 str(row["state"]) in {"completed", "failed", "cancelled"}
@@ -632,6 +645,11 @@ class PacGraphStore:
                 terminal,
                 actor in requested_actors,
                 actor in remote_return_actors,
+                held_idle=(
+                    graph_states.get(actor) == {"held"}
+                    and actor not in requested_actors
+                    and actor not in remote_return_actors
+                ),
             )
         return facts
 

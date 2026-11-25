@@ -15,8 +15,12 @@ from hyprial.shell.impl.cli.commands.common.pending_restart import (
     _read_pending_restart,
     restart_daemon,
 )
-from hyprial.shell.impl.cli.commands.daemon.commands import daemon_app
-from hyprial.shell.impl.cli.commands.common.support import JsonObject, _announce_setup_guidance, _append_warning, _squire_setup_warning, _utc_now
+from hyprial.shell.impl.cli.commands.daemon.commands import (
+    BOOTSTRAP_REFUSAL_CODES,
+    confirmed_bootstrap_refusal,
+    daemon_app,
+)
+from hyprial.shell.impl.cli.commands.common.support import JsonObject, _utc_now
 def _daemon_restart_identity(status: JsonObject) -> JsonObject:
     """Project the daemon identity fields used by restart reports."""
     services = get_services()
@@ -28,12 +32,15 @@ def _daemon_restart_identity(status: JsonObject) -> JsonObject:
         raise services.CliError("INVALID_RESPONSE", "running daemon did not report a valid pid")
     epoch = source.get("epoch")
     version = source.get("version")
-    return {
+    identity: JsonObject = {
         "running": True,
         "pid": pid,
         "epoch": epoch if isinstance(epoch, str) else None,
         "version": version if isinstance(version, str) else None,
     }
+    if source.get("phase") == "bootstrap":
+        identity["phase"] = "bootstrap"
+    return identity
 
 
 def _restart_status() -> JsonObject | None:
@@ -44,6 +51,11 @@ def _restart_status() -> JsonObject | None:
         result = services.runtime.request("ps", restore_wait=0.0)
     except ipc_errors.DaemonUnavailableError:
         return None
+    except services.CliError as error:
+        if error.code not in BOOTSTRAP_REFUSAL_CODES:
+            raise
+        daemon, _restore_pending = confirmed_bootstrap_refusal(services, error)
+        result = {"daemon": {"running": True, **daemon}, "agents": [], "connectors": []}
     if not isinstance(result, dict):
         raise services.CliError("INVALID_RESPONSE", "daemon ps result must be an object")
     daemon = result.get("daemon")
@@ -221,7 +233,6 @@ def restart_command(
         launched = restart_daemon(
             result,
             before_pid=before.get("pid") if status is not None else None,
-            survivor_idempotency_scope="hyprial-restart",
             stop=status is not None,
         )
         after = _daemon_restart_identity(dict(launched.status))
@@ -239,9 +250,6 @@ def restart_command(
             )
             result["pendingRestart"] = pending
             _clear_pending_restart()
-        _append_warning(result, _squire_setup_warning())
-        if not json_output:
-            _announce_setup_guidance(result)
         return result
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)

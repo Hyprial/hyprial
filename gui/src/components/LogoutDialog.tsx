@@ -1,3 +1,4 @@
+import { Button } from '../components/primitives';
 import { useEffect, useRef, type Dispatch } from 'react';
 import type { AppAction } from '../state/types';
 
@@ -55,7 +56,7 @@ export function LogoutDialog({
 
   return (
     <div
-      className="modal-backdrop"
+      className="ui-dialog-backdrop"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           dispatch({ type: 'cancel-logout' });
@@ -64,35 +65,30 @@ export function LogoutDialog({
     >
       <div
         ref={dialogRef}
-        className="dialog"
+        className="ui-dialog logout-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="logout-title"
         aria-describedby="logout-description"
       >
-        <span className="dialog-mark" aria-hidden="true">
-          ↪
-        </span>
-        <h2 id="logout-title">登出此账号？</h2>
-        <p id="logout-description">
+        <h2 id="logout-title" className="ui-dialog__title">登出此账号？</h2>
+        <p id="logout-description" className="ui-dialog__description">
           当前只清空本页面会话。
         </p>
-        <div className="dialog-actions">
-          <button
+        <div className="ui-dialog__actions">
+          <Button variant="secondary"
             type="button"
             ref={cancelRef}
-            className="button button-secondary"
             onClick={() => dispatch({ type: 'cancel-logout' })}
           >
             取消
-          </button>
-          <button
+          </Button>
+          <Button variant="primary"
             type="button"
-            className="button button-strong"
             onClick={() => dispatch({ type: 'confirm-logout' })}
           >
             确认登出
-          </button>
+          </Button>
         </div>
       </div>
     </div>

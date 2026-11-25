@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 
 from hyprial.daemon.impl import DesiredState, InteractiveSession
 from hyprial.daemon.impl.mcp import WakeAttempt, WakeCoordinator, WakeStatus
+from hyprial.kernel.impl.log import Logger
 
 
 @pytest.fixture(autouse=True)
@@ -52,12 +54,16 @@ def _session() -> InteractiveSession:
 
 
 @pytest.mark.anyio
-async def test_unread_count_change_cannot_duplicate_a_signalled_unconsumed_batch() -> None:
+async def test_unconsumed_signalled_batch_resignals_while_new_mail_waits(
+    tmp_path: Path,
+) -> None:
     now = 10.0
     driver = _Driver()
+    logger = Logger.worker(tmp_path, runtime="claude", name="alice")
     coordinator = WakeCoordinator(
         _Store(DesiredState(interactive_sessions=(_session(),))),
         driver,
+        logger=logger,
         clock=lambda: now,
         resignal_delay=lambda _attempt: 60.0,
     )
@@ -71,26 +77,38 @@ async def test_unread_count_change_cannot_duplicate_a_signalled_unconsumed_batch
     assert first[0].status is WakeStatus.SIGNALLED
     assert driver.calls[0].prompt == first_text
 
-    # A changed pending count marks later work dirty.  It must not replace or
-    # duplicate the already accepted edge before a real turn consumes c1.
     now += 1.0
     assert coordinator.enqueue_batch(
         "alice", cursor="c2", message_ids=("m3",), text=second_text
     )
     assert await coordinator.dispatch_due() == []
     assert [call.prompt for call in driver.calls] == [first_text]
+    gated = json.loads(logger.path.read_text().splitlines()[-1])
+    assert gated["event"] == "wake.gated"
+    assert {
+        "actorId": gated["actorId"],
+        "cursor": gated["cursor"],
+        "waitedSeconds": gated["waitedSeconds"],
+    } == {
+        "actorId": "alice",
+        "cursor": "c1",
+        "waitedSeconds": 1.0,
+    }
 
-    # The ordinary SIGNALLED cadence also cannot produce a second copy.  Only
-    # refusal retry or the existing post-consumption AWAITING_ACK recovery may
-    # replay the same cursor.
-    now += 60.0
-    assert await coordinator.dispatch_due() == []
-    assert [call.prompt for call in driver.calls] == [first_text]
+    now += 59.0
+    replay = await coordinator.dispatch_due()
+    assert replay[0].status is WakeStatus.SIGNALLED
+    assert [call.prompt for call in driver.calls] == [first_text, first_text]
+    assert [call.delivery_id for call in driver.calls] == ["c1", "c1"]
 
     coordinator.observe_batch_consumed("alice", cursor="c1")
     second = await coordinator.dispatch_due()
     assert second[0].status is WakeStatus.SIGNALLED
-    assert [call.prompt for call in driver.calls] == [first_text, second_text]
+    assert [call.prompt for call in driver.calls] == [
+        first_text,
+        first_text,
+        second_text,
+    ]
 
 
 @pytest.mark.anyio
@@ -173,18 +191,21 @@ async def test_older_awaiting_ack_timer_cannot_bypass_newer_unconsumed_edge() ->
     await coordinator.dispatch_due()
     assert [call.prompt for call in driver.calls] == [first_text, second_text]
 
-    # c1's long recovery is due, but c2 is already accepted and has not been
-    # consumed. No timer may inject across that model-input edge.
     now += 120.0
-    assert await coordinator.dispatch_due() == []
-    assert [call.prompt for call in driver.calls] == [first_text, second_text]
-
-    # Once c2 consumption is proven, the oldest overdue recovery wins.
-    coordinator.observe_batch_consumed("alice", cursor="c2")
     replay = await coordinator.dispatch_due()
-    assert replay[0].status is WakeStatus.SIGNALLED
+    assert replay[0].delivery_id == "c2"
     assert [call.prompt for call in driver.calls] == [
         first_text,
+        second_text,
+        second_text,
+    ]
+
+    coordinator.observe_batch_consumed("alice", cursor="c2")
+    recovered = await coordinator.dispatch_due()
+    assert recovered[0].status is WakeStatus.SIGNALLED
+    assert [call.prompt for call in driver.calls] == [
+        first_text,
+        second_text,
         second_text,
         first_text,
     ]

@@ -421,8 +421,12 @@ class LarkScopeClient:
     """Small synchronous v6 client; injectable origin keeps tests offline."""
 
     def __init__(
-        self, app_id: str, app_secret: str, *, origin: str | None = None
+        self, app_id: str, app_secret: str, *, origin: str | None = None,
+        http_timeout_seconds: float = 15.0,
     ) -> None:
+        if not 0 < http_timeout_seconds <= 60:
+            raise ValueError("scope request timeout must be between zero and sixty seconds")
+        self._http_timeout_seconds = http_timeout_seconds
         self.app_id = app_id
         self._app_secret = app_secret
         # ``origin`` was injectable before this line and no production caller
@@ -451,7 +455,7 @@ class LarkScopeClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
+            with urllib.request.urlopen(request, timeout=self._http_timeout_seconds) as response:
                 value = self._decode_bounded(response)
         except urllib.error.HTTPError as error:
             try:
@@ -792,10 +796,10 @@ def configured_app_id(hyprial_home: Path, state_dir: Path, adapter: str) -> str:
 
 
 def configured_scope_client(
-    hyprial_home: Path, state_dir: Path, adapter: str
+    hyprial_home: Path, state_dir: Path, adapter: str, *, http_timeout_seconds: float = 15.0,
 ) -> tuple[str, LarkScopeClient]:
     """Resolve one local adapter without ever returning/logging its secret."""
 
     store, gateway = _configured_gateway(hyprial_home, state_dir, adapter)
     secret = store.lark_app_secret(gateway.credential_ref)
-    return gateway.app_id, LarkScopeClient(gateway.app_id, secret)
+    return gateway.app_id, LarkScopeClient(gateway.app_id, secret, http_timeout_seconds=http_timeout_seconds)

@@ -1,15 +1,11 @@
-"""Create or restore the automatic sparse GUI development worktree.
+"""Shared helpers for GUI development sources.
 
-This module is the only part of the GUI launcher that writes to Git and to a
-GUI checkout.  It is used by ``hyprial gui dev`` when the caller did not
-provide ``--gui-home`` or ``HYPRIAL_DEV_GUI_HOME``.  It creates a linked
-worktree with a stable branch and a cone sparse checkout containing only
-``gui``; later invocations restore that same worktree without resetting,
-cleaning, force-checking-out, rebasing, stashing, committing, or pushing it.
-
-The source repository is discovered with read-only Git commands.  Existing
-worktrees at the target path are validated strictly and otherwise reported as
-conflicts; nothing is deleted, moved, or reused on a best-effort guess.
+Decision (2026-11-14, GUI launch consolidation PR 1a): the CLI no longer
+creates ``.worktrees/gui-dev-auto`` for a source checkout; ``hyprial gui dev``
+uses the checkout's own ``gui/`` directly.  What remains here is the read-only
+source-checkout discovery and the worktree record, dependency install and Git
+runners reused by the installed-wheel exact-``sourceCommit`` worktree in
+``install/dev_source.py``.  Nothing in this module writes to a source checkout.
 """
 
 from __future__ import annotations
@@ -22,15 +18,12 @@ import shutil
 import subprocess
 from typing import Any
 
+from hyprial.kernel import manysys
+
 from ..errors import GuiError
 from ..install.resources import redact_remote
 
-AUTO_WORKTREE_RELATIVE = Path(".worktrees") / "gui-dev-auto"
-AUTO_BRANCH = "work/gui-dev-auto"
-SPARSE_PATHS = ("gui",)
-
 SOURCE_CODE = "GUI_AUTO_WORKTREE_SOURCE"
-CONFLICT_CODE = "GUI_AUTO_WORKTREE_CONFLICT"
 FAILED_CODE = "GUI_AUTO_WORKTREE_FAILED"
 INSTALL_FAILED_CODE = "GUI_AUTO_WORKTREE_INSTALL_FAILED"
 
@@ -53,7 +46,7 @@ class DependencyInstall:
 
 @dataclass(frozen=True)
 class AutoGuiWorktree:
-    """The independent sparse worktree used by the no-option dev mode."""
+    """The managed exact-sourceCommit worktree prepared for an installed wheel."""
 
     source: Path
     path: Path
@@ -68,7 +61,7 @@ class AutoGuiWorktree:
 
 
 def auto_worktree_payload(auto: AutoGuiWorktree | None) -> dict[str, Any] | None:
-    """Startup metadata for the automatic worktree, or ``None`` when unused.
+    """Startup metadata for the managed worktree, or ``None`` when unused.
 
     The remote is display metadata and is always redacted here, not by the
     caller, so every consumer of the startup payload gets the same treatment as
@@ -93,95 +86,6 @@ def auto_worktree_payload(auto: AutoGuiWorktree | None) -> dict[str, Any] | None
             "reason": auto.install.reason,
         },
     }
-
-
-def ensure_dev_worktree(
-    *,
-    cwd: Path | None = None,
-    environ: Mapping[str, str] | None = None,
-    which: Callable[[str], str | None] = shutil.which,
-    run: Callable[..., Any] = subprocess.run,
-) -> AutoGuiWorktree:
-    """Discover a source checkout, then create or restore the sparse worktree."""
-    environment = dict(os.environ if environ is None else environ)
-    source = discover_source_repo(
-        cwd=cwd,
-        environ=environment,
-        which=which,
-        run=run,
-    )
-    git = _require_tool(
-        "git",
-        which,
-        "GUI_GIT_MISSING",
-        "git is required to create the independent GUI development worktree",
-    )
-    base = _git_required(
-        git,
-        source,
-        ["rev-parse", "HEAD"],
-        environ=environment,
-        run=run,
-        code=SOURCE_CODE,
-        message=f"cannot read HEAD of source GUI repository {source}",
-    )
-    if not _git_succeeds(
-        git,
-        source,
-        ["cat-file", "-e", f"{base}:gui/package.json"],
-        environ=environment,
-        run=run,
-    ):
-        raise GuiError(
-            SOURCE_CODE,
-            f"source repository {source} does not contain gui/package.json at HEAD",
-            {"source": str(source), "base": base},
-        )
-
-    if _is_auto_worktree(git, source, environment, run):
-        path = source
-        created = False
-        _validate_existing(git, source, path, environment, run)
-    else:
-        # Keep the path unresolved so a symlinked ``.worktrees`` or target is
-        # rejected below instead of silently redirecting writes outside it.
-        path = source / AUTO_WORKTREE_RELATIVE
-        if _path_present(path):
-            created = False
-            _validate_existing(git, source, path, environment, run)
-        else:
-            _guard_new_worktree(git, source, path, environment, run)
-            _create_worktree(git, source, path, base, environment, run)
-            created = True
-            _validate_existing(git, source, path, environment, run)
-
-    actual_base = _git_required(
-        git,
-        path,
-        ["rev-parse", "HEAD"],
-        environ=environment,
-        run=run,
-        code=FAILED_CODE,
-        message=f"cannot read HEAD of GUI worktree {path}",
-    )
-    home = path / SPARSE_PATHS[0]
-    install = _ensure_dependencies(
-        home,
-        source=source,
-        worktree=path,
-        environ=environment,
-        which=which,
-        run=run,
-    )
-    return AutoGuiWorktree(
-        source=source,
-        path=path,
-        branch=AUTO_BRANCH,
-        base=actual_base,
-        home=home,
-        created=created,
-        install=install,
-    )
 
 
 def discover_source_repo(
@@ -246,228 +150,6 @@ def discover_source_repo(
             "hint": "run from the repository root or set HYPRIAL_DEV_GUI_HOME",
         },
     )
-
-
-def _create_worktree(
-    git: str,
-    source: Path,
-    path: Path,
-    base: str,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> None:
-    """Run the exact create -> sparse -> checkout sequence, preserving failures."""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise GuiError(
-            CONFLICT_CODE,
-            f"cannot create the auto GUI worktree parent {path.parent}: {error}",
-            {"source": str(source), "path": str(path)},
-        ) from error
-    commands = (
-        [
-            git,
-            "-C",
-            str(source),
-            "worktree",
-            "add",
-            "-b",
-            AUTO_BRANCH,
-            "--no-checkout",
-            str(path),
-            base,
-        ],
-        [
-            git,
-            "-C",
-            str(path),
-            "sparse-checkout",
-            "set",
-            "--cone",
-            *SPARSE_PATHS,
-        ],
-        [git, "-C", str(path), "checkout"],
-    )
-    for command in commands:
-        completed = _run_command(
-            command,
-            environ=environ,
-            run=run,
-            timeout=_GIT_TIMEOUT_SECONDS,
-        )
-        if completed.returncode == 0:
-            continue
-        detail = _diagnostic(completed)
-        lowered = detail.lower()
-        code = (
-            CONFLICT_CODE
-            if "already exists" in lowered or "already checked out" in lowered
-            else FAILED_CODE
-        )
-        raise GuiError(
-            code,
-            f"cannot create the automatic sparse GUI worktree at {path} "
-            f"(exit {completed.returncode}); the partial scene was preserved",
-            {
-                "source": str(source),
-                "path": str(path),
-                "branch": AUTO_BRANCH,
-                "base": base,
-                "command": command,
-                "returncode": completed.returncode,
-                "output": detail,
-            },
-        )
-
-
-def _guard_new_worktree(
-    git: str,
-    source: Path,
-    path: Path,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> None:
-    """Reject a target path or branch that is not ours before writing anything."""
-    parent = path.parent
-    if parent.is_symlink():
-        raise GuiError(
-            CONFLICT_CODE,
-            f"automatic GUI worktree parent {parent} is a symlink; refusing to "
-            "write through it",
-            {"source": str(source), "path": str(path)},
-        )
-    if _path_present(parent) and not parent.is_dir():
-        raise GuiError(
-            CONFLICT_CODE,
-            f"automatic GUI worktree parent {parent} is not a directory",
-            {"source": str(source), "path": str(path)},
-        )
-    if _branch_exists(git, source, AUTO_BRANCH, environ, run):
-        raise GuiError(
-            CONFLICT_CODE,
-            f"branch {AUTO_BRANCH} already exists but the automatic worktree is "
-            f"missing at {path}; refusing to reuse or move it",
-            {
-                "source": str(source),
-                "path": str(path),
-                "branch": AUTO_BRANCH,
-                "reason": "branch-already-exists",
-            },
-        )
-
-
-def _validate_existing(
-    git: str,
-    source: Path,
-    path: Path,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> None:
-    """Validate a path without modifying it; every mismatch is a clear conflict."""
-    data = {"source": str(source), "path": str(path), "branch": AUTO_BRANCH}
-    if path.parent.is_symlink():
-        raise GuiError(
-            CONFLICT_CODE,
-            f"automatic GUI worktree parent {path.parent} is a symlink; "
-            "refusing to use it",
-            data,
-        )
-    if path.is_symlink() or not path.is_dir():
-        raise GuiError(
-            CONFLICT_CODE,
-            f"{path} is not a Git worktree; refusing to delete, copy, or reuse it",
-            data,
-        )
-    toplevel = _git_text(
-        git,
-        path,
-        ["rev-parse", "--show-toplevel"],
-        environ=environ,
-        run=run,
-        allow_failure=True,
-    )
-    if toplevel is None or Path(toplevel).resolve() != path:
-        raise GuiError(
-            CONFLICT_CODE,
-            f"{path} is not a Git worktree root; refusing to delete or reuse it",
-            data,
-        )
-    source_common = _git_common_dir(git, source, environ, run)
-    path_common = _git_common_dir(git, path, environ, run)
-    if source_common is None or path_common is None or source_common != path_common:
-        raise GuiError(
-            CONFLICT_CODE,
-            f"{path} belongs to a different Git repository than {source}; "
-            "refusing to reuse it",
-            {**data, "sourceCommonDir": str(source_common), "pathCommonDir": str(path_common)},
-        )
-    branch = _git_text(
-        git,
-        path,
-        ["branch", "--show-current"],
-        environ=environ,
-        run=run,
-        allow_failure=True,
-    )
-    if branch != AUTO_BRANCH:
-        raise GuiError(
-            CONFLICT_CODE,
-            f"{path} is on branch {branch or '(detached)'}, not {AUTO_BRANCH}; "
-            "refusing to switch or reuse it",
-            {**data, "actualBranch": branch},
-        )
-    sparse = _sparse_entries(git, path, environ, run)
-    if sparse != list(SPARSE_PATHS):
-        raise GuiError(
-            CONFLICT_CODE,
-            f"{path} must use a sparse checkout containing only {list(SPARSE_PATHS)}; "
-            f"found {sparse!r}",
-            {**data, "sparseCheckout": sparse},
-        )
-    gui = path / SPARSE_PATHS[0]
-    if gui.is_symlink() or not gui.is_dir():
-        raise GuiError(
-            CONFLICT_CODE,
-            f"{gui} is not the materialized sparse GUI directory; refusing to "
-            "follow or reuse it",
-            data,
-        )
-    if not (gui / "package.json").is_file():
-        raise GuiError(
-            CONFLICT_CODE,
-            f"{path} has no gui/package.json; refusing to guess or reuse it",
-            data,
-        )
-
-
-def _is_auto_worktree(
-    git: str,
-    root: Path,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> bool:
-    """Whether ``root`` is already a linked worktree for this auto branch.
-
-    Reusing the linked worktree makes the command stable when run from inside
-    it.  The main checkout is deliberately not reused even if someone checked
-    out the same branch there; a source checkout must remain independent.
-    """
-    branch = _git_text(
-        git,
-        root,
-        ["branch", "--show-current"],
-        environ=environ,
-        run=run,
-        allow_failure=True,
-    )
-    if branch != AUTO_BRANCH:
-        return False
-    common = _git_common_dir(git, root, environ, run)
-    git_dir = _git_dir(git, root, environ, run)
-    if common is None or git_dir is None or common == git_dir:
-        return False
-    return _sparse_entries(git, root, environ, run) == list(SPARSE_PATHS)
 
 
 def _ensure_dependencies(
@@ -545,86 +227,6 @@ def _ensure_dependencies(
     )
 
 
-def _branch_exists(
-    git: str,
-    root: Path,
-    branch: str,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> bool:
-    completed = _run_git(
-        git,
-        root,
-        ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        environ=environ,
-        run=run,
-    )
-    return completed.returncode == 0
-
-
-def _sparse_entries(
-    git: str,
-    root: Path,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> list[str] | None:
-    completed = _run_git(
-        git,
-        root,
-        ["sparse-checkout", "list"],
-        environ=environ,
-        run=run,
-    )
-    if completed.returncode != 0:
-        return None
-    return [
-        line.strip()
-        for line in (completed.stdout or "").splitlines()
-        if line.strip()
-    ]
-
-
-def _git_common_dir(
-    git: str,
-    root: Path,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> Path | None:
-    return _git_path(git, root, ["rev-parse", "--git-common-dir"], environ, run)
-
-
-def _git_dir(
-    git: str,
-    root: Path,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> Path | None:
-    return _git_path(git, root, ["rev-parse", "--git-dir"], environ, run)
-
-
-def _git_path(
-    git: str,
-    root: Path,
-    arguments: list[str],
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-) -> Path | None:
-    raw = _git_text(
-        git,
-        root,
-        arguments,
-        environ=environ,
-        run=run,
-        allow_failure=True,
-    )
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_absolute():
-        path = root / path
-    return path.resolve()
-
-
 def _git_succeeds(
     git: str,
     root: Path,
@@ -634,58 +236,6 @@ def _git_succeeds(
     run: Callable[..., Any],
 ) -> bool:
     return _run_git(git, root, arguments, environ=environ, run=run).returncode == 0
-
-
-def _git_text(
-    git: str,
-    root: Path,
-    arguments: list[str],
-    *,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-    allow_failure: bool,
-) -> str | None:
-    completed = _run_git(git, root, arguments, environ=environ, run=run)
-    if completed.returncode != 0:
-        if allow_failure:
-            return None
-        raise GuiError(
-            FAILED_CODE,
-            f"git {' '.join(arguments)} failed in {root} "
-            f"(exit {completed.returncode})",
-            {
-                "root": str(root),
-                "command": ["git", *arguments],
-                "returncode": completed.returncode,
-                "output": _diagnostic(completed),
-            },
-        )
-    return (completed.stdout or "").strip()
-
-
-def _git_required(
-    git: str,
-    root: Path,
-    arguments: list[str],
-    *,
-    environ: Mapping[str, str],
-    run: Callable[..., Any],
-    code: str,
-    message: str,
-) -> str:
-    completed = _run_git(git, root, arguments, environ=environ, run=run)
-    if completed.returncode != 0:
-        raise GuiError(
-            code,
-            message,
-            {
-                "root": str(root),
-                "command": ["git", *arguments],
-                "returncode": completed.returncode,
-                "output": _diagnostic(completed),
-            },
-        )
-    return (completed.stdout or "").strip()
 
 
 def _run_git(
@@ -731,7 +281,9 @@ def _run_command(
 
 def _npm_prefix(npm: str, environ: Mapping[str, str]) -> list[str]:
     """Make Windows ``npm.cmd`` executable without a shell on POSIX."""
-    if os.name == "nt" and Path(npm).suffix.lower() in {".cmd", ".bat"}:
+    if manysys.managed_launcher_names("npm")[0].endswith(".cmd") and Path(
+        npm
+    ).suffix.lower() in {".cmd", ".bat"}:
         command = environ.get("COMSPEC") or "cmd.exe"
         return [command, "/d", "/s", "/c", npm]
     return [npm]

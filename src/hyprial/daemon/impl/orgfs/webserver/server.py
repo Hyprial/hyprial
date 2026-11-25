@@ -1,3 +1,8 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Resolves local_ipc_stream_server_base() before preparing filesystem paths on
+#   unix: endpoints so platforms without AF_UNIX stream servers fail cleanly
+#   without mutating disk, while loopback TCP endpoints bind ThreadingMixIn +
+#   TCPServer directly across POSIX and Windows (H9).
 from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
@@ -18,6 +23,7 @@ import urllib.parse
 from hyprial.kernel import (
     canonical_orgfs_uri,
     canonical_user_uri,
+    local_ipc_stream_server_base,
     parse_orgfs_uri)
 from hyprial.daemon.impl.orgfs.webserver.config import WebServiceConfig, _prepare_unix_socket, _validate_config
 from hyprial.daemon.impl.orgfs.webserver.identity import (
@@ -416,10 +422,15 @@ def build_server(
     }
     if endpoint.kind == "unix":
         assert endpoint.path is not None
+        unix_base = local_ipc_stream_server_base()
         _prepare_unix_socket(endpoint.path)
         server_cls = type(
             "_OrgfsWebUnixServer",
-            (_AcceptMixin, socketserver.ThreadingMixIn, socketserver.UnixStreamServer),
+            (
+                _AcceptMixin,
+                socketserver.ThreadingMixIn,
+                unix_base,
+            ),
             attributes,
         )
         return server_cls(str(endpoint.path), _OrgfsWebHandler)

@@ -9,7 +9,7 @@ import time
 from collections import OrderedDict
 from typing import Any, cast, get_args
 from uuid import uuid4
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult, HarnessLaunchSpec
+from hyprial.kernel import ActorSpec, AdmissionResult, HarnessLaunchSpec
 from hyprial.kernel import CallCostCounters
 from hyprial.daemon.impl.desired_state  import (
     DesiredStateStore,
@@ -59,12 +59,15 @@ class StatePersistenceAuthority:
         self,
         desired_store: DesiredStateStore,
         *,
+        actor_host=None,
         mailbox_capacity: int = 128,
         completion_capacity: int = 256,
         call_timeout: float = 70.0,
     ) -> None:
         if completion_capacity < mailbox_capacity or mailbox_capacity < 1:
             raise ValueError("completion capacity must cover the mailbox")
+        if actor_host is None:
+            raise ValueError("state persistence authority requires an actor host")
         self.state_db: StateDatabase = desired_store.state_db
         self._desired_store = desired_store
         self._journal_store = _LifecycleStore(self.state_db)
@@ -86,7 +89,6 @@ class StatePersistenceAuthority:
         self._execution_wall = CallCostCounters(_STATE_COST_KEYS, wall=True)
         self._round_trip_wall = CallCostCounters(_STATE_COST_KEYS, wall=True)
         self._mailbox_capacity = mailbox_capacity
-        self._runtime = ActorRuntime()
 
         def factory() -> _Generation:
             self._generation += 1
@@ -100,7 +102,7 @@ class StatePersistenceAuthority:
                 self._execution_wall,
             )
 
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="state-persistence-authority",
                 handler_factory=factory,
@@ -122,7 +124,7 @@ class StatePersistenceAuthority:
     def latency_status(self) -> dict[str, Any]:
         """Queue depth and per-command wall time of the single writer (``ps``)."""
 
-        snapshot = self._runtime.snapshot(self._handle)
+        snapshot = self._cell.snapshot()
         with self._lock:
             pending = len(self._pending)
         return {
@@ -162,10 +164,7 @@ class StatePersistenceAuthority:
             raise TypeError("state commands cannot carry executable callbacks")
         if kwargs:
             raise TypeError("desired queries do not accept keyword arguments")
-        key_queries = {
-            DesiredQuery.HARNESS_LIFECYCLE_RECEIPT,
-            DesiredQuery.ADAPTER_REGISTRATION,
-        }
+        key_queries = {DesiredQuery.HARNESS_LIFECYCLE_RECEIPT}
         if operation in key_queries:
             if len(args) != 1 or not isinstance(args[0], str):
                 raise TypeError(f"{operation.value} requires one string key")
@@ -213,6 +212,7 @@ class StatePersistenceAuthority:
             raise TypeError("journal queries do not accept keyword arguments")
         arity = {
             JournalQuery.PENDING: 0,
+            JournalQuery.START_FAILURES: 0,
             JournalQuery.LOAD: 1,
             JournalQuery.STATE: 1,
             JournalQuery.RESULT: 1,
@@ -267,7 +267,7 @@ class StatePersistenceAuthority:
                     f"state correlation is already pending: {command.correlation_id}"
                 )
             self._pending[command.correlation_id] = pending
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 del self._pending[command.correlation_id]
                 raise StatePersistenceBusy(f"state command admission: {admission.value}")
@@ -370,4 +370,4 @@ class StatePersistenceAuthority:
     def close(self, timeout: float = 5.0) -> bool:
         with self._lock:
             self._closed = True
-        return self._runtime.drain(timeout).complete
+        return self._cell.drain(timeout).complete

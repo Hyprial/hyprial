@@ -1,0 +1,1 @@
+{"schemaVersion":1,"platform":"discord","variant":"gateway","conversation":{"kind":"channel","id":"discord_fixture","threadId":"thread_fixture"},"sender":{"id":"discord_user"},"native":{"messageId":"discord_msg"}}

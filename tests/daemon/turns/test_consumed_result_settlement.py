@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import queue
 import sqlite3
 from pathlib import Path
 
@@ -132,7 +131,6 @@ def test_batched_workflow_skip_does_not_enter_the_pac_outcome_hook(
     outcomes: list[HarnessResult] = []
     probe = _SettlementProbe(tmp_path, inbox, outcomes.append)
     probe.harnesses = Harnesses()
-    probe._forward_outcomes = queue.Queue()
     probe._logger = None
     try:
         assert probe._complete_harness_results() == 0

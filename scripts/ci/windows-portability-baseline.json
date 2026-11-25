@@ -1,0 +1,150 @@
+{
+  "version": 2,
+  "policy": "(path, rule) -> count map; keys may only leave: lower a count or delete a key when the code is fixed (check_windows_portability.py --prune-baseline); a new key or a raised count is red against the PR base (--base-ref)",
+  "seededRules": [
+    "W001",
+    "W002",
+    "W003",
+    "W004",
+    "W005",
+    "W006",
+    "W007",
+    "W008",
+    "W009",
+    "W010",
+    "W011",
+    "W012",
+    "W013",
+    "W014",
+    "W015",
+    "W016",
+    "W019",
+    "W021"
+  ],
+  "entries": {
+    "src/hyprial/daemon/impl/adapters/lark/credentials/authorization/process.py": {
+      "W015": {
+        "count": 3,
+        "reason": "debt-0.5.5.4: capability checks or a kernel seam's platform-neutral API",
+        "removal": "0.5.5.4"
+      },
+      "W019": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: CREATE_NEW_PROCESS_GROUP for the Lark authorization child; move to the kernel spawn_detached() seam together with this file's W015/W005 (Lark adapter only, not daemon start)",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/adapters/lark/credentials/reauth.py": {
+      "W012": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: kernel harden_private_path / private_metadata_violation; keyring",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/adapters/lark/credentials/scopes.py": {
+      "W007": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: kernel fsync_directory(path)",
+        "removal": "0.5.5.4"
+      },
+      "W012": {
+        "count": 3,
+        "reason": "debt-0.5.5.4: kernel harden_private_path / private_metadata_violation; keyring",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/adapters/lark/media/media.py": {
+      "W012": {
+        "count": 2,
+        "reason": "debt-0.5.5.4: kernel harden_private_path / private_metadata_violation; keyring",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/adapters/lark/outbound/reactions.py": {
+      "W012": {
+        "count": 2,
+        "reason": "debt-0.5.5.4: kernel harden_private_path / private_metadata_violation; keyring",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/adapters/lark/worker/process.py": {
+      "W004": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: Lark worker connects back over multiprocessing.connection instead of inherited pipe fds + selectors (audit 750e3a7e7); Lark adapter only, not daemon start",
+        "removal": "0.5.5.4"
+      },
+      "W014": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: Lark worker connects back over multiprocessing.connection instead of inherited pipe fds + selectors (audit 750e3a7e7); Lark adapter only, not daemon start",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/autoupdate/__init__.py": {
+      "W002": {
+        "count": 2,
+        "reason": "debt-0.5.5.4: getattr(os, 'O_X', 0); kernel private_access / OwnedProcessGroup",
+        "removal": "0.5.5.4"
+      },
+      "W011": {
+        "count": 5,
+        "reason": "debt-0.5.5.4: tempfile.gettempdir() / platformdirs / shutil.which / the tool's own report",
+        "removal": "0.5.5.4"
+      },
+      "W012": {
+        "count": 2,
+        "reason": "debt-0.5.5.4: kernel harden_private_path / private_metadata_violation; keyring",
+        "removal": "0.5.5.4"
+      },
+      "W015": {
+        "count": 2,
+        "reason": "debt-0.5.5.4: darwin->launchd / linux->systemd service selection; Windows falls through to 'unsupported' (no service manager); share shell daemon/service.py _service_platform instead of a second dispatch",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/operations/service/identity.py": {
+      "W001": {
+        "count": 1,
+        "reason": "posix-only-module: launchd/systemd ServiceManager runner; shell/impl/cli/commands/daemon/service.py:_service_platform raises ServicePlatformUnsupported off darwin/linux",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/daemon/impl/transfer/execution/container.py": {
+      "W002": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: getattr(os, 'O_X', 0); kernel private_access / OwnedProcessGroup",
+        "removal": "0.5.5.4"
+      },
+      "W012": {
+        "count": 2,
+        "reason": "debt-0.5.5.4: kernel harden_private_path / private_metadata_violation; keyring",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/identity/impl/agents/migration/entry.py": {
+      "W021": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: migration plan privacy refused without a private ACL (pywin32 seam, H12-dependent); owner to assign",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/shell/impl/cli/commands/daemon/service.py": {
+      "W015": {
+        "count": 2,
+        "reason": "posix-only-module: _service_platform darwin->launchd / linux->systemd; raises ServicePlatformUnsupported elsewhere (Windows has no service integration in 0.5.5.3.4)",
+        "removal": "0.5.5.4"
+      },
+      "W021": {
+        "count": 2,
+        "reason": "debt-0.5.5.4: per-user service registration has no Windows backend (H11); needs a Windows scheduled-task / Run-key design",
+        "removal": "0.5.5.4"
+      }
+    },
+    "src/hyprial/shell/impl/cli/commands/init/init.py": {
+      "W021": {
+        "count": 1,
+        "reason": "debt-0.5.5.4: init --service refuses platforms without a service backend (H11); follows the Windows service design",
+        "removal": "0.5.5.4"
+      }
+    }
+  }
+}

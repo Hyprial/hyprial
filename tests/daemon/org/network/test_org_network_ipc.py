@@ -126,6 +126,7 @@ def test_ipc_org_create_and_network_round_trip(app: _FakeApp) -> None:
     assert view["sidecar"]["policy"] == "auto"
     assert view["self"] == {
         "deviceId": NODE_ID,
+        "deviceUid": None,
         "owner": OWNER,
         "serverPublic": key("server-node-a"),
         "addressPresent": True,
@@ -343,10 +344,19 @@ def test_ipc_org_remove_and_delete_round_trip(app: _FakeApp) -> None:
     removed = confirm_ipc_removal(ipc_org_remove, app, {"org": "group-acme", "user": "user:bob@example"})
     assert removed["user"] == "user:bob@example"
     assert removed["phase"] == "complete"
-    with pytest.raises(DaemonRequestError) as refused:
-        ipc_org_delete(app, {"org": "group-acme"})
-    assert refused.value.code == "LAST_AUTHORITY_REFUSED"
-    assert [row["org"] for row in ipc_org_list(app, {})["orgs"]] == ["group-acme"]
+    preview = ipc_org_delete(app, {"org": "group-acme"})
+    assert preview["phase"] == "pending-confirmation"
+    with pytest.raises(DaemonRequestError) as stale:
+        ipc_org_delete(app, {"org": "group-acme", "confirmed": True, "operationId": "not-the-id"})
+    assert stale.value.code == "REMOVAL_CONFIRMATION_STALE"
+    deleted = ipc_org_delete(
+        app,
+        {"org": "group-acme", "confirmed": True, "operationId": preview["operationId"]},
+    )
+    assert deleted["phase"] == "complete"
+    assert deleted["orgfsMarked"] is True
+    assert deleted["tailnetClosed"] is True
+    assert [row["org"] for row in ipc_org_list(app, {})["orgs"]] == []
 
 
 def test_ipc_org_join_rejects_a_malformed_link(app: _FakeApp) -> None:
@@ -359,11 +369,13 @@ def test_ipc_org_join_rejects_a_malformed_link(app: _FakeApp) -> None:
     ("handler", "service_method"),
     [(ipc_org_join, "join"), (ipc_org_execute, "execute")],
 )
-def test_ipc_org_join_and_execute_retry_identity_binding_publication(
+def test_ipc_org_join_and_execute_publish_no_identity_binding(
     app: _FakeApp, handler: Any, service_method: str
 ) -> None:
-    published: list[bool] = []
-    app._publish_identity_binding = lambda: published.append(True)
+    def publish() -> None:
+        raise AssertionError("a join no longer publishes an identity binding")
+
+    app._publish_identity_binding = publish
 
     with patch(
         "hyprial.daemon.impl.org.network.ipc._build_service"
@@ -376,32 +388,6 @@ def test_ipc_org_join_and_execute_retry_identity_binding_publication(
         result = handler(app, {"link": "v1.payload"})
 
     assert result["org"] == "group-acme"
-    assert published == [True]
-
-
-def test_a_failed_binding_publication_never_fails_a_completed_join(
-    app: _FakeApp,
-) -> None:
-    logged: list[str] = []
-
-    def publish() -> None:
-        raise RuntimeError("orgfs facade is closing")
-
-    app._publish_identity_binding = publish
-    app._log = lambda _level, _area, event, **_fields: logged.append(event)
-
-    with patch(
-        "hyprial.daemon.impl.org.network.ipc._build_service"
-    ) as build_service:
-        build_service.return_value.join.return_value = {
-            "org": "group-acme",
-            "spaceId": "space-1",
-            "steps": [],
-        }
-        result = ipc_org_join(app, {"link": "v1.payload"})
-
-    assert result["org"] == "group-acme"
-    assert logged == ["identity.org-binding.publish-after-join-failed"]
 
 
 @pytest.mark.parametrize(
@@ -426,7 +412,9 @@ def _settled(app: _FakeApp, event: str) -> list[dict[str, Any]]:
     return [record for record in app.records if record["event"] == event]
 
 
-def test_ipc_org_invite_replies_before_the_forwarding_reconcile(app: _FakeApp) -> None:
+def test_ipc_org_invite_replies_before_the_forwarding_reconcile(
+    app: _FakeApp, *, actor_host
+) -> None:
     """0.5.5.1 production stall (2026-10-28): the reply waited on the reconcile.
 
     ``org.invite`` returned IPC_TIMEOUT after the CLI's 15s budget although
@@ -454,7 +442,7 @@ def test_ipc_org_invite_replies_before_the_forwarding_reconcile(app: _FakeApp) -
 
     requests = ForwardingReconcileRequests(app._log)
     cadence: BoundedCadence[None] = BoundedCadence(
-        "forwarding-reconcile", reconcile, requests.settle
+        "forwarding-reconcile", reconcile, requests.settle, actor_host=actor_host
     )
     app._reconcile_forwarding_endpoints = lambda: reconcile()  # type: ignore[method-assign]
     app._request_forwarding_reconcile = (  # type: ignore[method-assign]

@@ -43,7 +43,7 @@ HARNESS_REMOVAL = 5
 HARNESS_KEY = "harness:codex:worker"
 
 
-def _coordinator(tmp_path: Path, ports: _CompletionPorts, router):  # type: ignore[no-untyped-def]
+def _coordinator(tmp_path: Path, ports: _CompletionPorts, router, actor_host):  # type: ignore[no-untyped-def]
     # The fake domain's current tokens play the desired state's active
     # lifecycle_resources, which the daemon wires in production.
     return LifecycleCoordinator(
@@ -52,16 +52,17 @@ def _coordinator(tmp_path: Path, ports: _CompletionPorts, router):  # type: igno
         router,
         completion_timeout=0.05,
         live_resource=lambda key, token: ports.current_tokens.get(key) == token,
+        actor_host=actor_host,
     )
 
 
 @pytest.mark.parametrize("build", [_coordinator], ids=["coordinator"])
-def test_a_harness_that_was_not_removed_keeps_its_agent_and_route(tmp_path: Path, build) -> None:  # type: ignore[no-untyped-def]
+def test_a_harness_that_was_not_removed_keeps_its_agent_and_route(tmp_path: Path, build, actor_host) -> None:  # type: ignore[no-untyped-def]
     router = CorrelationEventRouter()
     ports = _ReplaceBeforeFailurePorts(
         router, fail_at=SESSION_REGISTER, resource_key=HARNESS_KEY
     )
-    manager = build(tmp_path, ports, router)
+    manager = build(tmp_path, ports, router, actor_host)
     try:
         assert (
             manager.submit(LifecycleOperation.create("late", _spec()))
@@ -81,10 +82,10 @@ def test_a_harness_that_was_not_removed_keeps_its_agent_and_route(tmp_path: Path
 
 
 @pytest.mark.parametrize("build", [_coordinator], ids=["coordinator"])
-def test_a_removed_harness_still_rolls_back_everything(tmp_path: Path, build) -> None:  # type: ignore[no-untyped-def]
+def test_a_removed_harness_still_rolls_back_everything(tmp_path: Path, build, actor_host) -> None:  # type: ignore[no-untyped-def]
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router, fail_at=SESSION_REGISTER)
-    manager = build(tmp_path, ports, router)
+    manager = build(tmp_path, ports, router, actor_host)
     try:
         manager.submit(LifecycleOperation.create("early", _spec()))
         result = manager.wait("early", TERMINAL_WAIT_SECONDS)

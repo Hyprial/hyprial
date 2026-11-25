@@ -19,21 +19,25 @@ class StopAdapterCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class BeginAdapterRemovalCommand:
+    correlation_id: str
+    name: str
+    token: str
+    expected_generation: int
+    expected_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class FinishAdapterRemovalCommand:
+    correlation_id: str
+    name: str
+    token: str
+    committed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ReloadAdaptersCommand:
     correlation_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class PinAdapterCommand:
-    correlation_id: str
-    name: str
-    actor: str
-
-
-@dataclass(frozen=True, slots=True)
-class UnpinAdapterCommand:
-    correlation_id: str
-    name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,9 +73,9 @@ class DeliverLarkAlarmCommand:
 LarkCommand: TypeAlias = (
     StartAdapterCommand
     | StopAdapterCommand
+    | BeginAdapterRemovalCommand
+    | FinishAdapterRemovalCommand
     | ReloadAdaptersCommand
-    | PinAdapterCommand
-    | UnpinAdapterCommand
     | AdapterTimerElapsedCommand
     | DrainAdapterHealthCommand
     | DeliverLarkMessageCommand
@@ -158,33 +162,6 @@ class AdapterItemProjection:
 
 
 @dataclass(frozen=True, slots=True)
-class AdapterPinProjection:
-    adapter: str
-    actor: str | None
-    previous: str | None
-    changed: bool
-    pins: tuple[tuple[str, str], ...]
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "ok": True,
-            "adapter": self.adapter,
-            **({"actor": self.actor} if self.actor is not None else {}),
-            "previous": self.previous,
-            "changed": self.changed,
-            "pins": dict(self.pins),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class AdapterPinsProjection:
-    pins: tuple[tuple[str, str], ...]
-
-    def to_payload(self) -> dict[str, object]:
-        return {"ok": True, "pins": dict(self.pins)}
-
-
-@dataclass(frozen=True, slots=True)
 class AdapterMutationCompleted:
     correlation_id: str
     generation: int
@@ -192,7 +169,6 @@ class AdapterMutationCompleted:
     changed: bool
     adapter: AdapterProjection | None = None
     reload: AdapterReloadProjection | None = None
-    pin: AdapterPinProjection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,5 +206,3 @@ class LarkProjectionPort(Protocol):
     def read_adapter(self, name: str) -> AdapterProjection | None: ...
 
     def read_adapters(self) -> tuple[AdapterProjection, ...]: ...
-
-    def read_pins(self) -> tuple[tuple[str, str], ...]: ...

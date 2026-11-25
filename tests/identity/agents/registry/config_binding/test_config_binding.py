@@ -18,6 +18,7 @@ from hyprial.identity.impl.agents.registry import config_binding
 from hyprial.daemon.impl.composition.domains import AgentSessionDomains
 from hyprial.daemon.impl.composition.events import CorrelatedDomainEvents, DomainCommandError
 from hyprial.daemon.impl.composition.views import AgentDirectoryFacade
+from tests.support.actor_hosts import new_actor_host
 
 
 @pytest.fixture
@@ -28,6 +29,15 @@ def registry(tmp_path):
         yield value
     finally:
         value.close()
+
+
+def compensate_without_freezing(registry, agent):
+    """Roll ``agent`` back as a saga compensation does.
+    """
+
+    assert registry.prepare_destroy_settlement(
+        agent.actor, agent.entity_token
+    ) == ("destroyed", None)
 
 
 def bind(registry, agent, config, expected=None):
@@ -65,7 +75,7 @@ def test_config_change_by_admin_is_visible_conflict_not_overwrite(registry, tmp_
 
 def test_old_incarnation_cannot_bind_or_destroy_replacement(registry, tmp_path):
     old = registry.require("visitor")
-    registry.destroy("visitor")
+    compensate_without_freezing(registry, old)
     replacement = registry.create("visitor")
     with pytest.raises(AgentError) as error:
         bind(registry, old, AgentConfig(str(tmp_path / "migration")))
@@ -155,7 +165,7 @@ def test_command_detaches_mutable_input(tmp_path):
 @pytest.fixture
 def facade(registry):
     events = CorrelatedDomainEvents()
-    actor = AgentActor(registry, event_sink=events.publish)
+    actor = AgentActor(registry, event_sink=events.publish, actor_host=new_actor_host())
     domains = object.__new__(AgentSessionDomains)
     domains.agent, domains._registry, domains._agent_events = actor, registry, events
     try:
@@ -207,7 +217,7 @@ def test_empty_fences_are_never_wildcards(registry, tmp_path, field, value):
 def test_facade_propagates_incarnation_conflict_without_destroy(facade, registry, tmp_path):
     port, _actor = facade
     prior = registry.require("visitor")
-    registry.destroy("visitor")
+    compensate_without_freezing(registry, prior)
     current = registry.create("visitor")
     with pytest.raises(DomainCommandError) as error:
         bind(port, prior, AgentConfig(str(tmp_path / "config")))

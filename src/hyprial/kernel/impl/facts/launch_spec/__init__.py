@@ -1,0 +1,70 @@
+"""Launch-state vocabulary: HarnessLaunchSpec + DesiredStateError (canonical).
+
+Re-exports all public and internal symbols from ``args`` and ``spec`` so
+existing imports against ``hyprial.kernel.impl.facts.launch_spec`` remain
+100% equivalent after the same-name package split.
+"""
+
+from __future__ import annotations
+
+from .args import (
+    _AGY_EFFORTS as _AGY_EFFORTS,
+    _AGY_MODES as _AGY_MODES,
+    _CLAUDE_FLAG_OPTIONS as _CLAUDE_FLAG_OPTIONS,
+    _CLAUDE_PERMISSION_MODES as _CLAUDE_PERMISSION_MODES,
+    _CLAUDE_VALUE_OPTIONS as _CLAUDE_VALUE_OPTIONS,
+    _CODEX_APPROVAL_POLICIES as _CODEX_APPROVAL_POLICIES,
+    _CODEX_EFFORTS as _CODEX_EFFORTS,
+    _CODEX_FLAG_OPTIONS as _CODEX_FLAG_OPTIONS,
+    _CODEX_SANDBOXES as _CODEX_SANDBOXES,
+    _CODEX_VALUE_ALIASES as _CODEX_VALUE_ALIASES,
+    _DANGEROUS_OPTION_PATTERN as _DANGEROUS_OPTION_PATTERN,
+    _HARNESS_ARG_OPTIONS as _HARNESS_ARG_OPTIONS,
+    _LIFECYCLE_OPTIONS as _LIFECYCLE_OPTIONS,
+    _MANAGED_HARNESS_ARGS as _MANAGED_HARNESS_ARGS,
+    _MAX_HARNESS_ARG_BYTES as _MAX_HARNESS_ARG_BYTES,
+    _MAX_HARNESS_ARG_COUNT as _MAX_HARNESS_ARG_COUNT,
+    _MAX_REDACTED_JSON_BYTES as _MAX_REDACTED_JSON_BYTES,
+    _MAX_REDACTED_VALUE_CHARS as _MAX_REDACTED_VALUE_CHARS,
+    _SENSITIVE_HARNESS_OPTIONS as _SENSITIVE_HARNESS_OPTIONS,
+    DangerousArg as DangerousArg,
+    HarnessArgIssue as HarnessArgIssue,
+    HarnessArgValidationError as HarnessArgValidationError,
+    RedactedHarnessArgs as RedactedHarnessArgs,
+    _canonical_harness_args_json as _canonical_harness_args_json,
+    _checked_harness_arg_group as _checked_harness_arg_group,
+    _classification_value as _classification_value,
+    _codex_effort_from_config as _codex_effort_from_config,
+    _dangerous_arg as _dangerous_arg,
+    _normalize_redaction_input as _normalize_redaction_input,
+    _redact_harness_arg_group as _redact_harness_arg_group,
+    _reject_harness_arg as _reject_harness_arg,
+    _reject_lifecycle_option as _reject_lifecycle_option,
+    _reject_unsupported_option as _reject_unsupported_option,
+    _required_option_value as _required_option_value,
+    _safe_option_token as _safe_option_token,
+    _split_policy_option as _split_policy_option,
+    _truncate_redacted_token as _truncate_redacted_token,
+    _validate_agy_launch_args as _validate_agy_launch_args,
+    _validate_claude_launch_args as _validate_claude_launch_args,
+    _validate_codex_launch_args as _validate_codex_launch_args,
+    _validate_pi_launch_args as _validate_pi_launch_args,
+    classify_dangerous_launch_args as classify_dangerous_launch_args,
+    managed_harness_args_supported as managed_harness_args_supported,
+    normalize_harness_args as normalize_harness_args,
+    redact_harness_args as redact_harness_args,
+    validate_harness_launch_args as validate_harness_launch_args,
+)
+from .spec import (
+    DECLARED_HARNESSES as DECLARED_HARNESSES,
+    _HARNESSES as _HARNESSES,
+    DesiredStateError as DesiredStateError,
+    HarnessLaunchSpec as HarnessLaunchSpec,
+    _launch_arg_groups as _launch_arg_groups,
+    _launch_option_key as _launch_option_key,
+    _optional_string as _optional_string,
+    _record as _record,
+    _string as _string,
+    _validated_launch_args as _validated_launch_args,
+    merge_harness_launch_args as merge_harness_launch_args,
+)

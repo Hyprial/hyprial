@@ -108,7 +108,7 @@ def test_missing_runner_receipt_drains_without_acknowledging_other_helper(
         assert "finished:" + removed_operation not in actor._commands
         # Replaying the old receipt/ACK again must still leave live custody.
         receipt_processed.clear()
-        actor._runtime.tell(actor._handle, receipts[0])
+        actor._cell.tell(receipts[0])
         assert receipt_processed.wait(2)
         assert actor._helpers.snapshot().outstanding == 1
         release["openai-codex"].set()

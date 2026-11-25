@@ -66,6 +66,7 @@ class RoutineAlarmEffect:
     text: str
     idempotency_key: str = ""
     operation: str = "alarm"
+    sender: str = ""
 
 
 RoutineEffect: TypeAlias = (

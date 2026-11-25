@@ -10,10 +10,8 @@ from typer.testing import CliRunner
 from hyprial.kernel import ipc_errors
 
 from .support import (
-    _bind_owner,
     _fake_upgrade,
     _locked_constraints as _locked_constraints,
-    _record_owner_messages,
     _seed_desired_rows,
 )
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
@@ -27,11 +25,9 @@ def test_a_reconciled_restart_is_confirmed_and_needs_no_followup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """T1: launch ok + ping phase=reconciled => confirmed true, reported as a
-    plain install, and nobody is pinged twice about it."""
+    plain install, with no follow-up recorded."""
 
     events = _fake_upgrade(monkeypatch, tmp_path)
-    _bind_owner(tmp_path)
-    sent = _record_owner_messages(monkeypatch)
 
     result = CliRunner().invoke(_cli_root_app, ["daemon", "upgrade", "--json"])
 
@@ -40,10 +36,6 @@ def test_a_reconciled_restart_is_confirmed_and_needs_no_followup(
     assert payload["restart"]["confirmed"] is True
     assert payload["restart"]["reason"] == "resolved tag changed; running daemon restarted"
     assert "followUp" not in payload["restart"], "reconciled needs no follow-up"
-    assert len(sent) == 1, "a settled restart must not send a follow-up"
-    assert "尚未确认完成 adapter 恢复" not in sent[0], (
-        "a reconciled restart reported as UPGRADE_UNCONFIRMED"
-    )
     assert events.count("ping:2") == 1, "the phase was read more than once"
 
 
@@ -51,11 +43,9 @@ def test_a_restore_that_settles_during_the_poll_gets_one_recovery_followup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """T2: restoring at the read, reconciled during the poll => exactly one
-    「已恢复」 follow-up and confirmed flips to true in the result."""
+    recovered follow-up and confirmed flips to true in the result."""
 
     events = _fake_upgrade(monkeypatch, tmp_path)
-    _bind_owner(tmp_path)
-    sent = _record_owner_messages(monkeypatch)
     _seed_desired_rows(tmp_path, 1)
 
     # One row at the default knobs: a 90s poll budget, so the transition
@@ -72,6 +62,9 @@ def test_a_restore_that_settles_during_the_poll_gets_one_recovery_followup(
         timeout: float = 15.0,
         restore_wait: float | None = None,
     ) -> dict[str, Any]:
+        if method == "upgrade.steps.run":
+            assert params == {"apply": True}
+            return {"steps": [], "pending": ["org-membership-v1"]}
         del params, restore_wait
         events.append(f"{method}:{timeout:g}")
         if method == "ps":
@@ -114,18 +107,16 @@ def test_a_restore_that_settles_during_the_poll_gets_one_recovery_followup(
     assert restart["confirmed"] is True
     assert restart["reason"] == "restore settled after poll (phase reconciled)"
     assert restart["followUp"]["outcome"] == "recovered"
-    assert len(sent) == 2, "first notice plus exactly one follow-up"
-    assert "尚未确认完成 adapter 恢复" in sent[0]
-    assert "已恢复" in sent[1]
-    assert "reconciled" in sent[1]
+    assert restart["followUp"] == {"phase": "reconciled", "outcome": "recovered"}
     assert events.count("ping:2") == 3, "read once, polled twice, then settled"
 
 
 def test_an_unsettled_restore_follows_up_once_at_the_derived_budget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """T3: phase never leaves restoring => one 「仍在启动:N」 follow-up when the
-    fleet-derived budget runs out, confirmed stays false.
+    """T3: phase never leaves restoring => one still-starting follow-up with
+    the pending count when the fleet-derived budget runs out, confirmed
+    stays false.
 
     The budget is injected small (5 rows, width 2, 0.2s start timeout =>
     ceil(5/2)=3 rounds x 0.2s x 1.5 = 0.9s); the duration assertion is what
@@ -136,8 +127,6 @@ def test_an_unsettled_restore_follows_up_once_at_the_derived_budget(
     monkeypatch.delenv("HYPRIAL_SOCKET_PATH", raising=False)
     monkeypatch.delenv("HARNESS_CONFIG", raising=False)
     (tmp_path / "home").mkdir(mode=0o700)
-    _bind_owner(tmp_path)
-    sent = _record_owner_messages(monkeypatch)
     _seed_desired_rows(tmp_path, 5)
 
     def restoring_daemon_request(
@@ -187,8 +176,11 @@ def test_an_unsettled_restore_follows_up_once_at_the_derived_budget(
     assert restart["confirmed"] is False
     assert restart["followUp"]["outcome"] == "still-starting"
     assert restart["followUp"]["pendingConnectors"] == 1
-    assert len(sent) == 1, "exactly one follow-up, never a stream"
-    assert "仍在启动:1 个 connector 未回" in sent[0]
+    assert restart["followUp"] == {
+        "phase": "restoring",
+        "outcome": "still-starting",
+        "pendingConnectors": 1,
+    }
 
 
 def test_a_transient_ping_blip_does_not_abort_the_followup_poll(
@@ -196,7 +188,7 @@ def test_a_transient_ping_blip_does_not_abort_the_followup_poll(
 ) -> None:
     """#332 F4② landed under this card's rebase: the transport's transient
     classes are no longer CliError.  A poll that died on the first blip
-    would send no follow-up at all -- the exact silence this card closes --
+    would record no follow-up at all -- the exact silence this card closes --
     so one refused ping must read as \"not reconciled\" and the poll must
     keep its promise to the budget."""
 
@@ -205,8 +197,6 @@ def test_a_transient_ping_blip_does_not_abort_the_followup_poll(
     monkeypatch.delenv("HYPRIAL_SOCKET_PATH", raising=False)
     monkeypatch.delenv("HARNESS_CONFIG", raising=False)
     (tmp_path / "home").mkdir(mode=0o700)
-    _bind_owner(tmp_path)
-    sent = _record_owner_messages(monkeypatch)
     _seed_desired_rows(tmp_path, 1)
 
     ping_calls = iter(["blip"] + ["restoring"] * 40)
@@ -245,7 +235,7 @@ def test_a_transient_ping_blip_does_not_abort_the_followup_poll(
     )
 
     assert result["restart"]["followUp"]["outcome"] == "still-starting"
-    assert len(sent) == 1, "the blip cost the owner its only follow-up"
+    assert "alert" not in result["restart"]["followUp"]
 
 
 def test_pre_upgrade_snapshot_reaches_a_daemon_whose_ps_is_storming(monkeypatch, tmp_path) -> None:

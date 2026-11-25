@@ -7,8 +7,8 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 from hyprial.daemon.impl.dispatch.runtime.state  import DispatchStateAuthority
 
@@ -36,27 +36,28 @@ class HoldRefreshCoordinator:
     def __init__(
         self, refresh, state: DispatchStateAuthority, *,
         capacity: int = 64, workers: int = 4,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
     ) -> None:
         self._refresh = refresh
         self._state = state
-        self._runtime = runtime or ActorRuntime()
+        if actor_host is None:
+            raise ValueError("actor_host is required")
         self._guard = threading.Lock()
         self._active: dict[str, RefreshHold] = {}
         self._rejected = self._completed = self._failed = 0
         self._closed = False
         self._capacity = capacity
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="inbox-hold-refresh",
                 handler_factory=lambda: self._receive,
                 mailbox_capacity=capacity,
             )
         )
-        self._effects: EffectLane[RefreshHold, bool] = EffectLane(
+        self._effects = actor_host.effect_lane(
             name="inbox-hold-refresh-io",
             execute=lambda request: bool(self._refresh(request.message_id)),
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=lambda event: self._cell.tell(event),
             capacity=capacity,
             workers=workers,
         )
@@ -77,7 +78,7 @@ class HoldRefreshCoordinator:
                 self._rejected += 1
                 return AdmissionResult.OVERLOADED
             self._active[message_id] = command
-            admitted = self._runtime.tell(self._handle, command)
+            admitted = self._cell.tell(command)
             if admitted is not AdmissionResult.ACCEPTED:
                 self._active.pop(message_id)
                 self._rejected += 1
@@ -148,6 +149,6 @@ class HoldRefreshCoordinator:
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
+        return self._cell.stop(
+            max(0.0, deadline - time.monotonic())
         )

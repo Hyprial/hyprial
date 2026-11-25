@@ -8,14 +8,11 @@ import re
 import json
 import os
 import sqlite3
-import subprocess
-import sys
 from pathlib import Path
 import pytest
 from hyprial.identity.impl.agents import (
     Agent,
     AgentExistsError,
-    AgentNotFoundError,
     AgentRegistry,
     InvalidAgentNameError,
 )
@@ -31,6 +28,8 @@ from .support import (
     OWNER,
     URI,
     _close_test_applications as _close_test_applications,
+    address,
+    address_of,
     application,
     register_interactive,
     start_headless,
@@ -69,12 +68,10 @@ def test_agent_record_stores_configuration_and_no_runtime_state() -> None:
         "last_harness",
         "last_session_id",
         "last_active_at_ms",
-        # Which adapters route their inbound DMs here.  On the record on
-        # purpose: destroy deletes the file and every pin dies with it.
-        "pinned_adapters",
         "created_at_ms",
         # Explicit hosting authority is identity metadata, not runtime state.
         "hosted_by",
+        "display_name",
     )
     assert "harness" not in fields
     assert "state" not in fields
@@ -115,8 +112,10 @@ def test_agent_id_is_derived_from_incarnation_and_changes_on_recreate(
         "u.6f8b1d21-33a8-4688-a32e-b1b23e87d5d9",
         "d." + "b" * 32,
         "a." + "a" * 26,
+        "g." + "a" * 26,
         "D." + "B" * 32,
         "A." + "A" * 26,
+        "G." + "A" * 26,
     ],
 )
 def test_agent_names_reject_exact_identity_id_shapes(
@@ -130,7 +129,7 @@ def test_agent_names_reject_exact_identity_id_shapes(
         registry.close()
 
 
-@pytest.mark.parametrize("name", ["d.lane", "a.smith", "u.zhang"])
+@pytest.mark.parametrize("name", ["d.lane", "a.smith", "u.zhang", "g.lane"])
 def test_agent_names_accept_id_prefix_lookalikes(tmp_path: Path, name: str) -> None:
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     try:
@@ -143,11 +142,7 @@ def test_agent_names_accept_id_prefix_lookalikes(tmp_path: Path, name: str) -> N
 def test_agent_names_reject_daemon_reserved_actor_names(
     tmp_path: Path, reserved: str
 ) -> None:
-    """README ruling 63: a reserved name must not claim the link exemption.
-
-    ``link_governed`` exempts these actor names on any node, so registering an
-    ordinary agent under one would bypass every link constraint.
-    """
+    """A reserved daemon actor name cannot be registered as an ordinary agent."""
 
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     try:
@@ -363,7 +358,7 @@ def test_registry_round_trips_an_agent_through_its_own_file(tmp_path: Path) -> N
         preferred_harness="claude",
     )
 
-    assert created.uri == URI
+    assert created.uri == address_of(created)
     assert created.harness_args == {
         "claude": ("--model", "opus"),
         "pi": ("--fast",),
@@ -378,7 +373,7 @@ def test_registry_round_trips_an_agent_through_its_own_file(tmp_path: Path) -> N
         AgentRegistry(database, owner=OWNER, machine=NODE).get("foo") == created
     )
     # A canonical URI resolves to the same record as the bare name.
-    assert registry.get(URI) == created
+    assert registry.get(created.uri) == registry.get(URI) == created
 
 
 def test_legacy_json_records_import_once_and_are_archived(tmp_path: Path) -> None:
@@ -407,8 +402,7 @@ def test_legacy_json_records_import_once_and_are_archived(tmp_path: Path) -> Non
     assert imported.uri == URI
     assert imported.cwd == "/work"
     assert imported.created_at_ms == 7
-    # The pin rode along into the pins table.
-    assert registry.pins() == {"lark-a": URI}
+    assert not hasattr(imported, "pinned_adapters")
     # Archived, not deleted.
     assert not (legacy / "foo.json").exists()
     assert (legacy / "foo.json.imported").is_file()
@@ -416,30 +410,6 @@ def test_legacy_json_records_import_once_and_are_archived(tmp_path: Path) -> Non
     again = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     assert again.imported_legacy == ()
     assert again.require("foo").created_at_ms == 7
-
-
-def test_pinned_adapters_come_from_the_pins_table(tmp_path: Path) -> None:
-    """``pinnedAdapters`` is composed from the pins table at read time; the
-    only writers are pin/unpin, so a stale record save cannot clobber it."""
-
-    database = tmp_path / "agents.sqlite3"
-    registry = AgentRegistry(database, owner=OWNER, machine=NODE)
-    registry.create("foo")
-
-    assert registry.pin("lark-a", "foo") is None
-    assert registry.require("foo").pinned_adapters == ("lark-a",)
-    # A second registry over the same database sees the same binding.
-    reloaded = AgentRegistry(database, owner=OWNER, machine=NODE)
-    assert reloaded.require("foo").pinned_adapters == ("lark-a",)
-    assert reloaded.pins() == {"lark-a": URI}
-    # save() ignores the field: an old copy of the record cannot unpin.
-    registry.save(
-        dataclasses.replace(registry.require("foo"), pinned_adapters=())
-    )
-    assert registry.require("foo").pinned_adapters == ("lark-a",)
-    # unpin is the one legitimate remover.
-    assert registry.unpin("lark-a") == URI
-    assert registry.require("foo").pinned_adapters == ()
 
 
 def test_registry_rejects_names_that_are_not_safe_file_segments(
@@ -511,12 +481,12 @@ def test_an_agent_name_is_a_name_not_a_harness(tmp_path: Path) -> None:
     app = application(tmp_path)
     app.handle("agent.create", {"name": "pi-ds4"})
     agent = app.agents.require("pi-ds4")
-    assert agent.uri == f"agent:{OWNER}:{NODE}:pi-ds4"
+    assert agent.uri == address_of(agent)
     assert not hasattr(agent, "harness")
 
     # Runs happily on a harness whose name has nothing to do with its own.
     started = start_headless(app, "claude", "pi-ds4")
-    assert started["actor"] == f"agent:{OWNER}:{NODE}:pi-ds4"
+    assert started["actor"] == agent.uri
 
     # And the name is still taken, by that one agent.
     with pytest.raises(DaemonRequestError) as failure:
@@ -548,7 +518,7 @@ def test_starting_a_running_agent_is_refused_and_names_the_remedy(
     assert "not a name conflict" in message
     # The refused start left nothing behind.
     assert [spec.harness for spec in app.desired_state.load().harnesses] == ["pi"]
-    assert app._agent_liveness.binding(URI).harness == "pi"  # type: ignore[union-attr]
+    assert app._agent_liveness.binding(address(app, "foo")).harness == "pi"  # type: ignore[union-attr]
 
 
 def test_restarting_the_very_same_connector_is_refused_too(tmp_path: Path) -> None:
@@ -617,12 +587,12 @@ def test_down_then_start_moves_the_same_agent_to_another_harness(
     result = start_headless(app, "claude", "foo")
 
     assert result["ok"] is True
-    assert result["actor"] == URI
+    assert result["actor"] == address(app, "foo")
     # Same agent record throughout -- not a new one.
-    assert app.agents.local_actors() == (URI,)
+    assert app.agents.local_actors() == (address(app, "foo"),)
     assert app.agents.require("foo").created_at_ms == created_at
     assert [spec.harness for spec in app.desired_state.load().harnesses] == ["claude"]
-    assert app._agent_liveness.binding(URI).harness == "claude"  # type: ignore[union-attr]
+    assert app._agent_liveness.binding(address(app, "foo")).harness == "claude"  # type: ignore[union-attr]
     handover = result["harnessHandover"]
     assert handover["previousHarness"] == "pi"
     assert handover["nextHarness"] == "claude"
@@ -643,7 +613,7 @@ def test_at_most_one_connector_ever_speaks_for_an_actor(tmp_path: Path) -> None:
         specs = app.desired_state.load().harnesses
         assert [spec.harness for spec in specs] == [harness]
         assert len(app._harnesses.status()) == 1  # type: ignore[union-attr]
-        assert app.agents.local_actors() == (URI,)
+        assert app.agents.local_actors() == (address(app, "foo"),)
         # And a competing start is refused for as long as it is running.
         with pytest.raises(DaemonRequestError):
             register_interactive(app, URI)
@@ -678,12 +648,12 @@ def test_down_releases_the_binding_even_without_a_desired_state_entry(
     start_headless(app, "pi", "foo")
     # Simulate the spec vanishing without release: down has nothing to match.
     app.desired_state.remove_harness("pi", "foo")
-    assert app._agent_liveness.binding(URI) is not None
+    assert app._agent_liveness.binding(address(app, "foo")) is not None
 
     result = app.handle("down", {"target": "foo"})
 
     assert result["removed"] == []
-    assert app._agent_liveness.binding(URI) is None
+    assert app._agent_liveness.binding(address(app, "foo")) is None
     # The named remedy worked: the agent can start again.
     assert start_headless(app, "claude", "foo")["ok"] is True
 
@@ -694,10 +664,9 @@ def test_two_differently_named_agents_coexist(tmp_path: Path) -> None:
     start_headless(app, "claude", "foo")
     start_headless(app, "pi", "bar")
 
-    assert sorted(app.agents.local_actors()) == [
-        f"agent:{OWNER}:{NODE}:bar",
-        URI,
-    ]
+    assert sorted(app.agents.local_actors()) == sorted(
+        [address(app, "bar"), address(app, "foo")]
+    )
 
 
 # --------------------------------------------------------------------------
@@ -710,7 +679,7 @@ def test_duplicate_actor_is_refused_by_the_primary_key(tmp_path: Path) -> None:
 
     The raw INSERT proves the constraint itself; the registry API proves the
     IntegrityError is translated into the existing AGENT_EXISTS error, message
-    style intact (names the taken URI, gives the destroy command).
+    style intact (names the taken URI; under ruling X the remedy is a rename).
     """
 
     database = tmp_path / "agents.sqlite3"
@@ -730,93 +699,10 @@ def test_duplicate_actor_is_refused_by_the_primary_key(tmp_path: Path) -> None:
     with pytest.raises(AgentExistsError) as failure:
         registry.create("foo", cwd="/second")
     assert failure.value.code == "AGENT_EXISTS"
-    assert URI in str(failure.value)
-    assert "hyprial agent destroy foo" in str(failure.value)
+    assert address_of(registry.require("foo")) in str(failure.value)
+    assert "To reuse the name, destroy that agent first ('hyprial agent destroy foo'" in str(failure.value)
     # The loser wrote nothing.
     assert registry.require("foo").cwd == "/first"
-
-
-def test_destroy_cascades_the_pin_away_in_one_transaction(
-    tmp_path: Path,
-) -> None:
-    """ON DELETE CASCADE: no cleanup code exists to forget."""
-
-    database = tmp_path / "agents.sqlite3"
-    registry = AgentRegistry(database, owner=OWNER, machine=NODE)
-    registry.create("foo")
-    registry.pin("lark-a", "foo")
-    assert registry.pins() == {"lark-a": URI}
-
-    assert registry.destroy("foo") is True
-
-    assert registry.pins() == {}
-    connection = sqlite3.connect(database)
-    try:
-        assert connection.execute("SELECT COUNT(*) FROM pins").fetchone()[0] == 0
-    finally:
-        connection.close()
-
-
-def test_pinning_a_nonexistent_agent_is_a_foreign_key_error(
-    tmp_path: Path,
-) -> None:
-    registry = AgentRegistry(
-        tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE
-    )
-
-    with pytest.raises(AgentNotFoundError):
-        registry.pin("lark-a", "nobody")
-
-
-def test_concurrent_processes_pinning_one_agent_admit_exactly_one(
-    tmp_path: Path,
-) -> None:
-    """UNIQUE(agent) is enforced across real processes, not just in-process.
-
-    Two subprocesses race to pin two different adapters to the same agent.
-    Exactly one insert may win; the loser must see the typed conflict, and
-    the surviving row must be the winner's.
-    """
-
-    database = tmp_path / "agents.sqlite3"
-    AgentRegistry(database, owner=OWNER, machine=NODE).create("foo")
-    script = (
-        "import sys\n"
-        "from pathlib import Path\n"
-        "from hyprial.identity.impl.agents import AgentRegistry, PinConflictError\n"
-        f"registry = AgentRegistry(Path({str(database)!r}), "
-        f"owner={OWNER!r}, machine={NODE!r})\n"
-        "try:\n"
-        "    registry.pin(sys.argv[1], 'foo')\n"
-        "except PinConflictError:\n"
-        "    print('CONFLICT')\n"
-        "else:\n"
-        "    print('PINNED')\n"
-    )
-    processes = [
-        subprocess.Popen(
-            [sys.executable, "-c", script, adapter],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for adapter in ("lark-a", "lark-b")
-    ]
-    outcomes = []
-    for process in processes:
-        stdout, stderr = process.communicate(timeout=60)
-        assert process.returncode == 0, stderr
-        outcomes.append(stdout.strip())
-
-    assert sorted(outcomes) == ["CONFLICT", "PINNED"]
-    pins = AgentRegistry(database, owner=OWNER, machine=NODE).pins()
-    assert len(pins) == 1
-    assert set(pins.values()) == {URI}
-
-
-# --------------------------------------------------------------------------
-# A5 -- hyprial agent start creates the agent through agent create
-# --------------------------------------------------------------------------
 
 
 def test_lifecycle_start_creates_the_agent_record(tmp_path: Path) -> None:
@@ -824,9 +710,8 @@ def test_lifecycle_start_creates_the_agent_record(tmp_path: Path) -> None:
 
     result = start_headless(app, "pi", "foo")
 
-    assert result["actor"] == URI
     agent = app.agents.require("foo")
-    assert agent.uri == URI
+    assert result["actor"] == agent.uri == address_of(agent)
     assert agent.cwd == "/work"
     assert agent.preferred_harness == "pi"
     assert (tmp_path / "agents.sqlite3").is_file()
@@ -837,7 +722,7 @@ def test_session_register_creates_the_agent_record(tmp_path: Path) -> None:
 
     register_interactive(app, URI)
 
-    assert app.agents.require("foo").uri == URI
+    assert app.agents.require("foo").uri == address(app, "foo")
 
 
 def test_retired_session_refs_prune_on_write_and_release_exactly_one(
@@ -969,7 +854,7 @@ def test_startup_imports_pre_agent_registry_interactive_session(
     app = application(tmp_path)
 
     imported = app.agents.require("foo")
-    assert imported.uri == URI
+    assert imported.uri == f"agent:{OWNER}:{NODE}:{imported.agent_id}"
     assert imported.cwd == "/legacy/work"
     assert imported.preferred_harness == "claude"
     assert app._agent_session_domains.imported_legacy == (
@@ -990,4 +875,4 @@ def test_agent_create_rpc_reuses_an_existing_agent_for_start(tmp_path: Path) -> 
     )
 
     assert again["created"] is False
-    assert again["agent"]["uri"] == URI
+    assert again["agent"]["uri"] == address(app, "foo")

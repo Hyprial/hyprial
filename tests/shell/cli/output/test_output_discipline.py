@@ -24,12 +24,7 @@ _FORBIDDEN_CALLS = {
 }
 
 # (file relative to cli/commands, call) -> why it may stay.
-ALLOWED = {
-    ("transfer/move.py", "print"): (
-        "transfer facts go to stderr through the injected print hook, so tests "
-        "can observe that they precede the first mutation"
-    ),
-}
+ALLOWED: dict[tuple[str, str], str] = {}
 
 _LOWER_LAYERS = ("kernel", "identity", "daemon", "biz")
 _PRESENTATION_MODULES = ("typer", "click", "rich")
@@ -90,12 +85,16 @@ def test_lower_layers_do_not_import_presentation_libraries():
     assert violations == [], "\n".join(violations)
 
 
-def test_the_scan_covers_the_link_group_and_the_read_command():
+def test_the_scan_covers_nested_message_commands_and_the_read_command():
     """A path move must not silently take the new files out of the scan."""
 
     scanned = {path.relative_to(COMMANDS).as_posix() for path in COMMANDS.rglob("*.py")}
 
-    assert {"link/commands.py", "link/render.py", "message/read.py"} <= scanned
+    assert {
+        "message/threads/conversation.py",
+        "message/threads/history.py",
+        "message/read.py",
+    } <= scanned
 
 
 def test_the_scan_sees_a_violation():

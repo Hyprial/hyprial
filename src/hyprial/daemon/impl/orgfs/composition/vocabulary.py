@@ -8,12 +8,11 @@ import threading
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
+    from hyprial.daemon.impl.composition.actors import ActorHostRegistry
     from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+    from hyprial.kernel import ActorHost, EffectLane
 
-from hyprial.kernel import (
-    ActorHandle,
-    ActorRuntime)
-from hyprial.kernel import EffectLane
+from hyprial.kernel import ActorCell
 from hyprial.daemon.impl.transport import TransportSample
 
 from hyprial.daemon.impl.orgfs.storage.store  import LocalSpaceStore
@@ -127,8 +126,7 @@ class _LifecycleWaiter:
 
 @dataclass(slots=True)
 class _LifecycleAuthority:
-    runtime: ActorRuntime
-    actor: ActorHandle
+    runtime: ActorCell
     effects: EffectLane[_LifecycleCommand, _LifecycleOutcome]
     generation: int = 1
     commands: dict[str, _LifecycleCommand] = field(default_factory=dict)
@@ -194,5 +192,49 @@ class _StoreRegistry(dict[str, LocalSpaceStore]):
 
 #: Backoff between await_content provisioning attempts for one blob.
 ORGFS_AWAIT_RETRY_SECONDS = 0.1
+
+
+_ORGFS_HOST_OWNER = "orgfs"
+
+
+class OrgFsActorHostCustody:
+    """The orgfs actor host, injected or privately owned for standalone use.
+
+    OrgFS holds no actor engine: every orgfs actor cell and effect lane comes
+    from an injected ActorHost (P4 batch B2). With no host supplied (standalone
+    CLI and unit tests) this custody lazily creates one private host registry
+    for the "orgfs" owner and owns its shutdown; an injected host is borrowed
+    and is never shut down here.
+    """
+
+    __slots__ = ("_host", "_lock", "_registry")
+
+    def __init__(self, host: ActorHost | None = None) -> None:
+        self._host = host
+        self._registry: ActorHostRegistry | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def host(self) -> ActorHost:
+        with self._lock:
+            if self._host is None:
+                from hyprial.daemon.impl.composition.actors import ActorHostRegistry
+
+                self._registry = ActorHostRegistry()
+                self._host = self._registry.host_for(_ORGFS_HOST_OWNER)
+            return self._host
+
+    def shutdown(self, timeout: float = 5.0) -> bool:
+        with self._lock:
+            registry = self._registry
+        if registry is None:
+            return True
+        if not registry.shutdown(timeout):
+            return False
+        with self._lock:
+            if self._registry is registry:
+                self._registry = None
+                self._host = None
+        return True
 
 

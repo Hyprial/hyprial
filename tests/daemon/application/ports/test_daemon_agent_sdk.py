@@ -23,6 +23,7 @@ from hyprial.daemon.impl import (
 )
 from hyprial.daemon.impl.api import delivery_prompt
 from hyprial.kernel import canonical_agent_uri
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 from hyprial.daemon.impl.inbox import (
     AckResult,
     DeliveryLifecycle,
@@ -238,7 +239,9 @@ def message(
     )
 
 
-def runtime(tmp_path: Path, inbox: FakeInbox, launcher: Launcher) -> DaemonEventBridge:
+def runtime(
+    tmp_path: Path, inbox: FakeInbox, launcher: Launcher, *, actor_host
+) -> DaemonEventBridge:
     desired = tmp_path / "desired-state.json"
     write_desired_state(desired)
     desired_state = DesiredStateStore(desired)
@@ -251,7 +254,8 @@ def runtime(tmp_path: Path, inbox: FakeInbox, launcher: Launcher) -> DaemonEvent
         transport=FakeTransport(),
         inbox=inbox,
         harnesses=harnesses,
-        harness_actor_uri=lambda name: canonical_agent_uri("op", "node-1", name),
+        harness_actor_uri=lambda name: canonical_agent_uri("op", "node-1", name), actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     value.start()
     return value
@@ -339,14 +343,14 @@ def test_real_streaming_client_query_preserves_hook_text_protocol() -> None:
 
 
 def test_daemon_managed_model_edge_dispatches_one_canonical_batch(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = FakeInbox(
         message(message_id="delivery-1"),
         message(message_id="delivery-2"),
     )
     launcher = Launcher()
-    daemon = runtime(tmp_path, inbox, launcher)
+    daemon = runtime(tmp_path, inbox, launcher, actor_host=actor_host)
     try:
         outcome = daemon.on_timer()
 
@@ -363,8 +367,8 @@ def test_daemon_managed_model_edge_dispatches_one_canonical_batch(
         daemon.stop()
 
 
-def test_daemon_managed_model_edge_preserves_verified_owner_origin(
-    tmp_path: Path,
+def test_daemon_managed_model_edge_preserves_the_adapter_sender_origin(
+    tmp_path: Path, *, actor_host
 ) -> None:
     verified = InboxMessage(
         message_id="verified-delivery",
@@ -373,12 +377,12 @@ def test_daemon_managed_model_edge_preserves_verified_owner_origin(
         recipient=WORKER_URI,
         payload=json.dumps(
             {
-                "message": "do the verified work",
+                "message": "do the work",
                 "origin": {
                     "sender": {
-                        "displayName": "Verified Owner",
-                        "standing": "verified",
-                        "owner": "user:owner",
+                        "kind": "user",
+                        "platformId": "ou_owner",
+                        "displayName": "Ann",
                     }
                 },
             }
@@ -389,7 +393,7 @@ def test_daemon_managed_model_edge_preserves_verified_owner_origin(
     )
     inbox = FakeInbox(verified)
     launcher = Launcher()
-    daemon = runtime(tmp_path, inbox, launcher)
+    daemon = runtime(tmp_path, inbox, launcher, actor_host=actor_host)
     try:
         outcome = daemon.on_timer()
 
@@ -397,23 +401,23 @@ def test_daemon_managed_model_edge_preserves_verified_owner_origin(
         [delivery] = launcher.process.deliveries
         assert delivery.delivery_id == "verified-delivery"
         assert delivery.message_ids == ("verified-delivery",)
-        assert "origin: sender=Verified Owner (owner user:owner, verified)" in (
+        assert "origin: sender=Ann (via adapter:lark:test, account ou_owner)" in (
             delivery.message
         )
-        assert "origin: (unrecorded; NOT verified)" not in delivery.message
+        assert "origin: (unrecorded)" not in delivery.message
     finally:
         daemon.stop()
 
 
 def test_completed_batch_keeps_each_unsettled_member_without_reply_loop(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = FakeInbox(
         message(message_id="delivery-1"),
         message(message_id="delivery-2"),
     )
     launcher = Launcher()
-    daemon = runtime(tmp_path, inbox, launcher)
+    daemon = runtime(tmp_path, inbox, launcher, actor_host=actor_host)
     try:
         daemon.on_timer()
         [delivery] = launcher.process.deliveries
@@ -445,11 +449,11 @@ def test_completed_batch_keeps_each_unsettled_member_without_reply_loop(
 
 
 def test_interrupted_result_does_not_reply_or_ack_and_is_redelivered(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = FakeInbox(message())
     launcher = Launcher()
-    daemon = runtime(tmp_path, inbox, launcher)
+    daemon = runtime(tmp_path, inbox, launcher, actor_host=actor_host)
     try:
         daemon.on_timer()
         launcher.process.results.append(
@@ -474,11 +478,11 @@ def test_interrupted_result_does_not_reply_or_ack_and_is_redelivered(
 
 
 def test_completed_reply_delivery_is_consumed_without_reply_loop(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = FakeInbox(message(intent="reply"))
     launcher = Launcher()
-    daemon = runtime(tmp_path, inbox, launcher)
+    daemon = runtime(tmp_path, inbox, launcher, actor_host=actor_host)
     try:
         daemon.on_timer()
         launcher.process.results.append(

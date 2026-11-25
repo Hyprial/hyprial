@@ -6,7 +6,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.service_connect.models import CatalogEntry
-from hyprial.daemon.impl.service_connect.io import ControllerCall
+from hyprial.daemon.impl.service_connect.io import ControllerCall, ServiceIo
 from hyprial.daemon.impl.service_connect import ServiceManager
 
 
@@ -29,6 +29,22 @@ CATALOG_ENTRY_PAYLOAD = CatalogEntry.from_json(
 )
 
 
+def test_service_io_requires_host() -> None:
+    with pytest.raises(ValueError, match="host"):
+        ServiceIo()
+
+
+def test_service_io_close_leaves_borrowed_host_usable(actor_host) -> None:
+    first = ServiceIo(actor_host=actor_host)
+    assert first.close(1.0)
+    second = ServiceIo(actor_host=actor_host)
+    try:
+        controller = FakeController()
+        assert second.control(controller, "service_status", (), 1.0) == controller.service_status()
+    finally:
+        assert second.close(1.0)
+
+
 class _BoundedLock:
     """Expose the old inversion as a bounded error instead of a leaked deadlock."""
 
@@ -47,7 +63,7 @@ class _BoundedLock:
         self._lock.release()
 
 
-def _manager(tmp_path, controller, state):
+def _manager(tmp_path, controller, state, *, actor_host):
     access = tmp_path / "state" / "tailcat" / "service-access.json"
     write_access(access)
     return ServiceManager(
@@ -58,14 +74,15 @@ def _manager(tmp_path, controller, state):
         access_path=access,
         scheduler=ManualScheduler(),
         service_discovery=lambda: (CATALOG_ENTRY_PAYLOAD,),
+        actor_host=actor_host,
     )
 
 
-def test_disconnect_during_accepted_map_cannot_resurrect_intent(tmp_path) -> None:
+def test_disconnect_during_accepted_map_cannot_resurrect_intent(actor_host, tmp_path) -> None:
     controller = FakeController()
     controller.block_map = True
     state = FakeStatePort()
-    manager = _manager(tmp_path, controller, state)
+    manager = _manager(tmp_path, controller, state, actor_host=actor_host)
     connected: list[object] = []
     disconnected: list[object] = []
     connect_thread = threading.Thread(
@@ -95,10 +112,10 @@ def test_disconnect_during_accepted_map_cannot_resurrect_intent(tmp_path) -> Non
         manager.close(1.0)
 
 
-def test_reconcile_closes_mapping_when_protected_record_disappears(tmp_path) -> None:
+def test_reconcile_closes_mapping_when_protected_record_disappears(actor_host, tmp_path) -> None:
     controller = FakeController()
     state = FakeStatePort()
-    manager = _manager(tmp_path, controller, state)
+    manager = _manager(tmp_path, controller, state, actor_host=actor_host)
     try:
         manager.handle("service.connect", {"name": "subapi"})
         manager.access_path.unlink()
@@ -111,11 +128,11 @@ def test_reconcile_closes_mapping_when_protected_record_disappears(tmp_path) -> 
         manager.close(1.0)
 
 
-def test_close_retry_drains_a_real_blocking_effect_lane(tmp_path) -> None:
+def test_close_retry_drains_a_real_blocking_effect_lane(actor_host, tmp_path) -> None:
     controller = FakeController()
     controller.block_map = True
     state = FakeStatePort()
-    manager = _manager(tmp_path, controller, state)
+    manager = _manager(tmp_path, controller, state, actor_host=actor_host)
     close_calls: list[float] = []
     real_io_close = manager._io.close  # noqa: SLF001 - retry regression seam
 
@@ -176,9 +193,9 @@ def test_controller_call_and_effect_request_repr_hide_private_args() -> None:
     ],
 )
 def test_catalog_io_never_inverts_manager_lock_with_reconcile(
-    tmp_path, method: str, params: dict[str, str]
+    actor_host, tmp_path, method: str, params: dict[str, str]
 ) -> None:
-    manager = _manager(tmp_path, FakeController(), FakeStatePort())
+    manager = _manager(tmp_path, FakeController(), FakeStatePort(), actor_host=actor_host)
     catalog_lock = _BoundedLock()
     manager._catalog_lock = catalog_lock  # noqa: SLF001 - exact lock-order seam
     catalog_read_entered = threading.Event()
@@ -223,8 +240,8 @@ def test_catalog_io_never_inverts_manager_lock_with_reconcile(
         manager.close(1.0)
 
 
-def test_close_returns_false_within_deadline_when_manager_lock_is_held(tmp_path) -> None:
-    manager = _manager(tmp_path, FakeController(), FakeStatePort())
+def test_close_returns_false_within_deadline_when_manager_lock_is_held(actor_host, tmp_path) -> None:
+    manager = _manager(tmp_path, FakeController(), FakeStatePort(), actor_host=actor_host)
     held = threading.Event()
     release = threading.Event()
 
@@ -247,12 +264,12 @@ def test_close_returns_false_within_deadline_when_manager_lock_is_held(tmp_path)
         manager.close(1.0)
 
 
-def test_close_fences_admission_before_blocked_reconcile_drains(tmp_path) -> None:
+def test_close_fences_admission_before_blocked_reconcile_drains(actor_host, tmp_path) -> None:
     controller = FakeController()
     controller.block_map = True
     state = FakeStatePort()
     state.set_service_connection("subapi", 18080)
-    manager = _manager(tmp_path, controller, state)
+    manager = _manager(tmp_path, controller, state, actor_host=actor_host)
     reconcile_errors: list[BaseException] = []
     admission_errors: list[BaseException] = []
 

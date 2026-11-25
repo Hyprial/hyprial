@@ -856,9 +856,9 @@ class RouteRegistrationIo(_RouteReceiptMixin):
                     "ROUTE_PARTIAL_CLEANUP"
                     if isinstance(error, RoutePartialCleanup)
                     else (
-                        "ROUTE_LEASE_STALE"
+                        ipc_errors.ROUTE_LEASE_STALE
                         if str(error).startswith("RouteLeaseStale:")
-                        else "ROUTE_IO_FAILED"
+                        else ipc_errors.ROUTE_IO_FAILED
                     )
                 ),
                 f"{type(error).__name__}: {error}",
@@ -903,7 +903,7 @@ class RouteRegistrationIo(_RouteReceiptMixin):
                     event.version,
                     event.operation,
                     event.route_id,
-                    "ROUTE_CLOSED_BEFORE_COMPLETION",
+                    ipc_errors.ROUTE_CLOSED_BEFORE_COMPLETION,
                     "physical route closed before completion receipt settled",
                 )
                 self._resettle_pending.add(token)

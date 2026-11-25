@@ -1,11 +1,17 @@
 """WP8: the shipped skills must teach the send-links surface as implemented.
 
-Three audiences read three files: an operator reads ``hyprial-ops``, a
-dispatcher reads ``hyprial-workflow``, and a squire reads one of the two
-byte-identical ``SKILL-template.md`` copies.  After the hard cut every
+Two audiences read two files: an operator reads ``hyprial-ops`` and a
+dispatcher reads ``hyprial-workflow``.  After the hard cut every
 ``hyprial message send`` needs a ``--summary``, the inbox only shows a summary, and a
 new message is never a reply, so a skill that still teaches the old shape sends
 an agent into a wall.  These tests pin the shape, not the prose.
+2026-11-20 (S2b): the packaged squire SKILL template test is gone with the
+template.
+2026-11-21 (T1b): sends no longer pass a link gate, so the skills must not
+teach the send-time hold codes or the link refusals that only the gate
+produced.
+2026-11-22 (T2a): ``hyprial agent link`` and ``hyprial message thread`` are
+removed from the CLI and must no longer be taught in the skills.
 """
 
 from __future__ import annotations
@@ -13,25 +19,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[3]
 OPS = ROOT / "src" / "hyprial" / "skills" / "hyprial-ops" / "SKILL.md"
 WORKFLOW = ROOT / ".agents" / "skills" / "hyprial-workflow" / "SKILL.md"
-PACKAGED = (
-    ROOT / "src" / "hyprial" / "daemon" / "impl" / "squire" / "SKILL-template.md"
-)
-DOCUMENTED = ROOT / "docs" / "domains" / "squire" / "SKILL-template.md"
 
-# The four hold reasons and the link lifecycle codes the operator must be able
-# to recognise in a send result.
-HOLD_CODES = (
+RETIRED_GATE_CODES = (
     "LINK_MINTING",
     "LINK_PEER_FULL",
     "LINK_SELF_FULL",
     "LINK_WINDOW_FULL",
+    "LINK_RECLAIMED",
+    "LINK_UNKNOWN",
 )
-REFUSAL_CODES = ("LINK_RECLAIMED", "LINK_UNKNOWN", "MESSAGE_REPLY_UNAVAILABLE")
+REFUSAL_CODES = ("MESSAGE_REPLY_UNAVAILABLE",)
 
 # A line may mention 自动回复 only inside one of these denials; an affirmative
 # sentence would be the old "the carrier replies for the model" promise.
@@ -48,11 +48,10 @@ NEGATION_MARKERS = (
     "不代你回复",
 )
 
-SEND_EXAMPLE = re.compile(r"^\s*`?hyprial message send --")
 
 # Every inline example touching the send-links surface, e.g.
 # ``hyprial message send --from <自身> ... --summary "…"``.
-SEND_LINK_EXAMPLE = re.compile(r"`(hyprial (?:message (?:send|reply|read|ack)|link|outbox)\b[^`]*)`")
+SEND_LINK_EXAMPLE = re.compile(r"`(hyprial (?:message (?:send|reply|read|ack)|outbox)\b[^`]*)`")
 FLAG = re.compile(r"--[a-z][a-z-]*")
 
 
@@ -86,14 +85,26 @@ def test_ops_skill_documents_the_send_links_surface() -> None:
     for token in (
         "--summary",
         "hyprial message read",
-        "hyprial agent link list",
         "harness_read_body",
         "openRequestsFrom",
-        *HOLD_CODES,
         *REFUSAL_CODES,
         "on-request",
     ):
         assert token in text, f"hyprial-ops SKILL.md no longer documents {token!r}"
+
+
+def test_skills_no_longer_teach_retired_link_or_thread_cli() -> None:
+    for path in (OPS, WORKFLOW):
+        text = path.read_text(encoding="utf-8")
+        assert "hyprial agent link" not in text, path.name
+        assert "hyprial message thread" not in text, path.name
+
+
+def test_skills_no_longer_teach_link_gate_holds() -> None:
+    for path in (OPS, WORKFLOW):
+        text = path.read_text(encoding="utf-8")
+        for code in RETIRED_GATE_CODES:
+            assert code not in text, f"{path.name} still teaches the retired gate code {code!r}"
 
 
 def test_ops_skill_never_promises_an_automatic_reply() -> None:
@@ -137,16 +148,3 @@ def test_workflow_skill_says_pac_notices_carry_a_summary() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "summary" in text
     assert "harness_read_body" in text
-
-
-@pytest.mark.parametrize("template", [PACKAGED, DOCUMENTED], ids=["packaged", "documented"])
-def test_squire_template_send_examples_carry_a_summary(template: Path) -> None:
-    lines = [
-        line for line in template.read_text(encoding="utf-8").splitlines()
-        if SEND_EXAMPLE.match(line)
-    ]
-    assert len(lines) >= 3, (
-        "the squire template should keep its plain, image and file send examples"
-    )
-    for line in lines:
-        assert "--summary" in line, f"send example without --summary: {line.strip()}"

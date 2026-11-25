@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "ledgerPath": "scripts/ci/gui-mock-source-ledger.json",
+  "contractPath": "contract/daemon-request/openapi.json",
+  "presetsPath": "gui/contract-mock/presets.json",
+  "pythonMockRoot": "contract/daemon-request",
+  "extensions": [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
+  "dataExtensions": [".json", ".jsonl", ".ndjson", ".csv", ".yaml", ".yml"],
+  "sourceRoots": ["gui/src"],
+  "importScanRoots": ["gui/src", "gui/tests", "gui/scripts", "gui/server"],
+  "launchScanRoots": ["gui", "scripts", "src", "tests", ".forgejo", "contract"],
+  "launchExtensions": [".py", ".sh", ".yml", ".yaml", ".toml", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
+  "launchFiles": ["gui/package.json"],
+  "launchPatterns": ["-m contract_mock", "contract_mock\\.server", "contract_mock\\.service", "MockService", "mock-host\\.py"],
+  "pythonServerPatterns": ["http\\.server", "socketserver", "BaseHTTPRequestHandler", "ThreadingHTTPServer", "wsgiref", "start_server"],
+  "fixtureRoots": ["gui/src/dev"],
+  "fixtureExemptRoots": ["gui/src/dev/tools/", "gui/src/dev/contract-mock/"],
+  "generatedTables": ["gui/src/dev/contract-mock/contract.generated.json"],
+  "tableImporters": ["gui/src/dev/contract-mock/index.ts", "gui/scripts/generate-reference-client.mjs"],
+  "mockModuleRoots": ["gui/contract-mock/"],
+  "mockModuleImporterRoots": ["gui/contract-mock/", "gui/src/dev/contract-mock/", "gui/scripts/", "gui/tests/"],
+  "generatedClientRoots": ["gui/src/client/generated/"],
+  "pythonValidationFiles": [
+    "contract/daemon-request/contract_mock/__init__.py",
+    "contract/daemon-request/contract_mock/checks.py",
+    "contract/daemon-request/contract_mock/contract.py",
+    "contract/daemon-request/contract_mock/envelope.py",
+    "contract/daemon-request/contract_mock/sensitive.py"
+  ],
+  "skippedDirectories": ["node_modules", "dist", "dist-parity", "__pycache__", ".venv", ".git", ".worktrees"]
+}

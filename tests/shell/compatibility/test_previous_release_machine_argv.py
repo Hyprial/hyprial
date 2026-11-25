@@ -203,11 +203,6 @@ def _old_invocations() -> tuple[OldInvocation, ...]:
             _argv_list(artifacts["dsh"]["source"], "agent-channel", names=names),
             "mcp",
         ),
-        (
-            "dsh carrier",
-            _argv_list(artifacts["dsh"]["source"], "dsh-carrier", names=names),
-            "mcp",
-        ),
     ]
     rendered.extend(
         ("documented R5 timer variant", tuple(item["argv"]), "typer")
@@ -290,17 +285,17 @@ def test_each_individual_shim_is_required_by_the_cross_version_corpus(monkeypatc
 
 
 def test_main_routes_old_upgrade_argv_through_the_current_typer_path(monkeypatch) -> None:
-    calls: list[tuple[tuple[str, ...] | None, bool]] = []
+    calls: list[tuple[tuple[str, ...] | None, bool, object]] = []
 
-    def fake_app(*, args=None, standalone_mode=False):
-        calls.append((tuple(args) if args is not None else None, standalone_mode))
+    def fake_app(*, args=None, standalone_mode=False, obj=None):
+        calls.append((tuple(args) if args is not None else None, standalone_mode, obj))
 
     monkeypatch.setattr(cli, "app", fake_app)
     monkeypatch.setattr(sys, "argv", ["hyprial", "autoupdate", "run", "--json"])
 
     cli.main()
 
-    assert calls == [(('daemon', 'upgrade', 'run', '--json'), False)]
+    assert calls == [(('daemon', 'upgrade', 'run', '--json'), False, {"interpreterOwned": True})]
 
 
 def test_main_routes_old_mcp_argv_to_the_private_process_entry(monkeypatch) -> None:

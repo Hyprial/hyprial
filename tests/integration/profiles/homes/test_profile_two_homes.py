@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from hyprial.daemon.impl.configuration.network_profile import NetworkProfile, resolve_profile, write_profile
+from tests.support.runtime.environment import UNIT_USER_ID
 
 _OWNER = "u1-two-homes-owner"
 _ISSUER_A = "https://auth.alpha.example"
@@ -65,6 +66,7 @@ def _daemon_environment(
             # ambient HYPRIAL_* variable, so the identity the daemon needs is
             # supplied explicitly instead of leaking in from the runner.
             "HYPRIAL_OWNER": _OWNER,
+            "HYPRIAL_USER_ID": UNIT_USER_ID,
             "HYPRIAL_ZENOH_LISTEN": "",
             "HYPRIAL_ZENOH_CONNECT": "",
             # The U1 isolation trio's remaining two: no peer discovery (no

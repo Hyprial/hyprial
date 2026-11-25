@@ -1,3 +1,9 @@
+# Decision notes (S3c, 2026-11-24): the users profile is deleted; this store
+# no longer reads the old state users file at all, so a damaged or stale one
+# can never block loading channels.json.
+# Decision notes (W1E-2, 2026-11-21): atomic_json_write relies on tempfile.mkstemp
+# (0o600 on POSIX) plus the HYPRIAL_HOME / state_dir outer gate and process umask
+# instead of redundant per-file os.chmod.
 """Validated persistent configuration shared by migration and daemon startup."""
 
 from __future__ import annotations
@@ -174,35 +180,8 @@ class ChannelConfiguration:
 
 
 @dataclass(frozen=True, slots=True)
-class UserProfiles:
-    users: tuple[dict[str, object], ...] = ()
-    version: int = 1
-
-    @classmethod
-    def from_json(cls, value: object) -> Self:
-        record = _record(value, "user profiles")
-        raw_users = record.get("users")
-        if record.get("version") != 1 or not isinstance(raw_users, list):
-            raise PersistentConfigError(
-                "unsupported user profile data; expected version 1"
-            )
-        users = tuple(
-            _validate_user_profile(item, f"users[{index}]")
-            for index, item in enumerate(raw_users)
-        )
-        owner_keys = [str(item["ownerKey"]) for item in users]
-        if len(set(owner_keys)) != len(owner_keys):
-            raise PersistentConfigError("user profiles contain duplicate ownerKey values")
-        return cls(users=users)
-
-    def to_json(self) -> dict[str, object]:
-        return {"version": self.version, "users": [dict(item) for item in self.users]}
-
-
-@dataclass(frozen=True, slots=True)
 class PersistentConfiguration:
     channels: ChannelConfiguration
-    users: UserProfiles
 
 
 class PersistentConfigStore:
@@ -218,10 +197,7 @@ class PersistentConfigStore:
             secret_path = self.hyprial_home / "secrets" / f"{gateway.credential_ref}.json"
             secret = _record(self._read_json(secret_path), f"credential {gateway.credential_ref}")
             _string(secret.get("appSecret"), f"credential {gateway.credential_ref}.appSecret")
-        users = UserProfiles.from_json(
-            self._read_json(self.state_dir / "users.json", {"version": 1, "users": []})
-        )
-        return PersistentConfiguration(channels=channels, users=users)
+        return PersistentConfiguration(channels=channels)
 
     def lark_app_secret(self, credential_ref: str) -> str:
         """Return one validated secret without including its value in errors."""
@@ -249,80 +225,6 @@ class PersistentConfigStore:
             raise PersistentConfigError(f"cannot read persistent config {path}: {error}") from error
 
 
-def _validate_user_profile(value: object, label: str) -> dict[str, object]:
-    record = _record(value, label)
-    result: dict[str, object] = {
-        "owner": _string(record.get("owner"), f"{label}.owner"),
-        "ownerKey": _string(record.get("ownerKey"), f"{label}.ownerKey"),
-        "loginName": _string(record.get("loginName"), f"{label}.loginName"),
-    }
-    agents = record.get("agents")
-    if not isinstance(agents, list) or any(
-        not isinstance(item, str) or not item for item in agents
-    ):
-        raise PersistentConfigError(f"{label}.agents must be an array of strings")
-    result["agents"] = list(agents)
-    if "squireChannel" in record:
-        result["squireChannel"] = _string(
-            record["squireChannel"], f"{label}.squireChannel"
-        )
-    if "ownerOpenId" in record:
-        binding = _record(record["ownerOpenId"], f"{label}.ownerOpenId")
-        result["ownerOpenId"] = {
-            "channel": _string(binding.get("channel"), f"{label}.ownerOpenId.channel"),
-            "openId": _string(binding.get("openId"), f"{label}.ownerOpenId.openId"),
-            "boundAt": _string(binding.get("boundAt"), f"{label}.ownerOpenId.boundAt"),
-        }
-    receiver = _record(record.get("preferredReceiver"), f"{label}.preferredReceiver")
-    result["preferredReceiver"] = {
-        "machine": _string(receiver.get("machine"), f"{label}.preferredReceiver.machine"),
-        "machineKey": _string(
-            receiver.get("machineKey"), f"{label}.preferredReceiver.machineKey"
-        ),
-    }
-    rules = record.get("notificationRules")
-    if not isinstance(rules, list):
-        raise PersistentConfigError(f"{label}.notificationRules must be an array")
-    result["notificationRules"] = [
-        _validate_notification_rule(item, f"{label}.notificationRules[{index}]")
-        for index, item in enumerate(rules)
-    ]
-    return result
-
-
-def _validate_notification_rule(value: object, label: str) -> dict[str, object]:
-    record = _record(value, label)
-    disposition = record.get("disposition")
-    if disposition not in {"immediate", "digest", "silent"}:
-        raise PersistentConfigError(
-            f"{label}.disposition must be immediate, digest, or silent"
-        )
-    enabled = record.get("enabled")
-    if not isinstance(enabled, bool):
-        raise PersistentConfigError(f"{label}.enabled must be a boolean")
-    result: dict[str, object] = {
-        "id": _string(record.get("id"), f"{label}.id"),
-        "disposition": disposition,
-        "enabled": enabled,
-    }
-    if "sender" in record:
-        result["sender"] = _string(record["sender"], f"{label}.sender")
-    if "intent" in record:
-        intent = record["intent"]
-        if intent not in {"request", "reply", "event"}:
-            raise PersistentConfigError(
-                f"{label}.intent must be request, reply, or event"
-            )
-        result["intent"] = intent
-    if "keywords" in record:
-        keywords = record["keywords"]
-        if not isinstance(keywords, list) or any(
-            not isinstance(item, str) or not item for item in keywords
-        ):
-            raise PersistentConfigError(f"{label}.keywords must be an array of strings")
-        result["keywords"] = list(keywords)
-    return result
-
 
 def atomic_json_write(path: Path, value: object) -> None:
     """Write ``value`` as JSON to ``path`` atomically at mode 0600.
@@ -345,7 +247,6 @@ def atomic_json_write(path: Path, value: object) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

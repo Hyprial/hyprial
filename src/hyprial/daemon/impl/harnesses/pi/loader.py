@@ -3,6 +3,10 @@
 The JavaScript side uses Pi's installed SDK, but its receipt is a Hyprial
 adapter contract.  It deliberately contains only non-secret configuration
 metadata; in particular it never serializes auth/model credential values.
+
+Missing Pi commands or SDK installations are launch precondition failures.
+The streaming pump must settle startup instead of retrying their lookup
+until the readiness and lifecycle deadlines expire.
 """
 
 from __future__ import annotations
@@ -428,7 +432,7 @@ def find_pi_package_root(
     """Resolve the installed SDK beside the exact Pi command being replaced."""
 
     if not command:
-        raise ValueError("Pi command must not be empty")
+        raise PiStartPreconditionError("Pi command must not be empty")
     executable = command[0]
     candidate = (
         shutil.which(executable, path=environment.get("PATH"))
@@ -436,7 +440,7 @@ def find_pi_package_root(
         else executable
     )
     if candidate is None:
-        raise ValueError(f"Pi command is unavailable: {executable!r}")
+        raise PiStartPreconditionError(f"Pi command is unavailable: {executable!r}")
     resolved = Path(candidate).resolve(strict=True)
     for parent in (resolved, *resolved.parents):
         manifest = parent / "package.json"
@@ -448,7 +452,7 @@ def find_pi_package_root(
             continue
         if body.get("name") == "@earendil-works/pi-coding-agent":
             return parent
-    raise ValueError(
+    raise PiStartPreconditionError(
         f"Pi SDK package root not found beside {resolved}; a pi installation "
         "with the @earendil-works/pi-coding-agent SDK is required for P2 launches"
     )
@@ -489,7 +493,6 @@ def _pi_recovery_command(
     cwd: str,
     runtime_args: tuple[str, ...],
     headless: bool,
-    tmux: bool,
     model_provider: str | None,
     model: str | None,
     session_ref: str | None,
@@ -498,8 +501,6 @@ def _pi_recovery_command(
     argv = ["hyprial", "agent", "start", "pi", "--name", name or "<agent-name>"]
     if headless:
         argv.append("--headless")
-    elif tmux:
-        argv.append("--tmux")
     argv.extend(("--cwd", cwd))
     if model_provider is not None:
         argv.extend(("--provider", model_provider))
@@ -538,7 +539,6 @@ def resolve_approved_pi_project(
     own_workspace: Path | None = None,
     command_name: str | None = None,
     command_headless: bool = True,
-    command_tmux: bool = False,
     command_model_provider: str | None = None,
     command_model: str | None = None,
     command_session_ref: str | None = None,
@@ -562,7 +562,6 @@ def resolve_approved_pi_project(
             cwd=("/absolute/path/to/git-working-tree" if git_cwd else cwd),
             runtime_args=runtime_args,
             headless=command_headless,
-            tmux=command_tmux,
             model_provider=command_model_provider,
             model=command_model,
             session_ref=command_session_ref,
@@ -596,7 +595,6 @@ def resolve_approved_pi_project(
     if not approved:
         raise PiProjectTrustError(
             "Pi P2 headless launch requires explicit --approve trust. "
-            "--headless and --tmux share this P2 precondition. "
             f"Run: `{recovery_command()}`."
         )
     resolved_cwd = Path(cwd).resolve(strict=True)

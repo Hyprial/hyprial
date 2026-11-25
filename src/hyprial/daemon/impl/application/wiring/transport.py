@@ -7,18 +7,14 @@ import time
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any
 from uuid import uuid4
 from hyprial.daemon.impl.transfer.execution.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
 from hyprial.daemon.impl.application.wiring.quota_hooks import wire_quota_hooks
 from hyprial.daemon.impl.application.wiring import reply_reminder_hooks
 from hyprial.daemon.impl.adapters.lark.runtime.runtime import AdapterRuntime
-from hyprial.daemon.impl.adapters.lark.worker.process import (
-    LarkWorkerLauncher,
-)
-from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import (
-    LarkReplyBridgeTransport,
-)
+from hyprial.daemon.impl.adapters.lark.worker.process import LarkWorkerLauncher
+from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import LarkReplyBridgeTransport
 from hyprial.kernel import DaemonStartupPhase, HOOKS_CONFIG_NAME, HookBus
 from hyprial.kernel import PortAdmission
 from hyprial.daemon.impl.inbox import (
@@ -28,21 +24,19 @@ from hyprial.daemon.impl.inbox import (
     HoldPolicy,
     LocalFirstDeliveryTransport,
     RecipientWakeCoordinator,
-    ZenohDeliveryTransport,
     ZenohInboxEndpoint,
+    stamped_network_transport,
 )
 from hyprial.daemon.impl.inbox.tracking.fetch_receipts import FetchReceiptPublisher
 from hyprial.daemon.impl.org import OrgContextMesh, OrgContextStore
-from hyprial.daemon.impl.squire import (
+from hyprial.daemon.impl.adapters.user_delivery import (
     ReceiverUserDelivery,
     UserDeliveryLedger,
     ZenohUserDeliveryEndpoint,
     ZenohUserDeliveryTransport,
 )
 from hyprial.daemon.impl.correlation.deprecations  import deprecation_notices
-from hyprial.daemon.impl.bootstrap.discovery  import (
-    merge_endpoints,
-)
+from hyprial.daemon.impl.bootstrap.discovery import merge_endpoints
 from hyprial.daemon.impl.transport import (
     KeySpace,
     LivelinessDirectory,
@@ -55,9 +49,7 @@ from hyprial.daemon.impl.inbox.links.io import (
     CorrelatedInboxEventRouter,
     InboxDeliveryIoAdapter,
 )
-from hyprial.daemon.impl.desired_state  import (
-    DesiredState,
-)
+from hyprial.daemon.impl.desired_state import DesiredState
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.composition  import (
     AgentIdentityProjectionView,
@@ -66,6 +58,9 @@ from hyprial.daemon.impl.composition  import (
     LarkDesiredStatePort,
     LarkPortClient,
     lark_human_alarm_legs,
+)
+from hyprial.daemon.impl.composition.cell_delivery import (
+    compose_headless_cell_delivery,
 )
 from hyprial.daemon.impl.configuration.identity import (
     classify_target_identity,
@@ -80,17 +75,13 @@ from hyprial.daemon.impl.runtime  import DaemonEventBridge
 from hyprial.daemon.impl.harnesses.turn_delivery.service  import (
     InboxTurnHookInvoker,
     )
-from hyprial.daemon.impl.application.ports import (
-    HookConsumersDeps,
-)
+from hyprial.daemon.impl.application.ports import HookConsumersDeps
 from hyprial.daemon.impl.application.wiring.delivery_hooks import wire_delivery_hooks
 from hyprial.daemon.impl.hooks import (
     DaemonHookService,
     TurnObserver,
 )
 from hyprial.daemon.impl.harnesses.actor.actor  import HarnessRuntimeActor
-if TYPE_CHECKING:
-    pass
 
 from hyprial.daemon.impl.application.messaging.status.views import (
     _LocalPresence,
@@ -301,8 +292,7 @@ class _WiringTransportMixin:
         # U0c ordering: the previous generation's receipts must be gone
         # before ANY lifecycle consumer of this daemon is constructed.
         self._expire_previous_generation_lifecycle_state()
-        persistent = self.load_persistent_configuration()
-        self.configure_user_adapters(persistent)
+        self.load_persistent_configuration()
         self._normalize_persisted_interactive_sessions()
         desired = self.desired_state.load()
         # Deprecated fields speak up; unknown ones stay silent.
@@ -382,8 +372,9 @@ class _WiringTransportMixin:
         forwarding_listen: tuple[str, ...] = ()
         if self._forwarding_automatic is not None:
             from hyprial.daemon.impl.forwarding.membership.settings import private_inbound
+            from hyprial.daemon.impl.forwarding.policy import inbound_listener_from_target
             target = private_inbound(self.hyprial_home)
-            forwarding_listen = ("unixsock-stream/" + target.removeprefix("unix:"),)
+            forwarding_listen = (inbound_listener_from_target(target),)
             # Sidecar control does not wait for the backend socket to exist.
             self._forwarding_environment = self._forwarding_automatic.environment(target)
             listen = forwarding_listen
@@ -401,12 +392,10 @@ class _WiringTransportMixin:
             discovered = self._discover_peer_endpoints()
         if discovered:
             connect = merge_endpoints(connect, discovered)
-        # Logged whether or not anything was found, and whether or not it is
-        # enabled.  Discovery is on by default, so it must be a *visible*
-        # default rather than a silent behaviour change on upgrade: an
-        # operator reading the startup log should be able to see that it ran,
-        # what the directory returned, and what this node ended up dialing --
-        # without having to know the switch exists.
+        # Logged whether or not anything was found or enabled: this is a
+        # visible default, not a silent upgrade behaviour change. An operator
+        # reading the startup log can see that discovery ran, what it returned,
+        # and what this node dials without knowing the switch exists.
         self._log(
             "info",
             "zenoh",
@@ -439,9 +428,12 @@ class _WiringTransportMixin:
                 event_sink=lambda event, fields: self._log(
                     "info", "zenoh", event, **fields
                 ),
+                actor_host=self._actor_hosts.host_for("zenoh-transport"),
             ),
             DaemonStartupPhase.ACTOR_RUNTIME_TRANSPORT,
         )
+        if forwarding_listen and forwarding_listen != listen:
+            self._rebind_forwarding_endpoint(forwarding_listen[0])
         poll = getattr(self._forwarding_backend(), "last_poll", None)
         if isinstance(poll, dict) and isinstance(poll.get("peers"), dict):
             transport.set_endpoint_peers(poll["peers"])
@@ -503,7 +495,8 @@ class _WiringTransportMixin:
     def _startup_compose_delivery_plane(self, transport: Any, forwarding_listen: tuple[str, ...]) -> _StartupGraph:
         """Compose presence, adapters, durable inbox, turn hooks, harness actor."""
         directory = LivelinessDirectory(
-            transport, observation_sink=self._trace_presence_observation
+            transport, observation_sink=self._trace_presence_observation,
+            actor_host=self._actor_hosts.host_for("zenoh-presence"),
         )
         presence = _LocalPresence(
             directory,
@@ -527,16 +520,12 @@ class _WiringTransportMixin:
             ),
             DaemonStartupPhase.ACTOR_RUNTIME_ORGFS_TRANSPORT,
         )
-        self._startup_step(
-            lambda: self._start_org_identity_bindings_safely(),
-            DaemonStartupPhase.ACTOR_RUNTIME_IDENTITY_BINDINGS,
-        )
         from hyprial.daemon.impl.org.network import start_casdoor_membership_sync
         self._startup_step(
             lambda: start_casdoor_membership_sync(self),
             DaemonStartupPhase.ACTOR_RUNTIME_CASDOOR_SYNC,
         )
-        network_delivery = ZenohDeliveryTransport(
+        network_delivery = stamped_network_transport(
             transport, presence, origin_node=self.node_id
         )
         # Local delivery retains the network path's terminal-state semantics.
@@ -545,6 +534,7 @@ class _WiringTransportMixin:
             origin_node=self.node_id,
             local_node_id=self.node_id,
             local_owner=self.owner,
+            recipient_claimed=self._local_recipient_claimed,
         )
         lark_events = CorrelatedDomainEvents()
         adapters = AdapterRuntime(
@@ -553,20 +543,16 @@ class _WiringTransportMixin:
                 state_dir=self.state_dir,
                 socket_path=self.socket_path,
                 config_store=self.persistent_config,
+                actor_host=self._actor_hosts.host_for("lark"),
             ),
             self.load_persistent_configuration().channels,
             event_sink=lark_events,
             configuration_source=lambda: self.load_persistent_configuration().channels,
             desired_state=LarkDesiredStatePort(self.desired_state),
+            actor_host=self._actor_hosts.host_for("lark"),
         )
         lark_client = LarkPortClient(adapters, lark_events)
-        deliver_human_alarm, deliver_in_channel_notice = lark_human_alarm_legs(
-            lark_client
-        )
-        # Correlated replies to channel:lark:<adapter> remain ordinary durable
-        # outbox rows.  The outer transport recognizes only that exact shape
-        # and asks the supervised worker to run its native-reply path; every
-        # other target keeps the local-first/network behavior unchanged.
+        deliver_human_alarm, deliver_in_channel_notice = lark_human_alarm_legs(lark_client)
         delivery = LarkReplyBridgeTransport(local_delivery, lark_client)
         inbox_database = self.state_dir / "inbox.sqlite3"
         shared_inbox_events = CorrelatedInboxEventRouter()
@@ -576,27 +562,26 @@ class _WiringTransportMixin:
                 inbox_database,
                 delivery,
                 shared_inbox_events,
+                actor_host=self._agent_session_domains.actor_hosts.host_for("inbox-authority"),
                 node_id=self.node_id,
+                session_current=self._origin_session_current,
                 service_options={
                     "hold_policy": hold_policy,
                     "logger": self._logger,
                     "alarm_human_delivery": deliver_human_alarm,
-                    # The one shared link admission slot (WP4): the actor asks
-                    # the gate for ingress and dispatch on its own thread.
-                    "link_admission": self._link_admission,
-                    # Resolve the actor projection live; session mutations no
-                    # longer require rebuilding delivery policy.
                     "interactive_recipient": lambda recipient: recipient
                     in self._registered_interactive_actors(),
                     "notice_recipient_resolver": lambda name: self._resolve_agent_alias(
                         normalize_agent_recipient(name)
                     ),
+                    "recipient_claimed": self._local_recipient_claimed,
                 },
             ),
             DaemonStartupPhase.ACTOR_RUNTIME_INBOX_STORE,
         )
         inbox = DeliveryCustodyFacade(inbox_coordinator, inbox_database)
         local_delivery.bind_receiver(inbox.receive)
+        self._local_delivery = local_delivery
         # PAC owns this outbound path independently of WorkflowService.  The
         # v1 service may share the same typed inbox authority while it exists,
         # but PAC notification and actor startup have no service precondition.
@@ -631,7 +616,7 @@ class _WiringTransportMixin:
             if hook_consumers_factory is not None
             else {}
         )
-        hook_bus = HookBus(logger=self._log)
+        hook_bus = HookBus(logger=self._log, actor_host=self._agent_session_domains.actor_hosts.host_for("hooks"))
         daemon_hooks = DaemonHookService(
             bus=hook_bus,
             config_path_for_agent=lambda actor: (
@@ -668,9 +653,11 @@ class _WiringTransportMixin:
             consumer_factory=self._reply_reminder_consumer_factory,
             daemon_hooks=daemon_hooks,
             logger=self._log,
+            read_keys=self._consumer_read_keys,
         )
         from hyprial.daemon.impl.harnesses import HarnessLauncher
-        from hyprial.daemon.impl.harnesses.worker_channel import WorkerChannel, build_worker_channel
+        from hyprial.daemon.impl.harnesses.worker_channel import WorkerAuthorityPolicy, WorkerChannel, build_worker_channel
+        from hyprial.daemon.impl.composition.cells.reconcile import member_launch_policy
 
         def worker_channel(spec: HarnessLaunchSpec) -> WorkerChannel:
             # Mint the worker's own canonical identity from the SAME source the
@@ -688,6 +675,7 @@ class _WiringTransportMixin:
                 legacy_reporter=self._report_legacy_agent_home,
             )
             self._report_agent_runtime_notices(runtime_context)
+            launch = member_launch_policy(self, spec)
             return build_worker_channel(
                 actor=actor,
                 session_ref=session_ref,
@@ -702,6 +690,7 @@ class _WiringTransportMixin:
                     _CONTAINER_PYTHON if spec.containerized else None
                 ),
                 runtime_context=runtime_context,
+                authority=None if launch is None else WorkerAuthorityPolicy(dict(launch.launch_options), launch.version),
             )
 
         def child_environment(
@@ -720,7 +709,7 @@ class _WiringTransportMixin:
                 hyprial_home=self.hyprial_home,
                 spec=spec,
                 channel=channel,
-                environ=os.environ,
+                environ=os.environ, app=self,
             )
 
         harness_events = CorrelatedDomainEvents()
@@ -734,18 +723,16 @@ class _WiringTransportMixin:
                 child_environment_factory=child_environment,
                 runtime_launch_custody=self._agent_runtime_launch_custody,
                 state_dir=self.state_dir,
-                turn_failure_observer=(
-                    provider_auth.handle_turn_failure
-                    if provider_auth is not None
-                    else None
-                ),
+                turn_failure_observer=provider_auth.handle_turn_failure if provider_auth is not None else None,
                 turn_completed_observer=TurnObserver(daemon_hooks),
+                process_observer=self._cell_member_policies.record_launch_process,
+                actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
             ),
             # A dead child is first exposed as stopped/error and its actor
             # registration is withdrawn.  Desired-state recovery starts a
             # replacement on a later one-second maintenance pass instead of
             # hiding the death behind a same-tick replacement.
-            restart_backoff_seconds=1.0,
+            restart_backoff_seconds=1.0, actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
             orphan_state_path=self.state_dir / "orphan-processes.json",
             orphan_logger=self._log,
             event_sink=harness_events,
@@ -756,11 +743,11 @@ class _WiringTransportMixin:
             agent_identity=AgentIdentityProjectionView(
                 self._agent_session_domains
             ),
-            source_custody_clear=lambda actor, token: (
-                not self._transfer_source_state(actor, token).blocks_start
-            ),
         )
-        harnesses = HarnessPortClient(harness_actor, harness_events)
+        harnesses = HarnessPortClient(
+            harness_actor, harness_events,
+            actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
+        )
         # `as_mailbox` used to declare the liveliness token and nothing else:
         # senders saw a mailbox and published custody to it, but no node ever
         # subscribed to `custody/<node>`, so the custody receipt never came
@@ -817,17 +804,15 @@ class _WiringTransportMixin:
         )
         user_receiver = ReceiverUserDelivery(
             node_id=self.node_id,
-            profiles=self.user_profiles,
-            adapters=self.user_adapters,
             ledger=UserDeliveryLedger(self.state_dir / "user-deliveries.json"),
-            reload_adapters=self._reload_user_adapters,
-            delivery_agent_delivery=self._deliver_to_live_user_proxy,
+            owner_push=self._push_owner_copy,
+            owns=self._accepts_owner_copy,
             logger=lambda level, event, **fields: self._log(
                 level, "user-delivery", event, **fields
             ),
-            identity_resolver=self._identity_resolver,
         )
-        user_endpoint = ZenohUserDeliveryEndpoint(graph.transport, user_receiver)
+        user_host = self._agent_session_domains.actor_hosts.host_for("user-delivery")
+        user_endpoint = ZenohUserDeliveryEndpoint(graph.transport, user_receiver, actor_host=user_host)
         user_delivery = ZenohUserDeliveryTransport(
             graph.transport,
             logger=self._logger.bind(component="user-delivery"),
@@ -835,13 +820,17 @@ class _WiringTransportMixin:
         graph.org_endpoint = OrgContextMesh(
             graph.transport,
             OrgContextStore(self.hyprial_home),
-            self.node_id,
+            self.node_id, actor_host=self._agent_session_domains.actor_hosts.host_for("org-context"),
             logger=lambda level, event, **fields: self._log(
                 level, "org", event, **fields
             ),
         )
 
+        self._cell_reconcile_barrier.close()
+        cell_delivery = compose_headless_cell_delivery(self)
+        self._cell_delivery = cell_delivery
         runtime = DaemonEventBridge(
+            actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
             state_dir=self.state_dir,
             node_id=self.node_id,
             desired_state=self.desired_state,
@@ -855,9 +844,10 @@ class _WiringTransportMixin:
             # here would recreate a second route/liveliness authority.
             harness_actor_registrar=None,
             harness_actor_uri=self._canonical_harness_uri,
-            logger=lambda level, component, event, **fields: self._log(
-                level, component, event, **fields
-            ),
+            harness_read_keys=self._harness_consumer_read_keys,
+            recipient_read_keys=self._consumer_read_keys,
+            official_actor_uri=self._canonical_interactive_actor,
+            logger=lambda level, component, event, **fields: self._log(level, component, event, **fields),
             workflow_outcome=lambda result: (
                 self._record_workflow_outcome(result)
                 if self._workflow_service is not None and result.delivery_id.startswith("workflow-") else False
@@ -865,15 +855,12 @@ class _WiringTransportMixin:
             blocking_failure_observer=self._blocking_failures.submit,
             blocking_failure_identity=self._blocking_failure_entity_token,
             blocked_actor=self.agents.is_blocked,
-            forwarder=self._forward_as_actor,
-            owner_notifier=self._owner_alert_notifier,
             in_channel_notice_delivery=graph.in_channel_notice_delivery,
-            owner_requester_addresses=self._owner_requester_addresses(),
             hold_ttl_ms=graph.hold_policy.ttl_ms,
             delivery_hooks=graph.delivery_hooks,
-            link_admission=self._link_admission,
             actor_mode=True,
             batch_actor_home=self.agents.batch_actor_home,
+            cell_delivery=cell_delivery,
         )
         recipient_wakes: RecipientWakeCoordinator | None = None
         stop_recipient_wake_observer: Callable[[], None] | None = None
@@ -937,15 +924,13 @@ class _WiringTransportMixin:
                 KeySpace().actor_liveliness(self.node_id)
             )
             self._trace_presence_announcement()
-            # The watch's own constructor closes its token if observing
-            # fails, so a raised construction leaves nothing behind.
+            # The watch's constructor closes its token if observing fails.
             duplicate_watch = DuplicateInstanceWatch(
                 graph.transport,
                 self.node_id,
                 self._home_guard.generation,
-                logger=lambda level, event, **fields: self._log(
-                    level, "daemon", event, **fields
-                ),
+                actor_host=self._agent_session_domains.actor_hosts.host_for("duplicate-instance-watch"),
+                logger=lambda level, event, **fields: self._log(level, "daemon", event, **fields),
             )
         except BaseException as startup_error:
             # Production run() reaches its finally/_close after this raise.
@@ -963,7 +948,8 @@ class _WiringTransportMixin:
         assert recipient_wakes is not None
         assert stop_recipient_wake_observer is not None
         self._transport = graph.transport
-        self._fetch_receipt_publisher = FetchReceiptPublisher(graph.transport, logger=self._log)
+        fetch_receipts_host = self._agent_session_domains.actor_hosts.host_for("fetch-receipts")
+        self._fetch_receipt_publisher = FetchReceiptPublisher(graph.transport, actor_host=fetch_receipts_host, logger=self._log)
         self._directory = graph.directory
         self._presence = graph.presence
         self._inbox = graph.inbox

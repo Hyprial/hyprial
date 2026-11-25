@@ -1,8 +1,8 @@
-"""S1: org membership commands write the Casdoor group first (design §2).
+"""OC3: org membership commands use the cell roster as their authority.
 
-Casdoor group membership is the authority and OrgFS the owner-kept cache,
-so a Casdoor failure must leave OrgFS untouched and success must write both.
-Only a fake Casdoor is used here; no credential file value is ever read.
+Casdoor remains an optional read-only compatibility adapter. Membership
+operations must complete from the owner-signed roster and issue no group
+mutation, even when the adapter would refuse a write.
 """
 
 # ruff: noqa: F811 - the imported pytest fixtures are redefined as parameters
@@ -30,7 +30,6 @@ from hyprial.daemon.impl.org.network.casdoor.client import (
     _urllib_transport,
 )
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
-from hyprial.daemon.impl.org.network.service import OrgNetworkError
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 
 from .network.test_org_lifecycle import (  # noqa: F401 - fixtures
@@ -103,21 +102,15 @@ def test_create_verifies_the_group_holds_the_owner_before_any_orgfs_write(runtim
 
     result = _service(runtime, home, casdoor=casdoor).create("group-acme")
 
-    # The probe answers "member", so the create path never asks Casdoor to write.
-    assert casdoor.calls == [
-        ("STATE", "hyprial/group-acme", f"hyprial/{OWNER}"),
-    ]
-    assert result["casdoorGroup"] == "verified"
+    assert casdoor.calls == []
+    assert result["casdoorGroup"] == "not-configured"
     assert {"group-acme", "group-acme-acl"} <= _space_names(runtime)
 
 
 def test_create_fails_whole_and_names_the_setup_when_the_group_is_unusable(runtime, home) -> None:
-    with pytest.raises(OrgNetworkError) as refused:
-        _service(runtime, home, casdoor=FakeCasdoor(fail={"STATE"})).create("group-acme")
-
-    assert refused.value.code == "CASDOOR_GROUP_UNAVAILABLE"
-    assert "infra-ops" in str(refused.value) and "permission" in str(refused.value)
-    assert _space_names(runtime) == set()
+    result = _service(runtime, home, casdoor=FakeCasdoor(fail={"STATE"})).create("group-acme")
+    assert result["casdoorGroup"] == "not-configured"
+    assert {"group-acme", "group-acme-acl"} <= _space_names(runtime)
 
 
 def test_create_ensures_the_group_when_the_owner_is_not_in_it_yet(runtime, home) -> None:
@@ -127,12 +120,8 @@ def test_create_ensures_the_group_when_the_owner_is_not_in_it_yet(runtime, home)
 
     result = _service(runtime, home, casdoor=casdoor).create("group-acme")
 
-    assert casdoor.calls == [
-        ("STATE", "hyprial/group-acme", f"hyprial/{OWNER}"),   # probe: not a member
-        ("ENSURE", "hyprial/group-acme", f"hyprial/{OWNER}"),  # create it
-        ("GET", "hyprial/group-acme", f"hyprial/{OWNER}"),     # re-confirm
-    ]
-    assert result["casdoorGroup"] == "verified"
+    assert casdoor.calls == []
+    assert result["casdoorGroup"] == "not-configured"
     assert {"group-acme", "group-acme-acl"} <= _space_names(runtime)
 
 
@@ -148,12 +137,8 @@ def test_create_ensures_the_group_when_the_probe_says_the_group_is_absent(runtim
 
     result = _service(runtime, home, casdoor=casdoor).create("group-acme")
 
-    assert casdoor.calls == [
-        ("STATE", "hyprial/group-acme", f"hyprial/{OWNER}"),   # probe: group absent
-        ("ENSURE", "hyprial/group-acme", f"hyprial/{OWNER}"),  # create it
-        ("GET", "hyprial/group-acme", f"hyprial/{OWNER}"),     # re-confirm
-    ]
-    assert result["casdoorGroup"] == "verified"
+    assert casdoor.calls == []
+    assert result["casdoorGroup"] == "not-configured"
     assert {"group-acme", "group-acme-acl"} <= _space_names(runtime)
 
 
@@ -164,8 +149,7 @@ def test_create_never_ensures_when_the_owner_is_already_a_member(runtime, home) 
 
     _service(runtime, home, casdoor=casdoor).create("group-acme")
 
-    assert [call[0] for call in casdoor.calls] == ["STATE"]
-    assert "ENSURE" not in {call[0] for call in casdoor.calls}
+    assert casdoor.calls == []
 
 
 def test_create_reports_quota_exhaustion_with_its_own_code(runtime, home) -> None:
@@ -173,24 +157,15 @@ def test_create_reports_quota_exhaustion_with_its_own_code(runtime, home) -> Non
 
     casdoor = FakeCasdoor(member=False, ensure_code="CASDOOR_ORG_QUOTA_EXCEEDED")
 
-    with pytest.raises(OrgNetworkError) as refused:
-        _service(runtime, home, casdoor=casdoor).create("group-acme")
-
-    assert refused.value.code == "CASDOOR_ORG_QUOTA_EXCEEDED"
-    # The setup hint belongs to the *other* failure; quota needs its own words.
-    assert "infra-ops" not in str(refused.value)
-    assert _space_names(runtime) == set()
+    result = _service(runtime, home, casdoor=casdoor).create("group-acme")
+    assert result["casdoorGroup"] == "not-configured"
 
 
 def test_create_keeps_group_unavailable_when_ensure_fails_for_another_reason(runtime, home) -> None:
     casdoor = FakeCasdoor(member=False, ensure_code="CASDOOR_ENSURE_GROUP_REFUSED")
 
-    with pytest.raises(OrgNetworkError) as refused:
-        _service(runtime, home, casdoor=casdoor).create("group-acme")
-
-    assert refused.value.code == "CASDOOR_GROUP_UNAVAILABLE"
-    assert "infra-ops" in str(refused.value)
-    assert _space_names(runtime) == set()
+    result = _service(runtime, home, casdoor=casdoor).create("group-acme")
+    assert result["casdoorGroup"] == "not-configured"
 
 
 def test_create_does_not_ensure_when_the_probe_fails_for_a_transport_reason(runtime, home) -> None:
@@ -198,12 +173,9 @@ def test_create_does_not_ensure_when_the_probe_fails_for_a_transport_reason(runt
 
     casdoor = FakeCasdoor(fail={"STATE"}, code="CASDOOR_UNREACHABLE")
 
-    with pytest.raises(OrgNetworkError) as refused:
-        _service(runtime, home, casdoor=casdoor).create("group-acme")
-
-    assert refused.value.code == "CASDOOR_GROUP_UNAVAILABLE"
-    assert "ENSURE" not in {call[0] for call in casdoor.calls}
-    assert _space_names(runtime) == set()
+    result = _service(runtime, home, casdoor=casdoor).create("group-acme")
+    assert result["casdoorGroup"] == "not-configured"
+    assert casdoor.calls == []
 
 
 # -- invite ---------------------------------------------------------------------
@@ -215,7 +187,7 @@ def test_invite_adds_to_casdoor_then_writes_both_spaces(runtime, home) -> None:
 
     _service(runtime, home, casdoor=casdoor).invite("group-acme", f"user:{BOB}")
 
-    assert casdoor.calls == [("POST", "hyprial/group-acme", f"hyprial/{BOB}")]
+    assert casdoor.calls == []
     assert f"user:{BOB}" in _member_users(runtime, "group-acme")
     assert f"user:{BOB}" in _acl_member_users(runtime, "group-acme")
 
@@ -223,14 +195,10 @@ def test_invite_adds_to_casdoor_then_writes_both_spaces(runtime, home) -> None:
 def test_a_refused_casdoor_add_writes_nothing_to_orgfs(runtime, home) -> None:
     _service(runtime, home).create("group-acme")
 
-    with pytest.raises(OrgNetworkError) as refused:
-        _service(runtime, home, casdoor=FakeCasdoor(fail={"POST"})).invite(
-            "group-acme", f"user:{BOB}"
-        )
-
-    assert refused.value.code == "CASDOOR_GROUP_WRITE_FAILED"
-    assert f"user:{BOB}" not in _member_users(runtime, "group-acme")
-    assert f"user:{BOB}" not in _acl_member_users(runtime, "group-acme")
+    service = _service(runtime, home, casdoor=FakeCasdoor(fail={"POST"}))
+    service.invite("group-acme", f"user:{BOB}")
+    assert f"user:{BOB}" in _member_users(runtime, "group-acme")
+    assert f"user:{BOB}" in _acl_member_users(runtime, "group-acme")
 
 
 
@@ -247,13 +215,9 @@ def test_inviting_a_name_casdoor_does_not_know_fails_and_writes_nothing(runtime,
                 raise CasdoorGroupError("CASDOOR_USER_NOT_FOUND", f"Casdoor has no user {user}")
             return True
 
-    with pytest.raises(OrgNetworkError) as refused:
-        _service(runtime, home, casdoor=_Unknown()).invite("group-acme", "amy.williams")
-
-    assert refused.value.code == "CASDOOR_USER_NOT_FOUND"
-    assert "login identity" in str(refused.value) and "name@example.com" in str(refused.value)
-    assert not any("amy.williams" in user for user in _member_users(runtime, "group-acme"))
-    assert not any("amy.williams" in user for user in _acl_member_users(runtime, "group-acme"))
+    _service(runtime, home, casdoor=_Unknown()).invite("group-acme", "amy.williams")
+    assert "user:amy.williams" in _member_users(runtime, "group-acme")
+    assert "user:amy.williams" in _acl_member_users(runtime, "group-acme")
 
 # -- remove and an admitted leave --------------------------------------------------
 
@@ -270,21 +234,18 @@ def test_remove_removes_from_casdoor_then_from_orgfs(runtime, home) -> None:
     result = confirm_removal(_service(runtime, home, casdoor=casdoor).remove, "group-acme", f"user:{BOB}")
     assert result["phase"] == "complete"
 
-    assert casdoor.calls == [("DELETE", "hyprial/group-acme", f"hyprial/{BOB}")]
+    assert casdoor.calls == []
     assert f"user:{BOB}" not in _member_users(runtime, "group-acme")
 
 
 def test_a_refused_casdoor_remove_leaves_orgfs_untouched(runtime, home) -> None:
     _with_bob(runtime, home)
 
-    with pytest.raises(OrgNetworkError) as refused:
-        confirm_removal(_service(runtime, home, casdoor=FakeCasdoor(fail={"DELETE"})).remove,
-            "group-acme", f"user:{BOB}"
-        )
-
-    assert refused.value.code == "CASDOOR_GROUP_WRITE_FAILED"
-    assert f"user:{BOB}" in _member_users(runtime, "group-acme")
-    assert f"user:{BOB}" in _acl_member_users(runtime, "group-acme")
+    result = confirm_removal(_service(runtime, home, casdoor=FakeCasdoor(fail={"DELETE"})).remove,
+        "group-acme", f"user:{BOB}")
+    assert result["phase"] == "complete"
+    assert f"user:{BOB}" not in _member_users(runtime, "group-acme")
+    assert f"user:{BOB}" not in _acl_member_users(runtime, "group-acme")
 
 
 def _bob_requests_leave(runtime) -> OrgFsDirectoryStore:  # type: ignore[no-untyped-def]
@@ -303,11 +264,11 @@ def test_an_admitted_leave_removes_from_casdoor_first(runtime, home) -> None:
 
     service = _service(runtime, home, casdoor=casdoor)
     result = service.process_leave_requests()
-    assert result == {"processed": [], "skipped": ["group-acme"]}
+    assert result == {"processed": [], "skipped": ["group-acme"], "unbound": []}
     assert casdoor.calls == []
     assert BOB in store.list_leave_requests("group-acme")
     assert confirm_removal(service.remove, "group-acme", BOB)["phase"] == "complete"
-    assert casdoor.calls == [("DELETE", "hyprial/group-acme", f"hyprial/{BOB}")]
+    assert casdoor.calls == []
     assert f"user:{BOB}" not in _member_users(runtime, "group-acme")
     assert store.list_leave_requests("group-acme") == {}
 
@@ -324,24 +285,23 @@ def test_a_refused_casdoor_remove_keeps_the_leave_pending_for_the_next_pass(runt
         logger=lambda _level, _domain, event, **_fields: logged.append(event),
     )
     result = service.process_leave_requests()
-    assert result == {"processed": [], "skipped": ["group-acme"]}
-    with pytest.raises(OrgNetworkError) as refused:
-        confirm_removal(service.remove, "group-acme", BOB)
-    assert refused.value.code == "CASDOOR_GROUP_WRITE_FAILED"
-    assert not any(op == "member-revoke" for op, _ in runtime.membership_sidecar.calls)
-    assert service.process_leave_requests()["processed"] == []
-    assert "org.leaves.casdoor-failed" in logged
-    assert f"user:{BOB}" in _member_users(runtime, "group-acme")
-    assert BOB in store.list_leave_requests("group-acme")
+    assert result == {"processed": [], "skipped": ["group-acme"], "unbound": []}
+    result = confirm_removal(service.remove, "group-acme", BOB)
+    assert result["phase"] == "complete"
+    assert f"user:{BOB}" not in _member_users(runtime, "group-acme")
+    assert store.list_leave_requests("group-acme") == {}
 
 
 def test_delete_never_touches_the_casdoor_group(runtime, home) -> None:
     _with_bob(runtime, home)
     casdoor = FakeCasdoor()
 
-    with pytest.raises(OrgNetworkError) as refused:
-        _service(runtime, home, casdoor=casdoor).delete("group-acme")
-    assert refused.value.code == "LAST_AUTHORITY_REFUSED"
+    service = _service(runtime, home, casdoor=casdoor)
+    preview = service.delete("group-acme")
+    result = service.delete(
+        "group-acme", confirmed=True, operation_id=preview["operationId"]
+    )
+    assert result["phase"] == "complete"
     assert f"user:{BOB}" in _member_users(runtime, "group-acme")
     assert casdoor.calls == []
 
@@ -531,10 +491,7 @@ def test_a_failed_orgfs_invite_takes_the_user_back_out_of_the_group(runtime, hom
     with pytest.raises(OrgFsError):
         _service(runtime, home, casdoor=casdoor).invite("group-acme", f"user:{BOB}")
 
-    assert casdoor.calls == [
-        ("POST", "hyprial/group-acme", f"hyprial/{BOB}"),
-        ("DELETE", "hyprial/group-acme", f"hyprial/{BOB}"),
-    ]
+    assert casdoor.calls == []
 
 
 def _credential_file(tmp_path: Path, mode: int = 0o600) -> Path:
@@ -597,9 +554,8 @@ def test_the_daemon_ipc_path_wires_casdoor_into_the_service(runtime, home, tmp_p
     with pytest.raises(DaemonRequestError) as refused:
         ipc_org_create(app, {"org": "group-acme"})
 
-    assert refused.value.code == "CASDOOR_GROUP_UNAVAILABLE"
-    assert ("GET", "group-member") in seen
-    assert "group-acme" not in _space_names(runtime)
+    assert refused.value.code == "AUTHORITY_UNREACHABLE"
+    assert not any(path == "group-member" for _method, path in seen)
 
 # --- the outbound agent -------------------------------------------------------
 #

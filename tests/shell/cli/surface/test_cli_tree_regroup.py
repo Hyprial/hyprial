@@ -1,10 +1,10 @@
 """The regrouped CLI tree and the fail-loud removal of old top-level paths.
 
-Targets (0.5.5.2): ``service``→``org service``, ``fs``→``org fs``,
-``user-proxy``→``user proxy``, ``link``→``agent link``,
-``onboarding``→``init onboarding``.  Old paths keep no alias: they exit 2 and
-print one greppable ``moved: hyprial <old>  →  hyprial <new>`` line.  A bare
-``hyprial init`` must still initialize — ``init`` becomes a group, not help-only.
+Targets (0.5.5.2): ``service``→``org service``, ``fs``→``org fs``.
+Old paths keep no
+alias: they exit 2 and print one greppable
+``moved: hyprial <old>  →  hyprial <new>`` line.  A bare ``hyprial init`` must
+still initialize — ``init`` becomes a group, not help-only.
 """
 
 from __future__ import annotations
@@ -20,20 +20,13 @@ from hyprial.shell.impl.cli.runtime import entry as cli
 MOVED_FAMILIES: dict[str, tuple[str, ...]] = {
     "service": ("org", "service"),
     "fs": ("org", "fs"),
-    "user-proxy": ("user", "proxy"),
-    "link": ("agent", "link"),
-    "onboarding": ("init", "onboarding"),
 }
 
 #: Old argv (without the ``hyprial`` program name) → new argv.
 MOVED_ARGV: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     (("service",), ("org", "service")),
     (("fs",), ("org", "fs")),
-    (("user-proxy",), ("user", "proxy")),
-    (("link",), ("agent", "link")),
-    (("onboarding",), ("init", "onboarding")),
     (("fs", "space", "list"), ("org", "fs", "space", "list")),
-    (("link", "list", "--json"), ("agent", "link", "list", "--json")),
     (("service", "connect", "--json"), ("org", "service", "connect", "--json")),
 ]
 
@@ -88,9 +81,6 @@ def test_old_path_fails_loud(
     [
         (("service",), ("org", "service")),
         (("fs",), ("org", "fs")),
-        (("user-proxy",), ("user", "proxy")),
-        (("link",), ("agent", "link")),
-        (("onboarding",), ("init", "onboarding")),
         (("fs", "space", "list"), ("org", "fs", "space", "list")),
     ],
 )

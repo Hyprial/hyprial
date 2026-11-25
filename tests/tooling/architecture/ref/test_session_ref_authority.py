@@ -135,7 +135,7 @@ def test_reconcile_joins_exact_native_ref_before_durable_reply(
         return original(owner)
 
     monkeypatch.setattr(ProcessOwner, "_read_facts", held_read)
-    replies: list[dict[tuple[str, str], str]] = []
+    replies: list[dict[tuple[str, str, str], str]] = []
     errors: list[BaseException] = []
 
     def reconcile() -> None:
@@ -167,7 +167,7 @@ def test_reconcile_joins_exact_native_ref_before_durable_reply(
             ) is AdmissionResult.ACCEPTED
             deadline = time.monotonic() + 2
             while actor._handler_generation == previous or (
-                actor._runtime.snapshot(actor._handle).state is not ActorState.RUNNING
+                actor._cell.snapshot().state is not ActorState.RUNNING
             ):
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
@@ -176,7 +176,7 @@ def test_reconcile_joins_exact_native_ref_before_durable_reply(
         waiter.join(3)
         assert not waiter.is_alive()
         assert errors == []
-        assert replies == [{("pi", "worker"): "fresh-native-ref"}]
+        assert replies == [{("pi", "worker", "worker"): "fresh-native-ref"}]
         assert store.load().harnesses[0].session_ref == "fresh-native-ref"
     finally:
         release.set()
@@ -224,7 +224,7 @@ def test_concurrent_ref_reconcile_cannot_resurrect_ref_across_restart(
     tmp_path: Path,
 ) -> None:
     store = DesiredStateStore(tmp_path / "desired.json")
-    initial = HarnessLaunchSpec("pi", "worker", True, args=("--old",))
+    initial = HarnessLaunchSpec("pi", "worker", True, args=("--model", "old"))
     store.upsert_harness(initial)
     events = CorrelatedDomainEvents()
     launcher = _SessionLauncher()
@@ -272,7 +272,7 @@ def test_concurrent_ref_reconcile_cannot_resurrect_ref_across_restart(
     )
     assert store.load().harnesses == ()
 
-    fresh = HarnessLaunchProjection("pi", "worker", True, args=("--fresh",))
+    fresh = HarnessLaunchProjection("pi", "worker", True, args=("--model", "fresh"))
     ensure = LifecycleMutationRequest(
         "restart-ensure",
         "restart-ensure-attempt",
@@ -283,7 +283,7 @@ def test_concurrent_ref_reconcile_cannot_resurrect_ref_across_restart(
     assert actor.submit(ensure) is PortAdmission.ACCEPTED
     events.wait(ensure.correlation_id, LifecycleMutationCompleted, timeout=3.0)
     [persisted] = store.load().harnesses
-    assert persisted.args == ("--fresh",)
+    assert persisted.args == ("--model", "fresh")
     assert persisted.session_ref is None
     harnesses.stop(2.0)
 
@@ -297,7 +297,7 @@ def test_concurrent_ref_reconcile_cannot_resurrect_ref_across_restart(
     restarted = HarnessPortClient(restarted_actor, restarted_events)
     restarted.restore(store.load().harnesses)
     [restored] = restarted_launcher.specs
-    assert restored.args == ("--fresh",)
+    assert restored.args == ("--model", "fresh")
     assert restored.session_ref is None
     restarted.stop(2.0)
 

@@ -10,9 +10,8 @@ squire.alw.usrb).  Allowed characters pass through byte-for-byte, so a clean
 ref is never rewritten and the sanitized value is still stable across
 reconnects.
 
-Introduced at the RPC boundary (#192); the interactive pty connector and the
-interactive attach launcher share the same boundary, so the translation
-lives here exactly once.
+Introduced at the RPC boundary (#192); the interactive attach launcher
+shares the same boundary, so the translation lives here exactly once.
 """
 
 from __future__ import annotations

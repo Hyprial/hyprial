@@ -1,0 +1,17 @@
+{
+  "description": "Who may write a protected org-membership record (0.5.5.3 O1a).",
+  "sections": {
+    "agents": {
+      "work org": "author must be the space owner (an admin may approve where the role source resolves one); the agent's owner alone is refused",
+      "personal org": "author and row principal must both be the space owner"
+    }
+  },
+  "protectedDocId": {
+    "agents": "spaceId + 'agents' + principal(user:<agent owner>) + '<agentId>.json'"
+  },
+  "decisions": ["ok", "not-a-member", "removed-author", "pending-meta"],
+  "notes": [
+    "Admission reads only the document id and the envelope author; it never trusts the record body.",
+    "A row whose agent URI names another owner is refused when parsed, not normalized."
+  ]
+}

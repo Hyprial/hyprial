@@ -1,8 +1,12 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Replaces raw os.chmod(parent, 0o700) in _prepare_unix_socket with
+#   hyprial.kernel.harden_private_path and gates POSIX mode-bit checks on
+#   posix_metadata_enforced(); loopback TCP listeners (127.0.0.1:<port>) are
+#   supported directly on Windows.
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import ipaddress
-import os
 import stat
 from hyprial.daemon.impl.orgfs.webserver.identity import (
     CLIENT_ADDRESS_MODES,
@@ -10,6 +14,7 @@ from hyprial.daemon.impl.orgfs.webserver.identity import (
     CLIENT_ADDRESS_SOCKET,
     DEFAULT_RETRY_AFTER_SECONDS,
 )
+from hyprial.kernel import harden_private_path, posix_metadata_enforced
 
 
 
@@ -114,13 +119,13 @@ def _prepare_unix_socket(path: Path) -> None:
         parent_stat = parent.lstat()
     except FileNotFoundError:
         parent.mkdir(mode=0o700)
-        os.chmod(parent, 0o700)
+        harden_private_path(parent, mode=0o700)
     else:
         if stat.S_ISLNK(parent_stat.st_mode):
             raise ValueError(f"unix socket parent is a symlink: {parent}")
         if not stat.S_ISDIR(parent_stat.st_mode):
             raise ValueError(f"unix socket parent is not a directory: {parent}")
-        if parent_stat.st_mode & 0o022:
+        if posix_metadata_enforced() and (parent_stat.st_mode & 0o022):
             raise ValueError(
                 f"unix socket parent is group- or world-writable: {parent}"
             )

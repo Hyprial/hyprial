@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 from typing import Any
+
+from hyprial.daemon.impl.inbox.contracts.origin import OriginOwnerKind
 
 from hyprial.daemon.impl.inbox.batch.contract import (
     DEFAULT_INLINE_LIMIT_BYTES,
@@ -37,7 +40,7 @@ from hyprial.daemon.impl.inbox.batch.spill import (
     publish,
 )
 
-__all__ = ["BatchView", "capture_batch", "item_json"]
+__all__ = ["BatchView", "capture_batch", "empty_batch_response", "item_json"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +49,7 @@ class BatchView:
 
     response: dict[str, Any]
     items: tuple[BatchItem, ...]
+    origin_claim_seq: int | None = None
 
     @property
     def cursor(self) -> str:
@@ -116,6 +120,25 @@ def _empty(actor: str, epoch: str, limit: int) -> dict[str, Any]:
     }
 
 
+def empty_batch_response(
+    actor: str, *, epoch: str, limit_bytes: int
+) -> dict[str, Any]:
+    """Return the wire-exact empty inbox batch response payload."""
+
+    return _empty(actor, epoch, limit_bytes)
+
+
+def _accepts_kwarg(fn: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        param.name == name or param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in parameters
+    )
+
+
 def capture_batch(
     inbox: object,
     actor: str,
@@ -128,6 +151,7 @@ def capture_batch(
     epoch: str = "",
     include_notices: bool = True,
     mark_fetched: bool = True,
+    origin_claim: object | None = None,
     _origin_resolver_for_test: Callable[
         [object, str], dict[str, object]
     ] | None = None,
@@ -149,28 +173,57 @@ def capture_batch(
             after_digest = cursor_digest(after_token)
     except CursorError:
         raise
-    selection = inbox.batch_snapshot(  # type: ignore[attr-defined]
-        actor,
-        keys=keys,
-        cursor=cursor,
-        after=after,
-        after_digest=after_digest,
-        include_notices=include_notices,
-        only=only,
-        **({"mark_fetched": False} if not mark_fetched else {}),
-    )
-    snapshot = build_snapshot(
-        selection,
-        key=key,
-        _origin_resolver_for_test=_origin_resolver_for_test,
-    )
-    response = _render_enriched_response(
-        snapshot,
-        limit_bytes=limit_bytes,
-        actor_home=actor_home,
-        epoch=epoch,
-    )
-    return BatchView(response, snapshot.items)
+    batch_snapshot_fn = inbox.batch_snapshot  # type: ignore[attr-defined]
+    snapshot_kwargs: dict[str, Any] = {
+        "keys": keys,
+        "cursor": cursor,
+        "after": after,
+        "after_digest": after_digest,
+        "include_notices": include_notices,
+        "only": only,
+    }
+    if not mark_fetched:
+        snapshot_kwargs["mark_fetched"] = False
+    if origin_claim is not None and _accepts_kwarg(batch_snapshot_fn, "origin_claim"):
+        snapshot_kwargs["origin_claim"] = origin_claim
+    selection = batch_snapshot_fn(actor, **snapshot_kwargs)
+    claim_seq = getattr(selection, "origin_claim_seq", None)
+    try:
+        snapshot = build_snapshot(
+            selection,
+            key=key,
+            _origin_resolver_for_test=_origin_resolver_for_test,
+        )
+        response = _render_enriched_response(
+            snapshot,
+            limit_bytes=limit_bytes,
+            actor_home=actor_home,
+            epoch=epoch,
+        )
+    except BaseException:
+        if (
+            origin_claim is not None
+            and getattr(origin_claim, "owner_kind", None) == OriginOwnerKind.HEADLESS
+            and isinstance(claim_seq, int)
+        ):
+            release = getattr(inbox, "release_origin_claims", None)
+            if callable(release):
+                inbox_ids = tuple(
+                    row.message.message_id
+                    for row in getattr(selection, "rows", ())
+                    if getattr(row, "source", None) == "inbox"
+                )
+                if inbox_ids:
+                    try:
+                        release(
+                            inbox_ids,
+                            owner_actor=getattr(origin_claim, "owner_actor", actor),
+                            claim_seq=claim_seq,
+                        )
+                    except Exception:  # noqa: BLE001 - best-effort cleanup before re-raise
+                        pass
+        raise
+    return BatchView(response, snapshot.items, origin_claim_seq=claim_seq)
 
 
 def _render_response(

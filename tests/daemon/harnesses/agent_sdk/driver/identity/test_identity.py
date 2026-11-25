@@ -12,7 +12,6 @@ from hyprial.identity.impl.agents.runtime.context import resolve_agent_runtime_c
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.harnesses.agent_sdk import AGENT_SDK_VERSION, ClaudeAgentSdkProcess, IsolatedAgentSdkClient, create_claude_sdk_client
 from hyprial.daemon.impl.harnesses.claude.runtime import CLAUDE_CREDENTIAL_MISSING, ClaudeRuntimeError, prepare_claude_runtime_context, validate_claude_auth_environment
-from hyprial.daemon.impl.harnesses.claude import ClaudeConnector
 from hyprial.daemon.impl.harnesses.model_provider import ModelProviderError
 
 from ..support import (
@@ -111,39 +110,6 @@ def test_p2_sdk_claude_refuses_legacy_home_deepseek_auth(tmp_path: Path) -> None
         registry.close()
 
 
-def test_p2_connector_claude_refuses_legacy_home_deepseek_auth(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    registry, context, _channel, launch = _configured_claude_launch(tmp_path)
-    try:
-        legacy_auth = context.roots.tool_home / ".pi" / "agent" / "auth.json"
-        legacy_auth.parent.mkdir(parents=True)
-        legacy_auth.write_text(
-            json.dumps({"deepseek": {"type": "api_key", "key": "legacy-bait"}}),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(
-            "hyprial.daemon.impl.harnesses.claude.PtyHarnessProcess.spawn",
-            lambda *_args, **_kwargs: pytest.fail(
-                "P2 auth rejection must happen before Claude spawn"
-            ),
-        )
-        with pytest.raises(ModelProviderError, match="agent-owned DEEPSEEK_API_KEY"):
-            ClaudeConnector().launch(
-                HarnessLaunchSpec(
-                    harness="claude",
-                    name="claude-worker",
-                    headless=True,
-                    cwd=str(tmp_path / "work"),
-                    model_provider="deepseek",
-                    model="deepseek-reasoner",
-                ),
-                complete_launch=launch,
-            )
-    finally:
-        registry.close()
-
-
 def test_agent_config_refuses_partial_or_relative_native_root(tmp_path: Path) -> None:
     spec = HarnessLaunchSpec(
         harness="claude",
@@ -226,7 +192,20 @@ def test_claude_native_view_is_idempotent_and_rejects_drift(tmp_path: Path) -> N
 def test_claude_native_view_switches_to_a_new_config_revision(tmp_path: Path) -> None:
     registry, first, _channel, _launch = _configured_claude_launch(tmp_path)
     try:
-        prepare_claude_runtime_context(first)
+        extra = first.roots.config_source / "native" / "claude" / "obsolete.md"
+        extra.write_text("remove-me\n", encoding="utf-8")
+        first_with_extra = resolve_agent_runtime_context(
+            registry=registry,
+            agent_name="claude-worker",
+            harness="claude",
+            cwd=str(tmp_path / "work"),
+            tool_profile=TEST_TOOL_PROFILE,
+        )
+        assert first_with_extra is not None
+        prepare_claude_runtime_context(first_with_extra)
+        assert (first_with_extra.roots.native_root / "obsolete.md").is_file()
+
+        extra.unlink()
         source = first.roots.config_source / "native" / "claude" / "settings.json"
         source.write_text('{"model":"p23-revision-two"}\n', encoding="utf-8")
         second = resolve_agent_runtime_context(
@@ -237,14 +216,15 @@ def test_claude_native_view_switches_to_a_new_config_revision(tmp_path: Path) ->
             tool_profile=TEST_TOOL_PROFILE,
         )
         assert second is not None
-        assert second.config_revision != first.config_revision
+        assert second.config_revision != first_with_extra.config_revision
 
         prepare_claude_runtime_context(second)
 
         settings = second.roots.native_root / "settings.json"
-        assert settings.is_symlink()
-        assert settings.readlink() == second.roots.projection_root / "settings.json"
+        assert settings.is_file()
+        assert not settings.is_symlink()
         assert settings.read_text() == '{"model":"p23-revision-two"}\n'
+        assert not (second.roots.native_root / "obsolete.md").exists()
     finally:
         registry.close()
 
@@ -529,16 +509,21 @@ def test_headless_claude_rejects_missing_credential_before_retry_loop(
 
 @pytest.mark.parametrize("removed", ["projects", "settings.json"])
 def test_authority_prepared_claude_view_is_verified_without_recreation(tmp_path, removed):
+    from hyprial.kernel import manysys
+
     registry, context, _channel, _launch = _configured_claude_launch(tmp_path)
     try:
         prepare_claude_runtime_context(context)
         prepared = dataclasses.replace(context, authority_prepared=True)
         prepare_claude_runtime_context(prepared)
         missing = context.roots.native_root / removed
-        missing.unlink()
+        if removed == "projects":
+            manysys.unlink_directory_link(missing)
+        else:
+            missing.unlink()
         with pytest.raises(ClaudeRuntimeError, match="authority-prepared"):
             prepare_claude_runtime_context(prepared)
-        assert not missing.exists() and not missing.is_symlink()
+        assert not missing.exists() and not manysys.is_directory_link(missing)
     finally:
         registry.close()
 

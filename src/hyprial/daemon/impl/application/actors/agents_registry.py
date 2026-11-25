@@ -20,7 +20,7 @@ from hyprial.identity import (
     desired_generation,
     is_inactive,
 )
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import ipc_errors, member_actor_uri
 from hyprial.kernel import DaemonRequestError
 from .status_projection import actor_status_snapshot
 from hyprial.daemon.impl.desired_state  import (
@@ -33,6 +33,7 @@ from hyprial.daemon.impl.composition  import (
 )
 from hyprial.kernel import (
     canonical_agent_uri,
+    is_agent_id_segment,
     parse_agent_uri,
 )
 from hyprial.daemon.impl.alias_resolver import (
@@ -40,18 +41,22 @@ from hyprial.daemon.impl.alias_resolver import (
     AliasSurface,
     AliasValidationError,
 )
+from hyprial.daemon.impl.application.actors.address_admission import (
+    _AgentAddressAdmissionMixin,
+)
 if TYPE_CHECKING:
     pass
 
 from hyprial.daemon.impl.application.actors.sessions.registry import (
     _session_harness,
 )
+from hyprial.daemon.impl.lifecycle.primitives import session_ref_for
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
 )
 
 
-class _AgentsRegistryMixin:
+class _AgentsRegistryMixin(_AgentAddressAdmissionMixin):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _canonical_harness_uri(
@@ -62,7 +67,7 @@ class _AgentsRegistryMixin:
     ) -> str:
         """The network identity this daemon mints for a managed harness.
 
-        A transferred or host-invited spec carries ``pinned_owner``: the
+        A transferred spec carries ``pinned_owner``: the
         URI keeps the admitted owner instead of this daemon's ambient one,
         so hosting never silently renames the worker. The machine
         segment stays this node's id -- the worker physically lives here.
@@ -93,7 +98,32 @@ class _AgentsRegistryMixin:
                 spec = None
         if spec is not None and spec.pinned_owner:
             owner = spec.pinned_owner
-        return canonical_agent_uri(owner, self.node_id, name)
+        actor = name
+        if spec is not None and spec.member != spec.name:
+            actor = member_actor_uri(name, spec.member)
+        return self._agent_address(actor, owner)
+
+    def _agent_address(self, name: str, owner: str | None = None) -> str:
+        """The official address of local agent ``name`` under ``owner``.
+
+        A registered agent is reached at the URI its record stores (its
+        ``a.`` id once id-form minting is on); a name with no record under
+        that owner, such as a daemon service actor, keeps the name-composed
+        URI.  Every daemon name-to-address mint goes through here.
+        """
+
+        from hyprial.identity import official_agent_uri
+
+        wanted = owner or self.owner
+
+        def read(key: str) -> Agent | None:
+            try:
+                agent = self.agents.get(key)
+            except Exception:  # noqa: BLE001
+                return None
+            return agent if agent is not None and agent.owner == wanted else None
+
+        return official_agent_uri(name, owner=wanted, machine=self.node_id, read=read)
 
     def _normalize_persisted_interactive_sessions(self) -> None:
         """Upgrade legacy bare desired-state sessions before mesh restore.
@@ -103,6 +133,15 @@ class _AgentsRegistryMixin:
         contains both spellings, the already-canonical record wins: it is the
         only record whose identity satisfied the post-fix registration
         contract, and restoring both would recreate the defect.
+
+        This is also the UUID-addressing migration of desired-state
+        interactive session actors (§2.4; the storage-migration lane does
+        not repeat it): each actor maps through ``_canonical_interactive_actor``
+        to the record's stored URI, which is the ``a.`` id URI once the
+        identity migration has run.  The ordering it relies on holds by
+        construction: the identity registry is opened (running that
+        migration) while ``DaemonApplication`` is constructed, and this
+        runs later, from ``_startup_prepare_state`` in ``_start_runtime``.
         """
 
         state = self.desired_state.load()
@@ -129,6 +168,7 @@ class _AgentsRegistryMixin:
             self.desired_state.normalize_interactive_sessions(
                 rewrites=tuple(rewrites)
             )
+            self._agent_session_domains.session.reload_committed_sessions()
 
     def _local_agent_candidates(self, target: str) -> set[str]:
         """Return the exact local transport identities claimed by an alias.
@@ -226,9 +266,14 @@ class _AgentsRegistryMixin:
         surface: AliasSurface,
         preserve_unknown: bool = False,
     ) -> str:
-        """Apply P2 validation without changing the caller's stored form."""
+        """Apply P2 validation without changing the caller's stored form.
+
+        With id-form minting on, a retired local name address is refused
+        first (``AGENT_ADDRESS_RETIRED``), on every surface.
+        """
 
         try:
+            self._refuse_retired_local_address(target)
             return self._alias_resolver.validate_target(
                 target,
                 surface=surface,
@@ -261,19 +306,19 @@ class _AgentsRegistryMixin:
     def _resolve_and_validate_input_alias(
         self, target: str, *, surface: AliasSurface
     ) -> str:
-        """Preserve existing short-name expansion, then validate its aliases."""
+        """Preserve existing short-name expansion, then validate its aliases.
+
+        With the id-form switch off, unknown spellings keep their historical
+        paths: a bare target reaches the target-kind gate (``TARGET_IS_NODE``)
+        and a canonical local name queues with ``TARGET_UNRESOLVED``.  With
+        it on, a local id with no live agent and a local name nothing claims
+        are refused here as a fatal ``TARGET_UNRESOLVED`` (UUID addressing
+        §2.3, HQ Q2).
+        """
 
         resolved = self._resolve_agent_alias(target)
-        # Before P2, an unresolved bare target reached the established
-        # target-kind gate and was refused as TARGET_IS_NODE with its
-        # historical payload. Keep that public contract; only new alias
-        # decisions (including ambiguity) belong to this layer.
-        # message.send already has stable handling for both unknown spellings:
-        # bare names reach the target-kind gate, while canonical local names
-        # queue with TARGET_UNRESOLVED plus send.target_unresolved telemetry.
-        # P2 adds ambiguity/source decisions but must not replace either path
-        # with a request-level TARGET_UNRESOLVED refusal.
         self._validate_input_alias(resolved, surface=surface, preserve_unknown=True)
+        self._refuse_unresolved_local_target(resolved)
         return resolved
 
     def _is_unresolved_local_identity(self, target: str) -> bool:
@@ -293,22 +338,9 @@ class _AgentsRegistryMixin:
         actor_segment = parsed_target[2]
         if parsed_target[0] != self.owner or parsed_target[1] != self.node_id:
             return False
-        if self._presence is not None and self._presence.actor_online(target):
+        if self._registered_at(target):
             return False
-        # Deferred import mirrors _resolve_agent_alias.
-        from hyprial.daemon.impl.harnesses import is_streaming_spec
-
-        state = self.desired_state.load()
-        for spec in state.harnesses:
-            if (
-                is_streaming_spec(spec)
-                and self._canonical_harness_uri(spec.name, spec) == target
-            ):
-                return False
-        for session in self._agent_session_domains.session.read_sessions():
-            if session.actor in (target, actor_segment):
-                return False
-        return self._worker_session_ref(target) is None
+        return not self._claimed_without_record(target, (target, actor_segment))
 
     def _managed_worker_running(
         self, actor: str, desired: DesiredState | None = None
@@ -320,6 +352,11 @@ class _AgentsRegistryMixin:
         old models into one instead of adding a fourth.  ``desired`` is the
         snapshot's already-loaded desired state (card 259), threaded to
         ``_canonical_harness_uri`` so each row stops re-reading the store.
+
+        A name-composed actor URI always ends ``:<name>``, so rows whose name
+        is not its last segment skip the harness-spec lookup.  An actor whose
+        last segment is an ``a.`` id (UUID addressing) carries no name, so
+        every row is checked against its official address.
         """
 
         snapshot = self._current_worker_snapshot()
@@ -348,10 +385,9 @@ class _AgentsRegistryMixin:
                 continue
             if name == actor:
                 return bool(status.get("running"))
-            # canonical_agent_uri(owner, node, name) always ends ":<name>", so
-            # a row whose name is not actor's last segment can never match;
-            # skip even the bounded harness-spec lookup for impossible rows.
-            if not actor.endswith(f":{name}"):
+            if not actor.endswith(f":{name}") and not is_agent_id_segment(
+                actor.rpartition(":")[2]
+            ):
                 continue
             if (
                 self._canonical_harness_uri(name, desired=desired) == actor
@@ -375,7 +411,12 @@ class _AgentsRegistryMixin:
         refs = read_refs()
         for spec in self.desired_state.load().harnesses:
             if self._canonical_harness_uri(spec.name, spec) == actor:
-                return refs.get((spec.harness, spec.name))
+                return session_ref_for(
+                    refs,
+                    harness=spec.harness,
+                    name=spec.name,
+                    member=spec.member,
+                )
         return None
 
     def _seed_agent_bindings(self) -> None:
@@ -555,14 +596,11 @@ class _AgentsRegistryMixin:
                 preferred_harness=harness,
             )
             if not agent.actor.startswith("wf-"):
-                self._finish_resident_agent_creation(agent)
+                self._finish_resident_agent_creation(agent, compose_cells=False)
             self._log(
                 "info", "agents", "agent.created", actor=agent.uri, harness=harness
             )
             self._declare_persona_route(agent.uri)
-            # A legacy pin naming this agent becomes migratable the moment
-            # the record exists (see _migrate_legacy_channel_pins).
-            self._migrate_legacy_channel_pins()
             self._publish_agent_restore_allow(agent)
             return agent
         changes: dict[str, Any] = {
@@ -742,6 +780,7 @@ class _AgentsRegistryMixin:
         recovery_cleanup = self._agent_recovery_cleanups.get(
             agent.uri
         ) or self._agent_recovery_cleanups.get(agent.actor)
+        from hyprial.daemon.impl.user_agent.admin import user_agent_row_fields
         from hyprial.identity import shared_credential_status
 
         credential_status = shared_credential_status(
@@ -766,6 +805,7 @@ class _AgentsRegistryMixin:
             **self._agent_liveness.snapshot(spelling),
             "status": self._registered_agent_status(agent),
             **self._cell_run_state_field(agent.uri),
+            **self._startup_failure_field(agent),
             **self._restore_agent_projection(
                 agent, now_ms=self._restore_now_ms()
             ),
@@ -790,6 +830,7 @@ class _AgentsRegistryMixin:
                 if recovery_failure is None and recovery_cleanup is not None
                 else {}
             ),
+            **user_agent_row_fields(agent),
         }
 
     def _restore_agent_projection(

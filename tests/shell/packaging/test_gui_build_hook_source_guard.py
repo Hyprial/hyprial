@@ -633,3 +633,57 @@ def test_stage_gui_ignores_a_redirected_git_index_file(
     decoy = tmp_path / "decoy-index"
     monkeypatch.setenv("GIT_INDEX_FILE", str(decoy))
     _expect_refused(root, tmp_path, monkeypatch)
+
+
+def test_trusted_git_config_keeps_the_chmod_guard_on_posix() -> None:
+    assert "core.fileMode=true" in module._trusted_git_config("posix")
+
+
+def test_trusted_git_config_ignores_exec_bits_on_windows() -> None:
+    assert "core.fileMode=false" in module._trusted_git_config("nt")
+
+
+def _use_windows_file_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = module._trusted_git_config
+    monkeypatch.setattr(
+        module,
+        "_trusted_git_config",
+        lambda platform_name=None: original("nt"),
+    )
+
+
+def _exec_bit_only_difference(root: Path) -> str:
+    script = root / "scripts" / "tool.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    _git(root, "add", "scripts/tool.sh")
+    _git(root, "update-index", "--chmod=+x", "scripts/tool.sh")
+    _git(root, "commit", "-qm", "exec-bit fixture")
+    return _git(root, "rev-parse", "--short=7", "HEAD")
+
+
+def test_stage_gui_tolerates_exec_bit_only_differences_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _stamp_version(root, _exec_bit_only_difference(root))
+    _fake_npm(tmp_path, monkeypatch)
+    _use_windows_file_mode(monkeypatch)
+
+    hook, build_data = _stage(root)
+
+    assert _staged_files(build_data)["hyprial/_gui/release.json"].is_file()
+    hook.finalize("wheel", build_data, "unused")
+
+
+def test_stage_gui_rejects_content_edits_under_windows_file_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _stamp_version(root, _exec_bit_only_difference(root))
+    _use_windows_file_mode(monkeypatch)
+    (root / "gui" / "src" / "main.js").write_text(
+        "console.log('changed');\n", encoding="utf-8"
+    )
+
+    _expect_refused(root, tmp_path, monkeypatch)

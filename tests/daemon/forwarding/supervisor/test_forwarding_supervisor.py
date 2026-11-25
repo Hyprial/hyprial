@@ -200,11 +200,15 @@ def test_two_start_failures_then_success_recovers_endpoints() -> None:
     ]
 
 
-def test_composed_supervisor_owns_native_controller_io() -> None:
+def test_composed_supervisor_owns_native_controller_io(
+    actor_host, generation_scheduler
+) -> None:
     factory = _FlakyFactory(failures=0)
     supervisor = ForwardingSidecarSupervisor(
         {}, event_log=lambda *_args, **_fields: None,
         controller_factory=factory, own_io=True,
+        scheduler=generation_scheduler,
+        actor_host=actor_host,
         slots=_slots,
     )
     supervisor.ensure_started()
@@ -216,7 +220,9 @@ def test_composed_supervisor_owns_native_controller_io() -> None:
     assert factory.controllers[0].closed
 
 
-def test_composed_supervisor_direct_peer_operations_reach_the_controller() -> None:
+def test_composed_supervisor_direct_peer_operations_reach_the_controller(
+    actor_host, generation_scheduler
+) -> None:
     """own_io=True must not strand map/unmap on the always-None ``_endpoints``.
 
     Regression: with the state owner holding the backend, the direct
@@ -234,6 +240,8 @@ def test_composed_supervisor_direct_peer_operations_reach_the_controller() -> No
     supervisor = ForwardingSidecarSupervisor(
         {}, event_log=lambda *_args, **_fields: None,
         controller_factory=lambda _environ, _on_exit: controller, own_io=True,
+        scheduler=generation_scheduler,
+        actor_host=actor_host,
         slots=_slots,
     )
     supervisor.ensure_started()
@@ -247,7 +255,9 @@ def test_composed_supervisor_direct_peer_operations_reach_the_controller() -> No
     supervisor.close()
 
 
-def test_composed_supervisor_fences_restart_decisions_in_state_actor() -> None:
+def test_composed_supervisor_fences_restart_decisions_in_state_actor(
+    actor_host,
+) -> None:
     factory = _FlakyFactory(failures=1)
     recorder = _TimerRecorder()
     events: list[str] = []
@@ -255,6 +265,7 @@ def test_composed_supervisor_fences_restart_decisions_in_state_actor() -> None:
         {}, event_log=lambda _level, event, **_fields: events.append(event),
         controller_factory=factory, own_io=True,
         scheduler=GenerationScheduler(timer_factory=recorder),
+        actor_host=actor_host,
         jitter_source=lambda: 0.5,
     )
     supervisor.ensure_started()
@@ -314,7 +325,9 @@ def test_requested_restart_replaces_the_closed_incarnation_immediately() -> None
     assert recorder.timers == []
 
 
-def test_requested_restart_failure_is_never_reported_running() -> None:
+def test_requested_restart_failure_is_never_reported_running(
+    actor_host, generation_scheduler
+) -> None:
     """A failed replacement cannot leave the closed old backend installed."""
 
     events: list[tuple[str, str, dict[str, Any]]] = []
@@ -334,6 +347,8 @@ def test_requested_restart_failure_is_never_reported_running() -> None:
         policy=policy,
         controller_factory=factory,
         own_io=True,
+        scheduler=generation_scheduler,
+        actor_host=actor_host,
         slots=_slots,
     )
     supervisor.ensure_started()
@@ -388,7 +403,7 @@ def test_exit_while_running_relaunches_within_the_backoff_bound() -> None:
     assert supervisor.endpoints() is not None
 
 
-def test_a_relaunch_recomputes_tcp_up_slots() -> None:
+def test_a_relaunch_recomputes_tcp_up_slots(generation_scheduler) -> None:
     from hyprial.kernel import FORWARDING_UP_ENV
 
     seen: list[list[str]] = []
@@ -406,6 +421,7 @@ def test_a_relaunch_recomputes_tcp_up_slots() -> None:
         },
         event_log=lambda *_args, **_fields: None,
         controller_factory=factory,
+        scheduler=generation_scheduler,
         slots=lambda: (),
         slot_transport="tcp",
         up_slots=lambda: tuple(current[0]),
@@ -563,7 +579,9 @@ def test_daemon_relaunches_real_sidecar_after_exit_and_recovers(
         app._close()
 
 
-def test_composed_supervisor_passes_the_membership_bound_to_the_io_owner() -> None:
+def test_composed_supervisor_passes_the_membership_bound_to_the_io_owner(
+    actor_host, generation_scheduler
+) -> None:
     """A request-path membership bound must reach the sidecar I/O owner intact."""
 
     class _Membership(_Controller):
@@ -575,6 +593,8 @@ def test_composed_supervisor_passes_the_membership_bound_to_the_io_owner() -> No
     supervisor = ForwardingSidecarSupervisor(
         {}, event_log=lambda *_args, **_fields: None,
         controller_factory=lambda _environ, _on_exit: controller, own_io=True,
+        scheduler=generation_scheduler,
+        actor_host=actor_host,
         slots=_slots,
     )
     supervisor.ensure_started()

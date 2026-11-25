@@ -1,4 +1,4 @@
-"""Work item command family."""
+"""Read shortcuts for an organization's work folder."""
 
 from hyprial.shell.impl.cli.commands.work.commands import work_app
 

@@ -254,3 +254,26 @@ def test_default_launcher_refuses_a_p2_cwd_outside_its_own_workspace(
 
     with pytest.raises(PiProjectTrustError):
         launcher.start(launch)
+
+
+def test_launcher_keeps_a_definite_configuration_refusal():
+    from hyprial.daemon.impl.harnesses.pi.loader import PiStartPreconditionError
+
+    class Refused:
+        p2_managed = True
+        last_failure = PiStartPreconditionError("configured Pi model is unavailable")
+        last_error = str(last_failure)
+        stopped = False
+
+        def wait_ready(self, *, timeout):
+            return False
+
+        def stop(self):
+            self.stopped = True
+
+    process = Refused()
+    launcher = HarnessLauncher(pi_rpc_factory=lambda _launch: process)
+    with pytest.raises(PiStartPreconditionError) as error:
+        launcher.start(spec(args=("--approve",)))
+    assert error.value is process.last_failure
+    assert process.stopped

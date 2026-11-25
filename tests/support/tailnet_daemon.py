@@ -3,6 +3,12 @@
 Only org service construction is adapted. CLI startup, IPC, OrgFS, management
 permissions, sessions and messages remain real. This is not tailnet acceptance:
 no transport, key derivation, remote authority or lease timer is exercised.
+
+Decision record (file header; no inline comments by repository rule):
+- S3 (2026-11-21): Preserve an existing device record's ``device_uid``,
+  ``name`` and ``key_generation`` when adapting org service construction so a
+  prepared test home (``tests.support.gui_home``) keeps its immutable device
+  identity instead of unlinking ``device-identity.json`` during first-run checks.
 """
 from __future__ import annotations
 
@@ -15,7 +21,7 @@ from threading import RLock
 from unittest.mock import patch
 
 from hyprial.daemon.impl.org.network import ipc
-from hyprial.identity.impl.device import DeviceRecord, write_device_record
+from hyprial.identity.impl.device import DeviceRecord, read_device_record, write_device_record
 from tests.support.tailnet_membership import FakeMembershipSidecar
 
 
@@ -37,7 +43,7 @@ def membership_services():
 
     The test double persists its own tables and receipts across CLI restarts.
     It never reconstructs admission from OrgFS. Separate owner identities get
-    separate stores, so an owner migration cannot adopt the old owner's roster.
+    separate stores, so a different owner cannot adopt the old owner's roster.
     No global/autouse fixture selects this adapter.
     """
     original = ipc._build_service
@@ -66,9 +72,15 @@ def membership_services():
             sidecars[identity] = (fake, store)
         fake, store = sidecars[identity]
         row = fake.local
+        existing = read_device_record(Path(app.hyprial_home))
         write_device_record(Path(app.hyprial_home), DeviceRecord(
-            device_id=row["deviceId"], owner=row["owner"],
-            client_public=row["masterPublic"], server_public=row["serverPublic"],
+            device_id=row["deviceId"],
+            owner=row["owner"],
+            client_public=row["masterPublic"],
+            server_public=row["serverPublic"],
+            key_generation=existing.key_generation if existing is not None else 1,
+            device_uid=existing.device_uid if existing is not None else None,
+            name=existing.name if existing is not None else None,
         ))
 
         def request(op, params):
@@ -82,6 +94,7 @@ def membership_services():
                 return result
 
         service = original(app, membership_timeout=membership_timeout)
+        service._network_isolated = False
         service._membership_request = request
         service._read_own_address = lambda: row["address"]
         return service

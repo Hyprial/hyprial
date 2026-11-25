@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from dataclasses import field
 import base64
 import hashlib
-from hyprial.kernel import CHANNEL_LIVENESS_TTL_SECONDS, ipc_errors
+from hyprial.kernel import CHANNEL_LIVENESS_TTL_SECONDS, ipc_errors, subject_cell_id
 import json
 import logging
 from hyprial.identity.impl.agents.home.config import normalize_agent_config
@@ -25,7 +25,7 @@ import uuid
 Before this module hyprial had an agent's *address* but no agent *identity*: how to
 launch it lived in ``HarnessLaunchSpec`` keyed by ``(harness, name)``, its
 session binding lived in ``InteractiveSession`` keyed by ``actor``, and the
-only proof it ever existed on the network was a URI string in ``users.json``.
+only proof it ever existed on the network was a URI string in the old users file.
 Three shapes, three keys, one concept — and because the process layer keyed on
 ``(harness, name)`` while the network layer keyed on ``actor``, ``claude:foo``
 and ``pi:foo`` minted the *same* four-segment URI and silently fought over it.
@@ -39,10 +39,6 @@ instead of in code:
 
 * A1 uniqueness — ``actor`` is the PRIMARY KEY: a duplicate name is an
   ``IntegrityError`` before it is anything else.
-* Pin one-to-one — the ``pins`` table carries UNIQUE on both columns:
-  one adapter binds one agent, one agent is bound by one adapter.
-* destroy erases the pins — ``ON DELETE CASCADE``: deleting the agent row
-  and its pins is a single transaction, so no cleanup code can forget.
 
 Deliberately absent from :class:`Agent`:
 
@@ -57,6 +53,11 @@ Deliberately absent from :class:`Agent`:
 ``last_seen_ms``
     Liveness is runtime state for one daemon generation, so it lives in
     :mod:`hyprial.identity.impl.agents.state.liveness`, never on the persisted record.
+
+The host-invite deletion (owner ruling round 2, 2026-11-21) deliberately leaves
+fresh and existing database CHECK constraints unchanged. The stored
+``'host-invite'`` value has no writer but remains valid on reads and rebuilds,
+so legacy rows load, list, and survive without a schema migration.
 """
 _LOG = logging.getLogger(__name__)
 def _uri() -> Any:
@@ -76,7 +77,7 @@ RETIRED_SESSION_REF_RETENTION_MS = int(CHANNEL_LIVENESS_TTL_SECONDS * 1000) * 43
 # takeovers consume this budget. 256 therefore covers roughly one new terminal
 # per working day for a year while keeping every Agent incarnation bounded.
 AGENT_SESSION_REF_HISTORY_LIMIT = 256
-HOSTED_BY_VALUES = ("transfer-receive", "squire-container", "host-invite")
+HOSTED_BY_VALUES = ("transfer-receive", "host-invite")
 class AgentError(RuntimeError):
     """Base class for every agent-registry failure, carrying an IPC code."""
 
@@ -88,45 +89,13 @@ class AgentExistsError(AgentError):
 class AgentNotFoundError(AgentError):
     code = ipc_errors.AGENT_NOT_FOUND
 class AgentDestroySettlementUnknown(AgentError):
-    code = "AGENT_DESTROY_SETTLEMENT_UNKNOWN"
+    code = ipc_errors.AGENT_DESTROY_SETTLEMENT_UNKNOWN
 class AgentEntityConflict(AgentError):
-    code = "AGENT_VERSION_CONFLICT"
+    code = ipc_errors.AGENT_VERSION_CONFLICT
 class AgentLifecycleFenceUnsupported(AgentError):
     code = ipc_errors.LIFECYCLE_INCARNATION_UNSUPPORTED
 class InvalidAgentNameError(AgentError):
-    code = "INVALID_AGENT_NAME"
-class PinConflictError(AgentError):
-    """The pins table's UNIQUE(agent) spoke: one agent, one adapter."""
-
-    code = "PIN_CONFLICT"
-
-    def __init__(self, agent_uri: str, adapter: str, holder: str) -> None:
-        super().__init__(
-            f"agent {agent_uri} is already pinned by adapter {holder!r}. "
-            f"Adapter and agent bind one-to-one: run 'hyprial adapter unpin "
-            f"{holder}' first if this pin should move."
-        )
-        self.agent_uri = agent_uri
-        self.adapter = adapter
-        self.holder = holder
-
-
-_UNCONDITIONAL_PIN = object()
-
-
-class PinStateConflictError(AgentError):
-    """A pin changed after the caller observed it; no write was performed."""
-
-    code = "PIN_STATE_CONFLICT"
-
-    def __init__(self, adapter: str, expected_actor: object, current_actor: str | None) -> None:
-        super().__init__(f"adapter {adapter!r} binding changed; read it again before confirming")
-        self.adapter = adapter
-        self.expected_actor = expected_actor
-        self.current_actor = current_actor
-        self.details = {"adapter": adapter, "expectedActor": expected_actor, "currentActor": current_actor}
-
-
+    code = ipc_errors.INVALID_AGENT_NAME
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 def _is_compensating_attempt(attempt_token: str) -> bool:
@@ -167,23 +136,6 @@ def normalize_capabilities(value: object) -> dict[str, Any]:
         return json.loads(json.dumps(dict(value), sort_keys=True, allow_nan=False))
     except (TypeError, ValueError) as error:
         raise AgentError("capabilities must contain only finite JSON values") from error
-def normalize_pinned_adapters(value: object) -> tuple[str, ...]:
-    """Normalize the adapters pinned to an agent into a sorted unique tuple.
-
-    Adapter pins live beside the agent rows on purpose: deleting the agent
-    cascades the pins away, so no separate store can go stale.  The schema
-    enforces one adapter per agent and one agent per adapter; the tuple shape
-    merely keeps the served field order-stable.
-    """
-
-    if value is None:
-        return ()
-    if isinstance(value, str) or not isinstance(value, Iterable):
-        raise AgentError("pinnedAdapters must be a sequence of adapter names")
-    adapters = tuple(value)
-    if any(not isinstance(item, str) or not item for item in adapters):
-        raise AgentError("pinnedAdapters must contain non-empty adapter names")
-    return tuple(sorted(set(adapters)))
 def normalize_harness_args(value: object) -> dict[str, tuple[str, ...]]:
     """Normalize per-harness launch arguments into ``{harness: (arg, ...)}``.
 
@@ -206,8 +158,61 @@ def normalize_harness_args(value: object) -> dict[str, tuple[str, ...]]:
         args = tuple(item)
         if any(not isinstance(entry, str) for entry in args):
             raise AgentError(f"harness_args[{key}] must contain only strings")
-        result[key] = args
+        if args:
+            result[key] = args
     return dict(sorted(result.items()))
+def agent_id_for_entity_token(entity_token: str) -> str:
+    """The ``a.``-typed agent id one incarnation token derives."""
+
+    try:
+        raw = bytes.fromhex(entity_token)
+    except (TypeError, ValueError) as error:
+        raise AgentError("entity_token must be uuid4 hexadecimal") from error
+    if len(raw) != 16:
+        raise AgentError("entity_token must be uuid4 hexadecimal")
+    digest = hashlib.sha256(b"hyprial-agent-id-v1" + raw).digest()[:16]
+    encoded = base64.b32encode(digest).decode("ascii").rstrip("=").lower()
+    return f"a.{encoded}"
+
+
+def mint_record_uri(owner: str, machine: str, actor: str, entity_token: str) -> str:
+    """The URI one incarnation's record stores, minted by the §2.1 switch.
+
+    The id is derived only while the switch mints it, so a legacy record
+    with a malformed token keeps its name-form fallback exactly as before.
+    """
+
+    from hyprial.identity.impl.agents.addressing import id_form_minting, mint_agent_uri
+
+    agent_id = agent_id_for_entity_token(entity_token) if id_form_minting() else actor
+    return mint_agent_uri(owner, machine, actor=actor, agent_id=agent_id)
+
+
+def _backfill_agent_ids(connection: sqlite3.Connection) -> None:
+    """Give every agents row its derived ``agent_id`` under a unique index.
+
+    The column is derived data: the incarnation token stays the authority, so
+    rows a mixed-version writer inserted without an id are repaired on the
+    next open, and lookups fall back to the token when the column is blank.
+    """
+
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(agents)")}
+    if "agent_id" not in columns:
+        connection.execute("ALTER TABLE agents ADD COLUMN agent_id TEXT DEFAULT NULL")
+    repairs: list[tuple[str, str]] = []
+    for row in connection.execute("SELECT actor, entity_token, agent_id FROM agents").fetchall():
+        try:
+            expected = agent_id_for_entity_token(str(row[1]))
+        except AgentError:
+            continue
+        if row[2] != expected:
+            repairs.append((expected, str(row[0])))
+    connection.executemany("UPDATE agents SET agent_id = ? WHERE actor = ?", repairs)
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS agents_agent_id ON agents(agent_id)"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Agent:
     """The durable "who is this agent, how is it configured" record (design §3).
@@ -245,22 +250,11 @@ class Agent:
     last_session_id: str | None = None
     last_active_at_ms: int | None = None
 
-    # -- adapter pins: which adapters route their inbound DMs to this agent --
-    #: Composed from the ``pins`` table at read time; writes go through
-    #: ``AgentRegistry.pin``/``unpin`` only (``save`` ignores this field).
-    #: Kept on the record (and in its JSON shape) so ``agent get/list``
-    #: show the binding.  Besides inbound routing, ``message.send`` uses the
-    #: pin to select this local agent's own bot for eligible ``user:`` DMs.
-    #: Kept a *list* for shape-compatibility even
-    #: though UNIQUE(agent) makes it hold at most one adapter.  Deleting the
-    #: agent row cascades the pins away.  It is not a bijection: correlated
-    #: replies still use each message's own adapter rather than this pin.
-    pinned_adapters: tuple[str, ...] = ()
-
     # -- lifecycle: existing is active, destroy is deletion (no retired state) --
     created_at_ms: int = 0
     #: Explicit hosting authority, not an inference from the URI's owner.
     hosted_by: str | None = None
+    display_name: str | None = None
 
     def __post_init__(self) -> None:
         if self.hosted_by not in (None, *HOSTED_BY_VALUES):
@@ -269,9 +263,6 @@ class Agent:
         object.__setattr__(self, "config", normalize_agent_config(self.config))
         object.__setattr__(
             self, "harness_args", normalize_harness_args(self.harness_args)
-        )
-        object.__setattr__(
-            self, "pinned_adapters", normalize_pinned_adapters(self.pinned_adapters)
         )
 
     def args_for(self, harness: str) -> tuple[str, ...]:
@@ -283,15 +274,36 @@ class Agent:
     def agent_id(self) -> str:
         """Immutable typed id derived from this incarnation's entity token."""
 
-        try:
-            raw = bytes.fromhex(self.entity_token)
-        except ValueError as error:
-            raise AgentError("entity_token must be uuid4 hexadecimal") from error
-        if len(raw) != 16:
-            raise AgentError("entity_token must be uuid4 hexadecimal")
-        digest = hashlib.sha256(b"hyprial-agent-id-v1" + raw).digest()[:16]
-        encoded = base64.b32encode(digest).decode("ascii").rstrip("=").lower()
-        return f"a.{encoded}"
+        return agent_id_for_entity_token(self.entity_token)
+
+    @property
+    def display(self) -> str:
+        """The name shown for this agent: its display name, else its actor."""
+
+        return self.display_name or self.actor
+
+    @classmethod
+    def minted(
+        cls, *, actor: str, owner: str, machine: str,
+        entity_token: str | None = None, **fields: Any,
+    ) -> Self:
+        """A new incarnation whose URI is minted from its own token (§2.1)."""
+
+        token = entity_token or uuid.uuid4().hex
+        return cls(
+            uri=mint_record_uri(owner, machine, actor, token), actor=actor,
+            owner=owner, machine=machine, entity_token=token, **fields,
+        )
+
+    @property
+    def cell_id(self) -> str:
+        """The agent's cell id: the ``agent`` subject cell of :attr:`agent_id`.
+
+        Derived, never stored, and kept out of :meth:`to_json` so no published
+        agent result shape changes.
+        """
+
+        return subject_cell_id("agent", self.agent_id)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -313,11 +325,18 @@ class Agent:
             "lastHarness": self.last_harness,
             "lastSessionId": self.last_session_id,
             "lastActiveAtMs": self.last_active_at_ms,
-            "pinnedAdapters": list(self.pinned_adapters),
             "createdAtMs": self.created_at_ms,
             "hosted": self.hosted_by is not None,
             "hostedBy": self.hosted_by,
+            "agentId": self._agent_id_or_none(),
+            "displayName": self.display_name,
         }
+
+    def _agent_id_or_none(self) -> str | None:
+        try:
+            return self.agent_id
+        except AgentError:
+            return None
 
     @classmethod
     def from_json(cls, value: object, label: str) -> Self:
@@ -326,9 +345,13 @@ class Agent:
         actor = _string(value.get("actor"), f"{label}.actor")
         owner = _string(value.get("owner"), f"{label}.owner")
         machine = _string(value.get("machine"), f"{label}.machine")
+        entity_token = (
+            _optional_string(value.get("entityToken"), f"{label}.entityToken")
+            or uuid.uuid4().hex
+        )
         uri = value.get("uri")
         if not isinstance(uri, str) or not uri:
-            uri = _uri().canonical_agent_uri(owner, machine, actor)
+            uri = mint_record_uri(owner, machine, actor, entity_token)
         raw_args = value.get("harnessArgs") or {}
         if not isinstance(raw_args, dict):
             raise AgentError(f"{label}.harnessArgs must be an object")
@@ -341,10 +364,7 @@ class Agent:
             actor=actor,
             owner=owner,
             machine=machine,
-            entity_token=(
-                _optional_string(value.get("entityToken"), f"{label}.entityToken")
-                or uuid.uuid4().hex
-            ),
+            entity_token=entity_token,
             cwd=_optional_string(value.get("cwd"), f"{label}.cwd"),
             config=(
                 None
@@ -369,9 +389,11 @@ class Agent:
                 if isinstance(value.get("lastActiveAtMs"), int)
                 else None
             ),
-            pinned_adapters=normalize_pinned_adapters(value.get("pinnedAdapters")),
             created_at_ms=int(created) if isinstance(created, int) else 0,
             hosted_by=_optional_string(value.get("hostedBy"), f"{label}.hostedBy"),
+            display_name=_optional_string(
+                value.get("displayName"), f"{label}.displayName"
+            ),
         )
 def _string(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -445,7 +467,7 @@ class HandoverNotice:
         }
 _HOSTED_BY_ALTER = (
     "ALTER TABLE agents ADD COLUMN hosted_by TEXT DEFAULT NULL "
-    "CHECK (hosted_by IN ('transfer-receive', 'squire-container', 'host-invite'))"
+    "CHECK (hosted_by IN ('transfer-receive', 'host-invite'))"
 )
 _AGENTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS __TABLE_NAME__ (
     actor TEXT PRIMARY KEY,
@@ -468,11 +490,6 @@ _AGENTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS __TABLE_NAME__ (
 _SCHEMA = "\n".join(
     (
         _AGENTS_TABLE_DDL.replace("__TABLE_NAME__", "agents") + ";",
-        """CREATE TABLE IF NOT EXISTS pins (
-    adapter TEXT NOT NULL UNIQUE,
-    agent TEXT NOT NULL UNIQUE
-        REFERENCES agents(actor) ON DELETE CASCADE
-);""",
         """CREATE TABLE IF NOT EXISTS lifecycle_resources (
     resource_key TEXT PRIMARY KEY,
     resource_token TEXT NOT NULL,
@@ -520,6 +537,25 @@ _SCHEMA = "\n".join(
 );""",
         """CREATE INDEX IF NOT EXISTS retired_session_refs_retired_at
     ON retired_session_refs(retired_at_ms);""",
+        """CREATE TABLE IF NOT EXISTS agent_harness_args_audit (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    at_ms INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    entity_token TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('set', 'clear', 'clear-all')),
+    harness TEXT,
+    before_json TEXT NOT NULL,
+    after_json TEXT NOT NULL,
+    before_digest TEXT NOT NULL,
+    after_digest TEXT NOT NULL,
+    dangerous_json TEXT NOT NULL,
+    confirmed_dangerous INTEGER NOT NULL,
+    operator TEXT NOT NULL,
+    reason TEXT,
+    correlation_id TEXT NOT NULL
+);""",
+        """CREATE INDEX IF NOT EXISTS agent_harness_args_audit_actor_at
+    ON agent_harness_args_audit(actor, at_ms);""",
     )
 )
 _AGENTS_TABLE_COLUMNS = (
@@ -715,6 +751,10 @@ def _connect(database: Path) -> sqlite3.Connection:
             "CREATE UNIQUE INDEX IF NOT EXISTS agents_actor_entity_token "
             "ON agents(actor, entity_token)"
         )
+        _backfill_agent_ids(connection)
+        from .naming import ensure_naming_schema
+
+        ensure_naming_schema(connection)
         connection.execute(
             "CREATE TABLE IF NOT EXISTS agent_session_ref_history ("
             "history_id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -824,8 +864,6 @@ def _connect(database: Path) -> sqlite3.Connection:
                 (new_key, old_key),
             )
         if rebuild:
-            # Finish sqlite's documented rebuild procedure: prove pins/grants
-            # still resolve before anything is committed.
             violations = connection.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise RuntimeError(

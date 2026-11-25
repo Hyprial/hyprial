@@ -684,25 +684,6 @@ def test_start_pi_resume_refuses_duplicate_exact_files(
     assert "spawned" not in launch_rig["observed"]
 
 
-def test_pi_connector_argv_sanitizes_session_ref_at_the_boundary() -> None:
-    """Item 4: the interactive pty connector passes session refs through the
-    same [A-Za-z0-9._-] translation as the RPC boundary (#192 follow-up)."""
-
-    from hyprial.kernel import HarnessLaunchSpec
-    from hyprial.daemon.impl.harnesses.pi import PiConnector
-
-    spec = HarnessLaunchSpec(
-        harness="pi",
-        name="pi-tui",
-        cwd=Path("/tmp"),
-        args=("--model", "k3"),
-        headless=False,
-        session_ref="squire:alw:usrb",
-    )
-    argv = PiConnector().build_argv(spec)
-    assert argv[-2:] == ("--session-id", "squire.alw.usrb")
-
-
 def test_pi_session_id_translation_is_deterministic_and_lossless() -> None:
     from hyprial.daemon.impl.harnesses.pi.session import pi_session_id
 
@@ -763,3 +744,159 @@ def test_a_stolen_global_clock_tick_cannot_hang_the_registration_wait(
 
     assert result.exit_code != 0
     assert "attach registration" in result.output
+
+
+def test_interactive_actor_follows_an_id_minted_registry_record() -> None:
+    """UUID addressing: compare against the address the daemon registers."""
+
+    from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
+        _interactive_actor,
+    )
+
+    official = "agent:op:node-1:a." + "e" * 26
+    status = {
+        "daemon": {"owner": "op", "nodeId": "node-1"},
+        "agents": [
+            {"actor": "pi-tui", "owner": "op", "uri": official},
+            {"actor": "named", "owner": "op", "uri": "agent:op:node-1:named"},
+            {"actor": "guest", "owner": "peer", "uri": "agent:peer:node-1:a." + "f" * 26},
+        ],
+    }
+
+    assert _interactive_actor("pi-tui", status) == official
+    assert _interactive_actor("named", status) == "agent:op:node-1:named"
+    assert _interactive_actor("guest", status) == "agent:op:node-1:guest"
+    assert _interactive_actor("fresh", status) == "agent:op:node-1:fresh"
+    assert _interactive_actor(ACTOR, status) == ACTOR
+
+
+def test_pi_attach_registration_compares_the_official_address() -> None:
+    """D12 for pi: ``ps`` lists the session at the record's id URI, not at the
+    name URI the CLI minted before the record existed."""
+
+    from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
+        _pi_attach_registration,
+    )
+
+    id_address = "agent:op:node-1:a.7k3m2ztw5rq9yb4xnd6vjc8hfe"
+    name_uri = "agent:op:node-1:worker"
+
+    def status(
+        session_actor: str, uri: str, *, owner: str = "op", source: str = "pi-extension"
+    ) -> dict[str, Any]:
+        return {
+            "agents": [
+                {"actor": "worker", "owner": owner, "machine": "node-1", "uri": uri}
+            ],
+            "interactiveSessions": [
+                {"actor": session_actor, "sessionRef": "s", "source": source}
+            ],
+        }
+
+    attach = _pi_attach_registration
+    assert attach(name_uri, "s", status(id_address, id_address)) is True
+    assert attach(name_uri, "s", status(name_uri, id_address)) is False
+    assert attach(name_uri, "s", status(name_uri, name_uri)) is True
+    assert attach(id_address, "s", status(id_address, id_address)) is True
+    assert attach(name_uri, "other", status(id_address, id_address)) is False
+    assert attach(
+        name_uri, "s", status(id_address, id_address, source="codex-app-server")
+    ) is False
+    assert attach(name_uri, "s", status(id_address, id_address, owner="other")) is False
+
+
+@pytest.mark.parametrize(
+    "json_output,notice_on_stderr",
+    [(False, True), (True, False)],
+    ids=["human-warning", "json-silent"],
+)
+def test_start_pi_interactive_passes_json_output_to_runtime_notices(
+    launch_rig: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    json_output: bool,
+    notice_on_stderr: bool,
+) -> None:
+    """#2600: the Pi launcher's own ``json_output`` reaches the daemon notice.
+
+    The helper under test is the real one (the pre-P22 fixture is undone here);
+    only the daemon transport and the SDK argv builder are faked.  A hardcoded
+    ``False`` at the launcher call site would leak the notice into ``--json``
+    stderr.
+    """
+
+    from types import SimpleNamespace
+
+    from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
+        _runtime_context_environment as _real_runtime_context_environment,
+    )
+
+    message = (
+        "tool profile(s) rev-1/legacy predate runtime git-identity resolution "
+        "and were re-resolved to 'profile'; each legacy directory was set aside "
+        "as *.migrated (git history untouched)"
+    )
+    native_root = tmp_path / "native"
+    native_root.mkdir(mode=0o700)
+    original_request = _cli_support._daemon_request
+
+    def daemon_request(
+        method: str, params: dict[str, Any] | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        if method == "agent.runtime-context":
+            return {
+                "ok": True,
+                "mode": "agent-home-p2",
+                "environment": {
+                    "HOME": str(tmp_path / "tool-home"),
+                    "PI_CODING_AGENT_DIR": str(native_root),
+                },
+                "projectionRoot": str(tmp_path / "projection"),
+                "nativeRoot": str(native_root),
+                "sessionRoot": str(tmp_path / "sessions"),
+                "notices": [
+                    {
+                        "code": "TOOL_PROFILE_MIGRATED",
+                        "actor": ACTOR,
+                        "message": message,
+                        "path": str(tmp_path / "projection" / "tools" / "legacy.migrated"),
+                    }
+                ],
+            }
+        return original_request(method, params, **kwargs)
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", daemon_request)
+    monkeypatch.setattr(
+        "hyprial.daemon.find_pi_package_root", lambda *_args, **_kwargs: tmp_path
+    )
+    monkeypatch.setattr(
+        "hyprial.daemon.resolve_approved_pi_project", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        "hyprial.daemon.pi_sdk_launch_from_public_projection",
+        lambda *_args, **_kwargs: SimpleNamespace(argv=["node", "pi-loader", "run-tui"]),
+    )
+    monkeypatch.setattr(
+        _cli_get_services(),
+        "_runtime_context_environment",
+        _real_runtime_context_environment,
+    )
+
+    result = _cli_get_services()._start_interactive_pi(
+        name="pi-tui",
+        nickname=None,
+        cwd=tmp_path,
+        resume=None,
+        runtime_args=(),
+        model_provider=None,
+        model=None,
+        json_output=json_output,
+    )
+
+    stderr = capsys.readouterr().err
+    assert result["ok"] is True
+    assert result["sessionRef"] == SESSION_REF
+    assert (message in stderr) is notice_on_stderr
+    if json_output:
+        assert stderr == ""

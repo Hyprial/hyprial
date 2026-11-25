@@ -352,7 +352,7 @@ def test_operator_on_behalf_flags_are_forwarded_visibly(
     ]
 
 
-def test_probe_delivery_paths_records_three_tagged_accepts(
+def test_probe_delivery_paths_records_two_tagged_accepts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
 ) -> None:
     """The explicit probe writes the same families doctor reads."""
@@ -385,8 +385,6 @@ def test_probe_delivery_paths_records_three_tagged_accepts(
             "probe-delivery-paths",
             "--from",
             "agent:owner:node:probe",
-            "--route",
-            "route:adapter:target",
             "--json",
         ],
     )
@@ -396,10 +394,29 @@ def test_probe_delivery_paths_records_three_tagged_accepts(
     assert payload["tag"] == "hyprial-probe"
     assert payload["per_family"]["agent"]["accepted"] is True
     assert payload["per_family"]["user"]["accepted"] is True
-    assert payload["per_family"]["route"]["accepted"] is True
+    assert set(payload["per_family"]) == {"agent", "user"}
     probe = tmp_path / "state" / "delivery-paths-probe.json"
     written = json.loads(probe.read_text())
-    assert written["per_family"]["route"]["target"] == "route:adapter:target"
+    assert set(written["per_family"]) == {"agent", "user"}
     assert written["per_family"]["user"]["target"] == "user:owner"
     assert written["per_family"]["agent"]["target"] == "agent:owner:node:probe"
-    assert len(calls) == 3
+    assert len(calls) == 2
+    assert not any("route:" in str(call) for call in calls)
+
+
+def test_probe_delivery_paths_has_no_route_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I4b (D5): the ``--route`` option is gone."""
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: {"ok": True, "deliveries": []})
+    monkeypatch.setattr(_cli_owner_1, "_local_operator_identity", lambda: "user:owner")
+    result = CliRunner().invoke(
+        _cli_root_app,
+        [
+            "message", "probe-delivery-paths", "--from", "agent:owner:node:probe",
+            "--route", "route:adapter:target", "--json",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    help_text = CliRunner().invoke(_cli_root_app, ["message", "probe-delivery-paths", "--help"]).output
+    assert "--route" not in help_text

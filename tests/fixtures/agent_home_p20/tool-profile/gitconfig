@@ -1,0 +1,5 @@
+[user]
+	name = Allen Woods
+	email = allenwoods@users.noreply.code.hyprial.com
+[url "ssh://git@git.internal.hyprial.com/"]
+	insteadOf = https://code.hyprial.com/

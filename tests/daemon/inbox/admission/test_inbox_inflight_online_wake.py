@@ -16,6 +16,7 @@ from hyprial.daemon.impl.inbox.contracts.ports import BoolMutationCompleted
 from hyprial.daemon.impl.inbox.links.wake import RecipientWakeCoordinator
 from hyprial.daemon.impl.transport import LivelinessDirectory
 from tests.integration.actor_preservation.delivery.test_actor_preserved_outbox_final_attempt_wake import _PresenceSession, _message, RECIPIENT
+from tests.support.actor_hosts import new_actor_host
 
 
 class Events:
@@ -127,7 +128,7 @@ def test_online_wake_survives_inflight_failed_receipt(
         )
         rpath = tmp_path / "receiver.sqlite3"
         receiver = DeliveryCustodyFacade(
-            DeliveryCustodyCoordinator(rpath, MemoryDeliveryTransport(), Events()),
+            DeliveryCustodyCoordinator(rpath, MemoryDeliveryTransport(), Events(), actor_host=new_actor_host()),
             rpath,
         )
         endpoint = ZenohInboxEndpoint(b, receiver, RECIPIENT)
@@ -135,7 +136,7 @@ def test_online_wake_survives_inflight_failed_receipt(
         eventually(lambda: directory.actor_online(RECIPIENT))
     router = WakeRouter()
     path = tmp_path / "sender.sqlite3"
-    owner = DeliveryCustodyCoordinator(path, transport, router)
+    owner = DeliveryCustodyCoordinator(path, transport, router, actor_host=new_actor_host())
     inbox = DeliveryCustodyFacade(owner, path)
     if not native:
         session = _PresenceSession()
@@ -311,7 +312,7 @@ def test_retained_wakes_coalesce_and_close_drains(tmp_path, monkeypatch, outcome
 
     monkeypatch.setattr(transport, "deliver", held_deliver)
     path = tmp_path / "close.sqlite3"
-    owner = DeliveryCustodyCoordinator(path, transport, Events())
+    owner = DeliveryCustodyCoordinator(path, transport, Events(), actor_host=new_actor_host())
     inbox = DeliveryCustodyFacade(owner, path)
     submit_inbox = DeliveryCustodyFacade(owner, path, timeout=hold_budget_seconds)
     message = replace(

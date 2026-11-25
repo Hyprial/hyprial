@@ -109,7 +109,7 @@ def locator_port(endpoint: str) -> int | None:
 
     This reads **zenoh's** locator grammar -- ``<protocol>/<host>:<port>``,
     optionally followed by a ``?``-query of locator options -- not the
-    ``agent:``/``channel:`` identity grammar owned by :mod:`hyprial.uri`.  A
+    ``agent:``/``adapter:`` identity grammar owned by :mod:`hyprial.uri`.  A
     ``unixsock-stream`` locator names a socket path, so it has no port.  This
     module owns the locator grammar, so link diagnostics asks here instead of
     taking the string apart again.

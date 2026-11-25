@@ -14,7 +14,6 @@ from hyprial import __version__
 from hyprial.kernel import (
     MethodError,
     MethodSpec,
-    export_catalog,
     ipc_errors,
 )
 
@@ -33,7 +32,11 @@ _HTTP_BINDING = {
                     "properties": {
                         "mode": {
                             "type": "string",
-                            "enum": ["none", "local-operator-selector"],
+                            "enum": [
+                                "none",
+                                "local-owner-selector",
+                                "local-owner-user-selector",
+                            ],
                         },
                         "param": {"type": ["string", "null"]},
                     },
@@ -41,7 +44,8 @@ _HTTP_BINDING = {
                     "additionalProperties": False,
                 },
                 "readiness": {"type": ["string", "null"]},
-                "readOnlyParamsSchema": {"type": "object"},
+                "onBehalfOf": {"type": ["string", "null"]},
+                "paramsConstraints": {"type": "object"},
             },
             "required": ["identity", "readiness"],
             "additionalProperties": False,
@@ -132,11 +136,35 @@ _METHOD = {
         "audience": {"type": "array", "items": {"type": "string"}},
         "paramsSchema": {"type": "object"},
         "resultSchema": {"type": "object"},
+        "ipcParamValidation": {
+            "type": "string",
+            "enum": ["schema", "handler"],
+        },
         "errors": {"type": "array", "items": _ERROR},
         "stream": _STREAM,
         "idempotency": _IDEMPOTENCY,
         "preview": _PREVIEW,
         "previewOf": {"type": "string"},
+        "phaseCaller": {
+            "type": "object",
+            "properties": {
+                "pairs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "phase": {"type": "string", "minLength": 1},
+                            "caller": {"type": "string", "minLength": 1},
+                        },
+                        "required": ["phase", "caller"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["pairs"],
+            "additionalProperties": False,
+        },
     },
     "required": [
         "name",
@@ -198,6 +226,21 @@ DAEMON_CATALOG_SPEC = MethodSpec(
 )
 
 
+def onboarding_host_registered(app: Any) -> bool:
+    """Whether a real onboarding host registered itself on this application.
+
+    A host owns the request port and the durable phase decision.  The marker is
+    set by that host only (never by a request, bearer, phase/home/view field or
+    trusted message origin); an unassembled daemon keeps every onboarding
+    method ``disabled`` rather than advertising work nobody can perform.
+    """
+
+    marker = getattr(app, "_onboarding_http_ready", False)
+    if callable(marker):
+        return bool(marker())
+    return bool(marker)
+
+
 def _method_state(
     app: Any,
     spec: MethodSpec,
@@ -208,6 +251,8 @@ def _method_state(
     """Return ``(state, callable, reason)`` in the declaration's fixed order."""
 
     if not spec.http_exposed:
+        return "disabled", False, None
+    if spec.owner == "daemon.onboarding" and not onboarding_host_registered(app):
         return "disabled", False, None
     restore_set = getattr(restore_done, "is_set", None)
     if restore_set is None or not restore_set():
@@ -231,10 +276,10 @@ def daemon_catalog_handler(
 ) -> JsonObject:
     """Project declarations plus live state; no business read or invocation."""
 
-    from ..registry import METHOD_REGISTRY
+    from ..registry import METHOD_REGISTRY, _frozen_catalog
 
     specs = {spec.name: spec for spec in METHOD_REGISTRY.specs}
-    entries = export_catalog(METHOD_REGISTRY.specs)["methods"]
+    entries = _frozen_catalog()["methods"]
     methods: list[JsonObject] = []
     for entry in entries:
         spec = specs[entry["name"]]
@@ -264,4 +309,4 @@ def daemon_catalog_handler(
 
 CATALOG_BINDINGS = ((DAEMON_CATALOG_SPEC, daemon_catalog_handler),)
 
-__all__ = ["CATALOG_BINDINGS", "DAEMON_CATALOG_SPEC", "daemon_catalog_handler"]
+__all__ = ["CATALOG_BINDINGS", "DAEMON_CATALOG_SPEC", "daemon_catalog_handler", "onboarding_host_registered"]

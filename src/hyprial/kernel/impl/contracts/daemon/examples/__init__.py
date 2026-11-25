@@ -143,7 +143,11 @@ def _error_message(value: Any, where: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class MethodExampleError:
-    """One business error instance used by an example case."""
+    """One business error instance used by an example case.
+
+    ``None`` means omitted data; this type cannot represent explicit JSON null.
+    An explicit object, including {}, must satisfy the declared data schema.
+    """
 
     code: str
     message: str
@@ -192,6 +196,7 @@ class MethodExampleSet:
     cases: tuple[MethodExample, ...]
     empty_not_applicable: str = ""
     domain_errors_not_applicable: str = ""
+    success_not_applicable: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "method", _require_text(self.method, "method"))
@@ -209,6 +214,12 @@ class MethodExampleSet:
                 _require_text(
                     self.domain_errors_not_applicable, "domain_errors_not_applicable"
                 ),
+            )
+        if self.success_not_applicable:
+            object.__setattr__(
+                self,
+                "success_not_applicable",
+                _require_text(self.success_not_applicable, "success_not_applicable"),
             )
 
 
@@ -233,9 +244,7 @@ def _check_error(
             )
         return
     if error.data is None:
-        raise ExampleSpecError(
-            f"{case.name}: declared error {error.code!r} requires error data"
-        )
+        return
     if data_validator is None:
         raise ExampleSpecError(f"{case.name}: error data validator is missing")
     if not data_validator.is_valid(_plain(error.data)):
@@ -352,8 +361,12 @@ def validate_method_example_set(
         for case in example_set.cases
         if case.kind in ("domain-error", "semantic-param-error")
     ]
-    if not any(case.kind == "success" for case in example_set.cases):
+    if not any(case.kind == "success" for case in example_set.cases) and not example_set.success_not_applicable:
         raise ExampleSpecError(f"{spec.name}: at least one success example is required")
+    if any(case.kind == "success" for case in example_set.cases) and example_set.success_not_applicable:
+        raise ExampleSpecError(
+            f"{spec.name}: success_not_applicable contradicts a success example"
+        )
     if empty_cases and example_set.empty_not_applicable:
         raise ExampleSpecError(
             f"{spec.name}: empty_not_applicable contradicts the empty/unconfigured cases"

@@ -7,7 +7,6 @@ admin, orgfs bridge, delivery, maintenance, ...) live in the ``application``
 subpackages and ``hyprial.daemon.impl.ipc``; every method has exactly one
 owner module and reads application state only through ``self``.
 """
-
 from __future__ import annotations
 import os
 import queue
@@ -18,7 +17,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-from hyprial.kernel import GenerationScheduler
+from hyprial.daemon.impl.composition.actors import ActorHostRegistry, create_generation_scheduler
 from hyprial.daemon.impl.correlation.bounded_cadence  import BoundedCadence
 from hyprial.daemon.impl.service_connect  import CatalogEntry
 from hyprial.daemon.impl.state_persistence  import StatePersistenceAuthority
@@ -59,11 +58,7 @@ from hyprial.daemon.impl.org import OrgContextMesh
 from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.kernel import PersistentConfigStore
-from hyprial.daemon.impl.squire import (
-    UserAdapterRegistry,
-    ZenohUserDeliveryEndpoint,
-    ZenohUserDeliveryTransport,
-)
+from hyprial.daemon.impl.adapters.user_delivery import ZenohUserDeliveryEndpoint, ZenohUserDeliveryTransport
 from hyprial.kernel import (
     FORWARDING_COMMAND_ENV,
     FORWARDING_UP_ENV,
@@ -100,7 +95,6 @@ from hyprial.daemon.impl.application.ports import (
 )
 from hyprial.daemon.impl.operations.watchdog_actor import AsyncInboxWatchdog as InboxWatchdog
 from hyprial.daemon.impl.operations.watchdog_actor import AsyncQuotaWatchdog as QuotaWatchdog
-from hyprial.daemon.impl.squire.actors.profile import UserProfileAuthority
 from hyprial.daemon.impl.lifecycle.duplicate_actor  import DuplicateInstanceAuthority as DuplicateInstanceWatch
 from hyprial.daemon.impl.lifecycle.maintenance_watchdog import ActorMaintenanceWatchdog as MaintenanceWatchdog
 from hyprial.daemon.impl.pac.workflows.runtime import GraphWorkflowService
@@ -112,6 +106,7 @@ from hyprial.daemon.impl.desired_state  import (
     DesiredState,
     DesiredStateStore,
 )
+from hyprial.daemon.impl.composition.cells.reconcile import CellReconcileStartBarrier
 from hyprial.daemon.impl.composition  import (
     AgentSessionDomains,
     CorrelatedDomainEvents,
@@ -131,20 +126,20 @@ from hyprial.daemon.impl.route_registration  import (
     RouteRegistrationClient,
     RouteRegistrationIo,
 )
-from hyprial.daemon.impl.owner_migration  import migrate_owner_if_needed
 from hyprial.daemon.impl.configuration.identity import (
     read_settings_identity_metadata,
     resolve_node_owner,
+    resolve_user_identity,
 )
 from hyprial.kernel  import CallCostCounters
 from hyprial.daemon.impl.configuration.home_guard  import keepalive_duration_from_environment
 from hyprial.daemon.impl.configuration.home_lease_actor  import HomeLeaseAuthority as ActiveDaemonHeartbeat
 from hyprial.daemon.impl.runtime  import DaemonEventBridge, ReconcileSummary
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
-from hyprial.kernel import RESERVED_AGENT_ACTOR_NAMES
 from hyprial.daemon.impl.operations.top  import InteractiveTurnStats
 from hyprial.daemon.impl.application.startup import _StartupMixin
 from hyprial.daemon.impl.application.shutdown import _ShutdownMixin
+from hyprial.daemon.impl.application.onboarding import _OnboardingAssemblyMixin
+from hyprial.daemon.impl.application.initialization import _InitializationMixin
 from hyprial.daemon.impl.application.wiring.transport import _WiringTransportMixin
 from hyprial.daemon.impl.application.wiring.services import _WiringServicesMixin
 from hyprial.daemon.impl.application.netendpoints.endpoints import _EndpointResolutionMixin
@@ -162,17 +157,14 @@ from hyprial.daemon.impl.application.actors.agents_registry import _AgentsRegist
 from hyprial.daemon.impl.application.actors.sessions.routes import _SessionRoutesMixin
 from hyprial.daemon.impl.application.actors.sessions.registry import _SessionRegistryMixin
 from hyprial.daemon.impl.application.actors.sessions.turns import _SessionTurnsMixin
-from hyprial.daemon.impl.application.actors.transfer import _TransferOpsMixin
-from hyprial.daemon.impl.application.actors.transfer_p2 import _TransferP2Mixin
+from hyprial.daemon.impl.application.actors.resume_support import _ResumeSupportMixin
 from hyprial.daemon.impl.application.actors.lifecycle_ops import _LifecycleOpsMixin
 from hyprial.daemon.impl.application.actors.routines import _RoutinesMixin
 from hyprial.daemon.impl.application.messaging.delivery.lark import _LarkGatewayMixin
-from hyprial.daemon.impl.application.messaging.delivery.sends import _UserDeliveryMixin
+from hyprial.daemon.impl.application.messaging.delivery.sends import OperatorAlarmLogPort, _UserDeliveryMixin
 from hyprial.daemon.impl.application.messaging.delivery.status_queries import _DeliveryStatusMixin
 from hyprial.daemon.impl.application.messaging.inbox_surface.send import _MessageSendMixin
-from hyprial.daemon.impl.application.messaging.inbox_surface.agent_bot_attempts import (
-    AgentBotAttemptLedger,
-)
+from hyprial.daemon.impl.application.messaging.inbox_surface.reply import _MessageReplyMixin
 from hyprial.daemon.impl.state_persistence.alarm import (
     CpuOwnerBudgetAlarm,
     StateWriterAlarm,
@@ -187,12 +179,10 @@ from hyprial.daemon.impl.application.messaging.status.views import _StatusViewsM
 from hyprial.daemon.impl.application.messaging.status.snapshots import _WorkerSnapshotMixin
 from hyprial.daemon.impl.application.messaging.status.refresh import CoalescedRefreshAuthority
 from hyprial.daemon.impl.application.messaging.orgfs_bridge import _OrgFsBridgeMixin
-from hyprial.daemon.impl.application.messaging.work_items import _WorkItemsMixin
 from hyprial.daemon.impl.application.messaging.visibility import _VisibilityMixin
 from hyprial.daemon.impl.application.messaging.maintenance import _MaintenanceMixin
 from hyprial.daemon.impl.ipc.router import _IpcDispatchMixin
 from hyprial.daemon.impl.ipc.server import _IpcServerMixin
-from hyprial.daemon.impl.identity import IdentityResolver
 from hyprial.daemon.impl.application.netendpoints.endpoints import (
     _lock_wait_timeout as _lock_wait_timeout,
     _zenoh_endpoints as _zenoh_endpoints,
@@ -202,7 +192,6 @@ from hyprial.daemon.impl.application.messaging.visibility import (
     _message_origin as _message_origin,
 )
 from hyprial.daemon.impl.application.messaging.delivery.sends import (
-    FORWARD_TARGET_UNKNOWN as FORWARD_TARGET_UNKNOWN,
     _undeliverable_outbox_recipient as _undeliverable_outbox_recipient,
 )
 from hyprial.daemon.impl.application.messaging.status.views import (
@@ -227,6 +216,8 @@ from hyprial.daemon.impl.ipc.params import JsonObject
 from hyprial.daemon.impl.ipc.server import _IPC_MAX_CLIENTS, _IpcListener, _IpcStream
 
 class DaemonApplication(
+    _OnboardingAssemblyMixin,
+    _InitializationMixin,
     _StartupMixin,
     _ShutdownMixin,
     _WiringTransportMixin,
@@ -246,69 +237,25 @@ class DaemonApplication(
     _SessionRoutesMixin,
     _SessionRegistryMixin,
     _SessionTurnsMixin,
-    _TransferOpsMixin,
-    _TransferP2Mixin,
+    _ResumeSupportMixin,
     _LifecycleOpsMixin,
     _RoutinesMixin,
     _LarkGatewayMixin,
     _UserDeliveryMixin,
     _DeliveryStatusMixin,
     _MessageSendMixin,
+    _MessageReplyMixin,
     _MessageQueriesMixin,
     _MessageHistoryMixin,
     _StatusViewsMixin,
     _WorkerSnapshotMixin,
     _OrgFsBridgeMixin,
-    _WorkItemsMixin,
     _VisibilityMixin,
     _MaintenanceMixin,
     _IpcDispatchMixin,
     _IpcServerMixin,
 ):
     """Own the real runtime graph and expose it through newline-delimited IPC."""
-
-    @property
-    def link_admission(self) -> LinkAdmission:
-        """The one composed send-link admission slot (WP2 binds it once)."""
-
-        return self._link_admission
-
-    def _abort_initialization(self) -> None:
-        """Release already-started authorities after a constructor failure."""
-
-        for attribute, close_operation in (
-            ("_status_refresh", "close"),
-            ("_database_health", "close"),
-            ("_maintenance_watchdog", "close"),
-            ("_operator_alarm_delivery", "close"),
-            ("_inbox_watchdog", "close"),
-            ("_quota_watchdog", "close"),
-            ("_blocking_failures", "close"),
-            ("_restore_policy", "close"),
-            ("_transfer_source", "close"),
-            ("_agent_session_domains", "close"),
-            ("user_profiles", "close"),
-            ("_state_persistence", "close"),
-            ("_transfer_p2", "close"),
-            ("_gateway_logger", "close"),
-            ("_logger", "close"),
-        ):
-            resource = getattr(self, attribute, None)
-            if resource is not None:
-                try:
-                    if attribute in {"_transfer_p2", "_transfer_source"}:
-                        resource.close(timeout=5.0)
-                    else:
-                        getattr(resource, close_operation)()
-                except BaseException:
-                    pass
-
-    def _construct_or_rollback(self, factory: Callable[[], Any]) -> Any:
-        try:
-            return factory()
-        except BaseException:
-            self._abort_initialization()
-            raise
 
     def __init__(
         self,
@@ -320,6 +267,7 @@ class DaemonApplication(
         zenoh_listen: tuple[str, ...] = (),
         zenoh_connect: tuple[str, ...] = (),
         owner: str | None = None,
+        user_id: str | None = None,
         usage_cache: UsageCollection | None = None,
         quota_evaluator_factory: QuotaEvaluatorFactory | None = None,
         quota_hook_consumer_factory: QuotaHookConsumerFactory | None = None,
@@ -338,12 +286,7 @@ class DaemonApplication(
         legacy_timer_home: Path | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
-        self._agent_bot_attempts = AgentBotAttemptLedger(
-            self.state_dir / "agent-bot-attempts.json"
-        )
-        self._exposure_store = ExposureStore(
-            self.state_dir / "network-exposures.json"
-        )
+        self._exposure_store = ExposureStore(self.state_dir / "network-exposures.json")
         self.socket_path = Path(socket_path)
         self.node_id = node_id
         # The seam that makes leaving testable without ending the test runner.
@@ -361,10 +304,11 @@ class DaemonApplication(
         self.identity_mode, self.identity_issuer = read_settings_identity_metadata(
             hyprial_home=self.hyprial_home
         )
-        self._identity_resolver = IdentityResolver(
-            state_dir=self.state_dir,
+        self.user_id, self.user_issuer = resolve_user_identity(
+            owner=owner,
+            user_id=user_id,
             hyprial_home=self.hyprial_home,
-            owner=self.owner,
+            settings_issuer=self.identity_issuer,
         )
         # One rollout switch.  This PR observes by default so existing
         # isolated/controlled scenario drivers stay usable while every
@@ -376,26 +320,7 @@ class DaemonApplication(
             .lower()
             == _SENDER_AUTH_ENFORCE
         )
-        self._ipc_peer = threading.local()
-        # ⭐ Rewrite the owner segment of stored addresses, once, before any
-        # store below reads them.  Ordering is the whole point: DesiredStateStore
-        # and the registries are constructed a few lines down, and a store that
-        # had already loaded the pre-migration document would keep serving the
-        # old owner for the life of this process.
-        #
-        # Idempotent — it detects the previous owner from the data and does
-        # nothing once none remains.  ⚠️ An abort here stops the daemon
-        # starting, deliberately: state this cannot account for should not be
-        # served half-rewritten.  See owner_migration for what "account for"
-        # means and what the abort reports.
-        # Held, not logged here: the logger does not exist yet (it is built
-        # below, after the stores).  A migration that rewrote thousands of
-        # cells and reported nothing is indistinguishable from one that found
-        # nothing to do, so the count is emitted as soon as there is somewhere
-        # to emit it.
-        self._owner_migration_rewrites = migrate_owner_if_needed(
-            state_dir=self.state_dir, hyprial_home=self.hyprial_home, owner=self.owner
-        )
+        self._ipc_peer, self._gui_transport = threading.local(), None
         self.zenoh_listen = zenoh_listen
         self.zenoh_connect = zenoh_connect
         #: Set by from_environment when HYPRIAL_NETWORK_ISOLATED is on: no
@@ -450,6 +375,10 @@ class DaemonApplication(
         # rebuild is retried when the sidecar's set changes again, not on
         # every tick (a persistent failure stays visible as restartRequired).
         self._forwarding_redial_attempted: tuple[str, ...] | None = None
+        # The application owns the host registry so hosts outlive every
+        # consumer that borrows them while this application closes.  P7 later
+        # converges the registry to one host per process.
+        self._actor_hosts = ActorHostRegistry()
         # One shared state database (U0a-2 丙): desired state and the
         # lifecycle journal write through the same serialized connection
         # owner, so in-process contention between the two is gone by
@@ -459,21 +388,29 @@ class DaemonApplication(
             self.state_dir / "desired-state.json", state_db=self.state_db
         )
         self._state_persistence = self._construct_or_rollback(
-            lambda: StatePersistenceAuthority(desired_store)
+            lambda: StatePersistenceAuthority(
+                desired_store,
+                actor_host=self._actor_hosts.host_for("state-persistence"),
+            )
         )
         self.desired_state = self._state_persistence.desired
-        self._transfer_p2 = self._construct_or_rollback(self._make_transfer_authority)
         self._state_writer_alarm = StateWriterAlarm()
         self._cpu_owner_alarm = CpuOwnerBudgetAlarm()
         self.persistent_config = PersistentConfigStore(self.hyprial_home, self.state_dir)
-        self._profile_refresh_due = 0.0
         self._restore_policy_refresh_due = 0.0
-        self.user_adapters = UserAdapterRegistry()
         self.stop_event = threading.Event()
+        from hyprial.daemon.impl.cells.reconcile.policy import MemberLaunchPolicies
+
+        self._cell_member_policies = MemberLaunchPolicies()
         self._stop_request_trace = _StopRequestTrace()
         self._trace_presence_enabled = os.environ.get("HYPRIAL_E2E_TRACE_PRESENCE") == "1"
         self.epoch = uuid4().hex
+        from hyprial.daemon.impl.request_catalog.preview import PreviewRegistry
+
+        self._agent_destroy_previews = PreviewRegistry(epoch=self.epoch)
+        self._adapter_remove_previews = PreviewRegistry(epoch=self.epoch)
         self._workflow_service: GraphWorkflowService | None = None
+        self._held_reminder: Any | None = None
         self._routine_service: RoutineServicePort | None = None
         self._routine_exists_probe: Callable[[str], bool] | None = None
         # Upper-layer (biz/shell) capabilities arrive through the ports in
@@ -492,12 +429,12 @@ class DaemonApplication(
         self._pac_graph_authority: Any | None = None
         self._pac_gc: Any | None = None
         self._lifecycle_manager: LifecycleCoordinator | None = None
-        self._transfer_source = None
         self._lifecycle_domain_ports: tuple[AtomicLifecycleDomainPort, ...] = ()
         self._route_registration: RouteRegistrationIo | None = None
         self._routes: RouteRegistrationClient | None = None
         self._lifecycle_router: CorrelationEventRouter | None = None
         self._runtime: DaemonEventBridge | None = None
+        self._cell_delivery: Any | None = None
         self._dispatch_cadence: BoundedCadence[ReconcileSummary] | None = None
         self._forwarding_cadence: BoundedCadence[None] | None = None
         self._forwarding_reconcile_requests = self._new_forwarding_reconcile_requests()
@@ -514,10 +451,6 @@ class DaemonApplication(
         self._interactive_route_versions: dict[tuple[str, str | None], int] = {}
         self._directory: LivelinessDirectory | None = None
         self._inbox: DeliveryCustodyFacade | None = None
-        # There is no second gate slot (README ruling 67 / WP4): the one gate
-        # lives in ``self._link_admission`` and composition binds it once
-        # through ``app.link_admission``.  Until then an agent-to-agent body
-        # is not readable and dispatch holds (README ruling 26).
         self._outbox_recipient_wakes = _BoundedRecipientWakes()
         self._inbox_coordinator: DeliveryCustodyCoordinator | None = None
         self._recipient_wakes: RecipientWakeCoordinator | None = None
@@ -528,6 +461,7 @@ class DaemonApplication(
         self._adapters: AdapterRuntime | None = None
         self._lark_events: CorrelatedDomainEvents | None = None
         self._lark_client: LarkPortClient | None = None
+        self._init_adapter_operations()
         self._endpoint: ZenohInboxEndpoint | None = None
         self._status_endpoint: DeliveryStatusEndpoint | None = None
         self._user_endpoint: ZenohUserDeliveryEndpoint | None = None
@@ -536,16 +470,7 @@ class DaemonApplication(
         # shutdown clearing it: outside that span a missing transport is
         # "not wired yet / already torn down", not "not configured".
         self._user_delivery_settled = False
-        self._operator_alarm_delivery: OperatorAlarmDelivery | None = (
-            self._construct_or_rollback(
-                lambda: OperatorAlarmDelivery(
-                    delivery=lambda: self._user_delivery,
-                    log=lambda level, component, event, **fields: self._log(
-                        level, component, event, **fields
-                    ),
-                )
-            )
-        )
+        self._operator_alarm_delivery: OperatorAlarmDelivery | None = None
         self._org_endpoint: OrgContextMesh | None = None
         self._actor_token: Any | None = None
         self._duplicate_watch: DuplicateInstanceWatch | None = None
@@ -570,7 +495,7 @@ class DaemonApplication(
         self._carrier_turn_ledgers: dict[tuple[str, str], object] = {}
         self._carrier_run_ledgers: dict[str, object] = {}
         self._clock: Callable[[], float] = time.monotonic
-        self._maintenance_scheduler = GenerationScheduler()
+        self._maintenance_scheduler = create_generation_scheduler()
         self._status_refresh = self._construct_or_rollback(CoalescedRefreshAuthority)
         self._status_refresh_due = 0.0
         # Sees the tick that never returns, which reconcile_overrun cannot.
@@ -579,10 +504,12 @@ class DaemonApplication(
                 level, "daemon", event, **fields
             ),
             diagnostics=self._transport_lock_holder,
+            actor_host=self._actor_hosts.host_for("maintenance-watchdog"),
         ))
         self._database_health = None
         self._maintenance_generation = 0
         self._owns_process_exit = False
+        self._exit_unless_logout = False
         # The daemon.readiness projection (phase ③): one entry per connector
         # that has ever reported, keyed by the report's source, holding the
         # latest report.  `_readiness_expected` is the desired set the
@@ -618,6 +545,7 @@ class DaemonApplication(
             return time.monotonic() if application is None else application._clock()
 
         self._agent_session_domains = self._construct_or_rollback(lambda: AgentSessionDomains(
+            actor_hosts=self._actor_hosts,
             database=self.state_dir / "agents.sqlite3",
             desired_state=self.desired_state,
             owner=self.owner,
@@ -634,6 +562,15 @@ class DaemonApplication(
             agent_runtime_notice_reporter=self._report_agent_runtime_notices,
         ))
         self.agents = self._agent_session_domains.agents
+        self._operator_alarm_delivery = self._construct_or_rollback(
+            lambda: OperatorAlarmDelivery(
+                delivery=lambda: OperatorAlarmLogPort(self),
+                log=lambda level, component, event, **fields: self._log(
+                    level, component, event, **fields
+                ),
+                actor_host=self._agent_session_domains.actor_hosts.host_for("operator-alarm"),
+            )
+        )
         self._alias_resolver = daemon_alias_resolver(
             home=self.hyprial_home,
             agents=self.agents,
@@ -665,6 +602,7 @@ class DaemonApplication(
             lambda: RestorePolicyAuthority(
                 self.state_dir / "agent-restore-policy.json",
                 normalize=self.agents.normalize_actor,
+                actor_host=self._agent_session_domains.actor_hosts.host_for("worker-state"),
             )
         )
         self._restore_activity_unknown: set[str] = set()
@@ -678,9 +616,6 @@ class DaemonApplication(
         self._restore_eligibility_batch = 64
         self._restore_classifying = False
         self._restore_wake_cadence: BoundedCadence[None] | None = None
-        self._transfer_restore_lock = threading.Lock()
-        self._transfer_custody_reads = {}
-        self._transfer_deferred = {}
         self._restore_wake_cursor = 0
         self._restore_wake_batch = 64
         self._restore_wake_lock = threading.Lock()
@@ -702,12 +637,13 @@ class DaemonApplication(
             application = blocking_application_ref()
             if application is None:
                 raise RuntimeError("daemon application is gone")
-            return application._owner_alert_notifier(
+            return application._agent_blocked_notifier(
                 text, idempotency_key=idempotency_key
             )
 
         self._blocking_failures = self._construct_or_rollback(
             lambda: BlockingFailureAuthority(
+                actor_host=self._agent_session_domains.actor_hosts.host_for("worker-state"),
                 block=commit_block,
                 notify=notify_block,
                 capacity=10_000,
@@ -732,9 +668,6 @@ class DaemonApplication(
         self._ipc_client_slots = threading.BoundedSemaphore(_IPC_MAX_CLIENTS)
         self._ipc_request_owner: IpcRequestOwner | None = None
         self._dispatch_diagnostics: DispatchDiagnostics | None = None
-        # Per-method handler cost (see ipc_stats for the attribution rule and
-        # the calibration contract).  Owned here, not per connection: the
-        # client threads are short-lived and the totals must outlive them.
         self._ipc_stats = CallCostCounters(_IPC_STATS_METHODS, wall=True)
         self._ipc_clients: set[_IpcStream] = set()
         self._ipc_clients_high_water = 0
@@ -758,6 +691,7 @@ class DaemonApplication(
         # restore pending, and gating it would change what those tests cover.
         self._restore_done = threading.Event()
         self._restore_done.set()
+        self._cell_reconcile_barrier = CellReconcileStartBarrier()
         self._provider_auth: Any = None
         self._restore_thread: threading.Thread | None = None
         self._restore_error: BaseException | None = None
@@ -772,22 +706,13 @@ class DaemonApplication(
         self._agent_recovery_cleanups: dict[str, JsonObject] = {}
         self._lock_stream: Any | None = None
         self._logger = self._construct_or_rollback(lambda: Logger.daemon(
-            self.state_dir, name=self.node_id, asynchronous=True, capacity=4096
+            self.state_dir, name=self.node_id, asynchronous=True, capacity=4096,
+            actor_host=self._agent_session_domains.actor_hosts.host_for("logs"),
         ))
         self._gateway_logger = self._construct_or_rollback(lambda: Logger.adapter(
-            self.state_dir, name=self.node_id, asynchronous=True, capacity=4096
+            self.state_dir, name=self.node_id, asynchronous=True, capacity=4096,
+            actor_host=self._agent_session_domains.actor_hosts.host_for("logs"),
         ))
-        # One send-link admission slot for the whole daemon (WP4).  Composition
-        # passes this exact object to the inbox custody actor and the runtime
-        # bridge; WP2 binds the real gate once through ``app.link_admission``.
-        # The exempt set is the kernel's reserved-name contract (README rulings
-        # 45/51/63): the parsed actor segment is compared exactly on any owner
-        # and node, so an ordinary agent's intent, hook flag or ``_``-prefixed
-        # name must never widen the exemption (review B2).
-        self._link_admission = LinkAdmission(
-            internal_actors=RESERVED_AGENT_ACTOR_NAMES,
-            logger=self._log,
-        )
         try:
             from hyprial.daemon.impl.upgrade import upgrade_step_status
 
@@ -812,14 +737,8 @@ class DaemonApplication(
         self._agent_runtime_notice_log = (threading.Lock(), set[tuple[str, str, str]]())
         self._orgfs_runtime: OrgFsRuntime | None = None
         self._org_directory_quarantine = InvalidDeviceQuarantine()
-        self._org_identity_binding_projector: Any | None = None
-        self._org_identity_binding_suppression: Any | None = None
         self._casdoor_membership_sync: Any | None = None
         self._casdoor_webhook: Any | None = None
-        # Re-entrant: publication holds it and the deferred branch takes it again.
-        self._org_identity_binding_publication_lock = threading.RLock()
-        self._org_identity_binding_pending_all = False
-        self._org_identity_binding_pending_orgs: set[str] = set()
         self._org_context_bridge: Any | None = None
         # A3 dispatch gate (design-dispatch-always-pac-2026-09-03 §三②): the
         # live numerator of the PAC bypass rate, surfaced on ps/top.  The
@@ -841,6 +760,11 @@ class DaemonApplication(
         # by from_environment so directly-constructed test applications never
         # start a network-touching refresher.
         self._usage_cache = usage_cache
+        if usage_cache is not None:
+            self._construct_or_rollback(lambda: usage_cache.bind(
+                host=self._agent_session_domains.actor_hosts.host_for("usage"),
+                scheduler=self._maintenance_scheduler,
+            ))
         # Quota watchdog (Allen 09-17): one bus consumer under biz/hooks/quota
         # evaluates each ``usage.refreshed`` and each usage-limit ``turn.failed``
         # (unified hooks H4), and tells the owner through Squire.  It exists
@@ -884,6 +808,9 @@ class DaemonApplication(
                             clock_ms=quota_deps.clock_ms,
                             on_alert=quota_deps.on_alert,
                             evaluator=evaluator,
+                            actor_host=self._agent_session_domains.actor_hosts.host_for(
+                                "quota-watchdog"
+                            ),
                         ))
                 except (OSError, ValueError) as error:
                     # An unreadable state file disables the watchdog loudly; it
@@ -909,6 +836,9 @@ class DaemonApplication(
                     "warn", "daemon", "inbox_watchdog.alerted",
                     kind=alert.kind, key=alert.key,
                 ),
+                actor_host=self._agent_session_domains.actor_hosts.host_for(
+                    "inbox-watchdog"
+                ),
             ))
         except (OSError, ValueError) as error:
             self._log(
@@ -920,10 +850,12 @@ class DaemonApplication(
         self._home_guard = self._construct_or_rollback(lambda: ActiveDaemonHeartbeat(
             self.hyprial_home,
             keepalive_duration=keepalive_duration,
-            ownership_lost=self._stop_request_trace.bind(self.stop_event, "home-ownership-lost"),
+            ownership_lost=self.stop_policy.bind(self._stop_request_trace.bind(self.stop_event, "home-ownership-lost"), "home-ownership-lost"),
             logger=self._log_trace,
             duplicate_detected=self._on_startup_duplicate_detected,
             duplicate_check_failed=self._on_duplicate_check_failed,
+            actor_host=self._actor_hosts.host_for("home-lease"),
+            scheduler=self._maintenance_scheduler,
         ))
         self._autoupdate = self._construct_or_rollback(lambda: InProcessAutoUpdateScheduler(
             state_dir=self.state_dir,
@@ -931,10 +863,9 @@ class DaemonApplication(
             logger=lambda level, event, **fields: self._log(
                 level, "autoupdate", event, **fields
             ),
+            actor_host=self._agent_session_domains.actor_hosts.host_for("autoupdate"),
+            scheduler=self._maintenance_scheduler,
         ))
-        self.user_profiles = self._construct_or_rollback(
-            lambda: UserProfileAuthority(self.state_dir / "users.json")
-        )
 
     @classmethod
     def from_environment(

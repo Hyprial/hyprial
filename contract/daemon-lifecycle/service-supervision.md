@@ -14,12 +14,27 @@ platforms fail with exit 1 and JSON code `SERVICE_PLATFORM_UNSUPPORTED`. A super
 loaded label that cannot be attributed to the exact Hyprial label/unit and executable fails with
 `SERVICE_OWNERSHIP_REFUSED`; it is not unloaded, replaced, or removed.
 
-The fixed user-service label is reserved for the default home, `$HOME/.hyprial` (resolved
-paths). Install, uninstall, restart, and reconcile reject any other home before supervisor
-commands, daemon probes, callbacks, or writes. A home outside the operating home retains
-`ownershipReason = hyprial-home-outside-operating-home`; a non-default home inside it or a
-`ServiceConfig.home`/`service_home` mismatch uses `service-home-nondefault`. Both use
-`ServiceOwnershipError`, mapped by the service CLI to `SERVICE_OWNERSHIP_REFUSED`.
+## Per-home unit identity
+
+The default home — `HYPRIAL_HOME` whose resolved path equals the resolved `$HOME/.hyprial` —
+keeps the fixed launchd label `com.hyprial.hyprial.daemon` and systemd unit `hyprial.service`,
+the same unit-file paths, and rendered bytes identical to the pre-per-home templates. Any other
+home inside the operating home derives its identity deterministically: `<id>` is the first 12
+lowercase hex digits of the SHA-256 of the canonical home path (`os.path.realpath`, encoded with
+`os.fsencode`, i.e. the path's UTF-8 filesystem bytes; no Unicode normalization); the launchd
+label is `com.hyprial.hyprial.daemon.<id>`, the systemd unit is `hyprial-<id>.service`, and the
+unit renders `HYPRIAL_SERVICE_UNIT` with its own name. Canonicalization resolves symlinks,
+trailing slashes, and `.` segments only; the case of existing path components is kept verbatim
+(measured on macOS 2026-11-15: `realpath('/users/x')` stays lowercase), so two spellings of one
+case-insensitive directory produce two ids, two unit files, and two competing jobs for the same
+directory — always spell the same home the same way. Ids are truncated to 48 bits; per-user
+collision risk is negligible. Unit files stay mode 0644.
+
+Install, uninstall, restart, and reconcile reject a home outside the operating home
+(`ownershipReason = hyprial-home-outside-operating-home`) before supervisor commands, daemon
+probes, callbacks, or writes. The former `service-home-nondefault` refusal for homes inside the
+operating home is removed: a non-default home installs its own derived unit. The default-home
+label and unit name remain reserved for the default home.
 
 Changing `HOME` does not change a launchd UID domain or a systemd user manager. Before any
 real supervisor command (including read-only probes), both configured operating homes must
@@ -29,9 +44,8 @@ Doctor reports this as a failed `daemon-service` check with `metrics.reason`; it
 query the real user's manager on behalf of a disposable HOME. Injected command runners are
 unit-test fakes; they do not execute OS supervisor commands.
 
-The default production home and account-home path are unchanged. Non-default home users
-must use `hyprial init --no-service` and their own process supervisor, rather than sharing
-Hyprial's fixed service label. `hyprial init` retains its existing partial-success behavior:
+The default production home and account-home path are unchanged. `hyprial init` retains its
+existing partial-success behavior:
 it reports `service = {ok: false, reason: service-install-failed, detail: ...}` and the daemon
 it started stays unsupervised. `--no-service` skips installation; it is required for
 containers, CI, and disposable homes. It does not make later service operations safe.
@@ -57,6 +71,52 @@ The status JSON object contains `ok`, `platform`, `unit`, `unitPath`, `installed
 requires the unit file and its containing directory to be owned by the current uid and not be
 group- or world-writable. `ownershipReason` identifies a failed filesystem check.
 
+## Install without custody
+
+`hyprial daemon service install` waits for custody after loading the unit. When the manager does
+not end up supervising the serving daemon, the install is reverted before the command fails with
+`SERVICE_SUPERVISION_LOST`, so a unit that cannot run is not left loaded and relaunched: with no
+previous unit the manager unloads it and the file is removed; with a previous unit that text is
+written back and the unit is loaded again only if it was loaded before; an install that changed
+nothing leaves the unit as it was. The error data carries
+`install: {supervision: "lost", reverted: "removed" | "restored" | "unchanged" | "failed"}` next to
+the status fields; `failed` means the revert itself failed and `hyprial daemon service uninstall`
+is needed. The automatic install of the daemon start primitive reverts the same way when its first
+supervised start fails and then starts the daemon detached, with one stderr notice naming the
+cause; if the revert fails it reports `SERVICE_SUPERVISION_LOST` and does not spawn beside a unit
+that may still be loaded.
+
+## Stop routing
+
+`hyprial daemon stop` goes through the manager (`launchctl bootout` / `systemctl --user stop`) only
+for a daemon the manager supervises: the answering daemon's pid is the manager's main pid for this
+home's unit. A daemon that answers with another pid (for example a detached daemon beside an
+installed but not loaded unit) is stopped over IPC `shutdown`, exactly as without a unit, and the
+manager is not asked. If that unit is loaded (but is not the serving process), the manager stop runs
+first so the manager cannot relaunch beside the exiting daemon, then the IPC `shutdown`. With no
+answering daemon the manager stop is used as before when the unit is loaded. `DAEMON_STOP_TIMEOUT`
+reports the control socket as observed at the timeout (gone, still present, or not checkable), never
+as assumed closed. Doctor reports an installed, attributable, unloaded unit with no serving daemon as a `warn`
+with `metrics.reason = stopped-on-request` instead of a failure; `supervision` in the status JSON
+stays `lost` (its three values are unchanged).
+
+When this home's unit is loaded but not attributable to this installation (foreign, unsafe, or
+another installation's program), the CLI never asks the manager to stop it, so the manager may
+restart the daemon after the IPC `shutdown`. `hyprial daemon stop --json` keeps `ok: true` and
+`teardownCompleted` (the daemon finished teardown) and adds, additively, `supervisorMayRestart:
+true` and `unattributedSupervisor: {platform, unit, attributed: false, ownershipReason}` (names as
+in `daemon service status --json`, no unit path); the stderr warning stays. Both keys are absent
+when there is no such unit. Read `teardownCompleted` as "this stop completed teardown" and
+`supervisorMayRestart` as "it may not stay stopped" (KP-092, option B). The answer for an
+attributable unit keeps its existing `supervisor: {platform, unit}`.
+
+## Socket path length
+
+The daemon start primitive checks the control socket path (`<state>/daemon.sock`) against the
+platform's AF_UNIX limit before installing a unit or spawning a daemon. Over the limit it fails with
+the existing `DAEMON_START_FAILED`, naming the path, and carries `socketPath`, `length` and `limit`
+in the error data.
+
 ## Restart custody
 
 All daemon restart callers share one decision. If an attributable installed supervisor currently
@@ -68,11 +128,39 @@ error data sets `restart.supervision` to `lost` with a typed `restart.reason`, w
 records expose that value as `restart.supervisionReason`. A status probe reports “not loaded” only
 for the manager's definitive absence response: `launchctl print` exits 113 and includes the exact
 `Could not find service "<label>" in domain for user gui: <uid>` line, or `systemctl --user show`
-exits 4 with stderr exactly `Unit <unit> could not be found.`. Every other manager non-zero exit,
+exits 4 while its output carries no loaded unit (`LoadState=not-found`, or no non-empty
+`FragmentPath`). The systemd classification is locale-independent: the English
+`Unit <unit> could not be found.` sentence is never required, and exit 4 with a real loaded
+`FragmentPath` in the output stays a manager failure. Every other manager non-zero exit,
 timeout, or missing executable uses the lost-supervision result. A verified supervisor restart
 reports `supervised`. A restart with no attributable owner uses the existing strict stop/start path
 and reports `unsupervised`. A loaded manager label with no unit file is configured but inconsistent;
 it fails instead of falling back to the unmanaged restart.
+
+## Program path and job adoption
+
+The unit runs the `hyprial` console script only when the script exists and its shebang interpreter
+is the running process's unresolved absolute `sys.executable` (compared with directories resolved,
+never the final symlink) or the script lives in the same `bin` directory; every other shape (no console
+script, a foreign installation's script, no shebang) renders
+`[sys.executable, "-m", "hyprial.cli", "daemon", "run"]` so the unit loads this installation's own
+package and engine. The interpreter is never symlink-resolved: a venv's `bin/python` links to a base
+CPython shared by every venv built on it, so resolving would render an interpreter without the
+venv's site-packages and accept another installation's script. Render, attribution and the job
+scanner use the same absolute spelling; the module form is matched on that spelling only, while the
+console-script form still tolerates a symlink to the script. The launchd job scanner recognizes
+the console-script, Program, wrapper, and module forms against the exact configured program and
+argument prefix; it additionally matches the job's `EnvironmentVariables.HYPRIAL_HOME` by resolved
+path, so a job naming another home is never adopted in either direction. A job with no
+`HYPRIAL_HOME` entry predates per-home units and serves the default home, so only the default
+home's manager claims it.
+
+At install time the unit renders the current `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` values
+(owner decision OD-Z7 option a, 2026-11-15): launchd values are XML-escaped, systemd values use
+the quoted/`%`-doubled form, absent keys render nothing, and a present-but-empty value renders as
+an empty value. Values are rendered unfiltered and may contain proxy userinfo; the unit file stays
+mode 0644 (no credential filtering, no 0600). The resulting userinfo exposure in a local proxy
+URL is an owner-accepted known issue, registered as KP-081.
 
 ## Daemon stdout/stderr stamps
 

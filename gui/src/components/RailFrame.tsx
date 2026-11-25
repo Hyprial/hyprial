@@ -1,5 +1,7 @@
 import { Fragment, type ReactNode } from 'react';
-import type { DevModuleId } from '../dev-mode';
+import markOnDark from '../assets/brand/hyprial-mark-dark.svg';
+import markOnLight from '../assets/brand/hyprial-mark.svg';
+import { Icon, type IconName } from './primitives/Icon';
 
 /**
  * The navigation shape shared by the fixture and live shells. Page ids are
@@ -9,58 +11,73 @@ import type { DevModuleId } from '../dev-mode';
 export type RailPage =
   | 'start'
   | 'chat'
-  | 'tasks'
   | 'agents'
-  | 'org';
+  | 'org'
+  | 'device';
 
 const NAV_GROUPS: readonly {
   readonly label: string | null;
-  readonly items: readonly { readonly id: RailPage; readonly label: string }[];
+  readonly items: readonly {
+    readonly id: RailPage;
+    readonly label: string;
+    readonly icon: IconName;
+  }[];
 }[] = [
   {
     label: null,
-    items: [{ id: 'start', label: '开始' }],
+    items: [{ id: 'start', label: '开始', icon: 'house' }],
   },
   {
     label: '工作',
-    items: [
-      { id: 'chat', label: '聊天' },
-      { id: 'tasks', label: '任务' },
-    ],
+    items: [{ id: 'chat', label: '聊天', icon: 'chat-circle' }],
   },
   {
     label: '查找',
     items: [
-      { id: 'agents', label: 'Agent' },
-      { id: 'org', label: '组织' },
+      { id: 'agents', label: 'Agent', icon: 'robot' },
+      { id: 'org', label: '组织', icon: 'tree-structure' },
+      { id: 'device', label: '设备', icon: 'desktop' },
     ],
   },
 ];
 
 interface RailFrameProps {
   readonly active: RailPage | null;
-  readonly devLabels?: Readonly<Partial<Record<RailPage, DevModuleId>>>;
   readonly onSelect: (page: RailPage) => void;
   readonly footer: ReactNode;
+  /** Destinations without a source in this composition: no entry is rendered. */
+  readonly hiddenPages?: ReadonlySet<RailPage>;
   /** The mobile surface has no organization projection. */
   readonly showOrg?: boolean;
 }
 
+function visibleGroups(hiddenPages: ReadonlySet<RailPage> | undefined, showOrg: boolean) {
+  return NAV_GROUPS
+    .map((group) => ({
+      ...group,
+      items: group.items.filter(
+        (item) => (showOrg || item.id !== 'org') && !hiddenPages?.has(item.id),
+      ),
+    }))
+    .filter((group) => group.items.length > 0);
+}
+
 export function RailFrame({
   active,
-  devLabels,
   onSelect,
   footer,
+  hiddenPages,
   showOrg = true,
 }: RailFrameProps) {
   return (
     <aside className="rail">
-      <div className="brand" aria-label="Hyprial OS">
-        <span className="brand-wordmark">Hyprial OS</span>
+      <div className="brand" role="img" aria-label="Hyprial OS">
+        <img className="brand-mark brand-mark--on-rail" src={markOnDark} alt="" />
+        <img className="brand-mark brand-mark--on-ground" src={markOnLight} alt="" />
       </div>
 
       <nav className="nav" aria-label="主导航">
-        {NAV_GROUPS.map((group, index) => (
+        {visibleGroups(hiddenPages, showOrg).map((group, index) => (
           <Fragment key={group.label ?? 'primary'}>
             {index > 0 ? (
               <div className="nav-separator" aria-hidden="true" />
@@ -70,29 +87,24 @@ export function RailFrame({
               role={group.label ? 'group' : undefined}
               aria-label={group.label ?? undefined}
             >
-              {group.items
-                .filter((item) => showOrg || item.id !== 'org')
-                .map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="nav-item"
-                    data-nav={item.id}
-                    aria-current={active === item.id ? 'page' : undefined}
-                    onClick={() => onSelect(item.id)}
-                  >
-                    <span className="nav-item-label">{item.label}</span>
-                    {devLabels?.[item.id] ? (
-                      <span
-                        aria-hidden="true"
-                        className="dev-nav-label"
-                        data-dev-label={devLabels[item.id]}
-                      >
-                        {devLabels[item.id]}
-                      </span>
-                    ) : null}
-                  </button>
-                ))}
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="nav-item"
+                  data-nav={item.id}
+                  aria-current={active === item.id ? 'page' : undefined}
+                  onClick={() => onSelect(item.id)}
+                >
+                  <Icon
+                    name={item.icon}
+                    size="md"
+                    active={active === item.id}
+                    className="nav-item__icon"
+                  />
+                  <span className="nav-item-label">{item.label}</span>
+                </button>
+              ))}
             </div>
           </Fragment>
         ))}

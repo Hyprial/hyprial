@@ -1,6 +1,8 @@
 from hyprial.kernel.impl.actor_runtime.contracts import (
+    ActorAdmissionError,
     ActorEvent,
     ActorEventKind,
+    ActorFailedError,
     ActorHandle,
     ActorSnapshot,
     ActorSpec,
@@ -16,17 +18,16 @@ from hyprial.kernel.impl.actor_runtime.policies import (
     STATE_AUTHORITY,
     SupervisionPolicy,
 )
-from hyprial.kernel.impl.actor_runtime.runtime import ActorRuntime
-
 __all__ = [
     "DEFAULT_POLICIES",
     "EXTERNAL_IO",
     "PROCESS_LIFECYCLE",
     "STATE_AUTHORITY",
+    "ActorAdmissionError",
     "ActorEvent",
     "ActorEventKind",
+    "ActorFailedError",
     "ActorHandle",
-    "ActorRuntime",
     "ActorSnapshot",
     "ActorSpec",
     "ActorState",

@@ -27,14 +27,16 @@ from pathlib import Path
 
 from hyprial.daemon.impl.adapters.lark.outbound.reactions import (
     ReactionEffectAdmission,
+    ReactionEffectKind,
     ReactionEffectsRuntime,
+    _NativeLane,
 )
 def _noop(_native_message_id: str) -> None:
     return None
 
 
 def test_close_leaves_the_store_open_when_the_actor_would_not_stop(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     """The store must survive a close that could not stop the actor.
 
@@ -47,6 +49,7 @@ def test_close_leaves_the_store_open_when_the_actor_would_not_stop(
 
     reports: list[dict[str, object]] = []
     entered = threading.Event()
+    held = threading.Event()
     release = threading.Event()
     finished = threading.Event()
 
@@ -54,6 +57,26 @@ def test_close_leaves_the_store_open_when_the_actor_would_not_stop(
         entered.set()
         release.wait(10.0)
         finished.set()
+
+    # The defect needs the actor itself to be busy when close() asks it to
+    # stop: the store is unsafe to close only while the actor thread can be
+    # inside pending()'s execute(). A blocking lane effect alone does not make
+    # that true -- the lane is a separate executor, and the actor is idle
+    # between commands. The Python engine's drain(0.0) happens to fail to stop
+    # even an idle actor because it cannot join within a zero budget; the
+    # native engine stops the idle actor immediately, which is correct. Hold
+    # the actor inside the dispatch it is already running so both engines
+    # reach close() with a genuinely live actor.
+    real_submit_reserved = _NativeLane.submit_reserved
+
+    def submit_then_hold_actor(lane, row):
+        real_submit_reserved(lane, row)
+        if lane.kind is ReactionEffectKind.ACK:
+            assert entered.wait(5.0), "the effect never started on its lane"
+            held.set()
+            assert release.wait(10.0)
+
+    monkeypatch.setattr(_NativeLane, "submit_reserved", submit_then_hold_actor)
 
     runtime = ReactionEffectsRuntime(
         tmp_path / "reaction-effects.sqlite3",
@@ -66,6 +89,10 @@ def test_close_leaves_the_store_open_when_the_actor_would_not_stop(
         assert entered.wait(5.0), (
             "the effect never started, so the actor was never busy and this "
             "test would pass without exercising anything"
+        )
+        assert held.wait(5.0), (
+            "the actor never acknowledged the in-flight effect, so it was not "
+            "busy when close() asked it to stop"
         )
 
         # Budget 0 is what production arrives at once wait_idle has spent it.
@@ -96,8 +123,19 @@ def test_close_leaves_the_store_open_when_the_actor_would_not_stop(
         # whole point -- and the suite's fd-hygiene fixture is right to notice
         # three sqlite descriptors going missing. Production leaks them for
         # the milliseconds it has left to live; a test lives inside a long
-        # run, so it cleans up after the actor is genuinely done.
+        # run, so it cleans up after the actor is genuinely done. Stopping the
+        # host is what makes "genuinely done" true: release only lets the
+        # in-flight dispatch finish, and the actor must not be inside another
+        # store call when the test closes the connection underneath it.
         finished.wait(10.0)
+        cell = runtime._cell
+        assert cell is not None
+        # close()'s failed drain is retryable on the cell; engine shutdown is
+        # not -- both engines return their first result forever.
+        assert cell.drain(5.0).complete, (
+            "the actor did not stop after the in-flight effect returned; "
+            "closing the store now would reintroduce the use-after-free"
+        )
         runtime._store.close()
 
 

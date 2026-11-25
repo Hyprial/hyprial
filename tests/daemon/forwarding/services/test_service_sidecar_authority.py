@@ -48,9 +48,11 @@ class _Controller:
         self.calls.append("close")
 
 
-def test_native_authority_exposes_capability_and_delegates_service_operations() -> None:
+def test_native_authority_exposes_capability_and_delegates_service_operations(
+    actor_host,
+) -> None:
     controller = _Controller()
-    owner = ForwardingControllerAuthority(controller)
+    owner = ForwardingControllerAuthority(controller, actor_host=actor_host)
     assert owner.pid == 321
     assert owner.supports_service_connect is True
     assert _map(owner) == MAPPING
@@ -60,10 +62,12 @@ def test_native_authority_exposes_capability_and_delegates_service_operations() 
     assert controller.calls == ["map", "unmap:api", "service-status", "close"]
 
 
-def test_native_authority_refuses_all_service_calls_when_capability_is_absent() -> None:
+def test_native_authority_refuses_all_service_calls_when_capability_is_absent(
+    actor_host,
+) -> None:
     controller = _Controller()
     controller.supports_service_connect = False
-    owner = ForwardingControllerAuthority(controller)
+    owner = ForwardingControllerAuthority(controller, actor_host=actor_host)
     for call in (_map, lambda value: value.unmap_service("api"), lambda value: value.service_status()):
         with pytest.raises(ServiceControlError) as raised:
             call(owner)
@@ -72,7 +76,9 @@ def test_native_authority_refuses_all_service_calls_when_capability_is_absent() 
     owner.close()
 
 
-def test_accepted_timeout_retains_custody_and_orders_disconnect_after_completion() -> None:
+def test_accepted_timeout_retains_custody_and_orders_disconnect_after_completion(
+    actor_host,
+) -> None:
     entered = threading.Event()
     release = threading.Event()
     settled = threading.Event()
@@ -87,7 +93,9 @@ def test_accepted_timeout_retains_custody_and_orders_disconnect_after_completion
             return dict(MAPPING)
 
     controller = Controller()
-    owner = ForwardingControllerAuthority(controller, timeout=0.05)
+    owner = ForwardingControllerAuthority(
+        controller, timeout=0.05, actor_host=actor_host
+    )
     errors: list[BaseException] = []
     worker = threading.Thread(target=lambda: _capture_error(errors, lambda: _map(owner)))
     worker.start()
@@ -115,7 +123,9 @@ def _capture_error(errors: list[BaseException], call) -> None:  # type: ignore[n
         errors.append(error)
 
 
-def test_authority_capacity_is_enforced_while_admitted_result_is_pending() -> None:
+def test_authority_capacity_is_enforced_while_admitted_result_is_pending(
+    actor_host,
+) -> None:
     entered = threading.Event()
     release = threading.Event()
 
@@ -125,7 +135,9 @@ def test_authority_capacity_is_enforced_while_admitted_result_is_pending() -> No
             assert release.wait(2)
             return dict(MAPPING)
 
-    owner = ForwardingControllerAuthority(Controller(), capacity=1, timeout=1.0)
+    owner = ForwardingControllerAuthority(
+        Controller(), capacity=1, timeout=1.0, actor_host=actor_host
+    )
     worker = threading.Thread(target=lambda: _map(owner))
     worker.start()
     assert entered.wait(1)
@@ -136,18 +148,20 @@ def test_authority_capacity_is_enforced_while_admitted_result_is_pending() -> No
     owner.close()
 
 
-def test_authority_sanitizes_unexpected_controller_error_and_replacement_is_fresh() -> None:
+def test_authority_sanitizes_unexpected_controller_error_and_replacement_is_fresh(
+    actor_host,
+) -> None:
     class Broken(_Controller):
         def map_service(self, *args, **kwargs):  # type: ignore[no-untyped-def]
             raise RuntimeError(PRIVATE_ADDRESS)
 
-    first = ForwardingControllerAuthority(Broken())
+    first = ForwardingControllerAuthority(Broken(), actor_host=actor_host)
     with pytest.raises(ServiceControlError) as raised:
         _map(first)
     assert raised.value.code == "SERVICE_UNAVAILABLE"
     assert PRIVATE_ADDRESS not in str(raised.value)
     first.close()
 
-    replacement = ForwardingControllerAuthority(_Controller())
+    replacement = ForwardingControllerAuthority(_Controller(), actor_host=actor_host)
     assert _map(replacement) == MAPPING
     replacement.close()

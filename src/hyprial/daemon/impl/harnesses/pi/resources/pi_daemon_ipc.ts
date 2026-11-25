@@ -2,6 +2,18 @@
  * Shared daemon IPC for hyprial's pi extensions (harness-bridge tools and the
  * interactive attach carrier).
  *
+ * Decision record (W1E-1, 2026-11-21):
+ * - processBirthIdentity supports win32 by reading the live process creation
+ *   FILETIME (100-ns ticks since 1601-01-01 UTC) via PowerShell's
+ *   Process.StartTime.ToFileTimeUtc() and formatting `win-filetime:<stamp>`,
+ *   matching hyprial.kernel.windows_process_identity byte-for-byte.
+ * - sessionRefFromFile drops the POSIX-only group/other mode-bit mask check per
+ *   Owner Shell-3 ruling (relying on the private Home/state root boundary while
+ *   keeping non-symlink, regular-file, size, and POSIX euid checks) so Windows
+ *   synthesized file modes do not reject valid interactive session-ref files.
+ * - daemonSocketPath resolves the default home directory fallback via Node's
+ *   `os.homedir()` instead of an ambient POSIX home environment variable.
+ *
  * Both extensions answer with ONE request against the owning daemon's
  * version-1 newline-delimited JSON IPC (the exact wire
  * `hyprial.mcp.unix.UnixDaemonConnection` speaks), signed with the session's own
@@ -11,23 +23,17 @@
  *   HYPRIAL_WORKER_SESSION_REF  the session ref the daemon's fence accepts
  *   HYPRIAL_WORKER_SESSION_REF_FILE  secure interactive binding file when the
  *                           ref cannot be published before the TUI starts
- *   HYPRIAL_WORKER_TMUX_SESSION detached-tmux session name when the TUI runs
- *                           under `hyprial agent start --tmux` (optional; recorded on
- *                           the interactive registration so `hyprial daemon status` shows
- *                           where to attach)
  *   HYPRIAL_HOME / HARNESS_STATE_DIR  locate THIS daemon's socket, never an
  *                           ambient production daemon
- *
- * Extracted from pi_harness_bridge.ts so the attach carrier speaks the
- * identical wire without duplicating it; the bridge's behavior is unchanged.
  */
 
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import * as net from "node:net";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 
-// Mirror hyprial.daemon.application._serve_connection / hyprial.cli._daemon_request.
+import { connectLocalIpc } from "./pi_local_ipc.ts";
+
 export const IPC_VERSION = 1;
 export const IPC_TIMEOUT_MS = 15_000;
 export const IPC_MAX_BYTES = 8 * 1024 * 1024;
@@ -35,15 +41,10 @@ export const IPC_MAX_BYTES = 8 * 1024 * 1024;
 export interface WorkerIdentity {
   actor: string;
   sessionRef: string;
-  /** Detached-tmux session name, present only on `hyprial agent start --tmux` launches. */
-  tmuxSession?: string;
 }
 
 export type DaemonResult = Record<string, unknown>;
 
-/** Keep the daemon's structured custody/failure receipt across the JS boundary.
- * The CODE: prefix remains stable for carrier session-fence classification.
- */
 export class DaemonIpcError extends Error {
   readonly code: string;
   readonly data: unknown;
@@ -59,6 +60,7 @@ export class DaemonIpcError extends Error {
 export interface ProcessBirthIdentityOptions {
   platform?: string;
   readPs?: (pid: number) => string | null;
+  readWinFiletime?: (pid: number) => string | null;
 }
 
 function readPsStart(pid: number): string | null {
@@ -73,13 +75,46 @@ function readPsStart(pid: number): string | null {
   }
 }
 
-/** Match the daemon's process-birth marker grammar for PID-reuse fencing. */
+function windowsPowershellExecutable(): string {
+  const root = (
+    process.env.SystemRoot ||
+    process.env.SYSTEMROOT ||
+    process.env.WINDIR
+  )?.trim();
+  return root
+    ? `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+    : "powershell.exe";
+}
+
+function readWinFiletime(pid: number): string | null {
+  const script = `$p = [System.Diagnostics.Process]::GetProcessById(${pid}); if (-not $p.HasExited) { $p.StartTime.ToFileTimeUtc() }`;
+  try {
+    const output = execFileSync(
+      windowsPowershellExecutable(),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 5000,
+        windowsHide: true,
+      },
+    ).trim();
+    return /^\d+$/.test(output) ? output : null;
+  } catch {
+    return null;
+  }
+}
+
 export function processBirthIdentity(
   pid: number,
   options: ProcessBirthIdentityOptions = {},
 ): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const platform = options.platform ?? process.platform;
+  if (platform === "win32") {
+    const filetime = (options.readWinFiletime ?? readWinFiletime)(pid);
+    return filetime && /^\d+$/.test(filetime) ? `win-filetime:${filetime}` : null;
+  }
   if (platform === "linux") {
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
@@ -90,17 +125,12 @@ export function processBirthIdentity(
         return `proc-starttime:${starttime}`;
       }
     } catch {
-      // Fall through to the daemon's portable ps-lstart component.
+      void 0;
     }
   }
-  // On Darwin, Date.now() - process.uptime() can round one second later than
-  // the kernel birth timestamp. ps reads the same lstart component as the
-  // daemon, so boundary starts compare exactly instead of intermittently.
   const started = (options.readPs ?? readPsStart)(pid);
   if (started) return `ps-lstart:${started}`;
   if (platform === "darwin") {
-    // Sandboxed hosts can deny ps. The daemon grants only this coarse
-    // component a documented one-second comparison tolerance.
     return `darwin-startsec:${Math.floor(Date.now() / 1000 - process.uptime())}`;
   }
   return null;
@@ -109,14 +139,14 @@ export function processBirthIdentity(
 function sessionRefFromFile(path: string): string | null {
   let descriptor: number | null = null;
   try {
+    if (lstatSync(path).isSymbolicLink()) return null;
     descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const metadata = fstatSync(descriptor);
     const effectiveUid = process.geteuid?.();
     if (
       !metadata.isFile() ||
       metadata.size > 4096 ||
-      (effectiveUid !== undefined && metadata.uid !== effectiveUid) ||
-      (metadata.mode & 0o077) !== 0
+      (effectiveUid !== undefined && metadata.uid !== effectiveUid)
     ) return null;
     const value = readFileSync(descriptor, "utf8").trim();
     return value && !/\s/.test(value) ? value : null;
@@ -134,11 +164,9 @@ export function identityFromEnv(): WorkerIdentity | null {
   if (directRef && refFile) return null;
   const sessionRef = directRef || (refFile ? sessionRefFromFile(refFile) : null);
   if (!actor || !sessionRef) return null;
-  const tmuxSession = process.env.HYPRIAL_WORKER_TMUX_SESSION?.trim();
-  return { actor, sessionRef, ...(tmuxSession ? { tmuxSession } : {}) };
+  return { actor, sessionRef };
 }
-/** Mirror hyprial.cli._socket_path: an explicit state/home root is an isolation
- * boundary and always wins over an ambient HARNESS_SOCKET_PATH override. */
+
 export function daemonSocketPath(): string {
   const stateDir = process.env.HARNESS_STATE_DIR?.trim();
   const hyprialHome = process.env.HYPRIAL_HOME?.trim();
@@ -146,12 +174,9 @@ export function daemonSocketPath(): string {
   if (hyprialHome) return `${hyprialHome}/state/daemon.sock`;
   const explicit = process.env.HARNESS_SOCKET_PATH?.trim();
   if (explicit) return explicit;
-  return `${process.env.HOME}/.hyprial/state/daemon.sock`;
+  return `${homedir()}/.hyprial/state/daemon.sock`;
 }
 
-/** One daemon request over a fresh connection, like StatelessDaemonProxy.
- * Mutations carry a fresh request id, which the daemon also adopts as the
- * message.send idempotency key. */
 export function callDaemon(
   method: string,
   params: Record<string, unknown>,
@@ -164,7 +189,7 @@ export function callDaemon(
       method,
       params,
     };
-    const socket = net.createConnection(daemonSocketPath());
+    const socket = connectLocalIpc(daemonSocketPath());
     let buffer = Buffer.alloc(0);
     let settled = false;
     const timer = setTimeout(() => {

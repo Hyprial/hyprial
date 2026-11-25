@@ -20,7 +20,6 @@ from hyprial.identity.impl.agents.actor.ports import CleanupRevokedAgentHomeComm
 from hyprial.identity.impl.agents.actor.ports import ClearRestoreDispositionCommand
 from hyprial.identity.impl.agents.actor.ports import ConfirmAgentLifecycleReceiptCommand
 from hyprial.identity.impl.agents.actor.ports import CreateAgentCommand
-from hyprial.identity.impl.agents.actor.ports import CreateHostInvitedAgentCommand
 from hyprial.identity.impl.agents.actor.ports import CreateTransferHostedAgentCommand
 from hyprial.identity.impl.agents.actor.ports import DestroyAgentCommand
 from hyprial.kernel import EffectCompleted
@@ -32,7 +31,6 @@ from hyprial.identity.impl.agents.home.effects import VerifyLandingPayload
 from hyprial.identity.impl.agents.home.effects import MaterialiseLandingHome
 from hyprial.identity.impl.agents.migration.actor import MigrationOwnerCall
 from hyprial.identity.impl.agents.migration.actor import MigrationRequest
-from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand
 from hyprial.identity.impl.agents.home.effects import PrepareRuntimeHome
 from hyprial.identity.impl.agents.home.effects import PrepareWorkspaceHome
 from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityCommand
@@ -50,9 +48,10 @@ from hyprial.identity.impl.agents.actor.ports import RevokeAgentSecretCommand
 from hyprial.identity.impl.agents.actor.ports import SetRestoreDispositionCommand
 from hyprial.identity.impl.agents.actor.ports import SettleAgentDestroyCommand
 from hyprial.identity.impl.agents.actor.ports import UnblockAgentCommand
-from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand
 from hyprial.identity.impl.agents.actor.ports import BindAgentConfigCommand
 from hyprial.identity.impl.agents.actor.ports import UpdateAgentCommand
+from hyprial.identity.impl.agents.actor.ports import SetHarnessArgsCommand
+from hyprial.identity.impl.agents.actor.ports import RenameAgentCommand
 from hyprial.identity.impl.agents.runtime.context import agent_home_mode
 from hyprial.identity.impl.agents.runtime.context import build_agent_runtime_preparation
 from hyprial.kernel import ipc_errors
@@ -65,7 +64,6 @@ from ._base import (
     AgentHomeAccessError,
     AgentUpdateConflict,
     _AGENT_COST_TYPES,
-    _AgentStateEffectCompleted,
     _VerifyLandingPayloadCommand,
     _ConfirmLandingHomeCommand,
     _LegacyRuntimeResult,
@@ -133,9 +131,6 @@ class _GenerationDispatchMixin:
         if isinstance(command, AgentHomeEffectCompleted):
             self._home_completed(command)
             return
-        if isinstance(command, _AgentStateEffectCompleted):
-            self._pin_state_completed(command)
-            return
         if self.migration_conflicts is not None and self.migration_conflicts(command):
             self._reject(command, ipc_errors.AGENT_MIGRATION_BUSY, "Agent migration has an unsettled lease")
             return
@@ -168,9 +163,10 @@ class _GenerationDispatchMixin:
             command,
             (
                 CreateAgentCommand,
-                CreateHostInvitedAgentCommand,
                 CreateTransferHostedAgentCommand,
                 UpdateAgentCommand,
+                SetHarnessArgsCommand,
+                RenameAgentCommand,
                 BindAgentConfigCommand,
                 DestroyAgentCommand,
                 SettleAgentDestroyCommand,
@@ -183,8 +179,6 @@ class _GenerationDispatchMixin:
                 ClearRestoreDispositionCommand,
                 BlockAgentCommand,
                 UnblockAgentCommand,
-                PinAgentAdapterCommand,
-                UnpinAgentAdapterCommand,
                 RecordAgentSessionRefCommand,
                 RetireAgentSessionRefsCommand,
                 RollbackRetiredAgentSessionRefsCommand,
@@ -205,7 +199,6 @@ class _GenerationDispatchMixin:
             command,
             (
                 CreateAgentCommand,
-                CreateHostInvitedAgentCommand,
                 CreateTransferHostedAgentCommand,
                 DestroyAgentCommand,
                 SettleAgentDestroyCommand,
@@ -217,16 +210,6 @@ class _GenerationDispatchMixin:
         try:
             if isinstance(command, CreateAgentCommand):
                 self._create(command)
-            elif isinstance(command, CreateHostInvitedAgentCommand):
-                agent = self.registry.create_host_invited(
-                    command.name, pinned_owner=command.pinned_owner,
-                    cwd=command.cwd, harness_args=dict(command.harness_args),
-                    preferred_harness=command.preferred_harness,
-                )
-                self._completed(
-                    command, operation="create", changed=True,
-                    version=self.version.bump(), agent=agent,
-                )
             elif isinstance(command, CreateTransferHostedAgentCommand):
                 agent = self.registry.create_transfer_hosted(
                     command.name, pinned_owner=command.pinned_owner,
@@ -241,6 +224,10 @@ class _GenerationDispatchMixin:
                 self._bind_agent_config(command)
             elif isinstance(command, UpdateAgentCommand):
                 self._update(command)
+            elif isinstance(command, SetHarnessArgsCommand):
+                self._set_harness_args(command)
+            elif isinstance(command, RenameAgentCommand):
+                self._rename(command)
             elif isinstance(command, DestroyAgentCommand):
                 self._destroy(command)
             elif isinstance(command, SettleAgentDestroyCommand):
@@ -364,8 +351,6 @@ class _GenerationDispatchMixin:
                     version=self.version.bump() if changed else self.version.read(),
                     agent=self.registry.get(command.actor),
                 )
-            elif isinstance(command, PinAgentAdapterCommand):
-                self._pin(command)
             elif isinstance(command, RetireAgentLifecycleReceiptCommand):
                 matched = self.registry.retire_lifecycle_receipt(
                     command.attempt_token, command.resource_token
@@ -440,6 +425,8 @@ class _GenerationDispatchMixin:
                     revision=command.revision,
                     prevalidated_home_token=command.prevalidated_home_token,
                     owner_actor=command.owner_actor,
+                    target_entity_token=command.target_entity_token,
+                    prevalidated_route_required=command.route_required,
                 )
                 self._publish(AgentSecretGrantCompleted(
                     command.correlation_id, self.generation, self.version.bump(),
@@ -454,8 +441,6 @@ class _GenerationDispatchMixin:
                     command.correlation_id, self.generation, version,
                     "revoke", changed,
                 ))
-            else:
-                self._unpin(command)
         except (AgentError, AgentHomeError, AgentAlreadyRunning) as error:
             self._reject(
                 command, str(getattr(error, "code", "AGENT_ERROR")), str(error)
@@ -479,11 +464,11 @@ class _GenerationDispatchMixin:
         ):
             launches = self.runtime_launches
             assert launches is not None
-            actor = self.registry.normalize_actor(payload.name)
+            actor = self.registry.actor_key(payload.name)
             if launches.active_for(actor):
                 self._reject(
                     command,
-                    "AGENT_LAUNCH_IN_PROGRESS",
+                    ipc_errors.AGENT_LAUNCH_IN_PROGRESS,
                     f"agent {actor!r} has a native process launch in progress",
                 )
                 return
@@ -526,14 +511,18 @@ class _GenerationDispatchMixin:
                 self._reject(
                     command,
                     str(getattr(AgentAlreadyRunning, "code", "AGENT_ALREADY_RUNNING")),
-                    str(AgentAlreadyRunning(actor, incumbent, command.launch_harness)),
+                    str(
+                        AgentAlreadyRunning(
+                            actor, incumbent, command.launch_harness, name=name
+                        )
+                    ),
                 )
                 return
         admission = lane.reserve(correlation_id, self.generation)
         if admission is not AdmissionResult.ACCEPTED:
             self._reject(
                 command,
-                "PORT_OVERLOADED" if admission is AdmissionResult.OVERLOADED else "PORT_CLOSING",
+                ipc_errors.PORT_OVERLOADED if admission is AdmissionResult.OVERLOADED else ipc_errors.PORT_CLOSING,
                 f"agent home effect admission is {admission.value}",
             )
             return
@@ -554,7 +543,6 @@ class _GenerationDispatchMixin:
                 command,
                 (
                     CreateAgentCommand,
-                    CreateHostInvitedAgentCommand,
                     CreateTransferHostedAgentCommand,
                 ),
             ):
@@ -825,38 +813,13 @@ class _GenerationDispatchMixin:
                 )
             agent = reservation.agent
             if reservation.operation == "create":
-                try:
-                    agent = (
-                        self.registry.commit_create_record(reservation, event.receipt)
-                        if reservation.changed
-                        else self.registry.commit_existing_home(
-                            reservation, event.receipt
-                        )
+                agent = (
+                    self.registry.commit_create_record(reservation, event.receipt)
+                    if reservation.changed
+                    else self.registry.commit_existing_home(
+                        reservation, event.receipt
                     )
-                except Exception as error:
-                    if not isinstance(command, CreateHostInvitedAgentCommand):
-                        raise
-                    # An invited home exists after the filesystem effect even
-                    # when its journal/Agent row transaction rolls back. Keep
-                    # the exact create claim and receipt until the facade
-                    # joins typed, entity-fenced destroy settlement.
-                    try:
-                        self.registry.revoke_failed_create_record(
-                            reservation, event.receipt
-                        )
-                    except Exception as cleanup_error:
-                        self._reject(
-                            command, ipc_errors.AGENT_CREATE_ROLLBACK_PENDING,
-                            f"create commit failed ({type(error).__name__}: {error}); "
-                            f"durable cleanup claim remains ({type(cleanup_error).__name__}: "
-                            f"{cleanup_error})",
-                        )
-                        return
-                    self._reject(
-                        command, ipc_errors.AGENT_CREATE_COMMIT_FAILED,
-                        f"{type(error).__name__}: {error}",
-                    )
-                    return
+                )
             else:
                 self.registry.commit_cleanup_home(reservation, event.receipt)
             if (

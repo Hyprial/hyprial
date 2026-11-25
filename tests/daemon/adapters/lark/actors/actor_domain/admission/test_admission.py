@@ -7,8 +7,8 @@ from hyprial.kernel import ActorState
 from hyprial.daemon.impl.adapters.lark import ActorTarget, HarnessDelivery
 from hyprial.daemon.impl.adapters.lark.contracts.errors import AdapterStartError
 from hyprial.daemon.impl.adapters.lark.runtime.runtime import AdapterRuntime
-from hyprial.daemon.impl.adapters.lark.ports.ports import AdapterMutationCompleted, PinAdapterCommand, StartAdapterCommand
-from hyprial.kernel import PortAdmission, PortCommandRejected
+from hyprial.daemon.impl.adapters.lark.ports.ports import AdapterMutationCompleted, StartAdapterCommand
+from hyprial.kernel import PortAdmission
 from hyprial.kernel import ChannelConfiguration, LarkGatewayConfig
 
 from ..support import (
@@ -31,12 +31,12 @@ def test_reload_and_desired_state_survive_actor_generation_restart() -> None:
         runtime.reload_gateways(
             ChannelConfiguration(gateways=(_gateway("a"), _gateway("b")))
         )
-        handle = runtime._handle
-        assert handle is not None
-        assert runtime._runtime.tell(handle, object()).value == "accepted"
+        cell = runtime._cell
+        assert cell is not None
+        assert cell.tell(object()).value == "accepted"
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            snapshot = runtime._runtime.snapshot(handle)
+            snapshot = runtime._cell.snapshot()
             if snapshot.generation > 1 and snapshot.state is ActorState.RUNNING:
                 break
             time.sleep(0.01)
@@ -241,26 +241,6 @@ def test_frozen_port_start_is_admission_only_and_completes_as_event() -> None:
         assert projection is not None and projection.process_running is True
     finally:
         release.set()
-        runtime.stop()
-
-
-def test_pin_port_is_typed_agent_domain_rejection_without_adapter_mutation() -> None:
-    launcher = _Launcher()
-    events = _Events()
-    runtime = AdapterRuntime(
-        launcher,
-        ChannelConfiguration(gateways=(_gateway("a"),)),
-        event_sink=events,
-    )
-    try:
-        before = runtime.read_adapters()
-        assert runtime.submit(PinAdapterCommand("pin", "a", "agent:x")) is PortAdmission.ACCEPTED
-        assert events.changed.wait(1.0)
-        assert isinstance(events.values[0], PortCommandRejected)
-        assert events.values[0].code == "PIN_OWNED_BY_AGENT_DOMAIN"
-        assert runtime.read_adapters() == before
-        assert launcher.calls == 0
-    finally:
         runtime.stop()
 
 

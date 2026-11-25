@@ -20,7 +20,7 @@ from typing import Any, NoReturn
 
 import typer
 
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import _local_operator_identity
 from hyprial.shell.impl.cli.output import report_error, warn
@@ -69,7 +69,7 @@ def _secret_store(agent: str) -> Any:
         return AgentSecretStore(services._hyprial_home() / "agents" / name)
     except (OSError, TypeError, ValueError) as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"cannot open private secret store for agent {agent!r}: {error}",
         ) from None
 
@@ -82,7 +82,7 @@ def _secret_store_exists(agent: str) -> bool:
         return agent_secret_store_exists(services._hyprial_home(), agent)
     except (OSError, TypeError, ValueError) as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"cannot inspect private secret store for agent {agent!r}: {error}",
         ) from None
 
@@ -96,7 +96,7 @@ def _read_stdin_values(field_names: list[str]) -> dict[str, str]:
         )
     if not field_names or len(field_names) != len(set(field_names)):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "secret write requires one or more unique --field options",
         )
     raw = sys.stdin.read()
@@ -108,7 +108,7 @@ def _read_stdin_values(field_names: list[str]) -> dict[str, str]:
         or any(not value or "\r" in value for value in values)
     ):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "secret write requires one non-empty line per --field on stdin",
         )
     return dict(zip(field_names, values, strict=True))
@@ -146,7 +146,7 @@ def _validate_service_shape(
         )
     if no_validate:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"service {service!r} has a validator; remove --no-validate",
         )
 
@@ -329,7 +329,7 @@ def _remote_revoke_time(
 
     def usage_error(reason: str) -> NoReturn:
         error = services.CliError(
-            ipc_errors.INVALID_ARGUMENT, f"invalid --remote-revoked-at: {reason}"
+            codes.INVALID_ARGUMENT, f"invalid --remote-revoked-at: {reason}"
         )
         report_error(error, json_output=json_output)
         raise typer.Exit(code=64)
@@ -416,7 +416,7 @@ def _write_secret_values(
                     result="rejected:invalid-field",
                 )
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT, f"secret write rejected: {error}"
+                codes.INVALID_ARGUMENT, f"secret write rejected: {error}"
             ) from None
         raise AssertionError("environment validator accepted an invalid field")
     validated, warning = _validate_service_shape(
@@ -450,7 +450,7 @@ def _write_secret_values(
         ) from None
     except ValueError as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, f"secret write rejected: {error}"
+            codes.INVALID_ARGUMENT, f"secret write rejected: {error}"
         ) from None
 
     result: dict[str, object] = {
@@ -548,7 +548,7 @@ def agent_secret_remove(
     def operation() -> dict[str, object]:
         if not remote_revoked and remote_revoked_at is not None:
             error = services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--remote-revoked-at requires --remote-revoked",
             )
             report_error(error, json_output=json_output)
@@ -687,7 +687,7 @@ def agent_secret_entry_write(
             value = value[:-1]
         if not value or "\n" in value or "\r" in value:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "secret write requires one non-empty line on stdin",
             )
         return services.runtime.request(

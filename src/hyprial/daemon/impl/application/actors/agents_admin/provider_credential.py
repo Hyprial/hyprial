@@ -44,6 +44,7 @@ from hyprial.identity import (
     FingerprintUnavailable,
     NativeCredentialError,
     install_native_credential_set,
+    inspect_native_credentials,
     remove_native_credentials,
     secret_environment_name_is_allowed,
 )
@@ -55,6 +56,21 @@ _DEFAULT_LOCK = threading.Lock()
 
 class _AgentProviderMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
+
+    def _handle_native_auth_list(
+        self, params: JsonObject, *, trusted_message_origin: str | None = None,
+    ) -> dict[str, object]:
+        """List owned native file metadata; no Key-store or launch inference."""
+        attribution = {key: value for key, value in params.items() if key != "actor"}
+        operator, _ = self._identity_binding_operator(attribution, trusted_message_origin=trusted_message_origin)
+        if not operator:
+            raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "native Auth inventory requires the local operator")
+        try:
+            return native_auth_records(self, params)
+        except AgentError as error:
+            raise DaemonRequestError(error.code, "native Auth agent inventory unavailable") from error
+        except AgentHomeError as error:
+            raise DaemonRequestError(AgentError.code, "native Auth agent home unavailable") from error
 
     def _handle_agent_provider_request(
         self, method: str, params: JsonObject, *, trusted_message_origin: str | None,
@@ -73,14 +89,25 @@ class _AgentProviderMixin:
         except AgentHomeError as error:
             raise DaemonRequestError(AgentError.code, str(error)) from error
 
+    def _refuse_user_agent_credential(self, params: JsonObject, verb: str) -> None:
+        """UA1b: refused after the caller check, so authorization keeps precedence."""
+
+        from hyprial.daemon.impl.user_agent.naming import refuse_user_agent_target
+
+        actor = params.get("actor")
+        if isinstance(actor, str) and actor:
+            refuse_user_agent_target(self.agents, actor, verb)
+
     def _handle_agent_provider(
         self, method: str, params: JsonObject, *, operator: bool = True
     ) -> Any:
         if method == "agent.provider.login":
             if params.get("makeDefault") and not operator:
                 raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "only the host operator may change the provider default")
+            self._refuse_user_agent_credential(params, "log in")
             return handle_provider_login(self, params)
         if method == "agent.provider.logout":
+            self._refuse_user_agent_credential(params, "log out")
             return handle_provider_logout(self, params)
         if method == "agent.provider.default":
             reference = self._agent_registry.default_claude_credential()
@@ -150,8 +177,16 @@ def change_default_credential(app: Any, params: JsonObject, *, operator: bool) -
 def materialize_agent_secret_environment(*, registry: Any, actor: str) -> dict[str, str]:
     """Read one agent's sqlite values and record the launch decision."""
 
+    from hyprial.identity import SecretResolutionError, SecretResolver, SecretSource
+
     agent = registry.require(actor)
     receipt = registry.home_receipt(agent.actor)
+    resolver = SecretResolver(registry.home_provisioner.hyprial_home, registry)
+    for grant in registry.secret_inventory(agent.actor):
+        if grant.source is SecretSource.USER_PROVIDER and (
+            grant.route_required or resolver.model_route_required(grant.entry_id, grant.field_name)
+        ):
+            raise SecretResolutionError("route-unsupported", grant.entry_id, "interactive-launch")
     store = AgentSecretStore(Path(receipt.path))
     write_receipts: dict[tuple[str, str], tuple[str, int]] = {}
     for event in store.history():
@@ -265,7 +300,10 @@ def handle_provider_login(application: Any, params: JsonObject) -> dict[str, obj
     else:
         documents = _decoded_documents(params.get("files"))
         try:
-            installed = install_native_credential_set(Path(receipt.path), provider, documents, force=force)
+            installed = install_native_credential_set(
+                Path(receipt.path), provider, documents, force=force,
+                import_record=application._agent_registry.native_credential_import_record(agent.actor),
+            )
         except NativeCredentialError as error:
             raise DaemonRequestError(error.code, error.message) from error
     result = {"ok": True, "actor": agent.actor, **installed}
@@ -285,13 +323,44 @@ def handle_provider_login(application: Any, params: JsonObject) -> dict[str, obj
 
 def _owned_agent(application: Any, actor: str) -> Any:
     agent = application.agents.require(actor)
-    if agent.hosted_by == "host-invite" or agent.owner != application.owner:
+    if agent.owner != application.owner:
         raise DaemonRequestError(
             ipc_errors.TARGET_NOT_AUTHORIZED,
             f"agent {agent.actor} belongs to {agent.owner}; provider login and "
             "logout act only on agents owned by the user this daemon is logged in as",
         )
     return agent
+
+
+def native_auth_records(application: Any, params: JsonObject) -> dict[str, object]:
+    """Keep unavailable records visible without exposing paths or secrets."""
+    actor = params.get("actor")
+    agents = ([_owned_agent(application, actor)] if actor is not None else
+              [agent for agent in application.agents.list()
+               if agent.owner == application.owner])
+    harnesses = [params["harness"]] if "harness" in params else sorted(NATIVE_CREDENTIAL_FILES)
+    records = []
+    for agent in agents:
+        for harness in harnesses:
+            error_code = None
+            try:
+                receipt = application._agent_registry.home_receipt(agent.actor, require_ready=False)
+                observation = inspect_native_credentials(
+                    Path(receipt.path), harness,
+                    import_record=application._agent_registry.native_credential_import_record(agent.actor),
+                )
+            except (NativeCredentialError, AgentError, AgentHomeError, OSError) as error:
+                error_code = error.code if isinstance(error, NativeCredentialError) else ipc_errors.DAEMON_ERROR
+                observation = {"state": "unavailable", "files": [], "missingFiles": []}
+            if observation["state"] == "absent":
+                continue
+            records.append({
+                "actor": agent.uri, "displayName": agent.display_name or agent.actor,
+                "harness": harness, **observation, "errorCode": error_code,
+                "importedAt": observation.get("importedAt"),
+                "startupConfirmedAt": observation.get("startupConfirmedAt"),
+            })
+    return {"ok": True, "records": records}
 
 
 def handle_provider_logout(application: Any, params: JsonObject) -> dict[str, object]:
@@ -302,7 +371,10 @@ def handle_provider_logout(application: Any, params: JsonObject) -> dict[str, ob
     agent = _owned_agent(application, actor)
     receipt = application._agent_registry.home_receipt(agent.actor, require_ready=False)
     try:
-        removed = remove_native_credentials(Path(receipt.path), provider)
+        removed = remove_native_credentials(
+            Path(receipt.path), provider,
+            import_record=application._agent_registry.native_credential_import_record(agent.actor),
+        )
     except NativeCredentialError as error:
         raise DaemonRequestError(error.code, error.message) from error
     return {"ok": True, "actor": agent.actor, **removed}

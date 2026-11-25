@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from __future__ import annotations
-from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -14,8 +12,7 @@ from hyprial.identity import (
     AgentBinding,
     AgentRegistry,
     HandoverNotice,
-    PinConflictError,
-    PinStateConflictError,
+    normalize_harness_args,
 )
 from hyprial.identity import HomePayloadFile
 from hyprial.identity import (
@@ -27,6 +24,7 @@ from hyprial.identity import (
     RevokeAgentSecretCommand,
     SecretSource,
     AgentDestroySettled,
+    AgentHarnessArgsUpdated,
     AgentMutationCompleted,
     AgentProjection,
     BindAgentCommand,
@@ -34,11 +32,10 @@ from hyprial.identity import (
     BlockAgentCommand,
     ClearRestoreDispositionCommand,
     CreateAgentCommand,
-    CreateHostInvitedAgentCommand,
     CreateTransferHostedAgentCommand,
     DestroyAgentCommand,
     SettleAgentDestroyCommand,
-    PinAgentAdapterCommand,
+    SetHarnessArgsCommand,
     RecordAgentActivityCommand,
     RecordAgentActivityIfBindingCommand,
     RecordAgentSessionRefCommand,
@@ -46,11 +43,11 @@ from hyprial.identity import (
     RollbackRetiredAgentSessionRefsCommand,
     SetRestoreDispositionCommand,
     ReleaseAgentCommand,
-    UnpinAgentAdapterCommand,
     UnblockAgentCommand,
     UpdateAgentCommand,
+    RenameAgentCommand,
 )
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import ipc_errors, member_actor_registry_key
 from hyprial.daemon.impl.harnesses.runtime.ports import (
     HarnessLaunchProjection,
     AgentIdentityProjectionPort,
@@ -68,7 +65,6 @@ from .events import (
     DomainCommandError,
 )
 
-_PIN_EXPECTATION_UNSET = object()
 
 
 def harness_launch_projection(spec: HarnessLaunchSpec) -> HarnessLaunchProjection:
@@ -88,9 +84,9 @@ def harness_launch_projection(spec: HarnessLaunchSpec) -> HarnessLaunchProjectio
         containerized=spec.containerized,
         pinned_owner=spec.pinned_owner,
         container_image=spec.container_image,
-        execution_runtime=spec.execution_runtime,
         model_provider=spec.model_provider,
         model=spec.model,
+        member=spec.member,
     )
 
 
@@ -108,41 +104,36 @@ class AgentDirectoryFacade:
 
     @staticmethod
     def normalize_actor(value: str) -> str:
-        return AgentRegistry.normalize_actor(value)
+        return AgentRegistry.normalize_actor(member_actor_registry_key(value))
+
+    def actor_key(self, value: str) -> str:
+        """The immutable actor key behind a name, display name, ``a.`` id or URI."""
+
+        return self.local_actor(value) or self.normalize_actor(value)
 
     def native_actor(self, value: str) -> str:
         return self._domains._registry.native_actor(value)
 
     def local_actor(self, value: str) -> str | None:
-        from hyprial.kernel import parse_agent_uri
+        from hyprial.identity import resolve_local_actor
 
-        parsed = parse_agent_uri(value)
-        if parsed is not None:
-            if parsed[0] != self.owner or parsed[1] != self.machine:
-                hosted = self._domains.agent.read_agent(parsed[2])
-                return (
-                    hosted.actor if hosted is not None
-                    and hosted.uri == value and hosted.hosted_by is not None
-                    else None
-                )
-            candidate = parsed[2]
-        elif ":" in value:
-            return None
-        else:
-            candidate = value
-        try:
-            return self.normalize_actor(candidate)
-        except Exception:
-            return None
+        return resolve_local_actor(
+            value,
+            owner=self.owner,
+            machine=self.machine,
+            read=self._domains.agent.read_agent,
+            normalize=self.normalize_actor,
+        )
 
     def uri_for(self, actor: str) -> str:
-        from hyprial.kernel import canonical_agent_uri
+        from hyprial.identity import official_agent_uri
 
-        name = self.normalize_actor(actor)
-        hosted = self._domains.agent.read_agent(name)
-        if hosted is not None and hosted.hosted_by is not None:
-            return hosted.uri
-        return canonical_agent_uri(self.owner, self.machine, name)
+        return official_agent_uri(
+            self.actor_key(actor),
+            owner=self.owner,
+            machine=self.machine,
+            read=self._domains.agent.read_agent,
+        )
 
     def cell(self, actor: str):
         """The agent's diagnostic attachment, separate from its execution lifetime."""
@@ -196,18 +187,16 @@ class AgentDirectoryFacade:
     def list(self) -> tuple[Agent, ...]:
         return tuple(_agent(item) for item in self._domains.agent.read_agents())
 
+    def on_mutation(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Run *listener* after each completed agent mutation; returns the unregister."""
+
+        return self._domains.on_agent_mutation(listener)
+
     def projections(self) -> tuple[AgentProjection, ...]:
         return self._domains.agent.read_agents()
 
     def local_actors(self) -> tuple[str, ...]:
         return tuple(item.uri for item in self._domains.agent.read_agents())
-
-    def pins(self) -> dict[str, str]:
-        return {
-            adapter: item.uri
-            for item in self._domains.agent.read_agents()
-            for adapter in item.pinned_adapters
-        }
 
     def create(
         self,
@@ -220,10 +209,12 @@ class AgentDirectoryFacade:
         capabilities: object = None,
         harness_args: object = None,
         preferred_harness: str | None = None,
+        reuse_existing: bool = False,
     ) -> Agent:
         command = CreateAgentCommand(
                 correlation_id=f"agent-command:create:{uuid.uuid4().hex}",
             name=actor,
+            reuse_existing=reuse_existing,
             cwd=cwd,
             config=config,
             provider=provider,
@@ -250,62 +241,6 @@ class AgentDirectoryFacade:
             AgentMutationCompleted,
         )
         assert event.agent is not None
-        return _agent(event.agent)
-
-    def create_host_invited(
-        self, actor: str, *, pinned_owner: str, cwd: str | None = None,
-        harness_args: object = None, preferred_harness: str | None = None,
-    ) -> Agent:
-        correlation_id = f"agent-command:host-invite:{uuid.uuid4().hex}"
-        entity_token = uuid.uuid4().hex
-        try:
-            event = self._domains.call_agent_settled(
-                CreateHostInvitedAgentCommand(
-                    correlation_id=correlation_id,
-                    name=actor, pinned_owner=pinned_owner,
-                    entity_token=entity_token, cwd=cwd,
-                    harness_args=_harness_pairs(harness_args),
-                    preferred_harness=preferred_harness,
-                ),
-                AgentMutationCompleted,
-            )
-        except DomainCommandError as error:
-            if error.code not in {
-                ipc_errors.AGENT_CREATE_COMMIT_FAILED,
-                ipc_errors.AGENT_CREATE_ROLLBACK_PENDING,
-            }:
-                raise
-            try:
-                settlement = self.settle_destroy(
-                    f"{correlation_id}:rollback", actor,
-                    expected_entity_token=entity_token,
-                )
-                if settlement.disposition not in {"destroyed", "already-cleaned"}:
-                    raise DomainCommandError(
-                        ipc_errors.AGENT_CREATE_ROLLBACK_PENDING,
-                        f"Agent invite {correlation_id} rollback is "
-                        f"{settlement.disposition}",
-                    )
-            except BaseException as cleanup_error:
-                raise DomainCommandError(
-                    ipc_errors.AGENT_CREATE_ROLLBACK_PENDING,
-                    f"Agent invite {correlation_id} failed ({error}); "
-                    f"entity {entity_token} cleanup remains unsettled: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}",
-                ) from cleanup_error
-            if error.code == ipc_errors.AGENT_CREATE_ROLLBACK_PENDING:
-                raise DomainCommandError(
-                    ipc_errors.AGENT_CREATE_COMMIT_FAILED,
-                    f"Agent invite {correlation_id} creation failed and its "
-                    f"entity {entity_token} cleanup settled: {error.detail}",
-                ) from error
-            raise
-        assert event.agent is not None
-        if event.agent.entity_token != entity_token:
-            raise DomainCommandError(
-                "DOMAIN_CORRELATION_CONFLICT",
-                "host invite completed for a different Agent incarnation",
-            )
         return _agent(event.agent)
 
     def bind_agent_config(
@@ -344,6 +279,21 @@ class AgentDirectoryFacade:
         assert event.agent is not None
         return _agent(event.agent)
 
+    def set_harness_args(
+        self, actor: str, *, harness: str | None, args: tuple[str, ...] | None,
+        expected_harness_args: object, operator: str, reason: str | None,
+        correlation_id: str, confirmed_dangerous: bool = False,
+    ) -> AgentHarnessArgsUpdated:
+        return self._domains.call_agent(
+            SetHarnessArgsCommand(
+                correlation_id, actor, harness, args,
+                tuple(normalize_harness_args(expected_harness_args).items()),
+                operator, reason,
+                confirmed_dangerous,
+            ),
+            AgentHarnessArgsUpdated,
+        )
+
     def compare_and_swap(self, expected: Agent, replacement: Agent) -> bool:
         """Restore an exact durable snapshot without overwriting a later write."""
 
@@ -354,7 +304,6 @@ class AgentDirectoryFacade:
         comparable = replace(
             current,
             last_active_at_ms=expected.last_active_at_ms,
-            pinned_adapters=expected.pinned_adapters,
         )
         if comparable != expected:
             return False
@@ -383,7 +332,7 @@ class AgentDirectoryFacade:
         try:
             event = self._domains.call_agent(command, AgentMutationCompleted)
         except DomainCommandError as error:
-            if error.code == "AGENT_VERSION_CONFLICT":
+            if error.code == ipc_errors.AGENT_VERSION_CONFLICT:
                 return False
             raise
         return event.agent is not None
@@ -555,7 +504,7 @@ class AgentDirectoryFacade:
             expected_entity_token=expected_entity_token,
         )
         if event.disposition == "stale-incarnation":
-            raise DomainCommandError("AGENT_VERSION_CONFLICT", "landing incarnation was replaced")
+            raise DomainCommandError(ipc_errors.AGENT_VERSION_CONFLICT, "landing incarnation was replaced")
         return True
 
     def materialise_landing_home(
@@ -624,6 +573,18 @@ class AgentDirectoryFacade:
             ),
             AgentSecretGrantCompleted,
         ).changed
+
+    def rename(self, actor: str, display_name: str) -> Agent:
+        """U2: change only the display name, through the Agent actor."""
+
+        event = self._domains.call_agent(
+            RenameAgentCommand(
+                f"agent-command:rename:{uuid.uuid4().hex}", actor, display_name,
+            ),
+            AgentMutationCompleted,
+        )
+        assert event.agent is not None
+        return _agent(event.agent)
 
     def destroy(
         self, actor: str, *, expected_entity_token: str | None = None
@@ -711,79 +672,9 @@ class AgentDirectoryFacade:
             )
         return event
 
-    def pin(self, adapter: str, actor: str, *, expected_actor: object = _PIN_EXPECTATION_UNSET) -> str | None:
-        pins = self.pins()
-        previous = pins.get(adapter) if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor
-        try:
-            event = self._domains.call_agent(
-                PinAgentAdapterCommand(
-                    f"agent-command:pin:{uuid.uuid4().hex}", actor, adapter,
-                    expected_actor=None if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor,
-                    strict_compare=expected_actor is not _PIN_EXPECTATION_UNSET,
-                ),
-                AgentMutationCompleted,
-            )
-        except DomainCommandError as error:
-            if error.code == PinStateConflictError.code:
-                raise PinStateConflictError(adapter, expected_actor, self.pins().get(adapter)) from error
-            if error.code != PinConflictError.code:
-                raise
-            agent = self.require(actor)
-            holder = next(
-                (name for name, target in pins.items() if target == agent.uri),
-                "(unknown)",
-            )
-            raise PinConflictError(agent.uri, adapter, holder) from error
-        return previous if event.changed else previous
-
-    def restore_pin_if_absent(self, adapter: str, actor: str) -> str | None:
-        """Restore one snapshot without overwriting a concurrent replacement."""
-
-        previous = self.pins().get(adapter)
-        event = self._domains.call_agent(
-            PinAgentAdapterCommand(
-                f"agent-command:restore-pin:{uuid.uuid4().hex}",
-                actor,
-                adapter,
-                None,
-                True,
-            ),
-            AgentMutationCompleted,
-        )
-        return previous if event.changed else previous
-
-    def unpin(self, adapter: str, *, expected_actor: object = _PIN_EXPECTATION_UNSET) -> str | None:
-        previous = self.pins().get(adapter) if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor
-        try:
-            self._domains.call_agent(
-                UnpinAgentAdapterCommand(
-                    f"agent-command:unpin:{uuid.uuid4().hex}", adapter,
-                    expected_actor=None if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor,
-                    strict_compare=expected_actor is not _PIN_EXPECTATION_UNSET,
-                ),
-                AgentMutationCompleted,
-            )
-        except DomainCommandError as error:
-            if error.code == PinStateConflictError.code:
-                raise PinStateConflictError(adapter, expected_actor, self.pins().get(adapter)) from error
-            raise
-        return previous
-
-    def unpin_if(self, adapter: str, expected_actor: str | None) -> str | None:
-        previous = self.pins().get(adapter)
-        self._domains.call_agent(
-            UnpinAgentAdapterCommand(
-                f"agent-command:unpin-if:{uuid.uuid4().hex}",
-                adapter,
-                expected_actor,
-                True,
-            ),
-            AgentMutationCompleted,
-        )
-        return previous
-
     def close(self) -> None:
-        self._domains.close()
+        # P7: borrower view; only the application stops the process-wide host.
+        self._domains.close(shutdown_hosts=False)
 
 
 class AgentIdentityProjectionView(AgentIdentityProjectionPort):
@@ -796,10 +687,12 @@ class AgentIdentityProjectionView(AgentIdentityProjectionPort):
         projection = self._agent.read_agent(actor)
         return None if projection is None else projection.entity_token
 
-    def binding_key(
-        self, actor: str
-    ) -> tuple[int, str | None, str | None, str | None]:
+    def binding_key(self, actor: str) -> tuple[int, str | None, str | None, str | None]:
         return self._agent.read_binding_key(actor)
+
+    def actor_name(self, actor: str) -> str | None:
+        projection = self._agent.read_agent(actor)
+        return None if projection is None else projection.actor
 
 
 class AgentLivenessProjectionFacade:
@@ -915,9 +808,9 @@ def _agent(value: AgentProjection) -> Agent:
         last_harness=value.last_harness,
         last_session_id=value.last_session_id,
         last_active_at_ms=value.last_active_at_ms,
-        pinned_adapters=value.pinned_adapters,
         created_at_ms=value.created_at_ms,
         hosted_by=value.hosted_by,
+        display_name=value.display_name,
     )
 
 

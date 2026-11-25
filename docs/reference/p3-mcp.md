@@ -177,13 +177,14 @@ separate rename-migration concern.
 
 The following is the public, harness-independent contract for calling
 `harness_reply` on a pending message whose sender is
-`channel:lark:<adapter>`:
+`adapter:lark:<adapter>`:
 
 - The daemon accepts one deterministic reply message into its durable outbox
   and returns `replyMessageId` plus `queued`. All MCP and worker harnesses use
   this same daemon method; Claude Channel no longer rejects the operation just
   because the pending sender is a Lark channel actor.
-- Only the exact `channel:lark:<adapter>` shape is bridgeable. The daemon sends
+- Only the exact `adapter:lark:<adapter>` shape is bridgeable (the retired
+  `channel:lark:<adapter>` spelling is not). The daemon sends
   the outbox item to that named supervised adapter worker, which uses Lark's
   native reply API with the original inbound `messageId` correlation and
   persists the existing durable reply index before returning a receipt.

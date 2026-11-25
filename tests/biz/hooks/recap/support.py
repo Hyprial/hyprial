@@ -77,13 +77,14 @@ def write_hooks_config(
 def build_service(
     home: Path,
     *,
+    actor_host,
     queue_size: int = 256,
     logger: Callable[..., None] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[HookBus, DaemonHookService, RecapHookConsumer]:
     """One daemon bus plus the real recap consumer, as the shell wires them."""
 
-    bus = HookBus(logger=logger, monotonic=monotonic)
+    bus = HookBus(logger=logger, monotonic=monotonic, actor_host=actor_host)
     consumer = RecapHookConsumer(
         home_for_actor=lambda _actor: home,
         logger=logger,

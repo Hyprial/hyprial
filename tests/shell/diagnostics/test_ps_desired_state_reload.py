@@ -20,6 +20,8 @@ identical to the per-lookup-loading shape on the same fixture.
 """
 
 from __future__ import annotations
+
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
 
 import json
@@ -184,7 +186,10 @@ def test_t1_snapshot_loads_desired_state_once(
     by_actor = {row["actor"]: row for row in rows}
     assert by_actor[f"agent:{OWNER}:{NODE}:worker-0"]["status"] == "online"
     assert by_actor[f"agent:{OWNER}:{NODE}:worker-1"]["status"] == "offline"
-    assert by_actor[f"agent:{OWNER}:{NODE}:actor-00"]["status"] == "offline"
+    actor_00 = app.agents.require("actor-00")
+    assert actor_00.uri == f"agent:{OWNER}:{NODE}:{actor_00.agent_id}"
+    assert by_actor[actor_00.uri]["status"] == "offline"
+    assert by_actor[actor_00.uri]["name"] == "actor-00"
 
 
 def test_t1b_request_snapshot_and_actor_snapshot_share_one_load(
@@ -214,7 +219,10 @@ def test_t1b_request_snapshot_and_actor_snapshot_share_one_load(
     by_actor = {row["actor"]: row for row in rows}
     assert by_actor[f"agent:{OWNER}:{NODE}:worker-0"]["status"] == "online"
     assert by_actor[f"agent:{OWNER}:{NODE}:worker-1"]["status"] == "offline"
-    assert by_actor[f"agent:{OWNER}:{NODE}:actor-00"]["status"] == "offline"
+    actor_00 = app.agents.require("actor-00")
+    assert actor_00.uri == f"agent:{OWNER}:{NODE}:{actor_00.agent_id}"
+    assert by_actor[actor_00.uri]["status"] == "offline"
+    assert by_actor[actor_00.uri]["name"] == "actor-00"
 
 
 def test_status_projection_never_opens_sqlite_and_tracks_committed_write(
@@ -299,6 +307,7 @@ def test_t3_threaded_state_changes_no_snapshot_byte(
             for session in desired.interactive_sessions
         ),
         registered_actors=(agent.uri for agent in app.agents.list()),
+        registered_names={agent.actor: agent.uri for agent in app.agents.list()},
         presence_actors=app._presence.online_actors(),
         status_for_actor=status_for_actor,
     )
@@ -457,7 +466,7 @@ class _StreamingHarnesses(_Harnesses):
 
 
 def _runtime_dispatch_document_reads(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, actors: int
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, actors: int, *, actor_host
 ) -> int:
     """SQLite desired-state reads for one runtime delivery pass with a snapshot."""
 
@@ -474,7 +483,8 @@ def _runtime_dispatch_document_reads(
         transport=None,  # type: ignore[arg-type]
         inbox=app._inbox,
         harnesses=harnesses,  # type: ignore[arg-type]
-        harness_actor_uri=app._canonical_harness_uri,
+        harness_actor_uri=app._canonical_harness_uri, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     reads = _patch_counting_read_document(monkeypatch)
     with app._worker_status_snapshot():
@@ -484,7 +494,7 @@ def _runtime_dispatch_document_reads(
 
 
 def test_t6_runtime_delivery_pass_reads_desired_state_a_constant_number_of_times(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, actor_host
 ) -> None:
     """The runtime timer is a batch path: one URI resolution per streaming actor.
 
@@ -495,8 +505,8 @@ def test_t6_runtime_delivery_pass_reads_desired_state_a_constant_number_of_times
     snapshot's loaded copy, so the count must not grow with the actor count.
     """
 
-    many = _runtime_dispatch_document_reads(monkeypatch, tmp_path / "many", 24)
-    few = _runtime_dispatch_document_reads(monkeypatch, tmp_path / "few", 3)
+    many = _runtime_dispatch_document_reads(monkeypatch, tmp_path / "many", 24, actor_host=actor_host)
+    few = _runtime_dispatch_document_reads(monkeypatch, tmp_path / "few", 3, actor_host=actor_host)
     assert many == few, (many, few)
     assert many <= 3, many
 

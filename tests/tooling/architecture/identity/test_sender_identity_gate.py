@@ -40,7 +40,6 @@ from hyprial.daemon.impl.inbox.links.zenoh_link import (
     decode_delivery_frame,
     encode_delivery_frame,
 )
-from tests.support.links.gate import PermissiveLinkGate
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
@@ -94,7 +93,6 @@ def _application(
     # Explicit premise (wp2.md §4.9 option a): this architecture gate measures
     # sender canonicalization, not link admission, so a permissive gate keeps
     # every admitted send reaching the wire instead of holding (ruling 54).
-    app.link_admission.bind(PermissiveLinkGate())
     return app
 
 
@@ -102,6 +100,16 @@ def _send(app: DaemonApplication, source: str, target: str) -> dict[str, Any]:
     return app.handle(
         "message.send", {"from": source, "to": [target], "message": "hi", "summary": "hi"}
     )
+
+
+def _create_foo(app: DaemonApplication, transport: _RecordingTransport) -> str:
+    """Register ``foo`` and answer the id-form address it is reached at."""
+
+    app.handle("agent.create", {"name": "foo"})
+    agent = app.agents.require("foo")
+    assert agent.uri == f"agent:{OWNER}:{NODE}:{agent.agent_id}"
+    transport.set_online(agent.uri, True)
+    return agent.uri
 
 
 def _message(message_id: str, sender: str, **kwargs: Any) -> InboxMessage:
@@ -125,15 +133,14 @@ def test_bare_alias_sender_becomes_the_registered_canonical_uri(
     tmp_path: Path,
 ) -> None:
     transport = _RecordingTransport()
-    transport.set_online(URI, True)
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
-    result = _send(app, "foo", URI)
+    result = _send(app, "foo", foo)
 
     assert result["ok"] is True
     (frame,) = transport.frames
-    assert frame.sender == URI  # on the wire: four segments, never bare
+    assert frame.sender == foo
 
 
 def test_unresolved_bare_sender_is_rejected_with_facts(tmp_path: Path) -> None:
@@ -183,23 +190,22 @@ def test_bridge_senders_pass_and_foreign_identities_are_rejected(
     tmp_path: Path,
 ) -> None:
     transport = _RecordingTransport()
-    transport.set_online(URI, True)
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
     # Lark inbound forwards carry the reply-bridge address as sender.
-    _send(app, "channel:lark:main", URI)
-    assert [frame.sender for frame in transport.frames] == ["channel:lark:main"]
+    _send(app, "adapter:lark:main", foo)
+    assert [frame.sender for frame in transport.frames] == ["adapter:lark:main"]
 
     # A canonical URI naming a FOREIGN node is not this node's identity:
     # sending with it would impersonate.  Rejected with facts.
     with pytest.raises(DaemonRequestError) as failure:
-        _send(app, f"agent:{OWNER}:node-2:worker", URI)
+        _send(app, f"agent:{OWNER}:node-2:worker", foo)
     assert failure.value.code == "SENDER_UNRESOLVED"
 
     # A malformed agent: URI is rejected as an argument, not as identity.
     with pytest.raises(DaemonRequestError) as failure:
-        _send(app, "agent:three:seg", URI)
+        _send(app, "agent:three:seg", foo)
     assert failure.value.code == "INVALID_ARGUMENT"
 
 
@@ -207,25 +213,23 @@ def test_local_canonical_registered_sender_passes(tmp_path: Path) -> None:
     """A canonical URI naming THIS node and a registered agent resolves."""
 
     transport = _RecordingTransport()
-    transport.set_online(URI, True)
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
-    _send(app, URI, URI)
+    _send(app, foo, foo)
 
     (frame,) = transport.frames
-    assert frame.sender == URI
+    assert frame.sender == foo
 
 
 def test_status_read_keys_by_the_canonical_sender(tmp_path: Path) -> None:
     """A bare --from must find the records its canonicalized sends wrote."""
 
     transport = _RecordingTransport()
-    transport.set_online(URI, True)
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
-    sent = _send(app, "foo", URI)
+    sent = _send(app, "foo", foo)
     status = app.handle(
         "message.status", {"from": "foo", "messageId": sent["messageId"]}
     )
@@ -335,13 +339,13 @@ def test_ingress_rejection_with_no_reachable_origin_is_stored_locally(
 
 
 def test_ingress_admits_canonical_and_bridge_senders(tmp_path: Path) -> None:
-    """Admitted really is admitted: canonical agents AND channel: reply
+    """Admitted really is admitted: canonical agents AND adapter: reply
     bridges (the Lark inbound forward shape) both land."""
 
     inbox = InboxService(tmp_path / "inbox.sqlite3", MemoryDeliveryTransport())
     try:
         canonical = inbox.receive(_message("m-ok", "agent:o:m:actor"))
-        bridge = inbox.receive(_message("m-bridge", "channel:lark:main"))
+        bridge = inbox.receive(_message("m-bridge", "adapter:lark:main"))
 
         assert canonical.accepted is True
         assert bridge.accepted is True
@@ -446,13 +450,12 @@ def test_every_send_the_boundary_admits_passes_ingress(tmp_path: Path) -> None:
     produces a sender the ingress gate would reject."""
 
     transport = _RecordingTransport()
-    transport.set_online(URI, True)
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
     app.handle("agent.create", {"name": "ad-hoc-ops"})
-    for source in ("foo", "ad-hoc-ops", "channel:lark:main", URI):
-        result = _send(app, source, URI)
+    for source in ("foo", "ad-hoc-ops", "adapter:lark:main", foo):
+        result = _send(app, source, foo)
         assert result["ok"] is True
 
     assert len(transport.frames) == 4
@@ -481,49 +484,55 @@ def test_sender_unresolved_error_states_the_reply_consequence(tmp_path: Path) ->
         assert "cannot receive replies" in str(failure)
 
 
-def test_send_flags_a_user_sender_without_a_squire_profile(tmp_path: Path) -> None:
-    """B: user:<owner> without a complete profile provably cannot be replied to."""
+def test_send_flags_the_owner_sender_without_a_push_target(tmp_path: Path) -> None:
+    """B, R2: with no chat named for the owner here a reply reaches no IM."""
 
     transport = _RecordingTransport()
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
-    result = _send(app, "user:nobody", URI)
+    result = _send(app, f"user:{OWNER}", foo)
 
     assert result["ok"] is True  # the send itself is legal
     assert result["replyPathUnavailable"] is True
 
 
-def test_send_does_not_flag_a_user_sender_with_a_complete_profile(
+def test_send_does_not_flag_the_owner_sender_when_an_agent_cell_names_a_chat(
     tmp_path: Path,
 ) -> None:
+    """I7a: a bound agent cell (the user agent cell included) is a reply path."""
+
+    from tests.support.identity.cell_runtime import bind_adapters, registry_cell_runtime
+
     transport = _RecordingTransport()
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
-    app.user_profiles.ensure(
-        owner="allen",
-        owner_key="owner-allen",
-        login_name="allen",
-        machine=NODE,
-        machine_key="machine-key",
-    )
-    adapter_uri = f"channel:{OWNER}:{NODE}:squire-app"
-    app.user_profiles.set_squire_channel("owner-allen", adapter_uri)
-    app.user_profiles.bind_owner_open_id(
-        "owner-allen", channel=adapter_uri, open_id="ou_allen"
-    )
+    foo = _create_foo(app, transport)
+    registry_cell_runtime(app)
+    bind_adapters(app, app.agents.require(foo), ("lark-a",))
 
-    result = _send(app, "user:allen", URI)
+    result = _send(app, f"user:{OWNER}", foo)
 
     assert "replyPathUnavailable" not in result
 
 
-def test_send_flags_a_channel_sender_whose_adapter_is_missing(
+def test_send_does_not_flag_another_owner_sender(tmp_path: Path) -> None:
+    """Unsure means silent (#60): another owner's push is that machine's decision."""
+
+    transport = _RecordingTransport()
+    app = _application(tmp_path, transport)
+    foo = _create_foo(app, transport)
+
+    result = _send(app, "user:nobody", foo)
+
+    assert "replyPathUnavailable" not in result
+
+
+def test_send_flags_an_adapter_sender_whose_adapter_is_missing(
     tmp_path: Path,
 ) -> None:
     transport = _RecordingTransport()
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
     class _Adapters:
         gateway_names = ("lark-main",)
@@ -533,10 +542,11 @@ def test_send_flags_a_channel_sender_whose_adapter_is_missing(
 
     app._adapters = _Adapters()  # type: ignore[assignment]
 
-    flagged = _send(app, "channel:lark:not-configured", URI)
+    address = foo
+    flagged = _send(app, "adapter:lark:not-configured", address)
     assert flagged["replyPathUnavailable"] is True
 
-    fine = _send(app, "channel:lark:lark-main", URI)
+    fine = _send(app, "adapter:lark:lark-main", address)
     assert "replyPathUnavailable" not in fine
 
 
@@ -545,9 +555,9 @@ def test_send_never_flags_a_registered_agent_sender(tmp_path: Path) -> None:
 
     transport = _RecordingTransport()
     app = _application(tmp_path, transport)
-    app.handle("agent.create", {"name": "foo"})
+    foo = _create_foo(app, transport)
 
-    result = _send(app, "foo", URI)
+    result = _send(app, "foo", foo)
 
     assert "replyPathUnavailable" not in result
 

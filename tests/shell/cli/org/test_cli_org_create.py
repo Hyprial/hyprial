@@ -9,6 +9,9 @@ from typer.testing import CliRunner
 from tests.shell.cli.org.test_cli_org import _org_ipc_env
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
+from hyprial.shell.impl.cli.commands.common.services import (
+    get_services as _cli_get_services,
+)
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 
@@ -227,3 +230,105 @@ def test_org_create_prefix_edges(monkeypatch, tmp_path: Path) -> None:
         # phrasing is absent and the actionable sentence is present instead.
         assert "must start with 'group-'" not in payload["error"], payload["error"]
         assert "letters, digits and hyphens" in payload["error"], payload["error"]
+
+
+def _delete_preview() -> dict:
+    return {
+        "org": "group-acme",
+        "spaceId": "space-1",
+        "operationId": "op-1",
+        "phase": "pending-confirmation",
+        "deviceIds": ["node-b"],
+        "confirmed": False,
+        "irreversible": True,
+    }
+
+
+def _delete_complete() -> dict:
+    return {**_delete_preview(), "phase": "complete", "confirmed": True}
+
+
+def _two_phase_request(calls: list[dict]):
+    def request(method, params=None, **_kwargs):
+        calls.append(params)
+        return _delete_complete() if params.get("confirmed") else _delete_preview()
+
+    return request
+
+
+def test_org_delete_requires_yes_off_a_tty(monkeypatch, tmp_path: Path) -> None:
+    _org_ipc_env(monkeypatch, tmp_path)
+    calls: list[dict] = []
+    monkeypatch.setattr(_cli_support, "_daemon_request", _two_phase_request(calls))
+
+    result = CliRunner().invoke(_cli_root_app, ["org", "delete", "group-acme", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["code"] == "USER_ACTION_REQUIRED"
+    assert calls == [{"org": "group-acme", "confirmed": False}]
+
+
+def test_org_delete_with_yes_calls_the_daemon(monkeypatch, tmp_path: Path) -> None:
+    _org_ipc_env(monkeypatch, tmp_path)
+    calls: list[dict] = []
+    monkeypatch.setattr(_cli_support, "_daemon_request", _two_phase_request(calls))
+
+    result = CliRunner().invoke(
+        _cli_root_app, ["org", "delete", "group-acme", "--yes", "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["phase"] == "complete"
+    assert calls == [
+        {"org": "group-acme", "confirmed": False},
+        {"org": "group-acme", "confirmed": True, "operationId": "op-1"},
+    ]
+
+
+def test_org_delete_on_a_tty_asks_and_honors_the_answer(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _org_ipc_env(monkeypatch, tmp_path)
+    calls: list[dict] = []
+    monkeypatch.setattr(_cli_support, "_daemon_request", _two_phase_request(calls))
+    monkeypatch.setattr(_cli_get_services(), "_stdin_isatty", lambda: True)
+
+    declined = CliRunner().invoke(_cli_root_app, ["org", "delete", "group-acme"], input="n\n")
+    assert declined.exit_code == 1
+    assert calls == [{"org": "group-acme", "confirmed": False}]
+
+    confirmed = CliRunner().invoke(_cli_root_app, ["org", "delete", "group-acme"], input="y\n")
+    assert confirmed.exit_code == 0, confirmed.output
+    assert calls == [
+        {"org": "group-acme", "confirmed": False},
+        {"org": "group-acme", "confirmed": False},
+        {"org": "group-acme", "confirmed": True, "operationId": "op-1"},
+    ]
+
+
+def test_org_create_accepts_parent_flag(monkeypatch, tmp_path: Path) -> None:
+    """`hyprial org create <child> --parent <parent>` normalizes and forwards parent."""
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def _record(command: str, payload: dict[str, object], **_kwargs) -> dict[str, object]:
+        seen.append((command, dict(payload)))
+        return {
+            "org": payload["org"],
+            "parent": payload["parent"],
+            "tailnetId": "sp-root-1",
+            "published": True,
+            "devicePublished": True,
+        }
+
+    _org_ipc_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(_cli_support, "_daemon_request", _record)
+    result = CliRunner().invoke(
+        _cli_root_app, ["org", "create", "dept", "--parent", "root", "--json"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert seen == [("org.create", {"org": "group-dept", "parent": "group-root"})]
+    parsed = json.loads(result.stdout)
+    assert parsed["parent"] == "group-root"
+    assert parsed["tailnetId"] == "sp-root-1"

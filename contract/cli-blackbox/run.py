@@ -15,6 +15,8 @@ import tempfile
 import time
 from typing import Any, Callable
 
+from logout_check import logout_contract
+
 
 Json = dict[str, Any]
 Check = tuple[str, Callable[[], None]]
@@ -92,13 +94,14 @@ class Runner:
             "managed daemon must report ready",
         )
 
-    def env(self, *, isolated: bool) -> dict[str, str]:
+    def env(self, *, isolated: bool, drop: tuple[str, ...] = ()) -> dict[str, str]:
         env = dict(os.environ)
         env["NPM_CONFIG_CACHE"] = str(self.npm_cache)
         if isolated:
             env["HYPRIAL_HOME"] = str(self.isolated_home)
             env["HARNESS_STATE_DIR"] = str(self.isolated_state)
             env["HYPRIAL_OWNER"] = "e2e"
+            env["HYPRIAL_USER_ID"] = "ou_" + "e2e0" * 8
             env["HYPRIAL_NETWORK_ISOLATED"] = "1"
             for name in (
                 "HARNESS_CONFIG",
@@ -109,6 +112,8 @@ class Runner:
                 "HYPRIAL_WORKER_SESSION_REF_FILE",
             ):
                 env.pop(name, None)
+        for name in drop:
+            env.pop(name, None)
         return env
 
     def invoke(
@@ -116,8 +121,9 @@ class Runner:
         *args: str,
         isolated: bool,
         exits: tuple[int, ...] = (0,),
+        drop: tuple[str, ...] = (),
     ) -> Json:
-        completed = self.invoke_text(*args, isolated=isolated, exits=exits)
+        completed = self.invoke_text(*args, isolated=isolated, exits=exits, drop=drop)
 
         try:
             value = json.loads(completed.stdout)
@@ -134,11 +140,12 @@ class Runner:
         *args: str,
         isolated: bool,
         exits: tuple[int, ...] = (0,),
+        drop: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
         try:
             completed = subprocess.run(
                 [self.executable, *args],
-                env=self.env(isolated=isolated),
+                env=self.env(isolated=isolated, drop=drop),
                 text=True,
                 capture_output=True,
                 timeout=self.timeout,
@@ -180,78 +187,12 @@ def build_checks(runner: Runner, include_live: bool) -> list[Check]:
             require(f"hyprial {command}" in usage, f"help must advertise hyprial {command}")
         require("hyprial ps" not in usage, "help must not advertise the retired hyprial ps (R7)")
         if runner.doctor_schema == "sealed":
-            for command in ("hyprial service", "hyprial adapter pin"):
+            for command in ("hyprial service", "hyprial agent cell"):
                 require(command in usage, f"sealed help must advertise {command}")
 
     checks.append(("help JSON and command inventory", help_contract))
 
-    def logout_contract() -> None:
-        usage = runner.invoke("help", "--json", isolated=True).get("usage", "")
-        # Older sealed references do not implement the user-login session
-        # surface. Keep their compatibility suite runnable, but enforce the
-        # complete contract for every implementation that advertises logout.
-        if "hyprial logout" not in usage:
-            return
-
-        home = runner.isolated_home
-        issuer = "https://issuer.invalid"
-        login = home / "secrets" / "login.json"
-        device = home / "secrets" / "tailcat" / "device-key.json"
-        agent = home / "agents" / "contract-agent" / "auth.json"
-        for path in (login, device, agent):
-            path.parent.mkdir(parents=True, exist_ok=True)
-        login.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "issuer": issuer,
-                    "refreshToken": "contract-refresh-token",
-                    "obtainedAt": "2026-01-01T00:00:00Z",
-                }
-            ),
-            encoding="utf-8",
-        )
-        device.write_text('{"private":"preserve"}', encoding="utf-8")
-        agent.write_text('{"credential":"preserve"}', encoding="utf-8")
-        (home / "settings.json").write_text(
-            json.dumps(
-                {
-                    "owner": "e2e",
-                    "identityMode": "casdoor",
-                    "identityIssuer": issuer,
-                    "unrelated": "preserve",
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        value = runner.invoke("logout", "--yes", "--json", isolated=True)
-        require(value.get("ok") is True, "logout.ok must be true")
-        require(value.get("status") == "logged-out", "logout must report logged-out")
-        reported_home = value.get("home")
-        require(
-            isinstance(reported_home, str)
-            and Path(reported_home).resolve() == home.resolve(),
-            "logout must report its scoped home",
-        )
-        require(not login.exists(), "logout must remove the user login credential")
-        require(device.exists(), "logout must preserve the Tailcat device key")
-        require(agent.exists(), "logout must preserve agent credentials")
-        settings = json.loads((home / "settings.json").read_text(encoding="utf-8"))
-        require(
-            settings == {"unrelated": "preserve"},
-            "logout must remove only Casdoor login fields from settings",
-        )
-
-        repeated = runner.invoke("logout", "--yes", "--json", isolated=True)
-        require(
-            repeated.get("ok") is True
-            and repeated.get("status") == "not-logged-in"
-            and repeated.get("removed") == [],
-            "repeated logout must be an idempotent success",
-        )
-
-    checks.append(("scoped idempotent logout", logout_contract))
+    checks.append(("scoped idempotent logout", lambda: logout_contract(runner, require)))
 
     def reasoning_effort_contract() -> None:
         help_result = runner.invoke_text("agent", "start", "--help", isolated=True)
@@ -338,8 +279,6 @@ def build_checks(runner: Runner, include_live: bool) -> list[Check]:
 
         for old, new in (
             ("service", "org service"), ("fs", "org fs"),
-            ("user-proxy", "user proxy"), ("link", "agent link"),
-            ("onboarding", "init onboarding"),
         ):
             for suffix in ((), ("--json",)):
                 retired = runner.invoke_text(old, *suffix, isolated=True, exits=(2,))
@@ -711,7 +650,7 @@ def build_checks(runner: Runner, include_live: bool) -> list[Check]:
                 )
                 require(
                     connector.get("restoreOverride")
-                    in {"none", "pending-work", "per-agent"},
+                    in {"none", "pending-work", "per-agent", "pac-held-idle"},
                     "ps connector restoreOverride has an unknown value",
                 )
                 require(
@@ -878,9 +817,9 @@ def build_checks(runner: Runner, include_live: bool) -> list[Check]:
             for target in targets:
                 require(isinstance(target, dict), "each target must be an object")
                 kind = target.get("targetKind")
-                require(kind in {"agent", "user", "channel_route"},
-                        "targets lists delivery promises only: agent, user, or "
-                        "channel_route (nodes live in `hyprial host list`, never here)")
+                require(kind in {"agent", "user"},
+                        "targets lists delivery promises only: agent or user "
+                        "(nodes live in `hyprial host list`, never here)")
                 require(isinstance(target.get("targetUri"), str), "targetUri must be a string")
                 if kind == "agent":
                     require(target["targetUri"].startswith("agent:"),
@@ -891,10 +830,6 @@ def build_checks(runner: Runner, include_live: bool) -> list[Check]:
                     require(target["targetUri"].startswith("user:")
                             and len(target["targetUri"].split(":")) == 2,
                             "user targetUri must be user:<owner>")
-                if kind == "channel_route":
-                    require(target["targetUri"].startswith("route:")
-                            and len(target["targetUri"].split(":")) == 3,
-                            "channel_route targetUri must be route:<adapter>:<route>")
                 require(target.get("deliverable") is True,
                         "every listed target is deliverable by definition")
                 require(isinstance(target.get("status"), str), "target status must be a string")

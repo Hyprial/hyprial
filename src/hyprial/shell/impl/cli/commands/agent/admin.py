@@ -9,7 +9,7 @@ from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.output import CliResult, confirm
-from hyprial.shell.impl.cli.output.status import render_agent_list
+from hyprial.shell.impl.cli.output.status import render_agent_list, render_agent_row
 
 
 agent_app = group(
@@ -50,6 +50,11 @@ def agent_list(
     exclude_wf: bool = typer.Option(
         False, "--exclude-wf", help="Exclude wf-* workflow workers."
     ),
+    include_user_agent: bool = typer.Option(
+        False,
+        "--include-user-agent",
+        help="Also list this machine's user agent (your own agent, no harness).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """List local agents, presence and scoped cell run diagnostics.
@@ -69,6 +74,7 @@ def agent_list(
                     else {}
                 ),
                 **({"excludeWf": True} if exclude_wf else {}),
+                **({"includeUserAgent": True} if include_user_agent else {}),
             },
         )
         if (
@@ -96,6 +102,27 @@ def agent_unblock(
         json_output=json_output,
     )
 
+@agent_app.command("rename")
+def agent_rename(
+    name: str = typer.Argument(..., help="The agent: name, display name, a.<id> or agent URI."),
+    display_name: str = typer.Argument(..., help="The new display name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Change an agent's display name; its id, address, home and grants stay."""
+    services = get_services()
+
+    def operation() -> CliResult:
+        result = services.runtime.request(
+            "agent.rename", {"name": name, "displayName": display_name}
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("agent"), dict):
+            raise services.CliError(
+                "INVALID_RESPONSE", "daemon agent.rename result must contain the agent row"
+            )
+        return CliResult(result, render=render_agent_row)
+
+    services.runtime.execute(operation, json_output=json_output)
+
 @agent_app.command("destroy")
 def agent_destroy(
     name: str = typer.Argument(..., help="Actor name of the agent to destroy."),
@@ -117,33 +144,27 @@ def agent_destroy(
 
     def operation() -> Any:
         services = get_services()
+        if not yes and (json_output or not services._stdin_isatty()):
+            raise services.CliError(
+                "CONFIRMATION_REQUIRED",
+                f"destroying agent {name!r} from a non-interactive command requires --yes",
+            )
+        preview = services.runtime.request("agent.destroy.preview", {"name": name})
+        operation_id = preview.get("operationId")
+        workspace = preview.get("workspace")
+        if not isinstance(operation_id, str) or not operation_id or not isinstance(workspace, dict):
+            raise services.CliError("INVALID_RESPONSE", "deletion preview must return operationId and workspace")
+        files = workspace.get("files")
+        size = workspace.get("bytes")
+        if type(files) is not int or type(size) is not int or files < 0 or size < 0:
+            raise services.CliError("INVALID_RESPONSE", "deletion preview returned an invalid workspace inventory")
         if not yes:
-            if json_output or not services._stdin_isatty():
-                raise services.CliError(
-                    "CONFIRMATION_REQUIRED",
-                    f"destroying agent {name!r} from a non-interactive command "
-                    "requires --yes",
-                )
-            preview = services.runtime.request("agent.destroy.preview", {"name": name})
-            workspace = preview.get("workspace")
-            if not isinstance(workspace, dict):
-                raise services.CliError(
-                    "INVALID_RESPONSE",
-                    "agent.destroy.preview must return a workspace inventory",
-                )
-            files = workspace.get("files")
-            size = workspace.get("bytes")
-            if not isinstance(files, int) or not isinstance(size, int):
-                raise services.CliError(
-                    "INVALID_RESPONSE",
-                    "agent.destroy.preview returned an invalid workspace inventory",
-                )
             prompt = (
                 f"将删除 workspace({files} 个文件、{size} 字节)，以及 agent "
                 f"{name!r} 的记录、连接器和未送达消息。继续？"
             )
             if not confirm(prompt):
                 raise services.CliError("CANCELLED", "agent destroy cancelled")
-        return services.runtime.request("agent.destroy", {"name": name})
+        return services.runtime.request("agent.destroy", {"operationId": operation_id})
 
     services.runtime.execute(operation, json_output=json_output)

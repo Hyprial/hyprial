@@ -1,12 +1,13 @@
 """AT10 wiring: capability entry points answer to a verified caller's ledger.
 
-Card 359 asks the frozen capability enum (``tool-surface``/``channel``/
+Card 359 asks the frozen capability enum (``tool-surface``/
 ``shared-path``/``org-context``/``isolation``) to be bound to the real entry
 points that must consult it.  This file drives the two entry points that
 already exist in the daemon:
 
-* ``message.send`` to ``route:<adapter>:<route>`` is the **channel** entry
-  point -- an outbound adapter route;
+* ``message.send`` to a retired ``route:<adapter>:<route>`` target is refused
+  with ``UNSUPPORTED_TARGET`` (I4b); the ``channel`` capability is retired
+  (2026-11-24) and a stored ``channel`` row changes no answer;
 * the org shared folder reads (``orgfs.read``/``ls``/``stat``/``history``/
   ``export``) are the **org-context** entry point.
 
@@ -26,6 +27,8 @@ from tests.support.runtime._owned_applications import close_application, owned_a
 
 import json
 import re
+from contextlib import closing
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -161,13 +164,27 @@ def _register_session(app: DaemonApplication, actor: str, session_ref: str) -> N
     )
 
 
+def _official(app: DaemonApplication, name: str) -> str:
+    """The address agent ``name`` hosted here is reached at: its record's URI."""
+
+    agent = app.agents.get(name)
+    assert agent is not None
+    return agent.uri
+
+
 def _hosted_visitor(
     app: DaemonApplication, *, session_ref: str = "visitor-session"
 ) -> str:
+    """Host the visitor; its carrier registers under the name-form URI.
+
+    The daemon boundary canonicalizes that URI to the record's official
+    address, which is what every later call and verdict names.
+    """
+
     app.handle("agent.create", {"name": "native"})
     app.agents.create_transfer_hosted("visitor", pinned_owner="guest")
     _register_session(app, VISITOR_URI, session_ref)
-    return VISITOR_URI
+    return _official(app, "visitor")
 
 
 def _grant(
@@ -219,112 +236,97 @@ def _send(
     return app.handle("message.send", params)
 
 
-# -- channel: outbound adapter routes ---------------------------------------
 
 
-def test_a_hosted_route_send_without_a_channel_grant_is_refused(
+def test_a_hosted_route_send_is_unsupported(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path, routes=True)
-    _hosted_visitor(app)
-
-    with pytest.raises(DaemonRequestError) as failure:
-        _send(app, sender=VISITOR_URI, target=ROUTE, session="visitor-session")
-
-    assert failure.value.code == "CHANNEL_NOT_AUTHORIZED"
-    assert failure.value.data["caller"] == VISITOR_URI
-    assert failure.value.data["channel"] == ROUTE
-    assert app._inbox.outbox_count() == 0  # type: ignore[union-attr]
-
-
-def test_a_channel_grant_naming_the_route_lets_the_send_through(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> None:
-    app = _application(request, tmp_path, routes=True)
-    _hosted_visitor(app)
+    visitor = _hosted_visitor(app)
     gateway = _offline_route_gateway(app)
-    _grant(
-        app,
-        actor=VISITOR_URI,
-        capability="channel",
-        scope=_array_scope(ROUTE),
-        grant_id="g2",
-    )
-
-    granted = _send(app, sender=VISITOR_URI, target=ROUTE, session="visitor-session")
-
-    assert granted["ok"] is True
-    assert gateway.calls == [("oc_ops", "转述自 agent:guest:node-1:visitor：\n\nhi")]
-
-
-def test_a_channel_grant_for_one_route_does_not_cover_another(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> None:
-    app = _application(request, tmp_path, routes=True)
-    _hosted_visitor(app)
-    _grant(
-        app,
-        actor=VISITOR_URI,
-        capability="channel",
-        scope=_array_scope(ROUTE),
-    )
 
     with pytest.raises(DaemonRequestError) as failure:
-        _send(app, sender=VISITOR_URI, target=OTHER_ROUTE, session="visitor-session")
+        _send(app, sender=visitor, target=ROUTE, session="visitor-session")
 
-    assert failure.value.code == "CHANNEL_NOT_AUTHORIZED"
-    assert failure.value.data["channel"] == OTHER_ROUTE
+    assert failure.value.code == "UNSUPPORTED_TARGET"
+    assert gateway.calls == []
 
 
-def test_a_channel_withdrawal_takes_effect_on_the_next_call(
+def test_a_stored_retired_channel_grant_changes_no_answer(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> None:
+    """A ``channel`` row left from before the retirement is skipped on read."""
+
+    app = _application(request, tmp_path)
+    visitor = _hosted_visitor(app)
+    native = _official(app, "native")
+    space_id = _create_space(app)
+    _grant(app, actor=visitor, capability="send-to", scope=_array_scope(native))
+    _grant(app, actor=visitor, capability="org-context", scope="accepted", grant_id="g2")
+    _grant(app, actor=visitor, capability="see-actors", scope=_array_scope(native), grant_id="g3")
+    with closing(sqlite3.connect(app._agent_registry.database)) as db, db:
+        db.execute(
+            "INSERT INTO agent_capability_grants SELECT actor, entity_token, 'old', "
+            "'channel', ?, granted_by, 1 FROM agent_capability_grants WHERE grant_id='g1'",
+            (_array_scope("lark:ops"),),
+        )
+
+    assert _send(app, sender=visitor, target=native, session="visitor-session")["ok"] is True
+    assert native in _targets(app, {"actor": visitor, "sessionRef": "visitor-session"})
+    read = app.handle("orgfs.read", {
+        "actor": visitor, "sessionRef": "visitor-session",
+        "spaceId": space_id, "path": "readme.md",
+    })
+    assert read["text"] == "hello"
+    with pytest.raises(DaemonRequestError) as failure:
+        _send(app, sender=visitor, target=ROUTE, session="visitor-session")
+    assert failure.value.code == "UNSUPPORTED_TARGET"
+
+
+def test_a_native_route_send_is_unsupported_too(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path, routes=True)
     _hosted_visitor(app)
-    _offline_route_gateway(app)
-    _grant(
-        app,
-        actor=VISITOR_URI,
-        capability="channel",
-        scope=_array_scope(ROUTE),
-    )
-    assert (
-        _send(app, sender=VISITOR_URI, target=ROUTE, session="visitor-session")["ok"]
-        is True
-    )
-
-    app.handle("agent.revoke", {"actor": VISITOR_URI, "grantId": "g1"})
+    native = _official(app, "native")
+    gateway = _offline_route_gateway(app)
 
     with pytest.raises(DaemonRequestError) as failure:
-        _send(app, sender=VISITOR_URI, target=ROUTE, session="visitor-session")
-    assert failure.value.code == "CHANNEL_NOT_AUTHORIZED"
+        _send(app, sender=native, target=ROUTE, session=None)
+
+    assert failure.value.code == "UNSUPPORTED_TARGET"
+    assert failure.value.data == {"target": ROUTE}
+    assert gateway.calls == []
 
 
-def test_the_host_local_route_send_path_is_not_fenced(
+def test_removing_the_send_to_gate_lets_the_same_send_through(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
-    """No session binding: the CLI/worker path keeps today's rules."""
+    """Sensitivity check: the TARGET_NOT_AUTHORIZED refusal comes from the gate."""
 
-    app = _application(request, tmp_path, routes=True)
-    _hosted_visitor(app)
-    _offline_route_gateway(app)
+    app = _application(request, tmp_path)
+    visitor = _hosted_visitor(app)
+    native = _official(app, "native")
 
-    sent = _send(app, sender=NATIVE_URI, target=ROUTE, session=None)
+    with pytest.raises(DaemonRequestError) as failure:
+        _send(app, sender=visitor, target=native, session="visitor-session")
+    assert failure.value.code == "TARGET_NOT_AUTHORIZED"
 
-    assert sent["ok"] is True
+    app._enforce_send_to = lambda caller, targets: None  # type: ignore[method-assign]
+
+    assert _send(app, sender=visitor, target=native, session="visitor-session")["ok"] is True
 
 
-def test_a_verified_native_route_send_is_not_fenced(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> None:
-    app = _application(request, tmp_path, routes=True)
-    _hosted_visitor(app)
-    _offline_route_gateway(app)
-    _register_session(app, NATIVE_URI, "native-session")
 
-    sent = _send(app, sender=NATIVE_URI, target=ROUTE, session="native-session")
 
-    assert sent["ok"] is True
+
+
+
+
+
+
+
+
 
 
 # -- org-context: org shared folder reads -----------------------------------
@@ -343,13 +345,13 @@ def test_a_hosted_orgfs_read_without_an_org_context_grant_is_refused(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    visitor = _hosted_visitor(app)
 
     with pytest.raises(DaemonRequestError) as failure:
         app.handle(
             "orgfs.read",
             {
-                "actor": VISITOR_URI,
+                "actor": visitor,
                 "sessionRef": "visitor-session",
                 "spaceId": "space-1",
                 "path": "readme.md",
@@ -357,21 +359,22 @@ def test_a_hosted_orgfs_read_without_an_org_context_grant_is_refused(
         )
 
     assert failure.value.code == "ORG_CONTEXT_NOT_AUTHORIZED"
-    assert failure.value.data["caller"] == VISITOR_URI
+    assert failure.value.data["caller"] == app.agents.uri_for("visitor")
+    assert failure.value.data["caller"] != VISITOR_URI
 
 
 def test_an_org_context_grant_lets_the_read_through(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    visitor = _hosted_visitor(app)
     space_id = _create_space(app)
-    _grant(app, actor=VISITOR_URI, capability="org-context", scope="accepted")
+    _grant(app, actor=visitor, capability="org-context", scope="accepted")
 
     read = app.handle(
         "orgfs.read",
         {
-            "actor": VISITOR_URI,
+            "actor": visitor,
             "sessionRef": "visitor-session",
             "spaceId": space_id,
             "path": "readme.md",
@@ -385,18 +388,18 @@ def test_org_context_withdrawal_takes_effect_on_the_next_call(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    visitor = _hosted_visitor(app)
     space_id = _create_space(app)
-    _grant(app, actor=VISITOR_URI, capability="org-context", scope="accepted")
+    _grant(app, actor=visitor, capability="org-context", scope="accepted")
     read_params = {
-        "actor": VISITOR_URI,
+        "actor": visitor,
         "sessionRef": "visitor-session",
         "spaceId": space_id,
         "path": "readme.md",
     }
     assert app.handle("orgfs.read", read_params)["text"] == "hello"
 
-    app.handle("agent.revoke", {"actor": VISITOR_URI, "grantId": "g1"})
+    app.handle("agent.revoke", {"actor": visitor, "grantId": "g1"})
 
     with pytest.raises(DaemonRequestError) as failure:
         app.handle("orgfs.read", read_params)
@@ -421,13 +424,13 @@ def test_a_made_up_session_binding_cannot_read_the_org_folder(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    visitor = _hosted_visitor(app)
 
     with pytest.raises(DaemonRequestError) as failure:
         app.handle(
             "orgfs.read",
             {
-                "actor": VISITOR_URI,
+                "actor": visitor,
                 "sessionRef": "made-up",
                 "spaceId": "space-1",
                 "path": "readme.md",
@@ -457,115 +460,63 @@ def _second_visitor(
     app: DaemonApplication, name: str, session_ref: str, owner: str = "guest2"
 ) -> str:
     app.agents.create_transfer_hosted(name, pinned_owner=owner)
-    uri = f"agent:{owner}:{NODE}:{name}"
-    _register_session(app, uri, session_ref)
-    return uri
+    _register_session(app, f"agent:{owner}:{NODE}:{name}", session_ref)
+    return _official(app, name)
 
 
 def test_two_hosted_visitors_keep_separate_target_views(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
-    """A see-actors grant to one tenant never widens another's view."""
+    """A see-actors grant to one tenant never widens another's view.
+
+    The first visitor calls with its pinned-owner name URI, so the hosted
+    name-to-id canonicalization at the targets boundary stays exercised; the
+    second calls with its id address.
+    """
 
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    visitor = _hosted_visitor(app)
+    native = _official(app, "native")
     other = _second_visitor(app, "visitor2", "visitor2-session")
     _grant(
         app,
-        actor=VISITOR_URI,
+        actor=visitor,
         capability="see-actors",
-        scope=_array_scope(NATIVE_URI),
+        scope=_array_scope(native),
     )
 
+    assert visitor != VISITOR_URI
     rows = _targets(app, {"actor": VISITOR_URI, "sessionRef": "visitor-session"})
-    assert rows == sorted([NATIVE_URI, VISITOR_URI])
+    assert rows == sorted([native, visitor])
 
     other_rows = _targets(app, {"actor": other, "sessionRef": "visitor2-session"})
     assert other_rows == [other]
-    assert NATIVE_URI not in other_rows
+    assert native not in other_rows
 
 
 def test_a_send_to_grant_does_not_cross_tenants(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     app = _application(request, tmp_path)
-    _hosted_visitor(app)
+    visitor = _hosted_visitor(app)
+    native = _official(app, "native")
     other = _second_visitor(app, "visitor2", "visitor2-session")
     _grant(
         app,
-        actor=VISITOR_URI,
+        actor=visitor,
         capability="send-to",
-        scope=_array_scope(NATIVE_URI),
+        scope=_array_scope(native),
     )
 
     assert _send(
-        app, sender=VISITOR_URI, target=NATIVE_URI, session="visitor-session"
+        app, sender=visitor, target=native, session="visitor-session"
     )["ok"] is True
 
     with pytest.raises(DaemonRequestError) as failure:
-        _send(app, sender=other, target=NATIVE_URI, session="visitor2-session")
+        _send(app, sender=other, target=native, session="visitor2-session")
     assert failure.value.code == "TARGET_NOT_AUTHORIZED"
     assert failure.value.data["caller"] == other
 
 
-def test_revoking_one_tenant_leaves_the_other_alone(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> None:
-    app = _application(request, tmp_path, routes=True)
-    _hosted_visitor(app)
-    other = _second_visitor(app, "visitor2", "visitor2-session")
-    gateway = _offline_route_gateway(app)
-    _grant(
-        app,
-        actor=VISITOR_URI,
-        capability="channel",
-        scope=_array_scope(ROUTE),
-    )
-    _grant(
-        app,
-        actor=other,
-        capability="channel",
-        scope=_array_scope(ROUTE),
-        grant_id="g2",
-    )
-    assert _send(
-        app, sender=VISITOR_URI, target=ROUTE, session="visitor-session"
-    )["ok"] is True
-    assert _send(
-        app, sender=other, target=ROUTE, session="visitor2-session"
-    )["ok"] is True
-
-    app.handle("agent.revoke", {"actor": VISITOR_URI, "grantId": "g1"})
-
-    with pytest.raises(DaemonRequestError) as failure:
-        _send(app, sender=VISITOR_URI, target=ROUTE, session="visitor-session")
-    assert failure.value.code == "CHANNEL_NOT_AUTHORIZED"
-    assert _send(
-        app, sender=other, target=ROUTE, session="visitor2-session"
-    )["ok"] is True
-    assert len(gateway.calls) == 3
 
 
-def test_mutation_removing_the_gates_lets_the_same_send_through(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> None:
-    """Sensitivity check: the refusals above come from these two gates.
-
-    Mutating the entry points to no-ops is exactly the change the deny tests
-    are supposed to catch, so if the send still fails afterwards the deny
-    tests would be passing for the wrong reason.
-    """
-
-    app = _application(request, tmp_path, routes=True)
-    _hosted_visitor(app)
-    _offline_route_gateway(app)
-
-    with pytest.raises(DaemonRequestError) as failure:
-        _send(app, sender=VISITOR_URI, target=ROUTE, session="visitor-session")
-    assert failure.value.code == "CHANNEL_NOT_AUTHORIZED"
-
-    app._enforce_send_to = lambda caller, targets: None  # type: ignore[method-assign]
-    app._enforce_channel = lambda caller, targets: None  # type: ignore[method-assign]
-
-    mutated = _send(app, sender=VISITOR_URI, target=ROUTE, session="visitor-session")
-    assert mutated["ok"] is True

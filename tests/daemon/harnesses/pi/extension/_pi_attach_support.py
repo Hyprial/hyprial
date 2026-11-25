@@ -23,6 +23,7 @@ from hyprial.daemon.impl.harnesses.pi.rpc_client import PI_HARNESS_BRIDGE_EXTENS
 NODE = shutil.which("node")
 ATTACH_EXTENSION = PI_HARNESS_BRIDGE_EXTENSION.with_name("pi_harness_attach.ts")
 DAEMON_IPC = PI_HARNESS_BRIDGE_EXTENSION.with_name("pi_daemon_ipc.ts")
+LOCAL_IPC = PI_HARNESS_BRIDGE_EXTENSION.with_name("pi_local_ipc.ts")
 INBOX_WATCH = PI_HARNESS_BRIDGE_EXTENSION.with_name("pi_inbox_watch.ts")
 
 
@@ -463,6 +464,7 @@ class Carrier:
             ATTACH_EXTENSION,
             PI_HARNESS_BRIDGE_EXTENSION,
             DAEMON_IPC,
+            LOCAL_IPC,
             INBOX_WATCH,
         ):
             shutil.copy(source, tmp_path / source.name)

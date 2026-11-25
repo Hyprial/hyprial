@@ -35,8 +35,10 @@ inboxes. Tests compare declared observable outcomes, not private storage.
 golden input for #21/#32 routing; it is not an invitation to put adapter policy
 inside the transport layer.
 
-WG-030..WG-037 (see `contract/wire/send-links.md` §2/§4/§5/§8) freeze the
-summary/body split, hold results, read_body, settle_hint and ingress refusal.
+WG-030..WG-036 (see
+[`design-send-links-2026-10-14.md`](../../../docs/design/design-send-links-2026-10-14.md)
+§4/§5/§7/§8.1) freeze the summary/body split, hold results, read_body and
+settle_hint.
 WG-030/WG-031 are `validate.py`'s `NEGATIVE_SUMMARY_FIXTURES`; WG-001/002/004/005
 renamed `autoReply` to `replyOwed`. Those and the new cases are
 `hyprialOnly: true` and cite the design document, not the TS reference.

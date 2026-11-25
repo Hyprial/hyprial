@@ -9,9 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from hyprial.kernel.impl.actor_runtime import AdmissionResult
+from hyprial.kernel import ActorCell
+
+from hyprial.kernel.impl.actor_runtime import ActorState, AdmissionResult
 from hyprial.daemon.impl.transport import KeySpace, LivelinessDirectory, TransportSample, ZenohConfig, ZenohTransport
 from hyprial.daemon.impl.transport.presence_actor import PresenceAuthority
+from tests.support.actor_hosts import new_actor_host
 
 
 HOST = "node-b"
@@ -355,7 +358,7 @@ def test_confirmed_live_token_wakes_durable_outbox_without_another_put(tmp_path)
     transport = Delivery()
     events = CorrelatedInboxEventRouter()
     database = tmp_path / "outbox.sqlite3"
-    commands = DeliveryCustodyCoordinator(database, transport, events)
+    commands = DeliveryCustodyCoordinator(database, transport, events, actor_host=new_actor_host())
     inbox = DeliveryCustodyFacade(commands, database)
     wakes = RecipientWakeCoordinator(commands, events, inbox, directory.presence_projection)
     def stop():
@@ -427,11 +430,9 @@ def test_directory_constructor_failure_retires_query_worker(monkeypatch):
 
 
 def test_failed_constructor_stops_owner_after_accepted_query_settles(monkeypatch):
-    import pykka
     from hyprial.daemon.impl.transport.zenoh import presence as module
 
     owners = []
-    existing_actors = {ref.actor_urn for ref in pykka.ActorRegistry.get_all()}
     stop_requested = threading.Event()
     authority_type = module.PresenceAuthority
     real_close = authority_type.close
@@ -439,14 +440,17 @@ def test_failed_constructor_stops_owner_after_accepted_query_settles(monkeypatch
     def track(**kwargs):
         owner = authority_type(**kwargs)
         owners.append(owner)
-        stop = owner._runtime.stop
+        # ``ActorCell`` is slotted, so the observation is installed on the class
+        # and scoped to this owner's cell: a non-blocking stop(0) from the
+        # completion handler is what the invariant is about.
+        original_cell_stop = ActorCell.stop
 
-        def observed_stop(handle, timeout=1.0):
-            if timeout == 0:
+        def observed_stop(cell, timeout=1.0):
+            if cell is owner._cell and timeout == 0:
                 stop_requested.set()
-            return stop(handle, timeout)
+            return original_cell_stop(cell, timeout)
 
-        monkeypatch.setattr(owner._runtime, "stop", observed_stop)
+        monkeypatch.setattr(ActorCell, "stop", observed_stop)
         # Keep the same incomplete-close semantics without a 1s test sleep.
         monkeypatch.setattr(owner, "close", lambda: real_close(owner, 0.01))
         return owner
@@ -469,18 +473,15 @@ def test_failed_constructor_stops_owner_after_accepted_query_settles(monkeypatch
         with pytest.raises(OSError, match="second declaration"):
             LivelinessDirectory(session)
         assert len(owners) == 1
-        created_actors = [
-            ref for ref in pykka.ActorRegistry.get_all()
-            if ref.actor_urn not in existing_actors
-        ]
-        assert len(created_actors) == 1
+        cell = owners[0]._cell
+        assert cell.snapshot().state is not ActorState.STOPPED
         assert owners[0]._delete_effects.snapshot().outstanding == 1
         assert not stop_requested.is_set()
         session.release.set()
         wait(lambda: owners[0]._delete_effects.snapshot().outstanding == 0)
         assert stop_requested.wait(1), "unreturned presence owner was left alive after I/O"
         assert owners[0]._delete_effects.close(1)
-        wait(lambda: all(not ref.is_alive() for ref in created_actors))
+        wait(lambda: cell.snapshot().state is ActorState.STOPPED)
     finally:
         session.release.set()
         for owner in owners:
@@ -548,14 +549,11 @@ def test_native_live_query_reconciles_reordered_delete_and_real_departure(identi
 
 
 def test_non_draining_close_stops_owner_after_late_query_without_retry():
-    import pykka
-
-    existing = {ref.actor_urn for ref in pykka.ActorRegistry.get_all()}
     session = Session()
     directory = LivelinessDirectory(session)
-    created = [ref for ref in pykka.ActorRegistry.get_all() if ref.actor_urn not in existing]
+    cell = directory._authority._cell
     try:
-        assert len(created) == 1
+        assert cell.snapshot().state is not ActorState.STOPPED
         session.put(directory, DRIVER)
         drain(directory)
         session.release.clear()
@@ -563,10 +561,10 @@ def test_non_draining_close_stops_owner_after_late_query_without_retry():
         assert session.entered.wait(1)
         assert not directory._authority.close(0.01)
         assert directory._authority._delete_effects.snapshot().outstanding == 1
-        assert created[0].is_alive()
+        assert cell.snapshot().state is not ActorState.STOPPED
         session.release.set()
         # No second close: the timed-out caller has relinquished ownership.
-        wait(lambda: not created[0].is_alive())
+        wait(lambda: cell.snapshot().state is ActorState.STOPPED)
         assert directory._authority._delete_effects.snapshot().outstanding == 0
     finally:
         session.release.set()

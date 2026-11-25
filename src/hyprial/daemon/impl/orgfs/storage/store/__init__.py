@@ -1,3 +1,6 @@
+# Decision record (W1E-2, 2026-11-21):
+# - _fsync_directory delegates to manysys.fsync_directory instead of opening a
+#   directory descriptor directly with os.open(path, os.O_RDONLY).
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +24,7 @@ from typing import Any
 
 from pycrdt import Doc
 
-from hyprial.kernel import lock_exclusive, unlock
+from hyprial.kernel import fsync_directory, lock_exclusive, unlock
 
 from hyprial.daemon.impl.orgfs.storage.store.membership import (
     StoreMembership,
@@ -82,11 +85,7 @@ _DOC_FILE_MAGIC = b"hyprial-orgfs-doc/1\n"
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    fsync_directory(path)
 
 
 class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapshots, StoreRetirement):

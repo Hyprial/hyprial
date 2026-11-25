@@ -8,11 +8,11 @@ import sys
 import pytest
 
 
-RUNNER = Path(__file__).resolve().parents[4] / 'contract/e2e/run-host-invite.py'
+RUNNER = Path(__file__).resolve().parents[4] / 'contract/e2e/run-hosted-registry.py'
 
 
 def _load_runner():
-    spec = importlib.util.spec_from_file_location("host_invite_readiness", RUNNER)
+    spec = importlib.util.spec_from_file_location("hosted_registry_readiness", RUNNER)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

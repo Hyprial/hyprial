@@ -213,6 +213,7 @@ class FakeAlarm:
         reason: str | None = None,
         conversation_id: str = "workflow",
         idempotency_key: str | None = None,
+        sender: str | None = None,
     ) -> None:
         self.calls.append(
             {
@@ -765,10 +766,9 @@ class AddressValidationTests(unittest.TestCase):
         # B4: route: would pass schema but fail at delivery — reject it loud.
         with self.assertRaises(RoutineSchemaError) as ctx:
             load_routine_text(VALID.replace("user:allen", "route:lark:main"))
-        # #2092: the rejection now names the supported use and the setup command
         message = str(ctx.exception)
-        assert "not a deliverable escalate_to/report_to address" in message
-        assert "hyprial message send --to route:<adapter>:<route>" in message
+        assert "is not a deliverable address" in message
+        assert "route:<adapter>:<route>" not in message
 
 
 class StoredAddressMigrationTests(unittest.TestCase):

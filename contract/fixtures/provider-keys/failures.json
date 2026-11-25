@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scope": "E1 pure primitives only; no process-launch or global-freshness claim",
+  "codes": [
+    "PROVIDER_GRANT_MISSING",
+    "PROVIDER_GRANT_REVOKED",
+    "PROVIDER_KEY_NOT_FOUND",
+    "PROVIDER_KEY_RECIPIENT_PENDING",
+    "PROVIDER_KEY_UNSEAL_FAILED",
+    "PROVIDER_KEY_SIGNATURE_INVALID"
+  ],
+  "accessPrecedence": [
+    {"name": "missing-grant-before-missing-key", "grantMissing": true, "revoked": false, "envelopeMissing": true, "code": "PROVIDER_GRANT_MISSING"},
+    {"name": "explicit-revocation-before-missing-key", "grantMissing": false, "revoked": true, "envelopeMissing": true, "code": "PROVIDER_GRANT_REVOKED"},
+    {"name": "missing-key-after-present-grant", "grantMissing": false, "revoked": false, "envelopeMissing": true, "code": "PROVIDER_KEY_NOT_FOUND"}
+  ]
+}

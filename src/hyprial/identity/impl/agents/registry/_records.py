@@ -1,18 +1,24 @@
+"""Agent registry record operations.
+
+Decision (owner, 2026-11-24, channel capability retirement): a stored
+capability grant whose capability is no longer in the ledger vocabulary is
+skipped when grants are read, so it can only narrow an answer, and it can
+still be revoked by its grant id; the journal keeps the raw row.  No row is
+rewritten or migrated.
+"""
+
 from __future__ import annotations
 
-from hyprial.identity.impl.agents.home.provisioner import AgentHomeError, HomeReceipt
+from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
 from typing import Any, TYPE_CHECKING
-from hyprial.identity.impl.agents.runtime.grants import CapabilityGrant, GrantJournalEntry, principal, single_line
-from collections.abc import Iterable
+from hyprial.identity.impl.agents.runtime.grants import CAPABILITY_VALUES, CapabilityGrant, GrantJournalEntry, principal, single_line
 import json
 from dataclasses import replace
 import sqlite3
 import uuid
 
-from hyprial.kernel import canonical_user_uri
-
 if TYPE_CHECKING:
-    from hyprial.identity.impl.agents.runtime.secrets import SecretGrant, SecretSource
+    from hyprial.identity.impl.agents.runtime.secrets import SecretGrant
 
 from ._base import (
     AGENT_ACTIVITY_WRITE_INTERVAL_MS,
@@ -21,17 +27,19 @@ from ._base import (
     AgentBlock,
     AgentEntityConflict,
     AgentError,
-    AgentNotFoundError,
     HandoverNotice,
-    PinConflictError,
-    PinStateConflictError,
-    _UNCONDITIONAL_PIN,
     RestoreDisposition,
     normalize_harness_args,
+    mint_record_uri,
 )
+from hyprial.identity.impl.agents.addressing import id_form_minting
+from .naming.id_form import stamp_agent_id
 
 
-class _RegistryRecordsMixin:
+from .secret_grants import _RegistrySecretGrantMixin
+
+
+class _RegistryRecordsMixin(_RegistrySecretGrantMixin):
     def record_session_ref(
         self, actor: str, entity_token: str, session_ref: str
     ) -> None:
@@ -39,7 +47,7 @@ class _RegistryRecordsMixin:
 
         if not entity_token or not session_ref:
             raise AgentError("session history identity must not be empty")
-        name = self.normalize_actor(actor)
+        name = self.actor_key(actor)
         registered_at_ms = int(self._clock())
         with self._lock, self._db:
             row = self._db.execute(
@@ -96,13 +104,14 @@ class _RegistryRecordsMixin:
                         for ref in evicted
                     ),
                 )
+                stamp_agent_id(self._db, "retired_session_refs", entity_token)
                 self._db.execute("DELETE " + overflow_query, overflow_params)
                 self._refresh_retired_session_refs_locked()
 
     def session_ref_history(
         self, actor: str, entity_token: str
     ) -> tuple[str, ...]:
-        name = self.normalize_actor(actor)
+        name = self.actor_key(actor)
         with self._lock:
             rows = self._db.execute(
                 "SELECT session_ref FROM agent_session_ref_history "
@@ -111,41 +120,11 @@ class _RegistryRecordsMixin:
             ).fetchall()
         return tuple(str(row["session_ref"]) for row in rows)
 
-    def is_session_ref_retired(self, actor: str, session_ref: str) -> bool:
-        candidates = {actor}
-        local = self.local_actor(actor)
-        if local is not None and actor == local:
-            candidates.add(self.uri_for(local))
-        with self._lock:
-            return any(
-                (candidate, session_ref) in self._retired_session_refs
-                for candidate in candidates
-            )
-
-    def release_retired_session_ref(self, actor: str, session_ref: str) -> bool:
-        """Release exactly one explicit-resume credential, never its peers."""
-
-        candidates = {actor}
-        local = self.local_actor(actor)
-        if local is not None and actor == local:
-            candidates.add(self.uri_for(local))
-        with self._lock, self._db:
-            before = self._db.total_changes
-            self._db.executemany(
-                "DELETE FROM retired_session_refs WHERE actor = ? AND session_ref = ?",
-                ((candidate, session_ref) for candidate in sorted(candidates)),
-            )
-            changed = self._db.total_changes - before
-            self._refresh_retired_session_refs_locked()
-        return changed > 0
-
     def save(self, agent: Agent, *, preserve_harness_args: bool = False) -> Agent:
         """Write a caller-merged record, preserving stored args for runtime bookkeeping.
 
-        ``pinned_adapters`` is deliberately not written here — pins change
-        only through :meth:`pin`/:meth:`unpin`, so a stale copy of the record
-        can never clobber a binding.  The upsert updates in place (never
-        DELETE+INSERT, which would fire the pin cascade).
+        The upsert updates in place (never DELETE+INSERT), so runtime
+        bookkeeping rows a caller never saw survive the write.
         """
 
         self._validate_config_location(agent)
@@ -224,8 +203,8 @@ class _RegistryRecordsMixin:
         return (
             "INSERT INTO agents (actor, owner, machine, uri, entity_token, cwd, config, provider, "
             "model, capabilities, harness_args, preferred_harness, "
-            "last_harness, last_session_id, last_active_at_ms, created_at_ms, hosted_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "last_harness, last_session_id, last_active_at_ms, created_at_ms, hosted_by, agent_id, "
+            "display_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent.actor,
                 agent.owner,
@@ -252,6 +231,8 @@ class _RegistryRecordsMixin:
                 agent.last_active_at_ms,
                 agent.created_at_ms,
                 agent.hosted_by,
+                agent.agent_id,
+                agent.display_name,
             ),
         )
     def record_activity(self, actor: str) -> bool:
@@ -534,14 +515,13 @@ class _RegistryRecordsMixin:
                 last_harness=harness,
                 last_session_id=session_id,
                 preferred_harness=agent.preferred_harness or harness,
-            )
+            ),
+            preserve_harness_args=True,
         )
         return notice
     def destroy(self, actor: str) -> bool:
         """Delete the record outright.  No tombstone, no revival (A6).
 
-        One transaction: ``ON DELETE CASCADE`` erases the agent's pins with
-        the row, so a crash can never leave a pin aimed at a deleted agent.
         Accepted cost, recorded here so nobody rediscovers it as a bug: after
         a destroy, historical messages addressed to this agent can no longer
         resolve a recipient.  Recreating the same name by hand is the only
@@ -556,12 +536,11 @@ class _RegistryRecordsMixin:
             previous = self._db.execute(
                 "SELECT * FROM agents WHERE actor = ?", (name,)
             ).fetchone()
-            previous_pins = self._pinned_adapters_locked(name)
             cursor = self._db.execute(
                 "DELETE FROM agents WHERE actor = ?", (name,)
             )
             if previous is not None:
-                prior_agent = self._row_agent(previous, previous_pins)
+                prior_agent = self._row_agent(previous)
                 revoked = self._revoke_home_locked(prior_agent)
                 self._record_external_resource_locked(
                     f"agent-record:{name}", False, prior_agent.to_json()
@@ -633,30 +612,6 @@ class _RegistryRecordsMixin:
             'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values,
         )
         return GrantJournalEntry(int(cursor.lastrowid), *values)
-    def _record_host_invite_locked(self, agent: Agent) -> GrantJournalEntry:
-        existing = self._db.execute(
-            "SELECT * FROM agent_grant_journal WHERE actor=? AND entity_token=? "
-            "AND action='host-invite' ORDER BY seq LIMIT 1",
-            (agent.actor, agent.entity_token),
-        ).fetchone()
-        if existing is not None:
-            return GrantJournalEntry(**dict(existing))
-        return self._append_grant_journal_locked(
-            agent, action="host-invite", grant_id="host-invite",
-            by=canonical_user_uri(self.owner), note="ownerAsserted=host",
-        )
-    def record_host_invite(
-        self, actor: str, *, by: str, note: str | None,
-    ) -> GrantJournalEntry:
-        """Idempotent invitation fact, always attributed to this host owner."""
-        if by != canonical_user_uri(self.owner) or note != "ownerAsserted=host":
-            raise ValueError("invitation attribution is fixed by the host")
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")
-            agent = self.require(actor)
-            if agent.hosted_by != "host-invite":
-                raise AgentError("not a host-invited agent")
-            return self._record_host_invite_locked(agent)
     def grant_capability(
         self, actor: str, *, grant_id: str, capability: str,
         scope: str, granted_by: str, revision: int,
@@ -699,7 +654,10 @@ class _RegistryRecordsMixin:
                 "ON a.actor=g.actor AND a.entity_token=g.entity_token "
                 "WHERE (? IS NULL OR g.actor=?) ORDER BY g.actor,g.grant_id", (name, name),
             ).fetchall()
-            return tuple(CapabilityGrant(**dict(row)) for row in rows)
+            return tuple(
+                CapabilityGrant(**dict(row)) for row in rows
+                if row["capability"] in CAPABILITY_VALUES
+            )
     def revoke_capability(
         self, actor: str, grant_id: str, *, revoked_by: str,
         expected_entity_token: str | None = None,
@@ -717,8 +675,12 @@ class _RegistryRecordsMixin:
             ).fetchone()
             if row is None:
                 return False
-            grant = CapabilityGrant(**dict(row))
-            if grant.capability == "agent-home":
+            if row["capability"] in CAPABILITY_VALUES:
+                grant = CapabilityGrant(**dict(row))
+                capability, scope, revision = grant.capability, grant.scope, grant.revision
+            else:
+                capability, scope, revision = row["capability"], row["scope"], int(row["revision"])
+            if capability == "agent-home":
                 raise AgentError("agent-home is intrinsic; destroy the agent to retire it")
             self._db.execute(
                 "DELETE FROM agent_capability_grants WHERE actor=? AND grant_id=?",
@@ -726,113 +688,17 @@ class _RegistryRecordsMixin:
             )
             self._append_grant_journal_locked(
                 agent, action="revoke", grant_id=grant_id, by=revoked_by,
-                capability=grant.capability, scope=grant.scope, revision=grant.revision,
+                capability=capability, scope=scope, revision=revision,
             )
             return True
     def grant_journal(self, actor: str) -> tuple[GrantJournalEntry, ...]:
         # No require(): operators can inspect a destroyed actor's history.
-        name = self.normalize_actor(actor)
+        name = self.actor_key(actor)
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM agent_grant_journal WHERE actor=? ORDER BY seq", (name,),
             ).fetchall()
             return tuple(GrantJournalEntry(**dict(row)) for row in rows)
-    def grant_secret(
-        self,
-        actor: str,
-        *,
-        grant_id: str,
-        source: "SecretSource",
-        entry_id: str,
-        field_name: str | None,
-        environment_names: Iterable[str],
-        revision: int,
-        prevalidated_home_token: str | None = None,
-        owner_actor: str | None = None,
-    ) -> "SecretGrant":
-        """Bind one exact entry to the current agent incarnation."""
-
-        from hyprial.identity.impl.agents.runtime.secrets  import SecretGrant, SecretSource
-
-        agent = self.require(actor)
-        owner = self.require(owner_actor) if owner_actor is not None else None
-        grant = SecretGrant(
-            actor=agent.actor,
-            entity_token=agent.entity_token,
-            grant_id=grant_id,
-            source=SecretSource(source),
-            entry_id=entry_id,
-            field_name=field_name,
-            environment_names=tuple(environment_names),
-            revision=revision,
-            owner_actor=None if owner is None else owner.actor,
-            owner_entity_token=None if owner is None else owner.entity_token,
-        )
-        if owner is not None:
-            if self.home_receipt(owner.actor).entity_token != owner.entity_token:
-                raise AgentError("secret owner incarnation changed")
-        validated_home_token = None
-        if grant.source in {SecretSource.AGENT_PRIVATE, SecretSource.AGENT_SHARED}:
-            validated_home_token = (
-                self.home_receipt(agent.actor).entity_token
-                if prevalidated_home_token is None
-                else prevalidated_home_token
-            )
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")
-            if owner is not None and self.require(owner.actor).entity_token != owner.entity_token:
-                raise AgentError("secret owner incarnation changed")
-            incumbent = self._db.execute(
-                "SELECT entity_token FROM agents WHERE actor=?", (agent.actor,)
-            ).fetchone()
-            if incumbent is None or str(incumbent["entity_token"]) != grant.entity_token:
-                raise AgentError("agent incarnation changed during secret grant")
-            if validated_home_token is not None:
-                row = self._db.execute(
-                    "SELECT active,payload FROM lifecycle_resources WHERE resource_key=?",
-                    (f"agent-home:{agent.actor}",),
-                ).fetchone()
-                if row is None or not bool(row["active"]):
-                    raise AgentHomeError("revoked", agent.actor, "grant-secret")
-                receipt = HomeReceipt.from_json(json.loads(str(row["payload"])))
-                if (
-                    receipt.status != "ready"
-                    or receipt.entity_token != validated_home_token
-                    or receipt.entity_token != grant.entity_token
-                ):
-                    raise AgentHomeError("receipt-mismatch", agent.actor, "grant-secret")
-            prior = self._db.execute(
-                "SELECT revision FROM agent_secret_grants "
-                "WHERE agent = ? AND grant_id = ?",
-                (agent.actor, grant.grant_id),
-            ).fetchone()
-            if prior is not None and revision <= int(prior["revision"]):
-                raise AgentError("secret grant revision must increase")
-            self._db.execute(
-                "INSERT INTO agent_secret_grants "
-                "(agent, entity_token, grant_id, source, entry_id, field_name, "
-                "environment_names, revision, owner_actor, owner_entity_token) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(agent, grant_id) DO UPDATE SET "
-                "entity_token=excluded.entity_token, source=excluded.source, "
-                "entry_id=excluded.entry_id, field_name=excluded.field_name, "
-                "environment_names=excluded.environment_names, "
-                "revision=excluded.revision, owner_actor=excluded.owner_actor, "
-                "owner_entity_token=excluded.owner_entity_token",
-                (
-                    grant.actor,
-                    grant.entity_token,
-                    grant.grant_id,
-                    grant.source.value,
-                    grant.entry_id,
-                    grant.field_name,
-                    json.dumps(list(grant.environment_names)),
-                    grant.revision,
-                    grant.owner_actor,
-                    grant.owner_entity_token,
-                ),
-            )
-        return grant
     def secret_grant(self, actor: str, grant_id: str) -> "SecretGrant | None":
         """Read one named grant; this is the resolver's non-enumerating seam."""
 
@@ -865,9 +731,27 @@ class _RegistryRecordsMixin:
             revision=int(row["revision"]),
             owner_actor=row["owner_actor"],
             owner_entity_token=row["owner_entity_token"],
+            route_required=bool(row["route_required"]),
         )
-    def secret_inventory(self, actor: str | None = None) -> tuple["SecretGrant", ...]:
+    def secret_inventory(self, actor: str | None = None, *, expected_uri: str | None = None,
+                         expected_created_at_ms: int | None = None) -> tuple["SecretGrant", ...]:
         """Operator metadata inventory; values and filesystem discovery excluded."""
+
+        if expected_uri is not None or expected_created_at_ms is not None:
+            from .config_binding import AgentIncarnationMismatch
+
+            if not expected_uri or type(expected_created_at_ms) is not int:
+                raise ValueError("expected secret inventory instance requires URI and creation time")
+            with self._lock, self._db:
+                self._db.execute("BEGIN")
+                current = self.get(actor) if actor is not None else None
+                if (current is None or str(current.uri) != expected_uri
+                        or current.created_at_ms != expected_created_at_ms):
+                    raise AgentIncarnationMismatch("target agent incarnation changed before secret inventory")
+                grants = self.secret_inventory(actor)
+                if any(grant.entity_token != current.entity_token for grant in grants):
+                    raise AgentIncarnationMismatch("secret inventory belongs to another incarnation")
+                return grants
 
         names = (
             tuple(agent.actor for agent in self.list())
@@ -898,10 +782,20 @@ class _RegistryRecordsMixin:
             )
             return cursor.rowcount > 0
     def rotate_secret_authority(self, actor: str) -> Agent:
-        """Fence a real account/hosting transfer without treating it as an alias."""
+        """Fence a real account/hosting transfer without treating it as an alias.
+
+        The session refs the record registered move to the new token with it,
+        so a later destroy of the rotated record still retires them; their
+        history rows key the incarnation, so foreign keys are checked at
+        commit, after both sides moved.
+        """
 
         agent = self.require(actor)
-        replacement = replace(agent, entity_token=uuid.uuid4().hex)
+        token = uuid.uuid4().hex
+        replacement = replace(agent, entity_token=token, uri=(
+            mint_record_uri(agent.owner, agent.machine, agent.actor, token)
+            if id_form_minting() else agent.uri
+        ))
         with self._lock, self._db:
             self._db.execute("BEGIN IMMEDIATE")
             self._revoke_home_locked(agent)
@@ -911,89 +805,19 @@ class _RegistryRecordsMixin:
             self._db.execute(
                 "DELETE FROM agent_capability_grants WHERE actor = ?", (agent.actor,)
             )
+            self._db.execute("PRAGMA defer_foreign_keys = ON")
+            self._db.execute("UPDATE agents SET entity_token = ?, agent_id = ?, uri = ? WHERE actor = ?",
+                             (token, replacement.agent_id, replacement.uri, agent.actor))
             self._db.execute(
-                "UPDATE agents SET entity_token = ? WHERE actor = ?",
-                (replacement.entity_token, agent.actor),
+                "UPDATE agent_session_ref_history SET entity_token = ? "
+                "WHERE actor = ? AND entity_token = ?",
+                (token, agent.actor, agent.entity_token),
             )
+            if replacement.uri != agent.uri:
+                self._carry_rotated_uri_locked(agent, replacement.uri)
             self._record_external_resource_locked(
                 f"agent-record:{agent.actor}", True, replacement.to_json()
             )
+            if replacement.uri != agent.uri:
+                self._refresh_retired_session_refs_locked()
         return replacement
-    def pin(self, adapter: str, actor: str, *, expected_actor: object = _UNCONDITIONAL_PIN) -> str | None:
-        """Bind ``adapter`` to ``actor`` one-to-one; return the previous URI.
-
-        Idempotent for the same pair; re-pinning the adapter to a different
-        agent is a move (the previous binding is released in the same
-        transaction).  The one-to-one rule is the schema's, not this
-        method's: UNIQUE(agent) rejects a second adapter on the same agent
-        (:class:`PinConflictError` names the holder and the exact unpin
-        command), and the FOREIGN KEY rejects a pin to a nonexistent agent.
-        """
-
-        name = self.normalize_actor(actor)
-        with self._lock:
-            try:
-                with self._db:
-                    self._db.execute("BEGIN IMMEDIATE")
-                    previous = self._pin_of_locked(adapter)
-                    self._check_pin_expectation(adapter, previous, expected_actor)
-                    if previous is not None and previous[0] == name:
-                        return previous[1]
-                    self._db.execute(
-                        "DELETE FROM pins WHERE adapter = ?", (adapter,)
-                    )
-                    self._db.execute(
-                        "INSERT INTO pins (adapter, agent) VALUES (?, ?)",
-                        (adapter, name),
-                    )
-            except sqlite3.IntegrityError as error:
-                message = str(error)
-                if "FOREIGN KEY" in message.upper():
-                    raise AgentNotFoundError(
-                        f"no agent named {name!r} on this machine"
-                    ) from error
-                holder = self._db.execute(
-                    "SELECT adapter FROM pins WHERE agent = ?", (name,)
-                ).fetchone()
-                raise PinConflictError(
-                    self.uri_for(name),
-                    adapter,
-                    holder["adapter"] if holder is not None else "(unknown)",
-                ) from error
-            return None if previous is None else previous[1]
-    def unpin(self, adapter: str, *, expected_actor: object = _UNCONDITIONAL_PIN) -> str | None:
-        """Remove ``adapter``'s pin; return the URI it pointed at, if any."""
-
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")
-            previous = self._pin_of_locked(adapter)
-            self._check_pin_expectation(adapter, previous, expected_actor)
-            if previous is None:
-                return None
-            self._db.execute("DELETE FROM pins WHERE adapter = ?", (adapter,))
-            return previous[1]
-
-    @staticmethod
-    def _check_pin_expectation(adapter: str, previous: Any, expected: object) -> None:
-        current = None if previous is None else previous[1]
-        if expected is not _UNCONDITIONAL_PIN and expected != current:
-            raise PinStateConflictError(adapter, expected, current)
-
-    def pins(self) -> dict[str, str]:
-        """Every pin, as ``{adapter: canonical agent URI}``, adapter-sorted."""
-
-        with self._lock:
-            return {
-                row["adapter"]: row["uri"]
-                for row in self._db.execute(
-                    "SELECT pins.adapter AS adapter, agents.uri AS uri "
-                    "FROM pins JOIN agents ON agents.actor = pins.agent "
-                    "ORDER BY pins.adapter"
-                )
-            }
-    def pinned_adapters(self, actor: str) -> tuple[str, ...]:
-        name = self.local_actor(actor)
-        if name is None:
-            return ()
-        with self._lock:
-            return self._pinned_adapters_locked(name)

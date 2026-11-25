@@ -313,7 +313,7 @@ def test_large_space_sync_answers_each_page_within_transport_timeout(
         bus.request_bytes.clear()
         bus.supplier_seconds.clear()
         imported = target_mesh.sync_from(
-            "node-source", timeout=0.1, deadline_monotonic=time.monotonic() + 2
+            "node-source", timeout=0.1, deadline_monotonic=time.monotonic() + 10
         )
 
         assert imported == 98

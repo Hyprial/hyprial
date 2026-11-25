@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests.support.runtime.environment import home_with_node_id
 import json
 import sqlite3
 import subprocess
@@ -88,7 +89,6 @@ def _seed_hosted_collision(state: Path, home: Path, hosted_owner: str) -> None:
     try:
         registry.create("native")
         registry.create_transfer_hosted("visitor", pinned_owner=hosted_owner)
-        registry.pin("lark:synthetic-alias", "visitor")
     finally:
         registry.close()
 
@@ -104,7 +104,7 @@ def _profile(server) -> NetworkProfile:
 def _environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     home = tmp_path / "home"
     state = tmp_path / "state"
-    home.mkdir()
+    home_with_node_id(home)
     state.mkdir()
     monkeypatch.setenv("HYPRIAL_HOME", str(home))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
@@ -156,9 +156,6 @@ def _seed_wal_state_after_clean_shutdown(state: Path, owner: str = OLD) -> None:
         database.close()
     (state / "desired-state.json.v1").write_text(
         json.dumps({"actor": f"agent:{owner}:node:worker"}), encoding="utf-8"
-    )
-    (state / "users.json").write_text(
-        json.dumps({"owner": owner}), encoding="utf-8"
     )
     leftovers = [
         path.name for path in state.iterdir() if path.name.endswith(("-wal", "-shm"))

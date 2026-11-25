@@ -18,7 +18,7 @@ import pytest
 
 from hyprial.daemon.impl.upgrade import runner
 from hyprial.daemon.impl.upgrade.steps import mcp_entry
-from hyprial.kernel.impl.platform.filesystem import durability
+from hyprial.kernel.impl.manysys.fs import durability
 
 
 @pytest.fixture

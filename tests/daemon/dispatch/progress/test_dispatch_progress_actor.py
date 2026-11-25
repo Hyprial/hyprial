@@ -20,7 +20,7 @@ def _event(delivery_id: str) -> ProgressEvent:
     )
 
 
-def test_blocked_progress_send_does_not_hold_unrelated_publication() -> None:
+def test_blocked_progress_send_does_not_hold_unrelated_publication(actor_host) -> None:
     entered = threading.Event()
     release = threading.Event()
     second = threading.Event()
@@ -34,7 +34,7 @@ def test_blocked_progress_send_does_not_hold_unrelated_publication() -> None:
             second.set()
         return True
 
-    owner = ProgressPublishCoordinator(submit, workers=2)
+    owner = ProgressPublishCoordinator(submit, workers=2, actor_host=actor_host)
     assert owner.submit(_event("one"), "sender") is AdmissionResult.ACCEPTED
     assert entered.wait(1)
     assert owner.submit(_event("two"), "sender") is AdmissionResult.ACCEPTED

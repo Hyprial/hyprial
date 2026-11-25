@@ -16,6 +16,12 @@ observer, never the approver: answering one is a denial the user never made
 the tool, so the reply never reaches the daemon -- loopback regression after
 #2242). Consent requests are therefore left unanswered for the user's TUI
 client to settle; every other server request keeps the PR1 ``-32601`` refusal.
+
+Decision record (ipc-seam 2026-11-19): the transport is opened by the
+kernel's one local-IPC entry point (``connect_local_ipc``); the WebSocket
+client speaks through the seam stream and never opens a socket family
+itself. A platform without unix sockets fails the connect with a plain
+``OSError`` the callers already treat as a lost app-server.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from hyprial.daemon.impl.harnesses.codex.process import _notification_turn_id
+from hyprial.kernel import connect_local_ipc
 
 _READER_JOIN_SECONDS = 5.0
 
@@ -56,9 +63,8 @@ class _UnixWebSocket:
     """Minimal Unix-domain RFC 6455 client for Codex's local app-server."""
 
     def __init__(self, path: Path, *, timeout: float) -> None:
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock = connect_local_ipc(Path(path), timeout)
         self.sock.settimeout(timeout)
-        self.sock.connect(str(path))
         key = base64.b64encode(secrets.token_bytes(16)).decode()
         self.sock.sendall(
             (

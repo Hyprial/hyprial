@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "polarity": "merged ⊇ (base ∪ head), per configured file: an entry present on EITHER side must survive the merge. A merge that drops one side's entry is a silent data loss, so the gate is RED. This is deliberately NOT a shrink-only rule: deleting an entry can be legitimate (a retired module), but that decision belongs to the registry's own semantics and needs its own ruling, not a generic gate. Do NOT add further invariants here without a written ruling.",
+  "registries": [
+    {
+      "path": "tests/integration/native_harnesses/resident_metadata/native_origins_a.py",
+      "symbol": "NATIVE_ORIGINS_PART",
+      "kind": "python-literal-string-collection",
+      "note": "One part of the exact physical inventory of daemon modules (NATIVE_ORIGINS is their union, merged in test_native_resident_tripwires.py; plus the explicitly named HISTORICAL_ROWS). Entries are added as modules are physically split; #1324 and #1297 lost entries by merging a stale copy of this constant."
+    },
+    {
+      "path": "tests/integration/native_harnesses/resident_metadata/native_origins_b_h.py",
+      "symbol": "NATIVE_ORIGINS_PART",
+      "kind": "python-literal-string-collection",
+      "note": "One part of the exact physical inventory of daemon modules (NATIVE_ORIGINS is their union, merged in test_native_resident_tripwires.py; plus the explicitly named HISTORICAL_ROWS). Entries are added as modules are physically split; #1324 and #1297 lost entries by merging a stale copy of this constant."
+    },
+    {
+      "path": "tests/integration/native_harnesses/resident_metadata/native_origins_i_o.py",
+      "symbol": "NATIVE_ORIGINS_PART",
+      "kind": "python-literal-string-collection",
+      "note": "One part of the exact physical inventory of daemon modules (NATIVE_ORIGINS is their union, merged in test_native_resident_tripwires.py; plus the explicitly named HISTORICAL_ROWS). Entries are added as modules are physically split; #1324 and #1297 lost entries by merging a stale copy of this constant."
+    },
+    {
+      "path": "tests/integration/native_harnesses/resident_metadata/native_origins_p_r.py",
+      "symbol": "NATIVE_ORIGINS_PART",
+      "kind": "python-literal-string-collection",
+      "note": "One part of the exact physical inventory of daemon modules (NATIVE_ORIGINS is their union, merged in test_native_resident_tripwires.py; plus the explicitly named HISTORICAL_ROWS). Entries are added as modules are physically split; #1324 and #1297 lost entries by merging a stale copy of this constant."
+    },
+    {
+      "path": "tests/integration/native_harnesses/resident_metadata/native_origins_s_z.py",
+      "symbol": "NATIVE_ORIGINS_PART",
+      "kind": "python-literal-string-collection",
+      "note": "One part of the exact physical inventory of daemon modules (NATIVE_ORIGINS is their union, merged in test_native_resident_tripwires.py; plus the explicitly named HISTORICAL_ROWS). Entries are added as modules are physically split; #1324 and #1297 lost entries by merging a stale copy of this constant."
+    }
+  ]
+}

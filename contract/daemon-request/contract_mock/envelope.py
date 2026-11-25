@@ -1,21 +1,20 @@
-"""HTTP transport envelope for the Contract Mock.
+"""HTTP transport envelope validation for the Contract Mock examples.
 
-Decision record (M-03, 2026-10-31)
+Decision record (M-03, 2026-10-31; 1e-2, 2026-11-15)
 - The mock must speak the same outer shape as the real H transport, otherwise a
   generated client would need a mock-only branch.  This module is a temporary
   adapter pinned to the H-01 candidate envelope; ``http-envelope.schema.json``
   is the reviewable artifact and HM-01 owns the combined replacement check.
-- Every payload is validated against that schema before it leaves the process.
-  A malformed example therefore fails at startup or as a 500, never as a
-  plausible-looking success.
-- Request identifiers, messages and the synthetic bearer token are generated
-  locally.  No daemon, home, identity, credential store or real token is read.
+- Every example is built into an envelope and validated against that schema by
+  ``check_contract`` (checks.py), so a malformed example fails the check instead
+  of becoming a plausible-looking success.  The served mock is JavaScript
+  (gui/contract-mock); its replies are validated against the same schema by its
+  own conformance test.  Request identifiers and bearer tokens are no longer
+  minted here: the server that needed them is gone.
 """
 
 from __future__ import annotations
 
-import secrets
-import uuid
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -34,22 +33,8 @@ class Envelope:
         error = definitions.get("error")
         if not isinstance(success, dict) or not isinstance(error, dict):
             raise ContractError("HTTP envelope schema needs success and error definitions")
-        self._success_schema = success
-        self._error_schema = error
         self._success = Draft202012Validator(success)
         self._error = Draft202012Validator(error)
-        statuses = contract.envelope_schema.get("x-hyprial-status-by-code")
-        self._statuses = statuses if isinstance(statuses, dict) else {}
-        default = contract.envelope_schema.get("x-hyprial-status-default", 500)
-        self._default_status = default if isinstance(default, int) else 500
-
-    @staticmethod
-    def request_id() -> str:
-        return "mock-" + uuid.uuid4().hex[:16]
-
-    @staticmethod
-    def token() -> str:
-        return "mock-not-a-credential-" + secrets.token_hex(8)
 
     @staticmethod
     def _message(value: str) -> str:
@@ -92,10 +77,6 @@ class Envelope:
             payload["data"] = data
         self._require(self._error, payload, "error")
         return payload
-
-    def status_for(self, code: str) -> int:
-        value = self._statuses.get(code)
-        return value if isinstance(value, int) else self._default_status
 
     @staticmethod
     def _require(validator: Draft202012Validator, payload: dict[str, Any], kind: str) -> None:

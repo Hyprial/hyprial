@@ -79,7 +79,6 @@ def _sandbox(tmp_path: Path, *, standalone: bool = False) -> Path:
         "daemon-lifecycle/run.py",
         "mcp-tools/run.py",
         "workers/python-worker/validate.py",
-        "workers/user-proxy/validate.py",
         "http-request/validate.py",
     ):
         _write_executable(
@@ -156,8 +155,15 @@ def _fake_hyprial(path: Path, marker: str) -> Path:
 
 
 def _cli_sandbox(tmp_path: Path) -> Path:
+    """Copy the real black-box runner with every Python module of its directory.
+
+    ``run.py`` imports sibling modules (``logout_check``), and the README keeps
+    the ``cli-blackbox/`` directory, not one file, as the copyable unit.
+    """
+
     root = _sandbox(tmp_path)
-    shutil.copy2(ROOT / "contract" / "cli-blackbox" / "run.py", root / "contract" / "cli-blackbox" / "run.py")
+    for module in sorted((ROOT / "contract" / "cli-blackbox").glob("*.py")):
+        shutil.copy2(module, root / "contract" / "cli-blackbox" / module.name)
     _python_wrapper(root / ".venv" / "bin" / "python", "repo-venv")
     return root
 
@@ -458,8 +464,8 @@ def test_bare_run_all_prefers_repo_venv_even_when_path_has_only_system_python(
 
     assert completed.returncode == 0, completed.stderr
     # Resolution, child validation, dependency probe, and eight contract runners.
-    assert (tmp_path / "resolver.log").read_text().splitlines() == ["repo-venv"] * 11
-    assert len((tmp_path / "children.log").read_text().splitlines()) == 8
+    assert (tmp_path / "resolver.log").read_text().splitlines() == ["repo-venv"] * 10
+    assert len((tmp_path / "children.log").read_text().splitlines()) == 7
 
 
 def test_explicit_hyprial_python_wins_over_repo_and_virtualenv(tmp_path: Path) -> None:
@@ -667,7 +673,7 @@ def test_every_contract_child_uses_exact_selected_python_identity(tmp_path: Path
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
     children = (tmp_path / "children.log").read_text().splitlines()
-    assert len(children) == 8
+    assert len(children) == 7
     assert {line.rsplit("|", 1)[1] for line in children} == {str(selected)}
 
 

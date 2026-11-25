@@ -5,7 +5,7 @@ from hyprial.kernel.impl.actor_runtime import AdmissionResult
 from hyprial.daemon.impl.inbox.tracking.fetch_receipts import FetchReceiptPublisher
 
 
-def test_slow_receipt_push_does_not_hold_fetch_caller():
+def test_slow_receipt_push_does_not_hold_fetch_caller(actor_host):
     entered, release = threading.Event(), threading.Event()
     sent = []
 
@@ -14,7 +14,9 @@ def test_slow_receipt_push_does_not_hold_fetch_caller():
         assert release.wait(3)
         sent.append((key, payload))
 
-    publisher = FetchReceiptPublisher(SimpleNamespace(put=put), capacity=1)
+    publisher = FetchReceiptPublisher(
+        SimpleNamespace(put=put), actor_host=actor_host, capacity=1
+    )
     message = SimpleNamespace(sender="agent:owner:node:sender", message_id="message")
     try:
         assert publisher.submit(message) is AdmissionResult.ACCEPTED
@@ -29,18 +31,18 @@ def test_slow_receipt_push_does_not_hold_fetch_caller():
     assert publisher.projection().rejected == 1
 
 
-def test_failed_hint_is_visible_and_next_receipt_still_runs():
+def test_failed_hint_is_visible_and_next_receipt_still_runs(actor_host):
     def put(key, payload):
         raise OSError("native send unavailable")
 
-    publisher = FetchReceiptPublisher(SimpleNamespace(put=put))
+    publisher = FetchReceiptPublisher(SimpleNamespace(put=put), actor_host=actor_host)
     publisher.submit(SimpleNamespace(sender="sender", message_id="message"))
     assert publisher.close(2)
     assert publisher.projection().failed == 1
     assert publisher.projection().published == 0
 
 
-def test_failed_hint_retains_original_diagnostic_event():
+def test_failed_hint_retains_original_diagnostic_event(actor_host):
     events = []
 
     def put(_key, _payload):
@@ -48,6 +50,7 @@ def test_failed_hint_retains_original_diagnostic_event():
 
     publisher = FetchReceiptPublisher(
         SimpleNamespace(put=put),
+        actor_host=actor_host,
         logger=lambda level, component, event, **fields: events.append(
             (level, component, event, fields)
         ),

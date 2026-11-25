@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-import hyprial.kernel.impl.processes.owned_process as owned_process
+import hyprial.kernel.impl.manysys.process.owned_process as owned_process
 from hyprial.kernel import OwnedProcessGroup, ProcessLivenessState
 
 
@@ -63,7 +63,7 @@ def _ps_birth_identity(pid: int) -> str:
 
 _LOCALE_PROBE = """
 import subprocess, sys
-from hyprial.kernel.impl.processes import owned_process as o
+from hyprial.kernel.impl.manysys.process import owned_process as o
 child = subprocess.Popen(["sleep", "5"])
 try:
     native = o._darwin_process_birth_identity(child.pid)

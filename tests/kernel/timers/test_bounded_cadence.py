@@ -3,12 +3,12 @@ from __future__ import annotations
 import threading
 import time
 
-from hyprial.kernel.impl.actor_runtime import ActorRuntime, AdmissionResult
+from hyprial.kernel import ActorCell, AdmissionResult
 from hyprial.kernel.impl.actor_runtime.effects import EffectCompleted
 from hyprial.daemon.impl.correlation.bounded_cadence import BoundedCadence
 
 
-def test_blocked_effect_coalesces_ticks_and_keeps_actor_responsive() -> None:
+def test_blocked_effect_coalesces_ticks_and_keeps_actor_responsive(actor_host) -> None:
     entered = threading.Event()
     release = threading.Event()
     observed: list[int] = []
@@ -20,7 +20,7 @@ def test_blocked_effect_coalesces_ticks_and_keeps_actor_responsive() -> None:
             assert release.wait(2)
         return at_ms
 
-    lane = BoundedCadence("test-cadence-coalesce", effect)
+    lane = BoundedCadence("test-cadence-coalesce", effect, actor_host=actor_host)
     assert lane.submit(1) is AdmissionResult.ACCEPTED
     assert entered.wait(1)
     assert lane.submit(2) is AdmissionResult.ACCEPTED
@@ -38,7 +38,7 @@ def test_blocked_effect_coalesces_ticks_and_keeps_actor_responsive() -> None:
     assert lane.submit(4) is AdmissionResult.CLOSED
 
 
-def test_effect_failure_is_reported_and_later_tick_runs() -> None:
+def test_effect_failure_is_reported_and_later_tick_runs(actor_host) -> None:
     results: list[int] = []
 
     def effect(at_ms: int) -> int:
@@ -47,7 +47,7 @@ def test_effect_failure_is_reported_and_later_tick_runs() -> None:
             raise ValueError("injected probe failure")
         return at_ms
 
-    lane = BoundedCadence("test-cadence-failure", effect)
+    lane = BoundedCadence("test-cadence-failure", effect, actor_host=actor_host)
     assert lane.submit(1) is AdmissionResult.ACCEPTED
     deadline = time.monotonic() + 1
     while lane.projection().completed != 1 and time.monotonic() < deadline:
@@ -58,27 +58,26 @@ def test_effect_failure_is_reported_and_later_tick_runs() -> None:
     assert lane.projection().failed == 1
 
 
-def test_lost_accepted_completion_is_redelivered_until_actor_ack() -> None:
-    class LostOnce(ActorRuntime):
-        def __init__(self) -> None:
-            super().__init__()
-            self.lost = False
+def test_lost_accepted_completion_is_redelivered_until_actor_ack(actor_host, monkeypatch) -> None:
+    original_tell = ActorCell.tell
+    lost = False
 
-        def tell(self, handle, command):  # type: ignore[no-untyped-def]
-            if isinstance(command, EffectCompleted) and not self.lost:
-                self.lost = True
-                return AdmissionResult.ACCEPTED
-            return super().tell(handle, command)
+    def tell(cell, command):
+        nonlocal lost
+        if isinstance(command, EffectCompleted) and not lost:
+            lost = True
+            return AdmissionResult.ACCEPTED
+        return original_tell(cell, command)
 
-    runtime = LostOnce()
+    monkeypatch.setattr(ActorCell, "tell", tell)
     effects: list[int] = []
     lane = BoundedCadence(
         "test-cadence-lost-completion",
         lambda at_ms: effects.append(at_ms) or at_ms,
-        runtime=runtime,
+        actor_host=actor_host,
     )
     assert lane.submit(17) is AdmissionResult.ACCEPTED
     assert lane.close(2)
-    assert runtime.lost
+    assert lost
     assert effects == [17]
     assert lane.projection().completed == 1

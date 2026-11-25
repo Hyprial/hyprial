@@ -38,7 +38,7 @@ class _Runner:
         return subprocess.CompletedProcess(command, 0, "", "")
 
 
-def _launchd(*, loaded: bool) -> tuple[Any, Any, _Runner]:
+def _launchd(*, loaded: bool, pid: int | None = None) -> tuple[Any, Any, _Runner]:
     runner = _Runner()
     status = ServiceStatus(
         platform="launchd",
@@ -46,7 +46,8 @@ def _launchd(*, loaded: bool) -> tuple[Any, Any, _Runner]:
         unit_path=Path("/LaunchAgents/x.plist"),
         installed=True,
         loaded=loaded,
-        running=False,
+        running=pid is not None,
+        pid=pid,
         attributed=True,
     )
     manager = SimpleNamespace(
@@ -116,7 +117,7 @@ def test_identity_switch_stop_refuses_an_unknown_pid_before_the_supervisor_acts(
 def test_supervisor_stop_reads_the_process_identity_before_signalling(
     monkeypatch: pytest.MonkeyPatch, services
 ) -> None:
-    manager, status, runner = _launchd(loaded=True)
+    manager, status, runner = _launchd(loaded=True, pid=77)
     monkeypatch.setattr(services, "_daemon_probe", lambda **_k: {"pid": 77, "epoch": "e"})
 
     def identity(pid: int) -> str:

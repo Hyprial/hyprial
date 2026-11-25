@@ -94,6 +94,10 @@ def strip_v18(db: sqlite3.Connection) -> None:
     for column in ("attempt_no", "expansion_digest", "expansion_text"):
         db.execute(f"ALTER TABLE remote_workflow_outbox DROP COLUMN {column}")
     for column in (
+        # Newer-than-v17 additive columns are stripped, newest first: the
+        # fixture must be a genuine v17 database, not a v20 one with an old
+        # ``user_version`` (#1803 added ``held_at_ms`` in v20).
+        "held_at_ms",
         "expansion_deadline_ms",
         "parent_node_id",
         "parent_graph_id",

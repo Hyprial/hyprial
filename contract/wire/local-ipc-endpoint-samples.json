@@ -1,0 +1,89 @@
+{
+  "schema": "hyprial-local-ipc-endpoint-samples/v1",
+  "authority": "src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py (PipeListener.__init__ writes, connect() validates)",
+  "endpointMaxBytes": 4096,
+  "cases": [
+    {
+      "id": "valid-canonical",
+      "expect": "resolve",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"}",
+      "endpoint": "\\\\.\\pipe\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    },
+    {
+      "id": "valid-unknown-fields-ignored",
+      "expect": "resolve",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f0\", \"note\": \"unknown members are ignored\", \"writtenBy\": {\"pid\": 42}}",
+      "endpoint": "\\\\.\\pipe\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    },
+    {
+      "id": "reject-not-json",
+      "expect": "reject",
+      "file": "this is not json {"
+    },
+    {
+      "id": "reject-json-array",
+      "expect": "reject",
+      "file": "[1, 2, 3]"
+    },
+    {
+      "id": "reject-json-string",
+      "expect": "reject",
+      "file": "\"a bare string\""
+    },
+    {
+      "id": "reject-empty-object",
+      "expect": "reject",
+      "file": "{}"
+    },
+    {
+      "id": "reject-transport-wrong",
+      "expect": "reject",
+      "file": "{\"transport\": \"unix-socket\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"}"
+    },
+    {
+      "id": "reject-transport-missing",
+      "expect": "reject",
+      "file": "{\"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"}"
+    },
+    {
+      "id": "reject-pipe-prefix-wrong",
+      "expect": "reject",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\other-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"}"
+    },
+    {
+      "id": "reject-pipe-no-prefix",
+      "expect": "reject",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"}"
+    },
+    {
+      "id": "reject-suffix-31-chars",
+      "expect": "reject",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f\"}"
+    },
+    {
+      "id": "reject-suffix-33-chars",
+      "expect": "reject",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f00\"}"
+    },
+    {
+      "id": "reject-suffix-uppercase",
+      "expect": "reject",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0F1E2D3C4B5A69788796A5B4C3D2E1F0\"}"
+    },
+    {
+      "id": "reject-suffix-non-hex",
+      "expect": "reject",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a6978zg96a5b4c3d2e1f0\"}"
+    },
+    {
+      "id": "reject-pipe-not-a-string",
+      "expect": "reject",
+      "file": "{\"transport\": \"windows-pipe-v1\", \"pipe\": 123}"
+    },
+    {
+      "id": "reject-over-4096-bytes",
+      "expect": "reject",
+      "file": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        {\"transport\": \"windows-pipe-v1\", \"pipe\": \"\\\\\\\\.\\\\pipe\\\\hyprial-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"}"
+    }
+  ]
+}

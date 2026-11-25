@@ -21,9 +21,27 @@ from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.processes.supervisor import ManagedHarnessRuntime
 from hyprial.shell.impl.cli.commands.doctor.commands import _restore_doctor_check
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.runtime.environment import UNIT_USER_ID
 
 
 HOUR_MS = 60 * 60 * 1_000
+
+
+def _compensate_without_freezing(app, name: str) -> None:  # type: ignore[no-untyped-def]
+    """Roll the live incarnation of ``name`` back as a saga compensation does.
+
+    Ruling X freezes a name on every forward destroy, so once id-form
+    minting is on a same-name successor only ever follows a compensating
+    destroy, which leaves the name free.
+    """
+
+    current = app.agents.require(name)
+    settled = app.agents.settle_destroy(
+        f"test-compensation:{current.entity_token}",
+        name,
+        expected_entity_token=current.entity_token,
+    )
+    assert settled.disposition == "destroyed"
 
 
 def test_shared_inactivity_boundary_is_strictly_past_threshold() -> None:
@@ -82,7 +100,7 @@ def _new_application(tmp_path: Path) -> DaemonApplication:
         state_dir=tmp_path,
         socket_path=tmp_path / "daemon.sock",
         node_id="restore-node",
-        owner="restore-owner",
+        owner="restore-owner", user_id=UNIT_USER_ID,
         **_deep_module_daemon_dependencies(),
     )
 
@@ -473,7 +491,7 @@ def test_same_name_new_incarnation_does_not_inherit_suppression(
         restore_threshold_ms=12 * HOUR_MS,
     )
     try:
-        assert app.agents.destroy("worker") is True
+        _compensate_without_freezing(app, "worker")
         replacement = app.agents.create("worker")
         assert replacement.entity_token != first.entity_token
         assert app._agent_registry.restore_disposition("worker") is None  # noqa: SLF001
@@ -612,14 +630,24 @@ def test_later_reconcile_cannot_bypass_suppression() -> None:
         ("PROVIDER_AUTHENTICATION_FAILED", "credential-invalid"),
     ],
 )
-def test_recognised_failure_block_is_durable_and_notified_once(
+def test_recognised_failure_block_is_durable_and_logged_once(
     tmp_path: Path, failure_code: str, reason: str
 ) -> None:
+    """The block notice is logged once as ``agent.blocked.notice`` and never sent.
+
+    R2, owner ruling 2026-11-19: daemon notices to the owner are log only.
+    """
+
     app = _application(tmp_path, created_at_ms=1_000, now_ms=5_000)
-    notices: list[tuple[str, str]] = []
-    app._owner_alert_notifier = (  # type: ignore[method-assign]
-        lambda text, *, idempotency_key: notices.append((text, idempotency_key))
-    )
+    notices: list[tuple[str, dict]] = []
+    real_log = app._log
+
+    def record(level: str, component: str, event: str, **fields) -> None:
+        if event == "agent.blocked.notice":
+            notices.append((level, dict(fields)))
+        real_log(level, component, event, **fields)
+
+    app._log = record  # type: ignore[method-assign]
     try:
         app._on_blocking_failure(  # noqa: SLF001
             app.agents.require("worker").uri, failure_code
@@ -629,7 +657,10 @@ def test_recognised_failure_block_is_durable_and_notified_once(
         )
         block = app._agent_registry.agent_block("worker")  # noqa: SLF001
         assert block is not None and block.reason == reason
-        assert len(notices) == 1
+        [(level, fields)] = notices
+        assert level == "warn"
+        assert reason in fields["text"] and fields["idempotencyKey"].endswith(f":{reason}")
+        assert app._inbox.pending_messages(f"user:{app.owner}") == ()
     finally:
         _close(app)
 

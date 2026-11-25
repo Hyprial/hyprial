@@ -14,7 +14,7 @@
 - `verify/` — 验证仪器：验收/落地脚本组（devcheck/intggate/onbranch/premerge/postmerge/
   tagaccept/vlib，原 tools/verify）、发布与安装核验（verify_*）、契约与残留检查
   （check_contract_impact、check_cli_help_inventory、check_hyprial_merge_residuals）、
-  探针（channel-probe.py）、`zenoh-capability/`（P1 能力闸门，原 spikes/zenoh）。
+  `zenoh-capability/`（P1 能力闸门，原 spikes/zenoh）。
 - `archived/` — 一次性脚本留档（不再维护，仅供追溯；`cleanup_resolved_retry_dlq.py` 为
   pull-retirement 缺陷留下的误报 DLQ 行的精确 ID 修复工具：需要 inbox 行与收件方
   `fetched/RECIPIENT_COMMIT` 双重证据，默认 dry-run，apply 模式需显式确认并先做

@@ -211,6 +211,7 @@ class RecordingPiRpcProcess:
         on_turn_failure_for_spec: object = None,
         on_turn_completed: object = None,
         runtime_launch_custody: object = None,
+        actor_host: object = None,
     ) -> None:
         self.spec = spec
         self.on_turn_completed = on_turn_completed
@@ -220,6 +221,7 @@ class RecordingPiRpcProcess:
         self.command = command
         self.on_turn_failure_for_spec = on_turn_failure_for_spec
         self.runtime_launch_custody = runtime_launch_custody
+        self.actor_host = actor_host
         self.last_error: str | None = None
 
     def wait_ready(self, *, timeout: float) -> bool:

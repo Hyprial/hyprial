@@ -6,7 +6,6 @@ import pytest
 
 from hyprial.kernel.impl.actor_runtime import ActorState
 from hyprial.kernel.impl.actor_runtime.scheduler import GenerationScheduler
-from hyprial.daemon.impl.configuration import home_lease_actor
 from hyprial.daemon.impl.configuration.home_lease_actor import HomeLeaseAuthority, LeaseExpired
 from hyprial.daemon.impl.configuration.home_guard import ActiveDaemonHeartbeat, HYPRIALHomeInUse
 from hyprial.daemon.impl.mcp.channel.ownership import _OwnerProcessStatus
@@ -28,11 +27,18 @@ class _ManualTimer:
         self.callback(*self.args)
 
 
-def _manual_scheduler(monkeypatch):
-    monkeypatch.setattr(
-        home_lease_actor, "GenerationScheduler",
-        lambda: GenerationScheduler(timer_factory=_ManualTimer),
-    )
+@pytest.fixture
+def manual_schedulers():
+    made = []
+
+    def make():
+        scheduler = GenerationScheduler(timer_factory=_ManualTimer)
+        made.append(scheduler)
+        return scheduler
+
+    yield make
+    for scheduler in made:
+        assert scheduler.shutdown(5.0)
 
 
 def _wait_for(predicate):
@@ -43,13 +49,17 @@ def _wait_for(predicate):
 
 
 @pytest.mark.parametrize("field", ["generation", "pid", "processIdentity"])
-def test_release_never_removes_a_replacement_generation(tmp_path, field):
+def test_release_never_removes_a_replacement_generation(
+    tmp_path, field, actor_host, generation_scheduler
+):
     lost = threading.Event()
     actor = HomeLeaseAuthority(
         tmp_path,
         keepalive_duration=0.03,
         identity_reader=lambda pid: "synthetic-identity",
         ownership_lost=lost.set,
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
     )
     actor.claim()
     replacement = json.loads(actor.path.read_text())
@@ -63,12 +73,16 @@ def test_release_never_removes_a_replacement_generation(tmp_path, field):
     assert actor.path.read_text() == raw
 
 
-def test_lease_claim_renew_release_keep_physical_generation_fence(tmp_path):
+def test_lease_claim_renew_release_keep_physical_generation_fence(
+    tmp_path, actor_host, generation_scheduler
+):
     actor = HomeLeaseAuthority(
         tmp_path,
         keepalive_duration=0.03,
         identity_reader=lambda pid: "synthetic-identity",
         duplicate_observe_window=0.05,
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
     )
     try:
         actor.claim()
@@ -87,7 +101,7 @@ def test_lease_claim_renew_release_keep_physical_generation_fence(tmp_path):
 
 
 def test_stalled_renewal_fences_lease_at_existing_stale_threshold(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, actor_host, generation_scheduler
 ):
     entered, release, lost = threading.Event(), threading.Event(), threading.Event()
     original = ActiveDaemonHeartbeat._renew_record
@@ -104,6 +118,8 @@ def test_stalled_renewal_fences_lease_at_existing_stale_threshold(
         keepalive_duration=0.03,
         identity_reader=lambda pid: "synthetic-identity",
         ownership_lost=lost.set,
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
     )
     try:
         actor.claim()
@@ -118,10 +134,11 @@ def test_stalled_renewal_fences_lease_at_existing_stale_threshold(
 
 @pytest.mark.parametrize("first_timer", ["expiry", "renew"])
 def test_one_second_owner_paused_four_seconds_has_one_live_lease(
-    tmp_path, monkeypatch, first_timer,
+    tmp_path, first_timer, actor_host, manual_schedulers,
 ):
     """Both due-timer orders retain one owner; only committed renew rescues it."""
-    _manual_scheduler(monkeypatch)
+    owner_scheduler = manual_schedulers()
+    successor_scheduler = manual_schedulers()
     now = [100.0]
     lost = threading.Event()
     options = dict(
@@ -132,8 +149,10 @@ def test_one_second_owner_paused_four_seconds_has_one_live_lease(
     )
     owner = HomeLeaseAuthority(tmp_path, pid=111, keepalive_duration=1,
                                self_fence_on_expiry=True,
-                               ownership_lost=lost.set, **options)
-    successor = HomeLeaseAuthority(tmp_path, pid=222, keepalive_duration=5, **options)
+                               ownership_lost=lost.set, actor_host=actor_host,
+                               scheduler=owner_scheduler, **options)
+    successor = HomeLeaseAuthority(tmp_path, pid=222, keepalive_duration=5, **options,
+                                   actor_host=actor_host, scheduler=successor_scheduler)
 
     def safety_cut(expected_pid):
         states = [lease.status() for lease in (owner, successor)]
@@ -156,7 +175,7 @@ def test_one_second_owner_paused_four_seconds_has_one_live_lease(
             assert owner.status()["fenceReason"] == "heartbeat-deadline"
             safety_cut(111)
             assert owner.close(2)
-            assert owner._runtime.snapshot(owner._handle).state is ActorState.STOPPED
+            assert owner._cell.snapshot().state is ActorState.STOPPED
             successor.claim()
             safety_cut(222)
             renew.fire()
@@ -183,9 +202,9 @@ def test_one_second_owner_paused_four_seconds_has_one_live_lease(
 
 @pytest.mark.parametrize("late_claim_receipt", [False, True])
 def test_default_expired_owner_renews_without_ttl_exit(
-    tmp_path, monkeypatch, late_claim_receipt,
+    tmp_path, monkeypatch, late_claim_receipt, actor_host, manual_schedulers,
 ):
-    _manual_scheduler(monkeypatch)
+    scheduler = manual_schedulers()
     now = [100.0]
     lost = threading.Event()
     owner = HomeLeaseAuthority(
@@ -193,6 +212,8 @@ def test_default_expired_owner_renews_without_ttl_exit(
         monotonic_clock=lambda: now[0],
         identity_reader=lambda _pid: "identity",
         ownership_lost=lost.set,
+        actor_host=actor_host,
+        scheduler=scheduler,
     )
     claim = owner._core._claim_record
 
@@ -212,7 +233,7 @@ def test_default_expired_owner_renews_without_ttl_exit(
         version = owner.status()["version"]
         # Default-off also ignores a stale expiry already delivered to the
         # actor, not merely timers it elects not to schedule.
-        owner._runtime.tell(owner._handle, LeaseExpired(owner.generation, version))
+        owner._cell.tell(LeaseExpired(owner.generation, version))
         owner._scheduler._entries["renew"][1].fire()
         _wait_for(lambda: lost.is_set() or owner.status()["version"] > version)
         assert not lost.is_set()
@@ -224,12 +245,16 @@ def test_default_expired_owner_renews_without_ttl_exit(
         assert owner.close(2)
 
 
-def test_default_renewal_write_failure_still_loses_ownership(tmp_path, monkeypatch):
-    _manual_scheduler(monkeypatch)
+def test_default_renewal_write_failure_still_loses_ownership(
+    tmp_path, monkeypatch, actor_host, manual_schedulers,
+):
+    scheduler = manual_schedulers()
     lost = threading.Event()
     owner = HomeLeaseAuthority(
         tmp_path, keepalive_duration=1,
         identity_reader=lambda _pid: "identity", ownership_lost=lost.set,
+        actor_host=actor_host,
+        scheduler=scheduler,
     )
     try:
         owner.claim()
@@ -250,14 +275,18 @@ def test_expiry_policy_rejects_a_non_boolean_before_starting(tmp_path):
         HomeLeaseAuthority(tmp_path, self_fence_on_expiry="false")
 
 
-def test_opt_in_late_claim_still_fences_at_original_deadline(tmp_path, monkeypatch):
-    _manual_scheduler(monkeypatch)
+def test_opt_in_late_claim_still_fences_at_original_deadline(
+    tmp_path, monkeypatch, actor_host, manual_schedulers,
+):
+    scheduler = manual_schedulers()
     now = [100.0]
     lost = threading.Event()
     owner = HomeLeaseAuthority(
         tmp_path, keepalive_duration=1, self_fence_on_expiry=True,
         monotonic_clock=lambda: now[0],
         identity_reader=lambda _pid: "identity", ownership_lost=lost.set,
+        actor_host=actor_host,
+        scheduler=scheduler,
     )
     claim = owner._core._claim_record
 
@@ -275,3 +304,25 @@ def test_opt_in_late_claim_still_fences_at_original_deadline(tmp_path, monkeypat
         assert not owner.status()["claimed"]
     finally:
         assert owner.close(2)
+
+
+def test_close_after_the_host_stopped_the_actor_still_releases(tmp_path):
+    """The final close step is idempotent even when its host shut down first."""
+
+    from hyprial.kernel import create_actor_host
+
+    scheduler = GenerationScheduler(timer_factory=_ManualTimer)
+    host = create_actor_host()
+    actor = HomeLeaseAuthority(
+        tmp_path,
+        keepalive_duration=1,
+        actor_host=host,
+        scheduler=scheduler,
+    )
+    try:
+        actor.claim()
+        assert host.shutdown()
+        assert actor.close(2.0)
+        assert actor.close(2.0)
+    finally:
+        assert scheduler.shutdown(5.0)

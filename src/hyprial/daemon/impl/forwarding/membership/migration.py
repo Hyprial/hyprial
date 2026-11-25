@@ -49,7 +49,7 @@ from hyprial.identity import (
     protected_directory_doc_id, read_device_record,
 )
 
-from ..policy import ForwardingSidecarError
+from ..policy import ForwardingSidecarError, is_managed_private_inbound_listener
 from .hardening.authority import select_authority
 from .hardening.rows import dedupe_rows, parse_updated_at, validate_row
 from .hardening.spaces import SKIP_NO_ROWS, SKIP_SPACE_MISSING, log_skip, space_skip_reason
@@ -60,8 +60,8 @@ from .settings import durable_json_write as atomic_json_write, pin_authority, ta
 def start_before_transport(app: Any, *, listen: tuple[str, ...], connect: tuple[str, ...]) -> None:
     if connect:
         raise ValueError('Managed networking accepts sidecar slots only, not explicit Zenoh connect endpoints.')
-    if any(not endpoint.startswith('unixsock-stream/') for endpoint in listen):
-        raise ValueError('sidecar-managed networking requires private Unix listeners')
+    if any(not is_managed_private_inbound_listener(endpoint) for endpoint in listen):
+        raise ValueError('sidecar-managed networking requires a private Unix listener or a Windows loopback TCP listener')
     app.zenoh_listen = listen
     # Decide everything the import needs from local files first. A refusal
     # (MIGRATION_AUTHORITY_MISSING) then costs no sidecar launch, no control

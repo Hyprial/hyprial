@@ -1,10 +1,10 @@
 from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from hyprial.kernel import PortCommandRejected
 from hyprial.daemon.impl.inbox.service.synchronization import _observe_committed_changes
-from hyprial.daemon.impl.inbox.service.link_ledger import _retention_only_update
 from hyprial.daemon.impl.inbox.contracts.api  import (
     InboxMessage,
     ReceiveResult,
@@ -17,6 +17,7 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     AdmittedPendingCommand,
     BatchSnapshotCommand,
     BatchSnapshotCompleted,
+    ClaimOriginCommand,
     CloseInboxCommand,
     DismissSystemNoticeCommand,
     DrainSystemNoticesCommand,
@@ -25,9 +26,11 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     FailureMutationCompleted,
     HarnessFailureSettled,
     FetchPendingCommand,
+    GrantBodyReleaseCommand,
     InboxClosed,
     InboxEventSink,
     InboxPruneCompleted,
+    OriginClaimCompleted,
     OutboxPruneCompleted,
     PruneOutboxCommand,
     PruneInboxCommand,
@@ -36,6 +39,7 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     ReceiveProgressCommand,
     ReceiveSystemNoticeCommand,
     RefreshHoldCommand,
+    ReleaseOriginClaimsCommand,
     RetireOutboxReceiptCommand,
     RetryCustodyCommand,
     RetryDueCommand,
@@ -43,8 +47,6 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     SubmitMessageCommand,
     SubmitProgressCommand,
     WakeOutboxRecipientCommand,
-    LinkLedgerUpdated,
-    UpdateLinkLedgerCommand,
 )
 from hyprial.daemon.impl.inbox.tracking.progress  import PROGRESS_INTENT
 from hyprial.daemon.impl.inbox.service.policy  import (
@@ -62,6 +64,7 @@ from ..events import (
     ReassociateIoCompletion,
 )
 from ..internal import (
+    OriginCustody,
     _ActorOwnedInboxService,
     _CompletionReceipts,
     _DurableCompletionHandoffs,
@@ -87,12 +90,16 @@ class DeliveryCustodyLifecycleMixin:
         max_custody_bytes: int = 1 << 30,
         node_id: str = "local",
         service_options: dict[str, object] | None = None,
+        origin_claims: OriginCustody | None = None,
     ) -> None:
         self._events = event_sink
         self._projection = projection
         self._io_worker = io_worker
         self._handoffs = handoffs
         self._receipts = receipts
+        self._origin_claims = (
+            origin_claims if origin_claims is not None else OriginCustody()
+        )
         self._generation = generation
         self._version = projection.version
         self._pending_io: dict[str, _PendingDispatch] = {}
@@ -154,6 +161,8 @@ class DeliveryCustodyLifecycleMixin:
                 )
             else:
                 result = self._service.receive(command.message, now_ms=command.now_ms)
+                if result.accepted:
+                    self._origin_claims.forget_origin(command.message.message_id)
                 self._stage_pending_link_notices()
             version = self._committed_version()
             self._publish(
@@ -167,6 +176,8 @@ class DeliveryCustodyLifecycleMixin:
             return
         if isinstance(command, AcknowledgeMessageCommand):
             result = self._service.ack(command.recipient, command.message_id)
+            if result.acknowledged:
+                self._origin_claims.forget_origin(command.message_id)
             version = self._committed_version()
             self._publish(
                 AcknowledgeCompleted(
@@ -201,6 +212,8 @@ class DeliveryCustodyLifecycleMixin:
                 return
             with self._publishing_commits():
                 items, notices = self._service._prune_inbox_state(command.now_ms)
+                for item in items:
+                    self._origin_claims.forget_origin(item.message_id)
                 self._stage_expired_sender_notices(command.correlation_id, notices)
             self._publish(
                 InboxPruneCompleted(
@@ -232,6 +245,7 @@ class DeliveryCustodyLifecycleMixin:
             except KeyError:
                 self._publish_missing(command.correlation_id, command.message_id)
                 return
+            self._origin_claims.forget_origin(command.message_id)
             version = self._committed_version()
             self._publish(
                 FailureMutationCompleted(
@@ -256,6 +270,8 @@ class DeliveryCustodyLifecycleMixin:
             except KeyError:
                 self._publish_missing(command.correlation_id, command.message_id)
                 return
+            if result.terminal:
+                self._origin_claims.forget_origin(command.message_id)
             version = self._committed_version()
             self._publish(
                 HarnessFailureSettled(
@@ -331,6 +347,23 @@ class DeliveryCustodyLifecycleMixin:
             )
             return
         if isinstance(command, BatchSnapshotCommand):
+            captured_seq: list[int | None] = [None]
+            claim_filter = None
+            if command.origin_claim is not None:
+                claimant = command.origin_claim
+
+                def _batch_claim_filter(
+                    messages: tuple[InboxMessage, ...],
+                ) -> tuple[InboxMessage, ...]:
+                    claimed = self._origin_claims.claim_origins(
+                        tuple(m.message_id for m in messages),
+                        claimant,
+                    )
+                    captured_seq[0] = claimed.claim_seq
+                    allowed = frozenset(claimed.claimed_ids)
+                    return tuple(m for m in messages if m.message_id in allowed)
+
+                claim_filter = _batch_claim_filter
             with self._publishing_commits():
                 selection = self._service.batch_snapshot(
                     command.recipient,
@@ -342,7 +375,10 @@ class DeliveryCustodyLifecycleMixin:
                     include_notices=command.include_notices,
                     only=command.only,
                     mark_fetched=command.mark_fetched,
+                    claim_filter=claim_filter,
                 )
+            if captured_seq[0] is not None:
+                selection = replace(selection, origin_claim_seq=captured_seq[0])
             self._publish(
                 BatchSnapshotCompleted(
                     command.correlation_id,
@@ -376,6 +412,22 @@ class DeliveryCustodyLifecycleMixin:
             )
             return
         if isinstance(command, AdmittedDispatchableCommand):
+            dispatch_filter = None
+            if command.origin_claim is not None:
+                claimant = command.origin_claim
+
+                def _dispatch_claim_filter(
+                    messages: tuple[InboxMessage, ...],
+                ) -> tuple[InboxMessage, ...]:
+                    allowed = frozenset(
+                        self._origin_claims.filter_unheld_origins(
+                            tuple(m.message_id for m in messages),
+                            claimant,
+                        )
+                    )
+                    return tuple(m for m in messages if m.message_id in allowed)
+
+                dispatch_filter = _dispatch_claim_filter
             self._publish_messages(
                 command.correlation_id,
                 "admitted_dispatchable",
@@ -383,10 +435,62 @@ class DeliveryCustodyLifecycleMixin:
                     command.recipient,
                     now_ms=command.now_ms,
                     exclude=frozenset(command.exclude),
+                    claim_filter=dispatch_filter,
                 ),
             )
             return
+        if isinstance(command, ClaimOriginCommand):
+            now = self._service._now_ms() if command.now_ms is None else command.now_ms
+            wanted = frozenset(command.message_ids)
+            dispatchable = tuple(
+                m
+                for m in self._service.dispatchable_messages(
+                    command.recipient, now_ms=now
+                )
+                if m.message_id in wanted
+            )
+            admitted = self._service._admit_dispatch(dispatchable, now, frozenset())
+            claim_result = self._origin_claims.claim_origins(
+                tuple(m.message_id for m in admitted),
+                command.claimant,
+            )
+            self._publish(
+                OriginClaimCompleted(
+                    correlation_id=command.correlation_id,
+                    generation=self._generation,
+                    version=self._version,
+                    result=claim_result,
+                )
+            )
+            return
+        if isinstance(command, ReleaseOriginClaimsCommand):
+            released = self._origin_claims.release_headless_claims(
+                command.message_ids,
+                owner_actor=command.owner_actor,
+                claim_seq=command.claim_seq,
+            )
+            self._publish_bool(
+                command.correlation_id,
+                "release_origin_claims",
+                released,
+            )
+            return
         if isinstance(command, FetchPendingCommand):
+            fetch_filter = None
+            if command.origin_claim is not None:
+                claimant = command.origin_claim
+
+                def _fetch_claim_filter(
+                    messages: tuple[InboxMessage, ...],
+                ) -> tuple[InboxMessage, ...]:
+                    claimed = self._origin_claims.claim_origins(
+                        tuple(m.message_id for m in messages),
+                        claimant,
+                    )
+                    allowed = frozenset(claimed.claimed_ids)
+                    return tuple(m for m in messages if m.message_id in allowed)
+
+                fetch_filter = _fetch_claim_filter
             with self._publishing_commits():
                 messages = self._service.fetch_pending_admitted(
                     command.recipient,
@@ -397,6 +501,7 @@ class DeliveryCustodyLifecycleMixin:
                         else None
                     ),
                     completed_turn=command.completed_turn,
+                    claim_filter=fetch_filter,
                 )
             self._publish_messages(
                 command.correlation_id,
@@ -466,21 +571,13 @@ class DeliveryCustodyLifecycleMixin:
                 else CompletionReceiptState.RETRY,
             )
             return
-        if isinstance(command, UpdateLinkLedgerCommand):
-            if _retention_only_update(command):
-                with self._publishing_commits():
-                    result = self._service.update_link_ledger(command)
-            else:
-                result = self._service.update_link_ledger(command)
-                self._committed_version()
-            self._publish(
-                LinkLedgerUpdated(
-                    correlation_id=command.correlation_id,
-                    generation=self._generation,
-                    version=self._version,
-                    result=result,
-                )
+        if isinstance(command, GrantBodyReleaseCommand):
+            granted = self._service.grant_body_release(
+                command.grant,
+                retention_ms=command.retention_ms,
+                now_ms=command.now_ms,
             )
+            self._publish_bool(command.correlation_id, "grant_body_release", granted)
             return
         if isinstance(command, CloseInboxCommand):
             if self._pending_io:

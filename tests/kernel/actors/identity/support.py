@@ -20,7 +20,7 @@ from hyprial.daemon.impl.inbox import (
     MemoryDeliveryTransport,
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate, permissive_admission_slot
+from tests.support.runtime.environment import UNIT_USER_ID
 
 
 def seed_legacy_row(inbox: InboxService, message: InboxMessage) -> None:
@@ -120,7 +120,7 @@ def application(
         state_dir=state_dir,
         socket_path=state_dir / "daemon.sock",
         node_id="node-1",
-        owner="op",
+        owner="op", user_id=UNIT_USER_ID,
     **_deep_module_daemon_dependencies())
     transport = _LoopbackTransport() if loopback else MemoryDeliveryTransport()
     # Explicit permissive premise: these identity tests read agent-to-agent
@@ -128,9 +128,7 @@ def application(
     app._inbox = InboxService(
         tmp_path / "inbox.sqlite3",
         transport,
-        link_admission=permissive_admission_slot(),
     )
-    app.link_admission.bind(PermissiveLinkGate())
     if isinstance(transport, _LoopbackTransport):
         transport.service = app._inbox
     app._harnesses = _Harnesses()  # type: ignore[assignment]

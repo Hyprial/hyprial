@@ -13,6 +13,7 @@ from hyprial.identity import (
     parse_principal,
 )
 from hyprial.kernel import parse_agent_uri, parse_user_uri
+from hyprial.daemon.impl.pac.storage.agent_uris import AgentReader, node_owner_matches
 from hyprial.daemon.impl.pac.graphs.flags import write_flag_in_transaction
 from hyprial.daemon.impl.pac.storage.journal import append_event
 from hyprial.daemon.impl.pac.workflows.expansion.storage import (
@@ -55,6 +56,7 @@ def accept_prepared_expansion_in_transaction(
     at: int,
     machine: str,
     local_owner: str,
+    agent_reader: AgentReader | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...], dict[str, Any]]:
     """Publish every authoritative expansion fact in the caller transaction."""
 
@@ -80,6 +82,8 @@ def accept_prepared_expansion_in_transaction(
     graph = store.graph(context.parent_graph_id)
     if graph is None or graph["closed_at"] is not None:
         raise PacError("PAC_GRAPH_CLOSED", "the parent graph is closed")
+    if agent_reader is not None and not node_owner_matches(store, store.node(context.parent_graph_id, context.planner_node_id), actor, agent_reader):
+        raise PacError("WORKFLOW_NOT_OWNER", "only the current planner owner may expand")
     planner = db.execute(
         "SELECT * FROM workflow_nodes WHERE graph_id=? AND node_id=?",
         (context.parent_graph_id, context.planner_node_id),
@@ -319,6 +323,7 @@ def complete_prepared_expansion(
             at=int(reactor._clock()),
             machine=machine,
             local_owner=local_owner,
+            agent_reader=reactor._agent_reader,
         )
         db.commit()
     except BaseException:

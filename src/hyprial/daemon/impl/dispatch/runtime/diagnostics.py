@@ -6,7 +6,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,15 +39,16 @@ class _Reply:
 class DispatchDiagnostics:
     """One mailbox serializes opener decisions and diagnostic counters."""
 
-    def __init__(self, *, capacity: int = 128, runtime: ActorRuntime | None = None):
-        self._runtime = runtime or ActorRuntime()
+    def __init__(self, *, capacity: int = 128, actor_host=None):
+        if actor_host is None:
+            raise ValueError("actor_host is required")
         self._guard = threading.Lock()
         self._pending: dict[str, _Reply] = {}
         self._conversations: dict[str, str] = {}
         self._without_pac = self._conversation = self._overloaded = 0
         self._closed = False
         self._capacity = capacity
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="dispatch-diagnostics",
                 handler_factory=lambda: self._receive,
@@ -73,7 +74,7 @@ class DispatchDiagnostics:
                 self._overloaded += 1
                 raise TimeoutError("dispatch diagnostic authority overloaded")
             self._pending[command.operation_id] = reply
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._pending.pop(command.operation_id)
                 self._overloaded += 1
@@ -114,4 +115,4 @@ class DispatchDiagnostics:
     def close(self, timeout: float = 5.0) -> bool:
         with self._guard:
             self._closed = True
-        return self._runtime.stop(self._handle, timeout)
+        return self._cell.drain(timeout).complete

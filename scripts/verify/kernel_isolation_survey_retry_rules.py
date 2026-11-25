@@ -2,7 +2,6 @@
 
 RELATED_CLASSIFICATIONS = {
     ("src/hyprial/biz/impl/usage.py", "_run"): "usage collection backoff",
-    ("src/hyprial/daemon/impl/application/messaging/identity_binding.py", "_retry_identity_binding_publication"): "identity binding publication retry",
     ("src/hyprial/daemon/impl/harnesses/streaming/process.py", "_backoff_delay"): "streaming harness reconnect",
     ("src/hyprial/daemon/impl/inbox/actor/custody/retry.py", "_claim_retry"): "durable inbox delivery retry",
     ("src/hyprial/daemon/impl/inbox/actor/custody/retry.py", "_claim_custody_retry"): "durable inbox delivery retry",
@@ -26,8 +25,8 @@ RELATED_CLASSIFICATIONS = {
     ("src/hyprial/identity/impl/provider_auth/actor/_authority.py", "_schedule_retry"): "provider-auth helper retry",
     ("src/hyprial/kernel/impl/actor_runtime/guardian.py", "_restart_attempt_failed"): "actor supervision",
     ("src/hyprial/kernel/impl/actor_runtime/guardian.py", "_restart"): "actor supervision",
-    ("src/hyprial/kernel/impl/platform/windows_pipe.py", "_complete_response_write"): "Windows IPC response-write settlement",
-    ("src/hyprial/kernel/impl/platform/windows_pipe.py", "_sendall"): "Windows IPC response-write settlement",
+    ("src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py", "_complete_response_write"): "Windows IPC response-write settlement",
+    ("src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py", "_sendall"): "Windows IPC response-write settlement",
     ("src/hyprial/daemon/impl/transport/zenoh/transport.py", "_register"): "Zenoh native call reopen",
     ("src/hyprial/daemon/impl/pac/graphs/reactor.py", "_deliver"): "PAC notification durable send replay",
     ("src/hyprial/daemon/impl/pac/graphs/reactor.py", "resend_undelivered"): "PAC notification durable send replay",
@@ -37,10 +36,6 @@ RELATED_CLASSIFICATIONS = {
 # cannot prove the cross-call control flow.  They are evidence limits, not
 # dismissals.  B1's runtime RetryPolicy gate is the completeness control.
 LOCATION_LIMIT_CLASSES = {
-    ("src/hyprial/daemon/impl/links/service/core.py", "_loop"): (
-        "periodic-reentry",
-        "tick retains failed link/apply or mirror work for a later service pass",
-    ),
     ("src/hyprial/daemon/impl/org/network/service.py", "process_leave_requests"): (
         "periodic-reentry",
         "a failed member removal remains a pending leave request for the next pass",
@@ -74,36 +69,7 @@ LIMIT_CLASS_DETAILS = (
 
 # Known instances that demonstrate a static-analysis blind spot.  ``needle``
 # is resolved to a baseline-bound file:line by the evidence generator.
-LIMIT_CLASS_INSTANCES = (
-    (
-        "periodic-reentry",
-        "src/hyprial/daemon/impl/links/service/core.py",
-        "_loop",
-        "self.tick()",
-        "LinkService._loop periodically calls tick after earlier passes return or fail",
-    ),
-    (
-        "periodic-reentry",
-        "src/hyprial/daemon/impl/links/service/core.py",
-        "tick",
-        "except Exception as error:  # noqa: BLE001 - retry the whole pass (B15)",
-        "LinkService.tick returns after apply failure; LinkService._loop later calls tick again",
-    ),
-    (
-        "periodic-reentry",
-        "src/hyprial/daemon/impl/links/store.py",
-        "_write_everywhere",
-        "except Exception:  # noqa: BLE001 - retry this mirror next pass",
-        "LinkStore._write_everywhere retains a failed mirror for the next flush pass",
-    ),
-    (
-        "periodic-reentry",
-        "src/hyprial/daemon/impl/links/store.py",
-        "_resolve_stale",
-        "except Exception:  # noqa: BLE001 - retry this mirror next pass",
-        "LinkStore._resolve_stale retains a failed rewrite for the next flush pass",
-    ),
-)
+LIMIT_CLASS_INSTANCES = ()
 
 LOCATION_DISMISSALS = {
     ("src/hyprial/daemon/impl/adapters/lark/inbound/reconcile.py", "reconcile_recent"): "bounded scan classifies distinct dead-letter rows; it does not replay a failed row in the loop",
@@ -111,7 +77,6 @@ LOCATION_DISMISSALS = {
     ("src/hyprial/daemon/impl/adapters/lark/worker/process.py", "_read_health_stream"): "stream loop parses new frames; malformed frames are discarded, not replayed",
     ("src/hyprial/daemon/impl/adapters/lark/worker/sweep.py", "_run"): "a coalesced pending reconnect requests one fresh sweep after success; failures terminate",
     ("src/hyprial/daemon/impl/harnesses/actor/behaviors/process_events.py", "_drive_ensure_failure_fence"): "loops visit distinct start attempts and timers; cancellation is not retried after failure",
-    ("src/hyprial/daemon/impl/harnesses/dsh_tui/carrier.py", "watch_tui_process"): "periodic process-state observation; run_sync does not repeat failed work",
     ("src/hyprial/daemon/impl/harnesses/turn_delivery/channel/worker_relay.py", "_accept"): "accept loop starts one handler for each distinct connection; failed accepts terminate or time out",
     ("src/hyprial/daemon/impl/inbox/service/core.py", "__init__"): "constructor validates distinct policy entries; no operation is replayed",
     ("src/hyprial/daemon/impl/lifecycle/maintenance_watchdog.py", "watch"): "periodic watchdog samples are distinct commands, not replay of a failed sample",

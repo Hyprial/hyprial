@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, type RefObject } from 'react';
 import { Button, Field } from '../primitives';
+import './forms.css';
 
 export interface SecretFieldProps {
   readonly id: string;
@@ -12,6 +13,7 @@ export interface SecretFieldProps {
   readonly required?: boolean;
   readonly showLabel?: string;
   readonly hideLabel?: string;
+  readonly inputRef?: RefObject<HTMLInputElement | null>;
   /** Opt-in compact control; stacked remains the default for existing forms. */
   readonly layout?: 'stacked' | 'inline';
 }
@@ -34,6 +36,7 @@ export function SecretField({
   required = false,
   showLabel = '显示内容',
   hideLabel = '隐藏内容',
+  inputRef,
   layout = 'stacked',
 }: SecretFieldProps) {
   const [revealed, setRevealed] = useState(false);
@@ -43,6 +46,7 @@ export function SecretField({
       <label className="ui-field__label" htmlFor={id}>{label}{required && <span className="ui-field__required" aria-hidden="true"> *</span>}</label>
       <div className="secret-field-inline">
         <input id={id} type={revealed ? 'text' : 'password'} value={value} autoComplete={autoComplete}
+          ref={inputRef}
           disabled={disabled} required={required} aria-describedby={hint ? `${id}-hint` : undefined} spellCheck={false}
           onChange={(event) => onChange(event.target.value)} />
         <button type="button" className="secret-field-inline__reveal" disabled={disabled}
@@ -66,6 +70,7 @@ export function SecretField({
           type={revealed ? 'text' : 'password'}
           value={value}
           autoComplete={autoComplete}
+          ref={inputRef}
           disabled={disabled}
           spellCheck={false}
           onChange={(event) => onChange(event.target.value)}

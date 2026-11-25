@@ -18,7 +18,6 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from hyprial.daemon.impl.transfer.archive.bundle import (
     BUNDLE_SCHEMA_VERSION,
@@ -31,7 +30,6 @@ from hyprial.daemon.impl.transfer.archive.bundle import (
     export_bundle,
     load_manifest,
     validate_bundle)
-from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 CREATED_AT = "2026-09-30T22:40:00+08:00"
@@ -161,52 +159,6 @@ def test_assert_bundle_identity_refuses_a_wrong_owner_and_actor(
         assert_bundle_identity(manifest, expect_owner="other@example.com")
     with pytest.raises(BundleActorMismatch):
         assert_bundle_identity(manifest, expect_actor="other")
-
-
-def test_validate_cli_refuses_a_wrong_owner(tmp_path: Path) -> None:
-    home = _home(tmp_path)
-    bundle_dir = tmp_path / "bundle"
-    _export(home, bundle_dir)
-    runner = CliRunner()
-
-    ok = runner.invoke(
-        _cli_root_app,
-        [
-            "agent", "transfer", "bundle-validate",
-            str(bundle_dir),
-            "--expect-owner",
-            "owner@example.com",
-            "--json",
-        ],
-    )
-    assert ok.exit_code == 0, ok.stdout
-    assert json.loads(ok.stdout)["ok"] is True
-
-    wrong = runner.invoke(
-        _cli_root_app,
-        [
-            "agent", "transfer", "bundle-validate",
-            str(bundle_dir),
-            "--expect-owner",
-            "other@example.com",
-            "--json",
-        ],
-    )
-    assert wrong.exit_code != 0
-    assert json.loads(wrong.stdout)["code"] == "bundle_owner_mismatch"
-
-    wrong_actor = runner.invoke(
-        _cli_root_app,
-        [
-            "agent", "transfer", "bundle-validate",
-            str(bundle_dir),
-            "--expect-actor",
-            "other",
-            "--json",
-        ],
-    )
-    assert wrong_actor.exit_code != 0
-    assert json.loads(wrong_actor.stdout)["code"] == "bundle_actor_mismatch"
 
 
 def test_historical_unsealed_schema_one_bundle_is_explicitly_refused(tmp_path):

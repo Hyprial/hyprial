@@ -1,16 +1,20 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Replaces raw os.kill(pid, SIGTERM) in _terminate_interactive_carrier with
+#   hyprial.kernel.terminate_fenced_process so Windows verifies birth identity
+#   on the open process handle before TerminateProcess instead of calling
+#   unfenced os.kill.
 """Agent destroy/stop operations with destroy reservations and runtime stop."""
 
 from __future__ import annotations
 
-from __future__ import annotations
 import hashlib
 import os
-import signal
 import time
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+from collections.abc import Callable
 from uuid import uuid4
-from hyprial.daemon.impl.network.routing.session_route_coordinator  import (
+from hyprial.daemon.impl.network.routing.session_route_coordinator import (
     SessionRefRetirement,
     SessionRouteKind,
 )
@@ -21,9 +25,13 @@ from hyprial.identity import (
     AgentAlreadyRunning,
     AgentHomeError,
 )
-from hyprial.kernel import ipc_errors
-from hyprial.kernel import DaemonRequestError
-from hyprial.kernel import PortAdmission
+from hyprial.kernel import (
+    DaemonRequestError,
+    PortAdmission,
+    canonical_agent_uri,
+    ipc_errors,
+    terminate_fenced_process,
+)
 from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleOperation,
 )
@@ -36,6 +44,10 @@ if TYPE_CHECKING:
 from hyprial.daemon.impl.application.actors.agents_admin.registry_ops import (
     _AGENT_OPERATION_NAMESPACE,
 )
+from hyprial.daemon.impl.composition.cells import (
+    agent_adapter_bindings,
+    agent_adapter_bindings_or_unknown,
+)
 from hyprial.daemon.impl.application.actors.sessions.registry import (
     _session_harness,
 )
@@ -46,6 +58,58 @@ from hyprial.daemon.impl.ipc.params import (
 
 class _AgentDestroyMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
+
+    def _cleanup_destroyed_agent_home(self, requested: str) -> JsonObject:
+        """Resume a previously revoked home internally; never a public name execute."""
+
+        from hyprial.daemon.impl.composition import DomainCommandError
+
+        from hyprial.identity import (
+            AgentMutationCompleted,
+            CleanupRevokedAgentHomeCommand,
+        )
+
+        generation = self._agent_session_domains.agent.generation
+        cleaned = self._agent_session_domains.call_agent(
+            CleanupRevokedAgentHomeCommand(
+                f"{_AGENT_OPERATION_NAMESPACE}:cleanup-home:{uuid4().hex}", requested
+            ),
+            AgentMutationCompleted,
+        )
+        if (
+            cleaned.generation != generation
+            or cleaned.operation != "cleanup-home"
+        ):
+            raise DomainCommandError(
+                "STALE_AGENT_HOME_CLEANUP",
+                "agent home cleanup completion fence mismatch",
+            )
+        if not cleaned.changed:
+            self.agents.require(requested)
+            raise AssertionError("require() returned for a missing agent")
+        cleaned_actor = self.agents.actor_key(requested)
+        actor = self._agent_address(cleaned_actor)
+        self._log(
+            "warn",
+            "agents",
+            "agent.destroyed",
+            actor=actor,
+            stopped=[],
+            destroyedMessages=0,
+            unboundAdapters=[],
+            cleanupResumed=True,
+        )
+        return {
+            "ok": True,
+            "destroyed": False,
+            "cleanupResumed": True,
+            "actor": actor,
+            "agent": cleaned_actor,
+            "stopped": [],
+            "destroyedMessages": 0,
+            "unboundAdapters": [],
+            "irreversible": True,
+        }
 
     def _reserve_agent_destroy(self, actor: str) -> Any:
         from hyprial.identity import (
@@ -98,7 +162,11 @@ class _AgentDestroyMixin:
             return
         raise DaemonRequestError(
             AgentAlreadyRunning.code,
-            str(AgentAlreadyRunning(actor, existing, harness)),
+            str(
+                AgentAlreadyRunning(
+                    actor, existing, harness, name=self._agent_name_for(actor)
+                )
+            ),
             {
                 "actor": actor,
                 "existing": existing.to_json(),
@@ -200,10 +268,7 @@ class _AgentDestroyMixin:
                 "interactive carrier state is unknown; cannot prove it exited",
                 {"actor": interactive.actor, "pid": pid, "state": status.value},
             )
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
+        terminate_fenced_process(pid, birth_marker=identity)
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             if _owner_process_status(pid, identity).value in {
@@ -218,6 +283,9 @@ class _AgentDestroyMixin:
             {"actor": interactive.actor, "pid": pid},
         )
 
+    def _agent_adapter_bindings(self, agent: Agent) -> tuple[str, ...]:
+        return agent_adapter_bindings(self, agent)
+
     def _destroy_agent(
         self,
         name: str,
@@ -225,12 +293,18 @@ class _AgentDestroyMixin:
         expected_entity_token: str | None = None,
         require_unpinned: bool = False,
         require_offline: bool = False,
+        before_effect: Callable[[Agent], None] | None = None,
     ) -> JsonObject:
         """Delete an agent outright: record, connectors, routes and messages.
 
         Irreversible by decision A6 -- no tombstone, no revival path. The cost
         is recorded rather than hidden: messages already addressed to this
         agent lose a resolvable recipient.
+
+        A GC selection is rechecked after the reservation: a same-name
+        successor incarnation answers ``agent-incarnation-mismatch``; an
+        incarnation destroyed meanwhile raises ``AGENT_NOT_FOUND``, and the
+        failure path releases the reservation (integrator decision D15).
         """
 
         agent = self.agents.require(name)
@@ -255,8 +329,12 @@ class _AgentDestroyMixin:
             reason = None
             if current.entity_token != agent.entity_token:
                 reason = "agent-incarnation-mismatch"
-            elif require_unpinned and current.pinned_adapters:
-                reason = "pinned"
+            elif require_unpinned and (
+                bindings := agent_adapter_bindings_or_unknown(self, current)
+            ) != ():
+                reason = (
+                    "adapter-bindings-unknown" if bindings is None else "adapter-bound"
+                )
             elif require_offline:
                 from hyprial.daemon.impl.pac.actors.coordinator import worker_in_use
                 from hyprial.daemon.impl.pac.actors.daemon  import DaemonActorRuntime
@@ -271,16 +349,15 @@ class _AgentDestroyMixin:
                 )
                 self._release_agent_destroy_reservation(reservation.reservation_token)
                 return {"ok": True, "destroyed": False, "reason": reason}
+            if before_effect is not None:
+                before_effect(current)
             workspace = self._read_workspace_summary_for_destroy(name)
             stopped = self._stop_agent_runtime(actor, keep=None)
             self._drop_persona_route(actor)
             self._release_agent_binding(actor)
             removed_routines = self._remove_agent_routines(agent)
             destroyed_messages = self._destroy_agent_messages(agent)
-            # Snapshot the pins for the report; the deletion itself needs no pin
-            # code at all -- ON DELETE CASCADE erases them in the same
-            # transaction that removes the agent row.
-            unpinned = sorted(agent.pinned_adapters)
+            unbound = sorted(self._agent_adapter_bindings(current))
             removed = self.agents.destroy(
                 name, expected_entity_token=agent.entity_token
             )
@@ -344,7 +421,7 @@ class _AgentDestroyMixin:
             actor=actor,
             stopped=stopped,
             destroyedMessages=destroyed_messages,
-            unpinnedAdapters=unpinned,
+            unboundAdapters=unbound,
             removedRoutines=removed_routines,
         )
         return {
@@ -354,7 +431,7 @@ class _AgentDestroyMixin:
             "agent": name,
             "stopped": stopped,
             "destroyedMessages": destroyed_messages,
-            "unpinnedAdapters": unpinned,
+            "unboundAdapters": unbound,
             "removedRoutines": removed_routines,
             "irreversible": True,
             "workspace": workspace_payload,
@@ -471,12 +548,21 @@ class _AgentDestroyMixin:
         into its schema. Draining pending messages leaves nothing routable to a
         name that no longer exists; row-level erasure of consumed history needs
         a purge entry point on the inbox service that does not exist yet.
+
+        Rows queued before the id-form flip under its actor-name URI are
+        drained too: no agent reads that key any more, and an agent created
+        later with the same name must not find them.
         """
 
         if self._inbox is None:
             return 0
         discarded = 0
-        for spelling in dict.fromkeys((agent.uri, agent.actor)):
+        spellings = (
+            agent.uri,
+            canonical_agent_uri(agent.owner, agent.machine, agent.actor),
+            agent.actor,
+        )
+        for spelling in dict.fromkeys(spellings):
             for message in self._inbox.pending_messages(spelling):
                 if self._inbox.ack(spelling, message.message_id).acknowledged:
                     discarded += 1

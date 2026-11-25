@@ -115,21 +115,25 @@ def _isolate(monkeypatch: Any, tmp_path: Path) -> None:
     monkeypatch.setattr(_cli_get_services(), "process_cpu_seconds", lambda _pid: None)
 
 
-def test_onboarding_dispatch_does_not_initialize(monkeypatch: Any) -> None:
+def test_removed_onboarding_group_does_not_initialize(monkeypatch: Any) -> None:
     from hyprial.shell.impl.cli.commands.init import init as init_module
 
     def unexpected_init() -> None:
-        raise AssertionError("onboarding must not run the parent initialization")
+        raise AssertionError("a removed onboarding path must not run the parent initialization")
 
     monkeypatch.setattr(init_module, "get_services", unexpected_init)
-    for argv, expected_exit in [
-        (["init", "onboarding"], 2),
-        (["init", "onboarding", "--help"], 0),
-        (["init", "onboarding", "plan", "--help"], 0),
-    ]:
+    for argv in (
+        ["init", "onboarding"],
+        ["init", "onboarding", "plan", "--json"],
+        ["init", "onboarding", "apply", "--auto", "--json"],
+        ["init", "onboarding", "harnesses", "--json"],
+        ["init", "onboarding", "harness-select", "pi", "--json"],
+        ["init", "onboarding", "harness-install", "pi", "--json"],
+    ):
         result = CliRunner().invoke(_cli_root_app, argv)
-        assert result.exit_code == expected_exit, result.exception
-        assert "Usage:" in result.output
+        assert result.exit_code == 2, result.exception
+        assert result.stdout == ""
+        assert "No such command 'onboarding'" in result.output
 
 
 def test_init_installs_the_supervisor_service_by_default(
@@ -230,6 +234,30 @@ def test_init_creates_org_slot_and_warns_when_context_is_absent(
     assert warnings[0]["message"] == "org-context absent"
     assert (tmp_path / "home" / "org" / "pending").is_dir()
     assert calls == ["ping", "org.fetch"]
+
+
+def test_init_against_a_running_bootstrap_daemon_succeeds_but_warns_it_has_no_account(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    _isolate(monkeypatch, tmp_path)
+
+    def request(method: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        if method == "ping":
+            return {"running": True, "pid": 4242, "epoch": "e", "phase": "bootstrap", "owner": None}
+        raise _cli_get_services().CliError("ACCOUNT_REQUIRED", "bootstrap daemon")
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", request)
+
+    result = CliRunner().invoke(_cli_root_app, ["init", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True and payload["alreadyRunning"] is True
+    assert payload["phase"] == "bootstrap"
+    assert payload["nextSteps"] == ["hyprial login"]
+    by_code = {item["code"]: item for item in payload["warnings"]}
+    assert "hyprial login" in by_code["DAEMON_BOOTSTRAP_NO_ACCOUNT"]["message"]
 
 
 def test_init_reports_neighbor_candidates_without_adopting(

@@ -13,9 +13,10 @@ import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from pathlib import Path
-from typing import get_args
-from hyprial.kernel import ActorHandle, ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane
+from typing import TYPE_CHECKING, get_args
+from hyprial.kernel import ActorHandle, ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.daemon.impl.api  import (
     HarnessLauncher,
     )
@@ -44,8 +45,6 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     SteerHarnessDeliveryCommand,
     ClaimedHarnessResult,
     EnsureHarnessCommand,
-    HoldStartsForTransfer,
-    ReleaseStartsHold,
     HarnessCallIoCompleted,
     HarnessCommand,
     HarnessFailedDrained,
@@ -82,7 +81,7 @@ from hyprial.kernel import ipc_errors
 from hyprial.kernel import PortAdmission, PortCommandRejected
 from hyprial.kernel import ReadinessReport
 
-from .behaviors.transfer import _TransferBehavior
+from .behaviors.incarnation import _IncarnationBehavior
 from .behaviors.delivery import _DeliveryBehavior
 from .behaviors.desired import _DesiredBehavior
 from .behaviors.lifecycle import _LifecycleBehavior
@@ -90,9 +89,13 @@ from .behaviors.process_events import _ProcessEventsBehavior
 from .behaviors.reconcile import _ReconcileBehavior
 from .contracts import HarnessProjection, HarnessRestoreSummary, ProcessIdentity, _ClaimScan, _ClaimScanOutcome, _CompletionReceipt, _DeliveryReservation, _EnsureFailureFence, _HarnessActorGeneration, _LIFECYCLE_SETTLED_CAPACITY, _PendingCallRegistry, _Record, _RestoreBatch, _default_identity_reader, _is_io_completion
 from .io_port import ProcessIoPort
+from hyprial.daemon.impl.cells.member_launch import member_launch_key
+
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
 
 class HarnessRuntimeActor(
-    _TransferBehavior,
+    _IncarnationBehavior,
     _DesiredBehavior,
     _ProcessEventsBehavior,
     _DeliveryBehavior,
@@ -105,7 +108,7 @@ class HarnessRuntimeActor(
         self,
         launcher: HarnessLauncher,
         *,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
         projection: HarnessProjection | None = None,
         clock: Callable[[], float] = time.monotonic,
         restart_backoff_seconds: float = 0.0,
@@ -127,10 +130,9 @@ class HarnessRuntimeActor(
             Callable[[str], StateCommandCompleted | None] | None
         ) = None,
         agent_identity: AgentIdentityProjectionPort | None = None,
-        source_custody_clear: Callable[[str, str], bool] | None = None,
         runtime_facts_authority: RuntimeFactsAuthority | None = None,
     ) -> None:
-        self._init_transfer_holds(mailbox_capacity)
+        self._init_start_tracking()
         # Composition-owned capability authority for the restore-only native
         # observation port.  A standalone actor is its own authority; the
         # composition layer hands the same instance to the harness port client
@@ -138,7 +140,8 @@ class HarnessRuntimeActor(
         self._runtime_facts_authority = (
             runtime_facts_authority or RuntimeFactsAuthority()
         )
-        self._runtime = runtime or ActorRuntime()
+        self._host_custody = ActorHostCustody(actor_host, owner="harness-runtime")
+        self._host = self._host_custody.host
         self._projection = projection or HarnessProjection()
         self._clock = clock
         self._restart_backoff_seconds = restart_backoff_seconds
@@ -201,7 +204,6 @@ class HarnessRuntimeActor(
         self._restore_eligibility: dict[str, RestoreEligibilityProjection] = {}
         self._restore_eligibility_capacity = 10_000
         self._agent_identity = agent_identity
-        self._source_custody_clear = source_custody_clear
         self._lifecycle_pending: dict[str, tuple[object, object]] = {}
         self._lifecycle_retry_timers: dict[str, threading.Timer] = {}
         self._lifecycle_effect_resources: set[str] = (
@@ -250,8 +252,9 @@ class HarnessRuntimeActor(
             orphan_state_path,
             identity_reader=identity_reader,
             logger=orphan_logger,
+            actor_host=self._host,
         )
-        self._handle = self._runtime.start(
+        self._cell = self._host.spawn(
             ActorSpec(
                 name="harness-runtime",
                 handler_factory=self._new_generation_handler,
@@ -260,12 +263,14 @@ class HarnessRuntimeActor(
                 undelivered_sink=self._on_undelivered,
             )
         )
+        self._handle = self._cell.handle
         if self._desired_state is not None:
             self._persistence = DesiredStateIoPort(
                 self._desired_state,
                 complete=lambda event: self._admit(event),
                 late_result=persistence_late_result,
                 capacity=mailbox_capacity,
+                actor_host=self._host,
             )
         self._result_effects: EffectLane[_ClaimScan, _ClaimScanOutcome] | None = None
         self._io = ProcessIoPort(
@@ -277,6 +282,7 @@ class HarnessRuntimeActor(
             identity_reader=identity_reader,
             orphan_processes=self._orphan_processes,
             max_workers=start_max_workers,
+            actor_host=self._host,
         )
         self._publish()
 
@@ -463,7 +469,7 @@ class HarnessRuntimeActor(
                     domain="harness",
                     generation=self._handler_generation,
                     version=self._version,
-                    code="PORT_CLOSING",
+                    code=ipc_errors.PORT_CLOSING,
                     detail="harness runtime is closing",
                     admission=PortAdmission.CLOSING,
                 )
@@ -483,9 +489,9 @@ class HarnessRuntimeActor(
                 generation=self._handler_generation,
                 version=self._version,
                 code=(
-                    "PORT_OVERLOADED"
+                    ipc_errors.PORT_OVERLOADED
                     if mapped is PortAdmission.OVERLOADED
-                    else "PORT_CLOSING"
+                    else ipc_errors.PORT_CLOSING
                 ),
                 detail=f"harness command admission is {mapped.value}",
                 admission=mapped,
@@ -495,10 +501,9 @@ class HarnessRuntimeActor(
 
 
     def _admit(self, command: object) -> AdmissionResult:
-        handle = self._handle
-        if handle is None:
+        if self._handle is None:
             return AdmissionResult.CLOSED
-        return self._runtime.tell(handle, command)
+        return self._cell.tell(command)
 
 
     def receive(self, handler_generation: int, command: object) -> None:
@@ -521,7 +526,7 @@ class HarnessRuntimeActor(
             and isinstance(command, get_args(HarnessCommand))
             and type(command) is not StopHarnessesCommand
         ):
-            self._reject(command, "PORT_CLOSING", "harness runtime is closing")
+            self._reject(command, ipc_errors.PORT_CLOSING, "harness runtime is closing")
             self._publish()
             return
         if self._dispatch_command(command):
@@ -595,7 +600,7 @@ class HarnessRuntimeActor(
                                 domain="harness",
                                 generation=self._handler_generation,
                                 version=self._version,
-                                code="PORT_OVERLOADED",
+                                code=ipc_errors.PORT_OVERLOADED,
                                 detail="Harness lifecycle replay capacity is full",
                                 admission=PortAdmission.OVERLOADED,
                             )
@@ -624,7 +629,7 @@ class HarnessRuntimeActor(
                             self._handler_generation,
                             self._version,
                             "harness",
-                            "HARNESS_RUNTIME_CLOSING",
+                            ipc_errors.HARNESS_RUNTIME_CLOSING,
                             "Harness runtime is closing before lifecycle admission",
                             True,
                         )
@@ -639,15 +644,12 @@ class HarnessRuntimeActor(
     def _dispatch_command(self, command: object) -> bool:
         from hyprial.daemon.impl.processes.process_owner  import ProcessFactsObserved
 
-        if isinstance(command, HoldStartsForTransfer):
-            self._on_hold_starts(command)
-        elif isinstance(command, ReleaseStartsHold):
-            self._on_release_starts(command)
-        elif isinstance(command, RestoreHarnessesCommand):
+        if isinstance(command, RestoreHarnessesCommand):
             self._on_restore(command)
         elif isinstance(command, EnsureHarnessCommand):
             self._on_ensure(command)
         elif isinstance(command, RemoveHarnessCommand):
+            self._restore_eligibility.pop(command.member or command.name, None)
             self._restore_eligibility.pop(command.name, None)
             self._on_remove(command)
         elif isinstance(command, HarnessTimerElapsedCommand):
@@ -737,10 +739,10 @@ class HarnessRuntimeActor(
             self._on_stop_all(command)
         elif isinstance(command, HarnessProcessStarted):
             self._on_start_completed(command)
-            self._transfer_start_completed(command)
+            self._start_completed(command)
         elif isinstance(command, HarnessStopIoCompleted):
             self._on_stop_completed(command)
-            self._transfer_stop_completed(command)
+            self._stop_completed(command)
         elif isinstance(command, HarnessCallIoCompleted):
             self._on_call_completed(command)
         elif isinstance(command, HarnessStartTimerElapsedCommand):
@@ -810,4 +812,5 @@ class HarnessRuntimeActor(
 
     @staticmethod
     def _key(spec: HarnessLaunchSpec) -> str:
-        return f"{spec.harness}:{spec.name}"
+        key = member_launch_key(spec)
+        return f"{key.harness}:{key.member}"

@@ -29,8 +29,7 @@ def test_gc_without_entity_receipt_preserves_current_unowned_incarnation(tmp_pat
             with_store.close()
         current = app.agents.create(actor_name)
         if replacement:
-            assert app.agents.destroy(actor_name)
-            current = app.agents.create(actor_name)
+            current = app.agents.rotate_secret_authority(actor_name)
         report = _gc(tmp_path, app, Runtime(), []).run_pass()
         preserved = app.agents.get(actor_name)
         assert preserved is not None, "GC deleted an incarnation with no workflow receipt"

@@ -50,11 +50,12 @@ def test_false_running_requires_positive_exit_evidence(case):
 
 
 @pytest.mark.parametrize("read_method", ["snapshot", "observe", "open"])
-def test_quarantine_is_visible_without_crashed_read(tmp_path, read_method):
+def test_quarantine_is_visible_without_crashed_read(tmp_path, read_method, actor_host):
     port = SimpleNamespace()
     coordinator = LifecycleCoordinator(
         tmp_path / "lifecycle.sqlite3", LifecyclePorts(port, port, port, port),
         CorrelationEventRouter(), observation_host_id="test-host",
+        actor_host=actor_host,
     )
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     projection = HarnessProjection()
@@ -68,16 +69,16 @@ def test_quarantine_is_visible_without_crashed_read(tmp_path, read_method):
         before = reader.snapshot(coordinator.lifecycle_target)
         for index in range(4):
             deadline = time.monotonic() + 3
-            while coordinator._runtime.snapshot(coordinator._handle).state.value != "running":
+            while coordinator._cell.snapshot().state.value != "running":
                 assert time.monotonic() < deadline
                 time.sleep(.01)
-            coordinator._runtime.tell(coordinator._handle, object())
+            coordinator._cell.tell(object())
             deadline = time.monotonic() + 3
-            while coordinator._runtime.snapshot(coordinator._handle).failures_in_window < index + 1:
+            while coordinator._cell.snapshot().failures_in_window < index + 1:
                 assert time.monotonic() < deadline
                 time.sleep(.01)
         deadline = time.monotonic() + 3
-        while coordinator._runtime.snapshot(coordinator._handle).state.value != "quarantined":
+        while coordinator._cell.snapshot().state.value != "quarantined":
             assert time.monotonic() < deadline
             time.sleep(.01)
         # Never read coordinator.crashed: the monitor must be sufficient by itself.

@@ -13,6 +13,12 @@ decouple commit broadcast effects)起,`FacadeEffects._space_has_unbroadcast`
 CI 慢调度下落进 wrap 之后即红。因此:其余九个方法保持 writer-lane 严格
 断言,`unbroadcast` 只要求至少一次 writer-lane 调用(purge 发布前沿的
 authority read),容忍 drain-probe 的额外条目。产品行为不改。
+
+S 默认切 native 后,effect completion actor 跑在 Rust 自建线程上,CPython
+以 threading._DummyThread 呈现(线程名 Dummy-N),不存在 _RuntimeActor-*。
+P8 删除 pykka 后只剩 ABI 引擎,off-lane 白名单固定认 Dummy-* 与
+hyprial-actor。实测(native,2026-11-14):off-lane unbroadcast 调用落在
+Dummy-1 与 orgfs-post-commit-network-*。
 """
 
 from __future__ import annotations
@@ -42,11 +48,11 @@ def _wait_for(predicate) -> None:
         time.sleep(0.005)
 
 
-def _restart(runtime, actor) -> int:
-    generation = runtime.snapshot(actor).generation
-    assert runtime.tell(actor, object()) is AdmissionResult.ACCEPTED
-    _wait_for(lambda: runtime.snapshot(actor).generation > generation)
-    return runtime.snapshot(actor).generation
+def _restart(cell) -> int:
+    generation = cell.snapshot().generation
+    assert cell.tell(object()) is AdmissionResult.ACCEPTED
+    _wait_for(lambda: cell.snapshot().generation > generation)
+    return cell.snapshot().generation
 
 
 def test_space_total_custody_bounds_deferred_and_rebases_restart(monkeypatch) -> None:
@@ -78,7 +84,7 @@ def test_space_total_custody_bounds_deferred_and_rebases_restart(monkeypatch) ->
             with pytest.raises(StoreError) as rejected:
                 authority.commit("third", b"three", author="user:a", actor=None)
             assert rejected.value.code == "resource-exhausted"
-            generation = _restart(authority._runtime, authority._actor)
+            generation = _restart(authority._cell)
             assert len(authority._commands) == 2
             _wait_for(
                 lambda: [item.generation for item in authority._deferred]
@@ -121,7 +127,7 @@ def test_facade_total_custody_bounds_deferred_and_rebases_restart(monkeypatch) -
             with pytest.raises(OrgFsError) as rejected:
                 facade.mkdir(space.space_id, "third")
             assert rejected.value.code == "resource-exhausted"
-            generation = _restart(owner.runtime, owner.actor)
+            generation = _restart(owner.runtime)
             assert len(owner.commands) == 2
             _wait_for(
                 lambda: [item.generation for item in owner.deferred] == [generation]
@@ -171,7 +177,7 @@ def test_replica_total_custody_bounds_deferred_and_rebases_restart(monkeypatch) 
             with pytest.raises(OrgFsError) as rejected:
                 authority.backend.put("log/space/doc/writer/3", b"three")
             assert rejected.value.code == "resource-exhausted"
-            generation = _restart(authority._runtime, authority._actor)
+            generation = _restart(authority._cell)
             assert len(authority._commands) == 2
             _wait_for(
                 lambda: [item.generation for item in authority._deferred]
@@ -214,9 +220,9 @@ def test_concurrent_serve_constructs_one_replica_per_space(monkeypatch, tmp_path
     original_init = ReplicaAuthority.__init__
     original_prime = ReplicaAuthority.prime_from
 
-    def counted_init(self, store, source_store, blob_store):
+    def counted_init(self, store, source_store, blob_store, **kwargs):
         constructed.append(store.space_id)
-        original_init(self, store, source_store, blob_store)
+        original_init(self, store, source_store, blob_store, **kwargs)
 
     def blocked_prime(self, store, blob_store=None):
         primed.append(self.space_id)
@@ -305,10 +311,13 @@ def test_purge_and_writer_projection_use_the_space_authority(tmp_path) -> None:
             thread.startswith(writer_prefix) for thread in observed["unbroadcast"]
         )
         # Off-lane unbroadcast reads are tolerated only from the known
-        # broadcast-drain probe threads, never from an arbitrary caller.
+        # broadcast-drain probe threads, never from an arbitrary caller.  The
+        # ABI engine runs the effect completion actor on a Rust-owned thread
+        # CPython names Dummy-N, or on the named hyprial-actor executor.
+        actor_threads = ("Dummy-", "hyprial-actor")
         assert all(
             thread.startswith(
-                (writer_prefix, "orgfs-post-commit-network-", "_RuntimeActor-")
+                (writer_prefix, "orgfs-post-commit-network-", *actor_threads)
             )
             for thread in observed["unbroadcast"]
         )

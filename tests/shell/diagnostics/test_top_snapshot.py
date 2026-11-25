@@ -567,16 +567,26 @@ def test_top_snapshot_handler_contract(tmp_path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+    app.agents.create("wk-stuck")
+    official = app.agents.require("wk-stuck").uri
+    assert official == f"agent:op:node-1:{app.agents.require('wk-stuck').agent_id}"
     app._inbox.receive(
-        _message("m-1", "agent:op:node-1:wk-stuck", now_ms - 20 * 60_000),
+        _message("m-1", official, now_ms - 20 * 60_000),
         now_ms=now_ms - 20 * 60_000,
+    )
+    app._inbox.receive(
+        _message("m-0", "agent:op:node-1:wk-stuck", now_ms - 30 * 60_000),
+        now_ms=now_ms - 30 * 60_000,
     )
     # A stranded key: same owner, same actor name, another node.  It must be
     # reported under "stranded" and never joined into the live actor's row.
-    app.agents.create("wk-stuck")
     app._inbox.receive(
         _message("m-2", "agent:op:old-node:wk-stuck", now_ms - 60_000),
         now_ms=now_ms - 60_000,
+    )
+    app._inbox.receive(
+        _message("m-3", official, now_ms - 5 * 60_000),
+        now_ms=now_ms - 5 * 60_000,
     )
 
     result = app.handle("top.snapshot", {})
@@ -584,14 +594,13 @@ def test_top_snapshot_handler_contract(tmp_path: Path) -> None:
     assert set(result) >= {"daemon", "nowMs", "actors", "stranded"}
     rows = {row["name"]: row for row in result["actors"]}
     stuck = rows["wk-stuck"]
-    assert stuck["actor"] == "agent:op:node-1:wk-stuck"
+    assert stuck["actor"] == official
     assert stuck["runtime"] == "pi"
     assert stuck["pid"] == 222
     assert stuck["running"] is True
     assert stuck["state"] == "stuck"
     assert stuck["openTurnStartedAtMs"] == now_ms - 14 * 60_000
-    # Queue depth joins on the full URI: the old-node message must not count.
-    assert stuck["pendingCount"] == 1
+    assert stuck["pendingCount"] == 2
     assert stuck["oldestPendingAgeMs"] == pytest.approx(20 * 60_000, abs=5_000)
     dead = rows["wk-dead"]
     assert dead["state"] == "stopped"
@@ -599,7 +608,7 @@ def test_top_snapshot_handler_contract(tmp_path: Path) -> None:
     assert result["stranded"] == [
         {
             "recipient": "agent:op:old-node:wk-stuck",
-            "currentRecipient": "agent:op:node-1:wk-stuck",
+            "currentRecipient": official,
             "pending": 1,
         }
     ]
@@ -689,7 +698,7 @@ def test_claude_interactive_row_uses_fenced_daemon_turn_stats(tmp_path: Path) ->
     assert row["recentTurnDurationsMs"] is None
     assert row["recentTurnOutcomes"] is None
 
-    rendered = _render_top(snapshot, wide=False, sampler=lambda: {})
+    rendered = _render_top(snapshot, wide=False)
     table_row = next(line for line in rendered.splitlines() if "claude-worker" in line)
     assert " 3 " in table_row
     assert " 1m " in table_row

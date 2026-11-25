@@ -43,7 +43,6 @@ CLI 线索列来自 [CLI 清单](cli-inventory.md) 的静态分析，`—` 不�
 | `agent.grant` | DR-18 | `agent` | [daemon/impl/application/actors/agents_admin/registry_ops.py:107](../../../src/hyprial/daemon/impl/application/actors/agents_admin/registry_ops.py#L107) |
 | `agent.grants` | DR-18 | `agent` | [daemon/impl/application/actors/agents_admin/registry_ops.py:107](../../../src/hyprial/daemon/impl/application/actors/agents_admin/registry_ops.py#L107) |
 | `agent.home-census` | DR-18 | `agent` | [daemon/impl/application/actors/agents_admin/registry_ops.py:540](../../../src/hyprial/daemon/impl/application/actors/agents_admin/registry_ops.py#L540) |
-| `agent.host-invite` | DR-18 | `agent` | [daemon/impl/application/actors/agents_admin/registry_ops.py:295](../../../src/hyprial/daemon/impl/application/actors/agents_admin/registry_ops.py#L295) |
 | `agent.list` | DR-18 | `agent` | [daemon/impl/application/actors/agents_admin/registry_ops.py:470](../../../src/hyprial/daemon/impl/application/actors/agents_admin/registry_ops.py#L470) |
 | `agent.migrate.execute` | DR-18 | `agent` | [identity/impl/agents/migration/actor.py:441](../../../src/hyprial/identity/impl/agents/migration/actor.py#L441) |
 | `agent.migrate.preflight` | DR-18 | `agent` | [identity/impl/agents/migration/actor.py:405](../../../src/hyprial/identity/impl/agents/migration/actor.py#L405) |

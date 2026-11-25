@@ -7,8 +7,15 @@ import pytest
 from hyprial.kernel.impl.log import Logger
 
 
+def test_async_logger_requires_a_host(tmp_path):
+    with pytest.raises(ValueError, match="host"):
+        Logger.daemon(tmp_path, name="unbound", asynchronous=True)
+    with pytest.raises(ValueError, match="host"):
+        Logger.adapter(tmp_path, name="unbound", asynchronous=True)
+
+
 @pytest.mark.parametrize("factory", [Logger.daemon, Logger.adapter])
-def test_disk_stall_does_not_block_log_admission_and_overflow_is_visible(tmp_path, factory):
+def test_disk_stall_does_not_block_log_admission_and_overflow_is_visible(tmp_path, factory, actor_host):
     entered, release = threading.Event(), threading.Event()
 
     def rotate(path):
@@ -16,7 +23,8 @@ def test_disk_stall_does_not_block_log_admission_and_overflow_is_visible(tmp_pat
         assert release.wait(3)
 
     logger = factory(
-        tmp_path, name="test", rotation_hook=rotate, asynchronous=True, capacity=1
+        tmp_path, name="test", rotation_hook=rotate, asynchronous=True, capacity=1,
+        actor_host=actor_host
     )
     try:
         logger.info("first")
@@ -37,12 +45,12 @@ def test_disk_stall_does_not_block_log_admission_and_overflow_is_visible(tmp_pat
     assert records[1]["component"] == "inbox"
 
 
-def test_append_failure_is_counted_without_recursive_logging(tmp_path):
+def test_append_failure_is_counted_without_recursive_logging(tmp_path, actor_host):
     def rotate(path):
         raise OSError("disk unavailable")
 
     logger = Logger.daemon(
-        tmp_path, name="test", rotation_hook=rotate, asynchronous=True
+        tmp_path, name="test", rotation_hook=rotate, asynchronous=True, actor_host=actor_host
     )
     logger.info("fails", token="synthetic-secret")
     assert logger.close(timeout=3)
@@ -52,7 +60,7 @@ def test_append_failure_is_counted_without_recursive_logging(tmp_path):
     assert status.last_error == "OSError"
 
 
-def test_async_log_freezes_redacted_payload_before_admission(tmp_path):
+def test_async_log_freezes_redacted_payload_before_admission(tmp_path, actor_host):
     entered, release = threading.Event(), threading.Event()
 
     def rotate(path):
@@ -60,7 +68,7 @@ def test_async_log_freezes_redacted_payload_before_admission(tmp_path):
         assert release.wait(3)
 
     logger = Logger.daemon(
-        tmp_path, name="test", rotation_hook=rotate, asynchronous=True
+        tmp_path, name="test", rotation_hook=rotate, asynchronous=True, actor_host=actor_host
     )
     fields = {"value": "before", "secret": "synthetic-secret"}
     try:

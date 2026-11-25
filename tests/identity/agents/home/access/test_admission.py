@@ -10,19 +10,19 @@ from hyprial.kernel import AdmissionResult
 @pytest.mark.parametrize("mode", ["overloaded", "closed", "undelivered"])
 def test_unstarted_command_releases_id_and_allows_explicit_resubmission(home_owner, monkeypatch, mode):
     _registry, actor, agent = home_owner(configured=False)
-    tell = actor._runtime.tell
+    tell = actor._cell.tell
     attempts = []
 
-    def reject_once(handle, command):
+    def reject_once(command):
         attempts.append(command.correlation_id)
         if len(attempts) == 1:
             if mode == "undelivered":
                 actor._undelivered(command, "owner retired before dispatch")
                 return AdmissionResult.ACCEPTED
             return AdmissionResult(mode)
-        return tell(handle, command)
+        return tell(command)
 
-    monkeypatch.setattr(actor._runtime, "tell", reject_once)
+    monkeypatch.setattr(actor._cell, "tell", reject_once)
     kwargs = dict(expected_entity_token=agent.entity_token, operation_id="confirm:reject")
     with pytest.raises((AgentHomeAccessError, RuntimeError)):
         actor.confirm_landing_home(agent.actor, **kwargs)

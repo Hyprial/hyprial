@@ -28,11 +28,13 @@ def actor_status_snapshot(app):
             return app._registered_agent_status(agent, desired)
         return app._agent_target_status(actor, online, desired)
 
+    registered = app.agents.list()
     return build_actor_status_snapshot(
         owner=app.owner, node_id=app.node_id, connectors=connectors,
         interactive_sessions=({"actor": session.actor, "runtime": session.runtime, "source": session.source}
                               for session in desired.interactive_sessions),
-        registered_actors=(agent.uri for agent in app.agents.list()),
+        registered_actors=(agent.uri for agent in registered),
+        registered_names={agent.actor: agent.uri for agent in registered},
         presence_actors=app._presence.online_actors(), status_for_actor=status_for_actor,
         run_states=run_states,
     )

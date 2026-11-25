@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shlex
 import stat
-import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -215,59 +214,33 @@ def test_r2_no_grant_refuses_interactive_claude_with_named_error(
     assert contaminated == []
 
 
-@pytest.mark.parametrize("tmux", [False, True], ids=["popen", "tmux"])
 def test_t5_secret_exists_only_in_spawn_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tmux: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[str] = []
     _prepare(monkeypatch, tmp_path, calls=calls)
     observed: dict[str, object] = {}
     ambient = dict(os.environ)
 
-    if tmux:
-        from hyprial.daemon import harnesses_tmux as tmux_mod
+    class Process:
+        @classmethod
+        def __class_getitem__(cls, _item: object) -> type[Process]:
+            return cls
 
-        monkeypatch.setattr(tmux_mod, "find_tmux", lambda: "/test/bin/tmux")
-        monkeypatch.setattr(tmux_mod, "has_session", lambda *_args: False)
-        monkeypatch.setattr(
-            tmux_mod,
-            "attach_hints",
-            lambda _name: {"wsl-linux-terminal": "attach", "macOS-iTerm2": "attach"},
-        )
-
-        def new_session(
-            _tmux: str,
-            _name: str,
-            argv: list[str],
-            *,
-            env: dict[str, str],
-            **_kwargs: object,
-        ) -> None:
+        def __init__(self, argv: list[str], **kwargs: object) -> None:
             assert dict(os.environ) == ambient
-            observed.update(argv=list(argv), env=dict(env))
+            observed.update(argv=list(argv), env=dict(kwargs["env"]))  # type: ignore[arg-type]
+            self.returncode: int | None = None
 
-        monkeypatch.setattr(tmux_mod, "new_detached_session", new_session)
-    else:
+        def poll(self) -> int | None:
+            return self.returncode
 
-        class Process:
-            @classmethod
-            def __class_getitem__(cls, _item: object) -> type[Process]:
-                return cls
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is None
+            self.returncode = 0
+            return 0
 
-            def __init__(self, argv: list[str], **kwargs: object) -> None:
-                assert dict(os.environ) == ambient
-                observed.update(argv=list(argv), env=dict(kwargs["env"]))  # type: ignore[arg-type]
-                self.returncode: int | None = None
-
-            def poll(self) -> int | None:
-                return self.returncode
-
-            def wait(self, timeout: float | None = None) -> int:
-                assert timeout is None
-                self.returncode = 0
-                return 0
-
-        monkeypatch.setattr(_cli_subprocess, "Popen", Process)
+    monkeypatch.setattr(_cli_subprocess, "Popen", Process)
 
     result = _cli_get_services()._start_interactive_claude(
         name="worker",
@@ -278,7 +251,6 @@ def test_t5_secret_exists_only_in_spawn_environment(
         model_provider="deepseek",
         model="deepseek-flash",
         json_output=True,
-        tmux=tmux,
     )
 
     environment = observed["env"]
@@ -292,13 +264,12 @@ def test_t5_secret_exists_only_in_spawn_environment(
     assert calls.count("agent.runtime-launch.release") == 1
 
 
-@pytest.mark.parametrize("tmux", [False, True], ids=["popen", "tmux"])
 def test_t6_real_child_receives_grant_and_provider_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tmux: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[str] = []
     _prepare(monkeypatch, tmp_path, calls=calls)
-    output = tmp_path / ("tmux.env" if tmux else "popen.env")
+    output = tmp_path / "popen.env"
     stub = tmp_path / "claude-stub"
     stub.write_text(
         f"#!/bin/sh\numask 077\nenv > {shlex.quote(str(output))}\nsleep 0.2\n",
@@ -306,29 +277,6 @@ def test_t6_real_child_receives_grant_and_provider_environment(
     )
     stub.chmod(0o700)
     monkeypatch.setenv("HARNESS_CLAUDE_BIN", str(stub))
-    if tmux:
-        from hyprial.daemon import harnesses_tmux as tmux_mod
-
-        monkeypatch.setattr(tmux_mod, "find_tmux", lambda: "/test/bin/tmux")
-        monkeypatch.setattr(tmux_mod, "has_session", lambda *_args: False)
-        monkeypatch.setattr(
-            tmux_mod,
-            "attach_hints",
-            lambda _name: {"wsl-linux-terminal": "attach", "macOS-iTerm2": "attach"},
-        )
-
-        def real_child(
-            _tmux: str,
-            _name: str,
-            argv: list[str],
-            *,
-            cwd: Path,
-            env: dict[str, str],
-            **_kwargs: object,
-        ) -> None:
-            subprocess.run(argv, cwd=cwd, env=env, check=True)
-
-        monkeypatch.setattr(tmux_mod, "new_detached_session", real_child)
 
     _cli_get_services()._start_interactive_claude(
         name="worker",
@@ -339,7 +287,6 @@ def test_t6_real_child_receives_grant_and_provider_environment(
         model_provider="deepseek",
         model="deepseek-flash",
         json_output=True,
-        tmux=tmux,
     )
 
     deadline = time.monotonic() + 3.0

@@ -111,11 +111,10 @@ CRLF、未知版本、未知字段、重复键、非有限数字、超过 8 MiB 
     },
     {
       "type": "object", "additionalProperties": false,
-      "required": ["v", "type", "kind", "pid", "hyprialCommit", "scriptSha256"],
+      "required": ["v", "type", "kind", "pid", "scriptSha256"],
       "properties": {
         "v": {"const": 1}, "type": {"const": "ready"}, "kind": {"const": "user-proxy"},
         "pid": {"type": "integer", "minimum": 1},
-        "hyprialCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "scriptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },

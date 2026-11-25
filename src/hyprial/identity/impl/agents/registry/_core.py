@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from hyprial.identity.impl.agents.home.provisioner import AgentHomeError
 from hyprial.identity.impl.agents.home.provisioner import AgentHomeProvisioner
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
 import json
 from hyprial.identity.impl.agents.home.config import normalize_agent_config
 from hyprial.kernel import RESERVED_AGENT_ACTOR_NAMES
@@ -21,6 +20,7 @@ from ._base import (
     _connect,
     _now_ms,
     _uri,
+    agent_id_for_entity_token,
     normalize_capabilities,
     normalize_harness_args,
 )
@@ -29,19 +29,17 @@ from ._home_create import _RegistryHomeCreateMixin
 from ._home_destroy import _RegistryHomeDestroyMixin
 from ._records import _RegistryRecordsMixin
 from .config_binding import _RegistryConfigBindingMixin
-
-if TYPE_CHECKING:
-    from hyprial.identity.impl.agents.runtime.secrets import SecretGrant
-
+from .harness_args import _RegistryHarnessArgsMixin
+from .naming import _RegistryNamingMixin
 from hyprial.identity.impl.agents.secret_store.defaults import DefaultCredentialMixin
 
 
-class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _RegistryLifecycleMixin, _RegistryHomeCreateMixin, _RegistryHomeDestroyMixin, _RegistryRecordsMixin):
+class AgentRegistry(DefaultCredentialMixin, _RegistryHarnessArgsMixin, _RegistryConfigBindingMixin, _RegistryNamingMixin, _RegistryLifecycleMixin, _RegistryHomeCreateMixin, _RegistryHomeDestroyMixin, _RegistryRecordsMixin):
     """Every agent on this machine, in one real SQLite database.
 
     The database path is a constructor argument so tests (and a second daemon
     on the same machine) can point at their own file.  Writes are
-    transactions; the schema owns the invariants (A1 PRIMARY KEY, pin
+    transactions; the schema owns the invariants (A1 PRIMARY KEY
     one-to-one UNIQUEs, destroy cascade), so the code translates
     ``IntegrityError`` into the typed errors instead of re-checking by hand.
 
@@ -62,6 +60,28 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
         finally:
             connection.close()
 
+    @staticmethod
+    def local_names_with_capability(database: Path, name: str, value: str) -> frozenset[str]:
+        """Read-only: the local names whose capability fact *name* equals *value*."""
+        try:
+            database.stat()
+        except FileNotFoundError:
+            return frozenset()
+        connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            rows = connection.execute("SELECT actor, capabilities FROM agents").fetchall()
+        finally:
+            connection.close()
+        found = set()
+        for actor, capabilities in rows:
+            try:
+                facts = json.loads(capabilities or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(facts, dict) and facts.get(name) == value:
+                found.add(actor)
+        return frozenset(found)
+
     def __init__(
         self,
         database: Path,
@@ -78,7 +98,16 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
         self._clock = clock
         self._lock = threading.RLock()
         self._db = _connect(self.database)
-        self._retired_session_refs: set[tuple[str, str]] = set()
+        from hyprial.identity.impl.agents.home.native_imports import initialize
+
+        initialize(self._db)
+        self._retired_session_refs: dict[str, set[tuple[str, str]]] = {}
+        from hyprial.identity.impl.agents.addressing import id_form_minting
+
+        if id_form_minting():
+            from .naming.id_form import migrate_registry_to_id_form
+
+            migrate_registry_to_id_form(self)
         self._refresh_retired_session_refs_locked()
         self._restore_dispositions = {
             item.actor: item
@@ -108,42 +137,23 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
             else Path(legacy_directory)
         )
 
-    def repoint_legacy_secret_grants(
-        self, grant: SecretGrant, values: Mapping[str, str], raw_field: str,
-    ) -> None:
-        """Commit all bindings for one imported source before its file is removed.
+    def native_credential_import_record(self, actor: str):
+        """Bind a native import receipt to this Agent and its provisioned home."""
+        from hyprial.identity.impl.agents.home.native_imports import NativeImportRecord
 
-        Structured grants already select their SQLite field. Fieldless grants
-        need an explicit binding because the source may itself contain VALUE.
-        The source-derived field makes retries independent of grant ordering.
-        """
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")
-            if (
-                self.require(grant.actor).entity_token != grant.entity_token
-                or self.home_receipt(grant.actor).entity_token != grant.entity_token
-            ):
-                raise ValueError("legacy migration incarnation changed")
-            parameters = (grant.actor, grant.entity_token, grant.source.value, grant.entry_id)
-            rows = self._db.execute(
-                "SELECT field_name FROM agent_secret_grants WHERE agent=? "
-                "AND entity_token=? AND source=? AND entry_id=?", parameters,
-            ).fetchall()
-            if any(not values.get(row["field_name"] or raw_field) for row in rows):
-                raise ValueError("legacy grant selects an invalid field")
-            self._db.execute(
-                "UPDATE agent_secret_grants SET field_name=?, revision=revision+1 "
-                "WHERE agent=? AND entity_token=? AND source=? AND entry_id=? "
-                "AND field_name IS NULL", (raw_field, *parameters),
-            )
+        with self._lock:
+            return NativeImportRecord(self, actor)
 
     def _refresh_retired_session_refs_locked(self) -> None:
-        self._retired_session_refs = {
-            (str(row["actor"]), str(row["session_ref"]))
-            for row in self._db.execute(
-                "SELECT actor, session_ref FROM retired_session_refs"
+        rows = self._db.execute(
+            "SELECT actor, session_ref, entity_token FROM retired_session_refs"
+        ).fetchall()
+        retired: dict[str, set[tuple[str, str]]] = {}
+        for row in rows:
+            retired.setdefault(str(row["session_ref"]), set()).add(
+                (str(row["actor"]), str(row["entity_token"]))
             )
-        }
+        self._retired_session_refs = retired
     @property
     def home_enabled(self) -> bool:
         return self._home is not None
@@ -159,7 +169,11 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
     def normalize_actor(value: str) -> str:
         """Reduce a bare name or a canonical URI to the machine-local actor name."""
 
-        candidate = _uri().agent_uri_actor(value) or value
+        candidate = _uri().agent_uri_actor(value)
+        if candidate is None:
+            candidate = value
+        else:
+            candidate = _uri().member_actor_registry_key(candidate)
         if not candidate:
             raise InvalidAgentNameError("agent name must not be empty")
         if len(candidate) > _MAX_ACTOR_NAME_LENGTH:
@@ -175,14 +189,12 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
     def native_actor(self, value: str) -> str:
         """Validate a public creation name without discarding URI ownership.
 
-        README ruling 63: the reserved daemon actor names are refused here, at
-        the single creation gate.  ``link_governed`` exempts these names as
-        sender or recipient on ANY node, so an ordinary agent registered under
-        one would bypass every link constraint.  The check is exact and reads
-        the name before the pattern guard, so ``_turn-hooks`` reports the
-        reserved reason rather than a generic shape error.  Read paths keep
-        using :meth:`normalize_actor`, so a legacy persisted row stays
-        resolvable and destroyable.
+        Reserved daemon actor names are refused here, at the single creation
+        gate, because they belong to daemon-owned delivery identities.  The
+        check is exact and reads the name before the pattern guard, so
+        ``_turn-hooks`` reports the reserved reason rather than a generic shape
+        error.  Read paths keep using :meth:`normalize_actor`, so a legacy
+        persisted row stays resolvable and destroyable.
         """
 
         parsed = _uri().parse_agent_uri(value)
@@ -213,34 +225,65 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
         The sole exception is an exact stored URI with explicit hosting authority.
         """
 
-        parsed = _uri().parse_agent_uri(value)
-        if parsed is not None:
-            if parsed[0] != self.owner or parsed[1] != self.machine:
-                with self._lock:
-                    row = self._db.execute(
-                        "SELECT actor FROM agents WHERE uri = ? "
-                        "AND hosted_by IS NOT NULL", (value,),
-                    ).fetchone()
-                return None if row is None else str(row["actor"])
-            candidate = parsed[2]
-        elif ":" in value:
-            return None
-        else:
-            candidate = value
-        try:
-            return self.normalize_actor(candidate)
-        except AgentError:
-            return None
-    def uri_for(self, actor: str) -> str:
-        name = self.normalize_actor(actor)
+        from hyprial.identity.impl.agents.addressing import resolve_local_actor
+
+        return resolve_local_actor(
+            value,
+            owner=self.owner,
+            machine=self.machine,
+            read=self._read_addressed,
+            normalize=self._local_name,
+        )
+    def actor_key(self, value: str) -> str:
+        """The immutable actor key behind a name, display name, ``a.`` id or URI.
+
+        Read and mutation paths key every table on ``actor``; an id-form
+        address must reach the same row its name does.  Values this registry
+        cannot place fall back to :meth:`normalize_actor`, as before.
+        """
+
+        return self.local_actor(value) or self.normalize_actor(value)
+    def _read_addressed(self, key: str) -> Agent | None:
+        if _uri().is_agent_id_segment(key):
+            return self.get_by_agent_id(key)
         with self._lock:
             row = self._db.execute(
-                "SELECT uri FROM agents WHERE actor = ? AND hosted_by IS NOT NULL",
-                (name,),
+                "SELECT * FROM agents WHERE actor = ? OR uri = ? OR display_name = ?",
+                (key, key, key),
             ).fetchone()
-        if row is not None:
-            return str(row["uri"])
-        return _uri().canonical_agent_uri(self.owner, self.machine, name)
+            if row is None:
+                return None
+            return self._row_agent(row)
+    def uri_for(self, actor: str) -> str:
+        from hyprial.identity.impl.agents.addressing import official_agent_uri
+
+        name = self.actor_key(actor)
+        return official_agent_uri(
+            name, owner=self.owner, machine=self.machine, read=self._read_addressed
+        )
+    def get_by_agent_id(self, agent_id: str) -> Agent | None:
+        """The live record whose immutable id is exactly ``agent_id``."""
+
+        if not _uri().is_agent_id_segment(agent_id):
+            return None
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if row is None:
+                row = next(
+                    (
+                        candidate
+                        for candidate in self._db.execute(
+                            "SELECT * FROM agents WHERE agent_id IS NULL"
+                        )
+                        if _agent_id_or_none(candidate["entity_token"]) == agent_id
+                    ),
+                    None,
+                )
+            if row is None:
+                return None
+            return self._row_agent(row)
     def get(self, actor: str) -> Agent | None:
         name = self.local_actor(actor)
         if name is None:
@@ -251,7 +294,7 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
             ).fetchone()
             if row is None:
                 return None
-            return self._row_agent(row, self._pinned_adapters_locked(name))
+            return self._row_agent(row)
     def require(self, actor: str) -> Agent:
         agent = self.get(actor)
         if agent is None:
@@ -261,13 +304,8 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
         return self.get(actor) is not None
     def list(self) -> tuple[Agent, ...]:
         with self._lock:
-            pins: dict[str, list[str]] = {}
-            for row in self._db.execute(
-                "SELECT adapter, agent FROM pins ORDER BY adapter"
-            ):
-                pins.setdefault(row["agent"], []).append(row["adapter"])
             return tuple(
-                self._row_agent(row, tuple(pins.get(row["actor"], ())))
+                self._row_agent(row)
                 for row in self._db.execute(
                     "SELECT * FROM agents ORDER BY actor"
                 )
@@ -323,23 +361,7 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
             return False
         name = self.local_actor(actor)
         return False if name is None else self.exists(name)
-    def _pinned_adapters_locked(self, name: str) -> tuple[str, ...]:
-        return tuple(
-            row["adapter"]
-            for row in self._db.execute(
-                "SELECT adapter FROM pins WHERE agent = ? ORDER BY adapter",
-                (name,),
-            )
-        )
-    def _pin_of_locked(self, adapter: str) -> tuple[str, str] | None:
-        row = self._db.execute(
-            "SELECT pins.agent AS agent, agents.uri AS uri "
-            "FROM pins JOIN agents ON agents.actor = pins.agent "
-            "WHERE pins.adapter = ?",
-            (adapter,),
-        ).fetchone()
-        return None if row is None else (row["agent"], row["uri"])
-    def _row_agent(self, row: sqlite3.Row, pinned: tuple[str, ...]) -> Agent:
+    def _row_agent(self, row: sqlite3.Row) -> Agent:
         # Fail closed on a blank token instead of stringifying it: ``str(None)``
         # is ``"None"``, and a ``"None"`` agent facing a ``"None"`` grant row
         # would make the incarnation fence constant-true.  The schema (new or
@@ -375,9 +397,9 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
                 if row["last_active_at_ms"] is None
                 else int(row["last_active_at_ms"])
             ),
-            pinned_adapters=pinned,
             created_at_ms=int(row["created_at_ms"]),
             hosted_by=row["hosted_by"],
+            display_name=row["display_name"],
         )
     def _import_legacy_files(self, directory: Path) -> None:
         """One-shot import of pre-sqlite ``<actor>.json`` records.
@@ -386,10 +408,7 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
         development machines.  Imported files are renamed to
         ``*.json.imported`` — kept as an archive so a rollback to a
         file-reading build finds its data; an unreadable file is left in
-        place untouched rather than renamed over.  Pins ride along under the
-        same constraints as live writes; on a conflict the alphabetically
-        first import wins (``INSERT OR IGNORE``), the same first-wins order
-        the desired-state migration uses.
+        place untouched rather than renamed over.
         """
 
         if not directory.is_dir():
@@ -418,15 +437,16 @@ class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _Regist
                 if not exists:
                     with self._db:
                         self._db.execute(*self._insert_statement(record))
-                        for adapter in record.pinned_adapters:
-                            self._db.execute(
-                                "INSERT OR IGNORE INTO pins (adapter, agent) "
-                                "VALUES (?, ?)",
-                                (adapter, record.actor),
-                            )
             path.rename(path.with_name(path.name + ".imported"))
             imported.append(path.name)
         self.imported_legacy = tuple(imported)
+
+
+def _agent_id_or_none(entity_token: object) -> str | None:
+    try:
+        return agent_id_for_entity_token(str(entity_token))
+    except AgentError:
+        return None
 
 
 _DEFAULT_REGISTRY: AgentRegistry | None = None

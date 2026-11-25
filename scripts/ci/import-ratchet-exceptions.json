@@ -1,0 +1,542 @@
+{
+  "version": 1,
+  "policy": "Exact per-item bootstrap/offline/protocol/CLI input-output exceptions; no wildcards, no ledger expansion. Every entry is bound to a reviewed condition and digest.",
+  "entries": [
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "module": "hyprial.daemon",
+      "symbol": "downgrade_adapter_state_result",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "adapter downgrade-state; offline direct state rollback while the daemon ownership fence is held; result boundary maps the public refusal (no preview/commit)"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "module": "hyprial.daemon",
+      "symbol": "validate_legacy_claude_auth",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "legacy PTY launch admits only the auth sources this launch already has; no new secret transport is opened"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "module": "hyprial.kernel",
+      "symbol": "Logger",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "single launch-path credential-source telemetry helper shared by both runtime modes; never a transport"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.identity",
+      "symbol": "PAC_PRINCIPAL_UNVERIFIED",
+      "count": 1,
+      "category": "protocol",
+      "condition": "identity error vocabulary used by the worker-binding refusal mapping"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.identity",
+      "symbol": "PacError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "identity error vocabulary used by the worker-binding refusal mapping"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "module": "hyprial.daemon",
+      "symbol": "wait_for_state_ownership",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "daemon run: the bounded first lock attempt loses to a live daemon, then the CLI waits while a serving daemon answers and takes the state lock when it exits (Allen 2026-10-29) instead of exiting into launchd KeepAlive; public fence+probe ports, no direct state write"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "module": "hyprial.daemon",
+      "symbol": "USER_BUS_ADDRESS_UNREACHABLE_REASON",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public diagnostic reason vocabulary for the per-user systemd bus, mapped into `daemon service` output"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "module": "hyprial.daemon",
+      "symbol": "USER_BUS_UNAVAILABLE_REASON",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public diagnostic reason vocabulary for the per-user systemd bus, mapped into `daemon service` output"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.identity",
+      "symbol": "AgentRegistry",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "B06 only after agent.list/adapter.list raise DAEMON_UNAVAILABLE; no online direct store read"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.kernel",
+      "symbol": "ChannelConfiguration",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "B06 only after agent.list/adapter.list raise DAEMON_UNAVAILABLE; offline channels.json read"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "official public request/transport error vocabulary used to distinguish DaemonUnavailableError from permission/timeouts; no other kernel helper"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_agent_uri",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical agent URI parser for online/offline doctor name collision names; no bare split"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/org_metadata.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "org-metadata check reads `org.network`; on CliError/TransientDaemonError it omits the row (returns None) instead of reporting a pass. `ipc_errors.TransientDaemonError` is the public transport error vocabulary for that distinction, same as before the extraction"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/start_failures.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_start_failures",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "doctor reads the persisted state/daemon-start-failures.json unconditionally (read-only local file, no daemon round-trip); the daemon start path writes it, so a restart loop stays visible from the product surface"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/redemption.py",
+      "module": "hyprial.daemon",
+      "symbol": "read_degraded_redemption",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "doctor reads the persisted tailnet/redemption-degraded.json unconditionally (read-only local file, no daemon round-trip); the daemon start path writes it, so a degraded pending redemption stays visible even when the daemon is not running"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/tiers.py",
+      "module": "hyprial.daemon",
+      "symbol": "probe_capabilities",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "agent tiers probe runs with ensure_daemon=False: it runs the local harness probes and records them in the node-local state/runtime-capabilities.json; no daemon round-trip, no other store, replaces the retired probe_profile edge (S3c)"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/org/authority.py",
+      "module": "hyprial.daemon",
+      "symbol": "OfflineMembership",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "only the existing `org pin-authority` and `org migration-status` maintenance commands: the former previews and confirms a settings-only pin (forwarding.tailnet.authorities[<spaceId>]) and refuses an already initialized membership table or a replacement of a different pin; the latter reports local migration state. The context manager acquires NO ownership fence and both commands explicitly allow a running daemon; this is not the stopped-daemon/fence guarantee of TailnetMaintenance and not a general online store fallback (org repin stays the post-import tool)"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/org/maintenance.py",
+      "module": "hyprial.daemon",
+      "symbol": "TailnetMaintenance",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "org repin; daemon stopped; ownership fence/preview/commit"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "RequestPortError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical public request error type for CLI request error capture, inheritance and mapping; protocol vocabulary only, no business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "transport error types for existing CLI request/startup error and fallback mapping; protocol vocabulary only, no business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/output/emit.py",
+      "module": "hyprial.kernel",
+      "symbol": "RequestPortError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical public request error type for mapping an interrupted CLI operation to output; protocol vocabulary only, no business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/output/errors.py",
+      "module": "hyprial.kernel",
+      "symbol": "RequestPortError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical public request error type for CLI output error normalization and hints; protocol vocabulary only, no business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/output/errors.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "transport error types for CLI output normalization and hints; protocol vocabulary only, no business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/runtime/entry.py",
+      "module": "hyprial.kernel",
+      "symbol": "RequestPortError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical public request error type for CLI argument and abort error output; protocol vocabulary only, no business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/socialware/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "canonical public DaemonUnavailableError type used by the upgrade pre-restart daemon probe to distinguish an unavailable daemon; protocol vocabulary only, no business helper or new request path"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/message/read.py",
+      "module": "hyprial.daemon",
+      "symbol": "IPC_MESSAGE_READ_BODY",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC method name passed to the existing message body request; message.read_body remains a legacy method pending MethodSpec and handler migration; protocol vocabulary only"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonUnavailableError, TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonUnavailableError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonRequestError, DaemonRestoringError, DaemonUnavailableError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/restart.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonUnavailableError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonUnavailableError, TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/init/init.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonUnavailableError, TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/login/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonUnavailableError, DaemonDisconnectedError, IpcTimeoutError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: DaemonDisconnectedError, DaemonUnavailableError, IpcTimeoutError, TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/message/send.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "public IPC error vocabulary only: TransientDaemonError; no transient_error_from_code function, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "ipc_errors",
+      "count": 1,
+      "category": "protocol",
+      "condition": "no direct use; _org_context_documents forwards ipc_errors to org/context/commands.py solely for INVALID_ARGUMENT and TransientDaemonError; no other forwarded store, parse, validate or adopt helpers, function calls, local validation policy, authorization, persistence, lifecycle orchestration or new request authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "module": "hyprial.kernel",
+      "symbol": "DaemonRequestError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "catch only daemon agent.ensure-home request failure for the existing per-actor CLI error rendering; no local home business or batch strategy authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/output/errors.py",
+      "module": "hyprial.identity",
+      "symbol": "PacError",
+      "count": 1,
+      "category": "protocol",
+      "condition": "CLI JSON error normalization isinstance check only; no PAC business permission"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/output/errors.py",
+      "module": "hyprial.kernel",
+      "symbol": "HYPRIALHomeNotInitialized",
+      "count": 1,
+      "category": "protocol",
+      "condition": "CLI JSON error normalization isinstance check only; no home initialization permission"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "module": "hyprial.kernel",
+      "symbol": "DAEMON_STARTUP_PHASES",
+      "count": 1,
+      "category": "protocol",
+      "condition": "existing startup diagnostic phase vocabulary only for counting and validating observed phase labels; no daemon startup choice or state access"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "CHANNEL_PROTOCOL_VERSION",
+      "count": 1,
+      "category": "protocol",
+      "condition": "existing channel protocol version reported in diagnostic output only; no negotiation or policy"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "module": "hyprial.kernel",
+      "symbol": "DaemonLaunchResult",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "existing local daemon launcher result contract and result construction only; no owner migration, endpoint configuration, supervisor policy, or business store access"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "module": "hyprial.kernel",
+      "symbol": "DaemonLaunchResult",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "existing restart handoff type and result shape only; no owner migration, endpoint configuration, supervisor policy, or business store access"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "module": "hyprial.kernel",
+      "symbol": "DaemonLaunchResult",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "existing local daemon service launch result contract and construction only; no owner migration, endpoint configuration, supervisor policy, or business store access"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/init/init.py",
+      "module": "hyprial.kernel",
+      "symbol": "DaemonLaunchResult",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "existing launch handoff result serialization only; no owner migration, endpoint configuration, supervisor policy, or business store access"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "module": "hyprial.biz",
+      "symbol": "template_text",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "routine templates show: read and display verbatim only a packaged whitelist template; no render_template, load_routine, dynamic external path or daemon fallback"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "module": "hyprial.daemon",
+      "symbol": "follow_lifetime",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "workflow events --follow: local CLI SIGINT/SIGTERM and stdout EOF lifetime only; no Projection, events_since, daemon control or event access authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "canonical_user_uri",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "format the squire setup warning and encode an already resolved local operator owner as the canonical URI used in existing from or actor fields only; no resolve_node_owner read, authentication, identity determination, sender decision or business access authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "daemon_request",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "standard CLI-to-daemon IPC request transport with existing endpoint, clock, ID, timeout and error mapping only; no local business fallback, HTTP substitution or direct handler call authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "daemon_socket_absent",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "connect-only probe of the IPC socket (no frame sent) to decide whether the implicit daemon start is needed before one request; returns only whether nothing is bound or listening; no request, retry, state read or business access authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "daemon_socket_path",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "IPC socket endpoint selection only; when neither HARNESS_STATE_DIR nor HYPRIAL_HOME is set and HARNESS_SOCKET_PATH is nonempty, do not evaluate state_dir; explicit state or home takes precedence; no state or home store access authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "module": "hyprial.kernel",
+      "symbol": "short_actor_name",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "abbreviate already obtained overview data for human display only; no query, filtering, selection or authorization decision authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "module": "hyprial.kernel",
+      "symbol": "parse_orgfs_uri",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "CLI argument-shape conversion only for orgfs.resolve; preserve URI and path usage errors and daemon-side owner and space verification; no local OrgFS lookup authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/runtime/services.py",
+      "module": "hyprial.kernel",
+      "symbol": "configured_hyprial_home",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "select user-provided CLI home root and source label using expanduser and Path.resolve only; no home business store read or write or initialization authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/runtime/services.py",
+      "module": "hyprial.kernel",
+      "symbol": "default_hyprial_home",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "select default local CLI home root and source label using Path.home and Path.resolve only; no profile read, validation, write or home initialization authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "module": "hyprial.identity",
+      "symbol": "ORG_SPACE_PREFIX",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "use the canonical group- prefix solely for existing org CLI help length and one-time case-sensitive user argument prefix normalization before the existing org.create, org.repair, org.delete and org.network requests; preserve local INVALID_ARGUMENT text and exit plus existing daemon validation and ACL behavior; no org_space_name business helper, org store, policy or authorization access authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "module": "hyprial.biz",
+      "symbol": "BUILTIN_TEMPLATES",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "list names from the installed package builtin template tuple for the offline routine templates display only; no template file read, parsing, rendering, validation, routine admission or home store access authorized"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/down.py",
+      "module": "hyprial.kernel",
+      "symbol": "LIFECYCLE_IPC_MARGIN_SECONDS",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "Only the existing agent stop `runtime.request(\"down\", ...)` timeout at down.py:68-75: sum of operation deadline, daemon wait margin and IPC margin so the client receives the daemon coded result; no local stop policy, payload validation, new request or fallback authorized."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/down.py",
+      "module": "hyprial.kernel",
+      "symbol": "LIFECYCLE_OPERATION_DEADLINE_SECONDS",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "Only the existing agent stop `runtime.request(\"down\", ...)` timeout at down.py:68-75: sum of operation deadline, daemon wait margin and IPC margin so the client receives the daemon coded result; no local stop policy, payload validation, new request or fallback authorized."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/down.py",
+      "module": "hyprial.kernel",
+      "symbol": "LIFECYCLE_WAIT_MARGIN_SECONDS",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "Only the existing agent stop `runtime.request(\"down\", ...)` timeout at down.py:68-75: sum of operation deadline, daemon wait margin and IPC margin so the client receives the daemon coded result; no local stop policy, payload validation, new request or fallback authorized."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "module": "hyprial.kernel",
+      "symbol": "LIFECYCLE_IPC_MARGIN_SECONDS",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "Only the existing `_request_start` timeout at start.py:503-507 and :618-630, forwarded unchanged to `runtime.request` for agent.start/lifecycle.start/lifecycle.start-smolvm; preserve the extra resume allowance exactly when `sessionRef` is present. No harness choice, resume policy, local lifecycle execution, new method or fallback authorized."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "module": "hyprial.kernel",
+      "symbol": "LIFECYCLE_OPERATION_DEADLINE_SECONDS",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "Only the existing `_request_start` timeout at start.py:503-507 and :618-630, forwarded unchanged to `runtime.request` for agent.start/lifecycle.start/lifecycle.start-smolvm; preserve the extra resume allowance exactly when `sessionRef` is present. No harness choice, resume policy, local lifecycle execution, new method or fallback authorized."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "module": "hyprial.kernel",
+      "symbol": "LIFECYCLE_WAIT_MARGIN_SECONDS",
+      "count": 1,
+      "category": "cli-input-output",
+      "condition": "Only the existing `_request_start` timeout at start.py:503-507 and :618-630, forwarded unchanged to `runtime.request` for agent.start/lifecycle.start/lifecycle.start-smolvm; preserve the extra resume allowance exactly when `sessionRef` is present. No harness choice, resume policy, local lifecycle execution, new method or fallback authorized."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "module": "hyprial.kernel",
+      "symbol": "local_ipc_path_limit",
+      "count": 1,
+      "category": "bootstrap",
+      "condition": "pre-launch endpoint path budget for the local daemon listener only; replaces the raw AF_UNIX bind probe that gate W020 forbids outside the platform seam; no other seam symbol"
+    }
+  ]
+}

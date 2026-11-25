@@ -6,11 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import re
 import shlex
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
 from hyprial.daemon import Alarm
-from hyprial.daemon.impl.squire import (
+from hyprial.daemon.impl.adapters.user_delivery import (
     UserDeliveryPort,
     UserDeliveryRequest,
     UserDeliveryResult,
@@ -18,13 +18,16 @@ from hyprial.daemon.impl.squire import (
 from hyprial.kernel import (
     AdmissionResult,
     EffectCompleted,
-    EffectLane,
     EffectRequest,
     HarnessLaunchSpec,
 )
 
 
-_RESTARTABLE_HARNESSES = frozenset({"claude", "pi", "codex", "dsh", "jev"})
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
+
+
+_RESTARTABLE_HARNESSES = frozenset({"claude", "pi", "codex", "jev", "agy"})
 _SECRET_NAME = re.compile(r"(?:^|[._-])(key|token|secret|password)(?:$|[._-])")
 
 
@@ -37,6 +40,7 @@ class _OperatorAlarmRequest:
     node: str
     occurrence: str
     harness: HarnessLaunchSpec | None = None
+    observe: Callable[[UserDeliveryRequest], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,11 +90,14 @@ class OperatorAlarmDelivery:
         delivery: Callable[[], UserDeliveryPort | None],
         log: Callable[..., None],
         capacity: int = 16,
+        actor_host=None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("operator alarm delivery requires an actor host")
         self._delivery = delivery
         self._log = log
         self._effects: EffectLane[_OperatorAlarmRequest, _OperatorAlarmOutcome] = (
-            EffectLane(
+            actor_host.effect_lane(
                 name="operator-alarm-delivery",
                 execute=self._execute,
                 complete=self._complete,
@@ -107,7 +114,10 @@ class OperatorAlarmDelivery:
         owner: str,
         node: str,
         harness: HarnessLaunchSpec | None = None,
+        observe: Callable[[UserDeliveryRequest], None] | None = None,
     ) -> None:
+        """Queue one owner DM; *observe* sees the exact request right before delivery."""
+
         # One identity per occurrence: the receiver's delivery ledger keeps
         # every outcome by key, so a key reused for the same harness's next
         # failure would answer "duplicate" -- or replay an old refusal --
@@ -119,7 +129,7 @@ class OperatorAlarmDelivery:
                 operation_id=f"{alarm.correlation_id}:{occurrence}",
                 generation=1,
                 payload=_OperatorAlarmRequest(
-                    alarm, kind, key, owner, node, occurrence, harness
+                    alarm, kind, key, owner, node, occurrence, harness, observe
                 ),
             )
         )
@@ -139,16 +149,20 @@ class OperatorAlarmDelivery:
         delivery = self._delivery()
         if delivery is None:
             return _OperatorAlarmOutcome(False, unavailable=True)
-        result: UserDeliveryResult = delivery.deliver(
-            UserDeliveryRequest(
-                message_id=f"{request.alarm.message_id}:{request.occurrence}",
-                idempotency_key=f"{request.alarm.correlation_id}:{request.occurrence}",
-                owner=request.owner,
-                sender="daemon-alarm",
-                message=self._message(request),
-                conversation_id=f"daemon-{request.kind}",
-            )
+        user_request = UserDeliveryRequest(
+            message_id=f"{request.alarm.message_id}:{request.occurrence}",
+            idempotency_key=f"{request.alarm.correlation_id}:{request.occurrence}",
+            owner=request.owner,
+            sender="daemon-alarm",
+            message=self._message(request),
+            conversation_id=f"daemon-{request.kind}",
         )
+        if request.observe is not None:
+            try:
+                request.observe(user_request)
+            except Exception:  # noqa: BLE001 - observation never blocks the DM
+                pass
+        result: UserDeliveryResult = delivery.deliver(user_request)
         return _OperatorAlarmOutcome(
             result.accepted,
             code=result.code,
@@ -270,7 +284,6 @@ def _restart_command(spec: HarnessLaunchSpec) -> str | None:
     )
     if (
         spec.harness not in _RESTARTABLE_HARNESSES
-        or spec.execution_runtime is not None
         or spec.containerized
         or spec.container_image is not None
         or spec.pinned_owner is not None
@@ -289,7 +302,7 @@ def _restart_command(spec: HarnessLaunchSpec) -> str | None:
         command.extend(("--provider", spec.model_provider))
     if spec.model is not None:
         command.extend(("--model", spec.model))
-    if spec.session_ref is not None:
+    if spec.session_ref is not None and spec.harness != "agy":
         command.extend(("--resume", spec.session_ref))
     if spec.args:
         command.append("--")

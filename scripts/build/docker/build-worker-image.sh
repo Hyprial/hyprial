@@ -2,11 +2,14 @@
 # Build the hyprial worker image and tag it hyprial-worker:<hyprial version>
 # (decision D-C: the image ships to transfer targets as a `docker save`
 # tar through the existing transfer transport; no registry).
+#
+# No host-side `uv build --wheel`: the Dockerfile compiles its own thin wheel
+# from `COPY src`, so a host wheel was never used, and since the wheel's
+# native actor engine stage it would demand Rust 1.93.1 on the source host.
 set -eu
 
 cd "$(dirname "$0")/../../.."
 
-uv build --wheel
 version="$(uv run python -c 'from hyprial import __version__; print(__version__)')"
 tag="hyprial-worker:$(printf '%s' "$version" | tr '+' '-')"
 

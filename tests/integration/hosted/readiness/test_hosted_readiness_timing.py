@@ -27,10 +27,9 @@ from typing import Any
 import pytest
 
 
-RUNNER = Path(__file__).resolve().parents[4] / 'contract/e2e/run-host-invite.py'
-LEDGER = Path(__file__).resolve().parents[4] / 'contract/e2e/run-capability-ledger.py'
+RUNNER = Path(__file__).resolve().parents[4] / 'contract/e2e/run-hosted-registry.py'
 SUITE = Path(__file__).resolve().parents[4] / 'contract/e2e/run-hosted-suite.py'
-CORE = ("shell.impl.cli.runtime.entry", "daemon.impl.application", "daemon.impl.owner_migration", "identity.impl.agents.registry")
+CORE = ("shell.impl.cli.runtime.entry", "daemon.impl.application", "identity.impl.agents.registry")
 
 
 def _hyprial_modules() -> set[str]:
@@ -78,7 +77,7 @@ def _fake_tree(root: Path, cli_body: str = "def main():\n    import time\n    ti
     files = {"__init__.py": "", "identity/__init__.py": "", "identity/impl/__init__.py": "",
              "identity/impl/agents/__init__.py": "", "identity/impl/agents/registry.py": "VALUE = 1\n",
              "daemon/__init__.py": "", "daemon/impl/__init__.py": "",
-             "daemon/impl/application.py": "VALUE = 1\n", "daemon/impl/owner_migration.py": "VALUE = 1\n",
+             "daemon/impl/application.py": "VALUE = 1\n",
              "shell/__init__.py": "", "shell/impl/__init__.py": "", "shell/impl/cli/runtime/__init__.py": "",
              "shell/impl/cli/runtime/entry.py": cli_body, "cli.py": cli_body, **(extra or {})}
     for rel, text in files.items():
@@ -140,27 +139,6 @@ def test_real_start_records_bootstrap_timing_and_a_ready_attempt(tmp_path: Path,
     assert record["startedUtc"] <= record["observedUtc"]
 
 
-def test_at02_fifth_module_is_timed_separately_from_the_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """run-capability-ledger.py appends the native grants provider to BOOTSTRAP."""
-    ledger_module = _load(LEDGER, "timing_at02")
-    runner = ledger_module.base
-    assert "'identity.impl.agents.runtime.grants')" in runner.BOOTSTRAP, "the AT02 replace must still match"
-    monkeypatch.setattr(runner.os, "nice", lambda _increment: None)
-    tree = _fake_tree(tmp_path / "tree", extra={"identity/impl/agents/runtime/__init__.py": "",
-                                               "identity/impl/agents/runtime/grants.py": "VALUE = 2\n"})
-    scenario = _scenario(runner, tmp_path, tree)
-    monkeypatch.setattr(runner, "ping", _ready_after(runner, scenario, scenario.root / "daemon-1-timing.json"))
-    try:
-        scenario.start()
-    finally:
-        _stop(scenario.process)
-    timing = _read(scenario.root / "daemon-1-timing.json")
-    assert list(timing["modules"]) == [*CORE, "identity.impl.agents.runtime.grants"]
-    assert timing["coreWall"] == pytest.approx(sum(timing["modules"][n]["wall"] for n in CORE))
-    assert timing["allWall"] == pytest.approx(timing["coreWall"] + timing["modules"]["identity.impl.agents.runtime.grants"]["wall"])
-    assert "identity.impl.agents.runtime.grants" in _read(scenario.root / "daemon-1-imports.json")
-
-
 def test_source_check_time_is_never_counted_as_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Deterministic: run BOOTSTRAP in-process on a virtual clock where each import costs
     exactly 1 s and each post-import read_bytes (the source check) costs exactly 7 s."""
@@ -199,8 +177,8 @@ def test_source_check_time_is_never_counted_as_import(tmp_path: Path, monkeypatc
         faulthandler.unregister(signal.SIGUSR2)
     timing = _read(tmp_path / "timing.json")
     assert all(timing["modules"][n] == {"wall": 1.0, "cpu": 1.0} for n in CORE)
-    assert timing["coreWall"] == 4.0 and timing["allWall"] == 4.0
-    assert timing["sourceCheckWall"] == 28.0
+    assert timing["coreWall"] == 3.0 and timing["allWall"] == 3.0
+    assert timing["sourceCheckWall"] == 21.0
 
 
 # ---------- B1: every attempt ends in exactly one terminal record ----------
@@ -324,7 +302,7 @@ def test_timeout_end_point_excludes_diagnostics_and_snapshots_import_timing(
     def diagnostics(*_: Any, **__: Any) -> str:
         clock.t += 15.0  # a 15 s sample
         timing.write_text(json.dumps({"modules": {n: {"wall": 1.0, "cpu": 1.0} for n in CORE},
-                                      "coreWall": 4.0, "coreCpu": 4.0, "allWall": 4.0, "allCpu": 4.0,
+                                      "coreWall": 3.0, "coreCpu": 3.0, "allWall": 3.0, "allCpu": 3.0,
                                       "sourceCheckWall": 0.1}))
         return "diagnosed"
 
@@ -361,7 +339,7 @@ def test_timing_file_that_lands_between_observation_and_first_read_is_not_backda
             clock.t += 0.02  # the child finishes 20 ms after t_obs
             imports.write_text(json.dumps({n: {"path": "p", "sha256": "s"} for n in CORE}))
             timing.write_text(json.dumps({"modules": {n: {"wall": 1.0, "cpu": 1.0} for n in CORE},
-                                          "coreWall": 4.0, "coreCpu": 4.0, "allWall": 4.0, "allCpu": 4.0,
+                                          "coreWall": 3.0, "coreCpu": 3.0, "allWall": 3.0, "allCpu": 3.0,
                                           "sourceCheckWall": 0.1}))
         return real_read(path, imports_path)
 
@@ -369,7 +347,7 @@ def test_timing_file_that_lands_between_observation_and_first_read_is_not_backda
     with pytest.raises(AssertionError):
         scenario.start()
     record = _read(scenario.root / "daemon-1-attempt.json")
-    assert record["import"]["coreWall"] == 4.0
+    assert record["import"]["coreWall"] == 3.0
     assert record["importTimingSnapshot"] == "pre-diagnostics"
     started, finished = record["importTimingReadOffsets"]
     assert started == 0.0 and finished >= 0.02 - 1e-9, "the read window after t_obs is recorded, not hidden"
@@ -422,7 +400,7 @@ def test_invalid_timing_is_null_with_a_reason_never_zero(tmp_path: Path, content
 
 def _timing(**overrides: Any) -> dict[str, Any]:
     body = {"modules": {n: {"wall": 1.0, "cpu": 0.5} for n in CORE},
-            "coreWall": 4.0, "coreCpu": 2.0, "allWall": 4.0, "allCpu": 2.0, "sourceCheckWall": 0.1}
+            "coreWall": 3.0, "coreCpu": 1.5, "allWall": 3.0, "allCpu": 1.5, "sourceCheckWall": 0.1}
     body.update(overrides)
     return body
 
@@ -430,10 +408,10 @@ def _timing(**overrides: Any) -> dict[str, Any]:
 @pytest.mark.parametrize("body, imported", [
     (_timing(coreWall=5.0), CORE),                                             # self-reported sum is wrong
     (_timing(allCpu=9.0), CORE),
-    (_timing(modules={n: {"wall": 1.0, "cpu": 0.5} for n in CORE[:3]}), CORE),  # a core module missing
+    (_timing(modules={n: {"wall": 1.0, "cpu": 0.5} for n in CORE[:2]}), CORE),
     (_timing(modules={**{n: {"wall": 1.0, "cpu": 0.5} for n in CORE}, "x": {"wall": 1.0, "cpu": 1.0}}), CORE),
     (_timing(), (*CORE, "identity.impl.agents.runtime.grants")),                 # imports.json has a 5th module
-    (_timing(modules={**{n: {"wall": 1.0, "cpu": 0.5} for n in CORE[:3]}, "identity.impl.agents.registry": {"wall": -1, "cpu": 0}}), CORE),
+    (_timing(modules={**{n: {"wall": 1.0, "cpu": 0.5} for n in CORE[:2]}, "identity.impl.agents.registry": {"wall": -1, "cpu": 0}}), CORE),
 ])
 def test_timing_arithmetic_and_module_set_are_checked(tmp_path: Path, body: dict[str, Any], imported: tuple[str, ...]) -> None:
     runner = _load(RUNNER, "timing_arith")
@@ -444,15 +422,15 @@ def test_timing_arithmetic_and_module_set_are_checked(tmp_path: Path, body: dict
     assert summary["coreWall"] is None and summary["note"]
 
 
-def test_valid_timing_with_the_at02_fifth_module(tmp_path: Path) -> None:
+def test_valid_timing_with_the_extra_at02_module(tmp_path: Path) -> None:
     runner = _load(RUNNER, "timing_valid5")
     body = _timing(modules={**{n: {"wall": 1.0, "cpu": 0.5} for n in CORE}, "identity.impl.agents.runtime.grants": {"wall": 2.0, "cpu": 1.0}},
-                   allWall=6.0, allCpu=3.0)
+                   allWall=5.0, allCpu=2.5)
     path, imports = tmp_path / "t.json", tmp_path / "i.json"
     path.write_text(json.dumps(body))
     imports.write_text(json.dumps({n: {"path": "p", "sha256": "s"} for n in (*CORE, "identity.impl.agents.runtime.grants")}))
     summary = runner.read_import_timing(path, imports)
-    assert summary == {"coreWall": 4.0, "coreCpu": 2.0, "allWall": 6.0, "allCpu": 3.0, "modules": 5, "note": None}
+    assert summary == {"coreWall": 3.0, "coreCpu": 1.5, "allWall": 5.0, "allCpu": 2.5, "modules": 4, "note": None}
 
 
 # ---------- B5: Scenario.cli total call time against its 30 s budget ----------
@@ -540,7 +518,7 @@ def _ledger(directory: Path, *labels: str) -> None:
 
 
 def _result(evidence: Path, scenario: str, *ledgers: str) -> None:
-    """run-host-invite main lists every ledger its process created, relative to the scenario root."""
+    """run-hosted-registry main lists every ledger its process created, relative to the scenario root."""
     _put(evidence / scenario / "result.json", {"result": "PASS", "ledgers": list(ledgers)})
 
 
@@ -607,10 +585,10 @@ def test_a_scenario_without_result_ledgers_is_not_run_or_unknown(tmp_path: Path)
     suite = _load(SUITE, "readiness_notrun")
     evidence, new, old = _evidence(tmp_path)
     _hosted_upgrade(evidence, new, old)
-    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["host-invite", "hosted-upgrade"],
+    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["hosted-registry", "hosted-upgrade"],
                                      lambda _: None)
     assert report["complete"] is False
-    assert report["scenarios"]["host-invite"].startswith("unknown") and report["scenarios"]["hosted-upgrade"] == "ok"
+    assert report["scenarios"]["hosted-registry"].startswith("unknown") and report["scenarios"]["hosted-upgrade"] == "ok"
 
 
 @pytest.mark.parametrize("damage, field", [
@@ -621,12 +599,12 @@ def test_a_scenario_without_result_ledgers_is_not_run_or_unknown(tmp_path: Path)
 def test_suite_marks_timing_evidence_incomplete(tmp_path: Path, damage: str, field: str) -> None:
     suite = _load(SUITE, "readiness_damage")
     evidence, new, old = _evidence(tmp_path)
-    _result(evidence, "host-invite", "attempts.json")
+    _result(evidence, "hosted-registry", "attempts.json")
     labels = ["daemon-1", "daemon-2"] + (["daemon-1"] if damage == "dup" else [])
-    _ledger(evidence / "host-invite", *labels)
+    _ledger(evidence / "hosted-registry", *labels)
     if damage == "ledger-garbage":
-        _put(evidence / "host-invite/attempts.json", "{broken")
-    _put(evidence / "host-invite/daemon-1-attempt.json", _attempt("daemon-1", new))
+        _put(evidence / "hosted-registry/attempts.json", "{broken")
+    _put(evidence / "hosted-registry/daemon-1-attempt.json", _attempt("daemon-1", new))
     second: Any = _attempt("daemon-2", new)
     if damage == "lost":
         second = None
@@ -645,10 +623,10 @@ def test_suite_marks_timing_evidence_incomplete(tmp_path: Path, damage: str, fie
     elif damage == "exited-with-margin":
         second.update(status="exited", exitCode=1, popenToReadySeconds=None)
     if second is not None:
-        _put(evidence / "host-invite/daemon-2-attempt.json", second if isinstance(second, str) else json.dumps(second))
+        _put(evidence / "hosted-registry/daemon-2-attempt.json", second if isinstance(second, str) else json.dumps(second))
     if damage == "extra":
-        _put(evidence / "host-invite/daemon-9-attempt.json", _attempt("daemon-9", new))
-    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["host-invite"], lambda _: None)
+        _put(evidence / "hosted-registry/daemon-9-attempt.json", _attempt("daemon-9", new))
+    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["hosted-registry"], lambda _: None)
     assert report["complete"] is False and report[field]
 
 
@@ -790,15 +768,15 @@ def test_invalid_ready_records_are_bad(tmp_path: Path, mutate: Any) -> None:
     """R3"""
     suite = _load(SUITE, "readiness_strict")
     evidence, new, old = _evidence(tmp_path)
-    _result(evidence, "host-invite", "attempts.json")
-    _ledger(evidence / "host-invite", "daemon-1", "daemon-2")
-    _put(evidence / "host-invite/daemon-1-attempt.json", _attempt("daemon-1", new))
+    _result(evidence, "hosted-registry", "attempts.json")
+    _ledger(evidence / "hosted-registry", "daemon-1", "daemon-2")
+    _put(evidence / "hosted-registry/daemon-1-attempt.json", _attempt("daemon-1", new))
     record = _attempt("daemon-2", new)
     mutate(record)
     if "import_" in record:
         record["import"] = record.pop("import_")
-    _put(evidence / "host-invite/daemon-2-attempt.json", record)
-    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["host-invite"], lambda _: None, planned=["host-invite"])
+    _put(evidence / "hosted-registry/daemon-2-attempt.json", record)
+    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["hosted-registry"], lambda _: None, planned=["hosted-registry"])
     assert report["complete"] is False and report["bad"]
 
 
@@ -810,10 +788,10 @@ def test_invalid_non_ready_records_are_bad(tmp_path: Path, record: dict[str, Any
     suite = _load(SUITE, "readiness_strict_nonready")
     evidence, new, old = _evidence(tmp_path)
     record = dict(record, tree=str(new))
-    _result(evidence, "host-invite", "attempts.json")
-    _ledger(evidence / "host-invite", "daemon-2")
-    _put(evidence / "host-invite/daemon-2-attempt.json", record)
-    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["host-invite"], lambda _: None, planned=["host-invite"])
+    _result(evidence, "hosted-registry", "attempts.json")
+    _ledger(evidence / "hosted-registry", "daemon-2")
+    _put(evidence / "hosted-registry/daemon-2-attempt.json", record)
+    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["hosted-registry"], lambda _: None, planned=["hosted-registry"])
     assert report["complete"] is False and report["bad"]
 
 
@@ -821,18 +799,18 @@ def test_valid_negative_margin_and_non_ready_nulls_are_kept(tmp_path: Path, monk
     suite = _load(SUITE, "readiness_strict_ok")
     _known_trees(suite, monkeypatch)
     evidence, new, old = _evidence(tmp_path)
-    _result(evidence, "host-invite", "attempts.json")
-    _ledger(evidence / "host-invite", "daemon-1", "daemon-2", "daemon-3")
-    _put(evidence / "host-invite/daemon-1-attempt.json",
+    _result(evidence, "hosted-registry", "attempts.json")
+    _ledger(evidence / "hosted-registry", "daemon-1", "daemon-2", "daemon-3")
+    _put(evidence / "hosted-registry/daemon-1-attempt.json",
          _attempt("daemon-1", new, elapsedSeconds=46.0, popenToReadySeconds=46.0, marginSeconds=-1.0))
-    _put(evidence / "host-invite/daemon-2-attempt.json", _attempt(
+    _put(evidence / "hosted-registry/daemon-2-attempt.json", _attempt(
         "daemon-2", new, "timeout", elapsedSeconds=45.1, overrunSeconds=0.1, diagnosticsSeconds=15.0,
         importTimingSnapshot="pre-diagnostics", importTimingReadOffsets=[0.0, 0.01],
         importTimingChangedDuringDiagnostics=False,
         **{"import": {"coreWall": None, "coreCpu": None, "allWall": None, "allCpu": None, "modules": None,
                       "note": "timing missing"}}))
-    _put(evidence / "host-invite/daemon-3-attempt.json", _attempt("daemon-3", new, "exited", exitCode=1))
-    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["host-invite"], lambda _: None, planned=["host-invite"])
+    _put(evidence / "hosted-registry/daemon-3-attempt.json", _attempt("daemon-3", new, "exited", exitCode=1))
+    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["hosted-registry"], lambda _: None, planned=["hosted-registry"])
     assert report["bad"] == [] and report["complete"] is True
 
 
@@ -848,16 +826,16 @@ def test_main_marks_unrun_planned_scenarios_and_is_not_complete(tmp_path: Path, 
     code, evidence = _main(suite, tmp_path, monkeypatch, first_fails)
     report = _read(evidence / "readiness.json")
     assert code == 1 and report["complete"] is False
-    assert report["scenarios"]["capability-ledger"] == "not-run" and report["scenarios"]["hosted-upgrade"] == "not-run"
+    assert report["scenarios"]["hosted-upgrade"] == "not-run"
 
 
 def test_duplicate_ledger_reference_across_results_is_reported(tmp_path: Path) -> None:
     suite = _load(SUITE, "readiness_dup_ref")
     evidence, new, old = _evidence(tmp_path)
-    _result(evidence, "host-invite", "attempts.json", "attempts.json")
-    _ledger(evidence / "host-invite", "daemon-1")
-    _put(evidence / "host-invite/daemon-1-attempt.json", _attempt("daemon-1", new))
-    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["host-invite"], lambda _: None, planned=["host-invite"])
+    _result(evidence, "hosted-registry", "attempts.json", "attempts.json")
+    _ledger(evidence / "hosted-registry", "daemon-1")
+    _put(evidence / "hosted-registry/daemon-1-attempt.json", _attempt("daemon-1", new))
+    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["hosted-registry"], lambda _: None, planned=["hosted-registry"])
     assert report["complete"] is False and report["duplicate"]
 
 
@@ -967,10 +945,10 @@ def test_timing_reader_failure_never_replaces_the_timeout(
 def test_suite_rejects_unrepresentable_numbers_without_raising(tmp_path: Path) -> None:
     suite = _load(SUITE, "readiness_bigint")
     evidence, new, old = _evidence(tmp_path)
-    _result(evidence, "host-invite", "attempts.json")
-    _ledger(evidence / "host-invite", "daemon-1")
-    _put(evidence / "host-invite/daemon-1-attempt.json",
+    _result(evidence, "hosted-registry", "attempts.json")
+    _ledger(evidence / "hosted-registry", "daemon-1")
+    _put(evidence / "hosted-registry/daemon-1-attempt.json",
          json.dumps(_attempt("daemon-1", new)).replace('"elapsedSeconds": 3.0', '"elapsedSeconds": ' + str(10 ** 400)))
-    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["host-invite"], lambda _: None,
-                                     planned=["host-invite"])
+    report = suite.collect_readiness(evidence, {"new": new, "old": old}, ["hosted-registry"], lambda _: None,
+                                     planned=["hosted-registry"])
     assert report["complete"] is False and report["bad"] and not report["notes"]

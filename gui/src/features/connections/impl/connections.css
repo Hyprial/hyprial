@@ -1,0 +1,85 @@
+.model-service-section {
+  display: grid;
+  gap: var(--ui-space-3);
+}
+
+.model-service-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-service-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+  padding: var(--ui-space-3) 0;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.model-service-row:last-child {
+  border-bottom: 0;
+}
+
+.model-service-row > .ui-button {
+  margin-left: auto;
+}
+
+.model-service-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  color: var(--ui-ink-1);
+}
+
+.model-service-meta {
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-xs);
+}
+
+.model-service-form form {
+  display: grid;
+  gap: var(--ui-space-4);
+  max-width: 520px;
+}
+
+.model-service-methods {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--ui-space-5);
+  row-gap: var(--ui-space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.model-service-methods legend {
+  width: 100%;
+  margin-bottom: var(--ui-space-2);
+  padding: 0;
+}
+
+.model-service-methods label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: var(--ui-control-height-sm);
+  font-size: var(--ui-text-md);
+  color: var(--ui-ink-1);
+}
+
+.model-service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-3);
+}
+
+.provider-module .connection-list {
+  margin-top: 0;
+  border-top: 0;
+}

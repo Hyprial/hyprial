@@ -1,0 +1,2242 @@
+{
+  "affected_authority_manifests": [],
+  "affected_gates": [],
+  "apply_token": "3ad0e26450bf0d73430c0f51ab74377d6229f3ab31da7b86221e6350df511a04",
+  "baseline_commit": "ad4ce68b6ccd08bd64dd9fdce448dd91a8329f43",
+  "baseline_match": true,
+  "blocked_reasons": [
+    "demo.desired-state.launch-spec-imports: draft",
+    "demo.cli.warm-import-string: draft"
+  ],
+  "changed_paths": [
+    "contract/e2e/_codex_deepseek_exec.py",
+    "contract/e2e/probe-codex-preapproval.py",
+    "contract/e2e/run-codex-app-server.py",
+    "contract/e2e/run-dsh-worker.py",
+    "contract/e2e/run-hosted-transfer.py",
+    "desktop/scripts/probe-real-codex.py",
+    "desktop/scripts/probe-real-sdk.py",
+    "desktop/scripts/probe-sdk-ownership.py",
+    "src/hyprial/agents/worker_state.py",
+    "src/hyprial/cli.py",
+    "src/hyprial/daemon/__init__.py",
+    "src/hyprial/daemon/api.py",
+    "src/hyprial/daemon/application.py",
+    "src/hyprial/daemon/composition.py",
+    "src/hyprial/daemon/harness_actor.py",
+    "src/hyprial/daemon/pac_actor.py",
+    "src/hyprial/daemon/state_persistence.py",
+    "src/hyprial/daemon/supervisor.py",
+    "src/hyprial/harnesses/agent_sdk.py",
+    "src/hyprial/harnesses/claude.py",
+    "src/hyprial/harnesses/codex.py",
+    "src/hyprial/harnesses/dsh.py",
+    "src/hyprial/harnesses/launcher.py",
+    "src/hyprial/harnesses/model_provider.py",
+    "src/hyprial/harnesses/pi.py",
+    "src/hyprial/harnesses/pi_rpc.py",
+    "src/hyprial/harnesses/python_worker.py",
+    "src/hyprial/management.py",
+    "src/hyprial/squire/setup.py",
+    "tests/actor_runtime/test_session_agent_actors.py",
+    "tests/test_actor_preserved_restore_threshold_states.py",
+    "tests/test_agent_entity.py",
+    "tests/test_agent_env_close.py",
+    "tests/test_agent_env_injection.py",
+    "tests/test_agent_home_p23_cc_native.py",
+    "tests/test_agent_sdk_dependency.py",
+    "tests/test_agent_sdk_driver.py",
+    "tests/test_agent_sdk_force_stop.py",
+    "tests/test_atomic_lifecycle_ports.py",
+    "tests/test_cli_adapter_remove.py",
+    "tests/test_cli_pi_interactive.py",
+    "tests/test_cli_upgrade_restart.py",
+    "tests/test_codex_agent_home.py",
+    "tests/test_codex_app_server.py",
+    "tests/test_daemon_readiness_reports.py",
+    "tests/test_daemon_reconcile_watchdog.py",
+    "tests/test_daemon_restore_settlement.py",
+    "tests/test_desired_state_sqlite_roundtrip.py",
+    "tests/test_desired_state_sqlite_shadow.py",
+    "tests/test_desired_state_start_timing.py",
+    "tests/test_dsh_harness.py",
+    "tests/test_dsh_interrupt_fence.py",
+    "tests/test_dsh_self_launch.py",
+    "tests/test_e2e012_codex_thread_lifecycle.py",
+    "tests/test_final_composition_lifecycle.py",
+    "tests/test_harness_actor.py",
+    "tests/test_harness_command_pinning.py",
+    "tests/test_harness_model_provider.py",
+    "tests/test_harness_restore_admission.py",
+    "tests/test_harness_result_claims.py",
+    "tests/test_harnesses.py",
+    "tests/test_hosts_org_batch_liveness.py",
+    "tests/test_inbox_dispatch_ttl_refresh.py",
+    "tests/test_lifecycle_failed_remove.py",
+    "tests/test_local_provider_wiring.py",
+    "tests/test_model_endpoint_override.py",
+    "tests/test_p1_config_roots.py",
+    "tests/test_pi_controlled_loader.py",
+    "tests/test_pi_rpc_process.py",
+    "tests/test_pi_worker_channel.py",
+    "tests/test_progress_end_to_end.py",
+    "tests/test_provider_auth_hook.py",
+    "tests/test_ps_desired_state_reload.py",
+    "tests/test_ps_status_snapshot.py",
+    "tests/test_python_harness_process.py",
+    "tests/test_python_worker.py",
+    "tests/test_restore_failed_persistence_settlement.py",
+    "tests/test_restore_isolation.py",
+    "tests/test_restore_threshold_states.py",
+    "tests/test_session_ref_authority.py",
+    "tests/test_smolvm_runtime_state.py",
+    "tests/test_smolvm_runtime_vm.py",
+    "tests/test_squire_setup_scaffold.py",
+    "tests/test_state_persistence_authority.py",
+    "tests/test_transfer_container.py",
+    "tests/test_transfer_daemon.py",
+    "tests/test_turn_stall_watch.py",
+    "tests/test_user_addressing.py",
+    "tests/test_user_proxy_worker.py",
+    "tests/test_worker_identity.py",
+    "tests/test_worker_proxy.py",
+    "tests/test_worker_proxy_codex_seam.py",
+    "tests/test_worker_relay.py"
+  ],
+  "command": "plan",
+  "diff_files": [
+    {
+      "diff": "--- a/contract/e2e/_codex_deepseek_exec.py\n+++ b/contract/e2e/_codex_deepseek_exec.py\n@@ -14,7 +14,7 @@\n sys.path.insert(0, str(Path(__file__).resolve().parent))\n \n from _deepseek import MODEL, PROVIDER, deepseek_environment\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.model_provider import codex_provider_configuration\n \n \n",
+      "path": "contract/e2e/_codex_deepseek_exec.py"
+    },
+    {
+      "diff": "--- a/contract/e2e/probe-codex-preapproval.py\n+++ b/contract/e2e/probe-codex-preapproval.py\n@@ -97,7 +97,7 @@\n \n sys.path.insert(0, str(ROOT / \"src\"))\n from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses import codex as codex_module\n from hyprial.harnesses.codex import CodexAppServerProcess\n from hyprial.harnesses.worker_channel import build_worker_channel\n",
+      "path": "contract/e2e/probe-codex-preapproval.py"
+    },
+    {
+      "diff": "--- a/contract/e2e/run-codex-app-server.py\n+++ b/contract/e2e/run-codex-app-server.py\n@@ -29,7 +29,7 @@\n \n sys.path.insert(0, str(ROOT / \"src\"))\n from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.codex import CodexAppServerProcess\n \n \n",
+      "path": "contract/e2e/run-codex-app-server.py"
+    },
+    {
+      "diff": "--- a/contract/e2e/run-dsh-worker.py\n+++ b/contract/e2e/run-dsh-worker.py\n@@ -47,7 +47,7 @@\n )\n \n from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.dsh import DshHarnessProcess, DshHttpApi\n \n SCENARIO = \"E2E-014\"\n",
+      "path": "contract/e2e/run-dsh-worker.py"
+    },
+    {
+      "diff": "--- a/contract/e2e/run-hosted-transfer.py\n+++ b/contract/e2e/run-hosted-transfer.py\n@@ -26,7 +26,7 @@\n sys.path.insert(0, str(Path(__file__).resolve().parent))\n \n from _daemon_runner import IsolatedDaemon, ROOT, free_tcp_endpoint, resolve_hyprial\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n \n \n SCOPE = \"controlled-container-receive-bind-only\"\n",
+      "path": "contract/e2e/run-hosted-transfer.py"
+    },
+    {
+      "diff": "--- a/desktop/scripts/probe-real-codex.py\n+++ b/desktop/scripts/probe-real-codex.py\n@@ -50,7 +50,7 @@\n \n \n async def run():\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n     from hyprial.harnesses.codex import CodexAppServerClient\n \n     spec = HarnessLaunchSpec(\n",
+      "path": "desktop/scripts/probe-real-codex.py"
+    },
+    {
+      "diff": "--- a/desktop/scripts/probe-real-sdk.py\n+++ b/desktop/scripts/probe-real-sdk.py\n@@ -70,7 +70,7 @@\n \n \n async def run():\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n     from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient\n \n     spec = HarnessLaunchSpec(\n",
+      "path": "desktop/scripts/probe-real-sdk.py"
+    },
+    {
+      "diff": "--- a/desktop/scripts/probe-sdk-ownership.py\n+++ b/desktop/scripts/probe-sdk-ownership.py\n@@ -16,7 +16,7 @@\n \n \n async def check(stubborn):\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n     from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient\n     from hyprial.platform.windows_process import process_identity\n \n",
+      "path": "desktop/scripts/probe-sdk-ownership.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/agents/worker_state.py\n+++ b/src/hyprial/agents/worker_state.py\n@@ -15,7 +15,7 @@\n \n from hyprial.actor_runtime import AdmissionResult\n from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.persistent_config import atomic_json_write\n \n \n",
+      "path": "src/hyprial/agents/worker_state.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/cli.py\n+++ b/src/hyprial/cli.py\n@@ -9451,7 +9451,7 @@\n     actor_name = _interactive_actor_name(name)\n     # A5: the agent exists before the TUI does. This is also where a duplicate\n     # name is refused -- before a Claude process has been spawned.\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n     from hyprial.harnesses.model_provider import claude_provider_environment\n \n     provider_spec = HarnessLaunchSpec(\n@@ -10080,7 +10080,7 @@\n     daemon can record it on the registration.\n     \"\"\"\n \n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n     from hyprial.harnesses.model_provider import pi_model_args\n     from hyprial.uri import agent_uri_actor\n     from hyprial.harnesses.pi import PI_HARNESS_ATTACH_EXTENSION\n@@ -10325,7 +10325,7 @@\n     clean detach.  The socket carrier's turn/inbox/FIFO behavior lands in PR2.\n     \"\"\"\n \n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n     from hyprial.agents.runtime import SharedCredentialBinding\n     from hyprial.harnesses.codex import (\n         CodexAppServerRpcError,\n@@ -11101,7 +11101,7 @@\n \n     for name in (\n         \"hyprial.autoupdate\",\n-        \"hyprial.daemon.desired_state\",\n+        \"hyprial.kernel\",\n         # 3c116ad2: the post-restart confirmation reads ping's phase and\n         # derives its poll budget here (pure arithmetic over the desired\n         # state's rows) -- lazily in cli.py, so it must cross the install\n",
+      "path": "src/hyprial/cli.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/__init__.py\n+++ b/src/hyprial/daemon/__init__.py\n@@ -21,9 +21,9 @@\n     DesiredStateError,\n     DesiredStateStore,\n     InteractiveSession,\n-    HarnessLaunchSpec,\n     ZenohEndpoints,\n )\n+from ..kernel import HarnessLaunchSpec\n from .service import (\n     LAUNCHD_LABEL,\n     ServiceConfig,\n",
+      "path": "src/hyprial/daemon/__init__.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/api.py\n+++ b/src/hyprial/daemon/api.py\n@@ -9,7 +9,7 @@\n \n from hyprial.contracts import ipc_errors\n \n-from .desired_state import HarnessLaunchSpec\n+from ..kernel import HarnessLaunchSpec\n \n \n def _freeze_delivery_json(value: object) -> object:\n",
+      "path": "src/hyprial/daemon/api.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/application.py\n+++ b/src/hyprial/daemon/application.py\n@@ -242,9 +242,9 @@\n from .desired_state import (\n     DesiredState,\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n     InteractiveSession,\n )\n+from ..kernel import HarnessLaunchSpec\n from .exit_independence import do_not_exit, finish_shutdown\n from .shutdown_stall import (\n     STALL_DUMP_SIGNAL,\n",
+      "path": "src/hyprial/daemon/application.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/composition.py\n+++ b/src/hyprial/daemon/composition.py\n@@ -126,7 +126,9 @@\n     StopAdapterCommand,\n )\n \n-from .desired_state import DesiredStateError, DesiredStateStore, HarnessLaunchSpec\n+from .desired_state import DesiredStateError, DesiredStateStore, \n+\n+from ..kernel import HarnessLaunchSpec\n from .session_actor import SessionActor\n \n \n",
+      "path": "src/hyprial/daemon/composition.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/harness_actor.py\n+++ b/src/hyprial/daemon/harness_actor.py\n@@ -32,7 +32,8 @@\n     ManagedHarnessProcess,\n     StreamingHarnessProcess,\n )\n-from .desired_state import DesiredStateError, DesiredStateStore, HarnessLaunchSpec\n+from .desired_state import DesiredStateError, DesiredStateStore, \n+from ..kernel import HarnessLaunchSpec\n from .desired_state_io import (\n     DesiredStateIoCompleted,\n     DesiredStateIoPort,\n",
+      "path": "src/hyprial/daemon/harness_actor.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/pac_actor.py\n+++ b/src/hyprial/daemon/pac_actor.py\n@@ -10,7 +10,7 @@\n from pathlib import Path\n from typing import Any, Callable, Protocol\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.lifecycle_manager import LifecycleOperation\n from hyprial.pac.lifecycle import (\n     ActorCoordinator,\n",
+      "path": "src/hyprial/daemon/pac_actor.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/state_persistence.py\n+++ b/src/hyprial/daemon/state_persistence.py\n@@ -22,9 +22,11 @@\n from hyprial.cost_counters import CallCostCounters\n \n from .desired_state import (\n-    DesiredState, DesiredStateStore, HarnessLaunchSpec, InteractiveSession,\n+    DesiredState, DesiredStateStore, InteractiveSession,\n     PendingSessionAgentEffect,\n )\n+\n+from ..kernel import HarnessLaunchSpec\n from .lifecycle_manager import (\n     LifecycleOperation,\n     LifecycleState,\n",
+      "path": "src/hyprial/daemon/state_persistence.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/daemon/supervisor.py\n+++ b/src/hyprial/daemon/supervisor.py\n@@ -14,7 +14,8 @@\n from pathlib import Path\n \n from .api import HarnessDelivery, HarnessLauncher, HarnessResult\n-from .desired_state import DesiredStateStore, HarnessLaunchSpec\n+from .desired_state import DesiredStateStore, \n+from ..kernel import HarnessLaunchSpec\n from .harness_ports import HarnessAdapterRegistrationProjection\n from .harness_actor import (\n     HarnessRestoreSummary,\n",
+      "path": "src/hyprial/daemon/supervisor.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/agent_sdk.py\n+++ b/src/hyprial/harnesses/agent_sdk.py\n@@ -19,7 +19,7 @@\n     whitelist_replacement_environment,\n )\n from hyprial.agents.runtime import AgentRuntimeContext\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.log import Logger\n from hyprial.transfer.container import (\n     CONTAINER_SDK_PYTHON,\n",
+      "path": "src/hyprial/harnesses/agent_sdk.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/claude.py\n+++ b/src/hyprial/harnesses/claude.py\n@@ -7,7 +7,7 @@\n from typing import TYPE_CHECKING\n from uuid import uuid4\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n \n from .common import (\n     ConnectorOptions,\n",
+      "path": "src/hyprial/harnesses/claude.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/codex.py\n+++ b/src/hyprial/harnesses/codex.py\n@@ -42,7 +42,7 @@\n     validate_shared_credential_binding,\n     validate_shared_credential_environment,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.transfer.container import wrap_worker_launch\n from hyprial.log import Logger\n \n",
+      "path": "src/hyprial/harnesses/codex.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/dsh.py\n+++ b/src/hyprial/harnesses/dsh.py\n@@ -31,7 +31,7 @@\n import yaml\n \n from hyprial._dsh_resolver import resolve_hostname\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.log import Logger\n \n from .owned_process import OwnedProcessGroup\n",
+      "path": "src/hyprial/harnesses/dsh.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/launcher.py\n+++ b/src/hyprial/harnesses/launcher.py\n@@ -7,7 +7,7 @@\n from pathlib import Path\n \n from hyprial.daemon.api import ManagedHarnessProcess\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n \n from .agent_sdk import ClaudeAgentSdkProcess\n from .capabilities import Capability, CapabilitySupport, SupportLevel, support\n",
+      "path": "src/hyprial/harnesses/launcher.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/model_provider.py\n+++ b/src/hyprial/harnesses/model_provider.py\n@@ -18,7 +18,7 @@\n from collections.abc import Mapping\n from pathlib import Path\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n \n DEEPSEEK_PROVIDER = \"deepseek\"\n DEEPSEEK_MODEL = \"deepseek-flash\"\n",
+      "path": "src/hyprial/harnesses/model_provider.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/pi.py\n+++ b/src/hyprial/harnesses/pi.py\n@@ -7,7 +7,7 @@\n from typing import TYPE_CHECKING\n from uuid import uuid4\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n \n from .common import (\n     ConnectorOptions,\n",
+      "path": "src/hyprial/harnesses/pi.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/pi_rpc.py\n+++ b/src/hyprial/harnesses/pi_rpc.py\n@@ -30,7 +30,7 @@\n from uuid import uuid4\n \n from hyprial.contracts import ipc_errors\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.transfer.container import CONTAINER_PI_EXTENSION, wrap_worker_launch\n from hyprial.log import Logger\n \n",
+      "path": "src/hyprial/harnesses/pi_rpc.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/harnesses/python_worker.py\n+++ b/src/hyprial/harnesses/python_worker.py\n@@ -29,7 +29,7 @@\n     ProcessLivenessState,\n     classify_harness_failure,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.log import Logger\n \n from .capabilities import concurrency\n",
+      "path": "src/hyprial/harnesses/python_worker.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/management.py\n+++ b/src/hyprial/management.py\n@@ -11,7 +11,9 @@\n from typing import Any, Protocol\n from uuid import uuid4\n \n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_ports import HarnessAdapterRegistrationProjection\n from hyprial.daemon.ownership import DaemonStateOwnershipFence\n \n",
+      "path": "src/hyprial/management.py"
+    },
+    {
+      "diff": "--- a/src/hyprial/squire/setup.py\n+++ b/src/hyprial/squire/setup.py\n@@ -16,7 +16,7 @@\n from pathlib import Path\n from typing import Protocol, runtime_checkable\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.management import (\n     EnsureSquireRegistryCommand,\n     RegistryManagementHandler,\n",
+      "path": "src/hyprial/squire/setup.py"
+    },
+    {
+      "diff": "--- a/tests/actor_runtime/test_session_agent_actors.py\n+++ b/tests/actor_runtime/test_session_agent_actors.py\n@@ -36,8 +36,8 @@\n from hyprial.contracts.ports import PortAdmission, PortCommandRejected\n from hyprial.daemon.desired_state import (\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n-)\n+    )\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.lifecycle_receipts import (\n     LifecycleMutationCompleted,\n     LifecycleMutationRequest,\n",
+      "path": "tests/actor_runtime/test_session_agent_actors.py"
+    },
+    {
+      "diff": "--- a/tests/test_actor_preserved_restore_threshold_states.py\n+++ b/tests/test_actor_preserved_restore_threshold_states.py\n@@ -18,7 +18,7 @@\n )\n from hyprial.contracts.ports import PortAdmission\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.lifecycle_manager import LifecycleState\n from hyprial.daemon.bounded_cadence import BoundedCadence\n from hyprial.pac.restore_facts import PacRestoreFacts\n",
+      "path": "tests/test_actor_preserved_restore_threshold_states.py"
+    },
+    {
+      "diff": "--- a/tests/test_agent_entity.py\n+++ b/tests/test_agent_entity.py\n@@ -36,9 +36,9 @@\n )\n from hyprial.daemon.desired_state import (\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n     InteractiveSession,\n )\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.lifecycle_manager import (\n     LifecycleKind,\n     LifecycleOperation,\n",
+      "path": "tests/test_agent_entity.py"
+    },
+    {
+      "diff": "--- a/tests/test_agent_env_close.py\n+++ b/tests/test_agent_env_close.py\n@@ -38,7 +38,7 @@\n \n \n def _spec(harness: str = \"codex\", **kwargs):\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n \n     return HarnessLaunchSpec(harness, \"worker\", True, **kwargs)\n \n",
+      "path": "tests/test_agent_env_close.py"
+    },
+    {
+      "diff": "--- a/tests/test_agent_env_injection.py\n+++ b/tests/test_agent_env_injection.py\n@@ -45,7 +45,7 @@\n \n \n def _spec(**kwargs):\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n \n     return HarnessLaunchSpec(harness=\"pi\", name=\"worker\", headless=True, **kwargs)\n \n",
+      "path": "tests/test_agent_env_injection.py"
+    },
+    {
+      "diff": "--- a/tests/test_agent_home_p23_cc_native.py\n+++ b/tests/test_agent_home_p23_cc_native.py\n@@ -34,7 +34,7 @@\n     AgentRuntimeContext,\n     resolve_agent_runtime_context,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses import tmux as tmux_mod\n from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient\n from hyprial.harnesses.claude_runtime import (\n",
+      "path": "tests/test_agent_home_p23_cc_native.py"
+    },
+    {
+      "diff": "--- a/tests/test_agent_sdk_dependency.py\n+++ b/tests/test_agent_sdk_dependency.py\n@@ -21,7 +21,7 @@\n import pytest\n \n import hyprial.harnesses.agent_sdk as agent_sdk_module\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.agent_sdk import (\n     AGENT_SDK_VERSION,\n     IsolatedAgentSdkClient,\n",
+      "path": "tests/test_agent_sdk_dependency.py"
+    },
+    {
+      "diff": "--- a/tests/test_agent_sdk_driver.py\n+++ b/tests/test_agent_sdk_driver.py\n@@ -26,7 +26,7 @@\n     resolve_agent_runtime_context,\n )\n from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.agent_sdk import (\n     AGENT_SDK_VERSION,\n     ClaudeAgentSdkProcess,\n",
+      "path": "tests/test_agent_sdk_driver.py"
+    },
+    {
+      "diff": "--- a/tests/test_agent_sdk_force_stop.py\n+++ b/tests/test_agent_sdk_force_stop.py\n@@ -16,7 +16,7 @@\n \n import pytest\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.agent_sdk import ClaudeAgentSdkProcess, IsolatedAgentSdkClient\n from hyprial.harnesses.codex import PROCESS_FORCE_JOIN_SECONDS, _OwnedProcessGroup\n \n",
+      "path": "tests/test_agent_sdk_force_stop.py"
+    },
+    {
+      "diff": "--- a/tests/test_atomic_lifecycle_ports.py\n+++ b/tests/test_atomic_lifecycle_ports.py\n@@ -23,9 +23,9 @@\n from hyprial.contracts.ports import PortAdmission, PortCommandRejected\n from hyprial.daemon.desired_state import (\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n     InteractiveSession,\n )\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.application import DaemonApplication\n from hyprial.daemon.atomic_lifecycle_ports import AtomicLifecycleDomainPort\n from hyprial.daemon.composition import (\n",
+      "path": "tests/test_atomic_lifecycle_ports.py"
+    },
+    {
+      "diff": "--- a/tests/test_cli_adapter_remove.py\n+++ b/tests/test_cli_adapter_remove.py\n@@ -77,7 +77,8 @@\n \n \n def _seed_desired_state(home: Path, *, provider: bool = True, pin: bool = True) -> None:\n-    from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+    from hyprial.daemon.desired_state import DesiredStateStore, \n+    from hyprial.kernel import HarnessLaunchSpec\n \n     store = DesiredStateStore(home / \"desired-state.json\")\n     if provider:\n",
+      "path": "tests/test_cli_adapter_remove.py"
+    },
+    {
+      "diff": "--- a/tests/test_cli_pi_interactive.py\n+++ b/tests/test_cli_pi_interactive.py\n@@ -321,7 +321,7 @@\n     \"\"\"Item 4: the interactive pty connector passes session refs through the\n     same [A-Za-z0-9._-] translation as the RPC boundary (#192 follow-up).\"\"\"\n \n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n     from hyprial.harnesses.pi import PiConnector\n \n     spec = HarnessLaunchSpec(\n",
+      "path": "tests/test_cli_pi_interactive.py"
+    },
+    {
+      "diff": "--- a/tests/test_cli_upgrade_restart.py\n+++ b/tests/test_cli_upgrade_restart.py\n@@ -824,8 +824,9 @@\n     from hyprial.daemon.desired_state import (\n         DesiredState,\n         DesiredStateStore,\n-        HarnessLaunchSpec,\n-    )\n+        )\n+\n+    from hyprial.kernel import HarnessLaunchSpec\n \n     state = tmp_path / \"state\"\n     state.mkdir(parents=True, exist_ok=True)\n",
+      "path": "tests/test_cli_upgrade_restart.py"
+    },
+    {
+      "diff": "--- a/tests/test_codex_agent_home.py\n+++ b/tests/test_codex_agent_home.py\n@@ -32,7 +32,7 @@\n     SharedCredentialBinding,\n     resolve_agent_runtime_context,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.codex import (\n     CodexAgentHomeError,\n     CodexAppServerClient,\n",
+      "path": "tests/test_codex_agent_home.py"
+    },
+    {
+      "diff": "--- a/tests/test_codex_app_server.py\n+++ b/tests/test_codex_app_server.py\n@@ -20,7 +20,7 @@\n     HarnessResultStatus,\n     StreamingHarnessProcess,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses import HarnessLauncher, PtyHarnessProcess, is_streaming_spec\n from hyprial.harnesses.codex import (\n     APP_SERVER_STARTUP_MARGIN_SECONDS,\n",
+      "path": "tests/test_codex_app_server.py"
+    },
+    {
+      "diff": "--- a/tests/test_daemon_readiness_reports.py\n+++ b/tests/test_daemon_readiness_reports.py\n@@ -33,7 +33,7 @@\n )\n from hyprial.contracts.ports import PortAdmission\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import HarnessRuntimeActor\n from hyprial.daemon.harness_ports import (\n     DrainHarnessReadinessCommand,\n",
+      "path": "tests/test_daemon_readiness_reports.py"
+    },
+    {
+      "diff": "--- a/tests/test_daemon_reconcile_watchdog.py\n+++ b/tests/test_daemon_reconcile_watchdog.py\n@@ -30,7 +30,7 @@\n from typing import Any\n \n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.runtime import ReconcileSummary\n from hyprial.daemon.supervisor import ManagedHarnessRuntime\n from hyprial.inbox import InboxService, MemoryDeliveryTransport\n",
+      "path": "tests/test_daemon_reconcile_watchdog.py"
+    },
+    {
+      "diff": "--- a/tests/test_daemon_restore_settlement.py\n+++ b/tests/test_daemon_restore_settlement.py\n@@ -34,7 +34,7 @@\n import pytest\n \n from hyprial.contracts.ports import PortAdmission\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import HarnessRuntimeActor\n from hyprial.daemon.harness_ports import (\n     HarnessLaunchProjection,\n",
+      "path": "tests/test_daemon_restore_settlement.py"
+    },
+    {
+      "diff": "--- a/tests/test_desired_state_sqlite_roundtrip.py\n+++ b/tests/test_desired_state_sqlite_roundtrip.py\n@@ -50,10 +50,11 @@\n from hyprial.daemon.desired_state import (\n     DesiredState,\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n     InteractiveSession,\n     PendingSessionAgentEffect,\n )\n+\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.desired_state_sqlite import DesiredStateSqliteShadow\n from hyprial.daemon.harness_ports import EnsureHarnessCommand, HarnessLaunchProjection\n from hyprial.daemon.lifecycle_receipts import LifecycleMutationRequest\n",
+      "path": "tests/test_desired_state_sqlite_roundtrip.py"
+    },
+    {
+      "diff": "--- a/tests/test_desired_state_sqlite_shadow.py\n+++ b/tests/test_desired_state_sqlite_shadow.py\n@@ -25,10 +25,11 @@\n from hyprial.daemon.desired_state import (\n     DesiredState,\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n     InteractiveSession,\n     PendingSessionAgentEffect,\n )\n+\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.desired_state_sqlite import DesiredStateSqliteShadow\n from hyprial.daemon.harness_ports import EnsureHarnessCommand, HarnessLaunchProjection\n from hyprial.daemon.lifecycle_receipts import LifecycleMutationRequest\n",
+      "path": "tests/test_desired_state_sqlite_shadow.py"
+    },
+    {
+      "diff": "--- a/tests/test_desired_state_start_timing.py\n+++ b/tests/test_desired_state_start_timing.py\n@@ -30,7 +30,8 @@\n \n from hyprial.contracts.ports import PortAdmission\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.desired_state_sqlite import DesiredStateSqliteShadow, _SCHEMA\n from hyprial.daemon.harness_actor import HarnessRuntimeActor, HarnessRuntimeFacade\n from hyprial.daemon.harness_ports import (\n",
+      "path": "tests/test_desired_state_start_timing.py"
+    },
+    {
+      "diff": "--- a/tests/test_dsh_harness.py\n+++ b/tests/test_dsh_harness.py\n@@ -10,7 +10,7 @@\n     ChildEnvironmentLaunch,\n     CompleteChildEnvironment,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.dsh import DshApiClient, DshApiError, DshHarnessProcess\n from hyprial.harnesses.launcher import HarnessLauncher, is_streaming_spec\n from hyprial.harnesses.worker_channel import WorkerChannel, build_worker_channel\n",
+      "path": "tests/test_dsh_harness.py"
+    },
+    {
+      "diff": "--- a/tests/test_dsh_interrupt_fence.py\n+++ b/tests/test_dsh_interrupt_fence.py\n@@ -11,7 +11,7 @@\n import pytest\n \n from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n import hyprial.harnesses.dsh as dsh_module\n from hyprial.harnesses.dsh import DshApiClient, DshApiError, DshHarnessProcess, DshHttpApi\n \n",
+      "path": "tests/test_dsh_interrupt_fence.py"
+    },
+    {
+      "diff": "--- a/tests/test_dsh_self_launch.py\n+++ b/tests/test_dsh_self_launch.py\n@@ -28,7 +28,7 @@\n     CompleteChildEnvironment,\n )\n from hyprial.daemon import ManagedHarnessRuntime\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import HarnessProjection, _Record\n from hyprial.harnesses.dsh import (\n     DshApiError,\n",
+      "path": "tests/test_dsh_self_launch.py"
+    },
+    {
+      "diff": "--- a/tests/test_e2e012_codex_thread_lifecycle.py\n+++ b/tests/test_e2e012_codex_thread_lifecycle.py\n@@ -101,7 +101,8 @@\n     runner = _runner()\n     state = tmp_path / \"state\"\n     state.mkdir()\n-    from hyprial.daemon.desired_state import DesiredState, DesiredStateStore, HarnessLaunchSpec\n+    from hyprial.daemon.desired_state import DesiredState, DesiredStateStore, \n+    from hyprial.kernel import HarnessLaunchSpec\n \n     # The runner reads the desired-state AUTHORITY through its store (#386:\n     # JSON on dev, SQLite on intg), so the fixture is written through the same\n",
+      "path": "tests/test_e2e012_codex_thread_lifecycle.py"
+    },
+    {
+      "diff": "--- a/tests/test_final_composition_lifecycle.py\n+++ b/tests/test_final_composition_lifecycle.py\n@@ -20,7 +20,7 @@\n     CorrelatedDomainEvents,\n     HarnessPortClient,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import HarnessRuntimeActor\n from hyprial.daemon.harness_ports import (\n     EnsureHarnessCommand,\n",
+      "path": "tests/test_final_composition_lifecycle.py"
+    },
+    {
+      "diff": "--- a/tests/test_harness_actor.py\n+++ b/tests/test_harness_actor.py\n@@ -18,7 +18,7 @@\n from hyprial.actor_runtime import ActorState, AdmissionResult\n from hyprial.contracts.ports import PortAdmission\n from hyprial.contracts.ports import PortCommandRejected\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.api import HarnessDelivery, HarnessResult, HarnessResultStatus\n from hyprial.daemon.harness_actor import (\n     HarnessProjection,\n",
+      "path": "tests/test_harness_actor.py"
+    },
+    {
+      "diff": "--- a/tests/test_harness_command_pinning.py\n+++ b/tests/test_harness_command_pinning.py\n@@ -24,7 +24,8 @@\n     LIFECYCLE_OPERATION_DEADLINE_SECONDS,\n     LIFECYCLE_WAIT_MARGIN_SECONDS,\n )\n-from hyprial.daemon.desired_state import DesiredStateError, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateError, \n+from hyprial.kernel import HarnessLaunchSpec\n \n \n def _spec_json(**overrides: object) -> dict[str, object]:\n",
+      "path": "tests/test_harness_command_pinning.py"
+    },
+    {
+      "diff": "--- a/tests/test_harness_model_provider.py\n+++ b/tests/test_harness_model_provider.py\n@@ -10,7 +10,7 @@\n from typer.testing import CliRunner\n \n from hyprial import cli\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_ports import HarnessLaunchProjection\n from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient\n from hyprial.harnesses.codex import CodexAppServerClient\n",
+      "path": "tests/test_harness_model_provider.py"
+    },
+    {
+      "diff": "--- a/tests/test_harness_restore_admission.py\n+++ b/tests/test_harness_restore_admission.py\n@@ -34,7 +34,7 @@\n import pytest\n \n from hyprial.daemon import supervisor as supervisor_module\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.supervisor import ManagedHarnessRuntime\n \n \n",
+      "path": "tests/test_harness_restore_admission.py"
+    },
+    {
+      "diff": "--- a/tests/test_harness_result_claims.py\n+++ b/tests/test_harness_result_claims.py\n@@ -6,7 +6,7 @@\n from hyprial.contracts.ports import PortAdmission\n from hyprial.daemon.api import HarnessResult, HarnessResultStatus\n from hyprial.daemon.composition import CorrelatedDomainEvents, HarnessPortClient\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import HarnessRuntimeActor\n from hyprial.daemon.harness_ports import ClaimHarnessResultsCommand\n \n",
+      "path": "tests/test_harness_result_claims.py"
+    },
+    {
+      "diff": "--- a/tests/test_harnesses.py\n+++ b/tests/test_harnesses.py\n@@ -7,7 +7,7 @@\n import pytest\n \n from hyprial.daemon.api import HarnessLauncher as HarnessLauncherProtocol\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses import (\n     OperationStatus,\n     HarnessLauncher,\n",
+      "path": "tests/test_harnesses.py"
+    },
+    {
+      "diff": "--- a/tests/test_hosts_org_batch_liveness.py\n+++ b/tests/test_hosts_org_batch_liveness.py\n@@ -81,7 +81,7 @@\n import pytest\n \n from hyprial.daemon.application import DaemonApplication, _LocalPresence\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.identity import classify_target_identity\n from hyprial.org.mesh import OrgFetchResult\n from hyprial.uri import TARGET_KIND_HOST\n",
+      "path": "tests/test_hosts_org_batch_liveness.py"
+    },
+    {
+      "diff": "--- a/tests/test_inbox_dispatch_ttl_refresh.py\n+++ b/tests/test_inbox_dispatch_ttl_refresh.py\n@@ -26,7 +26,8 @@\n import pytest\n \n from hyprial.daemon.api import HarnessDelivery, HarnessResult, HarnessResultStatus\n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.runtime import DaemonEventBridge\n from hyprial.daemon.supervisor import ManagedHarnessRuntime\n from hyprial.inbox import (\n",
+      "path": "tests/test_inbox_dispatch_ttl_refresh.py"
+    },
+    {
+      "diff": "--- a/tests/test_lifecycle_failed_remove.py\n+++ b/tests/test_lifecycle_failed_remove.py\n@@ -20,7 +20,7 @@\n \n from hyprial.daemon.application import DaemonRequestError, _LocalPresence\n from hyprial.daemon.composition import CorrelatedDomainEvents, HarnessPortClient\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import HarnessRuntimeActor\n from hyprial.daemon.lifecycle_manager import LifecycleOperation\n from hyprial.daemon.lifecycle_receipts import (\n",
+      "path": "tests/test_lifecycle_failed_remove.py"
+    },
+    {
+      "diff": "--- a/tests/test_local_provider_wiring.py\n+++ b/tests/test_local_provider_wiring.py\n@@ -19,7 +19,7 @@\n import urllib.request\n from pathlib import Path\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.model_provider import (\n     DEEPSEEK_MODEL,\n     claude_provider_environment,\n",
+      "path": "tests/test_local_provider_wiring.py"
+    },
+    {
+      "diff": "--- a/tests/test_model_endpoint_override.py\n+++ b/tests/test_model_endpoint_override.py\n@@ -16,7 +16,7 @@\n \n import pytest\n \n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.model_provider import (\n     ANTHROPIC_BASE_URL_ENV,\n     DEEPSEEK_ANTHROPIC_BASE_URL,\n",
+      "path": "tests/test_model_endpoint_override.py"
+    },
+    {
+      "diff": "--- a/tests/test_p1_config_roots.py\n+++ b/tests/test_p1_config_roots.py\n@@ -27,7 +27,7 @@\n     compose_worker_child_launch,\n     whitelist_replacement_environment,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient\n from hyprial.harnesses.codex import CodexAppServerClient\n from hyprial.harnesses.pi_rpc import PiRpcClient\n",
+      "path": "tests/test_p1_config_roots.py"
+    },
+    {
+      "diff": "--- a/tests/test_pi_controlled_loader.py\n+++ b/tests/test_pi_controlled_loader.py\n@@ -24,7 +24,7 @@\n     DEFAULT_AGENT_TOOL_PROFILE,\n     resolve_agent_runtime_context,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.pi_loader import (\n     PI_CONTROLLED_LOADER,\n     PI_LOADER_RECEIPT_SCHEMA,\n",
+      "path": "tests/test_pi_controlled_loader.py"
+    },
+    {
+      "diff": "--- a/tests/test_pi_rpc_process.py\n+++ b/tests/test_pi_rpc_process.py\n@@ -12,7 +12,7 @@\n import pytest\n \n from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus, StreamingHarnessProcess\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses import HarnessLauncher, PtyHarnessProcess\n from hyprial.harnesses import pi_rpc\n from hyprial.harnesses.pi_rpc import (\n",
+      "path": "tests/test_pi_rpc_process.py"
+    },
+    {
+      "diff": "--- a/tests/test_pi_worker_channel.py\n+++ b/tests/test_pi_worker_channel.py\n@@ -22,7 +22,7 @@\n import pytest\n \n import hyprial.harnesses.launcher as launcher_module\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.launcher import HarnessLauncher\n from hyprial.harnesses.pi_rpc import (\n     PI_HARNESS_BRIDGE_EXTENSION,\n",
+      "path": "tests/test_pi_worker_channel.py"
+    },
+    {
+      "diff": "--- a/tests/test_progress_end_to_end.py\n+++ b/tests/test_progress_end_to_end.py\n@@ -17,7 +17,8 @@\n \n from hyprial.daemon import application as daemon_application\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.runtime import DaemonEventBridge\n from hyprial.daemon.supervisor import ManagedHarnessRuntime\n from hyprial.harnesses.streaming import ProgressObservation, StreamingTurnProcess\n",
+      "path": "tests/test_progress_end_to_end.py"
+    },
+    {
+      "diff": "--- a/tests/test_provider_auth_hook.py\n+++ b/tests/test_provider_auth_hook.py\n@@ -26,7 +26,7 @@\n \n from hyprial.actor_runtime import AdmissionResult\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses import agent_sdk as agent_sdk_module\n from hyprial.harnesses.agent_sdk import ClaudeAgentSdkProcess\n from hyprial.harnesses.codex import CodexAppServerProcess\n",
+      "path": "tests/test_provider_auth_hook.py"
+    },
+    {
+      "diff": "--- a/tests/test_ps_desired_state_reload.py\n+++ b/tests/test_ps_desired_state_reload.py\n@@ -29,7 +29,8 @@\n import pytest\n \n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.inbox import InboxService, MemoryDeliveryTransport\n from hyprial.status import build_actor_status_snapshot\n \n",
+      "path": "tests/test_ps_desired_state_reload.py"
+    },
+    {
+      "diff": "--- a/tests/test_ps_status_snapshot.py\n+++ b/tests/test_ps_status_snapshot.py\n@@ -24,7 +24,8 @@\n from hyprial.agents import AGENT_HEARTBEAT_TTL_SECONDS\n from hyprial.contracts.ports import PortAdmission\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.lifecycle_manager import (\n     LifecycleKind,\n     LifecycleOperation,\n",
+      "path": "tests/test_ps_status_snapshot.py"
+    },
+    {
+      "diff": "--- a/tests/test_python_harness_process.py\n+++ b/tests/test_python_harness_process.py\n@@ -11,7 +11,7 @@\n import pytest\n \n from hyprial.daemon.api import HarnessDelivery\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.top import read_worker_turn_stats\n from hyprial.harnesses.python_worker import PythonHarnessProcess\n \n",
+      "path": "tests/test_python_harness_process.py"
+    },
+    {
+      "diff": "--- a/tests/test_python_worker.py\n+++ b/tests/test_python_worker.py\n@@ -171,7 +171,7 @@\n \n \n def _proxy_spec():\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n \n     return HarnessLaunchSpec(\n         harness=\"user-proxy\", name=\"p\", headless=True, args=(\"--route\", \"route:a:b\")\n",
+      "path": "tests/test_python_worker.py"
+    },
+    {
+      "diff": "--- a/tests/test_restore_failed_persistence_settlement.py\n+++ b/tests/test_restore_failed_persistence_settlement.py\n@@ -10,7 +10,8 @@\n \n from hyprial.actor_runtime import ActorState, AdmissionResult\n from hyprial.contracts.ports import PortCommandRejected\n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.desired_state_io import DesiredStateIoPort, DesiredStateOperation\n from hyprial.daemon.harness_actor import HarnessRuntimeActor, HarnessRuntimeFacade\n from hyprial.daemon.harness_ports import HarnessRestoreCompleted\n",
+      "path": "tests/test_restore_failed_persistence_settlement.py"
+    },
+    {
+      "diff": "--- a/tests/test_restore_isolation.py\n+++ b/tests/test_restore_isolation.py\n@@ -25,9 +25,10 @@\n from hyprial.daemon.desired_state import (\n     DesiredState,\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n     InteractiveSession,\n )\n+\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.state_db import StateDatabase\n from test_mcp_channel_owner_migration_e2e import IsolatedHarness\n \n",
+      "path": "tests/test_restore_isolation.py"
+    },
+    {
+      "diff": "--- a/tests/test_restore_threshold_states.py\n+++ b/tests/test_restore_threshold_states.py\n@@ -12,7 +12,7 @@\n     desired_generation,\n )\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.supervisor import ManagedHarnessRuntime\n from hyprial.cli import _restore_doctor_check\n \n",
+      "path": "tests/test_restore_threshold_states.py"
+    },
+    {
+      "diff": "--- a/tests/test_session_ref_authority.py\n+++ b/tests/test_session_ref_authority.py\n@@ -16,7 +16,8 @@\n     DomainCommandError,\n     HarnessPortClient,\n )\n-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateStore, \n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import HarnessRuntimeActor, HarnessRuntimeFacade\n from hyprial.daemon.process_owner import ProcessOwner\n from hyprial.daemon.harness_ports import (\n",
+      "path": "tests/test_session_ref_authority.py"
+    },
+    {
+      "diff": "--- a/tests/test_smolvm_runtime_state.py\n+++ b/tests/test_smolvm_runtime_state.py\n@@ -14,8 +14,8 @@\n     DesiredState,\n     DesiredStateError,\n     DesiredStateStore,\n-    HarnessLaunchSpec,\n-)\n+    )\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_actor import _launch_spec\n from hyprial.daemon.lifecycle_manager import (\n     LifecycleOperation,\n",
+      "path": "tests/test_smolvm_runtime_state.py"
+    },
+    {
+      "diff": "--- a/tests/test_smolvm_runtime_vm.py\n+++ b/tests/test_smolvm_runtime_vm.py\n@@ -20,7 +20,7 @@\n     resolve_agent_runtime_context,\n )\n from hyprial.contracts.execution_runtime import SmolvmRuntimeSpec\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.codex import CodexAppServerClient, CodexAgentHomeError\n from hyprial.harnesses.smolvm_runtime import SmolvmWorkerRuntime, mount_roots\n from hyprial.harnesses.worker_channel import build_worker_channel\n",
+      "path": "tests/test_smolvm_runtime_vm.py"
+    },
+    {
+      "diff": "--- a/tests/test_squire_setup_scaffold.py\n+++ b/tests/test_squire_setup_scaffold.py\n@@ -10,7 +10,7 @@\n from typer.testing import CliRunner\n \n from hyprial import cli\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.management import RegistryManagementHandler\n from hyprial.squire import SetupIdentity, SquireSetup\n \n",
+      "path": "tests/test_squire_setup_scaffold.py"
+    },
+    {
+      "diff": "--- a/tests/test_state_persistence_authority.py\n+++ b/tests/test_state_persistence_authority.py\n@@ -10,8 +10,9 @@\n \n from hyprial.actor_runtime import ActorState, AdmissionResult\n from hyprial.daemon.desired_state import (\n-    DesiredState, DesiredStateStore, HarnessLaunchSpec, InteractiveSession,\n+    DesiredState, DesiredStateStore, InteractiveSession,\n )\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.harness_ports import EnsureHarnessCommand, HarnessLaunchProjection\n from hyprial.daemon.state_db import StateDatabase\n from hyprial.daemon.lifecycle_receipts import LifecycleMutationRequest\n",
+      "path": "tests/test_state_persistence_authority.py"
+    },
+    {
+      "diff": "--- a/tests/test_transfer_container.py\n+++ b/tests/test_transfer_container.py\n@@ -17,7 +17,9 @@\n \n import pytest\n \n-from hyprial.daemon.desired_state import DesiredStateError, HarnessLaunchSpec\n+from hyprial.daemon.desired_state import DesiredStateError, \n+\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.transfer import orchestrator as xfer_orchestrator\n from hyprial.transfer.container import (\n     CONTAINER_HOME,\n",
+      "path": "tests/test_transfer_container.py"
+    },
+    {
+      "diff": "--- a/tests/test_transfer_daemon.py\n+++ b/tests/test_transfer_daemon.py\n@@ -23,7 +23,7 @@\n \n from hyprial.contracts.ports import PortAdmission\n from hyprial.daemon.application import DaemonApplication, DaemonRequestError\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.daemon.lifecycle_manager import (\n     LifecycleKind,\n     LifecycleOperation,\n",
+      "path": "tests/test_transfer_daemon.py"
+    },
+    {
+      "diff": "--- a/tests/test_turn_stall_watch.py\n+++ b/tests/test_turn_stall_watch.py\n@@ -23,7 +23,7 @@\n import pytest\n \n from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.codex import (\n     MANAGED_TURN_IDLE_TIMEOUT_SECONDS,\n     CodexAppServerClient,\n",
+      "path": "tests/test_turn_stall_watch.py"
+    },
+    {
+      "diff": "--- a/tests/test_user_addressing.py\n+++ b/tests/test_user_addressing.py\n@@ -408,7 +408,8 @@\n def test_daemon_submits_user_delivery_to_live_proxy_inbox(\n     tmp_path: Path,\n ) -> None:\n-    from hyprial.daemon.desired_state import DesiredState, HarnessLaunchSpec\n+    from hyprial.daemon.desired_state import DesiredState, \n+    from hyprial.kernel import HarnessLaunchSpec\n \n     app = DaemonApplication(\n         state_dir=tmp_path / \"state\",\n@@ -470,7 +471,7 @@\n def test_workflow_user_alert_preserves_resolvable_sender_through_live_proxy(\n     tmp_path: Path, request: pytest.FixtureRequest\n ) -> None:\n-    from hyprial.daemon.desired_state import HarnessLaunchSpec\n+    from hyprial.kernel import HarnessLaunchSpec\n \n     app = DaemonApplication(\n         state_dir=tmp_path / \"state\",\n@@ -529,7 +530,8 @@\n def test_daemon_does_not_select_stopped_proxy(\n     tmp_path: Path,\n ) -> None:\n-    from hyprial.daemon.desired_state import DesiredState, HarnessLaunchSpec\n+    from hyprial.daemon.desired_state import DesiredState, \n+    from hyprial.kernel import HarnessLaunchSpec\n \n     app = DaemonApplication(\n         state_dir=tmp_path / \"state\",\n",
+      "path": "tests/test_user_addressing.py"
+    },
+    {
+      "diff": "--- a/tests/test_user_proxy_worker.py\n+++ b/tests/test_user_proxy_worker.py\n@@ -16,7 +16,7 @@\n import pytest\n \n from hyprial.daemon.api import HarnessDelivery, HarnessResult, HarnessResultStatus\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses._user_proxy_worker import (\n     MISSING_RECIPIENT_HINT,\n     decide,\n",
+      "path": "tests/test_user_proxy_worker.py"
+    },
+    {
+      "diff": "--- a/tests/test_worker_identity.py\n+++ b/tests/test_worker_identity.py\n@@ -25,7 +25,7 @@\n \n from hyprial import cli\n from hyprial.daemon.application import DaemonApplication, DaemonRequestError\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses import agent_sdk as agent_sdk_module\n from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient, create_claude_sdk_client\n from hyprial.harnesses.launcher import HarnessLauncher\n",
+      "path": "tests/test_worker_identity.py"
+    },
+    {
+      "diff": "--- a/tests/test_worker_proxy.py\n+++ b/tests/test_worker_proxy.py\n@@ -41,7 +41,7 @@\n     DaemonApplication,\n     compose_daemon_worker_launch,\n )\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.dispatch.matrix import TIERS\n from hyprial.harnesses.worker_channel import build_worker_channel\n \n",
+      "path": "tests/test_worker_proxy.py"
+    },
+    {
+      "diff": "--- a/tests/test_worker_proxy_codex_seam.py\n+++ b/tests/test_worker_proxy_codex_seam.py\n@@ -33,7 +33,7 @@\n     PROXY_ENVIRONMENT_NAMES,\n )\n from hyprial.daemon.application import compose_daemon_worker_launch\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.codex import CodexAppServerClient\n from hyprial.harnesses.worker_channel import build_worker_channel\n \n",
+      "path": "tests/test_worker_proxy_codex_seam.py"
+    },
+    {
+      "diff": "--- a/tests/test_worker_relay.py\n+++ b/tests/test_worker_relay.py\n@@ -24,7 +24,7 @@\n from hyprial import cli\n from hyprial.contracts.worker_channel import WorkerBinding\n from hyprial.daemon.application import DaemonApplication\n-from hyprial.daemon.desired_state import HarnessLaunchSpec\n+from hyprial.kernel import HarnessLaunchSpec\n from hyprial.harnesses.worker_relay import BoundWorkerRelay\n from hyprial.inbox.api import DeliveryLifecycle, InboxMessage\n from hyprial.inbox.memory import MemoryDeliveryTransport\n",
+      "path": "tests/test_worker_relay.py"
+    }
+  ],
+  "executable": false,
+  "manifest_path": "/private/tmp/hyprial-r3-preview/manifest.demo.json",
+  "manifest_sha256": "081462f65b8f371f13a47896568005036a0e9012fb57449ad711b412de95291d",
+  "moves": [],
+  "pending_decisions": [
+    {
+      "kind": "import_symbol",
+      "rule_id": "demo.desired-state.launch-spec-imports",
+      "stage": "S1",
+      "status": "draft"
+    },
+    {
+      "kind": "reference_rule",
+      "rule_id": "demo.cli.warm-import-string",
+      "stage": "S2",
+      "status": "draft"
+    }
+  ],
+  "post_stage_hashes": {
+    "S1": {
+      "contract/e2e/_codex_deepseek_exec.py": "efa59ba0995d3e2593e966ad5e91ee4e085879292dac78e9ad50781ba02bb2d2",
+      "contract/e2e/probe-codex-preapproval.py": "5b900708f6b178d59cfbff9ec00071e42f5854bdf22ffab9bae6b06b59373b87",
+      "contract/e2e/run-codex-app-server.py": "76f800bb07e3bfae4a057231aa2e7d24d7d829d3cf90384ce21558c24faf2a80",
+      "contract/e2e/run-dsh-worker.py": "b482b9c77d716756d5188e3fcbab628cc14eda837855c44822f7e93b884c8d63",
+      "contract/e2e/run-hosted-transfer.py": "9cf9d1a5c5d264891144bb1877fcb16460a1dd92981e8b1544ab9413fc44913e",
+      "desktop/scripts/probe-real-codex.py": "6d631ffc1685ed11847b04d11e7ca0e696ec2717ef7967a7ac52ac3fb20aa11b",
+      "desktop/scripts/probe-real-sdk.py": "2c348d4fc8a0e65fbc3f02734ddb7b1a0cc3601bb292093d0a02c8277a251f39",
+      "desktop/scripts/probe-sdk-ownership.py": "9c42193c5a2767da83ee337b68a3d0a1bfd8aad411adbbdcd64b26aea179a5f1",
+      "src/hyprial/agents/worker_state.py": "ca4a016629012d2042a655938898ead0b335c269867b816f15b71ed7353b34ab",
+      "src/hyprial/cli.py": "631a664f7fc8e36adf6ece5b45c8195d5c6cb694f54892be15a7e402926f1cb8",
+      "src/hyprial/daemon/__init__.py": "7baced1948199d2cc1420f75fd7f5652100fd9c1a6bc7b44a19e2e93e4580c9b",
+      "src/hyprial/daemon/api.py": "1718e3fff94b88226d461006f0bf9d121a3360edddb0e6965a6be2d26e8b8cfa",
+      "src/hyprial/daemon/application.py": "c45e1b5ed18b1cdbbc58d4f9c95a535af3f49e44dd0aa879da4c230cdb30d98c",
+      "src/hyprial/daemon/composition.py": "a3148cf76ca41b8de2e7112d723489603f6ff90b95f380e336015611db397334",
+      "src/hyprial/daemon/harness_actor.py": "a027a973b16317dc2580129b40ed0dbf6ca6a58406ea16f008b4b5270baf3887",
+      "src/hyprial/daemon/pac_actor.py": "ff0aa39637ae72bdd5d72e583648d9fa71b58035d1e7d10d24797d8a7be80cef",
+      "src/hyprial/daemon/state_persistence.py": "84e5c0a7e5656f6c8b904a3162f2e529f394680c8d245c71a4f5b99ea418101e",
+      "src/hyprial/daemon/supervisor.py": "fd44938f33ef799609864b4f9bb264ce0f06659e7a0cc143c6441ca686918c50",
+      "src/hyprial/harnesses/agent_sdk.py": "0644133cac3d915904fcf28e06339f2bead1ead2eced47222c54786b3c301309",
+      "src/hyprial/harnesses/claude.py": "59f0a31f4392bb5afbc028704e3f2f0dff7bdf94d7001ef9a107e12befe47403",
+      "src/hyprial/harnesses/codex.py": "a27672df0671cc6c6dc2bad8b82bcf1cfb3221d1278561f89eaeba0f327a2edc",
+      "src/hyprial/harnesses/dsh.py": "278491687fefb32e6dc21935022d7e3238631b4a50e92a8b2f512c254910a72c",
+      "src/hyprial/harnesses/launcher.py": "1f1d4c376a129e263b28cc3468b82261f34945303320f317a073fd0a3191989d",
+      "src/hyprial/harnesses/model_provider.py": "0f5e172e8e2948d488fe6ea56ea3ff07efc25c5ad5be5b23eacc550eb77612f6",
+      "src/hyprial/harnesses/pi.py": "91d3b0f2579de2ec81a00733761cd836b005df703cc9d069bd452d62526071e3",
+      "src/hyprial/harnesses/pi_rpc.py": "7291615b3d493b11153cf75abaf09bdae975e120f5e59dfe2660118c629b29ec",
+      "src/hyprial/harnesses/python_worker.py": "2a7d1c5e7db9ddc4d0f1772ddb966843a6923946d38427d07a31391b99406484",
+      "src/hyprial/management.py": "935d46b2466ca47a521141a9b300b71035c731433e19ee4806c8e0adf1c2edee",
+      "src/hyprial/squire/setup.py": "249de6336fa9d3fed3c5c53155885262c56b8445c20d94dd4725bdba7f8bb8ef",
+      "tests/actor_runtime/test_session_agent_actors.py": "420e753ca5bcacdb365d27c537cc50d9f1fcf04027d0429caff5f0ee6cb93b6a",
+      "tests/test_actor_preserved_restore_threshold_states.py": "efe0bf9d3621a05d5d5e94d5dcbfdc138ad8e7691b4f904648504c61f767bff1",
+      "tests/test_agent_entity.py": "e104ceaa6b789db1b40498dd868d77f214913d0661e0492efb2992764f56fbb7",
+      "tests/test_agent_env_close.py": "2735633baaa653b616996a346d678cba69083fc2f6027865aa4eb51576416a78",
+      "tests/test_agent_env_injection.py": "dab3e6796cb122060d581a241d68b3af12ae33b3eff46237c6a105cf0e8db946",
+      "tests/test_agent_home_p23_cc_native.py": "12b531005442896ddf0a30c35f0c708c2ab8fad292b432fb8bc480bf89566d13",
+      "tests/test_agent_sdk_dependency.py": "96fa1deb7862fae3172c34a31574b1c198e29a174fb996cbb332e5d0daf30546",
+      "tests/test_agent_sdk_driver.py": "417a528779d86b204ac8177c206a5d035ff7f3e22340b89d290c8da60e6d8927",
+      "tests/test_agent_sdk_force_stop.py": "6902651229fabadab6340cf6ffc634b17cce804b314583a225f4b19d5c14afd1",
+      "tests/test_atomic_lifecycle_ports.py": "57ea74022cd898c521707ab9263c6c3af838f3ae1901758c69d82d58e23895b6",
+      "tests/test_cli_adapter_remove.py": "c561b9b0bf4f16c4246fc9ff9e88622bc433dbf52ec49131af7b1a324d830fc3",
+      "tests/test_cli_pi_interactive.py": "0e6e2a47bd4125e8aa732f31dfcb97496afaf8d74631c4a3e69cc5e582ed88f5",
+      "tests/test_cli_upgrade_restart.py": "078589ea5b920cccc8c6a3e7eba441ba752d017a90b4d98beb0019b012f4b954",
+      "tests/test_codex_agent_home.py": "29895b55cbbc40d362d3814c286793a903484068cf0c3e7c71092ee451cefe4b",
+      "tests/test_codex_app_server.py": "cdd2365386cade79b3a6b2f41c31143c78ebb239d72b57f8629546ee7d129d92",
+      "tests/test_daemon_readiness_reports.py": "551a6eba134f06e81a41440431692cd30d782227aeecc539fc4cd42f52d2a9b8",
+      "tests/test_daemon_reconcile_watchdog.py": "d30e30106c32b06f7ca9c0ee698acf386732e030f5723f99cd70002221c951f3",
+      "tests/test_daemon_restore_settlement.py": "a94f7e8a3cf5aa7832e5a4117ad4904ded710934cdc6ed6c6e777305aa766689",
+      "tests/test_desired_state_sqlite_roundtrip.py": "f1ae3f22d629e5ea717481cd4820d166a30b045d53a1db188600520c840af145",
+      "tests/test_desired_state_sqlite_shadow.py": "d7ffb53d2e4db532f066a4531c16c61e15b034ef1846168736629b3e954766b1",
+      "tests/test_desired_state_start_timing.py": "d709d2326211824df6665fa9d9180906101996ae1bc0709ac7bf714ca6b0232a",
+      "tests/test_dsh_harness.py": "5a6ae9795ebc4bd0537c356fb5ed68676fd5eab3a1b0d5e0c7d0cf44ef7fc1bb",
+      "tests/test_dsh_interrupt_fence.py": "33e65fa94122b41a438b5db42c209bd116025d2cb85fc68974c8233186596924",
+      "tests/test_dsh_self_launch.py": "6b65ec0ddbfd916772274c58020a2faa4631d43afb95365b29dab52974ef8625",
+      "tests/test_e2e012_codex_thread_lifecycle.py": "9cf5180a2ab8da749e2eafa88ffb603ba11006ca2c5f5a668d0a2fe6ad91c7b5",
+      "tests/test_final_composition_lifecycle.py": "0425b53ed3970e645128c5e2665cf10044a5f47e8ea086f54b248f2a45dd0ce7",
+      "tests/test_harness_actor.py": "b096a4c2aa56b7afac11304067f70310f9cb5d6747f0e223eefb9d79b4c0bd62",
+      "tests/test_harness_command_pinning.py": "f81a7409ae3e8454831aebbbf45f5bd005da1c88caf5e2c72ae2074836f9b150",
+      "tests/test_harness_model_provider.py": "b411d40619c9e71032613a7bb8a33a635fed10f35fd29293de5bb5672e9ee527",
+      "tests/test_harness_restore_admission.py": "63f88ca4914dc338333a56dc3b5b0421947298c5c6ba153c1f0687a435051ca2",
+      "tests/test_harness_result_claims.py": "4d93c447ddd5a412f0dc923905bda9418eecb9a09a89a6c8cec98040e7c7e899",
+      "tests/test_harnesses.py": "3b32cef95563b9f50b366f26328edb678332688c78843fce95a4645e3bd9e4f5",
+      "tests/test_hosts_org_batch_liveness.py": "d7e5f175c812e8abdac8eb61674eadf5928ff61ed1f412a02427743ed64c391f",
+      "tests/test_inbox_dispatch_ttl_refresh.py": "163487d8b891a63bc3d8bc88c9423d44fbeacd79ed2891051c07c0a1b794d1c3",
+      "tests/test_lifecycle_failed_remove.py": "c7c08d4d0f78492c3585604f612d09f911726eccf812204219c2fab050ad58b7",
+      "tests/test_local_provider_wiring.py": "87edc1a28a2fdff49500d7d523e4735f140e45fdb7a53ca6e92709a6156b9623",
+      "tests/test_model_endpoint_override.py": "00302e8783064aaf02b57389b27674defe63fd98b47275cf038cee103fe7384f",
+      "tests/test_p1_config_roots.py": "6b8180f461da4a98c2685cb5992b0a61eb0633f5acee4f959657656a71965e9f",
+      "tests/test_pi_controlled_loader.py": "d774b80db4c0fa941b131b279ccd79cd0fa9ac0c2b95e0523f1b2e36fb6710bf",
+      "tests/test_pi_rpc_process.py": "de9f5f7775498cec0ed1eb55f21a889178c06c462a1c83b0142544afc232c9c6",
+      "tests/test_pi_worker_channel.py": "2b28a90b12f8034c5fc83a48dd6cd5c60f347263ae2f2b93ef99bf485c2dfb3c",
+      "tests/test_progress_end_to_end.py": "7f2be0933915a327f64c6472c7757741548c73869e254ad23e491a1a2031ac0d",
+      "tests/test_provider_auth_hook.py": "061e54df2d359922cfe2dc4c68281f89c35288d30370228186e539926299b831",
+      "tests/test_ps_desired_state_reload.py": "6dea3b2a7148907f11fed21a27b68dac60b05fb0d6ec628531168619bc8c66f9",
+      "tests/test_ps_status_snapshot.py": "ba67100c24885e25b6c9e0009c532360639c60008b99f162df64b8a916869fb7",
+      "tests/test_python_harness_process.py": "113f00726387f627d5da4bf866d60b0795df962cce277aea86979bca293468db",
+      "tests/test_python_worker.py": "ad60d58192c8e95d25545bd9697e9f144e701910e10fd9770bcb6586755b3bad",
+      "tests/test_restore_failed_persistence_settlement.py": "d386ff26c3dc86aab42ed67e828a3198fdbb2b3a28ac2bfe83260d1c45752f19",
+      "tests/test_restore_isolation.py": "c3182f8c808b9d95a9278623c6070502db15e7ca239a821ed09e82ea790faa17",
+      "tests/test_restore_threshold_states.py": "5e679719755bd373a8c516fbf8e04c926080bffaab891ab741caa12d8db2f124",
+      "tests/test_session_ref_authority.py": "19114c32b299d029e1874132741557421e750d4622a48742004e234fd8da48c3",
+      "tests/test_smolvm_runtime_state.py": "cc03eaa4788c1a0c7da1f4e5dbe5c3be1ca03d8f9618433dbd20ff442906bc0e",
+      "tests/test_smolvm_runtime_vm.py": "8c2500e336d8fa34949036987d62470767b7f90bf3df77189b4879f5fd75a4cf",
+      "tests/test_squire_setup_scaffold.py": "669e893fd3935ff536fbe51470fa40e3a370cb4431c78d0237f55919c5c013ee",
+      "tests/test_state_persistence_authority.py": "f0b5f335e2bf2b3de8458a54dd928a5727218664b0a1b0a11c710c3a0bdf2651",
+      "tests/test_transfer_container.py": "fc72e7e00bb0b080be9b6fcdcce86d2921d0549bb3589a5cf7610c4f228071e1",
+      "tests/test_transfer_daemon.py": "cc246100a3ccef7d793d2b0d278bf427aa1c9b94dba9014c53a2785bebbb6483",
+      "tests/test_turn_stall_watch.py": "70ea68a0824fdcb64dd9cfcb17239b595f089f7f6d0fa314a0b385dd2ad03008",
+      "tests/test_user_addressing.py": "f3dddaa01a21a06e0c1e40df19beecbe32e5b0764ff253c27117fea8e189aa42",
+      "tests/test_user_proxy_worker.py": "f53231a9a848b9f7256611648ee537e1fb41173b8fbe617db66f635ae453f0a1",
+      "tests/test_worker_identity.py": "8bfdc0966a9417b2c02aa4ca530fc6fe5ac3d5ffde0c332884cda42a1ceb965c",
+      "tests/test_worker_proxy.py": "bf641123be111efc2ed5548102e25ea9ad713d6235cbf7d57a2828906ac1c1a5",
+      "tests/test_worker_proxy_codex_seam.py": "a52b90ad2e7b648b04aba861f92a9fa6e9925c2616e7a704f19d49f317b650e2",
+      "tests/test_worker_relay.py": "ecf5d7c230e556f182ea2372b51defad059fbb11dd2b22bb27c4620acc09fbdc"
+    },
+    "S2": {
+      "contract/e2e/_codex_deepseek_exec.py": "efa59ba0995d3e2593e966ad5e91ee4e085879292dac78e9ad50781ba02bb2d2",
+      "contract/e2e/probe-codex-preapproval.py": "5b900708f6b178d59cfbff9ec00071e42f5854bdf22ffab9bae6b06b59373b87",
+      "contract/e2e/run-codex-app-server.py": "76f800bb07e3bfae4a057231aa2e7d24d7d829d3cf90384ce21558c24faf2a80",
+      "contract/e2e/run-dsh-worker.py": "b482b9c77d716756d5188e3fcbab628cc14eda837855c44822f7e93b884c8d63",
+      "contract/e2e/run-hosted-transfer.py": "9cf9d1a5c5d264891144bb1877fcb16460a1dd92981e8b1544ab9413fc44913e",
+      "desktop/scripts/probe-real-codex.py": "6d631ffc1685ed11847b04d11e7ca0e696ec2717ef7967a7ac52ac3fb20aa11b",
+      "desktop/scripts/probe-real-sdk.py": "2c348d4fc8a0e65fbc3f02734ddb7b1a0cc3601bb292093d0a02c8277a251f39",
+      "desktop/scripts/probe-sdk-ownership.py": "9c42193c5a2767da83ee337b68a3d0a1bfd8aad411adbbdcd64b26aea179a5f1",
+      "src/hyprial/agents/worker_state.py": "ca4a016629012d2042a655938898ead0b335c269867b816f15b71ed7353b34ab",
+      "src/hyprial/cli.py": "631a664f7fc8e36adf6ece5b45c8195d5c6cb694f54892be15a7e402926f1cb8",
+      "src/hyprial/daemon/__init__.py": "7baced1948199d2cc1420f75fd7f5652100fd9c1a6bc7b44a19e2e93e4580c9b",
+      "src/hyprial/daemon/api.py": "1718e3fff94b88226d461006f0bf9d121a3360edddb0e6965a6be2d26e8b8cfa",
+      "src/hyprial/daemon/application.py": "c45e1b5ed18b1cdbbc58d4f9c95a535af3f49e44dd0aa879da4c230cdb30d98c",
+      "src/hyprial/daemon/composition.py": "a3148cf76ca41b8de2e7112d723489603f6ff90b95f380e336015611db397334",
+      "src/hyprial/daemon/harness_actor.py": "a027a973b16317dc2580129b40ed0dbf6ca6a58406ea16f008b4b5270baf3887",
+      "src/hyprial/daemon/pac_actor.py": "ff0aa39637ae72bdd5d72e583648d9fa71b58035d1e7d10d24797d8a7be80cef",
+      "src/hyprial/daemon/state_persistence.py": "84e5c0a7e5656f6c8b904a3162f2e529f394680c8d245c71a4f5b99ea418101e",
+      "src/hyprial/daemon/supervisor.py": "fd44938f33ef799609864b4f9bb264ce0f06659e7a0cc143c6441ca686918c50",
+      "src/hyprial/harnesses/agent_sdk.py": "0644133cac3d915904fcf28e06339f2bead1ead2eced47222c54786b3c301309",
+      "src/hyprial/harnesses/claude.py": "59f0a31f4392bb5afbc028704e3f2f0dff7bdf94d7001ef9a107e12befe47403",
+      "src/hyprial/harnesses/codex.py": "a27672df0671cc6c6dc2bad8b82bcf1cfb3221d1278561f89eaeba0f327a2edc",
+      "src/hyprial/harnesses/dsh.py": "278491687fefb32e6dc21935022d7e3238631b4a50e92a8b2f512c254910a72c",
+      "src/hyprial/harnesses/launcher.py": "1f1d4c376a129e263b28cc3468b82261f34945303320f317a073fd0a3191989d",
+      "src/hyprial/harnesses/model_provider.py": "0f5e172e8e2948d488fe6ea56ea3ff07efc25c5ad5be5b23eacc550eb77612f6",
+      "src/hyprial/harnesses/pi.py": "91d3b0f2579de2ec81a00733761cd836b005df703cc9d069bd452d62526071e3",
+      "src/hyprial/harnesses/pi_rpc.py": "7291615b3d493b11153cf75abaf09bdae975e120f5e59dfe2660118c629b29ec",
+      "src/hyprial/harnesses/python_worker.py": "2a7d1c5e7db9ddc4d0f1772ddb966843a6923946d38427d07a31391b99406484",
+      "src/hyprial/management.py": "935d46b2466ca47a521141a9b300b71035c731433e19ee4806c8e0adf1c2edee",
+      "src/hyprial/squire/setup.py": "249de6336fa9d3fed3c5c53155885262c56b8445c20d94dd4725bdba7f8bb8ef",
+      "tests/actor_runtime/test_session_agent_actors.py": "420e753ca5bcacdb365d27c537cc50d9f1fcf04027d0429caff5f0ee6cb93b6a",
+      "tests/test_actor_preserved_restore_threshold_states.py": "efe0bf9d3621a05d5d5e94d5dcbfdc138ad8e7691b4f904648504c61f767bff1",
+      "tests/test_agent_entity.py": "e104ceaa6b789db1b40498dd868d77f214913d0661e0492efb2992764f56fbb7",
+      "tests/test_agent_env_close.py": "2735633baaa653b616996a346d678cba69083fc2f6027865aa4eb51576416a78",
+      "tests/test_agent_env_injection.py": "dab3e6796cb122060d581a241d68b3af12ae33b3eff46237c6a105cf0e8db946",
+      "tests/test_agent_home_p23_cc_native.py": "12b531005442896ddf0a30c35f0c708c2ab8fad292b432fb8bc480bf89566d13",
+      "tests/test_agent_sdk_dependency.py": "96fa1deb7862fae3172c34a31574b1c198e29a174fb996cbb332e5d0daf30546",
+      "tests/test_agent_sdk_driver.py": "417a528779d86b204ac8177c206a5d035ff7f3e22340b89d290c8da60e6d8927",
+      "tests/test_agent_sdk_force_stop.py": "6902651229fabadab6340cf6ffc634b17cce804b314583a225f4b19d5c14afd1",
+      "tests/test_atomic_lifecycle_ports.py": "57ea74022cd898c521707ab9263c6c3af838f3ae1901758c69d82d58e23895b6",
+      "tests/test_cli_adapter_remove.py": "c561b9b0bf4f16c4246fc9ff9e88622bc433dbf52ec49131af7b1a324d830fc3",
+      "tests/test_cli_pi_interactive.py": "0e6e2a47bd4125e8aa732f31dfcb97496afaf8d74631c4a3e69cc5e582ed88f5",
+      "tests/test_cli_upgrade_restart.py": "078589ea5b920cccc8c6a3e7eba441ba752d017a90b4d98beb0019b012f4b954",
+      "tests/test_codex_agent_home.py": "29895b55cbbc40d362d3814c286793a903484068cf0c3e7c71092ee451cefe4b",
+      "tests/test_codex_app_server.py": "cdd2365386cade79b3a6b2f41c31143c78ebb239d72b57f8629546ee7d129d92",
+      "tests/test_daemon_readiness_reports.py": "551a6eba134f06e81a41440431692cd30d782227aeecc539fc4cd42f52d2a9b8",
+      "tests/test_daemon_reconcile_watchdog.py": "d30e30106c32b06f7ca9c0ee698acf386732e030f5723f99cd70002221c951f3",
+      "tests/test_daemon_restore_settlement.py": "a94f7e8a3cf5aa7832e5a4117ad4904ded710934cdc6ed6c6e777305aa766689",
+      "tests/test_desired_state_sqlite_roundtrip.py": "f1ae3f22d629e5ea717481cd4820d166a30b045d53a1db188600520c840af145",
+      "tests/test_desired_state_sqlite_shadow.py": "d7ffb53d2e4db532f066a4531c16c61e15b034ef1846168736629b3e954766b1",
+      "tests/test_desired_state_start_timing.py": "d709d2326211824df6665fa9d9180906101996ae1bc0709ac7bf714ca6b0232a",
+      "tests/test_dsh_harness.py": "5a6ae9795ebc4bd0537c356fb5ed68676fd5eab3a1b0d5e0c7d0cf44ef7fc1bb",
+      "tests/test_dsh_interrupt_fence.py": "33e65fa94122b41a438b5db42c209bd116025d2cb85fc68974c8233186596924",
+      "tests/test_dsh_self_launch.py": "6b65ec0ddbfd916772274c58020a2faa4631d43afb95365b29dab52974ef8625",
+      "tests/test_e2e012_codex_thread_lifecycle.py": "9cf5180a2ab8da749e2eafa88ffb603ba11006ca2c5f5a668d0a2fe6ad91c7b5",
+      "tests/test_final_composition_lifecycle.py": "0425b53ed3970e645128c5e2665cf10044a5f47e8ea086f54b248f2a45dd0ce7",
+      "tests/test_harness_actor.py": "b096a4c2aa56b7afac11304067f70310f9cb5d6747f0e223eefb9d79b4c0bd62",
+      "tests/test_harness_command_pinning.py": "f81a7409ae3e8454831aebbbf45f5bd005da1c88caf5e2c72ae2074836f9b150",
+      "tests/test_harness_model_provider.py": "b411d40619c9e71032613a7bb8a33a635fed10f35fd29293de5bb5672e9ee527",
+      "tests/test_harness_restore_admission.py": "63f88ca4914dc338333a56dc3b5b0421947298c5c6ba153c1f0687a435051ca2",
+      "tests/test_harness_result_claims.py": "4d93c447ddd5a412f0dc923905bda9418eecb9a09a89a6c8cec98040e7c7e899",
+      "tests/test_harnesses.py": "3b32cef95563b9f50b366f26328edb678332688c78843fce95a4645e3bd9e4f5",
+      "tests/test_hosts_org_batch_liveness.py": "d7e5f175c812e8abdac8eb61674eadf5928ff61ed1f412a02427743ed64c391f",
+      "tests/test_inbox_dispatch_ttl_refresh.py": "163487d8b891a63bc3d8bc88c9423d44fbeacd79ed2891051c07c0a1b794d1c3",
+      "tests/test_lifecycle_failed_remove.py": "c7c08d4d0f78492c3585604f612d09f911726eccf812204219c2fab050ad58b7",
+      "tests/test_local_provider_wiring.py": "87edc1a28a2fdff49500d7d523e4735f140e45fdb7a53ca6e92709a6156b9623",
+      "tests/test_model_endpoint_override.py": "00302e8783064aaf02b57389b27674defe63fd98b47275cf038cee103fe7384f",
+      "tests/test_p1_config_roots.py": "6b8180f461da4a98c2685cb5992b0a61eb0633f5acee4f959657656a71965e9f",
+      "tests/test_pi_controlled_loader.py": "d774b80db4c0fa941b131b279ccd79cd0fa9ac0c2b95e0523f1b2e36fb6710bf",
+      "tests/test_pi_rpc_process.py": "de9f5f7775498cec0ed1eb55f21a889178c06c462a1c83b0142544afc232c9c6",
+      "tests/test_pi_worker_channel.py": "2b28a90b12f8034c5fc83a48dd6cd5c60f347263ae2f2b93ef99bf485c2dfb3c",
+      "tests/test_progress_end_to_end.py": "7f2be0933915a327f64c6472c7757741548c73869e254ad23e491a1a2031ac0d",
+      "tests/test_provider_auth_hook.py": "061e54df2d359922cfe2dc4c68281f89c35288d30370228186e539926299b831",
+      "tests/test_ps_desired_state_reload.py": "6dea3b2a7148907f11fed21a27b68dac60b05fb0d6ec628531168619bc8c66f9",
+      "tests/test_ps_status_snapshot.py": "ba67100c24885e25b6c9e0009c532360639c60008b99f162df64b8a916869fb7",
+      "tests/test_python_harness_process.py": "113f00726387f627d5da4bf866d60b0795df962cce277aea86979bca293468db",
+      "tests/test_python_worker.py": "ad60d58192c8e95d25545bd9697e9f144e701910e10fd9770bcb6586755b3bad",
+      "tests/test_restore_failed_persistence_settlement.py": "d386ff26c3dc86aab42ed67e828a3198fdbb2b3a28ac2bfe83260d1c45752f19",
+      "tests/test_restore_isolation.py": "c3182f8c808b9d95a9278623c6070502db15e7ca239a821ed09e82ea790faa17",
+      "tests/test_restore_threshold_states.py": "5e679719755bd373a8c516fbf8e04c926080bffaab891ab741caa12d8db2f124",
+      "tests/test_session_ref_authority.py": "19114c32b299d029e1874132741557421e750d4622a48742004e234fd8da48c3",
+      "tests/test_smolvm_runtime_state.py": "cc03eaa4788c1a0c7da1f4e5dbe5c3be1ca03d8f9618433dbd20ff442906bc0e",
+      "tests/test_smolvm_runtime_vm.py": "8c2500e336d8fa34949036987d62470767b7f90bf3df77189b4879f5fd75a4cf",
+      "tests/test_squire_setup_scaffold.py": "669e893fd3935ff536fbe51470fa40e3a370cb4431c78d0237f55919c5c013ee",
+      "tests/test_state_persistence_authority.py": "f0b5f335e2bf2b3de8458a54dd928a5727218664b0a1b0a11c710c3a0bdf2651",
+      "tests/test_transfer_container.py": "fc72e7e00bb0b080be9b6fcdcce86d2921d0549bb3589a5cf7610c4f228071e1",
+      "tests/test_transfer_daemon.py": "cc246100a3ccef7d793d2b0d278bf427aa1c9b94dba9014c53a2785bebbb6483",
+      "tests/test_turn_stall_watch.py": "70ea68a0824fdcb64dd9cfcb17239b595f089f7f6d0fa314a0b385dd2ad03008",
+      "tests/test_user_addressing.py": "f3dddaa01a21a06e0c1e40df19beecbe32e5b0764ff253c27117fea8e189aa42",
+      "tests/test_user_proxy_worker.py": "f53231a9a848b9f7256611648ee537e1fb41173b8fbe617db66f635ae453f0a1",
+      "tests/test_worker_identity.py": "8bfdc0966a9417b2c02aa4ca530fc6fe5ac3d5ffde0c332884cda42a1ceb965c",
+      "tests/test_worker_proxy.py": "bf641123be111efc2ed5548102e25ea9ad713d6235cbf7d57a2828906ac1c1a5",
+      "tests/test_worker_proxy_codex_seam.py": "a52b90ad2e7b648b04aba861f92a9fa6e9925c2616e7a704f19d49f317b650e2",
+      "tests/test_worker_relay.py": "ecf5d7c230e556f182ea2372b51defad059fbb11dd2b22bb27c4620acc09fbdc"
+    },
+    "S3": {
+      "contract/e2e/_codex_deepseek_exec.py": "efa59ba0995d3e2593e966ad5e91ee4e085879292dac78e9ad50781ba02bb2d2",
+      "contract/e2e/probe-codex-preapproval.py": "5b900708f6b178d59cfbff9ec00071e42f5854bdf22ffab9bae6b06b59373b87",
+      "contract/e2e/run-codex-app-server.py": "76f800bb07e3bfae4a057231aa2e7d24d7d829d3cf90384ce21558c24faf2a80",
+      "contract/e2e/run-dsh-worker.py": "b482b9c77d716756d5188e3fcbab628cc14eda837855c44822f7e93b884c8d63",
+      "contract/e2e/run-hosted-transfer.py": "9cf9d1a5c5d264891144bb1877fcb16460a1dd92981e8b1544ab9413fc44913e",
+      "desktop/scripts/probe-real-codex.py": "6d631ffc1685ed11847b04d11e7ca0e696ec2717ef7967a7ac52ac3fb20aa11b",
+      "desktop/scripts/probe-real-sdk.py": "2c348d4fc8a0e65fbc3f02734ddb7b1a0cc3601bb292093d0a02c8277a251f39",
+      "desktop/scripts/probe-sdk-ownership.py": "9c42193c5a2767da83ee337b68a3d0a1bfd8aad411adbbdcd64b26aea179a5f1",
+      "src/hyprial/agents/worker_state.py": "ca4a016629012d2042a655938898ead0b335c269867b816f15b71ed7353b34ab",
+      "src/hyprial/cli.py": "631a664f7fc8e36adf6ece5b45c8195d5c6cb694f54892be15a7e402926f1cb8",
+      "src/hyprial/daemon/__init__.py": "7baced1948199d2cc1420f75fd7f5652100fd9c1a6bc7b44a19e2e93e4580c9b",
+      "src/hyprial/daemon/api.py": "1718e3fff94b88226d461006f0bf9d121a3360edddb0e6965a6be2d26e8b8cfa",
+      "src/hyprial/daemon/application.py": "c45e1b5ed18b1cdbbc58d4f9c95a535af3f49e44dd0aa879da4c230cdb30d98c",
+      "src/hyprial/daemon/composition.py": "a3148cf76ca41b8de2e7112d723489603f6ff90b95f380e336015611db397334",
+      "src/hyprial/daemon/harness_actor.py": "a027a973b16317dc2580129b40ed0dbf6ca6a58406ea16f008b4b5270baf3887",
+      "src/hyprial/daemon/pac_actor.py": "ff0aa39637ae72bdd5d72e583648d9fa71b58035d1e7d10d24797d8a7be80cef",
+      "src/hyprial/daemon/state_persistence.py": "84e5c0a7e5656f6c8b904a3162f2e529f394680c8d245c71a4f5b99ea418101e",
+      "src/hyprial/daemon/supervisor.py": "fd44938f33ef799609864b4f9bb264ce0f06659e7a0cc143c6441ca686918c50",
+      "src/hyprial/harnesses/agent_sdk.py": "0644133cac3d915904fcf28e06339f2bead1ead2eced47222c54786b3c301309",
+      "src/hyprial/harnesses/claude.py": "59f0a31f4392bb5afbc028704e3f2f0dff7bdf94d7001ef9a107e12befe47403",
+      "src/hyprial/harnesses/codex.py": "a27672df0671cc6c6dc2bad8b82bcf1cfb3221d1278561f89eaeba0f327a2edc",
+      "src/hyprial/harnesses/dsh.py": "278491687fefb32e6dc21935022d7e3238631b4a50e92a8b2f512c254910a72c",
+      "src/hyprial/harnesses/launcher.py": "1f1d4c376a129e263b28cc3468b82261f34945303320f317a073fd0a3191989d",
+      "src/hyprial/harnesses/model_provider.py": "0f5e172e8e2948d488fe6ea56ea3ff07efc25c5ad5be5b23eacc550eb77612f6",
+      "src/hyprial/harnesses/pi.py": "91d3b0f2579de2ec81a00733761cd836b005df703cc9d069bd452d62526071e3",
+      "src/hyprial/harnesses/pi_rpc.py": "7291615b3d493b11153cf75abaf09bdae975e120f5e59dfe2660118c629b29ec",
+      "src/hyprial/harnesses/python_worker.py": "2a7d1c5e7db9ddc4d0f1772ddb966843a6923946d38427d07a31391b99406484",
+      "src/hyprial/management.py": "935d46b2466ca47a521141a9b300b71035c731433e19ee4806c8e0adf1c2edee",
+      "src/hyprial/squire/setup.py": "249de6336fa9d3fed3c5c53155885262c56b8445c20d94dd4725bdba7f8bb8ef",
+      "tests/actor_runtime/test_session_agent_actors.py": "420e753ca5bcacdb365d27c537cc50d9f1fcf04027d0429caff5f0ee6cb93b6a",
+      "tests/test_actor_preserved_restore_threshold_states.py": "efe0bf9d3621a05d5d5e94d5dcbfdc138ad8e7691b4f904648504c61f767bff1",
+      "tests/test_agent_entity.py": "e104ceaa6b789db1b40498dd868d77f214913d0661e0492efb2992764f56fbb7",
+      "tests/test_agent_env_close.py": "2735633baaa653b616996a346d678cba69083fc2f6027865aa4eb51576416a78",
+      "tests/test_agent_env_injection.py": "dab3e6796cb122060d581a241d68b3af12ae33b3eff46237c6a105cf0e8db946",
+      "tests/test_agent_home_p23_cc_native.py": "12b531005442896ddf0a30c35f0c708c2ab8fad292b432fb8bc480bf89566d13",
+      "tests/test_agent_sdk_dependency.py": "96fa1deb7862fae3172c34a31574b1c198e29a174fb996cbb332e5d0daf30546",
+      "tests/test_agent_sdk_driver.py": "417a528779d86b204ac8177c206a5d035ff7f3e22340b89d290c8da60e6d8927",
+      "tests/test_agent_sdk_force_stop.py": "6902651229fabadab6340cf6ffc634b17cce804b314583a225f4b19d5c14afd1",
+      "tests/test_atomic_lifecycle_ports.py": "57ea74022cd898c521707ab9263c6c3af838f3ae1901758c69d82d58e23895b6",
+      "tests/test_cli_adapter_remove.py": "c561b9b0bf4f16c4246fc9ff9e88622bc433dbf52ec49131af7b1a324d830fc3",
+      "tests/test_cli_pi_interactive.py": "0e6e2a47bd4125e8aa732f31dfcb97496afaf8d74631c4a3e69cc5e582ed88f5",
+      "tests/test_cli_upgrade_restart.py": "078589ea5b920cccc8c6a3e7eba441ba752d017a90b4d98beb0019b012f4b954",
+      "tests/test_codex_agent_home.py": "29895b55cbbc40d362d3814c286793a903484068cf0c3e7c71092ee451cefe4b",
+      "tests/test_codex_app_server.py": "cdd2365386cade79b3a6b2f41c31143c78ebb239d72b57f8629546ee7d129d92",
+      "tests/test_daemon_readiness_reports.py": "551a6eba134f06e81a41440431692cd30d782227aeecc539fc4cd42f52d2a9b8",
+      "tests/test_daemon_reconcile_watchdog.py": "d30e30106c32b06f7ca9c0ee698acf386732e030f5723f99cd70002221c951f3",
+      "tests/test_daemon_restore_settlement.py": "a94f7e8a3cf5aa7832e5a4117ad4904ded710934cdc6ed6c6e777305aa766689",
+      "tests/test_desired_state_sqlite_roundtrip.py": "f1ae3f22d629e5ea717481cd4820d166a30b045d53a1db188600520c840af145",
+      "tests/test_desired_state_sqlite_shadow.py": "d7ffb53d2e4db532f066a4531c16c61e15b034ef1846168736629b3e954766b1",
+      "tests/test_desired_state_start_timing.py": "d709d2326211824df6665fa9d9180906101996ae1bc0709ac7bf714ca6b0232a",
+      "tests/test_dsh_harness.py": "5a6ae9795ebc4bd0537c356fb5ed68676fd5eab3a1b0d5e0c7d0cf44ef7fc1bb",
+      "tests/test_dsh_interrupt_fence.py": "33e65fa94122b41a438b5db42c209bd116025d2cb85fc68974c8233186596924",
+      "tests/test_dsh_self_launch.py": "6b65ec0ddbfd916772274c58020a2faa4631d43afb95365b29dab52974ef8625",
+      "tests/test_e2e012_codex_thread_lifecycle.py": "9cf5180a2ab8da749e2eafa88ffb603ba11006ca2c5f5a668d0a2fe6ad91c7b5",
+      "tests/test_final_composition_lifecycle.py": "0425b53ed3970e645128c5e2665cf10044a5f47e8ea086f54b248f2a45dd0ce7",
+      "tests/test_harness_actor.py": "b096a4c2aa56b7afac11304067f70310f9cb5d6747f0e223eefb9d79b4c0bd62",
+      "tests/test_harness_command_pinning.py": "f81a7409ae3e8454831aebbbf45f5bd005da1c88caf5e2c72ae2074836f9b150",
+      "tests/test_harness_model_provider.py": "b411d40619c9e71032613a7bb8a33a635fed10f35fd29293de5bb5672e9ee527",
+      "tests/test_harness_restore_admission.py": "63f88ca4914dc338333a56dc3b5b0421947298c5c6ba153c1f0687a435051ca2",
+      "tests/test_harness_result_claims.py": "4d93c447ddd5a412f0dc923905bda9418eecb9a09a89a6c8cec98040e7c7e899",
+      "tests/test_harnesses.py": "3b32cef95563b9f50b366f26328edb678332688c78843fce95a4645e3bd9e4f5",
+      "tests/test_hosts_org_batch_liveness.py": "d7e5f175c812e8abdac8eb61674eadf5928ff61ed1f412a02427743ed64c391f",
+      "tests/test_inbox_dispatch_ttl_refresh.py": "163487d8b891a63bc3d8bc88c9423d44fbeacd79ed2891051c07c0a1b794d1c3",
+      "tests/test_lifecycle_failed_remove.py": "c7c08d4d0f78492c3585604f612d09f911726eccf812204219c2fab050ad58b7",
+      "tests/test_local_provider_wiring.py": "87edc1a28a2fdff49500d7d523e4735f140e45fdb7a53ca6e92709a6156b9623",
+      "tests/test_model_endpoint_override.py": "00302e8783064aaf02b57389b27674defe63fd98b47275cf038cee103fe7384f",
+      "tests/test_p1_config_roots.py": "6b8180f461da4a98c2685cb5992b0a61eb0633f5acee4f959657656a71965e9f",
+      "tests/test_pi_controlled_loader.py": "d774b80db4c0fa941b131b279ccd79cd0fa9ac0c2b95e0523f1b2e36fb6710bf",
+      "tests/test_pi_rpc_process.py": "de9f5f7775498cec0ed1eb55f21a889178c06c462a1c83b0142544afc232c9c6",
+      "tests/test_pi_worker_channel.py": "2b28a90b12f8034c5fc83a48dd6cd5c60f347263ae2f2b93ef99bf485c2dfb3c",
+      "tests/test_progress_end_to_end.py": "7f2be0933915a327f64c6472c7757741548c73869e254ad23e491a1a2031ac0d",
+      "tests/test_provider_auth_hook.py": "061e54df2d359922cfe2dc4c68281f89c35288d30370228186e539926299b831",
+      "tests/test_ps_desired_state_reload.py": "6dea3b2a7148907f11fed21a27b68dac60b05fb0d6ec628531168619bc8c66f9",
+      "tests/test_ps_status_snapshot.py": "ba67100c24885e25b6c9e0009c532360639c60008b99f162df64b8a916869fb7",
+      "tests/test_python_harness_process.py": "113f00726387f627d5da4bf866d60b0795df962cce277aea86979bca293468db",
+      "tests/test_python_worker.py": "ad60d58192c8e95d25545bd9697e9f144e701910e10fd9770bcb6586755b3bad",
+      "tests/test_restore_failed_persistence_settlement.py": "d386ff26c3dc86aab42ed67e828a3198fdbb2b3a28ac2bfe83260d1c45752f19",
+      "tests/test_restore_isolation.py": "c3182f8c808b9d95a9278623c6070502db15e7ca239a821ed09e82ea790faa17",
+      "tests/test_restore_threshold_states.py": "5e679719755bd373a8c516fbf8e04c926080bffaab891ab741caa12d8db2f124",
+      "tests/test_session_ref_authority.py": "19114c32b299d029e1874132741557421e750d4622a48742004e234fd8da48c3",
+      "tests/test_smolvm_runtime_state.py": "cc03eaa4788c1a0c7da1f4e5dbe5c3be1ca03d8f9618433dbd20ff442906bc0e",
+      "tests/test_smolvm_runtime_vm.py": "8c2500e336d8fa34949036987d62470767b7f90bf3df77189b4879f5fd75a4cf",
+      "tests/test_squire_setup_scaffold.py": "669e893fd3935ff536fbe51470fa40e3a370cb4431c78d0237f55919c5c013ee",
+      "tests/test_state_persistence_authority.py": "f0b5f335e2bf2b3de8458a54dd928a5727218664b0a1b0a11c710c3a0bdf2651",
+      "tests/test_transfer_container.py": "fc72e7e00bb0b080be9b6fcdcce86d2921d0549bb3589a5cf7610c4f228071e1",
+      "tests/test_transfer_daemon.py": "cc246100a3ccef7d793d2b0d278bf427aa1c9b94dba9014c53a2785bebbb6483",
+      "tests/test_turn_stall_watch.py": "70ea68a0824fdcb64dd9cfcb17239b595f089f7f6d0fa314a0b385dd2ad03008",
+      "tests/test_user_addressing.py": "f3dddaa01a21a06e0c1e40df19beecbe32e5b0764ff253c27117fea8e189aa42",
+      "tests/test_user_proxy_worker.py": "f53231a9a848b9f7256611648ee537e1fb41173b8fbe617db66f635ae453f0a1",
+      "tests/test_worker_identity.py": "8bfdc0966a9417b2c02aa4ca530fc6fe5ac3d5ffde0c332884cda42a1ceb965c",
+      "tests/test_worker_proxy.py": "bf641123be111efc2ed5548102e25ea9ad713d6235cbf7d57a2828906ac1c1a5",
+      "tests/test_worker_proxy_codex_seam.py": "a52b90ad2e7b648b04aba861f92a9fa6e9925c2616e7a704f19d49f317b650e2",
+      "tests/test_worker_relay.py": "ecf5d7c230e556f182ea2372b51defad059fbb11dd2b22bb27c4620acc09fbdc"
+    },
+    "S4": {
+      "contract/e2e/_codex_deepseek_exec.py": "efa59ba0995d3e2593e966ad5e91ee4e085879292dac78e9ad50781ba02bb2d2",
+      "contract/e2e/probe-codex-preapproval.py": "5b900708f6b178d59cfbff9ec00071e42f5854bdf22ffab9bae6b06b59373b87",
+      "contract/e2e/run-codex-app-server.py": "76f800bb07e3bfae4a057231aa2e7d24d7d829d3cf90384ce21558c24faf2a80",
+      "contract/e2e/run-dsh-worker.py": "b482b9c77d716756d5188e3fcbab628cc14eda837855c44822f7e93b884c8d63",
+      "contract/e2e/run-hosted-transfer.py": "9cf9d1a5c5d264891144bb1877fcb16460a1dd92981e8b1544ab9413fc44913e",
+      "desktop/scripts/probe-real-codex.py": "6d631ffc1685ed11847b04d11e7ca0e696ec2717ef7967a7ac52ac3fb20aa11b",
+      "desktop/scripts/probe-real-sdk.py": "2c348d4fc8a0e65fbc3f02734ddb7b1a0cc3601bb292093d0a02c8277a251f39",
+      "desktop/scripts/probe-sdk-ownership.py": "9c42193c5a2767da83ee337b68a3d0a1bfd8aad411adbbdcd64b26aea179a5f1",
+      "src/hyprial/agents/worker_state.py": "ca4a016629012d2042a655938898ead0b335c269867b816f15b71ed7353b34ab",
+      "src/hyprial/cli.py": "631a664f7fc8e36adf6ece5b45c8195d5c6cb694f54892be15a7e402926f1cb8",
+      "src/hyprial/daemon/__init__.py": "7baced1948199d2cc1420f75fd7f5652100fd9c1a6bc7b44a19e2e93e4580c9b",
+      "src/hyprial/daemon/api.py": "1718e3fff94b88226d461006f0bf9d121a3360edddb0e6965a6be2d26e8b8cfa",
+      "src/hyprial/daemon/application.py": "c45e1b5ed18b1cdbbc58d4f9c95a535af3f49e44dd0aa879da4c230cdb30d98c",
+      "src/hyprial/daemon/composition.py": "a3148cf76ca41b8de2e7112d723489603f6ff90b95f380e336015611db397334",
+      "src/hyprial/daemon/harness_actor.py": "a027a973b16317dc2580129b40ed0dbf6ca6a58406ea16f008b4b5270baf3887",
+      "src/hyprial/daemon/pac_actor.py": "ff0aa39637ae72bdd5d72e583648d9fa71b58035d1e7d10d24797d8a7be80cef",
+      "src/hyprial/daemon/state_persistence.py": "84e5c0a7e5656f6c8b904a3162f2e529f394680c8d245c71a4f5b99ea418101e",
+      "src/hyprial/daemon/supervisor.py": "fd44938f33ef799609864b4f9bb264ce0f06659e7a0cc143c6441ca686918c50",
+      "src/hyprial/harnesses/agent_sdk.py": "0644133cac3d915904fcf28e06339f2bead1ead2eced47222c54786b3c301309",
+      "src/hyprial/harnesses/claude.py": "59f0a31f4392bb5afbc028704e3f2f0dff7bdf94d7001ef9a107e12befe47403",
+      "src/hyprial/harnesses/codex.py": "a27672df0671cc6c6dc2bad8b82bcf1cfb3221d1278561f89eaeba0f327a2edc",
+      "src/hyprial/harnesses/dsh.py": "278491687fefb32e6dc21935022d7e3238631b4a50e92a8b2f512c254910a72c",
+      "src/hyprial/harnesses/launcher.py": "1f1d4c376a129e263b28cc3468b82261f34945303320f317a073fd0a3191989d",
+      "src/hyprial/harnesses/model_provider.py": "0f5e172e8e2948d488fe6ea56ea3ff07efc25c5ad5be5b23eacc550eb77612f6",
+      "src/hyprial/harnesses/pi.py": "91d3b0f2579de2ec81a00733761cd836b005df703cc9d069bd452d62526071e3",
+      "src/hyprial/harnesses/pi_rpc.py": "7291615b3d493b11153cf75abaf09bdae975e120f5e59dfe2660118c629b29ec",
+      "src/hyprial/harnesses/python_worker.py": "2a7d1c5e7db9ddc4d0f1772ddb966843a6923946d38427d07a31391b99406484",
+      "src/hyprial/management.py": "935d46b2466ca47a521141a9b300b71035c731433e19ee4806c8e0adf1c2edee",
+      "src/hyprial/squire/setup.py": "249de6336fa9d3fed3c5c53155885262c56b8445c20d94dd4725bdba7f8bb8ef",
+      "tests/actor_runtime/test_session_agent_actors.py": "420e753ca5bcacdb365d27c537cc50d9f1fcf04027d0429caff5f0ee6cb93b6a",
+      "tests/test_actor_preserved_restore_threshold_states.py": "efe0bf9d3621a05d5d5e94d5dcbfdc138ad8e7691b4f904648504c61f767bff1",
+      "tests/test_agent_entity.py": "e104ceaa6b789db1b40498dd868d77f214913d0661e0492efb2992764f56fbb7",
+      "tests/test_agent_env_close.py": "2735633baaa653b616996a346d678cba69083fc2f6027865aa4eb51576416a78",
+      "tests/test_agent_env_injection.py": "dab3e6796cb122060d581a241d68b3af12ae33b3eff46237c6a105cf0e8db946",
+      "tests/test_agent_home_p23_cc_native.py": "12b531005442896ddf0a30c35f0c708c2ab8fad292b432fb8bc480bf89566d13",
+      "tests/test_agent_sdk_dependency.py": "96fa1deb7862fae3172c34a31574b1c198e29a174fb996cbb332e5d0daf30546",
+      "tests/test_agent_sdk_driver.py": "417a528779d86b204ac8177c206a5d035ff7f3e22340b89d290c8da60e6d8927",
+      "tests/test_agent_sdk_force_stop.py": "6902651229fabadab6340cf6ffc634b17cce804b314583a225f4b19d5c14afd1",
+      "tests/test_atomic_lifecycle_ports.py": "57ea74022cd898c521707ab9263c6c3af838f3ae1901758c69d82d58e23895b6",
+      "tests/test_cli_adapter_remove.py": "c561b9b0bf4f16c4246fc9ff9e88622bc433dbf52ec49131af7b1a324d830fc3",
+      "tests/test_cli_pi_interactive.py": "0e6e2a47bd4125e8aa732f31dfcb97496afaf8d74631c4a3e69cc5e582ed88f5",
+      "tests/test_cli_upgrade_restart.py": "078589ea5b920cccc8c6a3e7eba441ba752d017a90b4d98beb0019b012f4b954",
+      "tests/test_codex_agent_home.py": "29895b55cbbc40d362d3814c286793a903484068cf0c3e7c71092ee451cefe4b",
+      "tests/test_codex_app_server.py": "cdd2365386cade79b3a6b2f41c31143c78ebb239d72b57f8629546ee7d129d92",
+      "tests/test_daemon_readiness_reports.py": "551a6eba134f06e81a41440431692cd30d782227aeecc539fc4cd42f52d2a9b8",
+      "tests/test_daemon_reconcile_watchdog.py": "d30e30106c32b06f7ca9c0ee698acf386732e030f5723f99cd70002221c951f3",
+      "tests/test_daemon_restore_settlement.py": "a94f7e8a3cf5aa7832e5a4117ad4904ded710934cdc6ed6c6e777305aa766689",
+      "tests/test_desired_state_sqlite_roundtrip.py": "f1ae3f22d629e5ea717481cd4820d166a30b045d53a1db188600520c840af145",
+      "tests/test_desired_state_sqlite_shadow.py": "d7ffb53d2e4db532f066a4531c16c61e15b034ef1846168736629b3e954766b1",
+      "tests/test_desired_state_start_timing.py": "d709d2326211824df6665fa9d9180906101996ae1bc0709ac7bf714ca6b0232a",
+      "tests/test_dsh_harness.py": "5a6ae9795ebc4bd0537c356fb5ed68676fd5eab3a1b0d5e0c7d0cf44ef7fc1bb",
+      "tests/test_dsh_interrupt_fence.py": "33e65fa94122b41a438b5db42c209bd116025d2cb85fc68974c8233186596924",
+      "tests/test_dsh_self_launch.py": "6b65ec0ddbfd916772274c58020a2faa4631d43afb95365b29dab52974ef8625",
+      "tests/test_e2e012_codex_thread_lifecycle.py": "9cf5180a2ab8da749e2eafa88ffb603ba11006ca2c5f5a668d0a2fe6ad91c7b5",
+      "tests/test_final_composition_lifecycle.py": "0425b53ed3970e645128c5e2665cf10044a5f47e8ea086f54b248f2a45dd0ce7",
+      "tests/test_harness_actor.py": "b096a4c2aa56b7afac11304067f70310f9cb5d6747f0e223eefb9d79b4c0bd62",
+      "tests/test_harness_command_pinning.py": "f81a7409ae3e8454831aebbbf45f5bd005da1c88caf5e2c72ae2074836f9b150",
+      "tests/test_harness_model_provider.py": "b411d40619c9e71032613a7bb8a33a635fed10f35fd29293de5bb5672e9ee527",
+      "tests/test_harness_restore_admission.py": "63f88ca4914dc338333a56dc3b5b0421947298c5c6ba153c1f0687a435051ca2",
+      "tests/test_harness_result_claims.py": "4d93c447ddd5a412f0dc923905bda9418eecb9a09a89a6c8cec98040e7c7e899",
+      "tests/test_harnesses.py": "3b32cef95563b9f50b366f26328edb678332688c78843fce95a4645e3bd9e4f5",
+      "tests/test_hosts_org_batch_liveness.py": "d7e5f175c812e8abdac8eb61674eadf5928ff61ed1f412a02427743ed64c391f",
+      "tests/test_inbox_dispatch_ttl_refresh.py": "163487d8b891a63bc3d8bc88c9423d44fbeacd79ed2891051c07c0a1b794d1c3",
+      "tests/test_lifecycle_failed_remove.py": "c7c08d4d0f78492c3585604f612d09f911726eccf812204219c2fab050ad58b7",
+      "tests/test_local_provider_wiring.py": "87edc1a28a2fdff49500d7d523e4735f140e45fdb7a53ca6e92709a6156b9623",
+      "tests/test_model_endpoint_override.py": "00302e8783064aaf02b57389b27674defe63fd98b47275cf038cee103fe7384f",
+      "tests/test_p1_config_roots.py": "6b8180f461da4a98c2685cb5992b0a61eb0633f5acee4f959657656a71965e9f",
+      "tests/test_pi_controlled_loader.py": "d774b80db4c0fa941b131b279ccd79cd0fa9ac0c2b95e0523f1b2e36fb6710bf",
+      "tests/test_pi_rpc_process.py": "de9f5f7775498cec0ed1eb55f21a889178c06c462a1c83b0142544afc232c9c6",
+      "tests/test_pi_worker_channel.py": "2b28a90b12f8034c5fc83a48dd6cd5c60f347263ae2f2b93ef99bf485c2dfb3c",
+      "tests/test_progress_end_to_end.py": "7f2be0933915a327f64c6472c7757741548c73869e254ad23e491a1a2031ac0d",
+      "tests/test_provider_auth_hook.py": "061e54df2d359922cfe2dc4c68281f89c35288d30370228186e539926299b831",
+      "tests/test_ps_desired_state_reload.py": "6dea3b2a7148907f11fed21a27b68dac60b05fb0d6ec628531168619bc8c66f9",
+      "tests/test_ps_status_snapshot.py": "ba67100c24885e25b6c9e0009c532360639c60008b99f162df64b8a916869fb7",
+      "tests/test_python_harness_process.py": "113f00726387f627d5da4bf866d60b0795df962cce277aea86979bca293468db",
+      "tests/test_python_worker.py": "ad60d58192c8e95d25545bd9697e9f144e701910e10fd9770bcb6586755b3bad",
+      "tests/test_restore_failed_persistence_settlement.py": "d386ff26c3dc86aab42ed67e828a3198fdbb2b3a28ac2bfe83260d1c45752f19",
+      "tests/test_restore_isolation.py": "c3182f8c808b9d95a9278623c6070502db15e7ca239a821ed09e82ea790faa17",
+      "tests/test_restore_threshold_states.py": "5e679719755bd373a8c516fbf8e04c926080bffaab891ab741caa12d8db2f124",
+      "tests/test_session_ref_authority.py": "19114c32b299d029e1874132741557421e750d4622a48742004e234fd8da48c3",
+      "tests/test_smolvm_runtime_state.py": "cc03eaa4788c1a0c7da1f4e5dbe5c3be1ca03d8f9618433dbd20ff442906bc0e",
+      "tests/test_smolvm_runtime_vm.py": "8c2500e336d8fa34949036987d62470767b7f90bf3df77189b4879f5fd75a4cf",
+      "tests/test_squire_setup_scaffold.py": "669e893fd3935ff536fbe51470fa40e3a370cb4431c78d0237f55919c5c013ee",
+      "tests/test_state_persistence_authority.py": "f0b5f335e2bf2b3de8458a54dd928a5727218664b0a1b0a11c710c3a0bdf2651",
+      "tests/test_transfer_container.py": "fc72e7e00bb0b080be9b6fcdcce86d2921d0549bb3589a5cf7610c4f228071e1",
+      "tests/test_transfer_daemon.py": "cc246100a3ccef7d793d2b0d278bf427aa1c9b94dba9014c53a2785bebbb6483",
+      "tests/test_turn_stall_watch.py": "70ea68a0824fdcb64dd9cfcb17239b595f089f7f6d0fa314a0b385dd2ad03008",
+      "tests/test_user_addressing.py": "f3dddaa01a21a06e0c1e40df19beecbe32e5b0764ff253c27117fea8e189aa42",
+      "tests/test_user_proxy_worker.py": "f53231a9a848b9f7256611648ee537e1fb41173b8fbe617db66f635ae453f0a1",
+      "tests/test_worker_identity.py": "8bfdc0966a9417b2c02aa4ca530fc6fe5ac3d5ffde0c332884cda42a1ceb965c",
+      "tests/test_worker_proxy.py": "bf641123be111efc2ed5548102e25ea9ad713d6235cbf7d57a2828906ac1c1a5",
+      "tests/test_worker_proxy_codex_seam.py": "a52b90ad2e7b648b04aba861f92a9fa6e9925c2616e7a704f19d49f317b650e2",
+      "tests/test_worker_relay.py": "ecf5d7c230e556f182ea2372b51defad059fbb11dd2b22bb27c4620acc09fbdc"
+    },
+    "S5": {
+      "contract/e2e/_codex_deepseek_exec.py": "efa59ba0995d3e2593e966ad5e91ee4e085879292dac78e9ad50781ba02bb2d2",
+      "contract/e2e/probe-codex-preapproval.py": "5b900708f6b178d59cfbff9ec00071e42f5854bdf22ffab9bae6b06b59373b87",
+      "contract/e2e/run-codex-app-server.py": "76f800bb07e3bfae4a057231aa2e7d24d7d829d3cf90384ce21558c24faf2a80",
+      "contract/e2e/run-dsh-worker.py": "b482b9c77d716756d5188e3fcbab628cc14eda837855c44822f7e93b884c8d63",
+      "contract/e2e/run-hosted-transfer.py": "9cf9d1a5c5d264891144bb1877fcb16460a1dd92981e8b1544ab9413fc44913e",
+      "desktop/scripts/probe-real-codex.py": "6d631ffc1685ed11847b04d11e7ca0e696ec2717ef7967a7ac52ac3fb20aa11b",
+      "desktop/scripts/probe-real-sdk.py": "2c348d4fc8a0e65fbc3f02734ddb7b1a0cc3601bb292093d0a02c8277a251f39",
+      "desktop/scripts/probe-sdk-ownership.py": "9c42193c5a2767da83ee337b68a3d0a1bfd8aad411adbbdcd64b26aea179a5f1",
+      "src/hyprial/agents/worker_state.py": "ca4a016629012d2042a655938898ead0b335c269867b816f15b71ed7353b34ab",
+      "src/hyprial/cli.py": "631a664f7fc8e36adf6ece5b45c8195d5c6cb694f54892be15a7e402926f1cb8",
+      "src/hyprial/daemon/__init__.py": "7baced1948199d2cc1420f75fd7f5652100fd9c1a6bc7b44a19e2e93e4580c9b",
+      "src/hyprial/daemon/api.py": "1718e3fff94b88226d461006f0bf9d121a3360edddb0e6965a6be2d26e8b8cfa",
+      "src/hyprial/daemon/application.py": "c45e1b5ed18b1cdbbc58d4f9c95a535af3f49e44dd0aa879da4c230cdb30d98c",
+      "src/hyprial/daemon/composition.py": "a3148cf76ca41b8de2e7112d723489603f6ff90b95f380e336015611db397334",
+      "src/hyprial/daemon/harness_actor.py": "a027a973b16317dc2580129b40ed0dbf6ca6a58406ea16f008b4b5270baf3887",
+      "src/hyprial/daemon/pac_actor.py": "ff0aa39637ae72bdd5d72e583648d9fa71b58035d1e7d10d24797d8a7be80cef",
+      "src/hyprial/daemon/state_persistence.py": "84e5c0a7e5656f6c8b904a3162f2e529f394680c8d245c71a4f5b99ea418101e",
+      "src/hyprial/daemon/supervisor.py": "fd44938f33ef799609864b4f9bb264ce0f06659e7a0cc143c6441ca686918c50",
+      "src/hyprial/harnesses/agent_sdk.py": "0644133cac3d915904fcf28e06339f2bead1ead2eced47222c54786b3c301309",
+      "src/hyprial/harnesses/claude.py": "59f0a31f4392bb5afbc028704e3f2f0dff7bdf94d7001ef9a107e12befe47403",
+      "src/hyprial/harnesses/codex.py": "a27672df0671cc6c6dc2bad8b82bcf1cfb3221d1278561f89eaeba0f327a2edc",
+      "src/hyprial/harnesses/dsh.py": "278491687fefb32e6dc21935022d7e3238631b4a50e92a8b2f512c254910a72c",
+      "src/hyprial/harnesses/launcher.py": "1f1d4c376a129e263b28cc3468b82261f34945303320f317a073fd0a3191989d",
+      "src/hyprial/harnesses/model_provider.py": "0f5e172e8e2948d488fe6ea56ea3ff07efc25c5ad5be5b23eacc550eb77612f6",
+      "src/hyprial/harnesses/pi.py": "91d3b0f2579de2ec81a00733761cd836b005df703cc9d069bd452d62526071e3",
+      "src/hyprial/harnesses/pi_rpc.py": "7291615b3d493b11153cf75abaf09bdae975e120f5e59dfe2660118c629b29ec",
+      "src/hyprial/harnesses/python_worker.py": "2a7d1c5e7db9ddc4d0f1772ddb966843a6923946d38427d07a31391b99406484",
+      "src/hyprial/management.py": "935d46b2466ca47a521141a9b300b71035c731433e19ee4806c8e0adf1c2edee",
+      "src/hyprial/squire/setup.py": "249de6336fa9d3fed3c5c53155885262c56b8445c20d94dd4725bdba7f8bb8ef",
+      "tests/actor_runtime/test_session_agent_actors.py": "420e753ca5bcacdb365d27c537cc50d9f1fcf04027d0429caff5f0ee6cb93b6a",
+      "tests/test_actor_preserved_restore_threshold_states.py": "efe0bf9d3621a05d5d5e94d5dcbfdc138ad8e7691b4f904648504c61f767bff1",
+      "tests/test_agent_entity.py": "e104ceaa6b789db1b40498dd868d77f214913d0661e0492efb2992764f56fbb7",
+      "tests/test_agent_env_close.py": "2735633baaa653b616996a346d678cba69083fc2f6027865aa4eb51576416a78",
+      "tests/test_agent_env_injection.py": "dab3e6796cb122060d581a241d68b3af12ae33b3eff46237c6a105cf0e8db946",
+      "tests/test_agent_home_p23_cc_native.py": "12b531005442896ddf0a30c35f0c708c2ab8fad292b432fb8bc480bf89566d13",
+      "tests/test_agent_sdk_dependency.py": "96fa1deb7862fae3172c34a31574b1c198e29a174fb996cbb332e5d0daf30546",
+      "tests/test_agent_sdk_driver.py": "417a528779d86b204ac8177c206a5d035ff7f3e22340b89d290c8da60e6d8927",
+      "tests/test_agent_sdk_force_stop.py": "6902651229fabadab6340cf6ffc634b17cce804b314583a225f4b19d5c14afd1",
+      "tests/test_atomic_lifecycle_ports.py": "57ea74022cd898c521707ab9263c6c3af838f3ae1901758c69d82d58e23895b6",
+      "tests/test_cli_adapter_remove.py": "c561b9b0bf4f16c4246fc9ff9e88622bc433dbf52ec49131af7b1a324d830fc3",
+      "tests/test_cli_pi_interactive.py": "0e6e2a47bd4125e8aa732f31dfcb97496afaf8d74631c4a3e69cc5e582ed88f5",
+      "tests/test_cli_upgrade_restart.py": "078589ea5b920cccc8c6a3e7eba441ba752d017a90b4d98beb0019b012f4b954",
+      "tests/test_codex_agent_home.py": "29895b55cbbc40d362d3814c286793a903484068cf0c3e7c71092ee451cefe4b",
+      "tests/test_codex_app_server.py": "cdd2365386cade79b3a6b2f41c31143c78ebb239d72b57f8629546ee7d129d92",
+      "tests/test_daemon_readiness_reports.py": "551a6eba134f06e81a41440431692cd30d782227aeecc539fc4cd42f52d2a9b8",
+      "tests/test_daemon_reconcile_watchdog.py": "d30e30106c32b06f7ca9c0ee698acf386732e030f5723f99cd70002221c951f3",
+      "tests/test_daemon_restore_settlement.py": "a94f7e8a3cf5aa7832e5a4117ad4904ded710934cdc6ed6c6e777305aa766689",
+      "tests/test_desired_state_sqlite_roundtrip.py": "f1ae3f22d629e5ea717481cd4820d166a30b045d53a1db188600520c840af145",
+      "tests/test_desired_state_sqlite_shadow.py": "d7ffb53d2e4db532f066a4531c16c61e15b034ef1846168736629b3e954766b1",
+      "tests/test_desired_state_start_timing.py": "d709d2326211824df6665fa9d9180906101996ae1bc0709ac7bf714ca6b0232a",
+      "tests/test_dsh_harness.py": "5a6ae9795ebc4bd0537c356fb5ed68676fd5eab3a1b0d5e0c7d0cf44ef7fc1bb",
+      "tests/test_dsh_interrupt_fence.py": "33e65fa94122b41a438b5db42c209bd116025d2cb85fc68974c8233186596924",
+      "tests/test_dsh_self_launch.py": "6b65ec0ddbfd916772274c58020a2faa4631d43afb95365b29dab52974ef8625",
+      "tests/test_e2e012_codex_thread_lifecycle.py": "9cf5180a2ab8da749e2eafa88ffb603ba11006ca2c5f5a668d0a2fe6ad91c7b5",
+      "tests/test_final_composition_lifecycle.py": "0425b53ed3970e645128c5e2665cf10044a5f47e8ea086f54b248f2a45dd0ce7",
+      "tests/test_harness_actor.py": "b096a4c2aa56b7afac11304067f70310f9cb5d6747f0e223eefb9d79b4c0bd62",
+      "tests/test_harness_command_pinning.py": "f81a7409ae3e8454831aebbbf45f5bd005da1c88caf5e2c72ae2074836f9b150",
+      "tests/test_harness_model_provider.py": "b411d40619c9e71032613a7bb8a33a635fed10f35fd29293de5bb5672e9ee527",
+      "tests/test_harness_restore_admission.py": "63f88ca4914dc338333a56dc3b5b0421947298c5c6ba153c1f0687a435051ca2",
+      "tests/test_harness_result_claims.py": "4d93c447ddd5a412f0dc923905bda9418eecb9a09a89a6c8cec98040e7c7e899",
+      "tests/test_harnesses.py": "3b32cef95563b9f50b366f26328edb678332688c78843fce95a4645e3bd9e4f5",
+      "tests/test_hosts_org_batch_liveness.py": "d7e5f175c812e8abdac8eb61674eadf5928ff61ed1f412a02427743ed64c391f",
+      "tests/test_inbox_dispatch_ttl_refresh.py": "163487d8b891a63bc3d8bc88c9423d44fbeacd79ed2891051c07c0a1b794d1c3",
+      "tests/test_lifecycle_failed_remove.py": "c7c08d4d0f78492c3585604f612d09f911726eccf812204219c2fab050ad58b7",
+      "tests/test_local_provider_wiring.py": "87edc1a28a2fdff49500d7d523e4735f140e45fdb7a53ca6e92709a6156b9623",
+      "tests/test_model_endpoint_override.py": "00302e8783064aaf02b57389b27674defe63fd98b47275cf038cee103fe7384f",
+      "tests/test_p1_config_roots.py": "6b8180f461da4a98c2685cb5992b0a61eb0633f5acee4f959657656a71965e9f",
+      "tests/test_pi_controlled_loader.py": "d774b80db4c0fa941b131b279ccd79cd0fa9ac0c2b95e0523f1b2e36fb6710bf",
+      "tests/test_pi_rpc_process.py": "de9f5f7775498cec0ed1eb55f21a889178c06c462a1c83b0142544afc232c9c6",
+      "tests/test_pi_worker_channel.py": "2b28a90b12f8034c5fc83a48dd6cd5c60f347263ae2f2b93ef99bf485c2dfb3c",
+      "tests/test_progress_end_to_end.py": "7f2be0933915a327f64c6472c7757741548c73869e254ad23e491a1a2031ac0d",
+      "tests/test_provider_auth_hook.py": "061e54df2d359922cfe2dc4c68281f89c35288d30370228186e539926299b831",
+      "tests/test_ps_desired_state_reload.py": "6dea3b2a7148907f11fed21a27b68dac60b05fb0d6ec628531168619bc8c66f9",
+      "tests/test_ps_status_snapshot.py": "ba67100c24885e25b6c9e0009c532360639c60008b99f162df64b8a916869fb7",
+      "tests/test_python_harness_process.py": "113f00726387f627d5da4bf866d60b0795df962cce277aea86979bca293468db",
+      "tests/test_python_worker.py": "ad60d58192c8e95d25545bd9697e9f144e701910e10fd9770bcb6586755b3bad",
+      "tests/test_restore_failed_persistence_settlement.py": "d386ff26c3dc86aab42ed67e828a3198fdbb2b3a28ac2bfe83260d1c45752f19",
+      "tests/test_restore_isolation.py": "c3182f8c808b9d95a9278623c6070502db15e7ca239a821ed09e82ea790faa17",
+      "tests/test_restore_threshold_states.py": "5e679719755bd373a8c516fbf8e04c926080bffaab891ab741caa12d8db2f124",
+      "tests/test_session_ref_authority.py": "19114c32b299d029e1874132741557421e750d4622a48742004e234fd8da48c3",
+      "tests/test_smolvm_runtime_state.py": "cc03eaa4788c1a0c7da1f4e5dbe5c3be1ca03d8f9618433dbd20ff442906bc0e",
+      "tests/test_smolvm_runtime_vm.py": "8c2500e336d8fa34949036987d62470767b7f90bf3df77189b4879f5fd75a4cf",
+      "tests/test_squire_setup_scaffold.py": "669e893fd3935ff536fbe51470fa40e3a370cb4431c78d0237f55919c5c013ee",
+      "tests/test_state_persistence_authority.py": "f0b5f335e2bf2b3de8458a54dd928a5727218664b0a1b0a11c710c3a0bdf2651",
+      "tests/test_transfer_container.py": "fc72e7e00bb0b080be9b6fcdcce86d2921d0549bb3589a5cf7610c4f228071e1",
+      "tests/test_transfer_daemon.py": "cc246100a3ccef7d793d2b0d278bf427aa1c9b94dba9014c53a2785bebbb6483",
+      "tests/test_turn_stall_watch.py": "70ea68a0824fdcb64dd9cfcb17239b595f089f7f6d0fa314a0b385dd2ad03008",
+      "tests/test_user_addressing.py": "f3dddaa01a21a06e0c1e40df19beecbe32e5b0764ff253c27117fea8e189aa42",
+      "tests/test_user_proxy_worker.py": "f53231a9a848b9f7256611648ee537e1fb41173b8fbe617db66f635ae453f0a1",
+      "tests/test_worker_identity.py": "8bfdc0966a9417b2c02aa4ca530fc6fe5ac3d5ffde0c332884cda42a1ceb965c",
+      "tests/test_worker_proxy.py": "bf641123be111efc2ed5548102e25ea9ad713d6235cbf7d57a2828906ac1c1a5",
+      "tests/test_worker_proxy_codex_seam.py": "a52b90ad2e7b648b04aba861f92a9fa6e9925c2616e7a704f19d49f317b650e2",
+      "tests/test_worker_relay.py": "ecf5d7c230e556f182ea2372b51defad059fbb11dd2b22bb27c4620acc09fbdc"
+    },
+    "S6": {
+      "contract/e2e/_codex_deepseek_exec.py": "efa59ba0995d3e2593e966ad5e91ee4e085879292dac78e9ad50781ba02bb2d2",
+      "contract/e2e/probe-codex-preapproval.py": "5b900708f6b178d59cfbff9ec00071e42f5854bdf22ffab9bae6b06b59373b87",
+      "contract/e2e/run-codex-app-server.py": "76f800bb07e3bfae4a057231aa2e7d24d7d829d3cf90384ce21558c24faf2a80",
+      "contract/e2e/run-dsh-worker.py": "b482b9c77d716756d5188e3fcbab628cc14eda837855c44822f7e93b884c8d63",
+      "contract/e2e/run-hosted-transfer.py": "9cf9d1a5c5d264891144bb1877fcb16460a1dd92981e8b1544ab9413fc44913e",
+      "desktop/scripts/probe-real-codex.py": "6d631ffc1685ed11847b04d11e7ca0e696ec2717ef7967a7ac52ac3fb20aa11b",
+      "desktop/scripts/probe-real-sdk.py": "2c348d4fc8a0e65fbc3f02734ddb7b1a0cc3601bb292093d0a02c8277a251f39",
+      "desktop/scripts/probe-sdk-ownership.py": "9c42193c5a2767da83ee337b68a3d0a1bfd8aad411adbbdcd64b26aea179a5f1",
+      "src/hyprial/agents/worker_state.py": "ca4a016629012d2042a655938898ead0b335c269867b816f15b71ed7353b34ab",
+      "src/hyprial/cli.py": "631a664f7fc8e36adf6ece5b45c8195d5c6cb694f54892be15a7e402926f1cb8",
+      "src/hyprial/daemon/__init__.py": "7baced1948199d2cc1420f75fd7f5652100fd9c1a6bc7b44a19e2e93e4580c9b",
+      "src/hyprial/daemon/api.py": "1718e3fff94b88226d461006f0bf9d121a3360edddb0e6965a6be2d26e8b8cfa",
+      "src/hyprial/daemon/application.py": "c45e1b5ed18b1cdbbc58d4f9c95a535af3f49e44dd0aa879da4c230cdb30d98c",
+      "src/hyprial/daemon/composition.py": "a3148cf76ca41b8de2e7112d723489603f6ff90b95f380e336015611db397334",
+      "src/hyprial/daemon/harness_actor.py": "a027a973b16317dc2580129b40ed0dbf6ca6a58406ea16f008b4b5270baf3887",
+      "src/hyprial/daemon/pac_actor.py": "ff0aa39637ae72bdd5d72e583648d9fa71b58035d1e7d10d24797d8a7be80cef",
+      "src/hyprial/daemon/state_persistence.py": "84e5c0a7e5656f6c8b904a3162f2e529f394680c8d245c71a4f5b99ea418101e",
+      "src/hyprial/daemon/supervisor.py": "fd44938f33ef799609864b4f9bb264ce0f06659e7a0cc143c6441ca686918c50",
+      "src/hyprial/harnesses/agent_sdk.py": "0644133cac3d915904fcf28e06339f2bead1ead2eced47222c54786b3c301309",
+      "src/hyprial/harnesses/claude.py": "59f0a31f4392bb5afbc028704e3f2f0dff7bdf94d7001ef9a107e12befe47403",
+      "src/hyprial/harnesses/codex.py": "a27672df0671cc6c6dc2bad8b82bcf1cfb3221d1278561f89eaeba0f327a2edc",
+      "src/hyprial/harnesses/dsh.py": "278491687fefb32e6dc21935022d7e3238631b4a50e92a8b2f512c254910a72c",
+      "src/hyprial/harnesses/launcher.py": "1f1d4c376a129e263b28cc3468b82261f34945303320f317a073fd0a3191989d",
+      "src/hyprial/harnesses/model_provider.py": "0f5e172e8e2948d488fe6ea56ea3ff07efc25c5ad5be5b23eacc550eb77612f6",
+      "src/hyprial/harnesses/pi.py": "91d3b0f2579de2ec81a00733761cd836b005df703cc9d069bd452d62526071e3",
+      "src/hyprial/harnesses/pi_rpc.py": "7291615b3d493b11153cf75abaf09bdae975e120f5e59dfe2660118c629b29ec",
+      "src/hyprial/harnesses/python_worker.py": "2a7d1c5e7db9ddc4d0f1772ddb966843a6923946d38427d07a31391b99406484",
+      "src/hyprial/management.py": "935d46b2466ca47a521141a9b300b71035c731433e19ee4806c8e0adf1c2edee",
+      "src/hyprial/squire/setup.py": "249de6336fa9d3fed3c5c53155885262c56b8445c20d94dd4725bdba7f8bb8ef",
+      "tests/actor_runtime/test_session_agent_actors.py": "420e753ca5bcacdb365d27c537cc50d9f1fcf04027d0429caff5f0ee6cb93b6a",
+      "tests/test_actor_preserved_restore_threshold_states.py": "efe0bf9d3621a05d5d5e94d5dcbfdc138ad8e7691b4f904648504c61f767bff1",
+      "tests/test_agent_entity.py": "e104ceaa6b789db1b40498dd868d77f214913d0661e0492efb2992764f56fbb7",
+      "tests/test_agent_env_close.py": "2735633baaa653b616996a346d678cba69083fc2f6027865aa4eb51576416a78",
+      "tests/test_agent_env_injection.py": "dab3e6796cb122060d581a241d68b3af12ae33b3eff46237c6a105cf0e8db946",
+      "tests/test_agent_home_p23_cc_native.py": "12b531005442896ddf0a30c35f0c708c2ab8fad292b432fb8bc480bf89566d13",
+      "tests/test_agent_sdk_dependency.py": "96fa1deb7862fae3172c34a31574b1c198e29a174fb996cbb332e5d0daf30546",
+      "tests/test_agent_sdk_driver.py": "417a528779d86b204ac8177c206a5d035ff7f3e22340b89d290c8da60e6d8927",
+      "tests/test_agent_sdk_force_stop.py": "6902651229fabadab6340cf6ffc634b17cce804b314583a225f4b19d5c14afd1",
+      "tests/test_atomic_lifecycle_ports.py": "57ea74022cd898c521707ab9263c6c3af838f3ae1901758c69d82d58e23895b6",
+      "tests/test_cli_adapter_remove.py": "c561b9b0bf4f16c4246fc9ff9e88622bc433dbf52ec49131af7b1a324d830fc3",
+      "tests/test_cli_pi_interactive.py": "0e6e2a47bd4125e8aa732f31dfcb97496afaf8d74631c4a3e69cc5e582ed88f5",
+      "tests/test_cli_upgrade_restart.py": "078589ea5b920cccc8c6a3e7eba441ba752d017a90b4d98beb0019b012f4b954",
+      "tests/test_codex_agent_home.py": "29895b55cbbc40d362d3814c286793a903484068cf0c3e7c71092ee451cefe4b",
+      "tests/test_codex_app_server.py": "cdd2365386cade79b3a6b2f41c31143c78ebb239d72b57f8629546ee7d129d92",
+      "tests/test_daemon_readiness_reports.py": "551a6eba134f06e81a41440431692cd30d782227aeecc539fc4cd42f52d2a9b8",
+      "tests/test_daemon_reconcile_watchdog.py": "d30e30106c32b06f7ca9c0ee698acf386732e030f5723f99cd70002221c951f3",
+      "tests/test_daemon_restore_settlement.py": "a94f7e8a3cf5aa7832e5a4117ad4904ded710934cdc6ed6c6e777305aa766689",
+      "tests/test_desired_state_sqlite_roundtrip.py": "f1ae3f22d629e5ea717481cd4820d166a30b045d53a1db188600520c840af145",
+      "tests/test_desired_state_sqlite_shadow.py": "d7ffb53d2e4db532f066a4531c16c61e15b034ef1846168736629b3e954766b1",
+      "tests/test_desired_state_start_timing.py": "d709d2326211824df6665fa9d9180906101996ae1bc0709ac7bf714ca6b0232a",
+      "tests/test_dsh_harness.py": "5a6ae9795ebc4bd0537c356fb5ed68676fd5eab3a1b0d5e0c7d0cf44ef7fc1bb",
+      "tests/test_dsh_interrupt_fence.py": "33e65fa94122b41a438b5db42c209bd116025d2cb85fc68974c8233186596924",
+      "tests/test_dsh_self_launch.py": "6b65ec0ddbfd916772274c58020a2faa4631d43afb95365b29dab52974ef8625",
+      "tests/test_e2e012_codex_thread_lifecycle.py": "9cf5180a2ab8da749e2eafa88ffb603ba11006ca2c5f5a668d0a2fe6ad91c7b5",
+      "tests/test_final_composition_lifecycle.py": "0425b53ed3970e645128c5e2665cf10044a5f47e8ea086f54b248f2a45dd0ce7",
+      "tests/test_harness_actor.py": "b096a4c2aa56b7afac11304067f70310f9cb5d6747f0e223eefb9d79b4c0bd62",
+      "tests/test_harness_command_pinning.py": "f81a7409ae3e8454831aebbbf45f5bd005da1c88caf5e2c72ae2074836f9b150",
+      "tests/test_harness_model_provider.py": "b411d40619c9e71032613a7bb8a33a635fed10f35fd29293de5bb5672e9ee527",
+      "tests/test_harness_restore_admission.py": "63f88ca4914dc338333a56dc3b5b0421947298c5c6ba153c1f0687a435051ca2",
+      "tests/test_harness_result_claims.py": "4d93c447ddd5a412f0dc923905bda9418eecb9a09a89a6c8cec98040e7c7e899",
+      "tests/test_harnesses.py": "3b32cef95563b9f50b366f26328edb678332688c78843fce95a4645e3bd9e4f5",
+      "tests/test_hosts_org_batch_liveness.py": "d7e5f175c812e8abdac8eb61674eadf5928ff61ed1f412a02427743ed64c391f",
+      "tests/test_inbox_dispatch_ttl_refresh.py": "163487d8b891a63bc3d8bc88c9423d44fbeacd79ed2891051c07c0a1b794d1c3",
+      "tests/test_lifecycle_failed_remove.py": "c7c08d4d0f78492c3585604f612d09f911726eccf812204219c2fab050ad58b7",
+      "tests/test_local_provider_wiring.py": "87edc1a28a2fdff49500d7d523e4735f140e45fdb7a53ca6e92709a6156b9623",
+      "tests/test_model_endpoint_override.py": "00302e8783064aaf02b57389b27674defe63fd98b47275cf038cee103fe7384f",
+      "tests/test_p1_config_roots.py": "6b8180f461da4a98c2685cb5992b0a61eb0633f5acee4f959657656a71965e9f",
+      "tests/test_pi_controlled_loader.py": "d774b80db4c0fa941b131b279ccd79cd0fa9ac0c2b95e0523f1b2e36fb6710bf",
+      "tests/test_pi_rpc_process.py": "de9f5f7775498cec0ed1eb55f21a889178c06c462a1c83b0142544afc232c9c6",
+      "tests/test_pi_worker_channel.py": "2b28a90b12f8034c5fc83a48dd6cd5c60f347263ae2f2b93ef99bf485c2dfb3c",
+      "tests/test_progress_end_to_end.py": "7f2be0933915a327f64c6472c7757741548c73869e254ad23e491a1a2031ac0d",
+      "tests/test_provider_auth_hook.py": "061e54df2d359922cfe2dc4c68281f89c35288d30370228186e539926299b831",
+      "tests/test_ps_desired_state_reload.py": "6dea3b2a7148907f11fed21a27b68dac60b05fb0d6ec628531168619bc8c66f9",
+      "tests/test_ps_status_snapshot.py": "ba67100c24885e25b6c9e0009c532360639c60008b99f162df64b8a916869fb7",
+      "tests/test_python_harness_process.py": "113f00726387f627d5da4bf866d60b0795df962cce277aea86979bca293468db",
+      "tests/test_python_worker.py": "ad60d58192c8e95d25545bd9697e9f144e701910e10fd9770bcb6586755b3bad",
+      "tests/test_restore_failed_persistence_settlement.py": "d386ff26c3dc86aab42ed67e828a3198fdbb2b3a28ac2bfe83260d1c45752f19",
+      "tests/test_restore_isolation.py": "c3182f8c808b9d95a9278623c6070502db15e7ca239a821ed09e82ea790faa17",
+      "tests/test_restore_threshold_states.py": "5e679719755bd373a8c516fbf8e04c926080bffaab891ab741caa12d8db2f124",
+      "tests/test_session_ref_authority.py": "19114c32b299d029e1874132741557421e750d4622a48742004e234fd8da48c3",
+      "tests/test_smolvm_runtime_state.py": "cc03eaa4788c1a0c7da1f4e5dbe5c3be1ca03d8f9618433dbd20ff442906bc0e",
+      "tests/test_smolvm_runtime_vm.py": "8c2500e336d8fa34949036987d62470767b7f90bf3df77189b4879f5fd75a4cf",
+      "tests/test_squire_setup_scaffold.py": "669e893fd3935ff536fbe51470fa40e3a370cb4431c78d0237f55919c5c013ee",
+      "tests/test_state_persistence_authority.py": "f0b5f335e2bf2b3de8458a54dd928a5727218664b0a1b0a11c710c3a0bdf2651",
+      "tests/test_transfer_container.py": "fc72e7e00bb0b080be9b6fcdcce86d2921d0549bb3589a5cf7610c4f228071e1",
+      "tests/test_transfer_daemon.py": "cc246100a3ccef7d793d2b0d278bf427aa1c9b94dba9014c53a2785bebbb6483",
+      "tests/test_turn_stall_watch.py": "70ea68a0824fdcb64dd9cfcb17239b595f089f7f6d0fa314a0b385dd2ad03008",
+      "tests/test_user_addressing.py": "f3dddaa01a21a06e0c1e40df19beecbe32e5b0764ff253c27117fea8e189aa42",
+      "tests/test_user_proxy_worker.py": "f53231a9a848b9f7256611648ee537e1fb41173b8fbe617db66f635ae453f0a1",
+      "tests/test_worker_identity.py": "8bfdc0966a9417b2c02aa4ca530fc6fe5ac3d5ffde0c332884cda42a1ceb965c",
+      "tests/test_worker_proxy.py": "bf641123be111efc2ed5548102e25ea9ad713d6235cbf7d57a2828906ac1c1a5",
+      "tests/test_worker_proxy_codex_seam.py": "a52b90ad2e7b648b04aba861f92a9fa6e9925c2616e7a704f19d49f317b650e2",
+      "tests/test_worker_relay.py": "ecf5d7c230e556f182ea2372b51defad059fbb11dd2b22bb27c4620acc09fbdc"
+    }
+  },
+  "root": "/Users/allenwoods/Sync/2-engineering/HyprialOS/harness-bridge-python-review-r3",
+  "root_head": "ad4ce68b6ccd08bd64dd9fdce448dd91a8329f43",
+  "schema_version": 1,
+  "stages": [
+    {
+      "rules": [
+        {
+          "approval": "draft",
+          "changed_paths": [
+            "contract/e2e/_codex_deepseek_exec.py",
+            "contract/e2e/probe-codex-preapproval.py",
+            "contract/e2e/run-codex-app-server.py",
+            "contract/e2e/run-dsh-worker.py",
+            "contract/e2e/run-hosted-transfer.py",
+            "desktop/scripts/probe-real-codex.py",
+            "desktop/scripts/probe-real-sdk.py",
+            "desktop/scripts/probe-sdk-ownership.py",
+            "src/hyprial/agents/worker_state.py",
+            "src/hyprial/cli.py",
+            "src/hyprial/daemon/__init__.py",
+            "src/hyprial/daemon/api.py",
+            "src/hyprial/daemon/application.py",
+            "src/hyprial/daemon/composition.py",
+            "src/hyprial/daemon/harness_actor.py",
+            "src/hyprial/daemon/pac_actor.py",
+            "src/hyprial/daemon/state_persistence.py",
+            "src/hyprial/daemon/supervisor.py",
+            "src/hyprial/harnesses/agent_sdk.py",
+            "src/hyprial/harnesses/claude.py",
+            "src/hyprial/harnesses/codex.py",
+            "src/hyprial/harnesses/dsh.py",
+            "src/hyprial/harnesses/launcher.py",
+            "src/hyprial/harnesses/model_provider.py",
+            "src/hyprial/harnesses/pi.py",
+            "src/hyprial/harnesses/pi_rpc.py",
+            "src/hyprial/harnesses/python_worker.py",
+            "src/hyprial/management.py",
+            "src/hyprial/squire/setup.py",
+            "tests/actor_runtime/test_session_agent_actors.py",
+            "tests/test_actor_preserved_restore_threshold_states.py",
+            "tests/test_agent_entity.py",
+            "tests/test_agent_env_close.py",
+            "tests/test_agent_env_injection.py",
+            "tests/test_agent_home_p23_cc_native.py",
+            "tests/test_agent_sdk_dependency.py",
+            "tests/test_agent_sdk_driver.py",
+            "tests/test_agent_sdk_force_stop.py",
+            "tests/test_atomic_lifecycle_ports.py",
+            "tests/test_cli_adapter_remove.py",
+            "tests/test_cli_pi_interactive.py",
+            "tests/test_cli_upgrade_restart.py",
+            "tests/test_codex_agent_home.py",
+            "tests/test_codex_app_server.py",
+            "tests/test_daemon_readiness_reports.py",
+            "tests/test_daemon_reconcile_watchdog.py",
+            "tests/test_daemon_restore_settlement.py",
+            "tests/test_desired_state_sqlite_roundtrip.py",
+            "tests/test_desired_state_sqlite_shadow.py",
+            "tests/test_desired_state_start_timing.py",
+            "tests/test_dsh_harness.py",
+            "tests/test_dsh_interrupt_fence.py",
+            "tests/test_dsh_self_launch.py",
+            "tests/test_e2e012_codex_thread_lifecycle.py",
+            "tests/test_final_composition_lifecycle.py",
+            "tests/test_harness_actor.py",
+            "tests/test_harness_command_pinning.py",
+            "tests/test_harness_model_provider.py",
+            "tests/test_harness_restore_admission.py",
+            "tests/test_harness_result_claims.py",
+            "tests/test_harnesses.py",
+            "tests/test_hosts_org_batch_liveness.py",
+            "tests/test_inbox_dispatch_ttl_refresh.py",
+            "tests/test_lifecycle_failed_remove.py",
+            "tests/test_local_provider_wiring.py",
+            "tests/test_model_endpoint_override.py",
+            "tests/test_p1_config_roots.py",
+            "tests/test_pi_controlled_loader.py",
+            "tests/test_pi_rpc_process.py",
+            "tests/test_pi_worker_channel.py",
+            "tests/test_progress_end_to_end.py",
+            "tests/test_provider_auth_hook.py",
+            "tests/test_ps_desired_state_reload.py",
+            "tests/test_ps_status_snapshot.py",
+            "tests/test_python_harness_process.py",
+            "tests/test_python_worker.py",
+            "tests/test_restore_failed_persistence_settlement.py",
+            "tests/test_restore_isolation.py",
+            "tests/test_restore_threshold_states.py",
+            "tests/test_session_ref_authority.py",
+            "tests/test_smolvm_runtime_state.py",
+            "tests/test_smolvm_runtime_vm.py",
+            "tests/test_squire_setup_scaffold.py",
+            "tests/test_state_persistence_authority.py",
+            "tests/test_transfer_container.py",
+            "tests/test_transfer_daemon.py",
+            "tests/test_turn_stall_watch.py",
+            "tests/test_user_addressing.py",
+            "tests/test_user_proxy_worker.py",
+            "tests/test_worker_identity.py",
+            "tests/test_worker_proxy.py",
+            "tests/test_worker_proxy_codex_seam.py",
+            "tests/test_worker_relay.py"
+          ],
+          "detail": {
+            "scope_excluded": [
+              {
+                "path": ".agents/hooks/enforce-uv.py",
+                "reason": "protected-scope"
+              },
+              {
+                "path": "docs/notes/evidence/contract-impact-negatives-2026-09-15.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/evidence/identities-column-scan-2026-09-14.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/evidence/lark-fd-hygiene-2026-09-17/repro_face_a_bind_listen_window.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/evidence/lark-fd-hygiene-2026-09-17/repro_face_b_abandoned_store.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/evidence/login_partial_failure_envelope.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/evidence/login_s3_nowal_timing.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/evidence/network-isolation-run-2026-09-23.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/evidence/s3-review-e2-mutate.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/ipc_cost_bench.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/pac/slice-2/evidence-3/mutations.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/pac/slice-2/evidence-final/control-unchanged.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/pac/slice-2/evidence-final/mutations-final.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/pac/slice-2/evidence-final/probe-signal.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/pac/slice-2/evidence-final/run-full.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/pac/slice-2/evidence-review/intermediate-57/control-unchanged.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/pac/slice-2/evidence-review/mutations.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/repro/104164aa-bi3/run.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/repro/pac-close-backlog-pr638/probe.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "docs/notes/repro/test_repro_restore_hang_pr332.py",
+                "reason": "worm-read-only"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/download-modules.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/forwarding-crash-lease.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/forwarding-leak-flap.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/forwarding-leak-ruler.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/forwarding-midstream.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/forwarding-negative.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/forwarding-traffic.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/join-preauth.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "sidecar/hyprial-tsnet/e2e/login-official.py",
+                "reason": "unclassified-not-authorized"
+              },
+              {
+                "path": "src/gui/integration/pac-service.py",
+                "reason": "gui-python-frozen"
+              },
+              {
+                "path": "src/gui/scripts/configure-pac.py",
+                "reason": "gui-python-frozen"
+              },
+              {
+                "path": "src/gui/scripts/verify-pac-message-termination.py",
+                "reason": "gui-python-frozen"
+              },
+              {
+                "path": "src/gui/tests/pac-service.test.py",
+                "reason": "gui-python-frozen"
+              }
+            ]
+          },
+          "diagnostics": [],
+          "expected_matches": 97,
+          "kind": "import_symbol",
+          "matches": 97,
+          "new_form_count": 0,
+          "rule_id": "demo.desired-state.launch-spec-imports",
+          "stage": "S1",
+          "status": "applied"
+        }
+      ],
+      "stage": "S1"
+    },
+    {
+      "rules": [
+        {
+          "approval": "draft",
+          "changed_paths": [
+            "src/hyprial/cli.py"
+          ],
+          "detail": {},
+          "diagnostics": [],
+          "expected_matches": 1,
+          "kind": "reference_rule",
+          "matches": 1,
+          "new_form_count": 0,
+          "rule_id": "demo.cli.warm-import-string",
+          "stage": "S2",
+          "status": "applied"
+        }
+      ],
+      "stage": "S2"
+    },
+    {
+      "rules": [],
+      "stage": "S3"
+    },
+    {
+      "rules": [],
+      "stage": "S4"
+    },
+    {
+      "rules": [],
+      "stage": "S5"
+    },
+    {
+      "rules": [],
+      "stage": "S6"
+    }
+  ],
+  "stages_requested": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "S6"
+  ],
+  "tool_code_sha256": "b7c8c4495ac2c3a0fb75b730393c25b9d3e565cc35e90aaa62b9ac08e08c072a",
+  "tool_note": "plan is read-only; apply additionally requires an approved manifest",
+  "uncovered_evidence_blocked": false,
+  "uncovered_references": [
+    {
+      "kind": "string-constant",
+      "line": 572,
+      "path": "contract/e2e/run-upgrade-continuity.py",
+      "value": "import json, sys from pathlib import Path from hyprial.daemon.desired_state_sqlite import DesiredStateSqliteShadow from "
+    },
+    {
+      "kind": "string-constant",
+      "line": 332,
+      "path": "scripts/refactor/c0_scan.py",
+      "value": "hyprial."
+    },
+    {
+      "kind": "string-constant",
+      "line": 356,
+      "path": "scripts/refactor/c0_scan.py",
+      "value": "hyprial."
+    },
+    {
+      "kind": "string-constant",
+      "line": 523,
+      "path": "scripts/refactor/c0_scan.py",
+      "value": "hyprial."
+    },
+    {
+      "kind": "string-constant",
+      "line": 727,
+      "path": "scripts/refactor/c0_scan.py",
+      "value": "hyprial."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 151,
+      "path": "src/hyprial/adapter_registration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 151,
+      "path": "src/hyprial/adapter_registration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 695,
+      "path": "src/hyprial/adapters/lark/api.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 555,
+      "path": "src/hyprial/adapters/lark/scopes.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 595,
+      "path": "src/hyprial/adapters/lark/scopes.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 602,
+      "path": "src/hyprial/adapters/lark/scopes.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 602,
+      "path": "src/hyprial/adapters/lark/scopes.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 602,
+      "path": "src/hyprial/adapters/lark/scopes.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 209,
+      "path": "src/hyprial/agents/config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 632,
+      "path": "src/hyprial/agents/config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 632,
+      "path": "src/hyprial/agents/config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 921,
+      "path": "src/hyprial/agents/config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 923,
+      "path": "src/hyprial/agents/config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 959,
+      "path": "src/hyprial/agents/config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 111,
+      "path": "src/hyprial/agents/home.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 938,
+      "path": "src/hyprial/agents/migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 956,
+      "path": "src/hyprial/agents/migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1050,
+      "path": "src/hyprial/agents/migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1075,
+      "path": "src/hyprial/agents/migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1390,
+      "path": "src/hyprial/agents/migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1390,
+      "path": "src/hyprial/agents/migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 183,
+      "path": "src/hyprial/agents/migration_entry.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 485,
+      "path": "src/hyprial/agents/registry.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 4250,
+      "path": "src/hyprial/agents/registry.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 377,
+      "path": "src/hyprial/agents/secrets.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 377,
+      "path": "src/hyprial/agents/secrets.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 235,
+      "path": "src/hyprial/agents/worker_proxy.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 242,
+      "path": "src/hyprial/agents/worker_proxy.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 247,
+      "path": "src/hyprial/agents/worker_proxy.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 255,
+      "path": "src/hyprial/agents/worker_proxy.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 279,
+      "path": "src/hyprial/agents/worker_proxy.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 304,
+      "path": "src/hyprial/agents/worker_proxy.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 304,
+      "path": "src/hyprial/agents/worker_proxy.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 200,
+      "path": "src/hyprial/alarm.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 425,
+      "path": "src/hyprial/autoupdate/__init__.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 133,
+      "path": "src/hyprial/contracts/agent_task.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 134,
+      "path": "src/hyprial/contracts/agent_task.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 223,
+      "path": "src/hyprial/contracts/agent_task.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 127,
+      "path": "src/hyprial/daemon/deprecations.py",
+      "value": "."
+    },
+    {
+      "kind": "string-constant",
+      "line": 41,
+      "path": "src/hyprial/daemon/desired_state.py",
+      "value": "hyprial.daemon.desired_state"
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1941,
+      "path": "src/hyprial/daemon/desired_state.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1941,
+      "path": "src/hyprial/daemon/desired_state.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 2157,
+      "path": "src/hyprial/daemon/desired_state.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 370,
+      "path": "src/hyprial/daemon/forwarding.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 370,
+      "path": "src/hyprial/daemon/forwarding.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 370,
+      "path": "src/hyprial/daemon/forwarding.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 540,
+      "path": "src/hyprial/daemon/home_guard.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1494,
+      "path": "src/hyprial/daemon/lifecycle_manager.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1494,
+      "path": "src/hyprial/daemon/lifecycle_manager.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1513,
+      "path": "src/hyprial/daemon/lifecycle_manager.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1513,
+      "path": "src/hyprial/daemon/lifecycle_manager.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 643,
+      "path": "src/hyprial/daemon/owner_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 655,
+      "path": "src/hyprial/daemon/owner_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 677,
+      "path": "src/hyprial/daemon/owner_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 693,
+      "path": "src/hyprial/daemon/owner_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 774,
+      "path": "src/hyprial/daemon/owner_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "resources.files",
+      "line": 57,
+      "path": "src/hyprial/daemon/service.py",
+      "value": "hyprial.daemon"
+    },
+    {
+      "kind": "string-constant",
+      "line": 57,
+      "path": "src/hyprial/daemon/service.py",
+      "value": "hyprial.daemon"
+    },
+    {
+      "kind": "resources.files",
+      "line": 79,
+      "path": "src/hyprial/daemon/service.py",
+      "value": "hyprial.daemon"
+    },
+    {
+      "kind": "string-constant",
+      "line": 79,
+      "path": "src/hyprial/daemon/service.py",
+      "value": "hyprial.daemon"
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1824,
+      "path": "src/hyprial/daemon/session_actor.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 40,
+      "path": "src/hyprial/desktop_network.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 122,
+      "path": "src/hyprial/dispatch/matrix.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1004,
+      "path": "src/hyprial/dispatch/remote_workflow.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 129,
+      "path": "src/hyprial/forwarding_config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 240,
+      "path": "src/hyprial/forwarding_config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 240,
+      "path": "src/hyprial/forwarding_config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 29,
+      "path": "src/hyprial/gui_build_hook.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 30,
+      "path": "src/hyprial/gui_build_hook.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 251,
+      "path": "src/hyprial/harnesses/claude_runtime.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 28,
+      "path": "src/hyprial/harnesses/pi_session.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 156,
+      "path": "src/hyprial/home_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 2441,
+      "path": "src/hyprial/inbox/service.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 505,
+      "path": "src/hyprial/installers/core.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 112,
+      "path": "src/hyprial/log/__init__.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 175,
+      "path": "src/hyprial/log/__init__.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 175,
+      "path": "src/hyprial/log/__init__.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 447,
+      "path": "src/hyprial/log/__init__.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 454,
+      "path": "src/hyprial/login_preview.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 173,
+      "path": "src/hyprial/org/document.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 188,
+      "path": "src/hyprial/org/document.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 85,
+      "path": "src/hyprial/org/orgfs_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 85,
+      "path": "src/hyprial/org/orgfs_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 137,
+      "path": "src/hyprial/org/orgfs_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 150,
+      "path": "src/hyprial/org/orgfs_migration.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 82,
+      "path": "src/hyprial/org/store.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 82,
+      "path": "src/hyprial/org/store.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 421,
+      "path": "src/hyprial/orgfs/blobs.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 421,
+      "path": "src/hyprial/orgfs/blobs.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 195,
+      "path": "src/hyprial/orgfs/checkout.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 201,
+      "path": "src/hyprial/orgfs/checkout.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 203,
+      "path": "src/hyprial/orgfs/checkout.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 256,
+      "path": "src/hyprial/orgfs/checkout.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 256,
+      "path": "src/hyprial/orgfs/checkout.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 2003,
+      "path": "src/hyprial/orgfs/docs.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 85,
+      "path": "src/hyprial/orgfs/replica.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 86,
+      "path": "src/hyprial/orgfs/replica.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 243,
+      "path": "src/hyprial/orgfs/replica.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 290,
+      "path": "src/hyprial/orgfs/replica.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 482,
+      "path": "src/hyprial/orgfs/store.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 538,
+      "path": "src/hyprial/orgfs/store.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 538,
+      "path": "src/hyprial/orgfs/store.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 668,
+      "path": "src/hyprial/orgfs/store.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 668,
+      "path": "src/hyprial/orgfs/store.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 970,
+      "path": "src/hyprial/pac/migrations.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 705,
+      "path": "src/hyprial/pac/workflow_runtime.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 93,
+      "path": "src/hyprial/pac/workflow_schema.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 27,
+      "path": "src/hyprial/peer_reachability.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 90,
+      "path": "src/hyprial/peer_reachability.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 338,
+      "path": "src/hyprial/persistent_config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 338,
+      "path": "src/hyprial/persistent_config.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 69,
+      "path": "src/hyprial/routine/schema.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 225,
+      "path": "src/hyprial/squire/addressing.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 225,
+      "path": "src/hyprial/squire/addressing.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 225,
+      "path": "src/hyprial/squire/addressing.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 14,
+      "path": "src/hyprial/squire/store_lock.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 149,
+      "path": "src/hyprial/tailnet_identity.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 230,
+      "path": "src/hyprial/tailnet_identity.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 229,
+      "path": "src/hyprial/transfer/bundle.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 669,
+      "path": "src/hyprial/transport/zenoh.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 670,
+      "path": "src/hyprial/transport/zenoh.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1065,
+      "path": "src/hyprial/transport/zenoh.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 1080,
+      "path": "src/hyprial/transport/zenoh.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 256,
+      "path": "src/hyprial/tsnet_join.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 260,
+      "path": "src/hyprial/tsnet_join.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 475,
+      "path": "src/hyprial/tsnet_sidecar.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 140,
+      "path": "src/hyprial/uri.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 143,
+      "path": "src/hyprial/uri.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 146,
+      "path": "src/hyprial/uri.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 148,
+      "path": "src/hyprial/uri.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 150,
+      "path": "src/hyprial/uri.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 321,
+      "path": "src/hyprial/usage.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 141,
+      "path": "src/hyprial/users/home.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 141,
+      "path": "src/hyprial/users/home.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 99,
+      "path": "src/hyprial/watchdog_actor.py",
+      "value": "."
+    },
+    {
+      "kind": "relative-module-string",
+      "line": 99,
+      "path": "src/hyprial/watchdog_actor.py",
+      "value": "."
+    },
+    {
+      "kind": "string-constant",
+      "line": 147,
+      "path": "tests/test_hosted_readiness_timing.py",
+      "value": "hyprial."
+    },
+    {
+      "kind": "string-constant",
+      "line": 156,
+      "path": "tests/test_hosted_readiness_timing.py",
+      "value": "hyprial."
+    },
+    {
+      "kind": "string-constant",
+      "line": 101,
+      "path": "tests/test_unreachable_surface_retirement.py",
+      "value": "hyprial."
+    },
+    {
+      "kind": "string-constant",
+      "line": 46,
+      "path": "tests/waiting_support.py",
+      "value": "hyprial."
+    }
+  ]
+}

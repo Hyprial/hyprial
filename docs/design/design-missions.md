@@ -1,5 +1,13 @@
 # Missions：由 squire 维护的任务线，jev 负责关联 PAC
 
+> **Superseded for operation (#2214, 2026-11-08).** Current work documents are
+> ordinary OrgFS text under `work/`; only `org work ls/show` remain as read
+> shortcuts. Dedicated writers, automatic collect/finish association, the work
+> audit graph and local approval verification are retired. Use
+> [the current contract](../../contract/work-items/README.md) and the current
+> squire template. The original design below is historical, not executable
+> guidance. No document/history/ledger migration or deletion is implied.
+
 > 存储与 CLI 路由已于 2026-10-08 被 work item 设计取代：当前数据位于所选组织的
 > 目录空间 `work/` 下，统一通过 `hyprial org work` 操作。下文关于旧专用空间与
 > 目录的引用保留为历史设计记录；不执行数据迁移。

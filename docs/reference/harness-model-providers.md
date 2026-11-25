@@ -50,13 +50,19 @@ nothing, so native configuration remains authoritative.
 
 Model/client support varies: accepting a level here does not promise that the
 selected endpoint supports it. Codex's current protocol represents effort as a
-nonempty string; the flag validates the known levels above. Pi, DSH, Jev and user-proxy reject
+nonempty string; the flag validates the known levels above. Pi, DSH and Jev reject
 this flag.
 
 The flag is encoded in existing launch `args`: Codex uses
 `["-c", "model_reasoning_effort=\"max\""]`, Claude uses `["--effort", "low"]`.
 Managed desired state retains it for restart; saved per-harness `harnessArgs`
 can use the same native form. There is no new credential or environment source.
+Inspect and change persistent groups with `hyprial agent args show|validate|set|clear`.
+These phase-1 writes are local-operator-only daemon requests, are not exposed
+over HTTP, and never modify a process that is already running. Use
+`hyprial agent start ... --ignore-stored-args` to exclude stored groups from
+one start without changing the stored map. The complete operator and migration
+procedure is in [Manage persistent harness arguments](../guides/agent-harness-args.md).
 P2 launches still use only their approved complete child environment.
 An interactive launch's option is session-scoped; specify it again on a later
 manual `start`/`--resume` when desired.
@@ -154,7 +160,6 @@ the start stays refused. The CLI never signals a process itself.
 | Codex | Supported by exact `thread/resume` plus `thread/read`. | Supported by the app-server worker. |
 | DSH | No interactive TUI connector. | Not supported: each launch mints a fresh worker MCP identity that cannot attach an existing DSH session. |
 | Jev | No interactive runtime. | Not supported: requests are stateless and model selection is per request. |
-| user-proxy | No interactive runtime. | Not supported: it is a stateless relay. |
 
 ## DeepSeek credential
 
@@ -192,8 +197,8 @@ limit with no compact boundary anywhere in the transcript.
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `200000` | where auto-compaction runs, inside that window |
 
 This applies to every Claude launch shape — the daemon-managed Agent SDK
-worker (a fresh session and a resume alike), the PTY connector, and the
-interactive CLI — for `--provider deepseek`. Auto-compact itself is left at
+worker (a fresh session and a resume alike) and the interactive CLI — for
+`--provider deepseek`. Auto-compact itself is left at
 its default (enabled in current Claude Code): HYPRIAL does not set
 `autoCompactEnabled`, because doing so would override a user who turned it
 off.

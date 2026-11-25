@@ -6,8 +6,7 @@ from hyprial.daemon.impl.desired_state import DesiredStateStore
 from .fixtures import migrated_state as DesiredState
 from hyprial.daemon.impl.harnesses.capabilities import worker_spec
 from hyprial.daemon.impl.state_persistence.ports import _Projection
-from hyprial.daemon.impl.transfer.admission import resolve_transfer_target
-from hyprial.daemon.impl.application.actors.transfer_p2 import _TransferP2Mixin
+from hyprial.daemon.impl.teleport.wiring import source_ops
 from hyprial.kernel import HarnessLaunchSpec
 
 
@@ -32,9 +31,9 @@ def test_worker_lookup_is_unambiguous_and_never_returns_adapter(tmp_path):
     assert projection.harness_spec("sprite") is None
 
 
-def test_transfer_resolvers_ignore_adapter():
+def test_source_resolvers_ignore_adapter():
     desired = DesiredState(harnesses=specs())
-    assert resolve_transfer_target(desired, name="sprite").harness == "pi"
+    assert source_ops.resolve_source_target(desired, name="sprite").harness == "pi"
     app = SimpleNamespace(desired_state=SimpleNamespace(load=lambda: desired),
-                          agents=SimpleNamespace(native_actor=lambda a: a))
-    assert _TransferP2Mixin._transfer_desired_spec_for(app, "sprite").harness == "pi"
+                          agents=SimpleNamespace(local_actor=lambda a: a))
+    assert source_ops.desired_spec(app, "sprite", None).harness == "pi"

@@ -22,18 +22,19 @@ from .support import (
     _RecordingRouteIo,
     _close_application_domains as _close_application_domains,
     application,
+    official_address,
     pending_message,
     register,
 )
 
 
-def test_app_last_lease_close_failure_retries_exact_route_attempt(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
+def _fail_once_close_application(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
+):  # type: ignore[no-untyped-def]
     app = application(tmp_path, FakeInbox(pending_message()))
     app._ensure_session_route_coordinator()
     router = CorrelationEventRouter()
-    transport = _FailOnceCloseRouteTransport()
+    transport = _FailOnceCloseRouteTransport(target)
     route_io = _RecordingRouteIo(
         transport,
         lambda _route: lambda _key: b"ok",
@@ -43,11 +44,15 @@ def test_app_last_lease_close_failure_retries_exact_route_attempt(
     app._lifecycle_router = router
     app._routes = RouteRegistrationClient(route_io, router, timeout=0.01)
     monkeypatch.setattr(app, "_declare_persona_route", lambda _actor: None)
+    return app, transport, route_io
+
+
+def _register_alice(app, session_ref: str) -> None:  # type: ignore[no-untyped-def]
     app.handle(
         "session.register",
         {
             "actor": "alice",
-            "sessionRef": "close-retry-session",
+            "sessionRef": session_ref,
             "cwd": "/work/alice",
             "command": ["claude"],
             "source": "claude-channel",
@@ -55,9 +60,13 @@ def test_app_last_lease_close_failure_retries_exact_route_attempt(
         },
     )
 
+
+def _assert_unregister_retries_the_failed_close(  # type: ignore[no-untyped-def]
+    app, transport, route_io, address: str, session_ref: str
+) -> None:
     result = app.handle(
         "session.unregister",
-        {"actor": "alice", "sessionRef": "close-retry-session"},
+        {"actor": "alice", "sessionRef": session_ref},
     )
 
     assert result["unregistered"] is True
@@ -68,7 +77,50 @@ def test_app_last_lease_close_failure_retries_exact_route_attempt(
     ]
     assert len(session_drops) >= 2
     assert len(set(session_drops)) == 1
-    assert "session:close-retry-session" not in app._routes.owners(CANONICAL)
+    assert f"session:{session_ref}" not in app._routes.owners(address)
+
+
+def test_app_last_lease_close_failure_retries_when_the_first_register_creates_the_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """No record before the register: its route is still the id address's.
+
+    The fail-once transport targets the id-address prefix, which the name
+    URI ``CANONICAL`` does not contain, so a session route declared at the
+    name URI would never take the failing close.
+    """
+
+    app, transport, route_io = _fail_once_close_application(
+        monkeypatch, tmp_path, "agent:op:node-1:a."
+    )
+    assert app.agents.get("alice") is None
+    assert "agent:op:node-1:a." not in CANONICAL
+
+    _register_alice(app, "first-session")
+
+    agent = app.agents.require("alice")
+    address = f"agent:op:node-1:{agent.agent_id}"
+    assert agent.uri == address
+    assert app._routes.owners(CANONICAL) == ()
+    _assert_unregister_retries_the_failed_close(
+        app, transport, route_io, address, "first-session"
+    )
+
+
+def test_app_last_lease_close_failure_retries_exact_route_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    app, transport, route_io = _fail_once_close_application(
+        monkeypatch, tmp_path, "alice"
+    )
+    app.handle("agent.create", {"name": "alice"})
+    address = official_address(app)
+    transport.target = address
+    _register_alice(app, "close-retry-session")
+
+    _assert_unregister_retries_the_failed_close(
+        app, transport, route_io, address, "close-retry-session"
+    )
 
 
 def test_delayed_older_register_result_cannot_reopen_superseded_route(
@@ -142,12 +194,13 @@ def test_delayed_older_register_result_cannot_reopen_superseded_route(
     )
     first.start()
     assert first_result_ready.wait(IPC_WAIT_SECONDS)
+    address = official_address(app)
     second.start()
     assert second_finished.wait(ROUTE_PROGRESS_SECONDS)
     try:
         session_owners = {
             owner
-            for owner in route_owners.get(CANONICAL, set())
+            for owner in route_owners.get(address, set())
             if owner.startswith("session:")
         }
         assert session_owners == {"session:session-2"}
@@ -160,7 +213,7 @@ def test_delayed_older_register_result_cannot_reopen_superseded_route(
     assert not second.is_alive()
     session_owners = {
         owner
-        for owner in route_owners.get(CANONICAL, set())
+        for owner in route_owners.get(address, set())
         if owner.startswith("session:")
     }
     assert session_owners == {"session:session-2"}
@@ -187,13 +240,15 @@ def test_repeated_session_replacement_bounds_exact_route_versions(
         )
 
     current_ref = f"replacement-{replacements - 1}"
+    address = official_address(app)
     actor_keys = {
         key
         for key in app._interactive_route_versions
-        if key[0] == CANONICAL
+        if key[0] == address
     }
-    assert actor_keys == {(CANONICAL, current_ref)}
-    actor_high_water = app._interactive_route_actor_versions[CANONICAL]
+    assert actor_keys == {(address, current_ref)}
+    assert not any(key[0] == CANONICAL for key in app._interactive_route_versions)
+    actor_high_water = app._interactive_route_actor_versions[address]
 
     result = app.handle(
         "session.unregister",
@@ -201,9 +256,9 @@ def test_repeated_session_replacement_bounds_exact_route_versions(
     )
     assert result["unregistered"] is True
     assert not any(
-        key[0] == CANONICAL for key in app._interactive_route_versions
+        key[0] == address for key in app._interactive_route_versions
     )
-    assert app._interactive_route_actor_versions[CANONICAL] > actor_high_water
+    assert app._interactive_route_actor_versions[address] > actor_high_water
 
 
 def test_delayed_older_unregister_result_cannot_close_newer_route(
@@ -232,6 +287,7 @@ def test_delayed_older_unregister_result_cannot_close_newer_route(
 
     app._routes = Routes()  # type: ignore[assignment]
     register(app, "old-session")
+    address = official_address(app)
     old_result_ready = threading.Event()
     release_old_result = threading.Event()
     failures: list[BaseException] = []
@@ -272,7 +328,7 @@ def test_delayed_older_unregister_result_cannot_close_newer_route(
     try:
         assert {
             owner
-            for owner in route_owners[CANONICAL]
+            for owner in route_owners[address]
             if owner.startswith("session:")
         } == {"session:new-session"}
     finally:
@@ -282,7 +338,7 @@ def test_delayed_older_unregister_result_cannot_close_newer_route(
     assert not old.is_alive()
     assert {
         owner
-        for owner in route_owners[CANONICAL]
+        for owner in route_owners[address]
         if owner.startswith("session:")
     } == {"session:new-session"}
     assert failures == []

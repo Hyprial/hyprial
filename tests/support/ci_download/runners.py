@@ -21,7 +21,13 @@ claiming that both images are fetched in one job execution.
 import re
 
 CONTAINER_RUNNER_LABELS = frozenset({"ubuntu-latest", "publish-github", "release-ci"})
-HOST_RUNNER_LABELS = frozenset({"macos-host", "ci-light"})
+# release-linux-arm64 is the Linux host that runs the KP-027 arm64 jobs inside
+# an explicit manylinux2014_aarch64 container (KP-027-A, runs 56181/56196/56118);
+# release-macos-arm64 is the darwin/arm64 host (run 56118). Neither has a
+# per-job default image, so both are host labels, not container labels.
+HOST_RUNNER_LABELS = frozenset(
+    {"macos-host", "ci-light", "release-linux-arm64", "release-macos-arm64"}
+)
 _BASE_REF_SELECTOR = re.compile(
     r"\$\{\{\s*startsWith\(\s*github\.base_ref\s*,\s*'release/'\s*\)"
     r"\s*&&\s*'([a-zA-Z0-9_-]+)'\s*\|\|\s*'([a-zA-Z0-9_-]+)'\s*\}\}"

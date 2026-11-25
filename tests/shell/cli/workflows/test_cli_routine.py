@@ -34,7 +34,26 @@ def routine_file(tmp_path: Path) -> Path:
     return path
 
 
-def test_plan_validates_and_expands(routine_file: Path) -> None:
+@pytest.fixture()
+def plan_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from hyprial.daemon.impl.request_catalog.registry import METHOD_REGISTRY
+    from hyprial.kernel import RequestPortError, DaemonRequestError
+    from hyprial.shell.impl.daemon_wiring.routines import routine_text_loader
+
+    app = SimpleNamespace(_routine_text_loader=routine_text_loader)
+
+    def request(method, params=None, **kwargs):
+        try:
+            return METHOD_REGISTRY.invoke(app, method, params or {})
+        except DaemonRequestError as error:
+            raise RequestPortError(error.code, str(error), error.data) from error
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", request)
+
+
+def test_plan_validates_and_expands(routine_file: Path, plan_daemon: None) -> None:
     result = CliRunner().invoke(_cli_root_app, ["routine", "plan", str(routine_file), "--json"])
     assert result.exit_code == 0, result.output
     plan = json.loads(result.stdout)["plan"]
@@ -43,7 +62,7 @@ def test_plan_validates_and_expands(routine_file: Path) -> None:
     assert plan["limits"]["circuitBreaker"]["action"] == "pause+alarm"
 
 
-def test_plan_schema_error_is_a_standard_failure(tmp_path: Path) -> None:
+def test_plan_schema_error_is_a_standard_failure(tmp_path: Path, plan_daemon: None) -> None:
     bad = tmp_path / "bad.yaml"
     bad.write_text("version: 1\nname: x\n", encoding="utf-8")
     result = CliRunner().invoke(_cli_root_app, ["routine", "plan", str(bad)])
@@ -145,3 +164,28 @@ def test_list_default_and_all_scope_render_human_table(
     assert all_result.exit_code == 0, all_result.output
     assert "(all callers)" in all_result.stdout
     assert calls[1][1]["all"] is True
+
+
+def test_plan_delegates_validation_to_daemon(monkeypatch, routine_file: Path) -> None:
+    from hyprial.biz import load_routine
+
+    calls = []
+    plan = {
+        "name": "cli-routine", "mode": "source", "role": "dispatch", "actor": None,
+        "actorOwnership": "routine", "launch": load_routine(routine_file).launch, "overlap": None, "missedPeriods": None,
+        "intervalSeconds": 900.0, "source": {"kind": "taskwarrior", "filter": "+selfdrive -blocked"},
+        "routes": [{"tag": "route:self", "kind": "self", "value": "self"}],
+        "defaultRoute": "escalate", "limits": {"maxInFlight": 3, "circuitBreaker": {
+            "windowRuns": 5, "escalateRatio": 1.0, "action": "pause+alarm"}},
+        "escalateTo": "user:allen",
+    }
+
+    def request(method, params=None, **kwargs):
+        calls.append((method, params))
+        return {"plan": plan}
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", request)
+    result = CliRunner().invoke(_cli_root_app, ["routine", "plan", str(routine_file), "--json"])
+    assert result.exit_code == 0, result.output
+    assert calls == [("routine.plan", {"yaml": DOC, "label": str(routine_file)})]
+    assert json.loads(result.stdout) == {"ok": True, "plan": plan}

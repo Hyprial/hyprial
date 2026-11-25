@@ -12,10 +12,30 @@ per-request observation cut — observedAtMs and the RunProjection publish
 revision advance on every ps call by contract — so the skipped-rebuild
 equality drops exactly those two fields and still compares every other
 runState field between the skipped and the fresh cut.
+
+Decision 2026-11-22: three test-harness effects made
+``test_four_sides_cover_a_pure_heartbeat_load`` flaky after PR #3070 removed
+redundant ``chmod`` / ``st_uid`` work and shrank steady heartbeats (~0.5 ms
+each): (1) the single uncharged ``after = _stats(app)`` (``app.handle("ps",
+{})``) snapshot took a visible slice of a 40-beat ``processCpuSeconds`` delta;
+(2) calling ``_heartbeat(app)`` inside the timed window charged client-side
+``json.dumps(...).encode()`` to the same process's ``processCpuSeconds``
+denominator — work that in production runs in a separate client process; and
+(3) under ``pytest``, imported modules (such as ``lark_oapi``) leave hundreds
+of thousands of GC-tracked objects in memory, so an automatic cyclic GC sweep
+triggered mid-loop adds ~10-147 ms of uncharged ``process_time()``.
+Pre-encoding client wire bytes ``raw`` and warming ``app._response(raw)``
+outside the window (still exercising server-side ``json.loads`` and
+``_timed_handle`` on every measured beat), running ``gc.collect()``, and
+pausing automatic cyclic GC (``gc.disable()`` / ``finally: gc.enable()``, while
+reference counting still reclaims acyclic objects immediately) over a
+``range(500)`` window keeps the ``>= 0.70`` contract threshold unchanged and
+deterministic.
 """
 
 from __future__ import annotations
 
+import gc
 import inspect
 import json
 import re
@@ -369,11 +389,31 @@ def test_four_sides_cover_a_pure_heartbeat_load(app: DaemonApplication) -> None:
     """Coverage of a heartbeat-only window clears the contract's 70 %."""
 
     _register(app)
-    _heartbeat(app)
-    before = _stats(app)
-    for _ in range(40):
-        assert "error" not in _heartbeat(app)
-    after = _stats(app)
+    raw = json.dumps(
+        {
+            "version": 1,
+            "id": "req-session.heartbeat",
+            "method": "session.heartbeat",
+            "params": {
+                "actor": "alice",
+                "sessionRef": "session-1",
+                "channelLeaseToken": LEASE,
+            },
+        }
+    ).encode()
+    for _ in range(5):
+        assert "error" not in app._response(raw)
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        before = _stats(app)
+        for _ in range(500):
+            assert "error" not in app._response(raw)
+        after = _stats(app)
+    finally:
+        if was_enabled:
+            gc.enable()
     instrumented_ms = after["instrumentedCpuMs"] - before["instrumentedCpuMs"]
     delta_ms = 1000 * (after["processCpuSeconds"] - before["processCpuSeconds"])
     assert instrumented_ms / delta_ms >= 0.70, (instrumented_ms, delta_ms)

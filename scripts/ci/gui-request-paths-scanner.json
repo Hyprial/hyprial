@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "ledgerPath": "scripts/ci/gui-request-paths-ledger.json",
+  "transportConstructionFile": "gui/src/app/backend/browser-session.ts",
+  "transportFiles": [
+    "gui/src/client/transport.ts",
+    "gui/src/client/types.ts",
+    "gui/src/app/backend/browser-session.ts"
+  ],
+  "sanctionedHostRoots": [
+    "gui/contract-mock/serve.ts",
+    "gui/tests/daemon-request-host/host.test.ts",
+    "gui/tests/acceptance/support/ipc-proxy.mjs"
+  ],
+  "extensions": [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
+  "htmlExtensions": [".html", ".htm"],
+  "sourceRoots": ["gui/src"],
+  "htmlRoots": ["gui/src", "gui/public"],
+  "htmlFiles": ["gui/index.html"],
+  "packageFiles": ["gui/package.json"],
+  "hostRoots": ["gui/server", "gui/tests", "gui/scripts", "gui/contract-mock"],
+  "hostConfigRoots": ["gui"],
+  "hostFilePatterns": [
+    "^gui/(?:[^/]+/)*(?:vite|vitest|playwright)[^/]*\\.config\\.[^/]+$"
+  ],
+  "skippedHostDirectories": ["node_modules", "dist", "dist-parity"],
+  "skippedSourceDirectories": [],
+  "skippedFiles": [],
+  "networkNames": ["fetch", "XMLHttpRequest", "EventSource", "WebSocket", "sendBeacon"],
+  "globalObjects": ["globalThis", "window", "self", "navigator"],
+  "requestPathPatterns": ["^/(?:api|daemon|__gui|rpc|mock)(?:/|$)"],
+  "absoluteUrlPatterns": ["^(?:https?|wss?)://[^\\s/?#]"],
+  "reservedHostPatterns": ["^(?:https?|wss?)://(?:[^/?#]*\\.)?invalid(?:[:/?#]|$)"],
+  "hostPrivatePathPatterns": ["^/(?:api|rpc|__gui/auth)(?:/|$)"],
+  "bannedPrefixes": ["/api/gui/v1/", "/api/reference/", "/__gui/auth/"],
+  "httpClientLibraries": ["axios", "ky", "got", "undici", "node-fetch", "superagent", "cross-fetch", "ofetch"],
+  "hostServerLibraries": ["express", "connect", "koa", "fastify", "polka", "sirv"],
+  "nodeServerModules": ["http", "https", "http2", "net", "tls"],
+  "nodeServerFactories": ["createServer", "createSecureServer", "Server"],
+  "viteModules": ["vite"],
+  "routeHooks": ["configureServer", "configurePreviewServer"]
+}

@@ -21,7 +21,7 @@ from ..support import (
     _OnlineTransport,
     _close,
     _message,
-    _runtime,
+    _actor_host,
     _wait_until,
 )
 
@@ -30,7 +30,7 @@ def test_submit_returns_admission_and_correlated_typed_event(tmp_path: Path) -> 
     events = _Events()
     transport = _OnlineTransport()
     coordinator = DeliveryCustodyCoordinator(
-        tmp_path / "inbox.sqlite3", transport, events, runtime=_runtime()
+        tmp_path / "inbox.sqlite3", transport, events, actor_host=_actor_host()
     )
 
     assert coordinator.submit(SubmitMessageCommand("submit-1", _message())) is (
@@ -59,7 +59,7 @@ def test_duplicate_receive_is_idempotent_and_projection_is_stable(tmp_path: Path
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
     )
     message = _message()
     assert coordinator.submit(ReceiveMessageCommand("receive-1", message)) is (
@@ -92,7 +92,7 @@ def test_progress_storage_mutation_is_owned_by_state_actor(tmp_path: Path) -> No
         database,
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
     )
     progress = ProgressEvent(
         delivery_id="delivery-1",
@@ -137,7 +137,7 @@ def test_blocked_transport_does_not_occupy_delivery_state_actor(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
         io_capacity=1,
     )
     outbound = _message("m1")
@@ -183,7 +183,7 @@ def test_external_io_queue_is_bounded_independently_from_state_admission(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
         io_capacity=1,
     )
     assert coordinator.submit(SubmitMessageCommand("io-1", _message("m1"))) is (
@@ -252,7 +252,7 @@ def test_queued_reply_receipt_advances_on_background_retry_without_duplicate_io(
         database,
         LarkReplyBridgeTransport(MemoryDeliveryTransport(), client),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     actor = "agent:e2e:node:squire"
@@ -367,6 +367,7 @@ def test_reply_timeout_joins_late_durable_receipt_without_resubmit(
         database,
         LarkReplyBridgeTransport(MemoryDeliveryTransport(), client),
         events,
+        actor_host=_actor_host(),
     )
     try:
         facade = DeliveryCustodyFacade(coordinator, database, timeout=5.0)
@@ -430,10 +431,10 @@ def test_blocked_human_alarm_delivery_runs_off_the_state_actor(
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
         service_options={"alarm_human_delivery": deliver_human},
     )
-    outbound = replace(_message("expired"), sender="channel:lark:test-app")
+    outbound = replace(_message("expired"), sender="adapter:lark:test-app")
     assert coordinator.submit(
         SubmitMessageCommand(
             "stage-expired",
@@ -487,7 +488,7 @@ def test_stale_retry_fence_is_correlated_and_does_not_mutate(tmp_path: Path) -> 
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
     )
     before = coordinator.read_counts()
     assert coordinator.submit(
@@ -523,7 +524,7 @@ def test_actor_path_preserves_legacy_sqlite_schema(tmp_path: Path) -> None:
     legacy.close()
     events = _Events()
     coordinator = DeliveryCustodyCoordinator(
-        actor_path, MemoryDeliveryTransport(), events, runtime=_runtime()
+        actor_path, MemoryDeliveryTransport(), events, actor_host=_actor_host()
     )
     _close(coordinator, events)
 
@@ -540,3 +541,46 @@ def test_actor_path_preserves_legacy_sqlite_schema(tmp_path: Path) -> None:
             connection.close()
 
     assert schema(actor_path) == schema(legacy_path)
+
+
+def test_failed_restart_factory_keeps_custody_generation_equal_to_engine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from hyprial.kernel.impl.actor_runtime import ActorState, AdmissionResult
+    from hyprial.daemon.impl.inbox.actor import coordinator as coordinator_module
+
+    events = _Events()
+    host = _actor_host()
+    coordinator = DeliveryCustodyCoordinator(
+        tmp_path / "inbox.sqlite3", _OnlineTransport(), events, actor_host=host
+    )
+    real_custody = coordinator_module.DeliveryCustody
+    builds = 0
+
+    def flaky_custody(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        if builds == 1:
+            raise sqlite3.OperationalError("injected transient reopen failure")
+        return real_custody(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator_module, "DeliveryCustody", flaky_custody)
+    assert coordinator._cell.tell(object()) is AdmissionResult.ACCEPTED
+    _wait_until(
+        lambda: builds == 2
+        and coordinator._cell.snapshot().state is ActorState.RUNNING,
+        timeout=2.0,
+    )
+    assert coordinator._cell.snapshot().generation == 2
+    assert coordinator._factory_generation == 2
+    assert coordinator.submit(SubmitMessageCommand("after-restart", _message())) is (
+        PortAdmission.ACCEPTED
+    )
+    _wait_until(
+        lambda: any(
+            isinstance(item, SubmissionCompleted)
+            and item.correlation_id == "after-restart"
+            for item in events.snapshot()
+        )
+    )
+    _close(coordinator, events)

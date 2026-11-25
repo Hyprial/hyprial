@@ -1,4 +1,7 @@
 {
+  "schemaRejects": {
+    "readyWithHyprialCommit": {"v": 1, "type": "ready", "kind": "jev", "pid": 1, "effectiveConfig": {"concurrency": 10, "mode": "pool", "protocolVersion": 1}, "typesafeSdkVersion": "0.7.0", "scriptSha256": "0000000000000000000000000000000000000000000000000000000000000000", "startupHash": "0000000000000000000000000000000000000000000000000000000000000000", "credentialSource": null, "hyprialCommit": "3137ed2ad92e5bb2c4369661d660815b63ae787b"}
+  },
   "rawRejects": {
     "duplicateKeys": "{\"v\":1,\"v\":1,\"op\":\"stop\"}",
     "nonFinite": "{\"v\":1,\"op\":\"call\",\"id\":\"x\",\"payload\":{\"n\":NaN}}",

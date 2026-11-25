@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import typer
 
-from hyprial.kernel import DaemonRequestError, ipc_errors, parse_agent_uri
+from hyprial.error import codes
+from hyprial.kernel import DaemonRequestError, parse_agent_uri
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 
@@ -183,7 +185,7 @@ def agent_ensure_home(
         if all_legacy:
             if selected:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "pass either agent names or --all-legacy, not both",
                 )
             census = services.runtime.request("agent.home-census")
@@ -279,17 +281,17 @@ def _migration_manifest(path: Path) -> JsonObject:
         value = json.loads(path.expanduser().read_text(encoding="utf-8"))
     except OSError as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"cannot read migration manifest {path}: {error}",
         ) from error
     except json.JSONDecodeError as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"migration manifest {path} is not valid JSON: {error}",
         ) from error
     if not isinstance(value, dict):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "migration manifest must contain a JSON object",
         )
     return value
@@ -304,16 +306,64 @@ _MIGRATION_ROUTINE_BINDING_FIELDS = (
     "coordinatorUri",
 )
 
-def _routine_binding_matches_agent(value: object, requested: str) -> bool:
-    if not isinstance(value, str):
-        return False
-    if value == requested:
-        return True
+def _agent_binding_matcher(services: Any, requested: str) -> Callable[[object], bool]:
+    """Whether a routine binding value names the requested agent.
+
+    With id-form minting a binding stores the agent's ``a.`` id URI, whose
+    last segment is not the name the operator typed, so the guard resolves
+    the request through the daemon's own ``agent.list`` rows: the row whose
+    actor, agentId, displayName or uri the request names (bare, or as a URI
+    on that row's node) matches its own spellings exactly, and a URI on that
+    row's node whose last segment is its actor or agentId (the only segments
+    an agent URI is minted from).  The request itself keeps the release
+    semantics: a URI request matches that exact URI, a bare one any URI
+    ending in it.
+    """
+
+    listing = services.runtime.request("agent.list", {})
+    if not isinstance(listing, dict) or not isinstance(listing.get("agents"), list):
+        raise services.CliError("INVALID_RESPONSE", "agent.list must return agents")
     requested_uri = parse_agent_uri(requested)
-    candidate_uri = parse_agent_uri(value)
-    if requested_uri is not None:
-        return candidate_uri == requested_uri
-    return candidate_uri is not None and candidate_uri[2] == requested
+    exact = {requested}
+    #: ``(owner, machine)`` -> URI segments that name a resolved row there.
+    segments_by_node: dict[tuple[object, object], set[str]] = {}
+    for row in listing["agents"]:
+        if not isinstance(row, dict):
+            continue
+        node = (row.get("owner"), row.get("machine"))
+        segments = {
+            value
+            for value in (row.get("actor"), row.get("agentId"))
+            if isinstance(value, str) and value
+        }
+        spellings = segments | {
+            value
+            for value in (row.get("displayName"), row.get("uri"))
+            if isinstance(value, str) and value
+        }
+        if requested in spellings or (
+            requested_uri is not None
+            and requested_uri[:2] == node
+            and requested_uri[2] in spellings
+        ):
+            exact |= spellings
+            segments_by_node.setdefault(node, set()).update(segments)
+
+    def matches(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        if value in exact:
+            return True
+        candidate_uri = parse_agent_uri(value)
+        if candidate_uri is None:
+            return False
+        if candidate_uri[2] in segments_by_node.get(candidate_uri[:2], ()):
+            return True
+        if requested_uri is not None:
+            return candidate_uri == requested_uri
+        return candidate_uri[2] == requested
+
+    return matches
 
 def _guard_agent_migration_routines(agent: str, *, json_output: bool) -> None:
     services = get_services()
@@ -325,13 +375,16 @@ def _guard_agent_migration_routines(agent: str, *, json_output: bool) -> None:
         raise services.CliError("INVALID_RESPONSE", "routine.list must return routines")
 
     active: list[str] = []
+    matches: Callable[[object], bool] | None = None
     for routine in result["routines"]:
         if not isinstance(routine, dict):
             raise services.CliError("INVALID_RESPONSE", "routine.list routines must be objects")
         if routine.get("enabled") is not True:
             continue
+        if matches is None:
+            matches = _agent_binding_matcher(services, agent)
         if any(
-            _routine_binding_matches_agent(routine.get(field), agent)
+            matches(routine.get(field))
             for field in _MIGRATION_ROUTINE_BINDING_FIELDS
         ):
             name = routine.get("name")

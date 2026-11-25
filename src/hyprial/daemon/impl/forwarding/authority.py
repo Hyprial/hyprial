@@ -12,7 +12,6 @@ from typing import Any
 from hyprial.kernel import (
     SERVICE_CONTROL_TIMEOUT_SECONDS,
     MEMBERSHIP_REPLY_MARGIN_SECONDS,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult,
     ipc_errors,
@@ -98,9 +97,18 @@ class _SidecarReply:
 class ForwardingControllerAuthority:
     """Typed, bounded native wire owner for one forwarding sidecar process."""
 
-    def __init__(self, controller: Any, *, capacity: int = 16, timeout: float = 12.0):
+    def __init__(
+        self,
+        controller: Any,
+        *,
+        capacity: int = 16,
+        timeout: float = 12.0,
+        actor_host=None,
+    ):
         if capacity < 1 or timeout <= 0:
             raise ValueError("forwarding authority capacity and timeout must be positive")
+        if actor_host is None:
+            raise ValueError("forwarding controller authority requires an actor host")
         self._controller = controller
         self._capacity = capacity
         self._guard = threading.Lock()
@@ -109,8 +117,7 @@ class ForwardingControllerAuthority:
         self._timeout = timeout
         self._peers_reported: bool | None = None
         self._connection_telemetry: dict[str, Any] | None = None
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="forwarding-sidecar-io",
                 handler_factory=lambda: self._receive,
@@ -177,7 +184,7 @@ class ForwardingControllerAuthority:
                     )
                 raise ForwardingSidecarError("forwarding sidecar I/O owner overloaded")
             self._pending[operation_id] = reply
-            admitted = self._runtime.tell(self._handle, command)
+            admitted = self._cell.tell(command)
             if admitted is not AdmissionResult.ACCEPTED:
                 self._pending.pop(operation_id)
                 if service:
@@ -403,5 +410,5 @@ class ForwardingControllerAuthority:
         self._call(_CloseSidecar(uuid.uuid4().hex))
         with self._guard:
             self._closed = True
-        if not self._runtime.stop(self._handle, self._timeout):
+        if not self._cell.stop(self._timeout):
             raise TimeoutError("forwarding sidecar I/O owner did not drain")

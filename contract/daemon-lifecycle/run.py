@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from hyprial.daemon import DesiredStateStore  # noqa: E402
+from hyprial.kernel import create_actor_host  # noqa: E402
 from hyprial.daemon.impl.runtime import DaemonEventBridge  # noqa: E402
 from hyprial.daemon.impl.processes.supervisor import ManagedHarnessRuntime  # noqa: E402
 from hyprial.daemon.impl.application.messaging.status.refresh import (  # noqa: E402
@@ -94,13 +95,15 @@ def exercise(root: Path, *, crash_marker: bool) -> None:
     if crash_marker:
         (root / "daemon-run.json").write_text('{"schemaVersion":1,"pid":1}')
     launcher = Launcher()
+    actor_host = create_actor_host()
     runtime = DaemonEventBridge(
         state_dir=root,
         node_id="contract-node",
         desired_state=DesiredStateStore(desired),
         transport=Transport(),
         inbox=Inbox(),
-        harnesses=ManagedHarnessRuntime(launcher),
+        harnesses=ManagedHarnessRuntime(launcher, actor_host=actor_host),
+        actor_host=actor_host,
     )
     result = runtime.start()
 
@@ -125,6 +128,7 @@ def exercise(root: Path, *, crash_marker: bool) -> None:
     assert launcher.starts == 1
 
     runtime.stop()
+    assert actor_host.shutdown()
 
 
 def exercise_status_projection() -> None:

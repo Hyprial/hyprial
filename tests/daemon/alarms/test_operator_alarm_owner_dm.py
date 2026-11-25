@@ -1,4 +1,10 @@
-"""Operator alarms are paged to the daemon owner's existing DM route."""
+"""Operator alarms are rendered for the owner and logged (R2, 2026-11-19).
+
+The owner DM is gone: the alarm lane hands the rendered request to
+``OperatorAlarmLogPort``, which logs it as ``daemon.operator_alarm.notice``
+with the full text.  These tests observe that request at the log seam
+(``_log_operator_alarm``).
+"""
 
 from __future__ import annotations
 
@@ -15,8 +21,8 @@ from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.application.messaging.operator_alarm import (
     OperatorAlarmDelivery,
 )
-from hyprial.daemon.impl.squire import UserDeliveryRequest, UserDeliveryResult
-from hyprial.kernel import HarnessLaunchSpec, SmolvmRuntimeSpec
+from hyprial.daemon.impl.adapters.user_delivery import UserDeliveryRequest, UserDeliveryResult
+from hyprial.kernel import HarnessLaunchSpec
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies
 
 
@@ -85,7 +91,7 @@ def _owner_message_for_spec(tmp_path: Path, spec: HarnessLaunchSpec) -> str:
     application = _application(tmp_path)
     delivery = _Delivery()
     application._inbox = _Inbox(_Emitter())  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     real_store = application.desired_state
     application.desired_state = SimpleNamespace(  # type: ignore[assignment]
         # Deliberately hostile historical alarm projection, not valid new intent.
@@ -101,20 +107,6 @@ def _owner_message_for_spec(tmp_path: Path, spec: HarnessLaunchSpec) -> str:
         _close(application)
 
 
-def _smolvm_runtime() -> SmolvmRuntimeSpec:
-    return SmolvmRuntimeSpec(
-        "/opt/smolvm",
-        "a" * 64,
-        "/opt/rootfs.ext4",
-        "b" * 64,
-        "/opt/resize2fs",
-        "c" * 64,
-        ("/usr/bin/codex",),
-        "/usr/bin/python3",
-        "d" * 64,
-    )
-
-
 def test_harness_and_state_writer_alarms_each_deliver_one_owner_dm(
     tmp_path: Path,
 ) -> None:
@@ -122,7 +114,7 @@ def test_harness_and_state_writer_alarms_each_deliver_one_owner_dm(
     emitter = _Emitter()
     delivery = _Delivery()
     application._inbox = _Inbox(emitter)  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     try:
         application._raise_harness_failed_alarm("codex:worker-7")
         application._raise_harness_failed_alarm(
@@ -158,7 +150,7 @@ def test_start_precondition_alarm_names_no_retry_and_next_step(tmp_path: Path) -
     application = _application(tmp_path)
     delivery = _Delivery()
     application._inbox = _Inbox(_Emitter())  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     try:
         next_step = (
             "Pi P2 headless launch requires explicit --approve trust. "
@@ -188,7 +180,7 @@ def test_the_same_harness_failing_again_is_a_new_delivery(tmp_path: Path) -> Non
     application = _application(tmp_path)
     delivery = _Delivery()
     application._inbox = _Inbox(_Emitter())  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     try:
         application._raise_harness_failed_alarm("codex:worker-7")
         application._raise_harness_failed_alarm("codex:worker-7")
@@ -204,7 +196,7 @@ def test_throttled_operator_alarm_does_not_deliver_owner_dm(tmp_path: Path) -> N
     application = _application(tmp_path)
     delivery = _Delivery()
     application._inbox = _Inbox(_Emitter("throttled"))  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     try:
         application._raise_harness_failed_alarm("codex:worker-8")
         # Drain the lane before asserting: a submission that slipped through
@@ -228,7 +220,7 @@ def test_failed_operator_alarm_emit_does_not_bypass_the_emitter_throttle(
     application._inbox = _Inbox(  # type: ignore[assignment]
         _Emitter("failed", claimed=False)
     )
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     try:
         application._raise_harness_failed_alarm("codex:worker-emitter-failed")
         lane = application._operator_alarm_delivery
@@ -247,7 +239,7 @@ def test_failed_after_claim_operator_alarm_still_delivers_owner_dm(
     application._inbox = _Inbox(  # type: ignore[assignment]
         _Emitter("failed", claimed=True)
     )
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     try:
         application._raise_harness_failed_alarm("codex:worker-after-claim")
         delivery.wait_for(1)
@@ -262,7 +254,7 @@ def test_slow_owner_dm_transport_never_blocks_harness_alarm_raiser(
     application = _application(tmp_path)
     delivery = _Delivery(delay=3.0)
     application._inbox = _Inbox(_Emitter())  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     try:
         started = time.monotonic()
         application._raise_harness_failed_alarm("codex:worker-9")
@@ -273,7 +265,7 @@ def test_slow_owner_dm_transport_never_blocks_harness_alarm_raiser(
         _close(application)
 
 
-def test_missing_user_delivery_logs_once_without_raising(tmp_path: Path) -> None:
+def test_an_operator_alarm_is_logged_as_a_notice_with_its_text(tmp_path: Path) -> None:
     application = _application(tmp_path)
     logs: list[tuple[str, str, dict[str, Any]]] = []
     changed = threading.Condition()
@@ -285,18 +277,20 @@ def test_missing_user_delivery_logs_once_without_raising(tmp_path: Path) -> None
 
     application._log = record  # type: ignore[method-assign]
     application._inbox = _Inbox(_Emitter())  # type: ignore[assignment]
-    application._user_delivery = None
     try:
         application._raise_harness_failed_alarm("codex:worker-10")
         deadline = time.monotonic() + 2.0
         with changed:
-            while not logs:
+            while not any(event == "daemon.operator_alarm.notice" for _, event, _ in logs):
                 remaining = deadline - time.monotonic()
-                assert remaining > 0
+                assert remaining > 0, logs
                 changed.wait(remaining)
-        assert [(level, event) for level, event, _ in logs] == [
-            ("warn", "daemon.operator_alarm.user_delivery_unavailable")
+        [(level, fields)] = [
+            (level, fields) for level, event, fields in logs
+            if event == "daemon.operator_alarm.notice"
         ]
+        assert level == "warn"
+        assert "worker-10" in fields["text"] and fields["idempotencyKey"]
     finally:
         _close(application)
 
@@ -310,7 +304,7 @@ def test_daemon_close_drains_operator_alarm_lane_without_worker_leak(
     application = _application(tmp_path)
     delivery = _Delivery()
     application._inbox = _Inbox(_Emitter())  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
     lane = application._operator_alarm_delivery
     try:
         application._raise_harness_failed_alarm("codex:worker-11")
@@ -338,7 +332,12 @@ def test_operator_alarm_leak_guard_keeps_thread_objects_not_reusable_ids() -> No
     assert "id(thread)" not in source
 
 
-def test_operator_alarm_lane_overflow_is_counted_and_logged_without_blocking() -> None:
+def test_operator_alarm_requires_host() -> None:
+    with pytest.raises(ValueError, match="host"):
+        OperatorAlarmDelivery(delivery=lambda: None, log=lambda *args, **kwargs: None)
+
+
+def test_operator_alarm_lane_overflow_is_counted_and_logged_without_blocking(actor_host) -> None:
     before = set(threading.enumerate())
     entered = threading.Event()
     release = threading.Event()
@@ -352,6 +351,7 @@ def test_operator_alarm_lane_overflow_is_counted_and_logged_without_blocking() -
 
     delivery = BlockingDelivery()
     lane = OperatorAlarmDelivery(
+        actor_host=actor_host,
         delivery=lambda: delivery,
         log=lambda level, component, event, **fields: logs.append((event, fields)),
         capacity=1,
@@ -429,16 +429,6 @@ def test_a_known_harness_failure_names_its_restart_command(tmp_path: Path) -> No
                 harness="codex",
                 name="worker",
                 headless=True,
-                args=("--dangerously-bypass-approvals-and-sandbox",),
-                execution_runtime=_smolvm_runtime(),
-            ),
-            id="smolvm",
-        ),
-        pytest.param(
-            HarnessLaunchSpec(
-                harness="codex",
-                name="worker",
-                headless=True,
                 containerized=True,
             ),
             id="containerized",
@@ -451,15 +441,6 @@ def test_a_known_harness_failure_names_its_restart_command(tmp_path: Path) -> No
                 pinned_owner="owner-node",
             ),
             id="pinned-owner",
-        ),
-        pytest.param(
-            HarnessLaunchSpec(
-                harness="user-proxy",
-                name="worker",
-                headless=True,
-                command=("/usr/bin/proxy", "--route", "route:lark:owner"),
-            ),
-            id="user-proxy-route",
         ),
         pytest.param(
             HarnessLaunchSpec(
@@ -537,7 +518,7 @@ def test_failed_harness_spec_lookup_still_delivers_generic_owner_dm(
     application = _application(tmp_path)
     delivery = _Delivery()
     application._inbox = _Inbox(_Emitter())  # type: ignore[assignment]
-    application._user_delivery = delivery  # type: ignore[assignment]
+    application._log_operator_alarm = lambda request: delivery.deliver(request)  # type: ignore[method-assign]
 
     def lookup_failed(_key: str) -> None:
         raise OSError("desired state unavailable")

@@ -113,7 +113,7 @@ def windows(monkeypatch):
     files.WriteFile = io.write
     files.ReadFile = io.read
     files.GetOverlappedResult = io.result
-    path = Path(__file__).resolve().parents[4] / 'src/hyprial/kernel/impl/platform/windows_pipe.py'
+    path = Path(__file__).resolve().parents[4] / 'src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py'
     spec = importlib.util.spec_from_file_location("_isolated_windows_pipe_response", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

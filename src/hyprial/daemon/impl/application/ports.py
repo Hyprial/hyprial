@@ -11,7 +11,7 @@ docs/evidence/refactor-joint-2026-10-02/tasks/daemon-runtime/.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -27,6 +27,8 @@ from hyprial.kernel import PortAdmission, ipc_errors
 @runtime_checkable
 class UsageCollection(Protocol):
     """The usage cache the daemon starts, observes and reports from."""
+
+    def bind(self, *, host: Any, scheduler: Any) -> None: ...
 
     def snapshots(self) -> tuple[Any, ...]: ...
 
@@ -187,9 +189,39 @@ class RoutinePortTimeout(RoutinePortError):
         self.operation_id = operation_id
 
 
+class RoutineRoutePort(Protocol):
+    @property
+    def tag(self) -> str: ...
+
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def value(self) -> str: ...
+
+
+class RoutineCircuitBreakerPort(Protocol):
+    @property
+    def window_runs(self) -> int: ...
+
+    @property
+    def escalate_ratio(self) -> float: ...
+
+    @property
+    def action(self) -> str: ...
+
+
+class RoutineLimitsPort(Protocol):
+    @property
+    def max_in_flight(self) -> int: ...
+
+    @property
+    def circuit_breaker(self) -> RoutineCircuitBreakerPort: ...
+
+
 @runtime_checkable
 class RoutineSpecPort(Protocol):
-    """The parsed routine spec fields the daemon reads."""
+    """The parsed routine values the daemon reads."""
 
     @property
     def name(self) -> str: ...
@@ -200,9 +232,45 @@ class RoutineSpecPort(Protocol):
     @property
     def produces(self) -> str | None: ...
 
+    @property
+    def mode(self) -> str: ...
 
-RoutineTextLoader = Callable[[str], "RoutineSpecPort"]
-"""Parses routine YAML; raises RoutineSchemaPortError on invalid text."""
+    @property
+    def role(self) -> str: ...
+
+    @property
+    def launch(self) -> dict[str, Any] | None: ...
+
+    @property
+    def interval_seconds(self) -> float: ...
+
+    @property
+    def source_kind(self) -> str: ...
+
+    @property
+    def source_filter(self) -> str: ...
+
+    @property
+    def source_idle_threshold_seconds(self) -> float: ...
+
+    @property
+    def routes(self) -> tuple[RoutineRoutePort, ...]: ...
+
+    @property
+    def default_route(self) -> str: ...
+
+    @property
+    def limits(self) -> RoutineLimitsPort: ...
+
+    @property
+    def escalate_to(self) -> str: ...
+
+
+class RoutineTextLoader(Protocol):
+    """Parse routine YAML with an optional diagnostic label."""
+
+    def __call__(self, text: str, *, label: str = "routine") -> RoutineSpecPort: ...
+
 
 RoutineTemplateRenderer = Callable[..., str]
 """Renders a routine template by name with keyword substitutions."""
@@ -241,6 +309,12 @@ class RoutineServicePort(Protocol):
 
     def address_migrations(self) -> dict[str, Any]: ...
 
+    def export(self, *, name: str) -> dict[str, Any]: ...
+
+    def list_executed_by(self, *, agent: str) -> dict[str, Any]: ...
+
+    def wait_in_flight_drained(self, *, names: Sequence[str], timeout_seconds: float) -> list[str]: ...
+
 
 @runtime_checkable
 class RoutineCoordinatorPort(Protocol):
@@ -268,7 +342,13 @@ class RoutineCoordinatorPort(Protocol):
 
 @dataclass(frozen=True)
 class RoutineRuntimeDeps:
-    """Daemon-owned inputs of the routine runtime the shell adapter wires."""
+    """Daemon-owned inputs of the routine runtime the shell adapter wires.
+
+    ``stored_agent_uri`` is the UUID-addressing P4 mapping (stored name-form
+    local agent URI to its official URI, or None to keep).  The daemon sets
+    it only while id-form minting is on; the adapter then runs the one-time
+    routine store migration before the service opens the store.
+    """
 
     state_dir: Path
     hyprial_home: Path
@@ -285,6 +365,14 @@ class RoutineRuntimeDeps:
     retire_coordinator: Any = None
     close_graph: Any = None
     compensate_agent: Any = None
+    stored_agent_uri: Callable[[str], "str | None"] | None = None
+    binding_key: Callable[[str], Hashable] | None = None
+    resolve_routine_target: Callable[[str, str], str] | None = None
+    # P7: the daemon's one process-wide host, so the routine service and
+    # coordinator take cells from it instead of constructing an engine.  The
+    # shell adapter passes it through; None remains valid only for standalone
+    # construction, which then owns a private host.
+    actor_host: Any | None = None
 
 
 @dataclass

@@ -21,13 +21,15 @@ from hyprial.daemon.impl.state_persistence import StatePersistenceAuthority
 SLOW = 0.2
 
 
-def _authority(tmp_path: Path) -> StatePersistenceAuthority:
+def _authority(tmp_path: Path, actor_host) -> StatePersistenceAuthority:
     state_db = StateDatabase(tmp_path / "lifecycle-operations.sqlite3")
-    return StatePersistenceAuthority(DesiredStateStore(tmp_path / "desired.json", state_db))
+    return StatePersistenceAuthority(
+        DesiredStateStore(tmp_path / "desired.json", state_db), actor_host=actor_host
+    )
 
 
-def test_a_command_queued_behind_a_slow_one_shows_the_wait(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    authority = _authority(tmp_path)
+def test_a_command_queued_behind_a_slow_one_shows_the_wait(tmp_path: Path, actor_host, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    authority = _authority(tmp_path, actor_host)
     original = authority._journal_store.next_generation
 
     def slow_next_generation():  # type: ignore[no-untyped-def]

@@ -1,9 +1,15 @@
-"""Codex interactive app-server lifecycle and thread execution params."""
+"""Codex interactive app-server lifecycle and thread execution params.
+
+Decision record (W2B-3 manysys sweep, 2026-11-21):
+- Replaced raw start_new_session=True and signal.SIGKILL in
+  CodexInteractiveAppServer with hyprial.kernel.spawn_kwargs,
+  OwnedProcessGroup.force_close on POSIX process groups, and
+  terminate_process_tree on Windows child trees.
+"""
 from __future__ import annotations
 
 
 import os
-import signal
 import subprocess
 import sys as sys
 import threading
@@ -20,6 +26,12 @@ from hyprial.identity import (
     SharedCredentialBinding,
     validate_shared_credential_binding,
     validate_shared_credential_environment,
+)
+from hyprial.kernel import (
+    OwnedProcessGroup,
+    is_windows_owned_process_group,
+    spawn_kwargs,
+    terminate_process_tree,
 )
 
 from hyprial.daemon.impl.harnesses.codex.launch.inputs import (
@@ -42,7 +54,7 @@ from hyprial.daemon.impl.harnesses.codex.process import (
     PROCESS_GROUP_TERM_SECONDS,
     REQUEST_TIMEOUT_SECONDS_DEFAULT,
     CodexAppServerRpcError,
-    _OwnedProcessGroup,
+    _managed_process_group,
     resolve_codex_executable,
 )
 
@@ -132,8 +144,8 @@ class CodexInteractiveAppServer:
         cwd: Path,
         command: tuple[str, ...] = ("codex",),
         env: Mapping[str, str] | None = None,
-        startup_timeout_seconds: float = 30.0,
-        request_timeout_seconds: float = 15.0,
+        startup_timeout_seconds: float = 120.0,
+        request_timeout_seconds: float = 120.0,
         config_args: tuple[str, ...] = (),
         expected_session_flags: Mapping[str, object] | None = None,
         model_provider: str | None = None,
@@ -213,7 +225,10 @@ class CodexInteractiveAppServer:
         self.startup_timeout_seconds = startup_timeout_seconds
         self.request_timeout_seconds = request_timeout_seconds
         self._process: subprocess.Popen[Any] | None = None
-        self._group = _OwnedProcessGroup()
+        group = _managed_process_group()
+        self._group: OwnedProcessGroup | None = (
+            None if is_windows_owned_process_group(group) else group
+        )
         self._socket: CodexRpcConnection | None = None
         # The interactive carrier reads turns from a worker thread while
         # stop()/interrupt() may issue a concurrent RPC from the pump loop.
@@ -257,10 +272,11 @@ class CodexInteractiveAppServer:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **spawn_kwargs(),
         )
         try:
-            self._group.register(self._process.pid)
+            if self._group is not None:
+                self._group.register(self._process.pid)
             deadline = time.monotonic() + self.startup_timeout_seconds
             while time.monotonic() < deadline:
                 if self._process.poll() is not None:
@@ -691,18 +707,24 @@ class CodexInteractiveAppServer:
         process = self._process
         self._process = None
         if process is not None:
-            if self._group.exists(process.pid):
-                self._group.signal(process.pid, signal.SIGTERM)
-                if not self._group._wait_gone(process.pid, PROCESS_GROUP_TERM_SECONDS):
-                    self._group.signal(process.pid, signal.SIGKILL)
-                    self._group._wait_gone(process.pid, PROCESS_GROUP_KILL_SECONDS)
+            if self._group is not None:
+                if self._group.exists(process.pid):
+                    self._group.force_close()
+            else:
+                terminate_process_tree(
+                    process,
+                    process.pid,
+                    stop_timeout=PROCESS_GROUP_TERM_SECONDS,
+                    kill_timeout=PROCESS_GROUP_KILL_SECONDS,
+                )
             if process.poll() is None:
                 try:
                     process.wait(timeout=PROCESS_GROUP_KILL_SECONDS)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=PROCESS_GROUP_KILL_SECONDS)
-            self._group.release_if_gone(process.pid)
+            if self._group is not None:
+                self._group.release_if_gone(process.pid)
         self.socket_path.unlink(missing_ok=True)
 
 def _thread_payload(result: dict[str, object]) -> dict[str, object]:

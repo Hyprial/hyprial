@@ -1,12 +1,20 @@
-"""Typed management domain shared by live IPC and fenced offline bootstrap."""
+"""Typed management domain shared by live IPC and fenced offline bootstrap.
+
+Decision notes (phase B, S10; Allen 2026-11-03 "squire is an ordinary agent"):
+
+- 2026-11-20 (S2b, remove-squire-setup-surface): management.squire.ensure,
+  its command/result types and the template/start/save ports only it used
+  are deleted.  What remains is the adapter-removal transaction and the
+  fenced offline lease, both generic adapter/registry operations.
+"""
 
 from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
@@ -16,97 +24,13 @@ from hyprial.daemon.impl.desired_state import DesiredStateStore
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.harnesses.runtime.ports import HarnessAdapterRegistrationProjection
 from hyprial.daemon.impl.configuration.ownership import DaemonStateOwnershipFence
-from hyprial.identity import AgentConfig
 
 
 class ManagementError(RuntimeError):
     code = "MANAGEMENT_ERROR"
 
 
-@dataclass(frozen=True, slots=True)
-class EnsureSquireRegistryCommand:
-    owner: str
-    machine: str
-    spec: HarnessLaunchSpec
-    cwd: str
-    model_provider: str
-    model: str
-    preferred_harness: str
-    adapter: str | None = None
-    start: bool = False
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "owner": self.owner,
-            "machine": self.machine,
-            "spec": self.spec.to_json(),
-            "cwd": self.cwd,
-            "provider": self.model_provider,
-            "model": self.model,
-            "preferredHarness": self.preferred_harness,
-            "adapter": self.adapter,
-            "start": self.start,
-        }
-
-    @classmethod
-    def from_payload(cls, payload: dict[str, object]) -> EnsureSquireRegistryCommand:
-        def required(label: str) -> str:
-            value = payload.get(label)
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"{label} must be a non-empty string")
-            return value
-
-        raw_spec = payload.get("spec")
-        if not isinstance(raw_spec, dict):
-            raise ValueError("spec must be an object")
-        adapter = payload.get("adapter")
-        if adapter is not None and (not isinstance(adapter, str) or not adapter):
-            raise ValueError("adapter must be a non-empty string or null")
-        return cls(
-            required("owner"),
-            required("machine"),
-            HarnessLaunchSpec.from_json(raw_spec, "management.squire.spec"),
-            required("cwd"),
-            required("provider"),
-            required("model"),
-            required("preferredHarness"),
-            adapter,
-            payload.get("start") is True,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class SquireRegistryResult:
-    changed: tuple[str, ...]
-    agent_uri: str
-    worker: dict[str, object]
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "changed": list(self.changed),
-            "agentUri": self.agent_uri,
-            "worker": self.worker,
-        }
-
-    @classmethod
-    def from_payload(cls, payload: dict[str, object]) -> SquireRegistryResult:
-        changed = payload.get("changed")
-        agent_uri = payload.get("agentUri")
-        worker = payload.get("worker")
-        if not isinstance(changed, list) or not all(
-            isinstance(item, str) for item in changed
-        ):
-            raise ValueError("management changed must be a string array")
-        if not isinstance(agent_uri, str) or not agent_uri:
-            raise ValueError("management agentUri must be a non-empty string")
-        if not isinstance(worker, dict):
-            raise ValueError("management worker must be an object")
-        return cls(tuple(changed), agent_uri, dict(worker))
-
-
 class HarnessManagementPort(Protocol):
-    def stage_harness_desired(self, spec: HarnessLaunchSpec) -> bool: ...
-
     def snapshot_adapter_registration(
         self, name: str
     ) -> HarnessAdapterRegistrationProjection: ...
@@ -120,27 +44,6 @@ class HarnessManagementPort(Protocol):
     ) -> bool: ...
 
 
-class AgentManagementPort(Protocol):
-    owner: str
-    machine: str
-
-    def resolve_workspace_path(self, actor: str) -> str: ...
-
-    def get(self, actor: str) -> Any | None: ...
-
-    def create(self, actor: str, **configuration: object) -> Any: ...
-
-    def save(self, agent: Any) -> Any: ...
-
-    def pins(self) -> dict[str, str]: ...
-
-    def pin(self, adapter: str, actor: str) -> str | None: ...
-
-    def restore_pin_if_absent(self, adapter: str, actor: str) -> str | None: ...
-
-    def unpin_if(self, adapter: str, expected_actor: str | None) -> str | None: ...
-
-
 @dataclass(frozen=True, slots=True)
 class AdapterRegistrySnapshot:
     harness: HarnessAdapterRegistrationProjection
@@ -151,78 +54,50 @@ class AdapterRemovalTransaction:
     def __init__(
         self,
         harnesses: HarnessManagementPort,
-        agents: AgentManagementPort,
         snapshot: AdapterRegistrySnapshot,
+        *,
+        recovery: bool = False,
     ) -> None:
         self._harnesses = harnesses
-        self._agents = agents
         self.snapshot = snapshot
         self.committed = False
+        self.unsettled = recovery
+        self._recovery = recovery
 
     def commit(self) -> None:
+        if self._recovery:
+            raise ManagementError("adapter recovery is compensation-only")
+        if self.unsettled:
+            raise ManagementError("adapter registry compensation remains unsettled")
         if self.committed:
             return
+        self.unsettled = True
         try:
             self._harnesses.remove_adapter_registration(self.snapshot.harness)
         except BaseException as operation_error:
-            # The actor may have durably applied the mutation before its reply
-            # was lost or the facade raised.  Restoring is compare-fenced and
-            # idempotent when the old registration is still present, so always
-            # compensate rather than guessing whether the call took effect.
             try:
-                self._harnesses.restore_adapter_registration(self.snapshot.harness)
+                self.rollback()
             except BaseException as rollback_error:
                 raise BaseExceptionGroup(
-                    "adapter harness removal and rollback failed",
+                    "adapter registry commit and rollback failed",
                     [operation_error, rollback_error],
                 ) from operation_error
             raise
-        try:
-            if self.snapshot.agent_pin is not None:
-                self._agents.unpin_if(
-                    self.snapshot.harness.name, self.snapshot.agent_pin
-                )
-        except BaseException as operation_error:
-            rollback_errors: list[BaseException] = []
-            if self.snapshot.agent_pin is not None:
-                try:
-                    self._agents.restore_pin_if_absent(
-                        self.snapshot.harness.name, self.snapshot.agent_pin
-                    )
-                except BaseException as rollback_error:
-                    rollback_errors.append(rollback_error)
-            try:
-                self._harnesses.restore_adapter_registration(self.snapshot.harness)
-            except BaseException as rollback_error:
-                rollback_errors.append(rollback_error)
-            if rollback_errors:
-                raise BaseExceptionGroup(
-                    "adapter registry commit and rollback failed",
-                    [operation_error, *rollback_errors],
-                ) from operation_error
-            raise
         self.committed = True
+        self.unsettled = False
 
     def rollback(self) -> None:
-        if not self.committed:
+        if not self.committed and not self.unsettled:
             return
-        rollback_errors: list[BaseException] = []
-        if self.snapshot.agent_pin is not None:
-            try:
-                self._agents.restore_pin_if_absent(
-                    self.snapshot.harness.name, self.snapshot.agent_pin
-                )
-            except BaseException as rollback_error:
-                rollback_errors.append(rollback_error)
+        self.unsettled = True
         try:
             self._harnesses.restore_adapter_registration(self.snapshot.harness)
         except BaseException as rollback_error:
-            rollback_errors.append(rollback_error)
-        if rollback_errors:
             raise BaseExceptionGroup(
-                "adapter registry rollback failed", rollback_errors
-            )
+                "adapter registry rollback failed", [rollback_error]
+            ) from rollback_error
         self.committed = False
+        self.unsettled = False
 
 
 class RegistryManagementHandler:
@@ -231,107 +106,18 @@ class RegistryManagementHandler:
     def __init__(
         self,
         harnesses: HarnessManagementPort,
-        agents: AgentManagementPort,
-        *,
-        start_harness: Callable[[HarnessLaunchSpec], dict[str, object]] | None = None,
     ) -> None:
         self._harnesses = harnesses
-        self._agents = agents
-        self._start_harness = start_harness
         self._lock = threading.RLock()
-
-    def ensure_squire(
-        self, command: EnsureSquireRegistryCommand
-    ) -> SquireRegistryResult:
-        with self._lock:
-            if (command.owner, command.machine) != (
-                self._agents.owner,
-                self._agents.machine,
-            ):
-                # Both segments are compared, and the message names BOTH sides.
-                #
-                # ⚠️ This matters more after owner became a user identity.  It
-                # used to come from the host login, so a mismatch here was
-                # almost always the owner — two machines disagreeing simply by
-                # being two machines.  Now owner is the same value across every
-                # machine a user owns, so a mismatch is almost always the
-                # <machine> segment instead.  An error naming neither side
-                # leaves the reader unable to tell which one moved, and the
-                # likely answer changed underneath them.
-                raise ManagementError(
-                    "Squire identity does not match this management authority: "
-                    f"requested owner={command.owner!r} machine={command.machine!r}, "
-                    f"authority owner={self._agents.owner!r} "
-                    f"machine={self._agents.machine!r}"
-                )
-            workspace = Path(self._agents.resolve_workspace_path("squire"))
-            home = workspace.parent
-            if (
-                Path(command.cwd).resolve() != workspace.resolve()
-                or command.spec.cwd is None
-                or Path(command.spec.cwd).resolve() != workspace.resolve()
-                or command.spec.name != "squire"
-            ):
-                raise ManagementError(
-                    "Squire must use its ordinary agent home workspace inside "
-                    "HYPRIAL_HOME/agents/squire"
-                )
-            changed: list[str] = []
-            agent = self._agents.get("squire")
-            config = AgentConfig(str(home / "config"))
-            if agent is None:
-                agent = self._agents.create(
-                    "squire",
-                    cwd=command.cwd,
-                    config=config.to_json(),
-                    provider=command.model_provider,
-                    model=command.model,
-                    preferred_harness=command.preferred_harness,
-                )
-                changed.append("agent")
-            else:
-                if agent.config not in (None, config):
-                    raise ManagementError(
-                        "existing Squire uses a different agent config; "
-                        "review it before rebinding to HYPRIAL_HOME/agents/squire/config"
-                    )
-                if agent.cwd != command.cwd or agent.config is None:
-                    agent = self._agents.save(
-                        replace(agent, cwd=command.cwd, config=config)
-                    )
-                    changed.append("agent")
-            if not command.start and self._harnesses.stage_harness_desired(
-                command.spec
-            ):
-                changed.append("desiredState.providers")
-            worker: dict[str, object] = {"started": False}
-            if command.start:
-                if self._start_harness is None:
-                    raise ManagementError(
-                        "--start requires a running daemon management authority"
-                    )
-                launch = self._start_harness(command.spec)
-                worker = {"started": True, "result": launch}
-                if launch.get("changed") is True:
-                    changed.append("desiredState.providers")
-            agent_uri = str(getattr(agent, "uri"))
-            if command.adapter is not None:
-                current = self._agents.pins().get(command.adapter)
-                if current != agent_uri:
-                    self._agents.pin(command.adapter, "squire")
-                    changed.append("adapter.pin")
-            return SquireRegistryResult(tuple(changed), agent_uri, worker)
 
     @contextmanager
     def adapter_removal(self, name: str) -> Iterator[AdapterRemovalTransaction]:
         with self._lock:
             snapshot = AdapterRegistrySnapshot(
                 self._harnesses.snapshot_adapter_registration(name),
-                self._agents.pins().get(name),
+                None,
             )
-            transaction = AdapterRemovalTransaction(
-                self._harnesses, self._agents, snapshot
-            )
+            transaction = AdapterRemovalTransaction(self._harnesses, snapshot)
             try:
                 yield transaction
             except BaseException as operation_error:
@@ -366,16 +152,21 @@ class OfflineManagementLease:
         self.owner = owner
         self.machine = machine
         self._fence: DaemonStateOwnershipFence | None = None
+        # P7: one registry for this offline process, shared by the agent
+        # domains and the (never-launching) harness runtime.
+        self._actor_hosts: Any | None = None
         self._domains: Any | None = None
         self._harnesses: Any | None = None
         self.handler: RegistryManagementHandler | None = None
 
     def __enter__(self) -> RegistryManagementHandler:
         from hyprial.daemon.impl.composition import AgentSessionDomains
+        from hyprial.daemon.impl.composition.actors import ActorHostRegistry
         from hyprial.daemon.impl.processes.supervisor import ManagedHarnessRuntime
 
         self._fence = DaemonStateOwnershipFence.acquire(self.state_dir)
         desired = DesiredStateStore(self.state_dir / "desired-state.json")
+        self._actor_hosts = ActorHostRegistry()
         try:
             self._domains = AgentSessionDomains(
                 database=self.state_dir / "agents.sqlite3",
@@ -386,13 +177,14 @@ class OfflineManagementLease:
                 hyprial_home=self.hyprial_home,
                 worker_running=lambda _actor: None,
                 clock=time.monotonic,
+                actor_hosts=self._actor_hosts,
             )
             self._harnesses = ManagedHarnessRuntime(
-                _NeverLaunch(), desired_state=desired
+                _NeverLaunch(),
+                desired_state=desired,
+                actor_host=self._actor_hosts.host_for("offline-management-harnesses"),
             )
-            self.handler = RegistryManagementHandler(
-                self._harnesses, self._domains.agents
-            )
+            self.handler = RegistryManagementHandler(self._harnesses)
             return self.handler
         except BaseException:
             self.__exit__()
@@ -403,9 +195,21 @@ class OfflineManagementLease:
         if self._harnesses is not None:
             self._harnesses.stop()
             self._harnesses = None
+        domains_closed = True
         if self._domains is not None:
-            self._domains.close()
+            domains_closed = self._domains.close(shutdown_hosts=False)
             self._domains = None
+        if self._actor_hosts is not None:
+            actor_hosts = self._actor_hosts
+            self._actor_hosts = None
+            if (
+                domains_closed
+                and not actor_hosts.shutdown(5.0)
+                and not any(error is not None for error in _error)
+            ):
+                raise RuntimeError(
+                    "offline management actor host did not shut down"
+                )
         if self._fence is not None:
             self._fence.close()
             self._fence = None

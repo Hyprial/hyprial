@@ -54,7 +54,7 @@ from functools import wraps
 from typing import Any, TypeVar
 
 from hyprial.daemon.impl.transport import KeySpace, Registration, TransportSession
-from hyprial.kernel import ipc_errors, parse_agent_uri
+from hyprial.kernel import parse_agent_uri
 
 STATUS_FRAME_SCHEMA = "hyprial-delivery-status/v1"
 
@@ -72,11 +72,10 @@ DEFAULT_STATUS_RETENTION_MS = 7 * 86_400_000
 class TerminalState(StrEnum):
     """The only three ways a message may end.  All are persisted.
 
-    ``refused`` is written only by the receiving daemon's ingress boundary and
-    only means the local orgfs copy holds no link file for the sender at all
-    (§4.6, WP4).  It is the one terminal state a later retry can supersede:
-    once the sender joins the org space the same message id is accepted, and
-    the record upgrades to ``fetched`` (review B4 / wp4 §2.5).
+    ``refused`` is written by the receiving daemon's ingress boundary when
+    nothing on this node claims the recipient (``TARGET_UNRESOLVED``).
+    Historical rows written before T1b may also carry ``LINK_UNKNOWN`` here:
+    the reason is stored as a plain string, so those rows stay readable.
     """
 
     FETCHED = "fetched"
@@ -89,9 +88,6 @@ class HoldReason(StrEnum):
 
     ACK_RECEIVED = "ACK_RECEIVED"
     TTL_EXPIRED = "TTL_EXPIRED"
-    #: Ingress refusal: the sender has no link file in the local orgfs copy.
-    #: Value equals ``ipc_errors.LINK_UNKNOWN`` on purpose (wp4 §2.5).
-    LINK_UNKNOWN = ipc_errors.LINK_UNKNOWN
     # TODO(PR 4): capacity becomes a pre-admission refusal, never an outcome.
     HOLD_CAPACITY_EXCEEDED = "HOLD_CAPACITY_EXCEEDED"
 

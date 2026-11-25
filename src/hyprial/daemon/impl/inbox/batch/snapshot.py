@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-from hyprial.daemon.impl.api import visible_message_origin
+from hyprial.daemon.impl.api import published_message_origin
 from hyprial.daemon.impl.inbox.batch.contract import (
     SOURCE_INBOX,
     SOURCE_NOTICE,
@@ -60,7 +60,7 @@ def build_snapshot(
     """
 
     rows = _ordered_rows(selection)
-    origin_resolver = _origin_resolver_for_test or visible_message_origin
+    origin_resolver = _origin_resolver_for_test or published_message_origin
     items = tuple(
         item.with_origin(
             dict(origin_resolver(_decoded_payload(item.payload), item.sender))

@@ -1,4 +1,4 @@
-"""Schema-18 storage invariants for expansion custody."""
+"""Schema-18+ storage invariants for expansion custody."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ def test_fresh_schema_keeps_expansion_tables_and_columns(tmp_path):
     graph_store = store(tmp_path)
     try:
         db = graph_store._db
-        assert SCHEMA_VERSION == 19
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert SCHEMA_VERSION == 20
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 20
         tables = {
             row[0]
             for row in db.execute(

@@ -16,7 +16,7 @@ def _wait(predicate):
     assert predicate()
 
 
-def test_slow_alert_is_off_tick_and_state_commits_after_delivery(tmp_path):
+def test_slow_alert_is_off_tick_and_state_commits_after_delivery(tmp_path, actor_host):
     entered, release = threading.Event(), threading.Event()
     delivered = []
 
@@ -27,6 +27,7 @@ def test_slow_alert_is_off_tick_and_state_commits_after_delivery(tmp_path):
         return True
 
     actor = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path, deliver=deliver, clock_ms=lambda: UNFETCHED_ALERT_MS + 1
     )
     try:
@@ -50,15 +51,17 @@ def test_slow_alert_is_off_tick_and_state_commits_after_delivery(tmp_path):
     )
 
 
-def test_failed_delivery_retains_durable_batch_and_deferred_loss_event(tmp_path):
+def test_failed_delivery_retains_durable_batch_and_deferred_loss_event(tmp_path, actor_host):
     allow = threading.Event()
     calls = []
 
     def deliver(key, text):
-        calls.append(key)
-        return allow.is_set()
+        admitted = allow.is_set()
+        calls.append((key, admitted))
+        return admitted
 
     actor = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path, deliver=deliver, clock_ms=lambda: UNFETCHED_ALERT_MS + 1
     )
     try:
@@ -66,17 +69,21 @@ def test_failed_delivery_retains_durable_batch_and_deferred_loss_event(tmp_path)
         _wait(lambda: actor.status().failed == 1)
         assert not (tmp_path / "inbox-watchdog.json").exists()
         actor.observe_pruned((("actor", "message2"),), is_running=lambda _: True)
-        _wait(lambda: actor.status().failed == 2)
+        # Three refusals: the observation-triggered attempt, then the automatic
+        # retry queued because message2 is deferred behind the failed batch.
+        _wait(lambda: actor.status().failed == 3)
+        assert not (tmp_path / "inbox-watchdog.json").exists()
         allow.set()
     finally:
         allow.set()
         assert actor.close(2)
     assert not (tmp_path / "inbox-watchdog.outbox.json").exists()
-    assert len(calls) == 4  # two refusals, then both admitted loss observations
+    assert len({key for key, admitted in calls if admitted}) == 2
 
 
-def test_restart_replays_durable_batch_before_new_observation(tmp_path):
+def test_restart_replays_durable_batch_before_new_observation(tmp_path, actor_host):
     actor = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path,
         deliver=lambda key, text: AlertDeliveryOutcome(False, definitely_not_sent=True),
         clock_ms=lambda: UNFETCHED_ALERT_MS + 1,
@@ -86,9 +93,10 @@ def test_restart_replays_durable_batch_before_new_observation(tmp_path):
     scope = json.loads(actor._outbox.read_text())["key_scope"]
     # Simulate process loss after persisted refusal, before another cadence.
     assert actor._effects.close(1)
-    assert actor._runtime.stop(actor._handle, 1)
+    assert actor._cell.stop(1)
     delivered = []
     recovered = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path,
         deliver=lambda key, text: delivered.append(key) or True,
         clock_ms=lambda: UNFETCHED_ALERT_MS + 1,
@@ -98,7 +106,7 @@ def test_restart_replays_durable_batch_before_new_observation(tmp_path):
     assert delivered == [f"pruned:actor:batch:{scope}:actor-retry-1"]
 
 
-def test_quota_transition_commits_once_after_delivery(tmp_path):
+def test_quota_transition_commits_once_after_delivery(tmp_path, actor_host):
     sent = []
     snapshot = SourceSnapshot(
         "claude", True, 1, windows=(QuotaWindow("window", "hour", 95, 100, 10000),)
@@ -118,6 +126,7 @@ def test_quota_transition_commits_once_after_delivery(tmp_path):
         clock_ms=clock_ms, on_alert=lambda _alert: None,
     ))
     actor = AsyncQuotaWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path,
         deliver=deliver,
         readings=readings,
@@ -135,7 +144,7 @@ def test_quota_transition_commits_once_after_delivery(tmp_path):
     assert state["windows"]["claude/window"]["sent"]
 
 
-def test_uncertain_receipt_retry_preserves_native_identity(tmp_path):
+def test_uncertain_receipt_retry_preserves_native_identity(tmp_path, actor_host):
     delivered = set()
     calls = []
 
@@ -149,6 +158,7 @@ def test_uncertain_receipt_retry_preserves_native_identity(tmp_path):
         return AlertDeliveryOutcome(True)
 
     actor = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path, deliver=deliver, clock_ms=lambda: UNFETCHED_ALERT_MS + 1
     )
     try:
@@ -163,7 +173,7 @@ def test_uncertain_receipt_retry_preserves_native_identity(tmp_path):
     assert len(delivered) == 1
 
 
-def test_old_failed_completion_cannot_acknowledge_new_alert_attempt(tmp_path):
+def test_old_failed_completion_cannot_acknowledge_new_alert_attempt(tmp_path, actor_host):
     from hyprial.kernel.impl.actor_runtime import AdmissionResult
     from hyprial.kernel.impl.actor_runtime.effects import EffectCompleted
     from hyprial.daemon.impl.operations.watchdog_actor import RetryAlerts
@@ -180,6 +190,7 @@ def test_old_failed_completion_cannot_acknowledge_new_alert_attempt(tmp_path):
         return AlertDeliveryOutcome(True)
 
     actor = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path, deliver=deliver, clock_ms=lambda: UNFETCHED_ALERT_MS + 1
     )
     try:
@@ -187,11 +198,11 @@ def test_old_failed_completion_cannot_acknowledge_new_alert_attempt(tmp_path):
         _wait(lambda: actor.status().failed == 1)
         scope = json.loads(actor._outbox.read_text())["key_scope"]
         previous = EffectCompleted(actor._pending.operation_id, actor._generation, False)
-        assert actor._runtime.tell(actor._handle, RetryAlerts()) is AdmissionResult.ACCEPTED
+        assert actor._cell.tell(RetryAlerts()) is AdmissionResult.ACCEPTED
         assert entered.wait(1)
-        assert actor._runtime.tell(actor._handle, previous) is AdmissionResult.ACCEPTED
-        _wait(lambda: actor._runtime.snapshot(actor._handle).queued == 0
-              and actor._runtime.snapshot(actor._handle).in_flight == 0)
+        assert actor._cell.tell(previous) is AdmissionResult.ACCEPTED
+        _wait(lambda: actor._cell.snapshot().queued == 0
+              and actor._cell.snapshot().in_flight == 0)
         assert actor._effects.snapshot().outstanding == 1
         assert actor._active
         assert actor.status().failed == 1
@@ -201,12 +212,13 @@ def test_old_failed_completion_cannot_acknowledge_new_alert_attempt(tmp_path):
         assert actor.close(2)
 
 
-def test_new_alert_after_cooldown_has_a_distinct_durable_identity(tmp_path):
+def test_new_alert_after_cooldown_has_a_distinct_durable_identity(tmp_path, actor_host):
     from hyprial.daemon.impl.inbox.tracking.watchdog import REPEAT_AFTER_MS
 
     now = [UNFETCHED_ALERT_MS + 1]
     deliveries = []
     actor = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path,
         deliver=lambda key, text: deliveries.append(key) or True,
         clock_ms=lambda: now[0],
@@ -222,7 +234,7 @@ def test_new_alert_after_cooldown_has_a_distinct_durable_identity(tmp_path):
         assert actor.close(2)
 
 
-def test_legacy_outbox_replay_preserves_pre_upgrade_identity(tmp_path):
+def test_legacy_outbox_replay_preserves_pre_upgrade_identity(tmp_path, actor_host):
     path = tmp_path / "inbox-watchdog.outbox.json"
     path.write_text(json.dumps({
         "operation_id": "old-batch", "after_state": "{}",
@@ -230,6 +242,7 @@ def test_legacy_outbox_replay_preserves_pre_upgrade_identity(tmp_path):
     }))
     sent = []
     actor = AsyncInboxWatchdog(
+        actor_host=actor_host,
         state_dir=tmp_path, deliver=lambda key, text: sent.append(key) or True,
         clock_ms=lambda: 1,
     )

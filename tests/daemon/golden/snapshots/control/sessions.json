@@ -1,0 +1,406 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "control",
+ "scenario": "sessions",
+ "steps": [
+  {
+   "step": 1,
+   "method": "session.heartbeat",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "alive": true,
+    "unregistered": false,
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "daemonEpoch": "<uuid4#1>",
+    "observationGap": false
+   }
+  },
+  {
+   "step": 2,
+   "method": "session.refresh",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha"
+   },
+   "result": {
+    "ok": true,
+    "refreshed": true,
+    "unregistered": false,
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "channelCurrentThisGeneration": true,
+    "channelCurrentEpoch": "<uuid4#1>",
+    "daemonEpoch": "<uuid4#1>"
+   }
+  },
+  {
+   "step": 3,
+   "method": "session.turn.started",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha",
+    "reportId": "turn-1"
+   },
+   "result": {
+    "ok": true,
+    "startedAtMs": 1800000000000
+   }
+  },
+  {
+   "step": 4,
+   "method": "session.turn.ended",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha",
+    "reportIds": [
+     "turn-1"
+    ]
+   },
+   "result": {
+    "ok": true,
+    "turnCount": 1,
+    "turnCountSinceMs": 1800000000000,
+    "lastTurnEndedAtMs": 1800000000000,
+    "endedAtMs": 1800000000000
+   }
+  },
+  {
+   "step": 5,
+   "method": "session.turn.refresh",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha",
+    "schemaVersion": 1,
+    "producerEpoch": "producer-1",
+    "seq": 1,
+    "openRuns": [
+     {
+      "reportId": "run-1",
+      "phase": "executing",
+      "elapsedMs": 10
+     }
+    ],
+    "capabilities": {
+     "wholeSessionTurns": true,
+     "preparation": false,
+     "permissionWait": false,
+     "producerActivity": false
+    }
+   },
+   "result": {
+    "ok": true,
+    "schemaVersion": 1,
+    "refreshedAtMs": 1800000000000,
+    "applied": false,
+    "resyncCleared": false,
+    "observationGapCleared": false,
+    "rejectionReason": "stale_daemon_epoch"
+   }
+  },
+  {
+   "step": 6,
+   "method": "session.turn.refresh",
+   "label": "current-epoch",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha",
+    "schemaVersion": 1,
+    "producerEpoch": "producer-1",
+    "seq": 2,
+    "daemonEpoch": "<uuid4#1>",
+    "openRuns": [],
+    "capabilities": {
+     "wholeSessionTurns": true,
+     "preparation": false,
+     "permissionWait": false,
+     "producerActivity": false
+    }
+   },
+   "result": {
+    "ok": true,
+    "schemaVersion": 1,
+    "refreshedAtMs": 1800000000000,
+    "applied": true,
+    "resyncCleared": false,
+    "observationGapCleared": false,
+    "rejectionReason": null
+   }
+  },
+  {
+   "step": 7,
+   "method": "session.turn.refresh",
+   "label": "schema",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha",
+    "schemaVersion": 2
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "session.turn.refresh params do not match the declared schema at <root>"
+   }
+  },
+  {
+   "step": 8,
+   "method": "session.turn.started",
+   "label": "missing-report-id",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "reportId must be a non-empty string"
+   }
+  },
+  {
+   "step": 9,
+   "method": "session.heartbeat",
+   "label": "stale",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-bogus"
+   },
+   "error": {
+    "code": "SESSION_SUPERSEDED",
+    "message": "actor agent:op:node-1:alpha is now owned by another interactive session"
+   }
+  },
+  {
+   "step": 10,
+   "method": "session.register",
+   "label": "same-session",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha",
+    "cwd": "<tmp>/work",
+    "command": [
+     "golden-carrier"
+    ],
+    "source": "claude-channel",
+    "runtime": "claude_interactive"
+   },
+   "result": {
+    "ok": true,
+    "registered": true,
+    "unregistered": false,
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "channelCurrentThisGeneration": true,
+    "channelCurrentEpoch": "<uuid4#1>",
+    "daemonEpoch": "<uuid4#1>"
+   }
+  },
+  {
+   "step": 11,
+   "method": "session.register",
+   "label": "supersede",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha-2",
+    "cwd": "<tmp>/work",
+    "command": [
+     "golden-carrier"
+    ],
+    "source": "claude-channel",
+    "runtime": "claude_interactive"
+   },
+   "result": {
+    "ok": true,
+    "registered": true,
+    "unregistered": false,
+    "actor": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha-2",
+    "channelCurrentThisGeneration": true,
+    "channelCurrentEpoch": "<uuid4#1>",
+    "daemonEpoch": "<uuid4#1>"
+   }
+  },
+  {
+   "step": 12,
+   "method": "session.heartbeat",
+   "label": "superseded",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha"
+   },
+   "error": {
+    "code": "SESSION_SUPERSEDED",
+    "message": "actor agent:op:node-1:alpha is now owned by another interactive session"
+   }
+  },
+  {
+   "step": 13,
+   "method": "session.register_guarded",
+   "label": "guarded-reclaim",
+   "origin": "ipc",
+   "params": {
+    "actor": "alpha",
+    "sessionRef": "session-alpha",
+    "cwd": "<tmp>/work",
+    "command": [
+     "golden-carrier"
+    ],
+    "source": "claude-channel",
+    "runtime": "claude_interactive"
+   },
+   "error": {
+    "code": "AGENT_ALREADY_RUNNING",
+    "message": "agent agent:op:node-1:alpha already has a live connector on claude (interactive, session session-alpha-2); hyprial agent start will not attach to a running agent. To move it to claude, stop the current connector first — exit that session — then start it again. This is not a name conflict: it stays the same agent with the same identity, and its previous harness and session id are reported on the next start so you can restore that conversation by hand.",
+    "data": {
+     "actor": "agent:op:node-1:alpha",
+     "existing": {
+      "actor": "agent:op:node-1:alpha",
+      "harness": "claude",
+      "runtime": "interactive",
+      "sessionId": "session-alpha-2",
+      "boundAtMs": 1800000000000
+     },
+     "requestedHarness": "claude",
+     "requestedRuntime": "interactive"
+    }
+   }
+  },
+  {
+   "step": 14,
+   "method": "session.register_guarded",
+   "label": "guarded-unknown-agent",
+   "origin": "ipc",
+   "params": {
+    "actor": "delta",
+    "sessionRef": "session-delta",
+    "cwd": "<tmp>/work",
+    "command": [
+     "golden-carrier"
+    ],
+    "source": "claude-channel",
+    "runtime": "claude_interactive"
+   },
+   "error": {
+    "code": "AGENT_NOT_FOUND",
+    "message": "no agent named 'agent:op:node-1:delta' on this machine"
+   }
+  },
+  {
+   "step": 15,
+   "method": "session.unregister",
+   "origin": "ipc",
+   "params": {
+    "actor": "beta",
+    "sessionRef": "session-beta"
+   },
+   "result": {
+    "ok": true,
+    "unregistered": true,
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   }
+  },
+  {
+   "step": 16,
+   "method": "session.heartbeat",
+   "label": "after-unregister",
+   "origin": "ipc",
+   "params": {
+    "actor": "beta",
+    "sessionRef": "session-beta"
+   },
+   "error": {
+    "code": "STALE_SESSION",
+    "message": "interactive session session-beta no longer owns actor agent:op:node-1:beta"
+   }
+  },
+  {
+   "step": 17,
+   "method": "session.unregister",
+   "label": "repeat",
+   "origin": "ipc",
+   "params": {
+    "actor": "beta",
+    "sessionRef": "session-beta"
+   },
+   "result": {
+    "ok": true,
+    "unregistered": false,
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   }
+  },
+  {
+   "step": 18,
+   "method": "session.register",
+   "label": "missing-fields",
+   "origin": "ipc",
+   "params": {
+    "actor": "gamma"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "sessionRef must be a non-empty string"
+   }
+  },
+  {
+   "step": 19,
+   "method": "session.register_guarded",
+   "label": "guarded-after-unregister",
+   "origin": "ipc",
+   "params": {
+    "actor": "beta",
+    "sessionRef": "session-beta-2",
+    "cwd": "<tmp>/work",
+    "command": [
+     "golden-carrier"
+    ],
+    "source": "claude-channel",
+    "runtime": "claude_interactive"
+   },
+   "result": {
+    "ok": true,
+    "registered": true,
+    "unregistered": false,
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta-2",
+    "channelCurrentThisGeneration": true,
+    "channelCurrentEpoch": "<uuid4#1>",
+    "daemonEpoch": "<uuid4#1>",
+    "liveIncumbentGuardApplied": true
+   }
+  },
+  {
+   "step": 20,
+   "method": "session.heartbeat",
+   "label": "after-guarded-register",
+   "origin": "ipc",
+   "params": {
+    "actor": "beta",
+    "sessionRef": "session-beta-2"
+   },
+   "result": {
+    "ok": true,
+    "alive": true,
+    "unregistered": false,
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta-2",
+    "daemonEpoch": "<uuid4#1>",
+    "observationGap": false
+   }
+  }
+ ]
+}

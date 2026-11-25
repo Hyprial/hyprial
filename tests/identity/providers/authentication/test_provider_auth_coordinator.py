@@ -1,11 +1,11 @@
-"""Coordinator state-machine tests: real profile store, stubbed boundaries.
+"""Coordinator state-machine tests: real capability store, stubbed boundaries.
 
 The stubs sit exactly on the two process boundaries the production wiring
 uses — the helper runner (one call = one device-code round) and the owner
 notifier — and produce real-shaped objects (``DeviceCodeAnnouncement``,
 ``AlertOutcome``-like), not invented shapes.  Everything between them is the
-production code: classification, episode/round state, profile marking via a
-real ``UserProfileStore`` on a tmp file, and ``dispatch.matrix`` reads of
+production code: classification, episode/round state, capability marking via a
+real ``RuntimeCapabilityStore`` on a tmp file, and ``dispatch.matrix`` reads of
 those very marks.
 """
 
@@ -33,7 +33,7 @@ from hyprial.identity.impl.provider_auth import (
     HelperOutcome,
     ProviderAuthCoordinator,
 )
-from hyprial.identity.impl.users.profile import UserProfileStore
+from hyprial.identity import RuntimeCapabilityStore
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
 
 KIMI_A = (
@@ -121,20 +121,13 @@ def make_coordinator(
     runtime_helper_factory=None,
     runtime_context_validator=None,
 ):
-    store = UserProfileStore(tmp_path / "users.json")
-    store.ensure(
-        owner="alicesmith",
-        owner_key="owner-key",
-        login_name="unit",
-        machine="test-node",
-        machine_key="machine-key",
-    )
+    store = RuntimeCapabilityStore(tmp_path / "state" / "runtime-capabilities.json")
     auth_path = tmp_path / "auth.json"
     if auth is not None:
         auth_path.write_text(json.dumps(auth), "utf-8")
     notifier = notifier or FakeNotifier()
     coordinator = ProviderAuthCoordinator(
-        profile_store=store,
+        capability_store=store,
         owner_key="owner-key",
         notifier=notifier,
         helper_runner=runner,
@@ -148,7 +141,7 @@ def make_coordinator(
     if premark:
         # What a previous daemon generation left behind: broken marks.
         for harness, provider, model in _kimi_combos():
-            store.set_runtime_capability(
+            store.set(
                 "owner-key",
                 _cap(harness, provider, model, "unavailable", REASON_PROVIDER_AUTH_INVALID),
             )
@@ -167,7 +160,7 @@ def _kimi_combos() -> list[tuple[str, str, str]]:
 
 
 def _cap(harness, provider, model, status, reason=None):
-    from hyprial.identity.impl.users.profile import RuntimeCapability
+    from hyprial.identity import RuntimeCapability
 
     return RuntimeCapability(
         harness=harness,
@@ -179,14 +172,8 @@ def _cap(harness, provider, model, status, reason=None):
     )
 
 
-def _capabilities(store: UserProfileStore, provider: str):
-    profile = store.get("owner-key")
-    assert profile is not None
-    return [
-        c
-        for c in profile.runtime_capabilities
-        if c.provider == provider
-    ]
+def _capabilities(store: RuntimeCapabilityStore, provider: str):
+    return [c for c in store.list("owner-key") if c.provider == provider]
 
 
 def live_auth(provider: str = "kimi-coding") -> dict:
@@ -223,7 +210,7 @@ def test_t14_codex_auth_failure_never_runs_the_pi_login_helper(
     assert "自动重新登录不支持" in message
     capability = next(
         item
-        for item in store.get("owner-key").runtime_capabilities
+        for item in store.list("owner-key")
         if item.harness == "codex"
         and item.provider == "openai-codex"
         and item.model == "gpt-6-sol"
@@ -365,13 +352,12 @@ def test_mark_does_not_skip_marked_provider(tmp_path: Path) -> None:
     # unmarked: the old code would have had nothing to fall back to.
     for candidate in matrix.TIERS["strong"]:
         if candidate.provider != "kimi-coding":
-            store.set_runtime_capability(
+            store.set(
                 "owner-key",
                 _cap(candidate.harness, candidate.provider, candidate.model,
                      "unavailable", "usage-limit"),
             )
-    profile = store.get("owner-key")
-    kimi = [c for c in profile.runtime_capabilities if c.provider == "kimi-coding"]
+    kimi = [c for c in store.list("owner-key") if c.provider == "kimi-coding"]
     assert kimi and all(c.status == "unavailable" for c in kimi)
 
     choice = matrix.resolve("strong")
@@ -388,8 +374,7 @@ def test_mark_does_not_skip_marked_provider(tmp_path: Path) -> None:
     )
     # Recovery still works and the kimi combo is live again; the other marks
     # here are this test's own scaffolding.
-    profile = store.get("owner-key")
-    kimi = [c for c in profile.runtime_capabilities if c.provider == "kimi-coding"]
+    kimi = [c for c in store.list("owner-key") if c.provider == "kimi-coding"]
     assert kimi and all(c.status == "available" for c in kimi)
     assert matrix.resolve("strong").selected == matrix.TIERS["strong"][0]
 
@@ -443,8 +428,8 @@ def test_exhaustion_three_rounds_one_closing_notice(tmp_path: Path) -> None:
     )
 
 
-def make_store(tmp_path: Path) -> UserProfileStore:
-    return UserProfileStore(tmp_path / "users.json")
+def make_store(tmp_path: Path) -> RuntimeCapabilityStore:
+    return RuntimeCapabilityStore(tmp_path / "state" / "runtime-capabilities.json")
 
 
 def test_exhaustion_enters_cooldown_then_allows_fresh_episode(
@@ -582,11 +567,12 @@ def test_b_failure_alerts_without_login(tmp_path: Path) -> None:
     text = notifier.texts()[0]
     assert "重新登录无法解决" in text
     assert "astra-agent-home" in text
-    assert "squire probe" in text
+    assert "hyprial agent tiers probe" in text
+    assert "squire" not in text
     assert runner.calls == []  # no login flow for account-side failures
     marks = [
         c
-        for c in store.get("owner-key").runtime_capabilities
+        for c in store.list("owner-key")
         if c.provider == "openai-codex"
     ]
     assert len(marks) == 1  # exactly the failing combo, not the whole provider
@@ -619,7 +605,7 @@ def test_claude_b_failure_marks_combo_and_never_starts_login(
     assert runner.calls == []  # claude has no startable device flow
     marks = [
         c
-        for c in store.get("owner-key").runtime_capabilities
+        for c in store.list("owner-key")
         if c.harness == "claude"
     ]
     assert len(marks) == 1
@@ -635,7 +621,7 @@ def test_recovery_preserves_account_mark(tmp_path: Path) -> None:
     # The selected combo carries the 09-14 entitlement (B) mark.
     # Other catalog models may receive separate OAuth marks; this assertion
     # concerns preservation of this account mark, not the catalog size.
-    store.set_runtime_capability(
+    store.set(
         "owner-key",
         _cap(
             "pi", "openai-codex", "gpt-6-astra", "unavailable",
@@ -678,8 +664,7 @@ def test_account_failure_realerts_after_probe_clears_mark(
     )
     wait_until(lambda: len(notifier.texts()) == 1, what="first account alert")
 
-    # The operator fixes the account; `squire probe` rewrites the combo available.
-    store.set_runtime_capability(
+    store.set(
         "owner-key",
         _cap("pi", "openai-codex", "gpt-6-astra", "available"),
     )
@@ -691,7 +676,7 @@ def test_account_failure_realerts_after_probe_clears_mark(
     wait_until(lambda: len(notifier.texts()) == 2, what="second account alert")
     marks = [
         c
-        for c in store.get("owner-key").runtime_capabilities
+        for c in store.list("owner-key")
         if c.provider == "openai-codex"
     ]
     assert len(marks) == 1
@@ -705,7 +690,7 @@ def test_account_failure_realerts_after_probe_clears_mark(
 def test_c_failure_does_nothing(tmp_path: Path) -> None:
     runner = FakeRunner([])
     coordinator, store, notifier = make_coordinator(tmp_path, runner)
-    before = store.path.read_bytes()
+    before = store.path.read_bytes() if store.path.exists() else None
     coordinator.handle_turn_failure(
         harness="pi", provider="kimi-coding", model="k3",
         worker="pi-worker-1", failure="fetch failed",
@@ -713,7 +698,7 @@ def test_c_failure_does_nothing(tmp_path: Path) -> None:
     time.sleep(0.1)
     assert runner.calls == []
     assert notifier.texts() == []
-    assert store.path.read_bytes() == before
+    assert (store.path.read_bytes() if store.path.exists() else None) == before
 
 
 # ---------------------------------------------------------------- 契约:不抛

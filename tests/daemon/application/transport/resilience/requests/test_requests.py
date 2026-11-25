@@ -13,9 +13,11 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 import pytest
 import hyprial.kernel.impl.ipc.client as ipc_client
+import hyprial.kernel.impl.manysys.ipc.posix as local_ipc_posix
 
 from ..support import (
     _BrokenClient,
@@ -64,6 +66,27 @@ def test_partial_client_does_not_block_a_healthy_request(
         app._close()
 
 
+def _posix_socket_fake(
+    monkeypatch: pytest.MonkeyPatch, factory: Callable[..., object]
+) -> None:
+    """Point the seam's POSIX backend at a fake socket factory.
+
+    The client no longer builds sockets itself: the EAGAIN patience and the
+    connect budget live in the POSIX backend behind ``connect_local_ipc``,
+    so these injections keep the real retry loop under test.
+    """
+
+    monkeypatch.setattr(
+        local_ipc_posix,
+        "socket",
+        SimpleNamespace(
+            socket=factory,
+            AF_UNIX=socket.AF_UNIX,
+            SOCK_STREAM=socket.SOCK_STREAM,
+        ),
+    )
+
+
 def test_connect_daemon_socket_retries_full_backlog_eagain_within_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -93,9 +116,7 @@ def test_connect_daemon_socket_retries_full_backlog_eagain_within_budget(
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(
-        ipc_client.socket, "socket", lambda *_args: FullThenFreeSocket()
-    )
+    _posix_socket_fake(monkeypatch, lambda *_args: FullThenFreeSocket())
     client = ipc_client._connect_daemon_socket(Path("/tmp/unused.sock"), 5.0)
     assert attempts == 3
     client.close()
@@ -116,7 +137,7 @@ def test_connect_daemon_socket_still_fails_after_budget(
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(ipc_client.socket, "socket", lambda *_args: AlwaysFullSocket())
+    _posix_socket_fake(monkeypatch, lambda *_args: AlwaysFullSocket())
     started = time.monotonic()
     with pytest.raises(BlockingIOError):
         ipc_client._connect_daemon_socket(Path("/tmp/unused.sock"), 0.2)
@@ -142,7 +163,7 @@ def test_connect_daemon_socket_does_not_retry_refused(
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(ipc_client.socket, "socket", lambda *_args: RefusedSocket())
+    _posix_socket_fake(monkeypatch, lambda *_args: RefusedSocket())
     with pytest.raises(ConnectionRefusedError):
         ipc_client._connect_daemon_socket(Path("/tmp/unused.sock"), 5.0)
     assert attempts == 1

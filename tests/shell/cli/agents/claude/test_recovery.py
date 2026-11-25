@@ -1,6 +1,7 @@
 """cli_claude_interactive: recovery scenarios."""
 
 from __future__ import annotations
+from tests.support.runtime.environment import home_with_node_id
 import json
 import shutil
 import signal
@@ -36,7 +37,7 @@ def test_start_claude_interactive_fails_if_channel_never_registers(
         def terminate(self) -> None:
             raise AssertionError("already-exited process must not be terminated")
 
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HYPRIAL_HOME", str(home_with_node_id(tmp_path / "home")))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(
         _cli_support,
@@ -57,7 +58,7 @@ def test_start_claude_interactive_fails_if_channel_never_registers(
 def test_start_claude_interactive_preserves_spawn_failure(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HYPRIAL_HOME", str(home_with_node_id(tmp_path / "home")))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(
         _cli_support,
@@ -133,7 +134,7 @@ def test_start_claude_interactive_resume_reuses_target_session(
             self.returncode = 0
             return 0
 
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HYPRIAL_HOME", str(home_with_node_id(tmp_path / "home")))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
     monkeypatch.setenv("HARNESS_CLAUDE_BIN", "/test/bin/claude")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_root))
@@ -224,7 +225,7 @@ def test_start_claude_missing_resume_does_not_write_agent(
 def test_start_claude_interactive_rejects_session_identity_runtime_args(
     monkeypatch: Any, tmp_path: Path, flag: str
 ) -> None:
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HYPRIAL_HOME", str(home_with_node_id(tmp_path / "home")))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
 
     def forbidden(*_args: Any, **_kwargs: Any) -> None:
@@ -265,27 +266,6 @@ def test_start_resume_rejected_where_unsupported(
 
     monkeypatch.setattr(_cli_support, "_daemon_request", forbidden)
 
-    headless = CliRunner().invoke(
-        _cli_root_app,
-        [
-            "agent",
-            "start",
-            "dsh",
-            "--name",
-            "worker",
-            "--cwd",
-            str(tmp_path),
-            "--headless",
-            "--resume",
-            "abc",
-            "--json",
-        ],
-    )
-    assert headless.exit_code == 1
-    headless_payload = json.loads(headless.stdout)
-    assert headless_payload["code"] == "INVALID_ARGUMENT"
-    assert "fresh worker MCP identity" in headless_payload["error"]
-
     jev = CliRunner().invoke(
         _cli_root_app,
         [
@@ -304,27 +284,6 @@ def test_start_resume_rejected_where_unsupported(
     assert jev.exit_code == 1
     assert "no persistent session" in json.loads(jev.stdout)["error"]
 
-    user_proxy = CliRunner().invoke(
-        _cli_root_app,
-        [
-            "agent",
-            "start",
-            "user-proxy",
-            "--name",
-            "worker",
-            "--cwd",
-            str(tmp_path),
-            "--resume",
-            "abc",
-            "--json",
-            "--",
-            "--route",
-            "route:lark:test",
-        ],
-    )
-    assert user_proxy.exit_code == 1
-    assert "stateless relay" in json.loads(user_proxy.stdout)["error"]
-
 
 def test_start_help_documents_resume_support_and_precise_refusals() -> None:
     import click
@@ -333,9 +292,7 @@ def test_start_help_documents_resume_support_and_precise_refusals() -> None:
     assert result.exit_code == 0, result.output
     text = " ".join(click.unstyle(result.output).replace("│", " ").split())
     assert "interactive claude, pi, and codex" in text
-    assert "fresh worker MCP identity" in text
     assert "jev has no persistent session" in text
-    assert "user-proxy is a stateless relay" in text
 
 
 def test_start_claude_interactive_leaves_sigint_to_the_tui(
@@ -377,7 +334,7 @@ def test_start_claude_interactive_leaves_sigint_to_the_tui(
             self.returncode = 0
             return 0
 
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HYPRIAL_HOME", str(home_with_node_id(tmp_path / "home")))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(_cli_support, "_daemon_request", daemon_request)
     monkeypatch.setattr(_cli_subprocess, "Popen", Process)
@@ -424,7 +381,6 @@ def test_start_codex_non_headless_routes_to_app_server_attach(
             "model_provider": None,
             "model": None,
             "json_output": True,
-            "tmux": False,
         }
     ]
 

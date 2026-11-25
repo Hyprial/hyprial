@@ -27,14 +27,14 @@ def invoke(actor, agent, phase, operation_id):
 def test_public_stable_id_replays_once_and_default_calls_get_fresh_ids(home_owner, monkeypatch, phase):
     _registry, actor, agent = home_owner(configured=False)
     submitted = []
-    tell = actor._runtime.tell
+    tell = actor._cell.tell
 
-    def record(handle, command):
+    def record(command):
         if hasattr(command, "correlation_id"):
             submitted.append(command.correlation_id)
-        return tell(handle, command)
+        return tell(command)
 
-    monkeypatch.setattr(actor._runtime, "tell", record)
+    monkeypatch.setattr(actor._cell, "tell", record)
     first = invoke(actor, agent, phase, "phase:0")
     assert invoke(actor, agent, phase, "phase:0") == first
     assert actor.wait_home_access("phase:0", timeout=0) == first
@@ -71,7 +71,7 @@ def test_invalid_id_is_rejected_before_admission(home_owner, monkeypatch, phase,
     def forbidden(*_args, **_kwargs):
         pytest.fail("invalid operation ID reached the owner mailbox")
 
-    monkeypatch.setattr(actor._runtime, "tell", forbidden)
+    monkeypatch.setattr(actor._cell, "tell", forbidden)
     with pytest.raises(ValueError, match="operation_id"):
         if phase == "materialise":
             actor.materialise_landing_home(agent.actor, "/unused", expected_entity_token=agent.entity_token, expected_files=(), operation_id=bad_id)
@@ -89,13 +89,13 @@ def test_unknown_after_eviction_is_not_absent_but_explicit_submission_is_new(hom
         actor.wait_home_access("confirm:0", timeout=0)
     assert registry.home_receipt(agent.actor).path == home  # unknown is NOT absent.
     submitted = []
-    tell = actor._runtime.tell
+    tell = actor._cell.tell
 
-    def record(handle, command):
+    def record(command):
         submitted.append(command)
-        return tell(handle, command)
+        return tell(command)
 
-    monkeypatch.setattr(actor._runtime, "tell", record)
+    monkeypatch.setattr(actor._cell, "tell", record)
     # This tests the submission contract only, not P2's absent/retry decision.
     # The API cannot remember an evicted ID and does not promise it will.
     assert invoke(actor, agent, "confirm", "confirm:0") == home

@@ -14,14 +14,14 @@ import pytest
 
 import hyprial.daemon.impl.pac.graphs.authority as authority_module
 import hyprial.daemon.impl.pac.storage.store as store_module
-import hyprial.kernel.impl.processes.owned_process as owned_process_module
+import hyprial.kernel.impl.manysys.process.owned_process as owned_process_module
 from hyprial.daemon.impl.pac.graphs.authority import PacGraphAuthority
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore
 from hyprial.daemon.impl.pac.workflows.runtime.operations import (
     _GraphWorkflowServiceOps,
 )
 from hyprial.kernel import ProcessLivenessState
-from hyprial.kernel.impl.processes.owned_process import OwnedProcessGroup
+from hyprial.kernel.impl.manysys.process.owned_process import OwnedProcessGroup
 from tests.support.scaling import CountingConnection, assert_flat, at_scales
 
 

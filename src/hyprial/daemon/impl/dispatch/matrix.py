@@ -5,7 +5,7 @@ future PAC requires.tier consumers must compare minimums, not equality.
 
 Policy (Allen, 2026-09-21): *provider/model availability is the user's own
 responsibility*, so dispatch assumes every candidate is usable.  Selection is
-the first candidate in the declared tier pool, full stop: no profile mark, no
+the first candidate in the declared tier pool, full stop: no recorded mark, no
 liveness probe, and no fallback may change who is chosen.  A provider that is
 in fact unusable fails at execution time and is reported loudly to the sender
 that is waiting for the receipt (see ``hyprial.availability_loud``) -- never
@@ -14,7 +14,7 @@ routed around silently.
 Recorded availability is displayed by ``hyprial agent tiers`` and is never an
 input to selection. Explicit probes use the ``classify_run`` referee.
 ``diagnose`` returns read-only readings; ``agent tiers probe`` records facts
-through the existing Squire profile authority. Neither changes selection.
+in the owner's runtime capability cache. Neither changes selection.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from typing import TYPE_CHECKING
 from hyprial.kernel import ipc_errors
 
 if TYPE_CHECKING:
-    from hyprial.identity import UserProfile
-    from hyprial.daemon.impl.squire.probe import ComboSpec, ProbeRunner
+    from hyprial.identity import RuntimeCapability
+    from hyprial.daemon.impl.harnesses.probe import ComboSpec, ProbeRunner
 
 TIER_RANK = {tier: rank for rank, tier in enumerate(TIERS)}
 
@@ -228,32 +228,52 @@ def candidate_json(candidate: Candidate) -> dict[str, object]:
     return {**candidate._asdict(), "probe_cmd": list(candidate.probe_cmd)}
 
 
-def active_profile() -> UserProfile | None:
-    """Read only the active owner's runtime facts; never borrow another pool."""
-    from hyprial.daemon.impl.configuration.identity import resolve_node_owner
+RUNTIME_CAPABILITY_FILENAME = "runtime-capabilities.json"
+
+
+def _state_dir() -> Path:
     from hyprial.kernel import configured_hyprial_home
-    from hyprial.identity import UserProfileStore
 
     configured = os.environ.get("HARNESS_STATE_DIR")
-    state = (
+    return (
         Path(configured).expanduser().resolve()
         if configured else configured_hyprial_home()[0] / "state"
     )
-    store = UserProfileStore(state / "users.json")
+
+
+def recorded_capabilities() -> tuple[RuntimeCapability, ...]:
+    """Read only the active owner's runtime facts; never borrow another pool.
+
+    A home without a cache or without an owner has no recorded facts.
+    """
+    from hyprial.daemon.impl.configuration.identity import node_owner_or_none
+    from hyprial.identity import RuntimeCapabilityStore
+
+    store = RuntimeCapabilityStore(_state_dir() / RUNTIME_CAPABILITY_FILENAME)
     if not store.path.exists():
-        return None
-    return store.get_by_owner(resolve_node_owner())
+        return ()
+    owner = node_owner_or_none()
+    return () if owner is None else store.list(owner)
+
+
+def _recorded(
+    capabilities: tuple[RuntimeCapability, ...], candidate: Candidate,
+) -> RuntimeCapability | None:
+    combo = (candidate.harness, candidate.provider, candidate.model)
+    return next((item for item in capabilities if item.combo == combo), None)
 
 
 def recorded_candidate_json(
-    candidate: Candidate, profile: UserProfile | None,
+    candidate: Candidate, capabilities: tuple[RuntimeCapability, ...] | None = None,
 ) -> dict[str, object]:
-    """Display an owner's recorded fact without probing or selecting."""
+    """Display an owner's recorded fact without probing or selecting.
+
+    Without *capabilities* the active owner's recorded facts are read.
+    """
     row = candidate_json(candidate)
-    availability = (
-        profile.runtime_capability(candidate.harness, candidate.model, candidate.provider)
-        if profile is not None else None
-    )
+    if capabilities is None:
+        capabilities = recorded_capabilities()
+    availability = _recorded(capabilities, candidate)
     row["availability"] = availability.to_json() if availability is not None else None
     return row
 
@@ -287,7 +307,7 @@ def _static_choice(tier: str, candidates: tuple[Candidate, ...]) -> LaunchChoice
 def resolve(tier: str) -> LaunchChoice:
     """First candidate in one exact priority pool; availability is not read.
 
-    No profile mark, no probe, no fallback: changing every runtime
+    No recorded mark, no probe, no fallback: changing every runtime
     availability fact must leave this answer identical.
     """
     if tier not in TIERS:
@@ -310,7 +330,7 @@ def diagnose(
     tier: str,
     *,
     minimum: bool = False,
-    profile: UserProfile | None = None,
+    capabilities: tuple[RuntimeCapability, ...] | None = None,
     runner: ProbeRunner | None = None,
 ) -> tuple[ProbeReading, ...]:
     """Probe every candidate for a read-only report; never select or persist.
@@ -318,21 +338,16 @@ def diagnose(
     Marks neither suppress probes nor reorder candidates. The F2 referee is
     the only source of the verdict; these readings never feed selection.
     """
-    from hyprial.daemon.impl.squire.probe import ProbeRun, RuntimeProber, classify_run
+    from hyprial.daemon.impl.harnesses.probe import ProbeRun, RuntimeProber, classify_run
 
     if tier not in TIERS:
         raise ValueError(f"tier must be one of {', '.join(TIERS)}")
     candidates = minimum_pool(tier) if minimum else TIERS[tier]
-    profile = profile if profile is not None else active_profile()
+    capabilities = capabilities if capabilities is not None else recorded_capabilities()
     prober = RuntimeProber(runner=runner)
     readings: list[ProbeReading] = []
     for candidate in candidates:
-        observed = (
-            profile.runtime_capability(
-                candidate.harness, candidate.model, candidate.provider
-            )
-            if profile is not None else None
-        )
+        observed = _recorded(capabilities, candidate)
         mark = None
         if observed is not None:
             mark = observed.status if not observed.reason else f"{observed.status}:{observed.reason}"
@@ -348,7 +363,7 @@ def diagnose(
     return tuple(readings)
 
 
-def probe_profile(
+def probe_capabilities(
     state_dir: Path,
     owner_key: str | None,
     combos: tuple[ComboSpec, ...],
@@ -356,38 +371,32 @@ def probe_profile(
     timeout: float = 180.0,
     dry_run: bool = False,
 ) -> dict[str, object]:
-    """Run the explicit profile probe through the existing Squire authority."""
-    from hyprial.daemon.impl import squire
-    from hyprial.identity import UserProfileError, UserProfileStore
+    """Run the explicit runtime-capability probe and record it unless dry-run."""
+    from hyprial.daemon.impl.configuration.identity import resolve_node_owner
+    from hyprial.daemon.impl.harnesses import probe as runtime_probe
+    from hyprial.identity import RuntimeCapabilityStore
 
-    store = UserProfileStore(state_dir / "users.json")
+    store = RuntimeCapabilityStore(Path(state_dir) / RUNTIME_CAPABILITY_FILENAME)
     if owner_key is None:
-        profiles = store.list()
-        if not profiles:
-            raise UserProfileError("no user profile; run hyprial squire setup first")
-        if len(profiles) > 1:
-            raise ValueError("multiple user profiles; pass --owner-key")
-        owner_key = profiles[0].owner_key
+        owner_key = resolve_node_owner()
     if not combos:
-        profile = store.get(owner_key)
-        declared = () if profile is None else profile.runtime_capabilities
-        combos = tuple((cap.harness, cap.provider, cap.model) for cap in declared)
+        combos = tuple(capability.combo for capability in store.list(owner_key))
     if not combos:
         raise ValueError(
             "no runtime capability combinations declared; "
             "pass --combo harness:provider:model"
         )
-    results, changed, profile = squire.probe_combinations(
+    results, changed, capabilities = runtime_probe.probe_combinations(
         store, owner_key, combos,
-        prober=squire.RuntimeProber(timeout=timeout), dry_run=dry_run,
+        prober=runtime_probe.RuntimeProber(timeout=timeout), dry_run=dry_run,
     )
     return {
         "ok": True,
-        "probe": "squire-runtime-capability",
+        "probe": "user-runtime-capability",
         "schemaVersion": 1,
         "ownerKey": owner_key,
         "dryRun": dry_run,
         "changed": list(changed),
         "results": [result.to_json() for result in results],
-        "profile": profile.to_json(),
+        "capabilities": [capability.to_json() for capability in capabilities],
     }

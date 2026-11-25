@@ -5,7 +5,6 @@ import pytest
 from hyprial.kernel import DaemonRequestError
 
 from tests.daemon.harnesses.carrier.turns.test_turn_refresh import (
-    A_URI,
     LEASE,
     SESSION,
     _app,
@@ -28,17 +27,17 @@ def test_retired_producer_stays_retired_across_same_mount_contact(tmp_path, oper
         _refresh(app, producer_epoch="boot-A", seq=5, lease=lease,
                  open_runs=[{"reportId": "old-run", "phase": "executing"}])
         _refresh(app, producer_epoch="boot-B", seq=0, lease=lease)
-        fence = app.app._cell_binding_fence(A_URI, SESSION)
+        fence = app.app._cell_binding_fence(app.a_uri, SESSION)
         _open_contact_gap(app)
         if operation == "session.register":
             _register(app, source=source, runtime=runtime, lease=lease)
         else:
-            params = {"actor": A_URI, "sessionRef": SESSION}
+            params = {"actor": app.a_uri, "sessionRef": SESSION}
             if lease:
                 params["channelLeaseToken"] = lease
             app.app.handle(operation, params)
-        assert app.app._cell_binding_fence(A_URI, SESSION) == fence
-        assert app.app._agent_session_domains.session.read_runtime(A_URI).observation_gap
+        assert app.app._cell_binding_fence(app.a_uri, SESSION) == fence
+        assert app.app._agent_session_domains.session.read_runtime(app.a_uri).observation_gap
         answer = _refresh(app, producer_epoch="boot-A", seq=4, lease=lease,
                           open_runs=[{"reportId": "old-run", "phase": "executing"}])
         assert answer["applied"] is False, (answer, _published(app))
@@ -59,17 +58,17 @@ def test_same_mount_registration_preserves_sequence_and_saturation_fences(tmp_pa
         runtime = "claude_interactive" if lease else "pi_interactive"
         _register(app, source=source, runtime=runtime, lease=lease)
         _refresh(app, producer_epoch="boot-A", seq=5, lease=lease)
-        ledger = app.app._carrier_turn_ledgers[(A_URI, SESSION)].observation
+        ledger = app.app._carrier_turn_ledgers[(app.a_uri, SESSION)].observation
         if saturated:
             ledger.producer_capacity = 1
             assert _refresh(app, producer_epoch="boot-B", seq=5, lease=lease)["applied"]
             assert not _refresh(app, producer_epoch="boot-C", lease=lease)["applied"]
             assert ledger.producer_history_exhausted
-        fence = app.app._cell_binding_fence(A_URI, SESSION)
+        fence = app.app._cell_binding_fence(app.a_uri, SESSION)
         _open_contact_gap(app)
         _register(app, source=source, runtime=runtime, lease=lease)
-        assert app.app._cell_binding_fence(A_URI, SESSION) == fence
-        assert app.app._agent_session_domains.session.read_runtime(A_URI).observation_gap
+        assert app.app._cell_binding_fence(app.a_uri, SESSION) == fence
+        assert app.app._agent_session_domains.session.read_runtime(app.a_uri).observation_gap
         answer = _refresh(app, producer_epoch="boot-B" if saturated else "boot-A", seq=seq, lease=lease,
                           open_runs=[{"reportId": "stale", "phase": "executing"}])
         assert not answer["applied"], (answer, _published(app))
@@ -89,14 +88,14 @@ def test_display_reset_preserves_observation_fence_and_gap(tmp_path, reporting):
         _register(app)
         _refresh(app, producer_epoch="boot-A", seq=5)
         _refresh(app, producer_epoch="boot-B", seq=5)
-        ledger = app.app._carrier_turn_ledgers[(A_URI, SESSION)].observation
+        ledger = app.app._carrier_turn_ledgers[(app.a_uri, SESSION)].observation
         ledger.gap = True
-        app.app._reset_interactive_turn_stats(A_URI, SESSION, reporting=reporting)
+        app.app._reset_interactive_turn_stats(app.a_uri, SESSION, reporting=reporting)
         answer = _refresh(app, producer_epoch="boot-A", seq=4)
         assert answer["rejectionReason"] == "retired_producer"
         assert not answer["resyncCleared"]
         assert _facts(app).resync_required
-        assert app.app._carrier_turn_ledgers[(A_URI, SESSION)].observation is ledger
+        assert app.app._carrier_turn_ledgers[(app.a_uri, SESSION)].observation is ledger
         assert _refresh(app, producer_epoch="boot-B", seq=6)["resyncCleared"]
     finally:
         app.close()
@@ -148,11 +147,11 @@ def test_unregister_cannot_delete_observation_fences(tmp_path, session_ref):
         _register(app)
         _refresh(app, producer_epoch="boot-A", seq=5)
         _refresh(app, producer_epoch="boot-B", seq=5)
-        ledger = app.app._carrier_turn_ledgers[(A_URI, SESSION)].observation
+        ledger = app.app._carrier_turn_ledgers[(app.a_uri, SESSION)].observation
         ledger.gap = True
         old_fence = ledger.epoch
-        app.app.handle("session.unregister", {"actor": A_URI, "sessionRef": session_ref})
-        assert app.app._carrier_run_ledgers[A_URI] is ledger
+        app.app.handle("session.unregister", {"actor": app.a_uri, "sessionRef": session_ref})
+        assert app.app._carrier_run_ledgers[app.a_uri] is ledger
         assert ledger.epoch == old_fence
         assert ledger.retired_producers == {"boot-A"}
         assert ledger.producer_seq == 5 and ledger.gap
@@ -160,7 +159,7 @@ def test_unregister_cannot_delete_observation_fences(tmp_path, session_ref):
             with pytest.raises(DaemonRequestError):
                 _refresh(app, producer_epoch="boot-A", seq=4)
             _register(app, session_ref="replacement")
-            assert app.app._cell_binding_fence(A_URI, "replacement") != old_fence
+            assert app.app._cell_binding_fence(app.a_uri, "replacement") != old_fence
             assert not _facts(app).known
             assert ledger.epoch == old_fence
             assert _refresh(app, session_ref="replacement")["applied"]
@@ -207,13 +206,13 @@ def test_boundary_reports_after_stats_reset_cannot_clear_either_gap(tmp_path):
         _register(app)
         _refresh(app, seq=5)
         _open_contact_gap(app)
-        ledger = app.app._carrier_turn_ledgers[(A_URI, SESSION)].observation
+        ledger = app.app._carrier_turn_ledgers[(app.a_uri, SESSION)].observation
         ledger.gap = True
-        app.app._reset_interactive_turn_stats(A_URI, SESSION, reporting=True)
+        app.app._reset_interactive_turn_stats(app.a_uri, SESSION, reporting=True)
         app.started("boundary-run")
         app.ended(["boundary-run"])
         assert ledger.gap
-        assert app.app._agent_session_domains.session.read_runtime(A_URI).observation_gap
+        assert app.app._agent_session_domains.session.read_runtime(app.a_uri).observation_gap
         assert not _facts(app).known
         assert _refresh(app, seq=6)["observationGapCleared"]
         assert not ledger.gap
@@ -229,7 +228,7 @@ def test_missing_daemon_epoch_cannot_acknowledge_gap(tmp_path):
         _register(app)
         _open_contact_gap(app)
         answer = app.app.handle("session.turn.refresh", {
-            "actor": A_URI, "sessionRef": SESSION, "schemaVersion": 1,
+            "actor": app.a_uri, "sessionRef": SESSION, "schemaVersion": 1,
             "producerEpoch": "boot-A", "seq": 0, "openRuns": [],
             "capabilities": CAPABILITIES,
         })

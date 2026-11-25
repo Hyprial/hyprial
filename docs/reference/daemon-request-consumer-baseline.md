@@ -1,6 +1,6 @@
 # Daemon request public baseline (A-05)
 
-This is the consumable A baseline for the B (`agent move`) and C (remaining
+This is the consumable A baseline for the B (`agent teleport`, formerly `agent move`) and C (remaining
 daemon-request migration) workstreams. It records the public Python surface,
 the declared method snapshot, the installed console/resource proof, and the
 reproduction gate. It is **not** a release PASS: the known full-suite and
@@ -72,7 +72,13 @@ Client contracts:
 - `daemon_catalog()` / `daemon_openapi()` — the daemon-owned frozen registry
   view. They are pure data, not a running HTTP gateway.
 
-## Declared method snapshot
+## Historical declared method snapshot（已退役）
+
+以下内容是 A-05 源提交 `069a10e41992484c4e2aa88e57baac9ae7d27472` 于
+2026-10-28 生成的退役前历史证据。它不描述当前 declared method、OpenAPI 或可消费的
+daemon request 契约，也不能作为新增调用或验收条件。
+
+以下四个 `link.*` 方法已随 T2b 退役，仅保留为 A-05 历史基线，不是当前 declared method 或 OpenAPI 路径；不得据此新增调用。
 
 Catalogue `schemaVersion: 1`; OpenAPI `3.1.0`. All four methods are owned by
 `daemon.links`, audience `local-operator` + `bound-agent`, confirmation `none`,
@@ -95,7 +101,10 @@ This is the A-05 snapshot, not the complete future catalogue. B adds `move.*`
 declarations and handlers in its own PR; C adds the remaining command groups.
 Neither may register a placeholder `{}` schema or a fake handler.
 
-## Installed behaviour snapshot
+## Historical installed behaviour evidence（A-05，2026-10-28；已退役）
+
+以下记录只证明上述 A-05 源提交当时的安装行为。T2b 退役后，不能据此判断当前安装包仍
+提供 `link.*`，也不能把其中的 golden 文件当作现行契约。
 
 - `hyprial help --json` exits 0 and reports `ok:true`; stdout SHA-256
   `a88e3c507479610b79e340710336d355205258f50b0cf12b4b4cbead224c4d51`.
@@ -103,13 +112,18 @@ Neither may register a placeholder `{}` schema or a fake handler.
   install origin.
 - A fresh isolated daemon (`hyprial daemon run`, short AF_UNIX path, isolated
   `HOME`/`HYPRIAL_HOME`/`HARNESS_STATE_DIR`, Zenoh isolated, peer discovery
-  off, `HYPRIAL_LINKS_BYPASS=0`) served the real link commands.
-- The eight accepted link text/JSON cases match
-  `tests/integration/cli/link/golden.json` byte-for-byte (stdout, stderr,
-  exit). The error cases keep `INVALID_ARGUMENT`, `CALLER_NOT_AUTHORIZED`,
-  `SENDER_UNRESOLVED`, exit 1 and the pinned empty-peer text/JSON bytes.
+  off, `HYPRIAL_LINKS_BYPASS=0`) served the real link commands at that
+  historical source head.
+- The eight historical link text/JSON cases matched
+  `tests/integration/cli/link/golden.json` byte-for-byte at that time. Those
+  golden cases are retained as evidence only and are not a current acceptance
+  surface.
 
-## Reproduce the installed acceptance
+## Historical reproduction procedure（A-05，2026-10-28；非当前验收）
+
+The following procedure reproduces the retired A-05 evidence at its recorded
+source head. A successful run is historical evidence only and does not establish
+that `link.*` is available in the current daemon or wheel.
 
 ```sh
 # 1. Build from the exact clean source commit and record the hash.
@@ -140,7 +154,7 @@ uv run --no-project --python 3.12 \
   --artifacts-dir /tmp/a05-artifacts --json-out /tmp/a05-artifacts/result.json
 ```
 
-Exit 0 with `"ok": true` is the acceptance result. The standard wheel above
+At the time of capture, exit 0 with `"ok": true` was the A-05 acceptance result. The standard wheel above
 has `0.5.5.1+g069a10e`, 1,159 installed product members byte-matched to the
 wheel, and 13 real isolated daemon/CLI cases. A thin/worker wheel (no sidecar,
 `py3-none-any`), a wrong installed artifact and a tampered contract all exit 1;
@@ -150,7 +164,7 @@ this acceptance.
 
 ## B/C consumption rules
 
-For B (`agent move`):
+For B (`agent teleport`, formerly `agent move`):
 
 1. Declare each method with the public `MethodSpec` and complete
    params/result/error schemas; bind it to a real handler. Do not add a
@@ -176,10 +190,11 @@ For C (remaining migration):
 3. Use the installed verifier at the exact final integration head as the
    package/console/resource proof, in addition to focused and contract tests.
 
-## Known limits (not PASS)
+## Historical known limits at capture time（A-05，2026-10-28；已退役）
 
-- Only `link` is migrated and declared; all other dispatch families remain on
-  the legacy router until C.
+- At capture time, only `link` was migrated and declared; all other dispatch
+  families remained on the legacy router until C. This is not the current method
+  set.
 - `link.add` / `link.drop` are catalogued but not HTTP-exposed. This baseline
   starts no HTTP gateway.
 - The generic preview protocol exists as a declaration/binding surface but is

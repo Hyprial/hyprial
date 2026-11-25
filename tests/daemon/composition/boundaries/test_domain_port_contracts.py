@@ -11,7 +11,7 @@ from typing import get_args
 
 import pytest
 
-from hyprial.daemon.impl.adapters.lark.ports.ports import AdapterPinProjection, AdapterProjection, AdapterReloadProjection, AdaptersProjection
+from hyprial.daemon.impl.adapters.lark.ports.ports import AdapterProjection, AdapterReloadProjection, AdaptersProjection
 from hyprial.identity.impl.agents.actor.ports import AgentProjection, AgentsProjection
 from hyprial.kernel.impl.contracts.ports import PortAdmission, PortCommandRejected
 from hyprial.daemon.impl.harnesses.runtime.ports import HarnessLaunchProjection, HarnessStatusProjection
@@ -234,17 +234,6 @@ def test_existing_adapter_agent_session_and_harness_payload_shapes_are_preserved
         "removed": [],
         "removedRunning": [],
     }
-    assert AdapterPinProjection(
-        "work", "agent:a", None, True, (("work", "agent:a"),)
-    ).to_payload() == {
-        "ok": True,
-        "adapter": "work",
-        "actor": "agent:a",
-        "previous": None,
-        "changed": True,
-        "pins": {"work": "agent:a"},
-    }
-
     agent = AgentProjection(
         version=1,
         uri="agent:o:m:a",
@@ -254,7 +243,6 @@ def test_existing_adapter_agent_session_and_harness_payload_shapes_are_preserved
         entity_token="entity-token",
         capabilities=(("chat", "true"),),
         harness_args=(("codex", ("--x",)),),
-        pinned_adapters=("work",),
         created_at_ms=9,
     )
     assert AgentsProjection((agent,)).to_payload()["agents"] == [agent.to_payload()]

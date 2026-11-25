@@ -1,25 +1,27 @@
-"""Interactive pi and codex session launches."""
+"""Interactive pi and codex session launches.
+
+Decision record (W2B-3 manysys sweep, 2026-11-21): foreground interactive Codex
+attach roots allocate via tempfile.mkdtemp under Path(tempfile.gettempdir())
+instead of hardcoded /tmp, falling back to POSIX short tmp only on drive-less
+paths whose socket candidate would exceed the conservative sun_path budget.
+"""
 
 from __future__ import annotations
 
 from hyprial.shell.impl.cli.output import warn
-
 from hyprial.shell.impl.cli.commands.common.services import get_services
-
 from typing import Any
-from hyprial.kernel import Logger, agent_uri_actor, redact
+from hyprial.kernel import Logger, child_state_environment
 from pathlib import Path
-from hyprial.kernel import child_state_environment
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
-from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _handover_prompt, _interactive_actor, _interactive_cli_identity, _launch_detached_tui, _pi_attach_registration, _plugin_skip_warnings, _preflight_codex_credential, _publish_session_ref, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings
+from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _handover_prompt, _interactive_actor, _interactive_cli_identity, _plugin_skip_warnings, _preflight_codex_credential, _publish_session_ref, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 _PI_SESSION_IDENTITY_FLAGS = frozenset(
     {
@@ -44,7 +46,7 @@ def _reject_pi_session_identity_args(runtime_args: tuple[str, ...]) -> None:
         flag = arg.split("=", 1)[0]
         if flag in _PI_SESSION_IDENTITY_FLAGS:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 f"{flag} changes pi session identity or mode, which hyprial owns "
                 "on an attached launch",
             )
@@ -72,25 +74,16 @@ def _start_interactive_pi(
     model_provider: str | None,
     model: str | None,
     json_output: bool,
-    tmux: bool = False,
 ) -> JsonObject:
     """Launch a real pi TUI with the hyprial attach carrier extension loaded.
 
     Same five phases as the Claude interactive launcher (design
     docs/notes/design-tui-launcher.md): prepare (validate + agent.create +
-    identity), spawn_tui (foreground, terminal inherited; or a detached
-    tmux session with --tmux), attach_and_register (poll ps until the
-    carrier's session.register lands), wait_foreground, teardown (terminate
-    stragglers; the carrier's own session_shutdown unregister is the normal
-    exit path and the daemon TTL reclaims anything else).
-
-    Detached mode needs no claude-style owner-fence rewiring: the pi carrier
-    is an IN-PROCESS extension, so its lifetime already equals the TUI
-    process's -- which under tmux is the pane's. kill-session SIGHUPs the
-    pane, pi dies, the carrier dies with it (session_shutdown unregisters
-    best-effort, the daemon TTL reclaims the rest). The launcher only
-    teaches the carrier the session name (HYPRIAL_WORKER_TMUX_SESSION) so the
-    daemon can record it on the registration.
+    identity), spawn_tui (foreground, terminal inherited), attach_and_register
+    (poll ps until the carrier's session.register lands), wait_foreground,
+    teardown (terminate stragglers; the carrier's own session_shutdown
+    unregister is the normal exit path and the daemon TTL reclaims anything
+    else).
     """
     services = get_services()
 
@@ -101,8 +94,6 @@ def _start_interactive_pi(
     from hyprial.daemon import pi_session_id
     from hyprial.daemon import SessionFileError, resolve_legacy_pi_resume_session
 
-    # Argument validation stays ahead of every daemon call: a rejected launch
-    # must not have touched the daemon at all.
     _reject_pi_session_identity_args(runtime_args)
     provider_spec = HarnessLaunchSpec(
         "pi",
@@ -139,7 +130,11 @@ def _start_interactive_pi(
             )
         handover = None
     runtime_projection = services._runtime_context_environment(
-        name=name, harness="pi", cwd=cwd, include_projection=True
+        name=name,
+        harness="pi",
+        cwd=cwd,
+        json_output=json_output,
+        include_projection=True,
     )
     runtime_environment = (
         None
@@ -217,7 +212,7 @@ def _start_interactive_pi(
     try:
         plugin_plan = pi_plan(load_manifest(services._hyprial_home()))
     except PluginManifestError as error:
-        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
     plugin_warnings = _plugin_skip_warnings(plugin_plan.skipped)
     _announce_plugin_skips(plugin_warnings)
     # HYPRIAL_HOME-declared payloads ride pi's native session-scoped flags, so a
@@ -251,11 +246,6 @@ def _start_interactive_pi(
         )
         from hyprial.daemon import pi_provider_environment
 
-        # Pi reads DEEPSEEK_API_KEY from its own environment; unlike claude and
-        # codex it had no model-vendor step here, so a P2 launch without a
-        # granted secret started secretless and failed every turn (2026-10-16).
-        # The source stays the per-agent authorization; a P2 launch with no
-        # grant now refuses here instead of running without a credential.
         environment = {
             **environment,
             **pi_provider_environment(
@@ -288,7 +278,6 @@ def _start_interactive_pi(
                     runtime_args=runtime_args,
                     command_name=name,
                     command_headless=False,
-                    command_tmux=tmux,
                     command_model_provider=model_provider,
                     command_model=model,
                     command_session_ref=resume,
@@ -314,38 +303,9 @@ def _start_interactive_pi(
                 )
             except ValueError as error:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT, str(error)
+                    codes.INVALID_ARGUMENT, str(error)
                 ) from error
             argv = list(sdk_launch.argv)
-        if tmux:
-            from hyprial.daemon import session_name_for_actor
-
-            session_name = session_name_for_actor(actor)
-            environment["HYPRIAL_WORKER_TMUX_SESSION"] = session_name
-            return _launch_detached_tui(
-                argv=argv,
-                env=environment,
-                cwd=cwd,
-                actor=actor,
-                session_ref=session_ref,
-                session_name=session_name,
-                harness="pi",
-                # An attended launch may stall on pi's project-trust prompt
-                # before the extension ever runs: the deadline is generous, and
-                # the error names that exact cause (research finding E8).
-                registration_deadline_seconds=180.0,
-                is_session_registered=lambda status: _pi_attach_registration(
-                    actor, session_ref, status
-                ),
-                registration_failure=(
-                    f"Pi could not resume exact session {session_ref!r}"
-                    if resume is not None
-                    else "pi exited or timed out before attach registration for "
-                    f"{actor}; if the project-trust prompt was showing, trust "
-                    "the project and retry"
-                ),
-                warnings=plugin_warnings,
-            )
         process = subprocess.Popen(
             argv,
             cwd=cwd,
@@ -418,7 +378,7 @@ def _reject_codex_session_args(runtime_args: tuple[str, ...]) -> None:
         flag = arg.split("=", 1)[0]
         if flag in _CODEX_SESSION_FLAGS:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 f"{flag} changes the Codex app-server session transport, which "
                 "hyprial owns on an attached launch",
             )
@@ -428,30 +388,6 @@ _CODEX_APPROVAL_OPTIONS = ("--ask-for-approval", "-a")
 _CODEX_NO_APPROVAL = "never"
 _CODEX_BYPASS_FLAGS = frozenset({"--dangerously-bypass-approvals-and-sandbox", "--yolo"})
 _CODEX_UPDATE_CONFIG = "check_for_update_on_startup=false"
-_CODEX_TMUX_WARNING: JsonObject = {
-    "code": "CODEX_TMUX_INBOX_UNAVAILABLE",
-    "message": "detached Codex cannot receive Harness Network messages; run foreground "
-    "`hyprial agent start codex ...` inside your own tmux window instead",
-}
-_ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
-
-
-def _codex_pane_failure_message(
-    tmux_module: Any, tmux_bin: str, session_name: str, base: str
-) -> str:
-    text = str(redact(_ANSI_ESCAPE.sub("", tmux_module.pane_text(tmux_bin, session_name))))
-    lines = [line.rstrip() for line in text.splitlines() if line.strip()][-20:]
-    tail = "\n".join(lines)[-4000:]
-    message = base
-    if tail:
-        message += f"\nLast Codex pane output:\n{tail}"
-    lowered = text.lower()
-    if "account/read failed" in lowered and "workspace routing discovery timed out" in lowered:
-        message += (
-            "\nHint: check the proxy/network environment (including HTTPS_PROXY) "
-            "and whether the runtime environment profile strips proxy variables."
-        )
-    return message
 
 
 def _interactive_codex_runtime_args(runtime_args: tuple[str, ...]) -> tuple[str, ...]:
@@ -477,7 +413,7 @@ def _interactive_codex_runtime_args(runtime_args: tuple[str, ...]) -> tuple[str,
         or _CODEX_BYPASS_FLAGS.intersection(runtime_args)
     ):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "an interactive Codex session needs on-request approvals for its "
             "harness-bridge tools; '-a never', '--yolo' and "
             "'--dangerously-bypass-approvals-and-sandbox' make Codex refuse every "
@@ -488,33 +424,38 @@ def _interactive_codex_runtime_args(runtime_args: tuple[str, ...]) -> tuple[str,
     return ("--ask-for-approval", "on-request", *runtime_args)
 
 
-def _codex_tmux_module() -> Any:
-    """The daemon's tmux boundary, imported lazily like the pi/claude paths."""
+def _codex_resume_tui_args(runtime_args: tuple[str, ...]) -> tuple[str, ...]:
+    """Strip CLI approval flags from the TUI argv when resuming remotely.
 
-    from hyprial.daemon import harnesses_tmux
+    Codex rejects any permission override when resuming a remote task.  The
+    app-server still receives the original ``launch_args`` through
+    ``resume_thread``; only the remote TUI argv must omit them.
+    """
 
-    return harnesses_tmux
+    stripped: list[str] = []
+    skip_next = False
+    for arg in runtime_args:
+        if skip_next:
+            skip_next = False
+            continue
+        name, equals, _ = arg.partition("=")
+        if name in ("--ask-for-approval", "-a"):
+            skip_next = not equals
+            continue
+        if arg == "--approve-for-me":
+            continue
+        stripped.append(arg)
+    return tuple(stripped)
 
 
-def _codex_tmux_session_name(actor: str) -> str:
-    from hyprial.daemon import session_name_for_actor
-
-    return session_name_for_actor(actor)
-
-
-def _codex_attach_registration(
-    actor: str, session_ref: str, status: JsonObject
-) -> bool:
-    """Readiness for the Codex carrier: its ``session.register`` has landed."""
-
-    sessions = status.get("interactiveSessions", [])
-    return isinstance(sessions, list) and any(
-        isinstance(item, dict)
-        and item.get("actor") == actor
-        and item.get("sessionRef") == session_ref
-        and item.get("source") == "codex-app-server"
-        for item in sessions
-    )
+def _codex_attach_temp_root() -> Path:
+    temp_dir = Path(tempfile.gettempdir())
+    probe = temp_dir / "hyprial-codex-attach-00000000" / "app.sock"
+    if not temp_dir.drive and len(os.fsencode(str(probe))) > 100:
+        posix_tmp = Path("/", "tmp")
+        if posix_tmp.is_dir():
+            temp_dir = posix_tmp
+    return Path(tempfile.mkdtemp(prefix="hyprial-codex-attach-", dir=temp_dir))
 
 
 def _start_interactive_codex(
@@ -527,7 +468,6 @@ def _start_interactive_codex(
     model_provider: str | None,
     model: str | None,
     json_output: bool,
-    tmux: bool = False,
     _attach_timeout_seconds: float = 180.0,
 ) -> JsonObject:
     """Launch Codex with a hyprial-owned app-server and remote TUI.
@@ -563,7 +503,7 @@ def _start_interactive_codex(
     try:
         plugin_plan = codex_plan(load_manifest(services._hyprial_home()))
     except PluginManifestError as error:
-        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
     plugin_warnings = _plugin_skip_warnings(plugin_plan.skipped)
     _announce_plugin_skips(plugin_warnings)
     if resume is None:
@@ -591,6 +531,7 @@ def _start_interactive_codex(
         name=name,
         harness="codex",
         cwd=cwd,
+        json_output=json_output,
         model_provider=model_provider,
         credential_preflight=True,
     )
@@ -607,35 +548,7 @@ def _start_interactive_codex(
     status = services.runtime.request("ps")
     actor = _interactive_actor(name, status)
     codex_bin = os.environ.get("HARNESS_CODEX_BIN", "codex")
-    # A detached pane outlives this CLI, so its socket directory must too: the
-    # app-server keeps listening there and the pane TUI keeps reading it.  The
-    # foreground path keeps the throwaway /tmp root it always had.
-    if tmux:
-        tmux_module = _codex_tmux_module()
-        tmux_bin = tmux_module.find_tmux()
-        if tmux_bin is None:
-            raise services.CliError(
-                "TMUX_UNAVAILABLE", "--tmux requires the tmux binary on PATH"
-            )
-        session_name = _codex_tmux_session_name(actor)
-        if tmux_module.has_session(tmux_bin, session_name):
-            hints = tmux_module.attach_hints(session_name)
-            raise services.CliError(
-                "TMUX_SESSION_EXISTS",
-                f"tmux session {session_name} already exists; attach with "
-                f"{hints['wsl-linux-terminal']} or kill it first",
-            )
-        root = (
-            Path(services._state_dir())
-            / "codex-tmux"
-            / (agent_uri_actor(actor) or actor)
-        )
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    else:
-        tmux_module = None
-        tmux_bin = None
-        session_name = None
-        root = Path(tempfile.mkdtemp(prefix="hyprial-codex-attach-", dir="/tmp"))
+    root = _codex_attach_temp_root()
     socket_path = root / "app.sock"
     session_ref_file = root / "session-ref"
     session_ref: str | None = None
@@ -659,7 +572,6 @@ def _start_interactive_codex(
     server: CodexInteractiveAppServer | None = None
     process: subprocess.Popen[Any] | None = None
     carrier: CodexInteractiveCarrier | None = None
-    detached_ready = False
     returncode = 1
     model_args = ("--model", model) if model is not None else ()
     argv: list[str] = []
@@ -731,7 +643,11 @@ def _start_interactive_codex(
                     "-c",
                     _CODEX_UPDATE_CONFIG,
                     *model_args,
-                    *launch_args,
+                    *(
+                        _codex_resume_tui_args(launch_args)
+                        if resume is not None
+                        else launch_args
+                    ),
                     "--remote",
                     f"unix://{socket_path}",
                 ]
@@ -752,42 +668,11 @@ def _start_interactive_codex(
                     )
                 except CodexInteractiveResumeError as error:
                     raise services.CliError(error.code, str(error)) from error
-            if tmux_module is not None:
-                assert session_name is not None and tmux_bin is not None
-                tmux_module.new_detached_session(
-                    tmux_bin,
-                    session_name,
-                    argv,
-                    cwd=cwd,
-                    env=environment,
-                    remain_on_exit=True,
-                )
-                process = None
-            else:
-                process = subprocess.Popen(argv, cwd=cwd, env=environment)
+            process = subprocess.Popen(argv, cwd=cwd, env=environment)
         assert server is not None
         deadline = _registration_clock() + 180.0
         while _registration_clock() < deadline:
-            if tmux_module is not None:
-                assert session_name is not None and tmux_bin is not None
-                if not tmux_module.has_session(tmux_bin, session_name):
-                    raise services.CliError(
-                        "CODEX_ATTACH_REGISTRATION_FAILED",
-                        "Codex tmux pane exited before interactive thread "
-                        f"discovery for {actor}",
-                    )
-                if tmux_module.pane_dead(tmux_bin, session_name):
-                    raise services.CliError(
-                        "CODEX_ATTACH_REGISTRATION_FAILED",
-                        _codex_pane_failure_message(
-                            tmux_module,
-                            tmux_bin,
-                            session_name,
-                            "Codex tmux pane exited before interactive thread "
-                            f"discovery for {actor}",
-                        ),
-                    )
-            elif process is not None and process.poll() is not None:
+            if process is not None and process.poll() is not None:
                 if resume is not None:
                     raise services.CliError(
                         "CODEX_RESUME_TUI_ATTACH_FAILED",
@@ -845,11 +730,10 @@ def _start_interactive_codex(
                     "runtime": "codex_interactive",
                     "sessionRef": session_ref,
                     **process_fence,
-                    **({"tmuxSession": session_name} if session_name else {}),
                     },
                 )
             except services.CliError as error:
-                if resume is not None and error.code == ipc_errors.METHOD_NOT_FOUND:
+                if resume is not None and error.code == codes.METHOD_NOT_FOUND:
                     raise services.CliError(
                         "CODEX_RESUME_GUARD_UNSUPPORTED",
                         "daemon does not implement guarded interactive Codex resume",
@@ -865,48 +749,6 @@ def _start_interactive_codex(
                     "daemon did not confirm that the live-incumbent guard was applied",
                 )
             _publish_session_ref(session_ref_file, session_ref)
-            if tmux_module is not None:
-                assert session_name is not None
-                # Re-verify the CLI's own predicate against the daemon's live
-                # ps, so a daemon that accepted the call but never reflected
-                # the session cannot be reported as detached-and-ready.
-                if not _codex_attach_registration(
-                    actor, session_ref, services.runtime.request("ps")
-                ):
-                    raise services.CliError(
-                        "CODEX_ATTACH_REGISTRATION_FAILED",
-                        f"daemon did not reflect the detached Codex session for {actor}",
-                    )
-                if tmux_module.pane_dead(tmux_bin, session_name):
-                    raise services.CliError(
-                        "CODEX_ATTACH_REGISTRATION_FAILED",
-                        _codex_pane_failure_message(
-                            tmux_module,
-                            tmux_bin,
-                            session_name,
-                            f"Codex tmux pane exited while registering {actor}",
-                        ),
-                    )
-                tmux_module.set_remain_on_exit(tmux_bin, session_name, False)
-                detached_ready = True
-                if not json_output:
-                    warn(
-                        f"hyprial: warning: {_CODEX_TMUX_WARNING['message']}",
-                        json_output=False,
-                    )
-                return _with_plugin_warnings(
-                    {
-                        "ok": True,
-                        "actor": actor,
-                        "provider": "codex",
-                        "runtime": "interactive",
-                        "sessionRef": session_ref,
-                        "detached": True,
-                        "tmuxSession": session_name,
-                        "attach": tmux_module.attach_hints(session_name),
-                    },
-                    [_CODEX_TMUX_WARNING, *plugin_warnings],
-                )
             carrier = CodexInteractiveCarrier(
                 server,
                 actor=actor,
@@ -933,11 +775,6 @@ def _start_interactive_codex(
                 if resume is not None
                 else f"timed out discovering a Codex TUI thread for {actor}"
             )
-            if tmux_module is not None:
-                assert session_name is not None and tmux_bin is not None
-                timeout_message = _codex_pane_failure_message(
-                    tmux_module, tmux_bin, session_name, timeout_message
-                )
             raise services.CliError(
                 "CODEX_RESUME_TUI_ATTACH_FAILED"
                 if resume is not None
@@ -946,33 +783,22 @@ def _start_interactive_codex(
             )
         returncode = _wait_foreground(process)
     finally:
-        if not detached_ready:
-            # On a failed detached launch the pane (if any) and app-server are
-            # ours to tear down; on success the pane TUI and its app-server are
-            # the owners: this CLI must not stop the server, unregister the
-            # session, or delete the socket directory it handed them.
-            if (
-                tmux_module is not None
-                and session_name is not None
-                and tmux_bin is not None
-            ):
-                tmux_module.kill_session(tmux_bin, session_name)
-            if carrier is not None:
-                carrier.stop()
-            if registered and session_ref is not None:
-                try:
-                    services.runtime.request(
-                        "session.unregister",
-                        {"actor": actor, "sessionRef": session_ref},
-                        restore_wait=0.0,
-                    )
-                except Exception:  # noqa: BLE001, S110 - cleanup must not mask the TUI exit
-                    pass
-            if process is not None and process.poll() is None:
-                _terminate_process(process)
-            if server is not None:
-                server.stop()
-            shutil.rmtree(root, ignore_errors=True)
+        if carrier is not None:
+            carrier.stop()
+        if registered and session_ref is not None:
+            try:
+                services.runtime.request(
+                    "session.unregister",
+                    {"actor": actor, "sessionRef": session_ref},
+                    restore_wait=0.0,
+                )
+            except Exception:  # noqa: BLE001, S110 - cleanup must not mask the TUI exit
+                pass
+        if process is not None and process.poll() is None:
+            _terminate_process(process)
+        if server is not None:
+            server.stop()
+        shutil.rmtree(root, ignore_errors=True)
     return _with_plugin_warnings(
         {
             "ok": returncode == 0,

@@ -65,7 +65,7 @@ def test_wire_timeout_reports_operation_leg_and_effective_budget(monkeypatch, op
     assert _translate(wrapped.value).data == raised.value.details
 
 
-def test_actor_passes_requested_budget_to_wire():
+def test_actor_passes_requested_budget_to_wire(actor_host):
     calls = []
 
     class Controller:
@@ -76,7 +76,7 @@ def test_actor_passes_requested_budget_to_wire():
         def close(self):
             pass
 
-    owner = ForwardingControllerAuthority(Controller())
+    owner = ForwardingControllerAuthority(Controller(), actor_host=actor_host)
     try:
         owner.membership_request("invite-redeem", {}, timeout=65)
         assert calls == [pytest.approx(65, abs=0.01)]
@@ -100,12 +100,18 @@ def test_expired_queued_command_is_not_sent_to_sidecar(monkeypatch):
 
 
 @pytest.mark.parametrize("actor", [False, True])
-def test_ipc_actor_wire_complete_three_proxy_exchanges(monkeypatch, tmp_path, actor):
+def test_ipc_actor_wire_complete_three_proxy_exchanges(
+    monkeypatch, tmp_path, actor_host, actor
+):
     from hyprial.daemon.impl.org.network.ipc import _request_service
 
     controller = fake_wire(monkeypatch, {"invite-redeem": [20, 20], "member-announce": [20]})
     controller.close = lambda: None
-    owner = ForwardingControllerAuthority(controller) if actor else controller
+    owner = (
+        ForwardingControllerAuthority(controller, actor_host=actor_host)
+        if actor
+        else controller
+    )
     app = SimpleNamespace(
         hyprial_home=tmp_path, node_id="node", owner="owner",
         _require_orgfs_runtime=lambda: SimpleNamespace(facade=object()),

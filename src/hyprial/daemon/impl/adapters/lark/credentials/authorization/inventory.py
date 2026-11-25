@@ -34,13 +34,14 @@ def configuration(home: Path, state_dir: Path, adapter: str) -> dict[str, Any]:
     return result
 
 
-def scope_inventory(home: Path, state_dir: Path, adapter: str) -> dict[str, Any]:
+def scope_inventory(home: Path, state_dir: Path, adapter: str, *, http_timeout_seconds: float | None = None) -> dict[str, Any]:
     result = configuration(home, state_dir, adapter)
     app_id = result["appId"]
     if app_id is None:
         return result
     try:
-        resolved, client = configured_scope_client(home, state_dir, adapter)
+        options = {} if http_timeout_seconds is None else {"http_timeout_seconds": http_timeout_seconds}
+        resolved, client = configured_scope_client(home, state_dir, adapter, **options)
         if resolved != app_id:
             return unknown(adapter, "CONFIGURATION_CHANGED", app_id)
         response = client.list_scopes()

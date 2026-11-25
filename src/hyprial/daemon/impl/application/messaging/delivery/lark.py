@@ -123,19 +123,20 @@ class _LarkGatewayMixin:
         )
         if not isinstance(app_secret, str) or not app_secret:
             raise DaemonRequestError(
-                ipc_errors.ROUTE_ADAPTER_UNCONFIGURED,
+                ipc_errors.USER_DELIVERY_UNAVAILABLE,
                 f"credential {gateway_config.credential_ref} is missing appSecret",
                 {"adapter": gateway_config.name},
             )
         owners = getattr(self, "_outbound_gateway_owners", None)
+        host = self._actor_hosts.host_for("lark-gateway")
         gateway = (
             self._lark_gateway_with_scope_recovery(
                 gateway_config, app_secret, self.state_dir, owned=True,
-                logger=self._gateway_logger,
+                logger=self._gateway_logger, actor_host=host,
             )
             if owners is not None
             else self._lark_gateway_with_scope_recovery(
-                gateway_config, app_secret, self.state_dir
+                gateway_config, app_secret, self.state_dir, actor_host=host
             )
         )
         try:
@@ -151,9 +152,13 @@ class _LarkGatewayMixin:
     @staticmethod
     def _lark_gateway_with_scope_recovery(
         gateway_config: Any, app_secret: str, state_dir: Path, *, owned: bool = False,
-        logger: Logger | None = None,
+        logger: Logger | None = None, actor_host: Any | None = None,
     ) -> LarkSdkGateway | GatewayIoAuthority:
-        """Build a gateway whose permission notification cannot recurse."""
+        """Build a gateway whose permission notification cannot recurse.
+
+        An owned async adapter logger writes through the actor host, so a
+        caller that does not pass ``logger`` must pass ``actor_host``.
+        """
 
         # Send outcomes (code + msg + native message id) belong on the
         # adapter log so a route send answers "what did Feishu return for
@@ -162,7 +167,10 @@ class _LarkGatewayMixin:
         owns_logger = owned and logger is None
         gateway_logger = (
             logger.bind(name=gateway_name) if logger is not None
-            else Logger.adapter(state_dir, name=gateway_name, asynchronous=owned)
+            else Logger.adapter(
+                state_dir, name=gateway_name, asynchronous=owned,
+                actor_host=actor_host,
+            )
         ) if isinstance(gateway_name, str) and gateway_name else None
         notification_owner = None
         try:
@@ -200,7 +208,7 @@ class _LarkGatewayMixin:
                 if callable(configure_logger):
                     configure_logger(gateway_logger, gateway_name=gateway_name)
             notification_owner = (
-                GatewayIoAuthority(notification_gateway)
+                GatewayIoAuthority(notification_gateway, actor_host=actor_host)
                 if owned and notification_gateway is not None else None
             )
 
@@ -236,6 +244,7 @@ class _LarkGatewayMixin:
                         *((notification_owner,) if notification_owner is not None else ()),
                         *((gateway_logger,) if owns_logger and gateway_logger is not None else ()),
                     ),
+                    actor_host=actor_host,
                 )
                 if owned else gateway
             )

@@ -13,12 +13,17 @@ uv run --with libcst==1.9.0 pytest tests/
 uv run ruff check .
 ```
 
-旧独立 GUI（`src/gui`）与 Tauri 外壳（`app`）在退场批次中移出运行路径；共享网页 UI
-以根 `gui/` 为唯一主线，由 UI 任务独立 PR 提供。CLI 只公开裸 `hyprial gui`
-（`npm start`）和 `hyprial gui dev`（Vite 热更新），需要 `--gui-home` 或
-`HYPRIAL_GUI_HOME` 指向包含 `gui/package.json` 的 Git 工作树。它启动独立 Node
-占位服务，业务明确返回 `not implemented: hyprial backend not wired`，不接真实
-daemon，也不恢复旧 Python Web/backend。操作契约见
+旧独立 GUI（`src/gui`）与旧 Tauri 外壳（`app`）已退场，仓库里不再有；共享网页 UI
+以根 `gui/` 为唯一主线。CLI 只公开裸 `hyprial gui`
+（先 `npm run build`，再由 Python 会话 host 提供 `gui/dist`）和 `hyprial gui dev`（Vite 热更新，
+Python 会话 host 反向代理 Vite dev server），在包含
+`gui/package.json` 的源码 checkout 内运行；`hyprial gui dev` 可用 `--gui-home` 或
+`HYPRIAL_DEV_GUI_HOME` 指向另一个工作树的 `gui/`。`dev` 等价于 `--with-dev-tools --live-source`
+两个独立开关（开发工具层、源码热更新），详见 `docs/guides/gui-dev-mode.md`。它经 admission 接入真实 daemon：会话 host 在自己的进程内提供 `request_http`
+（安装态与源码态同由 Python 会话 host 承载，已无 Node host，`hyprial gui` 只起一个 Python 子进程），
+不恢复旧 Python Web/backend。daemon 是唯一常驻后端：`hyprial gui` 在 home 的每种状态下都先确保
+daemon（前提：home 目录已存在且为私有，否则先报 `GUI_HOME_NOT_INITIALIZED` / `GUI_HOME_UNSAFE`），关闭 GUI 不停 daemon，登录与登出在原 GUI 进程内换绑 principal。最小原生壳在 `clients/native/`，
+打包在 `packaging/clients/`。操作契约见
 [docs/guides/gui-dev-mode.md](docs/guides/gui-dev-mode.md)，退场与恢复范围见
 [docs/design/gui-retirement-restore-ledger-2026-10-27.md](docs/design/gui-retirement-restore-ledger-2026-10-27.md)。
 
@@ -43,17 +48,21 @@ daemon，也不恢复旧 Python Web/backend。操作契约见
 
 ## 分支模型
 
+人和 agent 共用的机器可读规定位于 [`.forgejo/git-flow.json`](.forgejo/git-flow.json)，
+CI planner 实际读取它；流程说明见 [dev-first PR 规则](docs/guides/dev-source-branch-rule.md)。
+
 | 分支 | 用途 | 接受的 PR 来源 |
 | --- | --- | --- |
-| `main` | 正式发布；合入后打 `v<VERSION>` tag 并推进 `stable` 轨道 | `dev` |
-| `dev` | 集成主线；每次通过 `unit` 门后推进 `internal` 轨道 | 仅 `release/v*` 与 `hotfix/*` |
-| `release/v<版本>` | 当前版本的集成分支（release train） | 功能分支与 `intg/*` |
-| `intg/<主题>` | 多个 PR 组成的组件集成线 | 该主题的功能分支 |
-| `hotfix/<slug>` | 直接修复 `dev` 的小改动 | — |
+| `dev` | 唯一集成主线；从已验证的固定 SHA 选择发布候选 | 完成的功能、修复、文档、CI 与集成 PR |
+| `intg/<主题>` | 可选的临时组件集成线；完成后进入 dev | 该主题的功能分支 |
+| `release/v<版本>` | 历史发布线保留祖先；新建时仅承载发布准备 WIP，回流 dev | 不继续接收功能 PR |
+| `main` | 保留历史发布祖先；push 不再触发正式发布 | 按发布维护需要处理 |
 
-功能分支命名为 `<type>/<slug>`（如 `feat/…`、`fix/…`、`docs/…`）。目标为 `release/**`
-的 PR 必须改动 `CHANGELOG.md` 中对应版本的小节。规则来源见
-[发布规则](docs/guides/release-rules.md) 与 [dev 来源分支规则](docs/guides/dev-source-branch-rule.md)。
+功能分支命名为 `<type>/<slug>`（如 `feat/…`、`fix/…`、`docs/…`），完成后以 dev 为
+目标；WIP retarget 后仍保持 Draft。发布候选必须更新对应版本的 CHANGELOG，并使用
+不可变 `v<VERSION>` tag；stable 由正式发布链推进。0.5.5.4 收敛期间 internal 与正式
+发布写入保持冻结，详见 [发布规则](docs/guides/release-rules.md) 和
+[dev 来源分支规则](docs/guides/dev-source-branch-rule.md)。
 
 公网 GitHub 仓库 `Hyprial/hyprial` 是只读发布镜像，不接受 PR；补丁请在内部 Forgejo 提交。
 

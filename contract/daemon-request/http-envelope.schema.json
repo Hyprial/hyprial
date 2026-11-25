@@ -30,7 +30,50 @@
         "schemaVersion": { "const": 1 },
         "ok": { "const": false },
         "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "code": {
+          "type": "string",
+          "anyOf": [
+            { "pattern": "^[A-Z][A-Z0-9_]*$" },
+            {
+              "enum": [
+                "already-exists",
+                "ambiguous-path",
+                "ambiguous-space",
+                "bad-cursor",
+                "blob-unavailable",
+                "checkout-io",
+                "closed",
+                "content-pending",
+                "cross-space-uri",
+                "invalid-argument",
+                "invalid-uri",
+                "log-key-conflict",
+                "no-holder-online",
+                "not-a-member",
+                "not-owner",
+                "out-of-range",
+                "pending-meta",
+                "projection-behind",
+                "protected-path",
+                "purged",
+                "resource-exhausted",
+                "snapshot-barrier",
+                "snapshot-unavailable",
+                "space-purge-incomplete",
+                "space-purge-refused",
+                "stale-plan",
+                "stale-write",
+                "sync-peer-incompatible",
+                "too-large",
+                "unavailable",
+                "unknown-blob",
+                "unknown-doc",
+                "unknown-space",
+                "unsafe-space-path"
+              ]
+            }
+          ]
+        },
         "message": { "type": "string", "minLength": 1, "maxLength": 512 },
         "dispatch": {
           "enum": ["not-dispatched", "dispatched", "unknown"]
@@ -95,7 +138,6 @@
     "SENDER_NOT_AUTHENTICATED": 403,
     "SENDER_UNRESOLVED": 403,
     "TARGET_NOT_AUTHORIZED": 403,
-    "CHANNEL_NOT_AUTHORIZED": 403,
     "ORG_CONTEXT_NOT_AUTHORIZED": 403,
     "STALE_SESSION": 403,
     "SESSION_SUPERSEDED": 403,

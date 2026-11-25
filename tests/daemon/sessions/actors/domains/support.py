@@ -35,6 +35,7 @@ from hyprial.daemon.impl.operations.session_ports import (
     RegisterSessionCommand,
     SessionMutationCompleted,
 )
+from tests.support.actor_hosts import new_actor_host
 
 OWNER = "op"
 NODE = "node-1"
@@ -204,7 +205,7 @@ def _wired_session(
     if registry.get("foo") is None:
         registry.create("foo")
     relay = _AgentEventRelay()
-    agent = AgentActor(registry, event_sink=relay)
+    agent = AgentActor(registry, event_sink=relay, actor_host=new_actor_host())
     session = SessionActor(
         DesiredStateStore(tmp_path / "desired.json"),
         daemon_epoch=daemon_epoch,

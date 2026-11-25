@@ -36,7 +36,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hyprial.daemon.impl.org.network.casdoor.client import (
     CasdoorGroupError,
@@ -44,20 +44,21 @@ from hyprial.daemon.impl.org.network.casdoor.client import (
     casdoor_user,
 )
 from hyprial.kernel import (
-    ActorRuntime,
     ActorSpec,
     AdmissionResult,
     EffectCompleted,
-    EffectLane,
     EffectRequest,
-    GenerationScheduler,
     canonical_user_uri,
 )
+
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane, GenerationScheduler
 
 BACKSTOP_INTERVAL_SECONDS = 6 * 3600.0
 BREAKER_SHARE = 0.2
 REMOVAL_WINDOW_SECONDS = 600.0
 _PENDING_LIMIT = 256
+_BACKSTOP_TIMER_KEY = "org-casdoor-backstop"
 
 _Key = tuple[str, str | None, str | None]  # ("user", org|None, user) | ("all", org|None, None)
 _Logger = Callable[..., None]
@@ -191,8 +192,11 @@ class CasdoorMembershipSync:
         log: _Logger | None = None,
         clock: Callable[[], float] = time.time,
         interval_seconds: float = BACKSTOP_INTERVAL_SECONDS,
+        actor_host=None,
         scheduler: GenerationScheduler | None = None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("casdoor membership sync requires an actor host")
         self._service_factory = service_factory
         self._confirmed_store = confirmed
         self._confirmed = confirmed.load()
@@ -207,19 +211,25 @@ class CasdoorMembershipSync:
         self._removals: dict[str, deque[float]] = {}  # single-user removals, for the window budget
         self._closed = False
         self._started = False
-        self._runtime = ActorRuntime()
-        self._scheduler = scheduler or GenerationScheduler()
-        self._handle = self._runtime.start(
+        self._owns_scheduler = scheduler is None
+        if scheduler is None:
+            from hyprial.daemon.impl.composition.actors import (
+                create_generation_scheduler,
+            )
+
+            scheduler = create_generation_scheduler()
+        self._scheduler = scheduler
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="org-casdoor-membership",
                 handler_factory=lambda: self._receive,
                 mailbox_capacity=64,
             )
         )
-        self._effects: EffectLane[_Work, _PassResult] = EffectLane(
+        self._effects: EffectLane[_Work, _PassResult] = actor_host.effect_lane(
             name="org-casdoor-reads",
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=1,
         )
 
@@ -258,7 +268,7 @@ class CasdoorMembershipSync:
             }
 
     def idle(self) -> bool:
-        state = self._runtime.snapshot(self._handle)
+        state = self._cell.snapshot()
         with self._guard:
             return not self._pending and self._active is None and state.queued == state.in_flight == 0
 
@@ -267,14 +277,17 @@ class CasdoorMembershipSync:
         with self._guard:
             self._closed = True
             self._pending.clear()
-        self._scheduler.shutdown(max(0.0, deadline - time.monotonic()))
+        if self._owns_scheduler:
+            self._scheduler.shutdown(max(0.0, deadline - time.monotonic()))
+        else:
+            self._scheduler.cancel(_BACKSTOP_TIMER_KEY)
         while not self.idle():
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        return self._cell.stop(max(0.0, deadline - time.monotonic()))
 
     # -- actor ---------------------------------------------------------------
 
@@ -282,7 +295,7 @@ class CasdoorMembershipSync:
         with self._guard:
             if self._closed:
                 return AdmissionResult.CLOSED
-        return self._runtime.tell(self._handle, command)
+        return self._cell.tell(command)
 
     def _receive(self, command: Any) -> None:
         if isinstance(command, _Enqueue):
@@ -402,7 +415,10 @@ class CasdoorMembershipSync:
             if self._closed or not self._started:
                 return
         self._scheduler.schedule(
-            "backstop", 1, self._interval, lambda generation: self._tell(_Backstop(generation))
+            _BACKSTOP_TIMER_KEY,
+            1,
+            self._interval,
+            lambda generation: self._tell(_Backstop(generation)),
         )
 
     # -- effect (Casdoor reads and OrgFS removals; runs off the actor) --------

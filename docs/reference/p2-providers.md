@@ -7,11 +7,9 @@ historical `provider` spelling). The daemon depends only on
 `hyprial.daemon.api`; harness construction, injection, retrieval, and shutdown
 stay in this package.
 
-Pi and Codex children use a real POSIX PTY for stdin/stdout and a separate
-stderr pipe. The explicit Claude command override retained by connector tests
-uses the same legacy seam. `inject(message)` returns an opaque lookup
-reference; `retrieve(reference)` reports `inProgress`, `completed`, or
-`failed`. Managed shutdown sends SIGTERM to the child's process group, waits
+Pi RPC and Codex app-server children speak their own protocol over standard
+input/output pipes with a separate stderr pipe; no pseudo-terminal is
+involved. Managed shutdown sends SIGTERM to the child's process group, waits
 for the bounded grace period, and then uses SIGKILL if necessary. Repeated
 `stop()` calls are safe.
 

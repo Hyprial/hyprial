@@ -8,7 +8,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
 from collections.abc import Sequence
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import os
 import typer
 
@@ -68,13 +68,13 @@ def _authorize_interactively(name: str, capabilities: Sequence[str]) -> JsonObje
     try:
         scopes = capability_scopes(requested)
     except ValueError as error:
-        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
     try:
         # Only the app_id is resolved: this flow authenticates the human, so no
         # app secret is fetched, sent, rotated, or re-persisted anywhere in it.
         app_id = configured_app_id(services._hyprial_home(), services._state_dir(), name)
     except PersistentConfigError as error:
-        raise services.CliError(ipc_errors.ADAPTER_NOT_FOUND, str(error)) from error
+        raise services.CliError(codes.ADAPTER_NOT_FOUND, str(error)) from error
 
     warnings = [
         SENSITIVE_CAPABILITY_NOTES[item]
@@ -190,12 +190,12 @@ def adapter_authorize(
 
         if scope and (interactive or capability):
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--scope cannot be combined with --interactive or --capability",
             )
         if capability and not interactive:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--capability requires --interactive: the scopes/apply endpoint "
                 "cannot declare a scope the App does not already have",
             )
@@ -205,7 +205,7 @@ def adapter_authorize(
             invalid = [value for value in scope if not valid_scope_name(value)]
             if invalid:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "invalid --scope value(s): "
                     + ", ".join(repr(value) for value in invalid)
                     + "; scope names must be non-empty and contain no whitespace "
@@ -215,7 +215,7 @@ def adapter_authorize(
             try:
                 app_id = configured_app_id(services._hyprial_home(), services._state_dir(), name)
             except PersistentConfigError as error:
-                raise services.CliError(ipc_errors.ADAPTER_NOT_FOUND, str(error)) from error
+                raise services.CliError(codes.ADAPTER_NOT_FOUND, str(error)) from error
             return {
                 "ok": True,
                 "adapter": name,
@@ -229,7 +229,7 @@ def adapter_authorize(
             app_id, client = configured_scope_client(services._hyprial_home(), services._state_dir(), name)
             result = request_scope_authorization(client.apply_scopes())
         except PersistentConfigError as error:
-            raise services.CliError(ipc_errors.ADAPTER_NOT_FOUND, str(error)) from error
+            raise services.CliError(codes.ADAPTER_NOT_FOUND, str(error)) from error
         return {
             **result,
             "adapter": name,

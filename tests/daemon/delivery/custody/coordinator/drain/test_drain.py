@@ -11,7 +11,7 @@ from hyprial.daemon.impl.inbox.contracts.ports import CloseInboxCommand, InboxCl
 from ..support import (
     _Events,
     _message,
-    _runtime,
+    _actor_host,
     _wait_until,
 )
 
@@ -22,7 +22,7 @@ def test_close_drains_admitted_work_and_rejects_new_commands(tmp_path: Path) -> 
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
     )
     assert coordinator.submit(ReceiveMessageCommand("receive", _message())) is (
         PortAdmission.ACCEPTED
@@ -45,18 +45,16 @@ def test_terminal_actor_state_still_closes_the_port(tmp_path: Path) -> None:
     """A quarantined or stopped actor is terminal: the port stays closed."""
 
     events = _Events()
+    host = _actor_host()
+    host.intercept_tell(lambda _cell, _command: AdmissionResult.CLOSED)
+    host.intercept_snapshot(
+        lambda _cell, snapshot: replace(snapshot, state=ActorState.QUARANTINED)
+    )
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
-    )
-    coordinator._runtime.tell = (  # type: ignore[assignment]
-        lambda handle, command: AdmissionResult.CLOSED
-    )
-    live_snapshot = coordinator._runtime.snapshot
-    coordinator._runtime.snapshot = (  # type: ignore[assignment]
-        lambda handle: replace(live_snapshot(handle), state=ActorState.QUARANTINED)
+        actor_host=host,
     )
 
     assert coordinator.submit(ReceiveMessageCommand("first", _message())) is (
@@ -74,7 +72,7 @@ def test_direct_drain_finishes_admitted_work_and_releases_storage(
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
     )
     message = _message()
     assert coordinator.submit(ReceiveMessageCommand("receive", message)) is (

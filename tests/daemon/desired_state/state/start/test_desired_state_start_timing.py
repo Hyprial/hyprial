@@ -45,6 +45,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports import (
 from hyprial.kernel import LifecycleMutationCompleted
 
 from tests.daemon.lifecycle.lifecycle.ports.support import _Events, _Launcher, _request
+from tests.support.runtime.environment import UNIT_USER_ID
 
 NODE = "u0b-node"
 OWNER = "tester"
@@ -249,7 +250,7 @@ def _application(
         socket_path=state_dir / "daemon.sock",
         node_id=NODE,
         hyprial_home=home,
-        owner=OWNER,
+        owner=OWNER, user_id=UNIT_USER_ID,
     **_deep_module_daemon_dependencies())
 
 
@@ -332,14 +333,15 @@ def test_restart_gate_restores_running_rows_and_skips_failed(
 
 
 def _old_schema() -> str:
-    """The harnesses DDL as the pre-U0b build wrote it (no status column)."""
+    """The pre-member, pre-U0b harnesses DDL used by old-home fixtures."""
 
-    needle = (
+    status = (
         "    status TEXT NOT NULL DEFAULT 'running' "
-        "CHECK (status IN ('running', 'failed')),\n"
+        "CHECK (status IN ('running', 'failed')),"
     )
-    assert needle in _SCHEMA, "schema drifted; update the migration fixture"
-    return _SCHEMA.replace(needle, "")
+    member = "    harness TEXT NOT NULL, name TEXT NOT NULL, member TEXT NOT NULL DEFAULT '',\n"
+    assert status in _SCHEMA and member in _SCHEMA, "schema drifted; update the migration fixture"
+    return _SCHEMA.replace(status, "").replace(member, "    harness TEXT NOT NULL, name TEXT NOT NULL,\n").replace("PRIMARY KEY (harness, name, member)", "PRIMARY KEY (harness, name)")
 
 
 def _receipt_row(
@@ -648,6 +650,7 @@ def test_store_construction_upgrades_an_old_database(tmp_path: Path) -> None:
         "veteran",
     ]
     assert all(item.status == "running" for item in state.harnesses)
+    assert all(item.headless for item in state.harnesses)
     # Round-trip keeps failed out of the byte form when running (absent
     # == running), so pre-U0b documents stay byte-stable.
     document = store.load().to_json()

@@ -20,6 +20,7 @@ CONTRACT = Path(__file__).with_name("http-contract.v1.json")
 from jsonschema import Draft202012Validator  # noqa: E402
 from jsonschema.exceptions import SchemaError  # noqa: E402
 
+from hyprial.kernel import LEGACY_KEBAB_CODES  # noqa: E402
 from hyprial.shell.impl.request_http.errors import (  # noqa: E402
     RETRYABLE_CODES,
     STATUS_BY_CODE,
@@ -49,6 +50,21 @@ def problems(document: dict) -> list[str]:
             Draft202012Validator.check_schema(schema)
         except SchemaError as error:
             issues.append(f"{name}: {error.message}")
+    code_schema = (
+        document.get("errorEnvelope", {})
+        .get("properties", {})
+        .get("code", {})
+    )
+    branches = code_schema.get("anyOf") if isinstance(code_schema, dict) else None
+    if not isinstance(branches, list) or len(branches) != 2:
+        issues.append("errorEnvelope code must have upper-pattern/legacy-enum branches")
+    else:
+        pattern = branches[0].get("pattern") if isinstance(branches[0], dict) else None
+        enum = branches[1].get("enum") if isinstance(branches[1], dict) else None
+        if pattern != "^[A-Z][A-Z0-9_]*$":
+            issues.append("errorEnvelope code uppercase pattern changed")
+        if not isinstance(enum, list) or set(enum) != set(LEGACY_KEBAB_CODES):
+            issues.append("errorEnvelope legacy enum differs from LEGACY_KEBAB_CODES")
     headers = document.get("headers", {})
     if headers.get("catalogDigest") != "X-Hyprial-Catalog-Digest":
         issues.append("catalog digest header changed")

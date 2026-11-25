@@ -26,31 +26,18 @@ from hyprial.daemon.impl.application import DaemonApplication
 from tests.daemon.startup.test_startup_event_reconciliation import _native_application_source
 
 
-class _Runtime:
-    def __init__(self) -> None:
-        self.started = []
-        self.stopped = []
-
-    def start(self, spec):  # type: ignore[no-untyped-def]
-        self.started.append(spec)
-        return object()
-
-    def stop(self, handle, timeout):  # type: ignore[no-untyped-def]
-        self.stopped.append((handle, timeout))
-        return True
-
-    def snapshot(self, _handle):  # type: ignore[no-untyped-def]
-        return SimpleNamespace(queued=0, in_flight=0)
-
-
 class _Scheduler:
     def __init__(self) -> None:
         self.shutdowns = []
+        self.cancelled = []
         self.drain = True
 
     def shutdown(self, timeout):  # type: ignore[no-untyped-def]
         self.shutdowns.append(timeout)
         return self.drain
+
+    def cancel(self, name):  # type: ignore[no-untyped-def]
+        self.cancelled.append(name)
 
 
 class _Lane:
@@ -60,6 +47,37 @@ class _Lane:
     def close(self, timeout=1.0):  # type: ignore[no-untyped-def]
         self.closes.append(timeout)
         return True
+
+
+class _Cell:
+    def __init__(self) -> None:
+        self.stops = []
+
+    def tell(self, _command):  # type: ignore[no-untyped-def]
+        return object()
+
+    def snapshot(self):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(queued=0, in_flight=0)
+
+    def stop(self, timeout=1.0):  # type: ignore[no-untyped-def]
+        self.stops.append(timeout)
+        return True
+
+
+class _Host:
+    def __init__(self, lane):  # type: ignore[no-untyped-def]
+        self.lane = lane
+        self.cells = []
+
+    def spawn(self, _spec):  # type: ignore[no-untyped-def]
+        cell = _Cell()
+        self.cells.append(cell)
+        return cell
+
+    def effect_lane(self, **_kwargs):  # type: ignore[no-untyped-def]
+        if isinstance(self.lane, BaseException):
+            raise self.lane
+        return self.lane
 
 
 def _source_root() -> Path:
@@ -74,7 +92,7 @@ def _source_root() -> Path:
 def test_transport_authority_constructor_rolls_back_each_allocation_stage(
     monkeypatch: pytest.MonkeyPatch, failed_lane: str
 ) -> None:
-    runtime, scheduler = _Runtime(), _Scheduler()
+    scheduler = _Scheduler()
     allocated: list[tuple[str, _Lane]] = []
 
     def lane(*, name, **_kwargs):  # type: ignore[no-untyped-def]
@@ -84,18 +102,48 @@ def test_transport_authority_constructor_rolls_back_each_allocation_stage(
         allocated.append((name, result))
         return result
 
-    monkeypatch.setattr(session_actor, "ActorRuntime", lambda: runtime)
-    monkeypatch.setattr(session_actor, "GenerationScheduler", lambda: scheduler)
-    monkeypatch.setattr(session_actor, "EffectLane", lane)
+    class _Cell:
+        def __init__(self) -> None:
+            self.drains: list[float] = []
+
+        def tell(self, _command: object) -> object:
+            return None
+
+        def drain(self, timeout: float) -> object:
+            self.drains.append(timeout)
+            return SimpleNamespace(complete=True)
+
+        def stop(self, timeout: float) -> bool:
+            raise AssertionError("constructor rollback must drain, not abort")
+
+    class _Host:
+        def __init__(self) -> None:
+            self.cells: list[_Cell] = []
+
+        def spawn(self, _spec: object) -> _Cell:
+            cell = _Cell()
+            self.cells.append(cell)
+            return cell
+
+        def effect_lane(self, **kwargs):  # type: ignore[no-untyped-def]
+            return lane(**kwargs)
+
+    host = _Host()
+    # Self-built scheduler: the rollback must shut it down.  The factory lives
+    # in the composition root and is imported lazily by the constructor.
+    monkeypatch.setattr(
+        "hyprial.daemon.impl.composition.actors.create_generation_scheduler",
+        lambda: scheduler,
+    )
     native = SimpleNamespace(config=object())
 
     with pytest.raises(
         RuntimeError, match=f"injected {failed_lane} allocation failure"
     ):
-        session_actor.TransportSessionAuthority(native)
+        session_actor.TransportSessionAuthority(native, actor_host=host)
 
-    assert len(runtime.started) == 1
-    assert len(runtime.stopped) == 1
+    assert len(host.cells) == 1
+    assert len(host.cells[0].drains) == 1
     assert scheduler.shutdowns
     assert all(effect.closes == [1.0] for _, effect in allocated)
     assert [name for name, _effect in allocated] == (
@@ -126,18 +174,19 @@ def test_wrapper_failure_closes_native_without_derived_fallback() -> None:
     error = RuntimeError("injected authority construction failure")
 
     class Native:
-        def __init__(self, config, *, event_sink=None):  # type: ignore[no-untyped-def]
-            # The transport is opened with an optional diagnostic sink; the
-            # fake mirrors the real constructor so the contract stays honest.
+        def __init__(self, config, *, event_sink=None, actor_host=None):  # type: ignore[no-untyped-def]
+            # The transport is opened with an optional diagnostic sink and the
+            # process-wide host; the fake mirrors the real constructor.
             self.config = config
             self.event_sink = event_sink
+            self.actor_host = actor_host
             self.closed = False
             native_sessions.append(self)
 
         def close(self) -> None:
             self.closed = True
 
-    def fail_owner(_native):  # type: ignore[no-untyped-def]
+    def fail_owner(_native, *, actor_host=None):  # type: ignore[no-untyped-def]
         raise error
 
     endpoint = "tcp/100.64.20.1:7447"
@@ -163,8 +212,9 @@ def test_native_bind_failure_still_drops_only_derived_listener() -> None:
     endpoint = "tcp/100.64.20.1:7447"
 
     class Native:
-        def __init__(self, config, *, event_sink=None):  # type: ignore[no-untyped-def]
+        def __init__(self, config, *, event_sink=None, actor_host=None):  # type: ignore[no-untyped-def]
             self.event_sink = event_sink
+            self.actor_host = actor_host
             attempts.append(config.listen)
             if endpoint in config.listen:
                 raise OSError(f"bind failed: {endpoint}")
@@ -172,7 +222,7 @@ def test_native_bind_failure_still_drops_only_derived_listener() -> None:
 
     open_transport = _open_transport_from_isolated_source(
         ZenohConfig=_Config,
-        TransportSessionAuthority=lambda native: native,
+        TransportSessionAuthority=lambda native, *, actor_host=None: native,
         ZenohTransport=Native,
         DEFAULT_POLICIES={"external-io": SimpleNamespace(max_restarts=2)},
         EXTERNAL_IO="external-io",
@@ -188,40 +238,40 @@ def test_native_bind_failure_still_drops_only_derived_listener() -> None:
     assert endpoint in detail
 
 
-def test_autoupdate_constructor_rollback_and_scheduler_shutdown_are_truthful(
+def test_autoupdate_constructor_rollback_and_stop_stages_are_truthful(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime, scheduler = _Runtime(), _Scheduler()
-    monkeypatch.setattr(autoupdate_actor, "ActorRuntime", lambda: runtime)
-    monkeypatch.setattr(autoupdate_actor, "GenerationScheduler", lambda: scheduler)
-    monkeypatch.setattr(
-        autoupdate_actor,
-        "EffectLane",
-        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("lane failed")),
-    )
+    scheduler = _Scheduler()
+    failing_host = _Host(RuntimeError("lane failed"))
     monkeypatch.setattr(
         autoupdate_actor, "InProcessAutoUpdateScheduler",
         lambda **_kwargs: SimpleNamespace(_hyprial_home=tmp_path),
     )
 
     with pytest.raises(RuntimeError, match="lane failed"):
-        autoupdate_actor.AutoUpdateAuthority()
-    assert len(runtime.started) == len(runtime.stopped) == 1
-    assert scheduler.shutdowns
+        autoupdate_actor.AutoUpdateAuthority(
+            actor_host=failing_host, scheduler=scheduler
+        )
+    assert len(failing_host.cells) == 1
+    assert len(failing_host.cells[0].stops) == 1
+    assert scheduler.shutdowns == []
 
     lane = _Lane()
-    monkeypatch.setattr(autoupdate_actor, "EffectLane", lambda **_kwargs: lane)
-    actor = autoupdate_actor.AutoUpdateAuthority()
-    active_scheduler = actor._scheduler
-    active_scheduler.drain = False
+    host = _Host(lane)
+    actor = autoupdate_actor.AutoUpdateAuthority(actor_host=host, scheduler=scheduler)
+    assert len(host.cells) == 1
+    original_close = actor._effects.close
+    monkeypatch.setattr(actor._effects, "close", lambda _timeout: False)
     assert actor.stop(timeout=0.02) is False
+    assert actor.stop_incomplete_stage == "effects"
     assert lane.closes == []
-    assert len(runtime.stopped) == 1
-    active_scheduler.drain = True
+    assert host.cells[0].stops == []
+    monkeypatch.setattr(actor._effects, "close", original_close)
     assert actor.stop(timeout=0.02) is True
     assert lane.closes
-    assert len(runtime.stopped) == 2
+    assert len(host.cells[0].stops) == 1
+    assert scheduler.shutdowns == []
 
 
 def test_session_route_constructor_failure_stops_its_actor() -> None:
@@ -248,22 +298,62 @@ def test_session_route_constructor_failure_stops_its_actor() -> None:
         "    def _undelivered(self, _command, _reason): pass\n"
         "    def _execute(self, _request): pass\n" + textwrap.indent(body, "    ")
     )
-    runtime = _Runtime()
+    class _Cell:
+        def __init__(self) -> None:
+            self.drains: list[float] = []
 
-    def fail_lane(**_kwargs):  # type: ignore[no-untyped-def]
-        raise RuntimeError("injected session-route lane failure")
+        def tell(self, _command: object) -> object:
+            return None
+
+        def drain(self, timeout: float) -> object:
+            self.drains.append(timeout)
+            return SimpleNamespace(complete=True)
+
+        def stop(self, timeout: float) -> bool:
+            raise AssertionError("constructor rollback must drain, not abort")
+
+    class _Host:
+        def __init__(self) -> None:
+            self.cells: list[_Cell] = []
+
+        def spawn(self, _spec: object) -> _Cell:
+            cell = _Cell()
+            self.cells.append(cell)
+            return cell
+
+        def effect_lane(self, **_kwargs: object) -> object:
+            raise RuntimeError("injected session-route lane failure")
+
+    host = _Host()
+
+    shutdowns: list[float] = []
+
+    class _Custody:
+        def __init__(self, _host: object = None, *, owner: str) -> None:
+            assert owner == "network"
+            self.host = host
+
+        def shutdown(self, timeout: float) -> bool:
+            shutdowns.append(timeout)
+            return True
 
     namespace = {
-        "ActorRuntime": lambda: runtime,
+        "ActorHostCustody": _Custody,
         "ActorSpec": ActorSpec,
-        "EffectLane": fail_lane,
+        "TYPE_CHECKING": False,
         "threading": threading,
         "deque": deque,
     }
     exec(compile(program, "session_route_coordinator.py:Owner", "exec"), namespace)
     with pytest.raises(RuntimeError, match="injected session-route lane failure"):
         namespace["Owner"](lambda _request: None)
-    assert len(runtime.started) == len(runtime.stopped) == 1
+    # The invariant is unchanged: the actor the constructor started is stopped
+    # during the rollback, and nothing is left running.
+    assert len(host.cells) == 1
+    assert len(host.cells[0].drains) == 1
+    # The rollback also releases the host custody it created: without this the
+    # standalone path would leak the private registry.
+    assert shutdowns == [5.0]
 
 
 @pytest.mark.parametrize("fail_at", ["bind", "runtime_start"])
@@ -417,11 +507,13 @@ def test_recipient_wake_startup_failure_runs_existing_rollback(fail_at: str) -> 
         "_autoupdate", "_maintenance_scheduler", "_restore_policy",
         "_blocking_failures", "_restore_policy_finalizer",
         "_blocking_failures_finalizer", "user_adapters", "_route_gateway_cache",
-        "user_profiles", "_transfer_p2", "_state_persistence", "_maintenance_watchdog",
+        "_state_persistence", "_maintenance_watchdog",
         "_gateway_logger", "_logger", "_status_refresh",
     ):
         setattr(application, name, complete)
     application._registry_management_lock = threading.Lock()
+    DaemonApplication._init_adapter_operations(application)
+    application._close_adapter_operations = DaemonApplication._close_adapter_operations.__get__(application)
     application._degraded_workflow_handles = []
     application._lifecycle_domain_ports = ()
     application._outbound_gateway_owners = set()
@@ -434,11 +526,12 @@ def test_recipient_wake_startup_failure_runs_existing_rollback(fail_at: str) -> 
         setattr(application, name, None)
     for name in (
         "_arm_shutdown_stall_dump_if_owned", "_log_trace", "_join_restore_thread",
-        "_close_ipc_clients", "_flush_agent_activity",
+        "_close_ipc_clients", "_flush_agent_activity", "_close_home_lease",
         "_close_harnesses_before_agent_domains",
     ):
         setattr(application, name, lambda *_args, **_kwargs: None)
     globals_for_close["_close"](application)
+    assert application._lark_authorization_closed is True
     assert "wakes.close" in events
     assert "directory.close" in events
     assert "transport.close" in events

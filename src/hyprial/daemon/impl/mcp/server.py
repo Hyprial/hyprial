@@ -1,11 +1,22 @@
-"""Official MCP Python SDK facade for Harness daemon operations."""
+"""Official MCP Python SDK facade for Harness daemon operations.
+
+Decision (2026-11-19, slice GH): an agent reads a conversation's history,
+above all a group's it was not woken for, through ``harness_read`` with a
+``conversationId``; the tool then calls ``conversations.history`` signed
+with this server's fixed ``(actor, sessionRef)``, so the daemon's session
+fence and the group membership check decide.  No new tool: every harness
+already allows ``harness_read`` and none of the other tools takes a
+conversation id.  That branch never goes through the channel adapter, whose
+``harness_read`` takes custody of the inbox and opens a turn; without
+``conversationId`` the tool is the inbox batch read it always was.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import sys
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.context import Context
@@ -13,11 +24,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from hyprial import __version__
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import IPC_MESSAGE_READ_BODY, ipc_errors
 
 from hyprial.daemon.impl.mcp.api  import DaemonRequestRejected
 from hyprial.daemon.impl.mcp.proxy  import StatelessDaemonProxy
-from hyprial.daemon.impl.links.ports import IPC_MESSAGE_READ_BODY
 
 if TYPE_CHECKING:
     from hyprial.daemon.impl.mcp.channel.adapter  import ClaudeChannelAdapter
@@ -147,19 +157,16 @@ def create_mcp_server(
     @server.tool(
         description=(
             "Send one independent durable asynchronous Harness Network message "
-            "to one or more explicit agent, user:<owner>, or "
-            "route:<adapter>:<route> targets. ``to`` may be an array for "
+            "to one or more explicit agent or user:<owner> targets. "
+            "``to`` may be an array for "
             "fan-out. ``summary`` is required and is the only part the "
-            "recipient's context shows first (at most 512 UTF-8 bytes). User "
-            "delivery is performed by the receiving user's own "
-            "Squire adapter; route delivery posts to the Lark chat configured "
-            "as that route's nativeId and requires the adapter's app to be a "
-            "member of the chat. Any other address scheme is rejected. "
-            "A first send to an agent without a link is held (ok, queued, "
-            "holdReason) while the daemon mints the link; do not resend. A send "
-            "is never a reply: to answer a request use harness_reply, otherwise "
-            "the request stays open and the new message counts against your "
-            "window."
+            "recipient's context shows first (at most 512 UTF-8 bytes). How a "
+            "``user:`` target is reached is decided by the receiving side, not "
+            "by this contract: the result reports the path the message took in "
+            "``deliveries``, and callers must not assume one. "
+            "Any other address scheme is rejected. "
+            "A send is never a reply: to answer a request use harness_reply, "
+            "otherwise the request stays open."
         )
     )
     async def harness_send(
@@ -173,32 +180,51 @@ def create_mcp_server(
         # schema never reaches the daemon unwrapped (INVALID_ARGUMENT: to must
         # be a non-empty array).
         targets = [to] if isinstance(to, str) else list(to)
-        return await invoke(
-            ctx,
-            "message.send",
-            {"to": targets, "summary": summary, "message": message},
-            mutation=True,
-        )
+        params: dict[str, Any] = {"to": targets, "summary": summary, "message": message}
+        return await invoke(ctx, "message.send", params, mutation=True)
 
     @server.tool(
         description=(
             "Reply to one pending Harness request and acknowledge it only after "
             "the daemon durably accepts the reply. ``summary`` is required and "
             "is what the recipient sees first. Only a reply closes a request. "
-            "LINK_RECLAIMED means the link was reclaimed and the request was "
-            "drained; ack instead."
+            "In a group conversation (g.…), the reply mentions and wakes the "
+            "replied-to author by default when that author is another current "
+            "agent member (never the human owner, self, or a removed member); "
+            "pass ``mentions`` to add member ids or ``noMention=True`` to "
+            "suppress the default mention. "
         )
     )
     async def harness_reply(
-        messageId: NonEmpty, summary: NonEmpty, message: NonEmpty, ctx: Context
+        messageId: NonEmpty,
+        summary: NonEmpty,
+        message: NonEmpty,
+        ctx: Context,
+        mentions: list[NonEmpty] | None = None,
+        noMention: bool = False,
     ) -> dict[str, Any]:
         if channel_adapter is not None:
             refuse_stale_channel()
-            return await channel_adapter.harness_reply(messageId, summary, message)
+            return await channel_adapter.harness_reply(
+                messageId,
+                summary,
+                message,
+                mentions=mentions,
+                no_mention=noMention,
+            )
+        params: dict[str, Any] = {
+            "messageId": messageId,
+            "summary": summary,
+            "message": message,
+        }
+        if mentions:
+            params["mentions"] = list(mentions)
+        if noMention:
+            params["noMention"] = True
         return await invoke(
             ctx,
             "message.reply",
-            {"messageId": messageId, "summary": summary, "message": message},
+            params,
             mutation=True,
         )
 
@@ -225,10 +251,33 @@ def create_mcp_server(
             "(inbox-batch-v1): every pending item with its full body, or the "
             "one private spill file when it exceeds the inline budget. Inject "
             "delivery.text as-is, settle every listed messageId separately, "
-            "and do not re-read bodies that are already inline."
+            "and do not re-read bodies that are already inline. With "
+            "``conversationId`` (a group's g. id, or a c. id) it instead reads "
+            "one page of that conversation's history and settles nothing: "
+            "``mode`` tail (default), older or after, ``cursor`` from the "
+            "previous page's nextOlderCursor or nextCursor, ``limit`` 1-200. "
+            "A group's history is readable only by its current members."
         )
     )
-    async def harness_read(ctx: Context) -> dict[str, Any]:
+    async def harness_read(
+        ctx: Context,
+        conversationId: NonEmpty | None = None,
+        cursor: NonEmpty | None = None,
+        limit: Annotated[int, Field(ge=1, le=200)] | None = None,
+        mode: Literal["tail", "older", "after"] | None = None,
+    ) -> dict[str, Any]:
+        page = {
+            name: value
+            for name, value in (("cursor", cursor), ("limit", limit), ("mode", mode))
+            if value is not None
+        }
+        if conversationId is not None:
+            return await invoke(
+                ctx, "conversations.history",
+                {"conversationId": conversationId, **page}, mutation=False,
+            )
+        if page:
+            raise ToolError("cursor, limit and mode page a conversation: pass conversationId")
         if channel_adapter is not None:
             refuse_stale_channel()
             return await channel_adapter.harness_read()
@@ -271,14 +320,8 @@ def create_mcp_server(
 
     @server.tool(description="List live Harness targets visible to this actor.")
     async def harness_targets(ctx: Context, kind: str | None = None) -> dict[str, Any]:
-        # Only kinds the daemon can actually list are accepted.  targets is
-        # the delivery-promise view: agents, users (squire DM with sender
-        # attribution), and channel routes (configured outbound posts with
-        # the same attribution).  Nodes are observable via `hyprial host list`.
-        if kind not in {None, "agent", "user", "channel_route"}:
-            raise ValueError(
-                "harness_targets kind must be agent, user, or channel_route"
-            )
+        if kind not in {None, "agent", "user"}:
+            raise ValueError("harness_targets kind must be agent or user")
         # The daemon registers this as "targets" (see cli.py); "targets.list"
         # is METHOD_NOT_FOUND.
         return await invoke(
@@ -346,6 +389,10 @@ def create_mcp_server(
                 "destination": destination,
                 "waitSeconds": waitSeconds,
                 "overwrite": overwrite,
+                # The local-file MethodSpec declares ``from`` as its selector;
+                # MCP's operator-equivalent claim is the fixed session actor
+                # the proxy also appends.
+                "from": actor,
             },
             mutation=True,
         )
@@ -362,7 +409,12 @@ def create_mcp_server(
         return await invoke(
             ctx,
             "orgfs.import",
-            {"spaceId": spaceId, "node": node, "source": source},
+            {
+                "spaceId": spaceId,
+                "node": node,
+                "source": source,
+                "from": actor,
+            },
             mutation=True,
         )
 

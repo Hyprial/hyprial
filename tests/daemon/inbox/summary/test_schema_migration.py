@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from hyprial.daemon.impl.delivery.retention import BODY_COLUMNS
 from hyprial.daemon.impl.inbox import (
     DeliveryLifecycle,
     InboxMessage,
@@ -162,6 +163,9 @@ class _ForwardingTransport(MemoryDeliveryTransport):
         return self.recipient.receive(message).acknowledged
 
 
+BODY_RELEASE_COLUMNS = tuple(name for name, _kind in BODY_COLUMNS)
+
+
 def test_the_three_tables_gain_summary_and_keep_legacy_rows(tmp_path: Path) -> None:
     database = tmp_path / "inbox.sqlite3"
     connection = _legacy_database(database)
@@ -174,14 +178,13 @@ def test_the_three_tables_gain_summary_and_keep_legacy_rows(tmp_path: Path) -> N
     service = InboxService(database, MemoryDeliveryTransport())
     try:
         for table in ("outbox", "inbox", "custody"):
-            # Legacy columns keep their order; the migrations append their
-            # columns (outbox also gains B1's ``link_hold``).
             added = {
                 "summary",
-                # Inbox batches need one durable arrival ordinal; outbox also
-                # gains B1's link_hold.
-                *(("link_hold",) if table == "outbox" else ()),
                 *(("arrival_ordinal",) if table == "inbox" else ()),
+                "thread_id",
+                "conversation_cell_id",
+                "message_class",
+                *(BODY_RELEASE_COLUMNS if table == "inbox" else ()),
             }
             columns = _columns(service, table)
             assert columns[: len(before[table])] == before[table]
@@ -199,6 +202,10 @@ def test_the_three_tables_gain_summary_and_keep_legacy_rows(tmp_path: Path) -> N
                 *before["inbox"],
                 "arrival_ordinal",
                 "summary",
+                "thread_id",
+                "conversation_cell_id",
+                "message_class",
+                *BODY_RELEASE_COLUMNS,
             ]
             assert reopened.pending_messages("agent:op:node-1:reader")[0].summary is None
         finally:
@@ -327,3 +334,78 @@ def test_an_explicit_reply_to_survives_every_durable_path(
     finally:
         mailbox.close()
         custody_recipient.close()
+
+
+def test_t1d_ignores_legacy_link_ledger_tables_and_outbox_link_hold(
+    tmp_path: Path,
+) -> None:
+    fresh_path = tmp_path / "fresh.sqlite3"
+    fresh = InboxService(fresh_path, MemoryDeliveryTransport())
+    try:
+        tables = {
+            str(row[0])
+            for row in fresh._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "link_ledger" not in tables
+        assert "link_task_bindings" not in tables
+        assert "link_hold" not in _columns(fresh, "outbox")
+    finally:
+        fresh.close()
+
+    legacy_path = tmp_path / "legacy-link-ledger.sqlite3"
+    legacy_conn = sqlite3.connect(legacy_path)
+    legacy_conn.executescript(
+        _LEGACY_DDL
+        + """
+        ALTER TABLE outbox ADD COLUMN link_hold TEXT;
+        CREATE TABLE link_ledger (
+            actor TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            peer TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            reply_to TEXT,
+            state TEXT NOT NULL,
+            opened_at_ms INTEGER NOT NULL,
+            sent_at_ms INTEGER,
+            event_at_ms INTEGER,
+            threshold_ms INTEGER,
+            sample_pending INTEGER NOT NULL DEFAULT 0,
+            expires_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (actor, message_id, direction)
+        );
+        CREATE TABLE link_task_bindings (
+            actor TEXT NOT NULL,
+            peer TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            bound_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (actor, peer, task_id)
+        );
+        INSERT INTO outbox (
+            message_id, conversation_id, sender, recipient, payload, intent,
+            lifecycle, created_at_ms, expires_at_ms, next_attempt_ms, link_hold
+        ) VALUES (
+            'held-legacy-1', 'c-1', 'agent:op:node-1:driver', 'agent:op:node-1:reader',
+            X'7b226d657373616765223a226869227d', 'request', 'durable_service',
+            1, 99999999999999, 99999999999999, 'LINK_PEER_FULL'
+        );
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    recipient = InboxService(tmp_path / "recipient-after.sqlite3", MemoryDeliveryTransport())
+    transport = _ForwardingTransport(recipient)
+    service = InboxService(legacy_path, transport)
+    try:
+        items = {item.message.message_id: item for item in service.outbox_items()}
+        assert "held-legacy-1" in items
+        assert service.wake_outbox_recipient("agent:op:node-1:reader", now_ms=10) is True
+        transport.forwarding = True
+        service.retry_due(now_ms=11)
+        assert any(m.message_id == "held-legacy-1" for m in recipient.pending_messages("agent:op:node-1:reader"))
+    finally:
+        service.close()
+        recipient.close()

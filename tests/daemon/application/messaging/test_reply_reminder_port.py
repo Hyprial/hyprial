@@ -18,6 +18,7 @@ from hyprial.daemon.impl.inbox import DeliveryCustodyCoordinator, DeliveryCustod
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMessage
 from hyprial.daemon.impl.inbox.memory import MemoryDeliveryTransport
 from hyprial.daemon.impl.inbox.service import InboxService
+from tests.support.actor_hosts import new_actor_host
 
 NODE = "wp7-node"
 A_URI = "agent:wp7-owner:wp7-node:worker"
@@ -282,7 +283,7 @@ def test_p3_fetched_between_matches_on_service_and_facade(tmp_path: Path) -> Non
     _stamp(inbox, "r2", 250)
 
     coordinator = DeliveryCustodyCoordinator(
-        database, MemoryDeliveryTransport(), _Events()
+        database, MemoryDeliveryTransport(), _Events(), actor_host=new_actor_host()
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     try:

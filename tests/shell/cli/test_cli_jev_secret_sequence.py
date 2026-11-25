@@ -34,6 +34,8 @@ def test_clean_home_public_cli_sequence_and_second_instance_isolation(monkeypatc
             if actor not in state["actors"] or actor not in state["grants"]:  # type: ignore[operator]
                 raise _cli_get_services().CliError("INVALID_ARGUMENT", "actor must be created and granted first")
             return {"ok": True, "id": f"jev:{actor}"}
+        if method == "agent.start":
+            return {"ok": True, "accepted": True, "running": False}
         raise AssertionError(method)
 
     monkeypatch.setattr(_cli_support, "_daemon_request", daemon)
@@ -62,8 +64,9 @@ def test_clean_home_public_cli_sequence_and_second_instance_isolation(monkeypatc
 
     assert runner.invoke(_cli_root_app, ["agent", "create", "--name", "second", "--json"]).exit_code == 0
     assert "second" not in state["grants"]  # type: ignore[operator]
-    assert state["calls"][:4] == [
-        "agent.create", "agent.secret.provider-write", "agent.secret.grant", "agent.create"
+    assert state["calls"][:5] == [
+        "agent.create", "agent.secret.provider-write", "agent.secret.grant",
+        "agent.start", "agent.create",
     ]
 
 

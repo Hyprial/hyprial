@@ -326,6 +326,19 @@ def test_the_real_five_method_projection_passes_the_gate() -> None:
     }
 
 
+def test_temporary_probe_examples_pass_the_same_release_gate() -> None:
+    from hyprial.daemon import daemon_openapi
+
+    report = _load("scripts/verify/check_agent_contract_examples.py").evaluate(
+        daemon_openapi(), required=("agent.secret.provider-test",)
+    )
+    assert report.verdict == "PASS"
+    assert report.missing_methods == []
+    assert report.failures == []
+    assert report.sensitive == []
+    assert set(report.examples) == {"agent.secret.provider-test"}
+
+
 def test_ci_gate_entrypoints_consume_the_committed_projection() -> None:
     projection = ROOT / "contract/daemon-request/openapi.json"
     verifier = _load("scripts/verify/check_agent_contract_examples.py")
@@ -464,7 +477,8 @@ def test_ci_gate_diff_treats_a_base_without_a_projection_as_first_publication(
 
 def test_m03_example_modules_have_no_literal_ipc_error_codes() -> None:
     paths = (
-        ROOT / "src/hyprial/daemon/impl/request_catalog/agent/examples.py",
+        ROOT / "src/hyprial/daemon/impl/request_catalog/agent/examples/__init__.py",
+        ROOT / "src/hyprial/daemon/impl/request_catalog/agent/examples/relations.py",
         ROOT / "src/hyprial/kernel/impl/contracts/daemon/examples/__init__.py",
     )
     offenders: list[str] = []

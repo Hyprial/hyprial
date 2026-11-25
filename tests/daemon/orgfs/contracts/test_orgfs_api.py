@@ -112,6 +112,28 @@ def test_members_status_blobs_watch_and_store_commit() -> None:
     assert info.blob_hash is not None
 
 
+def test_recursive_listdir_returns_visible_descendants_in_path_order() -> None:
+    fs = LocalOrgFs(author="user:owner")
+    space = fs.create_space("team")
+    fs.write_text(space.space_id, "readme.md", "root")
+    fs.mkdir(space.space_id, "docs")
+    fs.mkdir(space.space_id, "docs/nested")
+    fs.write_text(space.space_id, "docs/a.md", "a")
+    fs.write_text(space.space_id, "docs/nested/b.md", "b")
+
+    direct = fs.listdir(space.space_id, "")
+    assert [node.path for node in direct] == ["docs", "readme.md"]
+
+    recursive = fs.listdir(space.space_id, "", recursive=True)
+    assert [(node.path, node.kind) for node in recursive] == [
+        ("docs", "dir"),
+        ("docs/a.md", "doc"),
+        ("docs/nested", "dir"),
+        ("docs/nested/b.md", "doc"),
+        ("readme.md", "doc"),
+    ]
+
+
 def test_non_owner_cannot_change_members_and_join_requires_holder() -> None:
     owner = LocalOrgFs(author="user:owner")
     space = owner.create_space("team")

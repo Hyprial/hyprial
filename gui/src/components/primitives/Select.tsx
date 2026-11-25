@@ -1,4 +1,4 @@
-import type { Ref } from 'react';
+import type { AriaAttributes, Ref } from 'react';
 import {
   Select as SelectRoot,
   SelectContent,
@@ -11,9 +11,11 @@ import { cx } from './types';
 export interface SelectOption {
   readonly value: string;
   readonly label: string;
+  readonly disabled?: boolean;
 }
 
-export interface SelectProps {
+export interface SelectProps extends Pick<AriaAttributes,
+  'aria-label' | 'aria-labelledby' | 'aria-describedby' | 'aria-invalid' | 'aria-errormessage' | 'aria-required'> {
   /** Labelled by the page's <label htmlFor>; the id lands on the trigger. */
   readonly id?: string;
   /**
@@ -25,6 +27,7 @@ export interface SelectProps {
   readonly options: readonly SelectOption[];
   readonly onValueChange: (value: string) => void;
   readonly disabled?: boolean;
+  readonly required?: boolean;
   readonly className?: string;
   readonly ref?: Ref<HTMLButtonElement>;
 }
@@ -45,19 +48,33 @@ export function Select({
   options,
   onValueChange,
   disabled = false,
+  required = false,
   className,
   ref,
+  'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
+  'aria-invalid': ariaInvalid,
+  'aria-errormessage': ariaErrorMessage,
+  'aria-required': ariaRequired,
 }: SelectProps) {
   return (
     <SelectRoot
       value={value === '' ? EMPTY_VALUE : value}
       onValueChange={(next) => onValueChange(next === EMPTY_VALUE ? '' : next)}
       disabled={disabled}
+      required={required}
     >
       <SelectTrigger
         id={id}
         ref={ref}
         className={cx('ui-select tw:w-full', className)}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
+        aria-errormessage={ariaErrorMessage}
+        aria-required={ariaRequired ?? (required || undefined)}
       >
         <SelectValue />
       </SelectTrigger>
@@ -66,6 +83,7 @@ export function Select({
           <SelectItem
             key={option.value}
             value={option.value === '' ? EMPTY_VALUE : option.value}
+            disabled={option.disabled}
           >
             {option.label}
           </SelectItem>

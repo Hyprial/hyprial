@@ -152,15 +152,25 @@ file     git show <sha>:<path> | <the check that prints the expected line>
 
 ## Work items
 
-Each work package gets one work item in the org space; keep the checklist decidable:
+Each work package gets one ordinary document under the org space's `work/`
+directory; keep the checklist decidable. `org work ls/show` are read shortcuts.
+Get the actual space ID from `hyprial org list --json`, then read, edit the
+complete text, and write against that exact version:
 
+```sh
+hyprial org work ls --org "<org>" --json
+hyprial org work show "<filename>" --org "<org>" --json
+hyprial org fs read "<space-id>" "work/<filename>" --json
+hyprial org fs write "<space-id>" "work/<filename>" "<complete updated text>" \
+  --expect-version "<version returned by read>" --json
 ```
-hyprial org work add "<feature>: <work package>" --org <org> \
-  --owner <agent-uri> --assignee <agent-uri> \
-  --item "<one acceptance item that can be true or false>" --acceptance "<the feature-level gate>"
-hyprial org work check <item-id> <n> --org <org>     # tick only a decidable item
-hyprial org work note  <item-id> "<state + reading + epoch>" --org <org>
-```
+
+Preserve unrelated text and unknown fields; re-read and reconcile on a stale
+version. The document's owner, checklist, log and acceptance fields express the
+work plan, not access rights or cryptographic approval. Ordinary OrgFS history,
+rename and trash operations apply. No dedicated work writers or local approval
+ledger are used. For creation guarantees and conflict/recovery commands, use
+`contract/work-items/README.md`; do not infer create-if-absent from CLI `write`.
 
 - A checklist item must be decidable true/false; if it can be done halfway, split it when it is
   created, not afterwards in a log.

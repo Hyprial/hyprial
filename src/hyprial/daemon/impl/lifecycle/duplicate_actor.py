@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import threading
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 from hyprial.daemon.impl.transport.api import TransportSample
 from hyprial.daemon.impl.lifecycle.duplicate_watch  import DuplicateInstanceWatch
 
 
 class DuplicateInstanceAuthority(DuplicateInstanceWatch):
-    def __init__(self, session, node_id, generation, *, keys=None, logger=None):
+    def __init__(
+        self, session, node_id, generation, *, actor_host=None, keys=None, logger=None
+    ):
         if not node_id or not generation:
             raise ValueError("node_id and generation must not be empty")
+        if actor_host is None:
+            raise ValueError("duplicate instance watch requires an actor host")
         self._admission_guard = threading.Lock()
         self._admission_closed = False
         self._rejected = 0
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="duplicate-instance-watch",
                 handler_factory=lambda: self._observe,
@@ -27,7 +30,7 @@ class DuplicateInstanceAuthority(DuplicateInstanceWatch):
         try:
             super().__init__(session, node_id, generation, keys=keys, logger=logger)
         except BaseException:
-            self._runtime.stop(self._handle, 1.0)
+            self._cell.stop(1.0)
             raise
 
     def _on_sample(self, sample):
@@ -38,7 +41,7 @@ class DuplicateInstanceAuthority(DuplicateInstanceWatch):
             admission = (
                 AdmissionResult.CLOSED
                 if self._admission_closed
-                else self._runtime.tell(self._handle, message)
+                else self._cell.tell(message)
             )
             if admission is not AdmissionResult.ACCEPTED:
                 self._rejected += 1
@@ -60,5 +63,5 @@ class DuplicateInstanceAuthority(DuplicateInstanceWatch):
         with self._admission_guard:
             self._admission_closed = True
         super().close()
-        if not self._runtime.stop(self._handle, 1.0):
+        if not self._cell.stop(1.0):
             raise TimeoutError("duplicate watch still owns admitted observations")

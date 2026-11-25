@@ -28,7 +28,7 @@ SESSION_REGISTER = 4  # the failing forward step; compensation starts at the har
 DEADLINE = 0.5
 
 
-def _coordinator(tmp_path: Path, ports: _CompletionPorts, router, events):  # type: ignore[no-untyped-def]
+def _coordinator(tmp_path: Path, ports: _CompletionPorts, router, events, actor_host):  # type: ignore[no-untyped-def]
     return LifecycleCoordinator(
         tmp_path / "coordinator.sqlite3",
         LifecyclePorts(ports, ports, ports, ports),
@@ -36,10 +36,11 @@ def _coordinator(tmp_path: Path, ports: _CompletionPorts, router, events):  # ty
         completion_timeout=0.05,
         operation_deadline=DEADLINE,
         event_sink=lambda event, **fields: events.append((event, fields)),
+        actor_host=actor_host,
     )
 
 
-def test_an_unsettled_harness_removal_ends_failed_and_frees_the_actor(tmp_path: Path) -> None:
+def test_an_unsettled_harness_removal_ends_failed_and_frees_the_actor(tmp_path: Path, actor_host) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(
         router,
@@ -48,7 +49,7 @@ def test_an_unsettled_harness_removal_ends_failed_and_frees_the_actor(tmp_path: 
         harness_failure_settlement="timeout",
     )
     events: list[tuple[str, dict[str, object]]] = []
-    coordinator = _coordinator(tmp_path, ports, router, events)
+    coordinator = _coordinator(tmp_path, ports, router, events, actor_host)
     try:
         assert coordinator.submit(LifecycleOperation.create("first", _spec())) is PortAdmission.ACCEPTED
         first = coordinator.wait("first", TERMINAL_WAIT_SECONDS)
@@ -66,7 +67,7 @@ def test_an_unsettled_harness_removal_ends_failed_and_frees_the_actor(tmp_path: 
         coordinator.drain(3.0)
 
 
-def test_a_removal_the_harness_owner_settles_finishes_compensating(tmp_path: Path) -> None:
+def test_a_removal_the_harness_owner_settles_finishes_compensating(tmp_path: Path, actor_host) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(
         router,
@@ -75,7 +76,7 @@ def test_a_removal_the_harness_owner_settles_finishes_compensating(tmp_path: Pat
         harness_failure_settlement="completed",
     )
     events: list[tuple[str, dict[str, object]]] = []
-    coordinator = _coordinator(tmp_path, ports, router, events)
+    coordinator = _coordinator(tmp_path, ports, router, events, actor_host)
     try:
         coordinator.submit(LifecycleOperation.create("first", _spec()))
         first = coordinator.wait("first", TERMINAL_WAIT_SECONDS)
@@ -106,7 +107,9 @@ class _UnretirablePorts(_CompletionPorts):
         return super().retire_receipt(attempt_token, resource_token)
 
 
-def test_a_completed_step_whose_receipt_stays_held_still_ends_failed(tmp_path: Path) -> None:
+def test_a_completed_step_whose_receipt_stays_held_still_ends_failed(
+    tmp_path: Path, actor_host
+) -> None:
     # Independent review on #1135: here the deadline path used to ask the
     # owner again, retry the same retirement, raise from inside its own
     # except branch and re-drive the operation forever.
@@ -115,7 +118,7 @@ def test_a_completed_step_whose_receipt_stays_held_still_ends_failed(tmp_path: P
         router, fail_at=SESSION_REGISTER, harness_failure_settlement="completed"
     )
     events: list[tuple[str, dict[str, object]]] = []
-    coordinator = _coordinator(tmp_path, ports, router, events)
+    coordinator = _coordinator(tmp_path, ports, router, events, actor_host)
     try:
         coordinator.submit(LifecycleOperation.create("first", _spec()))
         first = coordinator.wait("first", TERMINAL_WAIT_SECONDS)

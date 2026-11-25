@@ -30,8 +30,11 @@ DAEMON_CLOSE_STEP_BUDGETS = (
 # turn-hook service is retired (unified hooks H2).
 ("hooks-consumers", TURN_HOOK_CLOSE_TIMEOUT_SECONDS),
     ("restore-thread", 2.0),
-    ("org-binding-cache", 5.0),
     ("remote-workflow", 5.0),
+    # The lease releases while its host is alive, before actor-hosts.
+    ("home-lease", 5.0),
+    # Borrowed actor hosts stop last, after every consumer and the logger.
+    ("actor-hosts", 5.0),
 )
 
 DAEMON_CLOSE_BUDGET_SECONDS = sum(

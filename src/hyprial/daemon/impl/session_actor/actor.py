@@ -1,3 +1,11 @@
+# Decision record (file header; no inline comments by repository rule):
+# - The business generation advances only after _SessionGeneration was
+#   built. Under the ABI v1 generation rule a failed restart factory leaves
+#   the engine generation unchanged, so bumping first left this counter one
+#   ahead for good and the replay hook waited for a generation that never
+#   ran (every .generation read then blocked for its full 1 s budget).
+# - stopping (ABI v1 5.4) is as terminal as stopped for the replay hook and
+#   the generation read: a stopping actor never re-enters running.
 """SessionActor: the public session projection/command actor and its lease helpers."""
 
 from __future__ import annotations
@@ -10,12 +18,12 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from hyprial.kernel import (
-    ActorRuntime,
     ActorSpec,
     ActorState,
     AdmissionResult,
     DrainReport,
 )
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.kernel import EffectCompleted
 from hyprial.identity import (
     AgentEvent,
@@ -90,7 +98,7 @@ class SessionActor:
         effect_capacity: int = 64,
         effect_deadline: float = 1.0,
         effect_backoff: tuple[float, ...] = (0.005, 0.01, 0.02, 0.05),
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
         persistence_late_result: (
             Callable[[str], StateCommandCompleted | None] | None
         ) = None,
@@ -123,7 +131,8 @@ class SessionActor:
         # Owned by the actor, not the generation: a guardian restart mints a
         # new _SessionGeneration and the totals must survive it.
         self._command_costs = CallCostCounters(_SESSION_COST_KEYS, wall=False)
-        self._runtime = runtime or ActorRuntime()
+        self._host_custody = ActorHostCustody(actor_host, owner="session-actor")
+        self._host = self._host_custody.host
         self._generation = 0
         self._generation_lock = threading.Lock()
         self._effect_lock = threading.Lock()
@@ -161,8 +170,7 @@ class SessionActor:
 
         def factory() -> _SessionGeneration:
             with self._generation_lock:
-                self._generation += 1
-                generation = self._generation
+                generation = self._generation + 1
             handler = _SessionGeneration(
                 generation=generation,
                 store=self._store,
@@ -186,6 +194,8 @@ class SessionActor:
                 _mutations=self._mutations,
                 _effect_owners=self._effect_owners,
             )
+            with self._generation_lock:
+                self._generation = generation
             # Generation 1 is reconciled synchronously after the worker and
             # stable handle exist.  Guardian-created generations need their
             # own hook: handler_factory runs before the backend endpoint is
@@ -197,7 +207,7 @@ class SessionActor:
                 self._schedule_generation_replay(generation)
             return handler
 
-        self._handle = self._runtime.start(
+        self._cell = self._host.spawn(
             ActorSpec(
                 name="session-authority",
                 handler_factory=factory,
@@ -205,11 +215,13 @@ class SessionActor:
                 undelivered_sink=self._on_undelivered,
             )
         )
+        self._handle = self._cell.handle
         self._persistence = DesiredStateIoPort(
             self._store,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             late_result=persistence_late_result,
             capacity=mailbox_capacity,
+            actor_host=self._host,
         )
         self._effect_worker = _AgentEffectWorker(
             agent_commands,
@@ -272,7 +284,7 @@ class SessionActor:
                     if self._undelivered and self._undelivered[0] is command:
                         self._undelivered.popleft()
                 continue
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 with self._undelivered_lock:
                     if self._undelivered and self._undelivered[0] is command:
@@ -282,7 +294,7 @@ class SessionActor:
 
     @property
     def generation(self) -> int:
-        snapshot = self._runtime.snapshot(self._handle)
+        snapshot = self._cell.snapshot()
         if snapshot.generation > 1:
             deadline = time.monotonic() + 1.0
             attempted = None
@@ -290,11 +302,15 @@ class SessionActor:
                 with self._replay_lock:
                     attempted = self._replay_attempted.get(snapshot.generation)
                 if attempted is None:
-                    current = self._runtime.snapshot(self._handle)
+                    current = self._cell.snapshot()
                     if (
                         current.generation != snapshot.generation
                         or current.state
-                        in {ActorState.QUARANTINED, ActorState.STOPPED}
+                        in {
+                            ActorState.QUARANTINED,
+                            ActorState.STOPPING,
+                            ActorState.STOPPED,
+                        }
                     ):
                         return current.generation
                     time.sleep(0.005)
@@ -345,7 +361,7 @@ class SessionActor:
             return correlation_id in self._agent_attempts
 
     def submit(self, command: object) -> PortAdmission:
-        admission = self._runtime.tell(self._handle, command)
+        admission = self._cell.tell(command)
         if admission is AdmissionResult.ACCEPTED:
             return PortAdmission.ACCEPTED
         port_admission = (
@@ -361,9 +377,9 @@ class SessionActor:
                 generation=self.generation,
                 version=self.version,
                 code=(
-                    "PORT_OVERLOADED"
+                    ipc_errors.PORT_OVERLOADED
                     if port_admission is PortAdmission.OVERLOADED
-                    else "PORT_CLOSING"
+                    else ipc_errors.PORT_CLOSING
                 ),
                 detail=f"session command admission is {port_admission.value}",
                 admission=port_admission,
@@ -401,7 +417,7 @@ class SessionActor:
         self, *, expected_generation: int | None
     ) -> _ReplayScan | None:
         if expected_generation is not None:
-            snapshot = self._runtime.snapshot(self._handle)
+            snapshot = self._cell.snapshot()
             if (
                 snapshot.generation != expected_generation
                 or snapshot.state is not ActorState.RUNNING
@@ -410,7 +426,7 @@ class SessionActor:
 
         effects = self._store.load().pending_session_agent_effects
         if expected_generation is not None:
-            snapshot = self._runtime.snapshot(self._handle)
+            snapshot = self._cell.snapshot()
             if (
                 snapshot.generation != expected_generation
                 or snapshot.state is not ActorState.RUNNING
@@ -419,7 +435,7 @@ class SessionActor:
         generation = (
             expected_generation
             if expected_generation is not None
-            else self._runtime.snapshot(self._handle).generation
+            else self._cell.snapshot().generation
         )
         submitted = 0
         blocked = False
@@ -459,13 +475,17 @@ class SessionActor:
     def _replay_when_running(self, generation: int) -> None:
         while not self._draining:
             try:
-                snapshot = self._runtime.snapshot(self._handle)
+                snapshot = self._cell.snapshot()
             except (KeyError, RuntimeError):
                 time.sleep(0.005)
                 continue
             if snapshot.generation > generation:
                 return
-            if snapshot.state in {ActorState.QUARANTINED, ActorState.STOPPED}:
+            if snapshot.state in {
+                ActorState.QUARANTINED,
+                ActorState.STOPPING,
+                ActorState.STOPPED,
+            }:
                 return
             if snapshot.generation != generation or snapshot.state is not ActorState.RUNNING:
                 time.sleep(0.005)
@@ -518,6 +538,22 @@ class SessionActor:
         return tuple(
             _projection(session, version)
             for session in sessions
+        )
+
+    def reload_committed_sessions(self) -> None:
+        """Re-read the committed sessions after a startup identity rewrite.
+
+        The projection is seeded from the store at construction and then
+        refreshed by every persistence completion.  The daemon's startup
+        normalization of persisted session actors (bare names, and name URIs
+        whose record is minted under an ``a.`` id) rewrites the store before
+        any session command runs, so it re-reads the store here; otherwise
+        cleanup, recovery and the first carrier calls would see the old
+        spelling the store no longer holds.
+        """
+
+        self._session_projection.replace(
+            self._store.load().interactive_sessions, self._version.read()
         )
 
     def commit_liveness_if_owned(
@@ -641,7 +677,7 @@ class SessionActor:
         )
         worker_complete = self._effect_worker.drain(timeout / 3)
         remaining = max(0.0, timeout - (time.monotonic() - started))
-        report = self._runtime.drain(remaining)
+        report = self._cell.drain(remaining)
         if worker_complete and persistence_complete:
             return DrainReport(
                 complete=report.complete,
@@ -712,7 +748,7 @@ class SessionActor:
         deadline = time.monotonic() + 1.0
         delay = 0.001
         while True:
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 return True
             if admission is AdmissionResult.CLOSED:

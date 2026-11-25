@@ -7,13 +7,12 @@ from collections.abc import Callable
 from tests.support.runtime.waiting_support import Budget
 
 
+from hyprial.kernel import ActorEngineConfig, ActorHost, create_actor_host
 from hyprial.kernel.impl.actor_runtime import (
     STATE_AUTHORITY,
     AdmissionResult,
-    ActorRuntime,
     SupervisionPolicy,
 )
-from hyprial.kernel.impl.actor_runtime.scheduler import GenerationScheduler
 from hyprial.kernel.impl.contracts.ports import PortAdmission
 from hyprial.daemon.impl.inbox.actor import (
     DeliveryCustodyCoordinator,
@@ -26,6 +25,7 @@ from hyprial.daemon.impl.inbox.contracts.ports import (
     CloseInboxCommand,
     InboxClosed,
 )
+from tests.support.actor_hosts import InterceptingHost
 
 
 class _Events:
@@ -68,35 +68,23 @@ class _BlockingTransport(_OnlineTransport):
         return super().deliver(message)
 
 
-class _CompletionAdmissionRuntime(ActorRuntime):
+class _CompletionAdmissionHost(InterceptingHost):
     def __init__(
         self,
         *,
         overloaded_before_accept: int = 0,
         closed: bool = False,
         hold_overloaded: bool = False,
-        scheduler: GenerationScheduler | None = None,
     ) -> None:
-        super().__init__(
-            scheduler=scheduler,
-            policies={
-                STATE_AUTHORITY: SupervisionPolicy(
-                    max_restarts=3,
-                    restart_window=10.0,
-                    base_backoff=0.0,
-                    max_backoff=0.0,
-                    jitter_ratio=0.0,
-                )
-            },
-            random_source=lambda: 0.5,
-        )
+        super().__init__(_build_host())
         self._admission_lock = threading.Lock()
         self._overloaded_before_accept = overloaded_before_accept
         self._closed_completion = closed
         self._hold_overloaded = hold_overloaded
         self.completion_attempts = 0
+        self.intercept_tell(self._admit)
 
-    def tell(self, handle: object, command: object) -> AdmissionResult:
+    def _admit(self, _cell, command: object) -> AdmissionResult | None:
         if isinstance(command, (DispatchIoCompleted, DispatchIoFailed)):
             with self._admission_lock:
                 self.completion_attempts += 1
@@ -107,7 +95,7 @@ class _CompletionAdmissionRuntime(ActorRuntime):
                 if self._overloaded_before_accept > 0:
                     self._overloaded_before_accept -= 1
                     return AdmissionResult.OVERLOADED
-        return super().tell(handle, command)  # type: ignore[arg-type]
+        return None
 
     def allow_completions(self) -> None:
         with self._admission_lock:
@@ -208,8 +196,8 @@ def _wait_until(
     raise AssertionError(f"condition was not satisfied before timeout{detail}")
 
 
-def _runtime() -> ActorRuntime:
-    return ActorRuntime(
+def _build_host() -> ActorHost:
+    config = ActorEngineConfig(
         policies={
             STATE_AUTHORITY: SupervisionPolicy(
                 max_restarts=3,
@@ -221,6 +209,11 @@ def _runtime() -> ActorRuntime:
         },
         random_source=lambda: 0.5,
     )
+    return create_actor_host(config)
+
+
+def _actor_host() -> InterceptingHost:
+    return InterceptingHost(_build_host())
 
 
 def _close(coordinator: DeliveryCustodyCoordinator, events: _Events) -> None:
@@ -282,13 +275,13 @@ def _close(coordinator: DeliveryCustodyCoordinator, events: _Events) -> None:
 # Shared builders/data and fixture registrations used by the focused modules.
 __all__ = [
     '_BlockingTransport',
-    '_CompletionAdmissionRuntime',
+    '_CompletionAdmissionHost',
     '_Events',
     '_OnlineTransport',
     '_SETTLE_BUDGET',
     '_UNBUDGETED_RESTART_WAIT_SECONDS',
+    '_actor_host',
     '_close',
     '_message',
-    '_runtime',
     '_wait_until',
 ]

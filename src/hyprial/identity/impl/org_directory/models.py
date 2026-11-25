@@ -1,3 +1,11 @@
+# Decision notes (S3a, 2026-11-24): receivers.json is no longer a protected
+# path (protected_section_for_path and the id producers never name it), but
+# replicas written by older builds hold documents and tree rows under the
+# legacy receivers protected ids.  The id decoders keep accepting exactly that
+# legacy shape so those stores still open; nothing reads its content.  OrgFS
+# admission refuses this node's own writes to the legacy document and tree
+# row in every space and a peer's in org-directory spaces; peer history in
+# leftover non-org spaces still replicates (orgfs/storage/store/admission.py).
 """Organization directory semantics: devices, org names, space naming.
 
 Pure model plus naming rules — no storage, no daemon imports.  The storage
@@ -9,23 +17,21 @@ directory model, daemon provides the storage).
 from __future__ import annotations
 
 import base64
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from hyprial.kernel import (
-    IDENTITY_BINDING_PUBLISH_SKEW_SECONDS,
     canonical_user_uri,
+    is_agent_id_segment,
     parse_user_uri,
 )
+from hyprial.identity.impl.device.models import _device_uid as _checked_device_uid
 from hyprial.identity.impl.identity_slug import identity_slug
 
 __all__ = [
     "DIRECTORY_DIR",
-    "BINDING_ASSERTION_CLIENT_ID",
-    "BINDING_ASSERTION_OWNER",
     "INVITES_DIR",
     "LEAVES_DIR",
     "PEOPLE_DIR",
@@ -33,11 +39,6 @@ __all__ = [
     "ORG_SPACE_PREFIX",
     "DirectoryDevice",
     "directory_device_path",
-    "directory_binding_path",
-    "binding_assertion_audience_matches",
-    "binding_assertion_claims_unverified",
-    "binding_numeric_date",
-    "binding_assertion_publish_after",
     "directory_owner_principal",
     "is_org_acl_space",
     "is_org_directory_space",
@@ -48,21 +49,18 @@ __all__ = [
     "parse_protected_directory_node_id",
     "parse_protected_directory_doc_id",
     "protected_directory_node_id",
+    "protected_section_for_path",
     "protected_directory_doc_id",
     "protected_directory_author_allowed",
 ]
 
 #: An org name and its directory-space id share the ``group-`` prefix.
 ORG_SPACE_PREFIX = "group-"
-#: Public client id of the dedicated Casdoor binding-assertion application.
-BINDING_ASSERTION_CLIENT_ID = "1be2763a29154030fbcb"
-BINDING_ASSERTION_OWNER = "hyprial"
 #: Reserved suffix for the daemon-owned policy space beside each directory.
 _ORG_ACL_SUFFIX = "-acl"
 #: One document per device owner and opaque device id:
 #: ``directory/devices/<owner>/<deviceId>.json``.
 DIRECTORY_DIR = "directory/devices"
-#: Verified platform-account bindings: one fixed row per path-safe user key.
 PEOPLE_DIR = "directory/people"
 #: Pending invites: ``directory/invites/<token_id>.json``.
 INVITES_DIR = "directory/invites"
@@ -79,8 +77,6 @@ _PROTECTED_DOC_ID_FAMILY = "doc-orgdir-"
 _PROTECTED_DOC_ID_PREFIX = "doc-orgdir-v3-"
 _PROTECTED_NODE_ID_FAMILY = "node-orgdir-"
 _PROTECTED_NODE_ID_PREFIX = "node-orgdir-v1-"
-#: JavaScript-safe integer range used by JWT NumericDate claims.
-_NUMERIC_DATE_LIMIT = 1 << 53
 #: A protocol sanity bound, not a storage one: the local store and replica
 #: name each document by a fixed-length hash of its id, so the id is never a
 #: path component.  The id grows with the org name, owner and member names
@@ -88,7 +84,11 @@ _NUMERIC_DATE_LIMIT = 1 << 53
 #: for an invite in ``group-internal`` already passed the old 240 file-name
 #: bound) while still refusing an unbounded id on the wire.
 MAX_PROTECTED_DOC_ID_LENGTH = 1024
-_PROTECTED_DOC_SECTIONS = frozenset({"devices", "people", "leaves", "invites", "org"})
+_LEGACY_RECEIVERS_SECTION = "receivers"
+_LEGACY_RECEIVERS_LEAF = "receivers.json"
+_PROTECTED_DOC_SECTIONS = frozenset(
+    {"devices", "people", "leaves", "invites", "org", "agents", "receivers", "user-keys"}
+)
 
 #: The exact camelCase keys of the frozen wire shape (§4.1).
 _RECORD_KEYS = frozenset(
@@ -103,77 +103,8 @@ _RECORD_KEYS = frozenset(
         "updatedAt",
     }
 )
-_OPTIONAL_RECORD_KEYS = frozenset({"machineFingerprint", "firstPublishedAt"})
+_OPTIONAL_RECORD_KEYS = frozenset({"machineFingerprint", "firstPublishedAt", "deviceUid"})
 _MACHINE_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
-
-
-def binding_assertion_claims_unverified(proof: str) -> dict[str, object]:
-    """Decode only the JWT claims needed before signature verification.
-
-    Publication uses this parser solely to delay disclosure until the signed
-    ``exp`` is in the past, and login uses it to compare the confirmed account
-    with the already verified login identity.  It grants no authority.
-    """
-
-    parts = proof.split(".") if isinstance(proof, str) else []
-    if len(parts) != 3 or not parts[1] or len(parts[1]) > 65_536:
-        raise ValueError("binding proof is not a compact JWT")
-    try:
-        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
-        claims = json.loads(payload)
-    except (ValueError, TypeError, json.JSONDecodeError) as error:
-        raise ValueError("binding proof claims are invalid") from error
-    if not isinstance(claims, dict):
-        raise ValueError("binding proof claims are not an object")
-    return claims
-
-
-def binding_assertion_audience_matches(
-    claims: dict[str, object] | Mapping[str, object], client_id: str
-) -> bool:
-    """True when the assertion is addressed to ``client_id`` (RFC 7519 aud).
-
-    ``aud`` may be a string or an array of strings (Casdoor signs the array
-    form), so a plain string comparison rejects every otherwise valid proof.
-    A multi-element array must also name ``client_id`` as the authorized party
-    (``azp``); otherwise the assertion was minted for several relying parties
-    and cannot by itself bind this one.  Every audience check in the tree goes
-    through this function so the shapes cannot drift apart again.
-    """
-
-    audience = claims.get("aud")
-    if isinstance(audience, str):
-        return audience == client_id
-    if isinstance(audience, list):
-        if not audience or not all(isinstance(item, str) for item in audience):
-            return False
-        if client_id not in audience:
-            return False
-        if len(audience) == 1:
-            return True
-        return claims.get("azp") == client_id
-    return False
-
-
-def binding_assertion_publish_after(proof: str) -> float:
-    """Earliest wall-clock second at which the assertion may be published."""
-
-    expires_at = binding_assertion_claims_unverified(proof).get("exp")
-    return binding_numeric_date(expires_at, "expiry") + (
-        IDENTITY_BINDING_PUBLISH_SKEW_SECONDS
-    )
-
-
-def binding_numeric_date(value: object, label: str) -> float:
-    """Return one bounded JWT NumericDate or reject it without overflow."""
-
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not 0 < value < _NUMERIC_DATE_LIMIT
-    ):
-        raise ValueError(f"binding proof {label} is missing or invalid")
-    return float(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,9 +130,14 @@ class DirectoryDevice:
     client_public_by_server: Mapping[str, str] = field(default_factory=dict)
     machine_fingerprint: str | None = None
     first_published_at: str | None = None
+    device_uid: str | None = None
 
     def as_record(self) -> dict[str, object]:
-        """The camelCase JSON projection, including optional binding metadata."""
+        """The camelCase JSON projection, including optional binding metadata.
+
+        ``deviceUid`` (UUID addressing) is written only when the row carries
+        one, so a row without it keeps the exact pre-UUID shape.
+        """
         record: dict[str, object] = {
             "deviceId": self.device_id,
             "owner": self.owner,
@@ -216,6 +152,8 @@ class DirectoryDevice:
             record["machineFingerprint"] = self.machine_fingerprint
         if self.first_published_at is not None:
             record["firstPublishedAt"] = self.first_published_at
+        if self.device_uid is not None:
+            record["deviceUid"] = self.device_uid
         return record
 
     @classmethod
@@ -224,7 +162,9 @@ class DirectoryDevice:
 
         Unknown keys are rejected for the same reason ``DeviceRecord``
         rejects them: the schema is frozen by the cutover contract, and
-        documents cross machines via OrgFS sync.
+        documents cross machines via OrgFS sync.  ``deviceUid`` is either
+        absent or a UUID4 hex string; an explicit null is rejected, since
+        :meth:`as_record` never writes one.
         """
         if not isinstance(value, Mapping):
             raise ValueError(
@@ -259,6 +199,11 @@ class DirectoryDevice:
             first_published_at=_optional_timestamp(
                 value.get("firstPublishedAt"), "firstPublishedAt"
             ),
+            device_uid=(
+                None
+                if "deviceUid" not in value
+                else _checked_device_uid(value["deviceUid"])
+            ),
         )
 
 
@@ -288,26 +233,41 @@ def directory_device_path(owner: str, device_id: str) -> str:
     return f"{DIRECTORY_DIR}/{bare_owner}/{device_id}.json"
 
 
-def directory_binding_path(user: str) -> str:
-    """Build the owner-scoped binding path from the stable user-store key."""
-
-    principal = directory_owner_principal(user)
-    bare_user = parse_user_uri(principal)
-    assert bare_user is not None
-    return f"{PEOPLE_DIR}/{identity_slug(bare_user)}/binding.json"
-
-
 def protected_directory_author_allowed(
-    *, section: str, path_principal: str, author: str
+    *,
+    section: str,
+    path_principal: str,
+    author: str,
+    space_owner: str | None = None,
+    space_name: str | None = None,
 ) -> bool:
     """Authorize a protected row without trusting its content.
 
     Device paths retain the exact historical owner spelling.  People paths
     use the same stable path key as ``UserStore`` and therefore compare that
     key with the authenticated author's slug.
+
+    The org-membership sections carry their own rule (design §8.1 R2):
+
+    * ``agents`` in a personal org belongs to the owner's own agents, so the
+      owner writes it; the row's path principal *is* that owner, which is why
+      the plain path rule already says the right thing there.
+    * ``agents`` in a work org is an *approval*: only the org owner may write
+      it, even when the author owns the agent (no self-approval).
     """
 
+    if section in {"user-keys", _LEGACY_RECEIVERS_SECTION}:
+        return False
     author_principal = directory_owner_principal(author)
+    if section == "agents":
+        owner_principal = (
+            directory_owner_principal(space_owner)
+            if space_owner is not None
+            else None
+        )
+        if owner_principal is None:
+            return False
+        return author_principal == owner_principal
     if section != "people" or author_principal == path_principal:
         return author_principal == path_principal
     path_user = parse_user_uri(path_principal)
@@ -318,13 +278,47 @@ def protected_directory_author_allowed(
 
 def _protected_tree_principal(path: str, space_owner: str | None) -> str | None:
     parts = path.split("/")
-    if not parts or parts[0] != "directory" or space_owner is None:
+    if not parts or not parts[0]:
         return None
-    if len(parts) >= 3 and parts[1] in {"devices", "people"}:
+    if parts[0] == "agents":
+        if len(parts) >= 2 and parts[1]:
+            return directory_owner_principal(parts[1])
+        return None if space_owner is None else directory_owner_principal(space_owner)
+    if parts[0] != "directory" or space_owner is None:
+        return None
+    if len(parts) >= 3 and parts[1] in {"devices", "people", "user-keys"}:
         return directory_owner_principal(parts[2])
     if len(parts) >= 3 and parts[1] == "leaves":
         return directory_owner_principal(parts[2].removesuffix(".json"))
     return directory_owner_principal(space_owner)
+
+
+def protected_section_for_path(path: str, *, space_owner: str | None = None) -> str | None:
+    """The protected section a path belongs to, or ``None`` when unprotected.
+
+    One function names the section for the document id, the tree row and the
+    admission check; a second private copy is how the three drift apart.
+    """
+
+    parts = path.split("/")
+    # ``>= 3`` on purpose: a tree row names the owner-scoped directory
+    # (``directory/people/<user>``), a document row names the file under it,
+    # and both must resolve to the same section rule.
+    if len(parts) >= 3 and parts[:2] == ["directory", "devices"]:
+        return "devices"
+    if len(parts) >= 3 and parts[:2] == ["directory", "people"]:
+        return "people"
+    if len(parts) >= 3 and parts[:2] == ["directory", "user-keys"]:
+        return "user-keys"
+    if len(parts) == 3 and parts[:2] == ["directory", "leaves"] and parts[2].endswith(".json"):
+        return "leaves"
+    if len(parts) == 3 and parts[:2] == ["directory", "invites"] and parts[2].endswith(".json"):
+        return "invites"
+    if path == ORG_META_DOC:
+        return "org"
+    if parts[0] == "agents":
+        return "agents"
+    return None
 
 
 def protected_directory_node_id(
@@ -338,6 +332,20 @@ def protected_directory_node_id(
     if not space_id or not path:
         raise ValueError("protected directory node identity is incomplete")
     values = (space_id, principal, path)
+    payload = "".join(f"{len(value)}:{value}" for value in values).encode("utf-8")
+    return _PROTECTED_NODE_ID_PREFIX + _encode_base32(payload)
+
+
+def legacy_receivers_node_id(space_id: str, space_owner: str) -> str:
+    """Return the tree-node id older builds gave the owner's ``receivers.json``.
+
+    Decode-only: this build never writes under it; admission uses it to look
+    up the one legacy row of a space without walking the tree.
+    """
+
+    if not space_id or not space_owner:
+        raise ValueError("legacy receivers node identity is incomplete")
+    values = (space_id, directory_owner_principal(space_owner), _LEGACY_RECEIVERS_LEAF)
     payload = "".join(f"{len(value)}:{value}" for value in values).encode("utf-8")
     return _PROTECTED_NODE_ID_PREFIX + _encode_base32(payload)
 
@@ -359,7 +367,10 @@ def parse_protected_directory_node_id(
         not space_id
         or directory_owner_principal(principal) != principal
         or not path
-        or not (path == "directory" or path.startswith("directory/"))
+        or (
+            _protected_tree_principal(path, principal) is None
+            and path != _LEGACY_RECEIVERS_LEAF
+        )
     ):
         raise ValueError("protected node id fields are invalid")
     return space_id, principal, path
@@ -388,10 +399,18 @@ def protected_directory_doc_id(
         section = "devices"
         principal = directory_owner_principal(parts[2])
         leaf = "/".join(parts[3:])
-    elif len(parts) >= 4 and parts[:2] == ["directory", "people"]:
-        section = "people"
+    elif len(parts) >= 4 and parts[0] == "directory" and parts[1] in {"people", "user-keys"}:
+        section = parts[1]
         principal = directory_owner_principal(parts[2])
         leaf = "/".join(parts[3:])
+    elif (
+        len(parts) == 3
+        and parts[0] == "agents"
+        and parts[2].endswith(".json")
+    ):
+        section = "agents"
+        principal = directory_owner_principal(parts[1])
+        leaf = parts[2]
     elif (
         len(parts) == 3
         and parts[:2] == ["directory", "leaves"]
@@ -490,31 +509,43 @@ def parse_protected_directory_doc_id(
         or section not in _PROTECTED_DOC_SECTIONS
         or directory_owner_principal(principal) != principal
         or not leaf
+        or not _protected_section_fields_valid(section, leaf)
     ):
         raise ValueError("protected document id fields are invalid")
     return space_id, section, principal, leaf
 
 
-def org_space_name(org: str) -> str:
-    """Return the org's directory-space id, identical to its ``group-*`` name.
+def _protected_section_fields_valid(section: str, leaf: str) -> bool:
+    """The section-specific shape of a decoded protected leaf."""
 
-    The existing name grammar applies to the complete Casdoor group name.
-    ``-acl`` is reserved so a directory id can never collide with another
-    org's ACL-space id.
-    """
-    if (
-        not isinstance(org, str)
-        or _ORG_NAME.fullmatch(org) is None
-        or not org.startswith(ORG_SPACE_PREFIX)
-        or len(org) == len(ORG_SPACE_PREFIX)
-        or org.endswith(_ORG_ACL_SUFFIX)
-    ):
+    if section == "agents":
+        return leaf.endswith(".json") and is_agent_id_segment(leaf.removesuffix(".json"))
+    if section == _LEGACY_RECEIVERS_SECTION:
+        return leaf == _LEGACY_RECEIVERS_LEAF
+    return True
+
+
+def org_space_name(org: str) -> str:
+    """Return the org's directory-space id, matching its ``group-<name>`` name."""
+
+    if not isinstance(org, str):
         raise ValueError(
-            "org name must start with 'group-', match "
-            "[a-z0-9][a-z0-9-]{0,62}, and not end with reserved '-acl': "
-            + repr(org if isinstance(org, str) else type(org).__name__)
+            "org name must start with 'group-': "
+            + repr(type(org).__name__)
         )
-    return org
+    if (
+        _ORG_NAME.fullmatch(org) is not None
+        and org.startswith(ORG_SPACE_PREFIX)
+        and len(org) > len(ORG_SPACE_PREFIX)
+        and not org.endswith(_ORG_ACL_SUFFIX)
+    ):
+        return org
+    raise ValueError(
+        "org name must start with 'group-', match "
+        "[a-z0-9][a-z0-9-]{0,62}, "
+        "and not end with reserved '-acl': "
+        + repr(org)
+    )
 
 
 def is_org_acl_space(name: object) -> bool:

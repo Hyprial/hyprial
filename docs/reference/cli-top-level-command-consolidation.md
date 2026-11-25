@@ -104,7 +104,7 @@
 
 | 一级命令 | 可见性 | 实际用途（含完整二级面） | 调用者（仓内证据） | 证据类别 / 边界 |
 |---|---|---|---|---|
-| `login` | 可见 | 以 OIDC device flow 登录本 home 的用户身份并生成设备 key（`cc/setup/login.py:18`，`c2a73dff` 2026-09-04 引入） | 人；`skills/hyprial-ops/SKILL.md:61-62`、`.agents/skills/hyprial-e2e/SKILL.md:150`；`contract/migration/drill-run.py`。desktop 账户窗口走 `shell/impl/desktop_network.py` Python 模块，不是 CLI argv | **仓内调用证据** |
+| `login` | 可见 | 以 OIDC device flow 登录本 home 的用户身份并生成设备 key（`cc/setup/login.py:18`，`c2a73dff` 2026-09-04 引入） | 人；`skills/hyprial-ops/SKILL.md:61-62`、`.agents/skills/hyprial-e2e/SKILL.md:150`；`contract/migration/drill-run.py`。原 desktop 账户窗口所用的 Python 模块（`desktop_network.py`）已删除，从来不是 CLI argv | **仓内调用证据** |
 | `help` | 可见 | 由 Typer 注册树生成一级清单，含“Hidden commands (internal)”段（`cc/observe/meta.py:52`，`shell/impl/cli/inventory.py:20-57`） | `contract/cli-blackbox/run.py:155-161`（sealed schema 要求清单含 `hyprial service`）；CI `cli-help-inventory`（`.forgejo/workflows/gate-python.yml:32,128` → `scripts/verify/check_cli_help_inventory.py`） | **仓内调用证据**；CI 硬门 |
 | `version` | 可见 | 本地包版本、安装 revision、update source（`cc/observe/meta.py:70`） | E2E-005 `contract/e2e/run-uv-install-flow.py`、`cli-blackbox`、`daemon/impl/autoupdate/alert.py` 文案、`scripts/build/docker/build-worker-image.sh` | **仓内调用证据** |
 | `install` | 可见 | 已退役占位：接受并忽略一切参数，恒失败 `COMING_SOON`、退出 1（`cc/lifecycle/install.py:18-40`）；Allen 2026-10-03 裁决保留名字 | `skills/hyprial-ops/SKILL.md:76-77` 记载占位语义；`gui-workflow`、`hyprial-e2e` skill 提及 | **代码确认**：无业务效果 |
@@ -145,14 +145,14 @@
 | `adapter` | 可见组 | `add/onboard/remove/start/stop/status/reload/list/doctor/authorize/pin/unpin/pins`；`route list/candidates/add/remove`；`identities sync/list/find`（`upsert` 已由 #1202 删除）；`media get`（`entry.py:254,279-282`） | 约 7 个 contract runner（四 adapter、Lark onboarding 等）；Squire template | **仓内调用证据** |
 | `daemon` | 可见组 | `run`（前台运行）、`stop`（`cc/lifecycle/daemon.py:52,111`） | desktop 启动 `daemon run --json`（`desktop/src-tauri/src/runtime/boot.rs:235`）；`contract/e2e/_daemon_runner.py`、docker entrypoint；`init` 子进程 | **仓内调用证据** |
 | `mcp` | 可见组 | `claude-channel`、`agent-channel`；隐藏 `claude-channel-recover`、`claude-turn-ended`、`dsh-carrier`（launcher-owned dsh-tui carrier） | argv 生成：`cc/agents/claude.py:175`（channel server）、`:273,316`（hook）、`daemon/impl/harnesses/turn_delivery/channel/worker_channel.py:137`；`contract/e2e/_upgrade_continuity/channel_probe.py` | **内部调用已确认** |
-| `squire` | 可见组 | `setup`、`probe`（`cc/setup/squire.py:451,566`） | `contract/e2e/run-squire-setup.py`；onboarding plan | **仓内调用证据** |
+| `squire` | 可见组 | `setup`、`probe`（`cc/setup/squire.py:451,566`） | 无 E2E runner（原 `run-squire-setup.py` 已随 E2E-009 改写删除）；help/surface 测试 | **仓内调用证据**（命令注册） |
 | `user-proxy` | 可见组 | `status`、`setup`：配置个人 user-proxy 投递通道（`cc/setup/squire.py:183,212`，`33a925bd` 2026-09-26） | CLI 自身的 setup warning；测试 | **仓内调用证据**（测试） |
 | `outbox` | 可见组 | `list`、`prune`（`cc/messaging.py:187,197`） | `contract/e2e/run-outbox-deadletter.py:111,357` | **仓内调用证据** |
 | `delivery` | 可见组 | 只有 `status`（`cc/messaging.py:213`） | `contract/e2e/_harness_lifecycle/phases/lark.py:439`、`run-daemon-restart-survival.py` | **仓内调用证据** |
 | `autoupdate` | 可见组 | `status`、`restart`（仅在有 pending 时重启）、隐藏 `run`；legacy `install/uninstall` 已删除 | daemon 调度以子进程调 `autoupdate run`；daemon 启动迁移清理旧 launchd/systemd 单元；告警正文要求运行 `autoupdate restart`；`run-inprocess-autoupdate.py`；`hyprial-ops` skill | **内部调用已确认** + **仓内调用证据** |
 | `config` | 可见组 | 只有 `set`，8 个键（`autoUpgrade` 等，`cc/lifecycle/autoupdate.py:24,377-395`）；没有 get/list | `run-inprocess-autoupdate.py:351`、`_upgrade_continuity/installation.py`、`run-uv-install-flow.py`、`scripts/verify/verify_gui_profile_recovery.py`；`hyprial-ops` SKILL:44,64,68 | **仓内调用证据** |
 | `lark-auth` | 可见组 | `check`、`complete`：lark-cli USER 凭据 watchdog（`cc/config/lark_auth.py:107,183`） | `contract/e2e/feishu/identity.py:93`、`_harness_lifecycle/lark_auth.py:105`；`autoupdate run` 进程内调用（`cc/lifecycle/autoupdate.py:695`）；授权提示文案（`daemon/impl/adapters/lark/credentials/reauth.py:438,454`） | **仓内调用证据** |
-| `agent` | 可见组 | `create/host-invite/grant/revoke/grants/list/home-census/restore-policy/restore-threshold/unblock/destroy`；`secret provider-write/grant/list/revoke`；`migrate preflight/execute/rollback`；`keep add/remove/list`（`cc/agents/admin.py:18-39`，`entry.py:251-253`） | E2E-013/018 文档与 runner；`hyprial-ops` SKILL:197 | **仓内调用证据** |
+| `agent` | 可见组 | `create/grant/revoke/grants/list/home-census/restore-policy/restore-threshold/unblock/destroy`；`secret provider-write/grant/list/revoke`；`migrate preflight/execute/rollback`；`keep add/remove/list`（`cc/agents/admin.py:18-39`，`entry.py:251-253`） | E2E-013/018 文档与 runner；`hyprial-ops` SKILL:197 | **仓内调用证据** |
 | `org` | 可见组 | 成员：`create/invite/join/execute/leave/remove/delete/list/pending/network`；组织上下文：`show/status/fetch/import`（`cc/orgfs/org.py:30-469`） | desktop deeplink 调 `org join -`、`org pending --accept-all`（`desktop/src-tauri/src/deeplink/mod.rs:171,211,330`）；`run-tailcat-org-invite-join.py:152`；Squire template | **仓内调用证据** |
 | `fs` | 可见组 | 27 个扁平叶子：`spaces/create/ls/resolve/read/write/mkdir/mv/rm/history/watch/import/export/invite/remove-member/members/join/web/trash/restore/status/serve/checkout/purge-plan/purge/purge-status/unban`（`cc/orgfs/fs.py:16`，`4b12093c` 2026-09-26） | Squire template（`fs ls/read/write`）；`run-tailcat-org-invite-join.py:282-301`、`run-orgfs-forwarding-redial.py` | **仓内调用证据** |
 | `profile` | 可见组 | `list/show/use/create`：网络 profile 即 home 选择（`cc/config/profile.py:71-176`） | `.agents/skills/hyprial-e2e/SKILL.md:49`；guides | **仓内调用证据** |
@@ -361,7 +361,7 @@ hyprial delivery inbox <actor> | delivery query <actor> inbox|outbox   # 名字�
 （`cc/setup/squire.py:566`），`dispatch matrix --probe` 只诊断不选择（`cc/routines/dispatch.py:17-27`）。
 `dispatch` 组只有一个子命令。建议先确认二者是否读写同一份可用性记录，再决定是否收成
 `dispatch matrix|probe`。破坏性**低-中**（`dispatch matrix` 的调用者为两份 skill；`squire probe`
-有 `run-squire-setup.py`）。本轮不给定形，标为**需 Allen 裁决**。
+没有仓内 runner 调用）。本轮不给定形，标为**需 Allen 裁决**。
 
 #### U（新）. 单子命令组：`config set`、`delivery status`、`dispatch matrix`
 

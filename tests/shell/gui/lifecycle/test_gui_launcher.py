@@ -9,7 +9,6 @@ available.
 from __future__ import annotations
 
 from dataclasses import replace
-import io
 import json
 import os
 from pathlib import Path
@@ -24,6 +23,7 @@ import pytest
 from typer.testing import CliRunner
 
 from hyprial.shell.impl.gui import launcher
+from hyprial.shell.impl.gui.backend.admission import SourceAdmission
 from hyprial.shell.impl.gui.errors import GuiError
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
@@ -61,6 +61,7 @@ def _which(paths: dict[str, str]):
 def _project(tmp_path: Path, *, scripts: dict[str, str] | None = None) -> launcher.GuiProject:
     home = tmp_path / "gui"
     home.mkdir(exist_ok=True)
+    (home / "node_modules").mkdir(exist_ok=True)
     (home / "package.json").write_text(
         json.dumps({"name": "@hyprial/gui-app", "scripts": scripts or {}}),
         encoding="utf-8",
@@ -76,9 +77,7 @@ def _project(tmp_path: Path, *, scripts: dict[str, str] | None = None) -> launch
         scripts=scripts
         or {
             "build": "vite build",
-            "start": "node server.mjs",
             "dev": "vite",
-            "stub": "node stub.mjs",
         },
     )
 
@@ -98,25 +97,24 @@ def _fake_plan(project: launcher.GuiProject, *, mode: str = "normal") -> launche
         host="127.0.0.1",
         port=4173,
         url="http://127.0.0.1:4173/",
-        backend_endpoint="http://127.0.0.1:4399",
+        backend_endpoint=None,
         backend_owned=False,
-        backend_argv=None,
         frontend_argv=("/fake/npm", "start"),
         env={"HYPRIAL_GUI_HOME": str(project.home)},
         open_browser=False,
     )
 
-
-def _ready_line(port: int = 4399) -> str:
-    return "HYPRIAL_STUB_READY " + json.dumps(
-        {
-            "ok": True,
-            "service": "hyprial-gui-stub",
-            "host": "127.0.0.1",
-            "port": port,
-            "endpoint": f"http://127.0.0.1:{port}",
-        }
-    ) + "\n"
+def _mock_admission(tmp_path: Path) -> SourceAdmission:
+    state = (tmp_path / "state").resolve()
+    return SourceAdmission(
+        driver="contract-mock",
+        owner="contract-mock",
+        node="local",
+        principal="user:contract-mock",
+        home=None,
+        state_dir=state,
+        socket_path=None,
+    )
 
 
 class FakeProcess:
@@ -139,12 +137,16 @@ class FakeProcess:
         self.returncode = -9
 
 
-def test_build_plan_normal_uses_stub_zero_port_and_start_script(
+def test_build_plan_normal_selects_the_explicit_source_driver_and_the_python_host(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
     project = _project(tmp_path)
-    source = {"PATH": "/usr/bin", "HYPRIAL_BACKEND_ENDPOINT": ""}
+    source = {
+        "PATH": "/usr/bin",
+        "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+        "HARNESS_STATE_DIR": str(tmp_path / "state"),
+    }
 
     plan = launcher.build_plan(
         "",
@@ -157,34 +159,34 @@ def test_build_plan_normal_uses_stub_zero_port_and_start_script(
     assert plan.mode == "normal"
     assert plan.backend_owned is True
     assert plan.backend_endpoint is None
-    assert plan.backend_argv == (
-        "/fake/npm",
-        "run",
-        "stub",
-        "--",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "0",
-    )
+    assert plan.driver == "contract-mock"
+    assert plan.runtime_dir == (tmp_path / "state" / "gui" / "contract-mock").resolve()
     assert plan.frontend_argv == (
-        "/fake/npm",
-        "start",
-        "--",
+        sys.executable,
+        "-P",
+        "-m",
+        "hyprial.shell.impl.gui.host",
+        "serve",
+        "--root",
+        str(project.home / "dist"),
         "--host",
         "127.0.0.1",
         "--port",
         "5173",
-        "--strict-port",
     )
+    assert plan.assets_argv is None
     assert plan.build_argv == ("/fake/npm", "run", "build")
     assert plan.env["HYPRIAL_GUI_HOME"] == str(project.home)
     assert "HYPRIAL_BACKEND_ENDPOINT" not in plan.env
-    assert source == {"PATH": "/usr/bin", "HYPRIAL_BACKEND_ENDPOINT": ""}
+    assert source == {
+        "PATH": "/usr/bin",
+        "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+        "HARNESS_STATE_DIR": str(tmp_path / "state"),
+    }
     assert plan.url == "http://127.0.0.1:5173/"
 
 
-def test_build_plan_dev_uses_dev_script_and_preset_loopback_endpoint(
+def test_build_plan_dev_runs_the_python_host_in_front_of_a_vite_child_without_a_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
@@ -193,19 +195,34 @@ def test_build_plan_dev_uses_dev_script_and_preset_loopback_endpoint(
     plan = launcher.build_plan(
         "dev",
         gui_home=project.home,
-        environ={"HYPRIAL_BACKEND_ENDPOINT": "http://127.0.0.1:4321/"},
+        environ={
+            "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+            "HARNESS_STATE_DIR": str(tmp_path / "state"),
+        },
         cwd=project.home,
         inspect=_fake_inspect(project),
     )
 
     assert plan.mode == "dev"
     assert plan.auto_worktree is None
-    assert plan.backend_owned is False
-    assert plan.backend_argv is None
-    assert plan.backend_endpoint == "http://127.0.0.1:4321"
+    assert plan.backend_owned is True
+    assert plan.driver == "contract-mock"
+    assert plan.backend_endpoint is None
     assert plan.build_argv is None
-    assert plan.env["HYPRIAL_BACKEND_ENDPOINT"] == "http://127.0.0.1:4321"
+    assert "HYPRIAL_BACKEND_ENDPOINT" not in plan.env
     assert plan.frontend_argv == (
+        sys.executable,
+        "-P",
+        "-m",
+        "hyprial.shell.impl.gui.host",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "4173",
+        "--dev-tools",
+    )
+    assert plan.assets_argv == (
         "/fake/npm",
         "run",
         "dev",
@@ -213,7 +230,7 @@ def test_build_plan_dev_uses_dev_script_and_preset_loopback_endpoint(
         "--host",
         "127.0.0.1",
         "--port",
-        "4173",
+        "0",
         "--strict-port",
     )
 
@@ -237,30 +254,71 @@ def test_host_and_port_validation() -> None:
     assert launcher.parse_host("::1") == "::1"
     assert launcher.parse_port(1) == 1
     assert launcher.parse_port(65535) == 65535
-    for value in (0, 65536, -1):
+    assert launcher.parse_port(0) == 0
+    for value in (65536, -1, True):
         with pytest.raises(GuiError) as caught:
             launcher.parse_port(value)
         assert caught.value.code == "INVALID_ARGUMENT"
 
 
-def test_gui_home_precedence_and_detection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    explicit = tmp_path / "explicit"
-    explicit.mkdir()
-    from_env = tmp_path / "from-env"
-    from_env.mkdir()
+def test_build_plan_with_port_zero_probes_nothing_and_passes_port_zero_to_the_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        launcher,
+        "_assert_port_free",
+        lambda host, port: pytest.fail("port 0 must not be probed"),
+    )
+    project = _project(tmp_path)
+    plan = launcher.build_plan(
+        "",
+        port=0,
+        environ={
+            "PATH": "/usr/bin",
+            "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+            "HARNESS_STATE_DIR": str(tmp_path / "state"),
+        },
+        cwd=project.home,
+        inspect=_fake_inspect(project),
+    )
+    assert plan.port == 0
+    assert plan.frontend_argv[-2:] == ("--port", "0")
+
+
+def test_gui_home_detection_ignores_hyprial_gui_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     detected = tmp_path / "checkout" / "gui"
     detected.mkdir(parents=True)
     (detected / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HYPRIAL_GUI_HOME", str(tmp_path / "from-env"))
 
-    assert launcher.resolve_gui_home(
-        explicit, environ={"HYPRIAL_GUI_HOME": str(from_env)}, cwd=tmp_path
-    ) == explicit.resolve()
-    assert launcher.resolve_gui_home(
-        None, environ={"HYPRIAL_GUI_HOME": str(from_env)}, cwd=tmp_path
-    ) == from_env.resolve()
-    assert launcher.resolve_gui_home(
-        None, environ={}, cwd=detected.parent
-    ) == detected.resolve()
+    assert launcher.resolve_gui_home(cwd=detected.parent) == detected.resolve()
+
+
+def test_build_plan_normal_source_rejects_gui_home_option_before_inspection(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("rejected option reached inspection or admission")
+
+    with pytest.raises(launcher.GuiError) as caught:
+        launcher.build_plan(
+            "",
+            gui_home=project.home,
+            environ={
+                "PATH": "/usr/bin",
+                "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+                "HARNESS_STATE_DIR": str(tmp_path / "state"),
+            },
+            cwd=project.home,
+            inspect=unreachable,
+            admit=unreachable,
+        )
+
+    assert caught.value.code == "INVALID_ARGUMENT"
 
 
 def test_inspect_project_reads_git_metadata_and_never_writes(
@@ -347,7 +405,7 @@ def test_inspect_project_enforces_node_engine(tmp_path: Path) -> None:
         "http://127.0.0.1:4321/?x=1",
     ],
 )
-def test_backend_endpoint_must_be_plain_loopback(endpoint: str, monkeypatch, tmp_path) -> None:
+def test_legacy_backend_endpoint_is_rejected(endpoint: str, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
     project = _project(tmp_path)
     with pytest.raises(GuiError) as caught:
@@ -357,7 +415,7 @@ def test_backend_endpoint_must_be_plain_loopback(endpoint: str, monkeypatch, tmp
             cwd=project.home,
             inspect=_fake_inspect(project),
         )
-    assert caught.value.code == "INVALID_ARGUMENT"
+    assert caught.value.code == "GUI_CONFIG_CONFLICT"
 
 
 def test_frontend_port_can_be_reused_after_connection_close() -> None:
@@ -388,202 +446,52 @@ def test_frontend_port_conflict_is_explicit(tmp_path: Path) -> None:
     assert str(port) in str(caught.value)
 
 
-def test_missing_frontend_or_stub_script_is_an_error(monkeypatch, tmp_path) -> None:
+def test_the_normal_gui_needs_a_build_script_and_dev_needs_a_dev_script_but_no_start_script(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
-    project = _project(tmp_path, scripts={"start": "node server.mjs"})
+    project = _project(tmp_path, scripts={"dev": "vite"})
     with pytest.raises(GuiError) as caught:
         launcher.build_plan(
             "",
-            environ={},
+            environ={
+                "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+                "HARNESS_STATE_DIR": str(tmp_path / "state"),
+            },
             cwd=project.home,
             inspect=_fake_inspect(project),
         )
-    assert caught.value.code == "GUI_BACKEND_SCRIPT_MISSING"
+    assert caught.value.code == "GUI_SCRIPT_MISSING"
+    assert caught.value.data["script"] == "build"
 
-    dev_project = _project(tmp_path, scripts={"start": "node server.mjs", "stub": "node stub.mjs"})
+    dev_project = _project(
+        tmp_path, scripts={"build": "vite build"}
+    )
     with pytest.raises(GuiError) as caught:
         launcher.build_plan(
             "dev",
             gui_home=dev_project.home,
-            environ={},
+            environ={
+                "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+                "HARNESS_STATE_DIR": str(tmp_path / "state"),
+            },
             cwd=dev_project.home,
             inspect=_fake_inspect(dev_project),
         )
     assert caught.value.code == "GUI_SCRIPT_MISSING"
+    assert caught.value.data["script"] == "dev"
 
-
-def test_stub_ready_parser_accepts_exact_line_and_rejects_mismatch() -> None:
-    assert launcher._parse_stub_ready(_ready_line(4399).rstrip("\n")) == "http://127.0.0.1:4399"
-    # The delivered UI documents this line without the redundant ok flag and
-    # with an extra backend marker.  Identity and endpoint fields still gate it.
-    assert (
-        launcher._parse_stub_ready(
-            'HYPRIAL_STUB_READY {"service":"hyprial-gui-stub",'
-            '"host":"127.0.0.1","port":4401,'
-            '"endpoint":"http://127.0.0.1:4401","backend":"not-wired"}'
-        )
-        == "http://127.0.0.1:4401"
+    accepted = _project(tmp_path, scripts={"build": "vite build", "dev": "vite"})
+    plan = launcher.build_plan(
+        "",
+        environ={
+            "HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock",
+            "HARNESS_STATE_DIR": str(tmp_path / "state"),
+        },
+        cwd=accepted.home,
+        inspect=_fake_inspect(accepted),
     )
-
-    bad_payloads = [
-        "HYPRIAL_STUB_READY not-json",
-        json.dumps({"ok": False, "service": "hyprial-gui-stub", "host": "127.0.0.1", "port": 1, "endpoint": "http://127.0.0.1:1"}),
-        json.dumps({"ok": True, "service": "other", "host": "127.0.0.1", "port": 1, "endpoint": "http://127.0.0.1:1"}),
-        json.dumps({"ok": True, "service": "hyprial-gui-stub", "host": "10.0.0.1", "port": 1, "endpoint": "http://10.0.0.1:1"}),
-        json.dumps({"ok": True, "service": "hyprial-gui-stub", "host": "127.0.0.1", "port": 2, "endpoint": "http://127.0.0.1:1"}),
-    ]
-    for raw in bad_payloads:
-        with pytest.raises(GuiError) as caught:
-            launcher._parse_stub_ready(f"HYPRIAL_STUB_READY {raw}")
-        assert caught.value.code == "GUI_BACKEND_CONTRACT"
-
-
-def test_stub_ready_is_flushed_after_early_process_exit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(launcher, "STUB_READY_POLL_SECONDS", 0.001)
-    lines: queue.Queue[object] = queue.Queue()
-    process = FakeProcess(("npm", "run", "stub"), pid=77, returncode=0)
-    child = launcher.GuiChild("backend", process, None)
-    ticks = iter([0.0, 0.5, 1.0])
-
-    def sleep(_seconds: float) -> None:
-        lines.put(_ready_line())
-
-    endpoint = launcher._wait_for_stub_ready(
-        child,
-        lines,
-        sleep=sleep,
-        monotonic=lambda: next(ticks, 2.0),
-    )
-    assert endpoint == "http://127.0.0.1:4399"
-
-
-def test_start_session_passes_discovered_backend_endpoint_to_frontend(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    project = _project(tmp_path)
-    plan = replace(
-        _fake_plan(project),
-        backend_owned=True,
-        backend_endpoint=None,
-        backend_argv=(
-            "/fake/npm",
-            "run",
-            "stub",
-            "--",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "0",
-        ),
-        frontend_argv=(
-            "/fake/npm",
-            "start",
-            "--",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "4173",
-            "--strict-port",
-        ),
-        env={"HYPRIAL_GUI_HOME": str(project.home)},
-        open_browser=True,
-    )
-    spawned: list[tuple[tuple[str, ...], dict]] = []
-    http_calls: list[str] = []
-
-    def spawn(argv, **kwargs):
-        spawned.append((tuple(argv), kwargs))
-        if "stub" in argv:
-            return FakeProcess(argv, pid=101, stdout=io.StringIO(_ready_line(4399)))
-        return FakeProcess(argv, pid=102, returncode=None)
-
-    monkeypatch.setattr(launcher, "_wait_for_http", lambda url, *args, **kwargs: http_calls.append(url))
-    opener_calls: list[str] = []
-
-    session = launcher.start_session(
-        plan,
-        popen=spawn,
-        opener=lambda url: opener_calls.append(url),
-        sleep=lambda seconds: None,
-    )
-
-    assert len(spawned) == 2
-    assert "stub" in spawned[0][0]
-    assert "start" in spawned[1][0]
-    frontend_env = spawned[1][1]["env"]
-    assert frontend_env["HYPRIAL_BACKEND_ENDPOINT"] == "http://127.0.0.1:4399"
-    assert frontend_env["HYPRIAL_GUI_HOME"] == str(project.home)
-    assert session.plan.backend_endpoint == "http://127.0.0.1:4399"
-    assert http_calls == ["http://127.0.0.1:4399/healthz", "http://127.0.0.1:4173/__gui/healthz"]
-    assert opener_calls == ["http://127.0.0.1:4173/"]
-    assert session.frontend.process.pid == 102
-    assert session.backend is not None and session.backend.process.pid == 101
-
-
-def test_start_session_runs_production_build_before_any_child(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    project = _project(tmp_path)
-    plan = replace(
-        _fake_plan(project),
-        build_argv=("/fake/npm", "run", "build"),
-    )
-    events: list[tuple[str, tuple[str, ...]]] = []
-
-    def build(argv, **kwargs):
-        events.append(("build", tuple(argv)))
-        assert kwargs["cwd"] == str(project.home)
-        assert kwargs["env"] == dict(plan.env)
-        return subprocess.CompletedProcess(argv, 0)
-
-    def spawn(argv, **kwargs):
-        events.append(("spawn", tuple(argv)))
-        return FakeProcess(argv, pid=401)
-
-    monkeypatch.setattr(launcher, "_wait_for_http", lambda *args, **kwargs: None)
-
-    session = launcher.start_session(
-        plan,
-        popen=spawn,
-        build_runner=build,
-        sleep=lambda seconds: None,
-    )
-
-    assert events == [
-        ("build", ("/fake/npm", "run", "build")),
-        ("spawn", ("/fake/npm", "start")),
-    ]
-    assert session.frontend.process.pid == 401
-
-
-def test_start_session_stops_before_spawning_when_build_fails(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    project = _project(tmp_path)
-    plan = replace(
-        _fake_plan(project),
-        build_argv=("/fake/npm", "run", "build"),
-    )
-    spawned: list[tuple[str, ...]] = []
-
-    def spawn(argv, **kwargs):
-        spawned.append(tuple(argv))
-        return FakeProcess(argv, pid=402)
-
-    monkeypatch.setattr(launcher, "_wait_for_http", lambda *args, **kwargs: None)
-
-    with pytest.raises(GuiError) as caught:
-        launcher.start_session(
-            plan,
-            popen=spawn,
-            build_runner=lambda argv, **kwargs: subprocess.CompletedProcess(argv, 2),
-            sleep=lambda seconds: None,
-        )
-    assert caught.value.code == "GUI_BUILD_FAILED"
-    assert "2" in str(caught.value)
-    assert spawned == []
+    assert "start" not in accepted.scripts and plan.build_argv == ("/fake/npm", "run", "build")
 
 
 def test_run_build_routes_output_away_from_json_stdout() -> None:
@@ -605,7 +513,6 @@ def test_run_build_routes_output_away_from_json_stdout() -> None:
         url="http://127.0.0.1:4173/",
         backend_endpoint=None,
         backend_owned=False,
-        backend_argv=None,
         frontend_argv=("/fake/npm", "start"),
         env={},
         open_browser=False,
@@ -622,41 +529,6 @@ def test_run_build_routes_output_away_from_json_stdout() -> None:
     assert seen["stdout"] is sys.stderr
     assert seen["stderr"] is subprocess.STDOUT
     assert seen["stdin"] is subprocess.DEVNULL
-
-
-def test_start_session_cleans_both_groups_when_frontend_never_gets_ready(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    project = _project(tmp_path)
-    plan = replace(
-        _fake_plan(project),
-        backend_owned=True,
-        backend_endpoint=None,
-        backend_argv=("/fake/npm", "run", "stub"),
-        env={"HYPRIAL_GUI_HOME": str(project.home)},
-    )
-    terminated: list[str] = []
-
-    def spawn(argv, **kwargs):
-        if "stub" in argv:
-            return FakeProcess(argv, pid=201, stdout=io.StringIO(_ready_line()))
-        return FakeProcess(argv, pid=202)
-
-    def wait_http(url, *args, **kwargs):
-        if "__gui/healthz" in url:
-            raise GuiError("GUI_READY_TIMEOUT", "frontend not ready")
-
-    monkeypatch.setattr(launcher, "_wait_for_http", wait_http)
-    monkeypatch.setattr(
-        launcher,
-        "_terminate_child",
-        lambda child: terminated.append(child.name) if child is not None else None,
-    )
-
-    with pytest.raises(GuiError) as caught:
-        launcher.start_session(plan, popen=spawn, sleep=lambda seconds: None)
-    assert caught.value.code == "GUI_READY_TIMEOUT"
-    assert terminated == ["frontend", "backend"]
 
 
 def test_session_wait_reports_backend_exit_and_frontend_exit() -> None:
@@ -676,9 +548,8 @@ def test_session_wait_reports_backend_exit_and_frontend_exit() -> None:
         host="127.0.0.1",
         port=4173,
         url="http://127.0.0.1:4173/",
-        backend_endpoint="http://127.0.0.1:4399",
+        backend_endpoint=None,
         backend_owned=True,
-        backend_argv=("npm", "run", "stub"),
         frontend_argv=("npm", "start"),
         env={},
         open_browser=False,
@@ -754,7 +625,11 @@ def test_cli_startup_emits_one_json_record_and_exits_with_the_frontend(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, argv: list[str]
 ) -> None:
     project = _project(tmp_path)
-    plan = _fake_plan(project)
+    plan = replace(
+        _fake_plan(project),
+        driver="contract-mock",
+        admission=_mock_admission(tmp_path),
+    )
     session = launcher.GuiSession(
         plan=plan,
         frontend=launcher.GuiChild(
@@ -780,7 +655,8 @@ def test_cli_startup_emits_one_json_record_and_exits_with_the_frontend(
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["url"] == "http://127.0.0.1:4173/"
-    assert payload["business"] == "not implemented: hyprial backend not wired"
+    assert payload["business"].startswith("Source GUI: contract-mock")
+    assert payload["backend_principal"] == "user:contract-mock"
     assert calls[0][1]["port"] == 5173
     assert calls[0][1]["no_open"] is False
     assert calls[0][0] == ("" if argv == ["gui"] else "dev")
@@ -827,6 +703,7 @@ def test_gui_json_startup_is_flushed_before_the_foreground_wait() -> None:
             port=4173,
             no_open=True,
             gui_home=None,
+            stdin_stop=False,
             json_output=True,
         )
         """
@@ -855,3 +732,65 @@ def test_gui_json_startup_is_flushed_before_the_foreground_wait() -> None:
         stderr = process.stderr.read() if process.stderr else ""
     assert line, f"no flushed startup record; stderr={stderr}"
     assert json.loads(line)["ok"] is True
+
+
+def _daemon_admission(tmp_path: Path) -> SourceAdmission:
+    return SourceAdmission(
+        driver="daemon",
+        owner="source-owner",
+        node="source-node",
+        principal="user:source-owner",
+        home=tmp_path / "home",
+        state_dir=(tmp_path / "state").resolve(),
+        socket_path=(tmp_path / "state" / "daemon.sock").resolve(),
+    )
+
+
+@pytest.mark.parametrize("mode", ["", "dev"])
+def test_an_unset_driver_means_the_daemon_for_a_source_checkout_and_the_caller_environment_is_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
+    project = _project(tmp_path)
+    admitted: list[dict[str, str]] = []
+
+    def admit(*, environ, **options):
+        admitted.append(dict(environ))
+        return _daemon_admission(tmp_path)
+
+    caller = {"PATH": "/usr/bin", "HARNESS_STATE_DIR": str(tmp_path / "state")}
+    plan = launcher.build_plan(
+        mode,
+        gui_home=project.home if mode == "dev" else None,
+        environ=caller,
+        cwd=project.home,
+        inspect=_fake_inspect(project),
+        admit=admit,
+    )
+
+    assert plan.driver == "daemon"
+    assert admitted[0]["HYPRIAL_GUI_BACKEND_DRIVER"] == "daemon"
+    assert caller == {"PATH": "/usr/bin", "HARNESS_STATE_DIR": str(tmp_path / "state")}
+    assert "HYPRIAL_GUI_BACKEND_DRIVER" not in plan.env
+
+
+def test_an_explicit_driver_is_never_replaced_by_the_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(launcher, "_assert_port_free", lambda host, port: None)
+    project = _project(tmp_path)
+    admitted: list[dict[str, str]] = []
+
+    def admit(*, environ, **options):
+        admitted.append(dict(environ))
+        return _mock_admission(tmp_path)
+
+    launcher.build_plan(
+        "",
+        environ={"HYPRIAL_GUI_BACKEND_DRIVER": "contract-mock", "HARNESS_STATE_DIR": str(tmp_path / "state")},
+        cwd=project.home,
+        inspect=_fake_inspect(project),
+        admit=admit,
+    )
+
+    assert admitted[0]["HYPRIAL_GUI_BACKEND_DRIVER"] == "contract-mock"

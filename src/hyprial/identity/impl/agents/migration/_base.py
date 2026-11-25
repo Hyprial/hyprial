@@ -1,3 +1,6 @@
+# Decision record (W2B-2, 2026-11-21):
+# - _fsync_directory delegates directory-entry durability to
+#   hyprial.kernel.fsync_directory.
 from __future__ import annotations
 
 from hyprial.identity.impl.agents.registry._base import Agent
@@ -14,6 +17,7 @@ import hashlib
 import logging
 from hyprial.kernel import (
     PrivateAccessUnsupported,
+    fsync_directory,
     harden_private_path,
     ipc_errors,
     path_is_reparse,
@@ -875,11 +879,7 @@ def _matches_shape(target: Path, snapshot: _EntrySnapshot, actor: str) -> bool:
     except AgentHomeMigrationError:
         return False
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    fsync_directory(path)
 def _is_within(path: Path, root: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(root.resolve(strict=False))

@@ -11,9 +11,10 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 from pathlib import Path
 
-from hyprial.daemon.impl.api  import HarnessDelivery, HarnessLauncher, HarnessResult
+from hyprial.daemon.impl.api  import HarnessLauncher, HarnessResult
 from hyprial.daemon.impl.desired_state  import DesiredStateStore
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.harnesses.runtime.ports  import HarnessAdapterRegistrationProjection
@@ -26,6 +27,9 @@ from hyprial.daemon.impl.harnesses.actor.actor  import (
 from hyprial.daemon.impl.harnesses.actor.facade  import (
     HarnessRuntimeFacade,
 )
+if TYPE_CHECKING:
+    from hyprial.daemon.impl.cells.actor.contracts import CellDispatchEnvelope
+
 from hyprial.kernel import ReadinessReport
 
 _LOGGER = logging.getLogger("hyprial.daemon.impl.processes.supervisor")
@@ -126,6 +130,7 @@ class ManagedHarnessRuntime:
         orphan_logger: Callable[..., None] | None = None,
         desired_state: DesiredStateStore | None = None,
         automatic_restore_allowed: Callable[[HarnessLaunchSpec], bool] | None = None,
+        actor_host=None,
     ) -> None:
         if restart_backoff_seconds < 0:
             raise ValueError("restart backoff must not be negative")
@@ -166,6 +171,7 @@ class ManagedHarnessRuntime:
             orphan_logger=orphan_logger,
             desired_state=desired_state,
             automatic_restore_allowed=automatic_restore_allowed,
+            actor_host=actor_host,
             **actor_kwargs,
         )
         self._facade = HarnessRuntimeFacade(
@@ -237,10 +243,10 @@ class ManagedHarnessRuntime:
     def streaming_generations(self) -> dict[str, int]:
         return dict(self._actor.read_streaming().process_generations)
 
-    def dispatch(self, name: str, delivery: HarnessDelivery) -> bool:
-        return self._facade.dispatch(name, delivery)
+    def dispatch(self, envelope: CellDispatchEnvelope) -> bool:
+        return self._facade.dispatch(envelope)
 
-    def steer(self, name: str, delivery_id: str, timeout: float = 5.0) -> bool:
+    def steer(self, envelope: CellDispatchEnvelope, timeout: float = 5.0) -> bool:
         """Fold a queued delivery into this worker's running turn.
 
         Returns False when there is no live steerable turn (no process, idle,
@@ -248,18 +254,18 @@ class ManagedHarnessRuntime:
         treats False as "steer failed" and reports it, never as silence.
         """
 
-        return self._facade.steer(name, delivery_id, timeout=timeout)
+        return self._facade.steer(envelope, timeout=timeout)
 
     def wait_ready(self, harness: str, name: str, timeout: float) -> bool:
         return self._facade.wait_ready(harness, name, timeout)
 
-    def session_refs(self) -> dict[tuple[str, str], str]:
+    def session_refs(self) -> dict[tuple[str, str, str], str]:
         return self._facade.session_refs()
 
-    def projected_session_refs(self) -> dict[tuple[str, str], str]:
+    def projected_session_refs(self) -> dict[tuple[str, str, str], str]:
         return self._facade.projection.session_refs()
 
-    def reconcile_session_refs(self) -> dict[tuple[str, str], str]:
+    def reconcile_session_refs(self) -> dict[tuple[str, str, str], str]:
         return self._facade.reconcile_session_refs()
 
     def stage_harness_desired(self, spec: HarnessLaunchSpec) -> bool:

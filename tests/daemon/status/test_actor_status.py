@@ -13,6 +13,7 @@ from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.inbox import InboxService, MemoryDeliveryTransport
 from hyprial.daemon.impl.status import build_actor_status_snapshot
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 
 OWNER = "op"
@@ -107,7 +108,6 @@ def test_top_and_targets_project_the_same_mixed_actor_snapshot(
             },
         )
     )
-    app._presence = _Presence((INTERACTIVE, REMOTE))  # type: ignore[assignment]
     for name in ("managed", "dormant"):
         app.agents.create(name)
     app.handle(
@@ -122,38 +122,44 @@ def test_top_and_targets_project_the_same_mixed_actor_snapshot(
         },
     )
 
+    managed, interactive, dormant = (
+        app.agents.require(name).uri for name in ("managed", "interactive", "dormant")
+    )
+    assert {managed, interactive, dormant}.isdisjoint({MANAGED, INTERACTIVE, DORMANT})
+    app._presence = _Presence((interactive, REMOTE))  # type: ignore[assignment]
+
     top = app.handle("top.snapshot", {})
     targets = app.handle("targets", {"kind": "agent"})["targets"]
     top_rows = {row["actor"]: row for row in top["actors"]}
     target_rows = {row["actor"]: row for row in targets}
 
     assert set(top_rows) == set(target_rows) == {
-        MANAGED,
-        INTERACTIVE,
-        DORMANT,
+        managed,
+        interactive,
+        dormant,
         REMOTE,
     }
     assert {actor: row["status"] for actor, row in top_rows.items()} == {
         actor: row["status"] for actor, row in target_rows.items()
     }
-    assert top_rows[MANAGED]["sources"] == ["connector", "registry"]
-    assert top_rows[INTERACTIVE]["sources"] == [
+    assert top_rows[managed]["sources"] == ["connector", "registry"]
+    assert top_rows[interactive]["sources"] == [
         "interactive_session",
         "presence",
         "registry",
     ]
-    assert top_rows[DORMANT]["sources"] == ["registry"]
+    assert top_rows[dormant]["sources"] == ["registry"]
     assert top_rows[REMOTE]["sources"] == ["presence"]
-    assert top_rows[INTERACTIVE]["processState"] == "not_applicable"
-    assert top_rows[INTERACTIVE]["state"] == "online"
-    assert top_rows[DORMANT]["processState"] == "not_applicable"
-    assert top_rows[DORMANT]["state"] == "offline"
+    assert top_rows[interactive]["processState"] == "not_applicable"
+    assert top_rows[interactive]["state"] == "online"
+    assert top_rows[dormant]["processState"] == "not_applicable"
+    assert top_rows[dormant]["state"] == "offline"
     assert all(
         row["state"] != "stopped"
         for row in top_rows.values()
         if row["processState"] == "not_applicable"
     )
-    rendered = _render_top(top, wide=False, sampler=lambda: {})
+    rendered = _render_top(top, wide=False)
     assert "interactive" in rendered
     assert "online (proc n/a)" in rendered
     assert "offline (proc n/a)" in rendered
@@ -197,4 +203,27 @@ def test_top_and_targets_both_depend_on_the_actor_status_snapshot_seam(
     ]
     assert [(row["actor"], row["status"]) for row in targets] == [
         (actor, "offline")
+    ]
+
+
+def test_id_minted_registry_actor_absorbs_its_connector_and_session() -> None:
+    """UUID addressing: a record stored under its ``a.`` id is one row."""
+
+    agent_id = "a." + "b" * 26
+    official = f"agent:{OWNER}:{NODE}:{agent_id}"
+    rows = build_actor_status_snapshot(
+        owner=OWNER,
+        node_id=NODE,
+        connectors=({"name": "managed", "running": True, "pid": 7},),
+        interactive_sessions=({"actor": "managed", "runtime": "pi"},),
+        registered_actors=(official,),
+        registered_names={"managed": official},
+        presence_actors=(official,),
+        status_for_actor=lambda _actor, _online: "online",
+    )
+
+    assert [row["actor"] for row in rows] == [official]
+    assert rows[0]["name"] == "managed"
+    assert rows[0]["sources"] == [
+        "connector", "interactive_session", "presence", "registry",
     ]

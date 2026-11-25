@@ -28,6 +28,7 @@ def test_daemon_worker_control_socket_returns_reply_delivery_receipt(
     process = object.__new__(LarkWorkerProcess)
     process._process = Process()  # type: ignore[assignment]
     process._control_socket = daemon_end
+    process._actor_host = None
     process._control_lock = threading.Lock()
     process._control_owner_lock = threading.Lock()
     process._control_owner = None
@@ -86,6 +87,7 @@ def test_daemon_worker_control_socket_rejects_receipt_without_native_message_id(
     process = object.__new__(LarkWorkerProcess)
     process._process = Process()  # type: ignore[assignment]
     process._control_socket = daemon_end
+    process._actor_host = None
     process._control_lock = threading.Lock()
     process._lock = threading.Lock()
     process._readiness = "online"
@@ -137,6 +139,7 @@ def test_daemon_worker_control_socket_logs_worker_rejection_reason() -> None:
     process = object.__new__(LarkWorkerProcess)
     process._process = Process()  # type: ignore[assignment]
     process._control_socket = daemon_end
+    process._actor_host = None
     process._control_lock = threading.Lock()
     process._lock = threading.Lock()
     process._readiness = "online"
@@ -227,6 +230,7 @@ def test_daemon_worker_control_socket_breaks_on_mismatched_receipt() -> None:
     process = object.__new__(LarkWorkerProcess)
     process._process = child  # type: ignore[assignment]
     process._control_socket = daemon_end
+    process._actor_host = None
     process._control_lock = threading.Lock()
     process._lock = threading.Lock()
     process._readiness = "online"

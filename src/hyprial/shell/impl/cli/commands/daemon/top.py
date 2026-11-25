@@ -8,10 +8,7 @@ from hyprial.shell.impl.cli.output.status import format_run_state
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
-from collections.abc import Callable
 from datetime import datetime
-import re
-import subprocess
 import typer
 
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
@@ -27,97 +24,6 @@ _TOP_SEVERITY = {
     "offline": 6,
     "stopped": 7,
 }
-
-
-def _parse_ps_duration(value: str) -> float | None:
-    """Parse ps ``time=``/``etime=`` values ([[dd-]hh:]mm:ss[.cc]) to seconds."""
-
-    match = re.fullmatch(
-        r"(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)(?:\.(\d+))?", value.strip()
-    )
-    if match is None:
-        return None
-    days, hours, minutes, seconds, fraction = match.groups()
-    total = int(minutes) * 60 + int(seconds)
-    total += int(hours) * 3600 if hours else 0
-    total += int(days) * 86400 if days else 0
-    if fraction:
-        total += int(fraction) / (10 ** len(fraction))
-    return float(total)
-
-
-def _sample_process_table() -> dict[int, tuple[int, float, int, float, float]]:
-    """One ``ps`` sweep: pid -> (ppid, cpu%, rss kb, cpu seconds, etime seconds).
-
-    These harnesses are I/O-bound, so instantaneous %cpu is normally 0.0 and
-    carries almost no diagnostic weight; it is sampled anyway (one fork total)
-    and only rendered under ``--wide``.
-    """
-
-    try:
-        result = subprocess.run(
-            ["ps", "-eo", "pid=,ppid=,etime=,%cpu=,rss=,time="],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return {}
-    if result.returncode != 0:
-        return {}
-    table: dict[int, tuple[int, float, int, float, float]] = {}
-    for line in result.stdout.splitlines():
-        fields = line.split(None, 5)
-        if len(fields) != 6:
-            continue
-        try:
-            pid = int(fields[0])
-            ppid = int(fields[1])
-            cpu_percent = float(fields[3])
-            rss_kb = int(fields[4])
-        except ValueError:
-            continue
-        etime = _parse_ps_duration(fields[2])
-        cputime = _parse_ps_duration(fields[5])
-        if etime is None or cputime is None:
-            continue
-        table[pid] = (ppid, cpu_percent, rss_kb, cputime, etime)
-    return table
-
-
-def _subtree_totals(
-    table: dict[int, tuple[int, float, int, float, float]], pid: int
-) -> tuple[float, int, float, float] | None:
-    """Aggregate cpu%/rss/cputime over the pid's ppid subtree.
-
-    pi workers share the daemon's process group, and codex grandchildren
-    escape the worker's own group, so per-pgid aggregation is wrong in both
-    directions; walking ppid children is correct for every runtime here.
-    """
-
-    if pid not in table:
-        return None
-    children: dict[int, list[int]] = {}
-    for child_pid, entry in table.items():
-        children.setdefault(entry[0], []).append(child_pid)
-    cpu_percent = 0.0
-    rss_kb = 0
-    cputime = 0.0
-    stack = [pid]
-    seen: set[int] = set()
-    while stack:
-        current = stack.pop()
-        if current in seen:
-            continue
-        seen.add(current)
-        entry = table.get(current)
-        if entry is not None:
-            cpu_percent += entry[1]
-            rss_kb += entry[2]
-            cputime += entry[3]
-        stack.extend(children.get(current, ()))
-    return cpu_percent, rss_kb, cputime, table[pid][4]
 
 
 def _format_top_age(ms: int | None) -> str:
@@ -187,31 +93,11 @@ def _top_state_label(row: JsonObject, now_ms: int) -> str:
     return "ok"
 
 
-def _format_top_link_count(value: object) -> str:
-    """A link counter cell: a real int, or the em dash placeholder.
-
-    ``bool`` is an ``int`` subclass but never a window count, and a string
-    ``"6"`` is not a reading -- both render as the dash rather than raising.
-    """
-
-    return str(value) if type(value) is int else "\u2014"
-
-
 def _render_top(
     payload: JsonObject,
     *,
     wide: bool,
-    sampler: Callable[[], dict[int, tuple[int, float, int, float, float]]]
-    | None = None,
 ) -> str:
-    # Imported lazily: ``hyprial.daemon`` resolves its facade on first access,
-    # and the shell must not pay for it while composing the CLI.
-    from hyprial.daemon import (
-        TOP_FIELD_CAPACITY_W,
-        TOP_FIELD_INBOUND_AWAITING_INJECTION,
-        TOP_FIELD_OUTBOUND_IN_FLIGHT,
-    )
-
     services = get_services()
     daemon = payload.get("daemon")
     daemon = daemon if isinstance(daemon, dict) else {}
@@ -224,9 +110,6 @@ def _render_top(
             str(row.get("name")),
         )
     )
-    sample = sampler if sampler is not None else services._sample_process_table
-    table = sample()
-
     headers = ["ACTOR", "RT", "PID"]
     if wide:
         headers.append("CPU%")
@@ -238,16 +121,14 @@ def _render_top(
         "AVG5",
         "IDLE",
         "Q",
-        "W",
-        "OUT",
-        "INJQ",
         "LEGACY",
         "RUN STATE",
     ]
     rows: list[list[str]] = []
     for row in actors:
         pid = row.get("pid")
-        totals = _subtree_totals(table, pid) if isinstance(pid, int) else None
+        metrics = row.get("processMetrics")
+        totals = (metrics["cpuPercent"], metrics["rssKb"], metrics["cpuSeconds"], metrics["elapsedSeconds"]) if isinstance(metrics, dict) else None
         cpu_percent: float | None = None
         rss_kb: int | None = None
         cputime: float | None = None
@@ -284,9 +165,6 @@ def _render_top(
             _format_top_age(avg5),
             _format_top_age(idle_ms),
             str(row.get("pendingCount", 0)),
-            _format_top_link_count(row.get(TOP_FIELD_CAPACITY_W)),
-            _format_top_link_count(row.get(TOP_FIELD_OUTBOUND_IN_FLIGHT)),
-            _format_top_link_count(row.get(TOP_FIELD_INBOUND_AWAITING_INJECTION)),
             _top_state_label(row, now_ms),
             format_run_state(row.get("runState")),
         ]
@@ -440,6 +318,14 @@ def _render_top_quota(quota: object, now_ms: int) -> list[str]:
     return lines
 
 
+def _request_top_snapshot() -> Any:
+    return get_services().runtime.request("top.snapshot")
+
+
+def _request_top_inspect() -> Any:
+    return get_services().runtime.request("top.inspect", timeout_allowance=5.0)
+
+
 @agent_app.command("top")
 def top_status(
     wide: bool = typer.Option(
@@ -481,11 +367,11 @@ def top_status(
 
     def operation() -> Any:
         services = get_services()
-        result = services.runtime.request("top.snapshot")
+        result = _request_top_snapshot() if json_output else _request_top_inspect()
         if not isinstance(result, dict) or not isinstance(result.get("actors"), list):
             raise services.CliError(
                 "INVALID_RESPONSE", "daemon top.snapshot result must contain actors"
             )
         return CliResult({"ok": True, **result}, render=lambda data: _render_top(data, wide=wide))
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)

@@ -1,0 +1,12 @@
+{
+  "schema": "hyprial-agent-template/v1",
+  "name": "user",
+  "description": "The owner as an agent: no model harness; its members are the owner's client surfaces.",
+  "capabilities": {
+    "template": "user"
+  },
+  "cellParams": {
+    "agent.role": "user",
+    "agent.template": "user"
+  }
+}

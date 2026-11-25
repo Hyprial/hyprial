@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from hyprial.identity.impl.agents.registry._base import PinStateConflictError
-
 from hyprial.identity.impl.agents.actor.ports import AcquireAgentRuntimeLaunchCommand
-from hyprial.kernel import AdmissionResult
 from hyprial.identity.impl.agents.registry._base import Agent
 from hyprial.identity.impl.agents.state.liveness import AgentAlreadyRunning
 from hyprial.identity.impl.agents.state.liveness import AgentBinding
@@ -13,14 +10,13 @@ from hyprial.identity.impl.agents.actor.ports import AgentDestroyReservationComp
 from hyprial.identity.impl.agents.actor.ports import AgentDestroySettled
 from hyprial.identity.impl.agents.registry._base import AgentError
 from hyprial.identity.impl.agents.actor.ports import AgentEvent
+from hyprial.identity.impl.agents.actor.ports import AgentHarnessArgsUpdated
 from hyprial.identity.impl.agents.home.provisioner import AgentHomeError
 from hyprial.identity.impl.agents.actor.ports import AgentMutationCompleted
 from hyprial.identity.impl.agents.actor.ports import AgentRuntimeLaunchLeaseCompleted
 from hyprial.identity.impl.agents.actor.ports import BindAgentCommand
 from hyprial.identity.impl.agents.actor.ports import CreateAgentCommand
 from hyprial.identity.impl.agents.actor.ports import DestroyAgentCommand
-from hyprial.kernel import EffectRequest
-from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand
 from hyprial.kernel import PortCommandRejected
 from hyprial.identity.impl.agents.state.liveness import RUNTIME_INTERACTIVE
 from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityCommand
@@ -30,9 +26,10 @@ from hyprial.identity.impl.agents.actor.ports import ReleaseAgentDestroyReservat
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentRuntimeLaunchCommand
 from hyprial.identity.impl.agents.actor.ports import ReserveAgentDestroyCommand
 from hyprial.identity.impl.agents.actor.ports import SettleAgentDestroyCommand
-from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand
 from hyprial.identity.impl.agents.actor.ports import BindAgentConfigCommand
 from hyprial.identity.impl.agents.actor.ports import UpdateAgentCommand
+from hyprial.identity.impl.agents.actor.ports import SetHarnessArgsCommand
+from hyprial.identity.impl.agents.actor.ports import RenameAgentCommand
 from hyprial.kernel import ipc_errors
 from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest
 
@@ -41,9 +38,6 @@ from ._base import (
     AgentRuntimeContextStale,
     AgentRuntimeLaunchMismatch,
     AgentUpdateConflict,
-    _AgentStateEffectCompleted,
-    _PendingPinMutation,
-    _PinStateRequest,
     _agent_projection,
     _binding_projection,
     _patch_agent_projection,
@@ -71,7 +65,7 @@ class _GenerationOpsMixin:
             if fence is not None:
                 launches.retire_context(command.launch_token, fence)
             self._reject(
-                command, str(getattr(error, "code", "AGENT_RUNTIME_CONTEXT_STALE")),
+                command, str(getattr(error, "code", ipc_errors.AGENT_RUNTIME_CONTEXT_STALE)),
                 str(error),
             )
             return
@@ -81,7 +75,7 @@ class _GenerationOpsMixin:
             )
         except (AgentError, AgentHomeError) as error:
             self._reject(
-                command, str(getattr(error, "code", "AGENT_RUNTIME_CONTEXT_STALE")),
+                command, str(getattr(error, "code", ipc_errors.AGENT_RUNTIME_CONTEXT_STALE)),
                 str(error),
             )
             return
@@ -118,13 +112,13 @@ class _GenerationOpsMixin:
         launches = self.runtime_launches
         assert launches is not None
         try:
-            actor = self.registry.normalize_actor(command.actor)
+            actor = self.registry.actor_key(command.actor)
             self.registry.require(actor)
             token = launches.reserve_destroy(actor)
         except (AgentError, AgentHomeError) as error:
             self._reject(
                 command,
-                str(getattr(error, "code", "AGENT_LAUNCH_IN_PROGRESS")),
+                str(getattr(error, "code", ipc_errors.AGENT_LAUNCH_IN_PROGRESS)),
                 str(error),
             )
             return
@@ -179,7 +173,9 @@ class _GenerationOpsMixin:
                     and payload.runtime == RUNTIME_INTERACTIVE
                 )
                 if incumbent is not None and not exact and not interactive_handoff:
-                    raise AgentAlreadyRunning(agent.uri, incumbent, payload.harness)
+                    raise AgentAlreadyRunning(
+                        agent.uri, incumbent, payload.harness, name=agent.actor
+                    )
             provenance, operation, _replayed = self.registry.apply_lifecycle(request)
             self._finish_lifecycle(
                 request, provenance, operation, prior_agent=prior_agent
@@ -281,7 +277,7 @@ class _GenerationOpsMixin:
                 incumbent = self.liveness.live_binding(agent.uri)
                 if incumbent is not None:
                     raise AgentAlreadyRunning(
-                        agent.uri, incumbent, command.launch_harness
+                        agent.uri, incumbent, command.launch_harness, name=agent.actor
                     )
         else:
             # The incumbent check precedes the INSERT.  A rejected
@@ -291,7 +287,7 @@ class _GenerationOpsMixin:
                 incumbent = self.liveness.live_binding(candidate_uri)
                 if incumbent is not None:
                     raise AgentAlreadyRunning(
-                        candidate_uri, incumbent, command.launch_harness
+                        candidate_uri, incumbent, command.launch_harness, name=name
                     )
             # Do not pre-claim or emulate uniqueness in actor memory.  Even
             # with serialized delivery another process may race this daemon;
@@ -374,9 +370,9 @@ class _GenerationOpsMixin:
                 last_harness=command.last_harness,
                 last_session_id=command.last_session_id,
                 last_active_at_ms=existing.last_active_at_ms,
-                pinned_adapters=existing.pinned_adapters,
                 created_at_ms=existing.created_at_ms,
                 hosted_by=existing.hosted_by,
+                display_name=existing.display_name,
             ),
             preserve_harness_args=command.preserve_harness_args,
         )
@@ -387,6 +383,42 @@ class _GenerationOpsMixin:
             operation="update",
             changed=changed,
             version=version,
+            agent=agent,
+        )
+    def _set_harness_args(self, command: SetHarnessArgsCommand) -> None:
+        mutation = self.registry.set_harness_args(
+            command.actor,
+            harness=command.harness,
+            args=command.args,
+            expected_harness_args=dict(command.expected_harness_args),
+            operator=command.operator,
+            reason=command.reason,
+            correlation_id=command.correlation_id,
+            confirmed_dangerous=command.confirmed_dangerous,
+        )
+        version = (
+            self.version.bump() if mutation.changed else self.version.read()
+        )
+        _refresh_projection(
+            self.projection, self.registry, self.liveness, version
+        )
+        self._publish(
+            AgentHarnessArgsUpdated(
+                command.correlation_id,
+                self.generation,
+                version,
+                mutation.changed,
+                _agent_projection(mutation.agent, version, self.registry),
+                mutation.audit_id,
+            )
+        )
+    def _rename(self, command: RenameAgentCommand) -> None:
+        before = self.registry.require(command.name)
+        agent = self.registry.rename(command.name, command.display_name)
+        changed = agent != before
+        self._completed(
+            command, operation="rename", changed=changed,
+            version=self.version.bump() if changed else self.version.read(),
             agent=agent,
         )
     def _bind(self, command: BindAgentCommand) -> None:
@@ -407,7 +439,9 @@ class _GenerationOpsMixin:
             and command.runtime == RUNTIME_INTERACTIVE
         )
         if incumbent is not None and not exact and not interactive_handoff:
-            raise AgentAlreadyRunning(agent.uri, incumbent, command.harness)
+            raise AgentAlreadyRunning(
+                agent.uri, incumbent, command.harness, name=agent.actor
+            )
         if exact:
             binding = incumbent
             self.liveness.touch(agent.uri)
@@ -537,174 +571,6 @@ class _GenerationOpsMixin:
             version=version,
             agent=agent,
             binding=None,
-        )
-    def _pin(self, command: PinAgentAdapterCommand) -> None:
-        if not command.adapter:
-            raise ValueError("adapter must not be empty")
-        agent = self.registry.require(command.actor)
-        launches = self.runtime_launches
-        if launches is not None and launches.destroy_reserved(agent.actor):
-            raise AgentLaunchInProgress("agent destroy is already reserved")
-        before = self.registry.pins().get(command.adapter)
-        if (
-            command.compare
-            and before != agent.uri
-            and before != command.expected_actor
-        ):
-            raise ValueError(
-                f"adapter {command.adapter!r} pin replacement blocks rollback"
-            )
-        if not self._reserve_pin_state(command):
-            return
-        try:
-            options = {"expected_actor": command.expected_actor} if command.strict_compare else {}
-            before = self.registry.pin(command.adapter, agent.actor, **options)
-            self._submit_pin_state(command, before=before, actor=agent.actor)
-        except PinStateConflictError:
-            _refresh_projection(self.projection, self.registry, self.liveness, self.version.bump())
-            self._cancel_pin_state(command)
-            raise
-        except BaseException:
-            self._cancel_pin_state(command)
-            raise
-    def _unpin(self, command: UnpinAgentAdapterCommand) -> None:
-        if not command.adapter:
-            raise ValueError("adapter must not be empty")
-        before = self.registry.pins().get(command.adapter)
-        if command.compare and before != command.expected_actor:
-            raise ValueError(
-                f"adapter {command.adapter!r} pin changed during management"
-            )
-        actor = None
-        if before is not None:
-            prior = self.registry.get(before)
-            actor = None if prior is None else prior.actor
-        if not self._reserve_pin_state(command):
-            return
-        try:
-            options = {"expected_actor": command.expected_actor} if command.strict_compare else {}
-            before = self.registry.unpin(command.adapter, **options)
-            self._submit_pin_state(command, before=before, actor=actor)
-        except PinStateConflictError:
-            _refresh_projection(self.projection, self.registry, self.liveness, self.version.bump())
-            self._cancel_pin_state(command)
-            raise
-        except BaseException:
-            self._cancel_pin_state(command)
-            raise
-    def _reserve_pin_state(
-        self, command: PinAgentAdapterCommand | UnpinAgentAdapterCommand
-    ) -> bool:
-        lane = self.state_effects
-        pending_adapters = self.pending_pin_adapters
-        if self.desired_state is None or lane is None or pending_adapters is None:
-            return True
-        if command.adapter in pending_adapters:
-            self._reject(
-                command, "AGENT_PIN_PENDING",
-                f"adapter {command.adapter!r} already has a pending state mutation",
-            )
-            return False
-        admission = lane.reserve(command.correlation_id, self.generation)
-        if admission is not AdmissionResult.ACCEPTED:
-            self._reject(
-                command,
-                "PORT_OVERLOADED" if admission is AdmissionResult.OVERLOADED else "PORT_CLOSING",
-                f"agent state effect admission is {admission.value}",
-            )
-            return False
-        pending_adapters.add(command.adapter)
-        return True
-    def _cancel_pin_state(
-        self, command: PinAgentAdapterCommand | UnpinAgentAdapterCommand
-    ) -> None:
-        if self.state_effects is not None:
-            self.state_effects.cancel_reservation(
-                command.correlation_id, self.generation
-            )
-        if self.pending_pin_adapters is not None:
-            self.pending_pin_adapters.discard(command.adapter)
-    def _submit_pin_state(
-        self,
-        command: PinAgentAdapterCommand | UnpinAgentAdapterCommand,
-        *,
-        before: str | None,
-        actor: str | None,
-    ) -> None:
-        lane = self.state_effects
-        pending = self.pending_pins
-        if self.desired_state is None or lane is None or pending is None:
-            self._finish_pin_state(command, before=before, actor=actor, legacy=None)
-            return
-        pending[(command.correlation_id, self.generation)] = _PendingPinMutation(
-            command, before, actor
-        )
-        admission = lane.submit_reserved(EffectRequest(
-            command.correlation_id,
-            self.generation,
-            _PinStateRequest(command.adapter),
-        ))
-        if admission is not AdmissionResult.ACCEPTED:
-            pending.pop((command.correlation_id, self.generation), None)
-            raise RuntimeError("reserved Agent state effect was not admitted")
-    def _pin_state_completed(self, event: _AgentStateEffectCompleted) -> None:
-        lane = self.state_effects
-        pending = self.pending_pins
-        adapters = self.pending_pin_adapters
-        assert lane is not None and pending is not None and adapters is not None
-        item = pending.pop((event.correlation_id, event.generation), None)
-        try:
-            if item is None:
-                return
-            adapters.discard(item.command.adapter)
-            if event.generation != self.generation:
-                self._reject(
-                    item.command, "AGENT_STATE_GENERATION_CHANGED",
-                    "Agent state effect completed after its actor generation retired",
-                )
-                return
-            if event.error_code is not None or event.result is None:
-                self._reject(
-                    item.command,
-                    event.error_code or "AGENT_STATE_EFFECT_FAILED",
-                    "Agent state mutation did not settle",
-                )
-                return
-            self._finish_pin_state(
-                item.command,
-                before=item.before,
-                actor=item.actor,
-                legacy=event.result.legacy_actor,
-            )
-        finally:
-            if item is not None:
-                adapters.discard(item.command.adapter)
-            lane.acknowledge(event.correlation_id, event.generation)
-    def _finish_pin_state(
-        self,
-        command: PinAgentAdapterCommand | UnpinAgentAdapterCommand,
-        *,
-        before: str | None,
-        actor: str | None,
-        legacy: str | None,
-    ) -> None:
-        if isinstance(command, PinAgentAdapterCommand):
-            assert actor is not None
-            refreshed = self.registry.require(actor)
-            changed = before != refreshed.uri
-            result_agent = refreshed
-            operation = "pin"
-        else:
-            changed = before is not None or legacy is not None
-            result_agent = None if actor is None else self.registry.get(actor)
-            operation = "unpin"
-        version = self.version.bump() if changed else self.version.read()
-        self._completed(
-            command,
-            operation=operation,
-            changed=changed,
-            version=version,
-            agent=result_agent,
         )
     def _completed(
         self,

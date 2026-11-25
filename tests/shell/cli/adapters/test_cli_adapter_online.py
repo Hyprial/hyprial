@@ -57,6 +57,7 @@ def _online_daemon(*, seed_adapter: bool = False) -> Iterator[tuple[Path, dict[s
             HYPRIAL_OWNER="adapter-online-test",
             HYPRIAL_NODE_ID="adapter-online-node",
             HYPRIAL_NETWORK_ISOLATED="1",
+            HYPRIAL_LARK_BASE_URL="http://127.0.0.1:9",
             HYPRIAL_PEER_DISCOVERY="0",
             HYPRIAL_ZENOH_LISTEN="",
             HYPRIAL_ZENOH_CONNECT="",
@@ -106,11 +107,40 @@ def test_online_daemon_honors_test_tmp_root(monkeypatch) -> None:
 def test_remove_while_daemon_online_clears_registry_and_view() -> None:
     with _online_daemon(seed_adapter=True) as (home, environment):
         _cli(environment, "agent", "create", "--name", "worker")
-        _cli(environment, "adapter", "pin", "feishu", "worker")
+        shown = _cli(environment, "agent", "cell", "show", "worker")
+        cell = shown["cell"]
+        members = list(cell["members"])
+        params = dict(cell["params"])
+        member_data = dict(params.get("cell.members") or {})
+        member_data["feishu"] = {"adapter": "feishu"}
+        if "cell.entry" not in params and members:
+            params["cell.entry"] = members[0]["ref"]
+        params["cell.members"] = member_data
+        fragment = home / "cell-worker.json"
+        fragment.write_text(
+            json.dumps(
+                {
+                    "members": [*members, {"ref": "feishu", "role": "adapter"}],
+                    "params": params,
+                }
+            ),
+            encoding="utf-8",
+        )
+        applied = _cli(
+            environment,
+            "agent", "cell", "apply", "worker",
+            "--expected-revision", str(cell["revision"]),
+            "--file", str(fragment),
+        )
+        assert applied["revision"] == cell["revision"] + 1
         result = _cli(environment, "adapter", "remove", "feishu")
-        assert result["removed"]["channelsEntry"] is True
-        assert result["removed"]["adapterPin"] is True
-        assert result["daemonReload"]["removed"] == ["feishu"]
+        assert result["removed"] is True
+        assert result["unboundAgent"] is None
+        assert result["credentialRemoved"] is True
+        assert result["name"] == "feishu"
+        assert result["provider"] == "lark"
+        assert not {"channelsPath", "secretPath", "secretKept"}.intersection(result)
+        assert result["daemonReload"]["removed"] == []
         assert json.loads((home / "channels.json").read_text())["gateways"] == []
         assert not (home / "secrets" / "lark-feishu.json").exists()
         assert _cli(environment, "adapter", "list")["adapters"] == []
@@ -123,6 +153,7 @@ def test_remove_while_daemon_online_clears_registry_and_view() -> None:
             machine="adapter-online-node",
         )
         try:
-            assert registry.pins() == {}
+            assert not hasattr(registry, "pins")
+            assert registry.require("worker") is not None
         finally:
             registry.close()

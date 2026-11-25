@@ -47,7 +47,6 @@ def test_observation_never_downgrades_a_verified_mapping(tmp_path: Path) -> None
             kind="user",
             platform_id="ou_mate",
             display_name="黄佳佳",
-            hyprial_owner="mate",
             standing="verified",
             source="manual:allen-confirmed 2026-08-14",
         ),
@@ -67,7 +66,6 @@ def test_observation_never_downgrades_a_verified_mapping(tmp_path: Path) -> None
     assert row is not None
     # The human confirmation is untouchable by mechanical collection.
     assert row.standing == "verified"
-    assert row.hyprial_owner == "mate"
     assert row.source == "manual:allen-confirmed 2026-08-14"
     # Platform facts still merged in.
     assert row.display_name == "黄佳佳(改名)"
@@ -86,7 +84,6 @@ def test_upsert_overwrites_but_preserves_first_seen(tmp_path: Path) -> None:
             kind="user",
             platform_id="ou_a",
             display_name="林懿伦",
-            hyprial_owner="alicesmith",
             standing="verified",
             source="manual:coordination 2026-08-14",
         ),
@@ -94,7 +91,6 @@ def test_upsert_overwrites_but_preserves_first_seen(tmp_path: Path) -> None:
     )
 
     assert stored.standing == "verified"
-    assert stored.hyprial_owner == "alicesmith"
     assert stored.first_seen_ms == 1_000
     assert stored.last_seen_ms == 5_000
     # The operator surface may also revoke a verification.

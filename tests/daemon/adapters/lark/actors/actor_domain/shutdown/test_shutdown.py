@@ -142,9 +142,9 @@ def test_stop_effect_completion_reassociates_after_actor_generation_restart() ->
     caller = threading.Thread(target=stop)
     caller.start()
     assert stop_entered.wait(1.0)
-    handle = runtime._handle
-    assert handle is not None
-    assert runtime._runtime.tell(handle, object()).value == "accepted"
+    cell = runtime._cell
+    assert cell is not None
+    assert runtime._cell.tell(object()).value == "accepted"
     deadline = time.monotonic() + 2.0
     while runtime.generation == 1 and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -713,3 +713,122 @@ def test_a_partial_settlement_keeps_the_still_held_worker_running() -> None:
     assert final_b["processRunning"] is False
     assert "unsettled" not in final_b
     assert "pid" not in final_b
+
+
+def test_completion_during_shutdown_uses_the_captured_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hyprial.daemon.impl.adapters.lark.runtime.commands import _IoResult
+    from hyprial.kernel import AdmissionResult
+
+    runtime = AdapterRuntime(
+        _Launcher(), ChannelConfiguration(gateways=(_gateway("a"),))
+    )
+    try:
+        completion = runtime._effects._completion  # type: ignore[attr-defined]
+        told: list[object] = []
+
+        class _Cell:
+            def tell(self, command: object) -> AdmissionResult:
+                told.append(command)
+                return AdmissionResult.ACCEPTED
+
+        cell = _Cell()
+        reads = {"count": 0}
+
+        def racing_cell(self: object) -> object | None:
+            del self
+            reads["count"] += 1
+            return cell if reads["count"] == 1 else None
+
+        monkeypatch.setattr(
+            AdapterRuntime, "_cell", property(racing_cell), raising=False
+        )
+        completion(_IoResult("c1", 1, 1, "a", "spawn", True))
+
+        assert reads["count"] == 1, "completion read the cell twice"
+        assert len(told) == 1
+    finally:
+        monkeypatch.undo()
+        runtime.stop()
+
+
+def test_submit_after_stop_uses_the_captured_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import Future
+
+    from hyprial.kernel import AdmissionResult
+
+    runtime = AdapterRuntime(
+        _Launcher(), ChannelConfiguration(gateways=(_gateway("a"),))
+    )
+    try:
+        future: Future[int] = Future()
+        future.set_result(7)
+        told: list[object] = []
+
+        class _Cell:
+            def tell(self, command: object) -> AdmissionResult:
+                told.append(command)
+                return AdmissionResult.ACCEPTED
+
+        cell = _Cell()
+        reads = {"count": 0}
+
+        def racing_cell(self: object) -> object | None:
+            del self
+            reads["count"] += 1
+            return cell if reads["count"] == 1 else None
+
+        monkeypatch.setattr(
+            AdapterRuntime, "_cell", property(racing_cell), raising=False
+        )
+        assert runtime._submit(object(), future, 0.1) == 7
+        assert reads["count"] == 1
+        assert len(told) == 1
+    finally:
+        monkeypatch.undo()
+        runtime.stop()
+
+
+def test_port_admission_after_stop_uses_the_captured_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import Future
+
+    from hyprial.kernel import AdmissionResult, PortAdmission
+
+    runtime = AdapterRuntime(
+        _Launcher(), ChannelConfiguration(gateways=(_gateway("a"),))
+    )
+    try:
+        told: list[object] = []
+
+        class _Cell:
+            def tell(self, command: object) -> AdmissionResult:
+                told.append(command)
+                return AdmissionResult.ACCEPTED
+
+        cell = _Cell()
+        reads = {"count": 0}
+
+        def racing_cell(self: object) -> object | None:
+            del self
+            reads["count"] += 1
+            return cell if reads["count"] == 1 else None
+
+        monkeypatch.setattr(
+            AdapterRuntime, "_cell", property(racing_cell), raising=False
+        )
+        admission = runtime._admit_port_future(
+            object(), Future(), "c1", lambda value: None
+        )
+        runtime._events.release()
+
+        assert admission is PortAdmission.ACCEPTED
+        assert reads["count"] == 1
+        assert len(told) == 1
+    finally:
+        monkeypatch.undo()
+        runtime.stop()

@@ -8,11 +8,11 @@ discards an inbox row.
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import hashlib
 import importlib.metadata
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -23,6 +23,10 @@ from hyprial.kernel import ipc_errors
 
 PROTOCOL_VERSION = 1
 MAX_LINE_BYTES = 8 * 1024 * 1024
+MAX_ID_LEN = 256
+MAX_SEEN_IDS = 10_000
+MAX_LABEL_LEN = 128
+MAX_OUTPUT_BYTES = 262_144
 DEFAULT_MODEL = "jev-latest"
 CONCURRENCY = 10
 EFFECTIVE_CONFIG = {
@@ -31,7 +35,6 @@ EFFECTIVE_CONFIG = {
     "model": DEFAULT_MODEL,
     "protocolVersion": PROTOCOL_VERSION,
 }
-_HEX40 = set("0123456789abcdef")
 
 
 def canonical_startup_json(value: object) -> bytes:
@@ -314,35 +317,6 @@ def _vendor_error(error: BaseException) -> WorkerError:
     return WorkerError("PROVIDER_TRANSIENT_FAILURE", "TypeSafe call failed", retryable=True)
 
 
-def _resolve_commit() -> str:
-    candidates: list[object] = [os.environ.get("HYPRIAL_SOURCE_COMMIT")]
-    try:
-        import hyprial.daemon.impl.updates as updates
-
-        candidates.append(updates.read_installation("hyprial").commit)
-    except Exception:
-        pass
-    package_root = Path(__file__).resolve()
-    for parent in (package_root, *package_root.parents):
-        if (parent / ".git").exists():
-            try:
-                candidates.append(
-                    subprocess.check_output(
-                        ["git", "-C", str(parent), "rev-parse", "HEAD"],
-                        text=True,
-                        stderr=subprocess.DEVNULL,
-                        timeout=2,
-                    ).strip()
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
-            break
-    for value in candidates:
-        if isinstance(value, str) and len(value) == 40 and set(value) <= _HEX40:
-            return value
-    raise WorkerError(ipc_errors.HARNESS_START_FAILED, "Hyprial commit is unavailable")
-
-
 def _startup_metadata(kind: str) -> dict[str, object]:
     try:
         sdk_version = importlib.metadata.version("typesafe-sdk")
@@ -350,10 +324,8 @@ def _startup_metadata(kind: str) -> dict[str, object]:
         raise WorkerError(ipc_errors.HARNESS_START_FAILED, "typesafe-sdk is unavailable") from error
     if sdk_version != "0.7.0":
         raise WorkerError(ipc_errors.HARNESS_START_FAILED, "typesafe-sdk version mismatch")
-    commit = _resolve_commit()
     script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     values = {
-        "hyprialCommit": commit,
         "kind": kind,
         "effectiveConfig": EFFECTIVE_CONFIG,
         "typesafeSdkVersion": sdk_version,
@@ -369,6 +341,81 @@ def _startup_metadata(kind: str) -> dict[str, object]:
 
 def startup_hash_for_values(values: dict[str, object]) -> str:
     return startup_hash(values)
+
+
+def _serialize_bounded_output(output: object) -> dict[str, object]:
+    if not isinstance(output, dict):
+        raise WorkerError("PROVIDER_INVALID_REQUEST", "worker output must be an object")
+    encoded = json.dumps(output, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if len(encoded.encode("utf-8")) > MAX_OUTPUT_BYTES:
+        raise WorkerError("PROVIDER_INVALID_REQUEST", "worker output exceeds size bound")
+    return output
+
+
+def build_result_frame(
+    request_id: str,
+    output: dict[str, object],
+    *,
+    label: str | None = None,
+) -> dict[str, object]:
+    """Construct a closed result frame with bounded label and output."""
+
+    if not isinstance(request_id, str) or not request_id or len(request_id) > MAX_ID_LEN:
+        raise WorkerError("PROVIDER_INVALID_REQUEST", "worker request id is invalid")
+    bounded_output = _serialize_bounded_output(output)
+    frame: dict[str, object] = {
+        "v": PROTOCOL_VERSION,
+        "type": "result",
+        "id": request_id,
+        "ok": True,
+        "output": bounded_output,
+    }
+    if label is not None:
+        if (
+            not isinstance(label, str)
+            or not label
+            or not label.strip()
+            or len(label) > MAX_LABEL_LEN
+        ):
+            raise WorkerError("PROVIDER_INVALID_REQUEST", "worker route label is invalid")
+        frame["label"] = label
+    return frame
+
+
+def build_route_frame(
+    request_id: str,
+    *,
+    outcome: str,
+    label: str | None = None,
+    output: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Construct a closed terminal route frame with bounded label and output."""
+
+    if not isinstance(request_id, str) or not request_id or len(request_id) > MAX_ID_LEN:
+        raise WorkerError("PROVIDER_INVALID_REQUEST", "worker request id is invalid")
+    if outcome not in {"done", "next", "refused"}:
+        raise WorkerError("PROVIDER_INVALID_REQUEST", "worker route outcome is invalid")
+    frame: dict[str, object] = {
+        "v": PROTOCOL_VERSION,
+        "type": "route",
+        "id": request_id,
+        "ok": outcome != "refused",
+        "outcome": outcome,
+    }
+    if outcome == "next":
+        if (
+            not isinstance(label, str)
+            or not label
+            or not label.strip()
+            or len(label) > MAX_LABEL_LEN
+        ):
+            raise WorkerError("PROVIDER_INVALID_REQUEST", "worker route label is invalid")
+        frame["label"] = label
+    elif label is not None:
+        raise WorkerError("PROVIDER_INVALID_REQUEST", "route label is only valid for next")
+    if output is not None:
+        frame["output"] = _serialize_bounded_output(output)
+    return frame
 
 
 def _emit(lock: threading.Lock, value: dict[str, object]) -> None:
@@ -429,6 +476,7 @@ def _run_call(
             if callable(close):
                 close()
         output = _response_output(response, model, set(questions))
+        result_frame = build_result_frame(request_id, output)
         _emit(
             lock,
             {
@@ -442,7 +490,7 @@ def _run_call(
                 "queueDepth": 0,
             },
         )
-        _emit(lock, {"v": PROTOCOL_VERSION, "type": "result", "id": request_id, "ok": True, "output": output})
+        _emit(lock, result_frame)
     except WorkerError as error:
         _emit(
             lock,
@@ -503,7 +551,7 @@ def run(kind: str) -> int:
     active = [0]
     active_lock = threading.Lock()
     futures: set[Future[object]] = set()
-    seen_ids: set[str] = set()
+    seen_ids: OrderedDict[str, None] = OrderedDict()
     accepting = True
     try:
         while True:
@@ -532,11 +580,13 @@ def run(kind: str) -> int:
                 if set(frame) != {"v", "op", "id", "payload"}:
                     raise ValueError("call has unknown fields")
                 request_id = frame["id"]
-                if not isinstance(request_id, str) or not request_id:
-                    raise ValueError("call id must be non-empty")
+                if not isinstance(request_id, str) or not request_id or len(request_id) > MAX_ID_LEN:
+                    raise ValueError("call id must be bounded and non-empty")
                 if request_id in seen_ids:
                     raise ValueError("call id is already live")
-                seen_ids.add(request_id)
+                seen_ids[request_id] = None
+                while len(seen_ids) > MAX_SEEN_IDS:
+                    seen_ids.popitem(last=False)
                 state, questions, model = parse_payload(frame["payload"])
                 _emit(
                     lock,

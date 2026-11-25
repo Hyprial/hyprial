@@ -18,7 +18,7 @@ from ..support import (
     _Events,
     _actor_state,
     _message,
-    _runtime,
+    _actor_host,
     _wait_until,
     authority as authority,
 )
@@ -270,7 +270,7 @@ def test_blocked_human_alarm_delivery_does_not_occupy_state_actor(
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=_actor_host(),
         node_id="node-b",
         service_options={"alarm_human_delivery": deliver_human},
     )
@@ -311,7 +311,7 @@ def test_alarm_delivery_failure_is_non_recursive(tmp_path: Path) -> None:
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         _Events(),
-        runtime=_runtime(),
+        actor_host=_actor_host(),
         service_options={"alarm_human_delivery": fail_delivery},
     )
     facade = DeliveryCustodyFacade(coordinator, tmp_path / "inbox.sqlite3")
@@ -348,7 +348,7 @@ def test_alarm_throttle_false_does_not_consume_throttle_window(
         database,
         MemoryDeliveryTransport(),
         _Events(),
-        runtime=_runtime(),
+        actor_host=_actor_host(),
         service_options={"alarm_human_delivery": deliver_human},
     )
     facade = DeliveryCustodyFacade(coordinator, database)

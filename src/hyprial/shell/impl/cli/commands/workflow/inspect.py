@@ -9,7 +9,7 @@ import typer
 
 from hyprial.biz import state_dir
 from hyprial.identity import PacError
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.workflow.internal.expansion import (
     render_workflow_status,
@@ -61,6 +61,10 @@ def list_workflows(
 
     services.runtime.execute(operation, json_output=json_output)
 
+def _request_node_context(run_id: str, node: str) -> Any:
+    return get_services().runtime.request("workflow.node.context", {"runId": run_id, "target": node})
+
+
 @workflow_app.command("inspect")
 def inspect(
     run_id: str = typer.Argument(
@@ -80,16 +84,14 @@ def inspect(
     services = get_services()
 
     def operation():
-        from hyprial.daemon import node_context
-
         if context:
             if node is None:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT, "--context requires --node"
+                    codes.INVALID_ARGUMENT, "--context requires --node"
                 )
-            document = node_context(
-                state_dir() / "pac-graph.sqlite3", run_id, node
-            )
+            document = _request_node_context(run_id, node)
+            if not isinstance(document, dict):
+                raise services.CliError("INVALID_RESPONSE", "workflow.node.context returned a non-object")
             return CliResult(document, render=_render_context(run_id, node))
         if node is None:
             return CliResult(

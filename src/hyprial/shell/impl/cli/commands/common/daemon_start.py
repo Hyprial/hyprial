@@ -1,3 +1,12 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Delegates private file hardening (capture and launch lock) and detached
+#   daemon process spawning to hyprial.shell.impl.daemon_spawn (backed by
+#   hyprial.kernel.{harden_private_path,spawn_detached_daemon}) so daemon launch
+#   carries zero direct POSIX session/chmod assumptions or CLI->backend edges.
+# - The launch state directory is created through
+#   daemon_spawn.prepare_private_state_dir (create-then-harden), not a plain
+#   ``mkdir(mode=0o700)``: on CPython 3.12.4+ (gh-118486) Windows that mkdir
+#   applies an OWNER RIGHTS DACL which bootstrap admission rejects as ``unsafe-acl``.
 """Daemon process lifecycle: launch, startup evidence, stop/teardown receipts."""
 
 from __future__ import annotations
@@ -5,19 +14,27 @@ from __future__ import annotations
 from hyprial.shell.impl.cli.output import notice
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
+from hyprial.shell.impl.daemon_spawn import (
+    harden_private_path,
+    prepare_private_state_dir,
+    spawn_detached_daemon,
+)
 
 from typing import Any
 from hyprial.kernel import DAEMON_STARTUP_PHASES
 from hyprial.kernel import DaemonLaunchResult
 from pathlib import Path
 from datetime import UTC, datetime
+from hyprial.error import codes
 from hyprial.kernel import ipc_errors
 import json
 from hyprial.kernel import lock_exclusive
 import os
+import shutil
 from hyprial.kernel import resolve_node_id
 import subprocess
 import sys
+import threading
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, CliError
 _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
@@ -160,27 +177,6 @@ def _daemon_startup_failure_evidence(
     }
 
 
-_CUSTODY_STARTUP_ERROR_SHAPES: dict[str, tuple[tuple[str, type], ...]] = {
-    ipc_errors.OWNER_MIGRATION_HOSTED_CONFLICT: (
-        ("old", str),
-        ("new", str),
-        ("actor", str),
-        ("hostedOwner", str),
-    ),
-    ipc_errors.OWNER_MIGRATION_CUSTODY_CONFLICT: (
-        ("old", str),
-        ("new", str),
-        ("grants", int),
-        ("homes", int),
-    ),
-    ipc_errors.OWNER_MIGRATION_CUSTODY_UNREADABLE: (
-        ("database", str),
-        ("table", str),
-        ("errorType", str),
-    ),
-}
-
-
 def _daemon_launch_log_summary(
     stream: Any, *, marker: bytes, offset: int
 ) -> JsonObject:
@@ -230,7 +226,7 @@ def _daemon_launch_log_summary(
             and event not in events
         ):
             events.append(event)
-        if entry.get("code") == ipc_errors.HYPRIAL_HOME_IN_USE:
+        if entry.get("code") == codes.HYPRIAL_HOME_IN_USE:
             data = entry.get("data")
             if (
                 isinstance(data, dict)
@@ -239,26 +235,8 @@ def _daemon_launch_log_summary(
                 and data["pid"] > 0
             ):
                 startup_error = {
-                    "code": ipc_errors.HYPRIAL_HOME_IN_USE,
+                    "code": codes.HYPRIAL_HOME_IN_USE,
                     "data": {"path": data["path"], "pid": data["pid"]},
-                }
-        # The startup owner-migration custody gate refuses with a named
-        # code (#513): the daemon child's ``--json`` failure line carries
-        # it, and the launcher / login orchestration branch on it to report
-        # the named switch outcome.  Only the bounded, daemon-minted fields
-        # named in the shape table are copied — never free text from the log.
-        shape = _CUSTODY_STARTUP_ERROR_SHAPES.get(entry.get("code"))
-        if shape is not None:
-            data = entry.get("data")
-            if isinstance(data, dict) and all(
-                isinstance(data.get(name), kind) and not isinstance(
-                    data.get(name), bool
-                )
-                for name, kind in shape
-            ):
-                startup_error = {
-                    "code": entry["code"],
-                    "data": {name: data[name] for name, _kind in shape},
                 }
     summary: JsonObject = {
         "logAvailable": True,
@@ -308,7 +286,7 @@ def _daemon_launch_capture(state_dir: Path) -> tuple[Any, Path, bytes, int]:
     compatibility_path = state_dir / "daemon-launch.log"
     temporary_link = state_dir / f".daemon-launch-link.{nonce}"
     stream = capture_path.open("x+b", buffering=0)
-    os.chmod(capture_path, 0o600)
+    harden_private_path(capture_path, mode=0o600)
     marker = f"hyprial-launch-boundary:{nonce}\n".encode()
     try:
         stream.write(marker)
@@ -336,12 +314,143 @@ def _launch_process_error(
     return error
 
 
+def _daemon_autostart_disabled() -> bool:
+    return os.environ.get("HYPRIAL_DAEMON_AUTOSTART") == "0"
+
+
+def _service_autoinstall_env_allowed() -> bool:
+    return os.environ.get("HYPRIAL_SERVICE_AUTOINSTALL") != "0"
+
+
+def _home_matches_account_home() -> bool:
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return False
+    try:
+        import pwd
+    except ImportError:
+        return False
+    return Path.home().resolve() == Path(pwd.getpwuid(getuid()).pw_dir).resolve()
+
+
+def _program_path_install_safe() -> bool:
+    candidate = shutil.which("hyprial") or sys.argv[0]
+    resolved = str(Path(candidate).expanduser().resolve())
+    return "/AppTranslocation/" not in resolved and "/AppTranslocation/" not in str(candidate)
+
+
+_AF_UNIX_PROBE_DIRECTORY = "/hyprial-af-unix-limit-probe-nonexistent/"
+
+
+def _af_unix_path_limit() -> int | None:
+    """The longest AF_UNIX path (bytes) this platform accepts, from the seam.
+
+    The bind-probe itself lives in the kernel local IPC seam; this name stays
+    as the CLI's own budget vocabulary (and test seam). ``None`` means the
+    transport reports no AF_UNIX path limit.
+    """
+    from hyprial.kernel import local_ipc_path_limit
+
+    return local_ipc_path_limit()
+
+
+def _require_socket_path_fits(services: Any) -> None:
+    socket_path = services._socket_path()
+    length = len(os.fsencode(str(socket_path)))
+    if length <= len(_AF_UNIX_PROBE_DIRECTORY) + 1:
+        return
+    limit = _af_unix_path_limit()
+    if limit is None or length <= limit:
+        return
+    raise services.CliError(
+        codes.DAEMON_START_FAILED,
+        f"the daemon socket path is {length} bytes, over this platform's AF_UNIX "
+        f"limit of {limit}: {socket_path}. Use a shorter HYPRIAL_HOME / "
+        "HARNESS_STATE_DIR.",
+        {"socketPath": str(socket_path), "length": length, "limit": limit},
+    )
+
+
+def _attempt_service_autoinstall(
+    services: Any,
+) -> tuple[tuple[Any, Any], Any, Any] | None:
+    """Install the per-user unit once through the manager, then re-derive it.
+
+    Z-8c (2026-11-15, workflow brief + OD-Z2): every manager failure is
+    non-fatal by design. Ownership refusal, manager command failure, a
+    missing manager command and an unsupported platform all surface as
+    ``RuntimeError`` shapes from the service backend, so exactly one stderr
+    notice names the failure and the manual retry, and the caller falls back
+    to the detached spawn so the daemon still starts. The suite reaches this
+    path only through fake runners/managers (no test relies on the backend's
+    HOME guard as its only protection), and the test fixtures pin both
+    opt-out variables to "0" so ambient exports cannot turn auto-install on
+    for a test run. Product code never writes either variable.
+
+    Z-8 launchd acceptance fix D1 (2026-11-16): the unit state before the
+    install is returned with the supervisor so the caller can revert a
+    first supervised start that fails (``_revert_autoinstall``); a unit that
+    cannot start must not stay loaded and crash-loop behind the fallback.
+    """
+    from hyprial.shell.impl.cli.commands.daemon.service import (
+        _service_manager,
+        installed_supervisor,
+    )
+
+    try:
+        manager = _service_manager()
+        state = manager.capture_unit_state()
+        status = manager.install()
+    except RuntimeError as error:
+        reason = (
+            getattr(error, "reason", None)
+            or getattr(error, "platform", None)
+            or type(error).__name__
+        )
+        notice(
+            f"daemon service auto-install failed ({reason}): {error}. "
+            "The daemon starts detached; register the service explicitly "
+            "with `hyprial daemon service install`."
+        )
+        return None
+    notice(
+        f"installed the per-user daemon service ({status.unit}); remove it "
+        "with `hyprial daemon service uninstall`."
+    )
+    supervisor = installed_supervisor()
+    if supervisor is None:
+        return None
+    return supervisor, manager, state
+
+
+def _revert_autoinstall(
+    services: Any, manager: Any, state: Any, cause: BaseException
+) -> None:
+    """Undo an auto-install whose first supervised start failed, then fall back."""
+    try:
+        reverted = manager.revert_install(state)
+    except RuntimeError as error:
+        raise services.CliError(
+            "SERVICE_SUPERVISION_LOST",
+            f"the auto-installed daemon service did not start ({cause}) and "
+            f"could not be reverted ({error}); run "
+            "`hyprial daemon service uninstall`",
+            {"install": {"supervision": "lost", "reverted": "failed"}},
+        ) from error
+    notice(
+        f"the auto-installed daemon service did not start ({cause}); "
+        f"reverted ({reverted}). The daemon starts detached."
+    )
+
+
 def _launch_daemon_process(
     *,
     ready_timeout: float,
     listen: str | None = None,
     connect: str | None = None,
     expected_identity_generation: int | None = None,
+    implicit: bool = False,
+    autoinstall: bool = True,
 ) -> DaemonLaunchResult:
     """Start the daemon once: through the installed supervisor, else spawn it.
 
@@ -358,14 +467,43 @@ def _launch_daemon_process(
     ``environment["HYPRIAL_ZENOH_CONNECT"] = connect``.  It also derives the
     child variables with ``daemon_forwarding_environment(...)`` and then
     ``environment.update(forwarding_environment)`` before spawn.
+
+    Z-8c start order (design §3.8, workflow brief 2026-11-15):
+    ``HYPRIAL_DAEMON_AUTOSTART=0`` gates every manager-mediated start. With
+    the opt-out an implicit caller is refused with
+    ``DAEMON_AUTOSTART_DISABLED`` and an explicit caller bypasses the manager
+    entirely -- installed supervisor included -- and takes the detached
+    spawn, so pinning the variable suite-wide can neither install units nor
+    turn ``daemon start`` into a silent no-op. Without the opt-out an
+    attributable installed unit is the launcher as before (installing is
+    never involved there; the unit was explicitly installed). Otherwise,
+    when ``autoinstall=True`` (a caller whose launch must not change
+    supervision state -- ``pending_restart`` -- passes ``autoinstall=False``),
+    no endpoints are requested (they keep their CLI-spawn-only meaning),
+    ``HYPRIAL_SERVICE_AUTOINSTALL!=0``, the operating HOME is the OS account
+    home, and the program path is stable (not AppTranslocated), the primitive
+    installs the unit once through the manager and starts supervised; any
+    install failure is non-fatal (one notice, detached fallback), and so is a
+    first supervised start that fails: the install is reverted through the
+    manager (unit unloaded and removed, or the previous unit restored) before
+    the detached fallback, so no crash-looping unit is left behind. Product
+    code never writes either opt-out variable.
+
+    Z-8 launchd acceptance fix F4 (2026-11-16): the socket path is checked
+    against the platform's AF_UNIX limit before anything is installed or
+    spawned, so an over-long state directory is named instead of surfacing as
+    a generic ``DAEMON_START_FAILED`` from the IPC server stage. The code is
+    the existing one; only the message and data are new.
     """
     services = get_services()
+    _require_socket_path_fits(services)
     from hyprial.shell.impl.cli.commands.daemon.service import (
         installed_supervisor,
         start_supervised_daemon,
     )
 
-    supervisor = installed_supervisor()
+    autostart_disabled = _daemon_autostart_disabled()
+    supervisor = None if autostart_disabled else installed_supervisor()
     if supervisor is not None:
         return start_supervised_daemon(
             supervisor,
@@ -373,6 +511,34 @@ def _launch_daemon_process(
             endpoints_requested=listen is not None or connect is not None,
             startup_progress=_daemon_startup_phase_summary,
         )
+    if implicit and autostart_disabled:
+        raise services.CliError(
+            "DAEMON_AUTOSTART_DISABLED",
+            "implicit daemon autostart is disabled (HYPRIAL_DAEMON_AUTOSTART=0); "
+            "start the daemon explicitly with `hyprial daemon start`",
+            {"env": "HYPRIAL_DAEMON_AUTOSTART"},
+        )
+    if (
+        autoinstall
+        and not autostart_disabled
+        and listen is None
+        and connect is None
+        and _service_autoinstall_env_allowed()
+        and _home_matches_account_home()
+        and _program_path_install_safe()
+    ):
+        attempt = _attempt_service_autoinstall(services)
+        if attempt is not None:
+            supervisor, manager, state = attempt
+            try:
+                return start_supervised_daemon(
+                    supervisor,
+                    idle_budget=ready_timeout,
+                    endpoints_requested=False,
+                    startup_progress=_daemon_startup_phase_summary,
+                )
+            except CliError as error:
+                _revert_autoinstall(services, manager, state, error)
     return services._launch_daemon_process_locked(
         ready_timeout=ready_timeout,
         listen=listen,
@@ -408,11 +574,11 @@ def _launch_daemon_process_locked(
     services = get_services()
 
     state_dir = services._state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    prepare_private_state_dir(state_dir)
     log_path = state_dir / "daemon-launch.log"
     lock_path = state_dir / "daemon-launch.lock"
     with lock_path.open("a+b") as launch_lock:
-        os.chmod(lock_path, 0o600)
+        harden_private_path(lock_path, mode=0o600)
         lock_exclusive(launch_lock.fileno())
         # Two launchers can both miss an optimistic readiness probe.  Recheck
         # under the lock so only one daemon generation is created.
@@ -496,15 +662,15 @@ def _launch_daemon_process_locked(
             set_launch_id(environment, launch_id)
             spawned_at = datetime.now(UTC)
             started_monotonic = services.time.monotonic()
-            process = subprocess.Popen(
+            process = spawn_detached_daemon(
                 [sys.executable, "-m", "hyprial.cli", "daemon", "run", "--json"],
                 stdin=subprocess.DEVNULL,
                 stdout=log_stream,
                 stderr=subprocess.STDOUT,
                 close_fds=True,
-                start_new_session=True,
                 env=environment,
             )
+            _reap_when_it_exits(process)
             try:
                 status = services._wait_for_daemon(
                     timeout=ready_timeout,
@@ -522,8 +688,8 @@ def _launch_daemon_process_locked(
 
                 process_identity = _read_process_identity(process.pid)
                 if error.code not in {
-                    ipc_errors.DAEMON_START_FAILED,
-                    ipc_errors.DAEMON_START_TIMEOUT,
+                    codes.DAEMON_START_FAILED,
+                    codes.DAEMON_START_TIMEOUT,
                 }:
                     raise
                 stale_exit = getattr(process, "returncode", None)
@@ -562,7 +728,7 @@ def _launch_daemon_process_locked(
                 startup_error = diagnostics.pop("startupError", None)
                 if (
                     isinstance(startup_error, dict)
-                    and startup_error.get("code") == ipc_errors.HYPRIAL_HOME_IN_USE
+                    and startup_error.get("code") == codes.HYPRIAL_HOME_IN_USE
                 ):
                     data = startup_error.get("data")
                     if isinstance(data, dict):
@@ -570,7 +736,7 @@ def _launch_daemon_process_locked(
                         pid = data.get("pid")
                         if isinstance(path, str) and isinstance(pid, int):
                             launch_error = services.CliError(
-                                ipc_errors.HYPRIAL_HOME_IN_USE,
+                                codes.HYPRIAL_HOME_IN_USE,
                                 f"HYPRIAL home {path} is being used by another "
                                 f"daemon (pid {pid})",
                                 data,
@@ -579,79 +745,7 @@ def _launch_daemon_process_locked(
                                 launch_error, process, process_identity
                             ) from error
                 if (
-                    isinstance(startup_error, dict)
-                    and startup_error.get("code")
-                    in _CUSTODY_STARTUP_ERROR_SHAPES
-                ):
-                    # #513: the daemon refused to start at the owner-migration
-                    # custody gate.  The named code crosses the boundary so the
-                    # login orchestration reports the named switch outcome; the
-                    # operator-facing full way out stays where the daemon wrote
-                    # it — daemon-launch.log, which outlives the capture.
-                    custody_code = str(startup_error["code"])
-                    custody_data = startup_error.get("data")
-                    bounded = (
-                        dict(custody_data) if isinstance(custody_data, dict) else {}
-                    )
-                    if custody_code == ipc_errors.OWNER_MIGRATION_HOSTED_CONFLICT:
-                        from hyprial.daemon import OwnerMigrationHostedConflict
-
-                        refusal = OwnerMigrationHostedConflict(
-                            old=str(bounded["old"]), new=str(bounded["new"]),
-                            actor=str(bounded["actor"]),
-                            hosted_owner=str(bounded["hostedOwner"]),
-                        )
-                        launch_error = services.CliError(
-                            custody_code, str(refusal),
-                            {
-                                "phase": "startup",
-                                "errorType": "hostedOwnerConflict",
-                                "exitCode": process.returncode,
-                                "logPath": str(log_path),
-                                **bounded,
-                                **diagnostics,
-                            },
-                        )
-                    elif custody_code == ipc_errors.OWNER_MIGRATION_CUSTODY_CONFLICT:
-                        launch_error = services.CliError(
-                            custody_code,
-                            "daemon refused to start: owner migration custody "
-                            "conflict — state under "
-                            f"{bounded.get('old')!r} holds "
-                            f"{bounded.get('grants')} live secret grant(s); the "
-                            "daemon's refusal message in daemon-launch.log "
-                            "names the full way out",
-                            {
-                                "phase": "startup",
-                                "errorType": "custodyRefusal",
-                                "exitCode": process.returncode,
-                                "logPath": str(log_path),
-                                **bounded,
-                                **diagnostics,
-                            },
-                        )
-                    else:
-                        launch_error = services.CliError(
-                            custody_code,
-                            "daemon refused to start: owner-migration custody "
-                            "state unreadable "
-                            f"({bounded.get('table')} in {bounded.get('database')}: "
-                            f"{bounded.get('errorType')}); the daemon's refusal "
-                            "message in daemon-launch.log names the way out",
-                            {
-                                "phase": "startup",
-                                "errorType": "custodyRefusal",
-                                "exitCode": process.returncode,
-                                "logPath": str(log_path),
-                                **bounded,
-                                **diagnostics,
-                            },
-                        )
-                    raise _launch_process_error(
-                        launch_error, process, process_identity
-                    ) from error
-                if (
-                    error.code == ipc_errors.DAEMON_START_TIMEOUT
+                    error.code == codes.DAEMON_START_TIMEOUT
                     and startup_evidence["child"]["alive"] is True
                 ):
                     # ① never arrived: the process is alive but did not bind
@@ -701,3 +795,26 @@ def _launch_daemon_process_locked(
         # None here) -- the type builds the same flat JSON form without
         # either.
         return DaemonLaunchResult.launched(status)
+
+
+def _reap_when_it_exits(process: subprocess.Popen[bytes]) -> None:
+    """Wait for the daemon this process started, so its exit leaves no zombie.
+
+    Decision: daemon-first-z6c-spawner-reaps-20261118.  The daemon is started
+    detached (its own session) and outlives the command that started it.  When
+    that command is long lived (``hyprial gui``) nothing ever waited for the
+    child, so after a stop the exited daemon stayed a zombie of the launcher, its
+    pid and birth identity still read, and a stop or logout that proves the exit
+    ended in ``DAEMON_STOP_SURVIVOR``.  A daemon thread blocked in ``wait()``
+    reaps it on every platform; it never signals or stops the daemon, never keeps
+    the launcher alive at exit (a short-lived command simply exits and init
+    reaps), and ``subprocess`` serializes it with the readiness wait's ``poll``.
+    """
+
+    def wait() -> None:
+        try:
+            process.wait()
+        except Exception:
+            return
+
+    threading.Thread(target=wait, name="daemon-reaper", daemon=True).start()

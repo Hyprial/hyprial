@@ -11,7 +11,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
-from hyprial.kernel import canonical_agent_uri, parse_agent_uri, short_actor_name
+from hyprial.kernel import (
+    canonical_agent_uri,
+    is_agent_id_segment,
+    parse_agent_uri,
+    short_actor_name,
+)
 
 JsonObject = dict[str, Any]
 
@@ -37,12 +42,18 @@ def build_actor_status_snapshot(
     presence_actors: Iterable[str],
     status_for_actor: Callable[[str, frozenset[str]], str],
     run_states: Mapping[str, JsonObject] | None = None,
+    registered_names: Mapping[str, str] | None = None,
 ) -> list[JsonObject]:
     """Build the canonical, deduplicated actor table for one daemon instant.
 
     ``status_for_actor`` is the daemon's existing liveness authority. This
     layer owns enumeration and the L1 process projection; it deliberately does
     not reinterpret presence, heartbeat, or supervisor verdicts.
+
+    ``registered_names`` maps each registered agent name to the URI its
+    record stores.  A record minted under its ``a.`` id has no name in its
+    URI, so this map is what lets a connector or bare session name join the
+    registry row; without it the name is read from the URI's last segment.
     """
 
     rows: dict[str, JsonObject] = {}
@@ -50,10 +61,15 @@ def build_actor_status_snapshot(
     registered_actors = tuple(registered_actors)
     # Registry identity wins over the daemon owner: a hosted connector must
     # not produce a second, invented native-owner target with the same name.
-    registered_by_name = {
-        parsed[2]: actor for actor in registered_actors
-        if (parsed := parse_agent_uri(actor)) is not None
-    }
+    registered_by_name = (
+        dict(registered_names)
+        if registered_names is not None
+        else {
+            parsed[2]: actor for actor in registered_actors
+            if (parsed := parse_agent_uri(actor)) is not None
+        }
+    )
+    name_by_registered = {actor: name for name, actor in registered_by_name.items()}
 
     def ensure(actor: str, source: str) -> JsonObject | None:
         if parse_agent_uri(actor) is None:
@@ -62,7 +78,7 @@ def build_actor_status_snapshot(
             actor,
             {
                 "actor": actor,
-                "name": short_actor_name(actor),
+                "name": name_by_registered.get(actor) or short_actor_name(actor),
                 "runtime": None,
                 "running": None,
                 "pid": None,
@@ -99,7 +115,12 @@ def build_actor_status_snapshot(
         if not isinstance(actor, str) or not actor:
             continue
         if parse_agent_uri(actor) is None and ":" not in actor:
-            actor = canonical_agent_uri(owner, node_id, actor)
+            minted = registered_by_name.get(actor)
+            actor = (
+                minted
+                if minted is not None and is_agent_id_segment(short_actor_name(minted))
+                else canonical_agent_uri(owner, node_id, actor)
+            )
         row = ensure(actor, "interactive_session")
         if row is None:
             continue

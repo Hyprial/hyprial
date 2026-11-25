@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hyprial.kernel.impl.actor_runtime import ActorRuntime, ActorState
+from hyprial.kernel import ActorEngineConfig, create_actor_host
+from hyprial.kernel.impl.actor_runtime import ActorState
 from hyprial.kernel.impl.actor_runtime.contracts import ActorEventKind
 from hyprial.identity.impl.agents.actor.ports import AgentMutationCompleted
 from hyprial.kernel.impl.contracts.ports import PortAdmission, PortCommandRejected
@@ -70,10 +71,10 @@ class _Probe:
         self.runtime_events = []
         self.commands = []
         self.router = CorrelatedDomainEvents()
-        self.runtime = ActorRuntime(event_sink=self.runtime_events.append)
+        self.host = create_actor_host(ActorEngineConfig(event_sink=self.runtime_events.append))
         self.actor = SessionActor(
             self.store, daemon_epoch="isolated-epoch", event_sink=self.publish,
-            agent_commands=self, mailbox_capacity=capacity, runtime=self.runtime,
+            agent_commands=self, mailbox_capacity=capacity, actor_host=self.host,
         )
         self.capacity = capacity
         self.originals = originals
@@ -154,6 +155,7 @@ def _probe(tmp_path, *, capacity=2, originals=1):
     finally:
         probe.store.release.set()
         assert probe.actor.drain(2.0).complete
+        assert probe.host.shutdown()
 
 
 @pytest.mark.parametrize("capacity", (2, 128))
@@ -202,7 +204,7 @@ def test_closed_persistence_rejects_original_correlations_without_actor_failure(
                    and "closed" in event.detail for event in probe.events)
         assert not probe.successful_correlations()
         assert len(probe.store.load().pending_session_agent_effects) == 3
-        snapshot = probe.runtime.snapshot(probe.actor._handle)
+        snapshot = probe.actor._cell.snapshot()
         assert snapshot.state is ActorState.RUNNING and snapshot.generation == 1
         assert probe.actor.command_costs.snapshot()["_AgentEffectResult"]["errors"] == 0
         assert not any(event.kind is ActorEventKind.CHILD_FAILED
@@ -241,7 +243,7 @@ def test_deferred_completion_survives_generation_and_cannot_restore_old_route(tm
         assert not probe.events
         _fail_next_ownership_read(probe.actor)
         probe.refresh("crash-probe")
-        _wait(lambda: probe.runtime.snapshot(probe.actor._handle).generation == 2)
+        _wait(lambda: probe.actor._cell.snapshot().generation == 2)
         assert len(probe.commands) == 1
         probe.release_and_finish(supersede=supersede)
         assert probe.successful_correlations() == {"A0", "B", "NEW" if supersede else "C0"}
@@ -261,3 +263,33 @@ def test_deferred_completion_survives_generation_and_cannot_restore_old_route(tm
             accept = DaemonApplication._accept_interactive_route_observation_locked
             assert accept(app, ACTOR, "new-ref", events["NEW"].version)
             assert not accept(app, ACTOR, "session-ref", events["A0"].version)
+
+
+def test_failed_restart_factory_keeps_session_generation_equal_to_engine(
+    tmp_path, monkeypatch
+):
+    from hyprial.daemon.impl.session_actor import actor as actor_module
+
+    real_generation = actor_module._SessionGeneration
+    builds = 0
+
+    def flaky_generation(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        if builds == 1:
+            raise RuntimeError("injected session generation build fault")
+        return real_generation(*args, **kwargs)
+
+    with _probe(tmp_path) as probe:
+        monkeypatch.setattr(actor_module, "_SessionGeneration", flaky_generation)
+        _fail_next_ownership_read(probe.actor)
+        probe.refresh("crash-probe")
+        _wait(lambda: builds == 2)
+        _wait(lambda: probe.actor._cell.snapshot().state
+              is ActorState.RUNNING)
+        snapshot = probe.actor._cell.snapshot()
+        assert snapshot.generation == 2
+        assert probe.actor._generation == snapshot.generation
+        started = time.monotonic()
+        assert probe.actor.generation == 2
+        assert time.monotonic() - started < 0.5

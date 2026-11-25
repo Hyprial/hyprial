@@ -12,6 +12,8 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 
+from hyprial.kernel import harden_private_path
+
 from ._base import (
     BUNDLE_PROTOCOL_VERSION,
     BundleDestinationNotEmpty,
@@ -23,6 +25,7 @@ from ._base import (
     BundleProtocolMismatch,
     BundleSourceChanged,
     BundleSourceLive,
+    EXCLUDED_ROOT_FILE_NAMES,
     PAYLOAD_DIRNAME,
     SUPPORTED_PROTOCOL_VERSIONS,
     _epoch_digest,
@@ -51,6 +54,7 @@ def export_bundle(
     credential_envelope: str = "",
     exclude_paths: Iterable[str] = (),
     extra_files: Mapping[str, tuple[bytes, int]] | None = None,
+    replace_files: Mapping[str, tuple[bytes, int]] | None = None,
     dependencies: Iterable[Mapping[str, object]] = (),
     source_epoch: str = "",
     protocol_version: int = BUNDLE_PROTOCOL_VERSION,
@@ -69,7 +73,9 @@ def export_bundle(
     and the stop-write witness ignores them for the same reason -- they are not
     payload.  ``extra_files`` adds files the export itself produced, registered
     exactly like a copied entry, so a declaration can always name a manifest
-    record instead of a payload file nobody hashed.
+    record instead of a payload file nobody hashed.  ``replace_files`` writes
+    generated payload files that supersede any same-path file in ``source_dir``
+    while keeping ``exclude_paths`` and ``extra_files`` strictly non-overlapping.
     """
 
     if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
@@ -117,15 +123,27 @@ def export_bundle(
                 f"destination is not empty: {dest}; export never removes a "
                 "destination, pass a fresh directory"
             )
-    payload = dest / PAYLOAD_DIRNAME
-    payload.mkdir(parents=True, exist_ok=True)
-
     excluded = frozenset(_safe_relative(item) for item in exclude_paths)
+    replaced_items: dict[str, tuple[bytes, int]] = {}
+    for relative, item in sorted((replace_files or {}).items()):
+        safe = _safe_relative(relative)
+        if safe in excluded:
+            raise BundlePathError(
+                f"replacement file {safe!r} is also excluded from the payload"
+            )
+        replaced_items[safe] = item
+    source_excluded = excluded | frozenset(replaced_items)
+
+    dest.mkdir(parents=True, exist_ok=True)
+    payload = dest / PAYLOAD_DIRNAME
+    _mkdir_private(payload)
 
     planned: list[tuple[str, Path, int, int, str]] = []
     skipped_binaries: list[dict[str, object]] = []
-    for relative, absolute in _iter_payload_files(source):
-        if relative in excluded:
+    for relative, absolute in _iter_payload_files(
+        source, exclude_root_names=EXCLUDED_ROOT_FILE_NAMES
+    ):
+        if relative in source_excluded:
             continue
         if absolute.is_symlink():
             raise BundlePathError(f"symlink in source is not allowed: {relative}")
@@ -157,7 +175,7 @@ def export_bundle(
     entries: list[BundleEntry] = []
     for relative, absolute, size, mode, digest in planned:
         target = payload / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_payload_parent(payload, PurePosixPath(relative).parts)
         shutil.copyfile(absolute, target)
         os.chmod(target, mode)
         landing = sha256_file(target)
@@ -172,12 +190,16 @@ def export_bundle(
         )
 
     if not allow_live:
-        _require_unchanged_source(source, planned, dest, excluded=excluded)
+        _require_unchanged_source(source, planned, dest, excluded=source_excluded)
 
     try:
         entries.extend(
             _write_extra_payload_files(payload, entries, extra_files or {}, excluded)
         )
+        if replaced_items:
+            entries.extend(
+                _write_extra_payload_files(payload, entries, replaced_items, excluded)
+            )
     except BundlePathError:
         shutil.rmtree(dest, ignore_errors=True)
         raise
@@ -257,7 +279,7 @@ def _write_extra_payload_files(
                 f"extra file {safe!r} must be a (bytes, mode) pair"
             )
         target = payload / Path(*PurePosixPath(safe).parts)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_payload_parent(payload, PurePosixPath(safe).parts)
         target.write_bytes(bytes(data))
         os.chmod(target, mode)
         extras.append(
@@ -270,6 +292,23 @@ def _write_extra_payload_files(
         )
         written.add(safe)
     return extras
+
+
+def _mkdir_private(directory: Path) -> None:
+    try:
+        os.mkdir(directory, 0o700)
+    except FileExistsError:
+        if directory.is_symlink() or not directory.is_dir():
+            raise BundlePathError(f"bundle path collides with a file: {directory}")
+    else:
+        harden_private_path(directory, mode=0o700)
+
+
+def _ensure_payload_parent(payload: Path, relative_parts: tuple[str, ...]) -> None:
+    current = payload
+    for part in relative_parts[:-1]:
+        current = current / part
+        _mkdir_private(current)
 
 
 def _canonical(target: os.PathLike[str] | str) -> Path:
@@ -322,7 +361,9 @@ def _require_unchanged_source(
 
     expected = {item[0]: (item[2], item[3], item[4]) for item in planned}
     actual: dict[str, tuple[int, int, str]] = {}
-    for relative, absolute in _iter_payload_files(source):
+    for relative, absolute in _iter_payload_files(
+        source, exclude_root_names=EXCLUDED_ROOT_FILE_NAMES
+    ):
         if relative in excluded:
             continue
         if absolute.is_symlink():

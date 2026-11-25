@@ -17,9 +17,11 @@ from hyprial.identity.impl.agents import (
     SecretSource,
     build_complete_child_environment,
 )
+from hyprial.identity import AgentSecretStore
 from hyprial.identity.impl.agents.actor._core import AgentActor
 from hyprial.identity.impl.agents.actor.ports import AgentSecretGrantCompleted, GrantAgentSecretCommand
 from hyprial.kernel.impl.contracts.ports import PortAdmission
+from tests.support.actor_hosts import new_actor_host
 
 
 @pytest.fixture(autouse=True)
@@ -109,17 +111,20 @@ def test_t06_agent_private_entry_stays_inside_the_granted_agent_home(
     custody: tuple[AgentRegistry, SecretResolver],
 ) -> None:
     registry, resolver = custody
-    # Legacy file fixture: product writes now go only through AgentSecretStore.
-    path = Path(registry.home_receipt("alpha").path) / "secrets" / "provider-openai.json"
-    path.parent.mkdir(mode=0o700, exist_ok=True)
-    path.write_text('{"apiKey":"alpha-sentinel"}', encoding="utf-8")
-    path.chmod(0o600)
+    AgentSecretStore(Path(registry.home_receipt("alpha").path)).set(
+        service="provider-openai.json",
+        field="APIKEY",
+        value="alpha-sentinel",
+        actor="alpha",
+        via="daemon",
+        at_ms=1,
+    )
     registry.grant_secret(
         "alpha",
         grant_id="openai",
         source=SecretSource.AGENT_PRIVATE,
         entry_id="provider-openai.json",
-        field_name="apiKey",
+        field_name="APIKEY",
         environment_names=("OPENAI_API_KEY",),
         revision=1,
     )
@@ -144,7 +149,7 @@ def test_private_grant_uses_prevalidated_home_receipt_off_actor(
 
     monkeypatch.setattr(registry, "home_receipt", observed_home_read)
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     receipt = actor.prevalidate_home("alpha")
     assert threads and threads[0] != threading.current_thread().name
 
@@ -257,7 +262,7 @@ def test_t06_one_claude_oauth_entry_is_granted_to_two_agents(
         / "providers"
         / "claude-shared.json"
     )
-    assert tuple(path.parent.iterdir()) == (path,)
+    assert set(path.parent.iterdir()) == {path, path.parent / ".write.lock"}
     resolved = tuple(
         resolver.resolve(actor, "claude-shared") for actor in ("alpha", "beta")
     )
@@ -419,14 +424,16 @@ def test_t11_permission_and_io_failures_are_not_folded_into_missing(
         environment_names=("OPENAI_API_KEY",),
         revision=1,
     )
-    original = Path.read_text
+    from hyprial.identity.impl.agents.runtime import secrets as secret_runtime
 
-    def fail_permission(self: Path, *args: object, **kwargs: object) -> str:
-        if self == path:
+    original = secret_runtime.read_private_file
+
+    def fail_permission(target: Path, *args: object, **kwargs: object):
+        if target == path:
             raise PermissionError("private operating-system detail")
-        return original(self, *args, **kwargs)
+        return original(target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", fail_permission)
+    monkeypatch.setattr(secret_runtime, "read_private_file", fail_permission)
     with pytest.raises(SecretResolutionError) as permission:
         resolver.resolve("alpha", "probe")
     assert permission.value.category == "permission"
@@ -434,12 +441,12 @@ def test_t11_permission_and_io_failures_are_not_folded_into_missing(
         "secret resolution permission: entry='probe' phase='read'"
     )
 
-    def fail_io(self: Path, *args: object, **kwargs: object) -> str:
-        if self == path:
+    def fail_io(target: Path, *args: object, **kwargs: object):
+        if target == path:
             raise OSError("private operating-system detail")
-        return original(self, *args, **kwargs)
+        return original(target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", fail_io)
+    monkeypatch.setattr(secret_runtime, "read_private_file", fail_io)
     with pytest.raises(SecretResolutionError) as io_failure:
         resolver.resolve("alpha", "probe")
     assert io_failure.value.category == "io"

@@ -1,0 +1,411 @@
+{
+  "version": 2,
+  "entries": [
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/inbound/inbound_runtime.py",
+      "line": 196,
+      "method": "result",
+      "call": "done.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/outbound/reactions.py",
+      "line": 556,
+      "method": "result",
+      "call": "done.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/effects.py",
+      "line": 213,
+      "method": "result",
+      "call": "done.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/runtime.py",
+      "line": 125,
+      "method": "get",
+      "call": "self._queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/runtime.py",
+      "line": 321,
+      "method": "result",
+      "call": "done.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/actors/sessions/routes.py",
+      "line": 377,
+      "method": "acquire",
+      "call": "gate.lock.acquire()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/netendpoints/services.py",
+      "line": 62,
+      "method": "wait",
+      "call": "self._condition.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/composition/events.py",
+      "line": 159,
+      "method": "wait",
+      "call": "self._condition.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/forwarding/controller.py",
+      "line": 521,
+      "method": "wait",
+      "call": "self._process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/forwarding/controller.py",
+      "line": 990,
+      "method": "wait",
+      "call": "self._process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/io_port.py",
+      "line": 301,
+      "method": "result",
+      "call": "future.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/__init__.py",
+      "line": 507,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/__init__.py",
+      "line": 514,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/__init__.py",
+      "line": 517,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/__init__.py",
+      "line": 632,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/_agent_sdk_worker.py",
+      "line": 410,
+      "method": "get",
+      "call": "commands.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/_agent_sdk_worker.py",
+      "line": 429,
+      "method": "get",
+      "call": "commands.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/_agent_sdk_worker.py",
+      "line": 438,
+      "method": "result",
+      "call": "control.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/observation/__init__.py",
+      "line": 42,
+      "method": "get",
+      "call": "self._notifications.get()",
+      "reason": "Moved unchanged from codex/client.py:704 by the cell observation slice; the call is wrapped in asyncio.wait_for(timeout=0.5), which this scanner does not recognize."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/process.py",
+      "line": 553,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/process.py",
+      "line": 591,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/process.py",
+      "line": 615,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/process.py",
+      "line": 624,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/process.py",
+      "line": 655,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/process.py",
+      "line": 664,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/pi/rpc_client.py",
+      "line": 402,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/pi/rpc_client.py",
+      "line": 408,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/pi/rpc_client.py",
+      "line": 416,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/pi/rpc_client.py",
+      "line": 881,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/python_worker/_python_worker.py",
+      "line": 582,
+      "method": "result",
+      "call": "future.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/streaming/failure.py",
+      "line": 53,
+      "method": "get",
+      "call": "observer_queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/streaming/turn_io.py",
+      "line": 169,
+      "method": "result",
+      "call": "done.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/streaming/turn_io.py",
+      "line": 257,
+      "method": "result",
+      "call": "done.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/streaming/turn_io.py",
+      "line": 341,
+      "method": "result",
+      "call": "done.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/turn_delivery/turn/turn_runtime.py",
+      "line": 309,
+      "method": "get",
+      "call": "self._queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/lifecycle/lifecycle_coordinator.py",
+      "line": 697,
+      "method": "get",
+      "call": "self._effects.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/mcp/channel/session.py",
+      "line": 193,
+      "method": "wait",
+      "call": "initialized.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/operations/management.py",
+      "line": 347,
+      "method": "acquire",
+      "call": "DaemonStateOwnershipFence.acquire(self.state_dir)",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/orgfs/composition/lifecycle.py",
+      "line": 376,
+      "method": "wait",
+      "call": "creation.done.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/orgfs/document/space_state.py",
+      "line": 516,
+      "method": "wait",
+      "call": "waiter.done.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/orgfs/storage/replica_authority.py",
+      "line": 481,
+      "method": "wait",
+      "call": "waiter.done.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/orgfs/storage/space_authority.py",
+      "line": 669,
+      "method": "wait",
+      "call": "waiter.done.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/pac/actors/daemon.py",
+      "line": 855,
+      "method": "get",
+      "call": "self._actor_queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/pac/actors/clocks.py",
+      "line": 31,
+      "method": "get",
+      "call": "service._clock_queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol. Relocated by #2082: this is the same already-grandfathered drain, now in the clock worker, and a blocking get is correct here because the queue is unwound by the None sentinel that stop() puts in (daemon.py:949 `stop(self._clock_queue, 1)`); clocks.py returns as soon as it reads it."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/pac/actors/daemon.py",
+      "line": 492,
+      "method": "get",
+      "call": "self._scan_queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/pac/workflows/runtime/core.py",
+      "line": 158,
+      "method": "get",
+      "call": "self._queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/route_registration/io.py",
+      "line": 595,
+      "method": "get",
+      "call": "self._native_queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/state_persistence/authority.py",
+      "line": 274,
+      "method": "wait",
+      "call": "pending.event.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/transport/zenoh/dispatchers.py",
+      "line": 79,
+      "method": "get",
+      "call": "lane.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/transport/zenoh/dispatchers.py",
+      "line": 291,
+      "method": "get",
+      "call": "self._queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/transport/zenoh/transport.py",
+      "line": 608,
+      "method": "get",
+      "call": "self._diagnostic_events.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/identity/impl/agents/actor/_core.py",
+      "line": 562,
+      "method": "result",
+      "call": "outcome.result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/identity/impl/agents/actor/_core.py",
+      "line": 533,
+      "method": "result",
+      "call": "settled[1].result()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/identity/impl/agents/home/effects.py",
+      "line": 234,
+      "method": "wait",
+      "call": "self._condition.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/identity/impl/agents/state/read_port.py",
+      "line": 196,
+      "method": "get",
+      "call": "self._queue.get()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/identity/impl/provider_auth/actor/_authority.py",
+      "line": 477,
+      "method": "wait",
+      "call": "self._retry_condition.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/identity/impl/provider_auth/helper.py",
+      "line": 167,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    },
+    {
+      "path": "src/hyprial/identity/impl/provider_auth/helper.py",
+      "line": 215,
+      "method": "wait",
+      "call": "process.wait()",
+      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
+    }
+  ]
+}

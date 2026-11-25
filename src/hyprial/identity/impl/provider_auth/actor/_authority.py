@@ -1,12 +1,10 @@
 from __future__ import annotations
 from ._episode import _EpisodeWriter, _StopView
 
-from hyprial.kernel import ActorRuntime
 from hyprial.kernel import ActorSpec
 from hyprial.kernel import AdmissionResult
 from hyprial.identity.impl.provider_auth.coordinator._base import AuthNoticeIntent
 from hyprial.kernel import EffectCompleted
-from hyprial.kernel import EffectLane
 from hyprial.kernel import EffectRequest
 from hyprial.identity.impl.provider_auth.helper import HelperOutcome
 from hyprial.identity.impl.provider_auth.coordinator._base import MAX_ROUNDS
@@ -38,6 +36,9 @@ class ProviderAuthAuthority():
     waits for any of these effects. Helper results are fenced by episode + round.
     """
     def __init__(self, **options):
+        actor_host = options.pop("actor_host", None)
+        if actor_host is None:
+            raise ValueError("provider auth authority requires an actor host")
         notification_capacity = int(options.pop("notification_capacity", 32))
         helper_capacity = int(options.pop("helper_capacity", 16))
         observation_capacity = int(
@@ -108,33 +109,33 @@ class ProviderAuthAuthority():
         self._decision_context = threading.local()
         options["stop"] = _StopView(options["stop"], self._stop)
         self._core = _EpisodeWriter(self, **options)
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="provider-auth",
                 handler_factory=lambda: self._receive,
                 mailbox_capacity=self._decision_capacity,
             )
         )
-        self._decisions = EffectLane(
+        self._handle = self._cell.handle
+        self._decisions = actor_host.effect_lane(
             name="provider-auth-state",
             execute=self._decide,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=self._decision_capacity,
         )
-        self._helpers = EffectLane(
+        self._helpers = actor_host.effect_lane(
             name="provider-auth-helper",
             execute=self._run_helper,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             # The second half is a bounded handoff reserve: a timed-out round
             # may start its successor before the old completion is ACKed.
             capacity=helper_capacity * 2,
             workers=min(4, helper_capacity * 2),
         )
-        self._notifications = EffectLane(
+        self._notifications = actor_host.effect_lane(
             name="provider-auth-notify",
             execute=self._notify,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=notification_capacity,
             workers=min(4, notification_capacity),
         )
@@ -898,7 +899,7 @@ class ProviderAuthAuthority():
         if not self._helpers.close(max(0.0, deadline - time.monotonic())):
             return False
         while True:
-            snapshot = self._runtime.snapshot(self._handle)
+            snapshot = self._cell.snapshot()
             with self._guard:
                 notices_pending = bool(self._notices)
                 observations_pending = bool(self._observations)
@@ -932,4 +933,4 @@ class ProviderAuthAuthority():
         for lane in (self._notifications, self._decisions):
             if not lane.close(max(0.0, deadline - time.monotonic())):
                 return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        return self._cell.stop(max(0.0, deadline - time.monotonic()))

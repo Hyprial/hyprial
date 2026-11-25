@@ -79,7 +79,9 @@ def _fake_restart(
     monkeypatch.setattr(
         _cli_get_services(),
         "_launch_daemon_process",
-        lambda *, ready_timeout: events.append(f"launch:{ready_timeout:g}")
+        lambda *, ready_timeout, autoinstall=True: events.append(
+            f"launch:{ready_timeout:g}"
+        )
         or DaemonLaunchResult.launched(AFTER),
     )
     return events
@@ -107,6 +109,23 @@ def test_restart_without_in_flight_turns_uses_supervisor_when_it_owns_daemon(
     assert payload["supervision"] == "supervised"
     assert payload["after"]["pid"] == 4202
     assert events == [f"supervisor:4101:{_cli_owner_1.DAEMON_START_HARD_CAP_SECONDS:g}"]
+
+
+def test_restart_has_no_user_proxy_reminder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """S2c (owner 2026-11-21): restart no longer pushes a user-proxy setup."""
+
+    _fake_restart(monkeypatch, tmp_path)
+    monkeypatch.setenv("HYPRIAL_OWNER", "allen")
+    monkeypatch.delenv("HYPRIAL_NETWORK_ISOLATED", raising=False)
+
+    result = CliRunner().invoke(_cli_root_app, ["daemon", "restart", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    codes = [item.get("code") for item in payload.get("warnings") or [] if isinstance(item, dict)]
+    assert "SQUIRE_USER_PROXY_NOT_CONFIGURED" not in codes
 
 
 def test_restart_without_in_flight_turns_restarts_with_fresh_pid(
@@ -261,7 +280,7 @@ def test_restart_confirms_pending_autoupdate_and_annotates_last_run(
     assert isinstance(confirmation["restartedAt"], str)
 
 
-def test_restart_survivor_uses_existing_alert_logic(
+def test_restart_survivor_writes_the_marker_and_sends_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     events = _fake_restart(monkeypatch, tmp_path)
@@ -280,30 +299,13 @@ def test_restart_survivor_uses_existing_alert_logic(
         lambda **_kwargs: events.append("marker") or tmp_path / "marker.json",
     )
 
-    class Alert:
-        def to_json(self) -> dict[str, Any]:
-            return {"delivered": True}
-
-    monkeypatch.setattr(
-        _cli_get_services(),
-        "notify_upgrade_failure",
-        lambda **_kwargs: events.append("alert") or Alert(),
-    )
-    monkeypatch.setattr(
-        _cli_get_services(),
-        "record_alert_outcome",
-        lambda *_args: events.append("record-alert"),
-    )
-
     result = CliRunner().invoke(_cli_root_app, ["daemon", "restart", "--json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["survivingOldProcess"] is True
-    assert payload["survivorAlert"] == {"delivered": True}
+    assert "survivorAlert" not in payload
     assert events == [
         "marker",
-        "alert",
-        "record-alert",
         f"launch:{_cli_owner_1.DAEMON_START_HARD_CAP_SECONDS:g}",
     ]

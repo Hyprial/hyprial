@@ -71,11 +71,27 @@ def format_run_state(value: object) -> str:
     return text
 
 
+def agent_label(row: Mapping[str, Any]) -> str:
+    """The human name of one agent row: ``display(a.<id>)``, or the display alone."""
+    display = row.get("displayName") or row.get("actor") or "-"
+    agent_id = row.get("agentId")
+    return f"{display}({agent_id})" if isinstance(agent_id, str) and agent_id else str(display)
+
+
 def render_agent_list(data: Mapping[str, Any]) -> str:
     """Keep the generic status detail, with a shared human-only run summary."""
     visible = dict(data)
     visible["agents"] = [
-        {**row, "runState": format_run_state(row.get("runState"))}
+        {"agent": agent_label(row), **row, "runState": format_run_state(row.get("runState"))}
         for row in data["agents"]
     ]
+    return render_generic(visible)
+
+
+def render_agent_row(data: Mapping[str, Any]) -> str:
+    """One agent answer (``agent rename``): the generic view headed by its label."""
+    visible = dict(data)
+    row = data.get("agent")
+    if isinstance(row, Mapping):
+        visible["agent"] = {"agent": agent_label(row), **row}
     return render_generic(visible)

@@ -2,8 +2,8 @@
 
 T3/T4/T5 of the acceptance matrix.  Candidate sources are the REAL
 serializations: ``AgentRegistry`` rows (never a hand-built ``agents(actor)``
-table, §7.2) and real ``UserProfileStore`` files.  The port's one
-auto-completion is graph scope; every partial view (registry, profiles,
+table, §7.2) .  The port's one
+auto-completion is graph scope; every partial view (registry,
 live targets) reports its candidates and refuses to select.
 """
 
@@ -25,7 +25,6 @@ from hyprial.identity import (
 from hyprial.daemon.impl.pac.graphs.edits import add_node, create_graph
 from hyprial.daemon.impl.pac.contracts.principals import resolve_owner
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore, default_database_path
-from hyprial.identity import UserProfileStore
 
 OWNER = "allen"
 MACHINE = "test-node"
@@ -72,56 +71,36 @@ def test_full_uri_input_is_pinned_without_local_knowledge(state: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_candidates_collect_from_real_registry_and_profiles_side_by_side(
+def test_candidates_come_from_the_real_registry_only(
     state: Path,
 ) -> None:
     registry = AgentRegistry(state / "agents.sqlite3", owner=OWNER, machine=MACHINE)
-    registry.create("squire")
+    squire = registry.create("squire").uri
     registry.close()
-    UserProfileStore(state / "users.json").ensure(
-        owner="squire",
-        owner_key="squire",
-        login_name="squire",
-        machine=MACHINE,
-        machine_key=MACHINE,
-    )
     # partial views can never auto-select: the port refuses with every
     # candidate listed so the author resubmits with a concrete URI
     with pytest.raises(PacError) as raised:
         resolve_owner("squire", state_dir=state)
     assert raised.value.code == PAC_OWNER_AMBIGUOUS
     listed = raised.value.data["candidates"]
-    assert {item["kind"] for item in listed} == {"agent", "user"}, (
-        "person and agent candidates listed together"
-    )
-    assert {item["source"] for item in listed} == {"agents-registry", "user-profiles"}
-    assert {item["uri"] for item in listed} == {
-        f"agent:{OWNER}:{MACHINE}:squire",
-        "user:squire",
-    }
+    assert {item["kind"] for item in listed} == {"agent"}
+    assert {item["source"] for item in listed} == {"agents-registry"}
+    assert {item["uri"] for item in listed} == {squire}
 
 
 def test_kind_hint_filters_candidates(state: Path) -> None:
     registry = AgentRegistry(state / "agents.sqlite3", owner=OWNER, machine=MACHINE)
-    registry.create("squire")
+    squire = registry.create("squire").uri
     registry.close()
-    UserProfileStore(state / "users.json").ensure(
-        owner="squire",
-        owner_key="squire",
-        login_name="squire",
-        machine=MACHINE,
-        machine_key=MACHINE,
-    )
     with pytest.raises(PacError) as agent_side:
         resolve_owner("squire", state_dir=state, kind_hint="agent")
     assert [item["uri"] for item in agent_side.value.data["candidates"]] == [
-        f"agent:{OWNER}:{MACHINE}:squire"
+        squire
     ]
     with pytest.raises(PacError) as human_side:
         resolve_owner("squire", state_dir=state, kind_hint="human")
-    assert [item["uri"] for item in human_side.value.data["candidates"]] == [
-        "user:squire"
-    ]
+    assert human_side.value.code == PAC_OWNER_UNRESOLVED
+    assert human_side.value.data["candidates"] == []
     with pytest.raises(PacError) as raised:
         resolve_owner("squire", state_dir=state, kind_hint="other")
     assert raised.value.code == PAC_PRINCIPAL_SHAPE_INVALID
@@ -146,17 +125,6 @@ def test_source_failure_is_unavailable_never_an_empty_set(state: Path) -> None:
         resolve_owner("squire", state_dir=state)
     assert raised.value.code == PAC_RESOLUTION_UNAVAILABLE
     assert "agents registry" in str(raised.value)
-
-
-def test_malformed_profiles_are_unavailable_not_an_empty_set(tmp_path: Path) -> None:
-    fresh = tmp_path / "other-state"
-    fresh.mkdir()
-    malformed = fresh / "users.json"
-    malformed.write_text('{"version": 2, "users": {}}', encoding="utf-8")
-    with pytest.raises(PacError) as raised:
-        resolve_owner("squire", state_dir=fresh)
-    assert raised.value.code == PAC_RESOLUTION_UNAVAILABLE
-    assert "refusing to guess" in str(raised.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +170,7 @@ def test_a_lone_partial_view_candidate_is_reported_not_selected(state: Path) -> 
     # an offline or foreign same-named principal is not disproved, so the
     # report carries the candidate and refuses to choose
     registry = AgentRegistry(state / "agents.sqlite3", owner=OWNER, machine=MACHINE)
-    registry.create("squire")
+    squire = registry.create("squire").uri
     registry.close()
     store = PacGraphStore(default_database_path(state))
     try:
@@ -211,7 +179,7 @@ def test_a_lone_partial_view_candidate_is_reported_not_selected(state: Path) -> 
             resolve_owner("squire", state_dir=state, store=store, graph_id=graph_id)
         assert raised.value.code == PAC_OWNER_AMBIGUOUS
         assert [item["uri"] for item in raised.value.data["candidates"]] == [
-            f"agent:{OWNER}:{MACHINE}:squire"
+            squire
         ]
         assert "complete scope" in str(raised.value)
     finally:
@@ -283,12 +251,12 @@ def test_resolved_report_shape_is_the_full_evidence_product(state: Path) -> None
 
 def test_registry_candidate_takes_the_stored_uri_verbatim(state: Path) -> None:
     registry = AgentRegistry(state / "agents.sqlite3", owner=OWNER, machine=MACHINE)
-    registry.create("kanban")
+    kanban = registry.create("kanban").uri
     registry.close()
     with pytest.raises(PacError) as raised:
         resolve_owner("kanban", state_dir=state)
     [item] = raised.value.data["candidates"]
-    assert item["uri"] == f"agent:{OWNER}:{MACHINE}:kanban"
+    assert item["uri"] == kanban
     # a tampered uri column is surfaced as-is (never re-minted): the resolver
     # reports what the registry stores; the write boundary still validates
     tampered = sqlite3.connect(state / "agents.sqlite3")

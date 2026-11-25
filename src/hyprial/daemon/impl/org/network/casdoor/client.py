@@ -70,6 +70,10 @@ class CasdoorGroups(Protocol):
 
     def ensure_group(self, group: str, user: str) -> dict[str, Any]: ...
 
+    def group_space(self, group: str) -> dict[str, Any] | None: ...
+
+    def bind_group_space(self, group: str, space_id: str) -> dict[str, Any]: ...
+
 
 def casdoor_user(member: str) -> str:
     """``user:<owner>`` (or a bare owner) -> ``hyprial/<owner>`` unchanged.
@@ -302,6 +306,56 @@ class HttpCasdoorGroups:
     def remove_member(self, group: str, user: str) -> bool:
         return bool(self._call("DELETE", group, user).get("changed"))
 
+    def group_space(self, group: str) -> dict[str, Any] | None:
+        """Probe and read the binding; None means the endpoint is absent."""
+        query = urllib.parse.urlencode({"group": group})
+        status, parsed = self._transport(
+            "GET", f"{self._credentials.endpoint}/api/hyprial/group-space?{query}",
+            {"Authorization": f"Bearer {self._bearer()}", "Accept": "application/json"},
+            None,
+        )
+        detail = parsed.get("msg", "") if isinstance(parsed, dict) else ""
+        if status == 404 or not isinstance(parsed, dict) or not parsed or (
+            isinstance(detail, str) and detail.lower() in {"not found", "404 page not found", "route not found"}
+        ):
+            return None
+        return self._space_result(status, parsed, group)
+
+    def bind_group_space(self, group: str, space_id: str) -> dict[str, Any]:
+        """CAS binding: created, idempotent replay, or conflict; never overwrite."""
+        status, parsed = self._transport(
+            "POST", f"{self._credentials.endpoint}/api/hyprial/bind-group-space",
+            {"Authorization": f"Bearer {self._bearer()}", "Accept": "application/json",
+             "Content-Type": "application/json"},
+            json.dumps({"group": group, "spaceId": space_id}).encode("utf-8"),
+        )
+        data = self._space_result(status, parsed, group)
+        flags = tuple(data.get(key) for key in ("created", "alreadyBound", "conflict"))
+        if any(type(flag) is not bool for flag in flags) or flags not in {
+            (True, False, False), (False, True, False), (False, True, True),
+        } or not data.get("spaceId") or (
+            not data["conflict"] and data["spaceId"] != space_id
+        ) or (data["conflict"] and data.get("requestedSpaceId") != space_id):
+            raise CasdoorGroupError("CASDOOR_GROUP_SPACE_REFUSED", "invalid binding receipt")
+        return data
+
+    def _space_result(self, status: int, parsed: Any, group: str) -> dict[str, Any]:
+        from uuid import UUID
+
+        if status != 200 or not isinstance(parsed, dict) or parsed.get("status") != "ok":
+            if status == 401:
+                self._token = None
+            raise CasdoorGroupError("CASDOOR_GROUP_SPACE_REFUSED", "Casdoor did not confirm the space binding")
+        data = parsed.get("data")
+        if not isinstance(data, dict) or data.get("group") != group or "spaceId" not in data:
+            raise CasdoorGroupError("CASDOOR_GROUP_SPACE_REFUSED", "invalid space binding response")
+        if data["spaceId"] is not None:
+            try:
+                UUID(data["spaceId"])
+            except (ValueError, TypeError, AttributeError) as error:
+                raise CasdoorGroupError("CASDOOR_GROUP_SPACE_REFUSED", "invalid space binding ID") from error
+        return data
+
     def ensure_group(self, group: str, user: str) -> dict[str, Any]:
         """Ask Casdoor to create the group for ``user`` if it does not exist.
 
@@ -332,7 +386,7 @@ class HttpCasdoorGroups:
             },
             body,
         )
-        if status == 401 or (isinstance(parsed, dict) and parsed.get("status") != "ok"):
+        if status != 200 or not isinstance(parsed, dict) or parsed.get("status") != "ok":
             detail = parsed.get("msg") if isinstance(parsed, dict) else None
             if status == 401 or (
                 isinstance(detail, str) and detail.startswith("Access token")

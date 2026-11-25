@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -13,7 +12,6 @@ from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.harnesses.runtime.ports import HarnessLaunchProjection
 from hyprial.daemon.impl.harnesses.agent_sdk import IsolatedAgentSdkClient
 from hyprial.daemon.impl.harnesses.codex import CodexAppServerClient
-from hyprial.daemon.impl.harnesses.dsh import DshApiClient
 from hyprial.daemon.impl.harnesses.model_provider import (
     DEEPSEEK_MODEL,
     ModelProviderError,
@@ -223,53 +221,6 @@ def test_pi_receives_native_provider_and_model_arguments() -> None:
     )
 
 
-class DshApi:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
-
-    async def call(self, method: str, payload: dict[str, object]) -> object:
-        self.calls.append((method, payload))
-        if method == "host.describe":
-            return {"provider": "kimi-coding", "model": "k3"}
-        if method == "session.create":
-            return {"sessionId": "s1"}
-        if method == "session.models":
-            return {
-                "current": {"provider": "kimi-coding", "model": "k3"},
-                "routable": True,
-                "groups": [],
-                "failures": [],
-            }
-        if method == "session.selectModel":
-            return {
-                "selected": {
-                    "provider": payload["provider"],
-                    "model": payload["model"],
-                }
-            }
-        if method == "session.cancel":
-            return {"accepted": True}
-        raise AssertionError(f"unexpected method {method}")
-
-
-def test_dsh_selects_model_on_the_new_session_not_the_host_default() -> None:
-    async def scenario() -> None:
-        api = DshApi()
-        client = DshApiClient(spec("dsh"), api=api)
-        async with client:
-            assert client.session_id == "s1"
-        assert (
-            "session.selectModel",
-            {
-                "sessionId": "s1",
-                "provider": "deepseek-official",
-                "model": DEEPSEEK_MODEL,
-            },
-        ) in api.calls
-
-    asyncio.run(scenario())
-
-
 def test_codex_rejects_deepseek_models_not_served_by_responses() -> None:
     # Deliberately a name this repository never ships.  The probe here used to
     # be "deepseek-v4-pro"; that name is now RETIRED, so it would be refused by
@@ -469,3 +420,70 @@ def test_every_p2_pi_launch_carries_the_model_provider_definitions(
 
     payload = json.loads(launch.argv[-1])
     assert payload["modelDefinitions"] == pi_model_definitions(environment)
+
+
+def test_agy_model_selection_and_provider_environment() -> None:
+    from hyprial.daemon.impl.harnesses.model_provider import (
+        AgentProviderCredentialMissing,
+        agy_provider_environment,
+    )
+
+    assert validate_model_selection("agy", None, "gemini-3.8-flash") == ()
+    assert validate_model_selection("agy", "google", "gemini-3.8-flash") == ()
+    with pytest.raises(ModelProviderError, match="google"):
+        validate_model_selection("agy", "deepseek", "deepseek-flash")
+    with pytest.raises(ModelProviderError, match="does not support --effort"):
+        validate_model_selection(
+            "agy", None, "gemini-pro-orchestrator-preview", effort="low"
+        )
+    with pytest.raises(ModelProviderError, match="does not support --effort"):
+        validate_model_selection(
+            "agy",
+            "google",
+            None,
+            args=("--model", "gemini-pro-orchestrator", "--effort", "high"),
+        )
+
+    native_spec = HarnessLaunchSpec("agy", "worker", True, model="gemini-3.8-flash")
+    assert agy_provider_environment(native_spec, {}) == {}
+
+    google_spec = HarnessLaunchSpec(
+        "agy", "worker", True, model_provider="google", model="gemini-3.8-flash"
+    )
+    assert agy_provider_environment(google_spec, {"GEMINI_API_KEY": "g-key"}) == {
+        "GEMINI_API_KEY": "g-key"
+    }
+    with pytest.raises(AgentProviderCredentialMissing, match="GEMINI_API_KEY"):
+        agy_provider_environment(google_spec, {})
+
+
+def test_make_agy_process_enforces_canonical_provider_and_effort_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from hyprial.daemon.impl.harnesses.model_provider import AgentProviderCredentialMissing
+    from hyprial.daemon.impl.harnesses.runtime.launcher import HarnessLauncher
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    launcher = HarnessLauncher(env={})
+
+    invalid_effort_spec = HarnessLaunchSpec(
+        "agy",
+        "worker",
+        True,
+        cwd=str(tmp_path),
+        model="gemini-pro-orchestrator",
+        effort="high",
+    )
+    with pytest.raises(ModelProviderError, match="does not support --effort"):
+        launcher._make_agy_process(invalid_effort_spec)
+
+    missing_key_spec = HarnessLaunchSpec(
+        "agy",
+        "worker",
+        True,
+        cwd=str(tmp_path),
+        model_provider="google",
+        model="gemini-3.8-flash",
+    )
+    with pytest.raises(AgentProviderCredentialMissing, match="GEMINI_API_KEY"):
+        launcher._make_agy_process(missing_key_spec)

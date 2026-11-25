@@ -1,4 +1,17 @@
-"""The ``hyprial message send`` operator messaging command."""
+# Decision record (W2B-2, 2026-11-21):
+# - probe_delivery_paths writes delivery-paths-probe.json inside HYPRIAL_HOME/
+#   state via a unique same-directory temporary path + os.replace so concurrent
+#   invocations cannot overwrite each other's temporary file. CLI entrypoints
+#   apply a private umask, so the temporary file needs no explicit chmod.
+"""The ``hyprial message send`` operator messaging command.
+
+Decision notes (slice GC5b, owner 2026-11-19): a group is sent to with the
+same command.  ``--conversation <g.>`` without ``--to`` sends to the group
+(one entry in its document; the daemon refuses a ``--to`` beside it), and
+``--mention`` names members by name or member id, mapped to member ids by
+one ``conversations.get``.  Without a group id, ``--to`` stays required
+with Typer's own usage error, and the direct params are unchanged.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +22,22 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from typing import Any
 from collections.abc import Mapping
 from pathlib import Path
+from hyprial.error import codes
 from hyprial.kernel import ipc_errors
 import json
 import mimetypes
 import os
 import time
+import uuid
+from typer._click.exceptions import MissingParameter
 import typer
 
 from hyprial.shell.impl.cli.commands.message import message_app
+from hyprial.shell.impl.cli.commands.message.group.names import (
+    is_group,
+    member_id,
+    read_members,
+)
 from hyprial.shell.impl.cli.commands.common.support import (
     CliError,
     JsonObject,
@@ -25,6 +46,10 @@ from hyprial.shell.impl.cli.commands.common.support import (
 )
 
 DASH = "\u2014"
+RESEND_GUARD = (
+    "the daemon re-evaluates this queued message; do not resend "
+    "(the wait is bounded by the message TTL)"
+)
 
 
 def _validate_from_identity(
@@ -47,7 +72,7 @@ def _validate_from_identity(
     try:
         answer = services.runtime.request("agent.resolve", {"name": value}, timeout=1.0)
     except (services.CliError, ipc_errors.TransientDaemonError) as error:
-        if isinstance(error, services.CliError) and error.code == ipc_errors.AMBIGUOUS_TARGET:
+        if isinstance(error, services.CliError) and error.code == codes.AMBIGUOUS_TARGET:
             raise typer.BadParameter(str(error), ctx=ctx, param=param) from error
         return value
     if not isinstance(answer, dict) or "known" not in answer:
@@ -77,18 +102,18 @@ def _require_summary(value: str | None) -> str:
 
     if value is None or not value.strip():
         raise CliError(
-            ipc_errors.SUMMARY_REQUIRED,
+            codes.SUMMARY_REQUIRED,
             f"--summary is required (at most {SUMMARY_MAX_BYTES} UTF-8 bytes)",
         )
     try:
         measured = len(value.encode("utf-8"))
     except UnicodeEncodeError:
         raise CliError(
-            ipc_errors.SUMMARY_REQUIRED, "--summary is not valid UTF-8 text"
+            codes.SUMMARY_REQUIRED, "--summary is not valid UTF-8 text"
         ) from None
     if measured > SUMMARY_MAX_BYTES:
         raise CliError(
-            ipc_errors.SUMMARY_REQUIRED,
+            codes.SUMMARY_REQUIRED,
             f"--summary is {measured} bytes; at most {SUMMARY_MAX_BYTES} UTF-8 bytes",
             {"summaryBytes": measured, "maxBytes": SUMMARY_MAX_BYTES},
         )
@@ -108,25 +133,17 @@ def _target(row: Mapping[str, Any]) -> str:
 
 
 def _hold_text(row: Mapping[str, Any]) -> str:
-    from hyprial.daemon import HOLD_REASON_KEY
-
-    reason = row.get(HOLD_REASON_KEY)
-    if not isinstance(reason, str) or not reason:
-        # Legacy free-text reason (e.g. "target-not-visible") as a fallback.
-        fallback = row.get("reason")
-        reason = fallback if isinstance(fallback, str) and fallback else "queued"
-    detail = row.get("detail")
-    return f"{reason}: {detail}" if isinstance(detail, str) and detail else reason
+    reason = row.get("reason")
+    return reason if isinstance(reason, str) and reason else "queued"
 
 
 def _lift_hold(result: dict[str, Any]) -> dict[str, Any]:
-    """Project a single queued delivery's hold onto the top level.
+    """Project a single queued delivery's reason onto the top level.
 
     A pure projection: nothing the daemon already put at the top level is
     overwritten, and a fan-out result never generalizes one target's reason
     to every target -- the per-delivery reason stays where it was.
     """
-    from hyprial.daemon import HOLD_REASON_KEY
 
     rows = _delivery_rows(result)
     if not rows:
@@ -134,9 +151,8 @@ def _lift_hold(result: dict[str, Any]) -> dict[str, Any]:
     if "queued" not in result:
         result["queued"] = any(row.get("queued") is True for row in rows)
     if len(rows) == 1 and rows[0].get("queued") is True:
-        for key in (HOLD_REASON_KEY, "reason"):
-            if key in rows[0] and key not in result:
-                result[key] = rows[0][key]
+        if "reason" in rows[0] and "reason" not in result:
+            result["reason"] = rows[0]["reason"]
     return result
 
 
@@ -180,8 +196,6 @@ def _warn_open_requests(result: Mapping[str, Any], *, json_output: bool) -> None
 def _render_send(data: Mapping[str, Any]) -> str:
     """One line per delivery: sent, held (with its reason) or failed."""
 
-    from hyprial.shell.impl.cli.commands.link.render import RESEND_GUARD
-
     rows = _delivery_rows(data)
     width = max((len(_target(row)) for row in rows), default=0)
     lines: list[str] = []
@@ -213,6 +227,21 @@ def _render_send(data: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _require_targets(
+    ctx: typer.Context, param: typer.CallbackParam, value: list[str] | None
+) -> list[str] | None:
+    """``--to`` is required unless ``--conversation`` names a group.
+
+    A missing option is processed after every given one, so a given
+    ``--conversation`` is already parsed here; the refusal is Typer's own
+    missing-option usage error.
+    """
+
+    if ctx.resilient_parsing or value or is_group(ctx.params.get("conversation")):
+        return value
+    raise MissingParameter(ctx=ctx, param=param)
+
+
 @message_app.command("send")
 def send(
     message: list[str] = typer.Argument(..., help="Message text."),
@@ -222,15 +251,32 @@ def send(
         help="Local sending actor; defaults to the verified interactive agent.",
         callback=_validate_from_identity,
     ),
-    to: list[str] = typer.Option(..., "--to", help="Target; repeat for fan-out."),
+    to: list[str] | None = typer.Option(
+        None,
+        "--to",
+        help="Target; repeat for fan-out; omit when --conversation is a group (g.…).",
+        callback=_require_targets,
+    ),
     summary: str | None = typer.Option(
         None,
         "--summary",
         help="Short summary the peer reads first; required, at most 512 UTF-8 bytes.",
     ),
     topic: str | None = typer.Option(None, "--topic"),
-    conversation: str | None = typer.Option(None, "--conversation"),
+    conversation: str | None = typer.Option(
+        None,
+        "--conversation",
+        help=(
+            "Conversation id to send in; omitted, each target's message joins "
+            "the default conversation of the sender and that target."
+        ),
+    ),
     reply_to: str | None = typer.Option(None, "--reply-to"),
+    mentions: list[str] | None = typer.Option(
+        None,
+        "--mention",
+        help="Group member to mention (wakes only mentioned agent members), by agent name or member id; repeatable.",
+    ),
     files: list[Path] | None = typer.Option(None, "--file"),
     images: list[Path] | None = typer.Option(None, "--image"),
     on_behalf_of: str | None = typer.Option(
@@ -249,7 +295,7 @@ def send(
         if source is None:
             if binding is None:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "--from is required outside a verified agent session",
                 )
             source_value = binding.actor
@@ -258,7 +304,7 @@ def send(
         summary_value = _require_summary(summary)
         text = " ".join(message).strip()
         if not text:
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, "message must not be empty")
+            raise services.CliError(codes.INVALID_ARGUMENT, "message must not be empty")
         resources = []
         for kind, paths in (("file", files or []), ("image", images or [])):
             for path in paths:
@@ -270,11 +316,12 @@ def send(
                         or "application/octet-stream",
                     }
                 )
+        claims = _message_claim_params(
+            source_value, on_behalf_of=on_behalf_of, binding=binding
+        )
         params: JsonObject = {
-            **_message_claim_params(
-                source_value, on_behalf_of=on_behalf_of, binding=binding
-            ),
-            "to": to,
+            **claims,
+            **({"to": to} if to else {}),
             "message": text,
             "summary": summary_value,
         }
@@ -284,6 +331,13 @@ def send(
             params["conversationId"] = conversation
         if reply_to is not None:
             params["replyTo"] = reply_to
+        if mentions:
+            members = (
+                read_members(services, claims, conversation)
+                if conversation is not None and is_group(conversation)
+                else []
+            )
+            params["mentions"] = [member_id(members, value) for value in mentions]
         if resources:
             params["resourcePaths"] = resources
         result = services.runtime.request("message.send", params)
@@ -310,7 +364,7 @@ def send(
 
 
 PROBE_TAG = "hyprial-probe"
-_PROBE_FAMILIES = ("agent", "user", "route")
+_PROBE_FAMILIES = ("agent", "user")
 
 
 def _probe_send(services: Any, source: str, target: str) -> dict[str, Any]:
@@ -351,14 +405,9 @@ def probe_delivery_paths(
         callback=_validate_from_identity,
         help="Local sending actor; defaults to the verified worker binding.",
     ),
-    route: str | None = typer.Option(
-        None,
-        "--route",
-        help="Configured route:<adapter>:<route> for the route-family probe.",
-    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Send one explicitly tagged probe through each delivery family."""
+    """Send one explicitly tagged probe through each delivery family (agent, user)."""
 
     services = get_services()
 
@@ -368,7 +417,7 @@ def probe_delivery_paths(
         if source is None:
             if binding is None:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "--from is required outside a verified agent session",
                 )
             source_value = binding.actor
@@ -391,11 +440,7 @@ def probe_delivery_paths(
             user_target: str | None = _local_operator_identity()
         except Exception:  # noqa: BLE001 - recorded below as a failed family
             user_target = None
-        targets = {
-            "agent": resolved,
-            "user": user_target,
-            "route": route,
-        }
+        targets = {"agent": resolved, "user": user_target}
         per_family: dict[str, Any] = {}
         for family in _PROBE_FAMILIES:
             target = targets[family]
@@ -403,13 +448,7 @@ def probe_delivery_paths(
                 per_family[family] = {
                     "target": None,
                     "accepted": False,
-                    "error": (
-                        "route target not supplied; create one with `hyprial "
-                        "adapter route add <adapter> <route>=<native-chat-id>` "
-                        "and pass --route route:<adapter>:<route>"
-                        if family == "route"
-                        else f"cannot derive {family} target from {resolved!r}"
-                    ),
+                    "error": f"cannot derive {family} target from {resolved!r}",
                 }
                 continue
             per_family[family] = _probe_send(services, source_value, target)
@@ -422,9 +461,8 @@ def probe_delivery_paths(
         state_dir = Path(services._hyprial_home()) / "state"
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = state_dir / "delivery-paths-probe.json"
-        temporary = path.with_name(path.name + ".tmp")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        os.chmod(temporary, 0o600)
         os.replace(temporary, path)
         return CliResult(payload, render=_render_probe)
 

@@ -25,7 +25,6 @@ from hyprial.identity import (
     write_device_record,
 )
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
-from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
 import hyprial.shell.impl.cli.commands.doctor.commands as _cli_owner_1
 import hyprial.shell.impl.cli.commands.init.init as _cli_owner_2
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
@@ -261,89 +260,6 @@ def test_doctor_keeps_single_daemon_failure_when_daemon_is_down(
     # the zenoh check is only meaningful against a running daemon.
     assert names == ["upgrade-steps", "tailcat-sidecar", "device-key", "delivery-paths", "daemon"]
     assert _checks(result)["daemon"]["status"] == "fail"
-
-
-def test_doctor_fails_when_dsh_service_is_down_even_if_connector_looks_running(
-    monkeypatch: Any,
-) -> None:
-    ps = _running_ps({"listen": ["tcp/127.0.0.1:7447"], "connect": []})
-    ps["connectors"] = [
-        {
-            "runtime": "dsh",
-            "name": "dsh-worker",
-            "running": True,
-            "endpoint": "http://127.0.0.1:13080",
-        }
-    ]
-
-    def unreachable(_endpoint: str, **_kwargs: Any) -> object:
-        raise RuntimeError("connection refused")
-
-    monkeypatch.setattr(_cli_get_services(), "_dsh_host_describe", unreachable)
-    result = _doctor(monkeypatch, ps)
-
-    # Mutation guard: removing the _dsh_doctor_check integration makes this
-    # lookup fail instead of allowing a process-liveness false green.
-    check = _checks(result)["dsh-endpoint"]
-    assert result["ok"] is False
-    assert check["status"] == "fail"
-    assert "DSH endpoint unreachable" in str(check["detail"])
-    assert "http://127.0.0.1:13080" in str(check["detail"])
-    assert check["metrics"]["unreachable"] == ["http://127.0.0.1:13080"]
-
-
-def test_doctor_reports_dsh_configuration_without_claiming_inference(
-    monkeypatch: Any,
-) -> None:
-    ps = _running_ps({"listen": ["tcp/127.0.0.1:7447"], "connect": []})
-    ps["connectors"] = [
-        {
-            "runtime": "dsh",
-            "name": "dsh-worker",
-            "running": True,
-            "endpoint": "http://127.0.0.1:13080",
-        }
-    ]
-    monkeypatch.setattr(
-        _cli_get_services(),
-        "_dsh_host_describe",
-        lambda endpoint, **kwargs: {"provider": "test-provider", "model": "test-model"},
-    )
-
-    result = _doctor(monkeypatch, ps)
-
-    check = _checks(result)["dsh-endpoint"]
-    assert check["status"] == "ok"
-    assert check["metrics"] == {
-        "endpoints": ["http://127.0.0.1:13080"],
-        "reachable": ["http://127.0.0.1:13080"],
-        "unreachable": [],
-        "missingModelConfiguration": [],
-        "unprobed": [],
-        "missingEndpoint": [],
-    }
-    assert "were not tested" in check["detail"]
-    assert result["ok"] is True
-
-
-def test_doctor_fails_when_dsh_has_no_configured_model(monkeypatch: Any) -> None:
-    ps = _running_ps({"listen": ["tcp/127.0.0.1:7447"], "connect": []})
-    ps["connectors"] = [
-        {
-            "runtime": "dsh",
-            "name": "dsh-worker",
-            "running": True,
-            "endpoint": "http://127.0.0.1:13080",
-        }
-    ]
-    monkeypatch.setattr(_cli_get_services(), "_dsh_host_describe", lambda endpoint, **kwargs: {})
-
-    result = _doctor(monkeypatch, ps)
-
-    check = _checks(result)["dsh-endpoint"]
-    assert check["status"] == "fail"
-    assert check["metrics"]["missingModelConfiguration"] == ["http://127.0.0.1:13080"]
-    assert result["ok"] is False
 
 
 def test_doctor_fails_when_lark_process_is_alive_but_inbound_is_stale(

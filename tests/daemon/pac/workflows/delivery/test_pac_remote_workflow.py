@@ -60,7 +60,7 @@ class Sender(NullSender):
         return self.app.remote.send(request, **kwargs)
 
 
-def application(tmp_path, name, mesh):
+def application(tmp_path, name, mesh, actor_host):
     actor = f"agent:test:{name}:borrowed"
     app = SimpleNamespace(
         owner="test",
@@ -69,6 +69,9 @@ def application(tmp_path, name, mesh):
         _dispatch_service_actor=f"agent:test:{name}:dispatch-coordinator",
         _log=lambda *a, **kw: None,
         _pac_notification_io=IO(),
+        _agent_session_domains=SimpleNamespace(
+            actor_hosts=SimpleNamespace(host_for=lambda _owner: actor_host),
+        ),
     )
     app.agents = SimpleNamespace(
         get=lambda uri: (
@@ -90,9 +93,9 @@ def application(tmp_path, name, mesh):
 
 
 @pytest.fixture
-def pair(tmp_path):
+def pair(tmp_path, actor_host):
     mesh = Mesh()
-    a, b = [application(tmp_path, name, mesh) for name in ("origin", "executor")]
+    a, b = [application(tmp_path, name, mesh, actor_host) for name in ("origin", "executor")]
     yield a, b, mesh
     for app in (a, b):
         app.remote.close()

@@ -42,7 +42,6 @@ def test_canonical_principals_parse(value, kind, owner, machine, actor):
         "host:machine",  # a node is not a responsible party
         "route:lark:chat",  # a route is a delivery exit
         "adapter:allen:machine:lark",  # an adapter is a delivery exit
-        "channel:lark:chat",  # a channel is a delivery exit
         "user: allen",  # leading whitespace inside the URI
         "user:allen ",  # trailing whitespace
         "agent:allen:test node:x",  # inner whitespace

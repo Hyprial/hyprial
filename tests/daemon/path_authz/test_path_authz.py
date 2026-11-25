@@ -7,8 +7,8 @@ the hyprial home's ``secrets``, and a symlink swapped in after the check.
 
 from __future__ import annotations
 
+import builtins
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -23,7 +23,6 @@ from hyprial.daemon.impl.path_authz import (
     REASON_OUTSIDE_ALLOWED_ROOTS,
     REASON_SYMLINK,
     REASON_TOO_LARGE,
-    REASON_UNVERIFIED,
     PathRefused,
     operator_policy,
     read_authorized_file,
@@ -163,12 +162,12 @@ def test_state_dir_outside_the_home_is_refused_too(layout: dict[str, Path]) -> N
 def test_case_variant_of_the_home_is_refused_before_open(
     layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # On a case-insensitive volume realpath keeps ".HYPRIAL-HOME"; the
-    # decision must not depend on the descriptor re-check to catch it.
     variant = layout["root"] / "HYPRIAL-HOME" / "secrets" / "lark.json"
     if not variant.exists():
         pytest.skip("case-sensitive filesystem")
-    monkeypatch.setattr(policy_module, "_descriptor_path", lambda fd: None)
+    monkeypatch.setattr(
+        builtins, "open", lambda *_args, **_kwargs: pytest.fail("must not open")
+    )
 
     for policy in (_session(layout), operator_policy(layout["home"])):
         assert _refused(variant, policy, REASON_HYPRIAL_HOME).path is None
@@ -214,32 +213,25 @@ def test_workspace_replaced_by_a_symlink_is_not_trusted(
     assert failure.value.reason in {REASON_HYPRIAL_HOME, REASON_OTHER_AGENT_HOME}
 
 
-@pytest.mark.skipif(
-    not (sys.platform == "darwin" or sys.platform.startswith("linux")),
-    reason="the descriptor path is required only where the platform reports it",
-)
-def test_unreadable_descriptor_path_fails_closed(
+def test_reparse_point_target_and_ancestor_are_refused(
     layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (layout["repo"] / "report.txt").write_text("fine")
-    if sys.platform == "darwin":
-        import fcntl
+    nested = layout["repo"] / "dir"
+    nested.mkdir()
+    target = nested / "report.txt"
+    target.write_text("fine")
+    target_ino = os.lstat(target).st_ino
+    nested_ino = os.lstat(nested).st_ino
 
-        def broken(*_args):
-            raise OSError("F_GETPATH failed")
+    monkeypatch.setattr(
+        policy_module, "path_is_reparse", lambda meta: meta.st_ino == target_ino
+    )
+    _refused(target, _session(layout), REASON_SYMLINK)
 
-        monkeypatch.setattr(fcntl, "fcntl", broken)
-    else:
-        real_readlink = os.readlink
-
-        def broken(path, *args, **kwargs):
-            if str(path).startswith("/proc/self/fd/"):
-                raise OSError("no /proc")
-            return real_readlink(path, *args, **kwargs)
-
-        monkeypatch.setattr(os, "readlink", broken)
-
-    assert _refused(layout["repo"] / "report.txt", _session(layout), REASON_UNVERIFIED).path is None
+    monkeypatch.setattr(
+        policy_module, "path_is_reparse", lambda meta: meta.st_ino == nested_ino
+    )
+    _refused(target, _session(layout), REASON_SYMLINK)
 
 
 def test_too_broad_cwd_is_not_a_root(layout: dict[str, Path]) -> None:
@@ -272,7 +264,7 @@ def test_fifo_is_refused_without_blocking(layout: dict[str, Path]) -> None:
     _refused(fifo, _session(layout), REASON_NOT_REGULAR)
 
 
-@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="needs O_NOFOLLOW")
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
 def test_symlink_swapped_in_after_the_check_is_refused(
     layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -293,10 +285,7 @@ def test_symlink_swapped_in_after_the_check_is_refused(
     _refused(target, _session(layout), REASON_SYMLINK)
 
 
-@pytest.mark.skipif(
-    not (sys.platform == "darwin" or sys.platform.startswith("linux")),
-    reason="needs the descriptor's own path",
-)
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
 def test_parent_directory_swapped_after_the_check_is_judged_where_it_landed(
     layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

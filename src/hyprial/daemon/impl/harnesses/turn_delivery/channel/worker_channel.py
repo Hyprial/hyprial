@@ -13,66 +13,66 @@ the worker, ``harness_read`` reads the worker's canonical inbox, and
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from hyprial.kernel import child_state_environment
+from hyprial.daemon.impl.harnesses.turn_delivery.channel.templates import (
+    load_worker_channel_template,
+)
 
 if TYPE_CHECKING:
     from hyprial.identity import AgentRuntimeContext
 
-# The harness tools a managed worker is pre-authorized to call, mirroring the
-# interactive path's allow-list, so a headless worker's proactive send or read
-# never stalls on an unanswerable permission prompt.  The two workflow tools
-# are how a worker with no shell completes or fails its own PAC node
-# (org-improver, 2026-09-24: every claude-tier node stayed requested until
-# its deadline because `hyprial workflow complete` needs Bash).
-WORKER_HARNESS_TOOLS = (
-    "harness_ack",
-    "harness_delegate",
-    "harness_progress",
-    "harness_read",
-    "harness_read_body",
-    "harness_reply",
-    "harness_send",
-    "harness_targets",
-    "harness_whoami",
-    "workflow_complete",
-    "workflow_fail",
-)
+WORKER_HARNESS_TOOLS = load_worker_channel_template("managed-worker").harness_tools
 
 
-#: Product CLI commands a managed worker may run without a permission prompt.
-#: Only the ``hyprial`` entry point is allowed, never arbitrary shell, so
-#: ``hyprial workflow ...`` works from a headless worker while ``cat``/``rm``
-#: still need an approval that the worker cannot obtain.  ``<cmd>:*`` is the
-#: glob-prefix form already validated against a live isolated CC (see
-#: ``contract/e2e/run-cc-tui-worker.py``).
-WORKER_CLI_ALLOW_TOOLS = ("Bash(hyprial:*)",)
+@dataclass(frozen=True, slots=True)
+class WorkerAuthorityPolicy:
+    """The adapter-produced launch option bundle for one managed worker."""
 
+    launch_options: Mapping[str, object]
+    version: int
 
-#: Product commands that change daemon, org, or home state.  Allen 2026-10-17:
-#: allow the CLI but deny these, because ``Bash(hyprial:*)`` also matches
-#: ``hyprial daemon restart``. Claude Code evaluates deny before allow, so the
-#: overlapping allow cannot carve an exception out of these rules. The same
-#: ruling tightened the list: ``agent stop``/``upgrade`` are deploy and
-#: operations work that belongs to the infra controlled window, and
-#: ``agent destroy`` is destructive. ``daemon`` stays as-is -- its read-only
-#: ``status`` is denied with the rest, which Allen accepted. Keep these sorted.
-WORKER_CLI_DENY_TOOLS = (
-    "Bash(hyprial agent destroy:*)",
-    "Bash(hyprial agent stop:*)",
-    "Bash(hyprial daemon upgrade:*)",
-    "Bash(hyprial daemon:*)",
-    "Bash(hyprial init:*)",
-    "Bash(hyprial org:*)",
-)
+    def __post_init__(self) -> None:
+        if not isinstance(self.launch_options, Mapping):
+            raise ValueError("worker authority launch options must be a mapping")
+        options = dict(self.launch_options)
+        if set(options) - {"allowedTools", "disallowedTools"}:
+            raise ValueError(
+                "worker authority launch options contain unsupported keys"
+            )
+        allowed = options.get("allowedTools")
+        if not isinstance(allowed, list) or any(
+            not isinstance(item, str) or not item for item in allowed
+        ):
+            raise ValueError(
+                "worker authority allowedTools must be a list of non-empty strings"
+            )
+        denied = options.get("disallowedTools")
+        if denied is not None and (
+            not isinstance(denied, list)
+            or any(not isinstance(item, str) or not item for item in denied)
+        ):
+            raise ValueError(
+                "worker authority disallowedTools must be a list of non-empty strings"
+            )
+        if type(self.version) is not int or self.version < 1:
+            raise ValueError("worker authority version must be a positive int")
+        object.__setattr__(self, "launch_options", MappingProxyType(options))
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerChannel:
-    """One managed worker's own Harness identity and daemon wiring."""
+    """One managed worker's own Harness identity and daemon wiring.
+
+    ``allowed_tools``/``disallowed_tools`` are the member policy of the cell
+    document (``authority``) when one is declared; without one the channel
+    carries only its own bridge tool names and no deny rules.
+    """
 
     actor: str
     session_ref: str
@@ -80,11 +80,8 @@ class WorkerChannel:
     state_dir: Path
     mcp_server: dict[str, object]
     allowed_tools: tuple[str, ...]
-    #: Deny rules forwarded together with ``allowed_tools``; empty means the
-    #: caller supplied no policy.  A managed channel always populates it:
-    #: allowing the CLI while omitting its state-changing commands is the
-    #: failure mode this list exists to prevent.
     disallowed_tools: tuple[str, ...] = ()
+    authority: WorkerAuthorityPolicy | None = None
     # Daemon-authority identity (P1b B1 / L3): the node id and owner THIS
     # daemon resolved at startup.  They are generated values in the child
     # env sense — never passed through from a parent process environment,
@@ -150,6 +147,8 @@ def build_worker_channel(
     node_id: str = "",
     owner: str = "",
     runtime_context: "AgentRuntimeContext | None" = None,
+    authority: WorkerAuthorityPolicy | None = None,
+    template_name: str = "managed-worker",
 ) -> WorkerChannel:
     """Compose the worker's harness-bridge stdio server pinned to this daemon.
 
@@ -157,11 +156,14 @@ def build_worker_channel(
     agent-channel`` process with the worker's canonical actor and a fresh
     session ref; its environment is sourced from the daemon (not the worker's
     inherited environment) so the stdio child always targets this daemon's
-    socket even under an ambient production override.
+    socket even under an ambient production override.  The tool lists come
+    from *authority* (the member's cell-document policy) or, without one, are
+    the bridge tool names alone: there is no in-code CLI allow or deny list.
     """
 
     if not actor or not session_ref:
         raise ValueError("worker channel requires actor and session_ref")
+    template = load_worker_channel_template(template_name)
     server: dict[str, object] = {
         "type": "stdio",
         "command": python_executable or sys.executable,
@@ -187,8 +189,14 @@ def build_worker_channel(
         state_dir=state_dir,
         mcp_server=server,
         allowed_tools=(
-            tuple(f"mcp__harness-bridge__{tool}" for tool in WORKER_HARNESS_TOOLS)
-            + WORKER_CLI_ALLOW_TOOLS
+            tuple(authority.launch_options["allowedTools"])
+            if authority is not None
+            else template.bridge_tools()
         ),
-        disallowed_tools=WORKER_CLI_DENY_TOOLS,
+        disallowed_tools=(
+            tuple(authority.launch_options.get("disallowedTools", ()))
+            if authority is not None
+            else ()
+        ),
+        authority=authority,
     )

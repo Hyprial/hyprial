@@ -9,9 +9,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from hyprial.kernel import ActorRuntime
+from typing import TYPE_CHECKING
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.kernel import ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,7 @@ class PresenceAuthority:
         self, *, capacity: int = 4096,
         confirm_present: Callable[[str, str, float], bool] | None = None,
         reconcile_timeout: float = 1.0,
+        actor_host: ActorHost | None = None,
     ):
         if not math.isfinite(reconcile_timeout) or reconcile_timeout <= 0:
             raise ValueError("presence reconcile timeout must be positive")
@@ -74,8 +79,9 @@ class PresenceAuthority:
         self._actors: set[str] = set()
         self._mailboxes: set[str] = set()
         self._projection = PresenceProjection(1)
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._hosts = ActorHostCustody(actor_host, owner="transport")
+        host = self._hosts.host
+        self._cell = host.spawn(
             ActorSpec(
                 name="presence",
                 handler_factory=lambda: self._receive,
@@ -84,14 +90,16 @@ class PresenceAuthority:
         )
         if confirm_present is not None:
             try:
-                self._delete_effects = EffectLane(
+                self._delete_effects = host.effect_lane(
                     name="presence-delete-reconcile", execute=self._probe,
-                    complete=lambda result: self._runtime.tell(self._handle, result),
+                    complete=lambda result: self._cell.tell(result),
                     capacity=capacity, workers=1,
                 )
             except BaseException as error:
-                if not self._runtime.stop(self._handle, timeout=1.0):
+                if not self._cell.drain(1.0).complete:
                     error.add_note("presence mailbox construction rollback did not drain")
+                if not self._hosts.shutdown(1.0):
+                    error.add_note("presence actor host did not stop during construction rollback")
                 raise
 
     def change(
@@ -117,7 +125,7 @@ class PresenceAuthority:
             elif len(self._accepted) >= self._custody_limit:
                 result = AdmissionResult.OVERLOADED
             else:
-                result = self._runtime.tell(self._handle, command)
+                result = self._cell.tell(command)
             if result is AdmissionResult.ACCEPTED:
                 self._accepted.add(command.revision)
                 self._latest[(kind, identity)] = command
@@ -346,7 +354,9 @@ class PresenceAuthority:
             if not self._delete_effects.close(max(0.0, deadline - time.monotonic())):
                 self.stop_after_drain()
                 return False  # retain I/O custody, then stop without a caller retry
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        stopped = self._cell.drain(max(0.0, deadline - time.monotonic())).complete
+        self._hosts.shutdown(max(0.0, deadline - time.monotonic()))
+        return stopped
 
     def stop_after_drain(self) -> None:
         """Retain cleanup ownership after construction or close cannot finish."""
@@ -366,4 +376,4 @@ class PresenceAuthority:
             self._stop_requested = True
         # All effect receipts are acknowledged before this nonblocking stop,
         # including when it is requested by our final completion handler.
-        self._runtime.stop(self._handle, timeout=0)
+        self._cell.stop(0)

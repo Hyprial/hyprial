@@ -119,6 +119,70 @@ operator must stop all writers first. The local fence is not a global write lock
 `REVISION_CONFLICT` preserves the refused operation as history and requires a new
 preview/confirmation under a new operation ID; ambiguous failures replay exactly.
 
+## Tailnet shutdown and forget (OC7)
+
+`tailnet-shutdown` `{operationId, tailnetId, expectedRevision, confirmed,
+reason}` is a local command on the pinned authority only; remote callers and
+non-authority devices get `AUTHORITY_REQUIRED`. It requires `confirmed:true`
+(`CONFIRMATION_REQUIRED`), the current revision (`REVISION_CONFLICT`) and a
+non-empty `reason` of at most 1024 bytes (`BAD_REQUEST`), and writes a backup
+first (`MEMBERSHIP_BACKUP_FAILED`). It increments the revision, marks the
+tailnet `closed` with `closedAtMs`, tombstones every member row (address and
+derived keys cleared), revokes every invite, drops leases and suspends refresh.
+The receipt `{tailnetId, revision, closed:true, closedAtMs, backupPath,
+propagation:"lease-bounded"}` replays by `operationId`.
+
+A closed tailnet is terminal. Every operation except `roster-fetch`,
+`membership-status`, `tailnet-forget` and a `tailnet-shutdown` replay is
+refused with `MEMBER_REVOKED`, the code a tombstoned member already gets: after
+shutdown every row, the authority's included, is a tombstone. `roster-fetch`
+on a closed tailnet skips the member check, so former members that were
+offline at shutdown still learn the closure; the roster adds `closed:true` and
+`closedAtMs` (both omitted while open) and lists only tombstoned rows without
+addresses or derived keys. A member that applies a closed roster stores it as
+closed and drops its lease. `membership-status` rows carry a Boolean `closed`
+(`memberReady:false` when closed).
+
+`tailnet-forget` `{operationId, tailnetId, orgDeleted}` is local only (remote
+peers cannot reach it). It removes the local store entry and every receipt of
+that tailnet and keeps no receipt of its own, so a repeat returns
+`MEMBERSHIP_NOT_INITIALIZED`. A closed tailnet can always be forgotten. An open
+one can be forgotten only with the daemon's `orgDeleted:true` proof (the OrgFS
+`deleted` marker), otherwise `CONFIRMATION_REQUIRED`, and never by its
+authority: the authority of an open tailnet gets `LAST_AUTHORITY_REFUSED` and
+must shut it down first.
+
+The daemon's org deletion (`org.delete`) runs only on the authority, as the
+sidecar reports it (`role: "authority"`). It reads the unfiltered
+`membership-status` and treats a tailnet as absent only when the sidecar
+answered without its row or the home is network-isolated; an unavailable
+sidecar fails the call. It compares revision, authority and active device set
+with the preview before it writes the OrgFS tombstone, then calls
+`tailnet-shutdown`. The authority keeps the closed tailnet afterwards so the
+closed roster stays fetchable (OrgFS sync rides tailnet admission); the owner
+removes it with `org.leave`, which calls `tailnet-forget`. Members call
+`tailnet-forget` with `orgDeleted:true` from `org.leave` once they observe the
+`deleted` marker or a closed roster.
+
+Sidecar refusal codes surface through Python unchanged: the network service
+raises them as `OrgNetworkError(code)` and IPC returns that code as the daemon
+request error. The method registry rewrites any code not declared on the
+called method to `DAEMON_ERROR`, so each code the daemon can actually reach is
+declared on its method: `org.delete` declares `AUTHORITY_REQUIRED`,
+`REVISION_CONFLICT`, `MEMBERSHIP_BACKUP_FAILED`, `OPERATION_CONFLICT`,
+`MEMBERSHIP_LIMIT_EXCEEDED`, `BAD_REQUEST`, `AUTHORITY_UNREACHABLE` (no live
+sidecar), `FORWARD_PROTOCOL` (the sidecar exited) and
+`SIDECAR_PROTOCOL_MISMATCH`, all
+without error data (the daemon drops sidecar diagnostics from `org.delete`
+errors so a declared code is never rewritten); `org.leave` declares
+`LAST_AUTHORITY_REFUSED`, which the daemon raises itself before calling the
+sidecar. The daemon always sends `confirmed:true` and `orgDeleted:true`, so
+`CONFIRMATION_REQUIRED` is not reachable through it. `org.invite` and
+`org.remove` refuse an org with the `deleted` marker (`ORG_ALREADY_DELETED`)
+before a closed tailnet could answer `MEMBER_REVOKED`; redeeming an invite of a
+closed tailnet fails as before with `INVITE_INVALID` (the invite is revoked) or
+`MEMBER_REVOKED`, both declared on the join methods.
+
 Transitional trust bypasses OrgFS supplier/requester directory-member gates
 only on the private sidecar transport. It retains document/author validation,
 management permissions and sidecar admission. Zenoh ACL and complete inter-org
@@ -146,7 +210,7 @@ for both request-path and background membership commands:
 | --- | ---: | --- |
 | `invite-redeem` | 65 | Redeem plus roster fetch: two Go exchanges, each up to 30s |
 | `member-announce`, `roster-fetch`, `member-revoke` | 35 | One Go control exchange |
-| `membership-init`, `membership-status`, `invite-create`, `authority-repin` | 10 | Local command |
+| `membership-init`, `membership-status`, `invite-create`, `authority-repin`, `tailnet-shutdown`, `tailnet-forget` | 10 | Local command |
 | Join | 105 | Shared monotonic deadline across membership and bootstrap |
 | CLI join / pending autojoin / login autojoin | 120 | Outer IPC wait, including reply margin |
 

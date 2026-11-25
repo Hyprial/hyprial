@@ -475,12 +475,9 @@ class DeliveryCustodyRetryMixin:
                         (due_ms, message_id, due_ms),
                     )
                 else:
-                    # A held row is not eligible for an online wake: only the
-                    # link release (or TTL) may make it due (WP2 §3.6).
                     self._service._db.execute(
                         "UPDATE outbox SET next_attempt_ms = MIN(next_attempt_ms, ?) "
-                        "WHERE message_id = ? AND expires_at_ms > ? "
-                        "AND link_hold IS NULL",
+                        "WHERE message_id = ? AND expires_at_ms > ?",
                         (due_ms, message_id, due_ms),
                     )
     def _pop_current_completion(

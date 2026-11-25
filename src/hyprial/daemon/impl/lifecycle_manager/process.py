@@ -38,6 +38,7 @@ from .steps import (
     _command,
     _completion_provenance,
     _plan,
+    is_cell_member_effect_operation,
 )
 from .store import (
     _InjectedManagerCrash,
@@ -45,6 +46,7 @@ from .store import (
     _RECOVER_FAULT_EVENT_EVERY,
     _RECOVER_FAULT_EVENT_MIN_INTERVAL_S,
 )
+from hyprial.kernel import ipc_errors
 from .vocabulary import (
     LifecycleOperation,
     LifecyclePorts,
@@ -405,8 +407,25 @@ class LifecycleProcessManager:
             pass
 
     def _execute(self, operation_id: str) -> None:
-        operation = self._store.load(operation_id)
-        steps = _plan(operation)
+        if is_cell_member_effect_operation(operation_id):
+            self._store.set_state(
+                operation_id,
+                LifecycleState.FAILED,
+                "cell reconcile effects are driven by cell reconcile actor, not saga runner",
+                "LIFECYCLE_FAIL_CLOSED",
+            )
+            return
+        try:
+            operation = self._store.load(operation_id)
+            steps = _plan(operation)
+        except (KeyError, TypeError, ValueError) as error:
+            self._store.set_state(
+                operation_id,
+                LifecycleState.FAILED,
+                f"fail-closed unsupported lifecycle operation: {error}",
+                "LEGACY_OPERATION_UNSUPPORTED",
+            )
+            return
         if self._store.state(operation_id) is LifecycleState.COMPENSATING:
             prior = self._store.result(operation_id)
             self._compensate(
@@ -431,10 +450,10 @@ class LifecycleProcessManager:
                     )
                     self._store.set_state(
                         operation_id, LifecycleState.COMPENSATING, detail,
-                        "LIFECYCLE_OPERATION_TIMEOUT",
+                        ipc_errors.LIFECYCLE_OPERATION_TIMEOUT,
                     )
                     self._compensate(
-                        operation_id, steps, detail, "LIFECYCLE_OPERATION_TIMEOUT"
+                        operation_id, steps, detail, ipc_errors.LIFECYCLE_OPERATION_TIMEOUT
                     )
                     return
                 self._perform(operation_id, ordinal, step, "forward")
@@ -445,10 +464,10 @@ class LifecycleProcessManager:
                     )
                     self._store.set_state(
                         operation_id, LifecycleState.COMPENSATING, detail,
-                        "LIFECYCLE_OPERATION_TIMEOUT",
+                        ipc_errors.LIFECYCLE_OPERATION_TIMEOUT,
                     )
                     self._compensate(
-                        operation_id, steps, detail, "LIFECYCLE_OPERATION_TIMEOUT"
+                        operation_id, steps, detail, ipc_errors.LIFECYCLE_OPERATION_TIMEOUT
                     )
                     return
             self._store.set_state(operation_id, LifecycleState.COMPLETED)
@@ -479,7 +498,7 @@ class LifecycleProcessManager:
                     "lifecycle operation exceeded its "
                     f"{self._operation_deadline:g}s deadline with a step still unresolved"
                 )
-                code = "LIFECYCLE_OPERATION_TIMEOUT"
+                code = ipc_errors.LIFECYCLE_OPERATION_TIMEOUT
                 self._deadline_exceeded.add(operation_id)
                 if (
                     step.domain == "harness"
@@ -500,6 +519,7 @@ class LifecycleProcessManager:
                             receipt.correlation_id,
                             step.spec.harness.harness,
                             step.spec.harness.name,
+                            member=step.spec.harness.member,
                         )
                     )
                     request = LifecycleMutationRequest(
@@ -751,13 +771,13 @@ class LifecycleProcessManager:
                         return
             if admission is PortAdmission.CLOSING:
                 raise LifecycleStepFailed(
-                    f"{domain} command port is closing", code="PORT_CLOSING"
+                    f"{domain} command port is closing", code=ipc_errors.PORT_CLOSING
                 )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise LifecycleStepFailed(
                     f"{domain} command port stayed overloaded",
-                    code="PORT_OVERLOADED",
+                    code=ipc_errors.PORT_OVERLOADED,
                 )
             delay = self._backoff[min(attempt, len(self._backoff) - 1)]
             attempt += 1

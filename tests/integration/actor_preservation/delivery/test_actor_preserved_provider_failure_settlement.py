@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
 
 import json
@@ -37,6 +39,7 @@ from hyprial.daemon.impl.inbox import (
     MemoryDeliveryTransport,
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.actor_hosts import new_actor_host
 
 ACTOR = "agent:op:provider-failure-node:worker"
 SENDER = "agent:op:sender-node:dispatcher"
@@ -73,8 +76,8 @@ class _Harnesses:
     def streaming_actors(self) -> tuple[str, ...]:
         return ("worker",)
 
-    def dispatch(self, _name: str, delivery: HarnessDelivery) -> bool:
-        self.dispatched.append(delivery)
+    def dispatch(self, envelope: object) -> bool:
+        self.dispatched.append(envelope.input)  # type: ignore[attr-defined]
         return True
 
     def drain_progress(self) -> tuple[()]:
@@ -150,7 +153,6 @@ def _message(message_id: str) -> InboxMessage:
 def _inbox(
     database: Path, *, max_inbox_items: int = 10_000
 ) -> DeliveryCustodyFacade:
-    from tests.support.links.gate import permissive_admission_slot
 
     coordinator = DeliveryCustodyCoordinator(
         database,
@@ -158,9 +160,7 @@ def _inbox(
         _Events(),
         node_id="provider-failure-node",
         max_inbox_items=max_inbox_items,
-        # ACTOR->ACTOR dispatch is gated; keep this preservation suite about
-        # provider failure settlement with a permissive premise (wp4 T13).
-        service_options={"link_admission": permissive_admission_slot()},
+        actor_host=new_actor_host(),
     )
     return DeliveryCustodyFacade(coordinator, database)
 
@@ -174,6 +174,8 @@ def _bridge(
     blocking_failure_observer: Any = None,
     blocking_failure_identity: Any = None,
     blocked_actor: Any = None,
+    *,
+    actor_host,
 ) -> DaemonEventBridge:
     return DaemonEventBridge(
         state_dir=state,
@@ -193,7 +195,8 @@ def _bridge(
         ),
         blocking_failure_observer=blocking_failure_observer,
         blocking_failure_identity=blocking_failure_identity,
-        blocked_actor=blocked_actor,
+        blocked_actor=blocked_actor, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
 
 
@@ -235,14 +238,14 @@ def test_usage_limit_is_exactly_classified_as_permanent_provider_failure() -> No
 
 
 def test_permanent_failure_mints_terminal_tombstone_without_reply_ack_or_redispatch(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database, max_inbox_items=1)
     harnesses = _Harnesses()
     clock = {"now": 1_000}
     logs: list[tuple[str, str, str, dict[str, object]]] = []
-    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs, actor_host=actor_host)
     message = _message("permanent-1")
     assert inbox.receive(message, now_ms=1).acknowledged
     runtime.start()
@@ -362,13 +365,13 @@ def test_permanent_failure_mints_terminal_tombstone_without_reply_ack_or_redispa
 
 
 def test_transient_backoff_and_budget_survive_actor_and_daemon_rebuild(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     database = tmp_path / "inbox.sqlite3"
     inbox = _inbox(database)
     harnesses = _Harnesses()
     clock = {"now": 1_000}
-    runtime = _bridge(tmp_path, inbox, harnesses, clock)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     message = _message("transient-restart-1")
     assert inbox.receive(message, now_ms=1).acknowledged
     runtime.start()
@@ -412,7 +415,7 @@ def test_transient_backoff_and_budget_survive_actor_and_daemon_rebuild(
     inbox = _inbox(database)
     harnesses = _Harnesses()
     clock["now"] = 6_999
-    runtime = _bridge(tmp_path, inbox, harnesses, clock)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     runtime.start()
     try:
         assert runtime.on_timer().harness_deliveries == 0
@@ -623,7 +626,7 @@ def _wait_for(predicate: Any, *, timeout: float) -> bool:
 
 
 def test_blocking_failure_handoff_retained_until_agent_owner_ack(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = _Harnesses()
@@ -646,7 +649,7 @@ def test_blocking_failure_handoff_retained_until_agent_owner_ack(
         clock,
         blocking_failure_observer=observe,
         blocking_failure_identity=lambda _actor: identity["token"],
-        blocked_actor=blocked.__contains__,
+        blocked_actor=blocked.__contains__, actor_host=actor_host,
     )
     message = _message("limited-block")
     assert inbox.receive(message, now_ms=1).acknowledged
@@ -678,8 +681,14 @@ def test_blocking_failure_handoff_retained_until_agent_owner_ack(
         inbox.close()
 
 
+def test_blocking_failure_requires_host() -> None:
+    with pytest.raises(ValueError, match="host"):
+        BlockingFailureAuthority(block=lambda *args: None, notify=lambda *args: None)
+
+
 def test_rate_limited_failure_settles_terminal_without_blocking_the_agent(
     tmp_path: Path,
+    actor_host,
 ) -> None:
     """A 429 stops THIS message; it must never disable the agent.
 
@@ -701,6 +710,7 @@ def test_rate_limited_failure_settles_terminal_without_blocking_the_agent(
     registry.create("worker", cwd=str(tmp_path))
     owner_notices: list[tuple[str, str]] = []
     authority = BlockingFailureAuthority(
+        actor_host=actor_host,
         block=lambda recipient, reason, expected_token: registry.block_agent(
             recipient, reason=reason, expected_entity_token=expected_token
         ),
@@ -724,7 +734,7 @@ def test_rate_limited_failure_settles_terminal_without_blocking_the_agent(
             if (item := registry.get(actor)) is not None
             else None
         ),
-        blocked_actor=registry.is_blocked,
+        blocked_actor=registry.is_blocked, actor_host=actor_host,
     )
     message = _message("rate-limited-1")
     assert inbox.receive(message, now_ms=1).acknowledged
@@ -784,7 +794,7 @@ def test_rate_limited_failure_settles_terminal_without_blocking_the_agent(
 
 
 def test_blocking_failure_capacity_retains_parent_claim_before_settlement(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = _Harnesses()
@@ -806,7 +816,7 @@ def test_blocking_failure_capacity_retains_parent_claim_before_settlement(
         harnesses,
         clock,
         blocking_failure_observer=observe,
-        blocking_failure_identity=lambda _actor: "target-entity",
+        blocking_failure_identity=lambda _actor: "target-entity", actor_host=actor_host,
     )
     runtime._blocking_failure_capacity = 1
     message = _message("limited-capacity")
@@ -851,6 +861,7 @@ def test_blocking_failure_capacity_retains_parent_claim_before_settlement(
 
 def test_stop_retains_overloaded_blocking_failure_until_transfer(
     tmp_path: Path,
+    actor_host,
 ) -> None:
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = _Harnesses()
@@ -876,6 +887,7 @@ def test_stop_retains_overloaded_blocking_failure_until_transfer(
         return SimpleNamespace(delivered=True)
 
     authority = BlockingFailureAuthority(
+        actor_host=actor_host,
         block=block,
         notify=notify,
         capacity=1,
@@ -894,7 +906,7 @@ def test_stop_retains_overloaded_blocking_failure_until_transfer(
         harnesses,
         clock,
         blocking_failure_observer=observe,
-        blocking_failure_identity=lambda _actor: "entity-1",
+        blocking_failure_identity=lambda _actor: "entity-1", actor_host=actor_host,
     )
     runtime.start()
     try:
@@ -932,7 +944,7 @@ def test_stop_retains_overloaded_blocking_failure_until_transfer(
 
 
 def test_block_projection_gates_dispatch_and_unblock_releases_without_sqlite(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = _Harnesses()
@@ -943,7 +955,7 @@ def test_block_projection_gates_dispatch_and_unblock_releases_without_sqlite(
         inbox,
         harnesses,
         clock,
-        blocked_actor=blocked.__contains__,
+        blocked_actor=blocked.__contains__, actor_host=actor_host,
     )
     message = _message("blocked-projection")
     assert inbox.receive(message, now_ms=clock["now"]).acknowledged

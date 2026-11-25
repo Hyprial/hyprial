@@ -26,14 +26,18 @@ import errno
 import json
 import math
 import os
-from pathlib import Path
 import socket
+from pathlib import Path
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import uuid4 as _stdlib_uuid4
 
 from hyprial.kernel.impl.contracts.daemon import ipc_errors
 from hyprial.kernel.impl.contracts.ports import RequestPortError
+from .cancellation import current_request_cancellation
+
+if TYPE_CHECKING:
+    from hyprial.kernel.impl.manysys.interface import LocalIpcStream
 
 
 JsonObject = dict[str, Any]
@@ -43,16 +47,6 @@ JsonObject = dict[str, Any]
 #: macOS spelling, ECONNRESET the Linux one; discriminate by errno, not by
 #: exception class, so a third platform cannot introduce a third spelling.
 _PEER_GONE_ERRNOS = frozenset({errno.EPIPE, errno.ECONNRESET})
-
-
-#: Linux answers connect() to a full AF_UNIX accept queue with an immediate
-#: EAGAIN even on a timeout socket; a patient caller must retry within its
-#: budget or a healthy request looks starved.  EWOULDBLOCK is the same value
-#: on POSIX but is listed so the intent survives a platform where they diverge.
-_CONNECT_BACKLOG_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK})
-
-
-_CONNECT_BACKLOG_RETRY_INTERVAL = 0.01
 
 
 _RESTORE_WAIT_POLL_SECONDS = 0.25
@@ -111,40 +105,37 @@ def _restore_wait_budget() -> float:
 
 def _connect_daemon_socket(
     socket_path: Path, timeout: float, *, clock: object | None = None
-) -> socket.socket:
-    """Connect to the daemon, waiting out a momentarily full listen backlog.
+) -> "LocalIpcStream":
+    """Connect to the daemon through the local IPC seam.
 
-    The retry budget is the request's own ``timeout``: the kernel only parks a
-    connect() against a full AF_UNIX accept queue for fully blocking sockets,
-    and this caller always runs with a timeout, so patience has to be
-    explicit.  Only the full-backlog spelling (EAGAIN/EWOULDBLOCK) is retried
-    -- ECONNREFUSED still fails fast because it also describes a stale socket
-    file whose daemon is gone, which must not take the whole budget to report.
+    The seam picks the platform backend (AF_UNIX, or the Windows named pipe)
+    and owns the backlog patience: the retry budget is the request's own
+    ``timeout``, only the full-backlog spelling (EAGAIN/EWOULDBLOCK) is
+    retried, and ECONNREFUSED still fails fast.  This name stays as the
+    client module's monkeypatch seam; tests replace it wholesale.
     """
 
-    if os.name == "nt":
-        # Resolved at connection time, not import time: the port function is a
-        # monkeypatch seam and the base client imported it lazily here.
-        from hyprial.kernel.impl.platform.ports import connect_named_pipe
+    from hyprial.kernel.impl.manysys.interface import connect_local_ipc
 
-        return connect_named_pipe(socket_path, timeout)
-    clock = time if clock is None else clock
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(timeout)
-    deadline = clock.monotonic() + timeout
+    return connect_local_ipc(socket_path, timeout, clock=clock)
+
+
+def daemon_socket_absent(socket_path: Path, timeout: float = 0.5) -> bool:
+    """True only when nothing is bound or listening at ``socket_path``.
+
+    A connect with no frame: the answer is yes when the socket file is missing
+    or the connection is refused (a stale file), and no for any other outcome,
+    including a live daemon that is slow to accept.  Nothing is ever sent.
+    """
+
     try:
-        while True:
-            try:
-                client.connect(str(socket_path))
-            except OSError as error:
-                if error.errno in _CONNECT_BACKLOG_ERRNOS and clock.monotonic() < deadline:
-                    clock.sleep(_CONNECT_BACKLOG_RETRY_INTERVAL)
-                    continue
-                raise
-            return client
-    except BaseException:
-        client.close()
-        raise
+        client = _connect_daemon_socket(socket_path, timeout)
+    except (FileNotFoundError, ConnectionRefusedError):
+        return True
+    except OSError:
+        return False
+    client.close()
+    return False
 
 
 def _peer_gone(
@@ -163,6 +154,7 @@ def daemon_request(
     *,
     socket_path: Path | Callable[[], Path],
     timeout: float | None = None,
+    timeout_allowance: float = 0.0,
     restore_wait: float | None = None,
     clock: object | Callable[[], object] | None = None,
     uuid4: Callable[[], Any] | None = None,
@@ -173,7 +165,8 @@ def daemon_request(
     endpoint and the service binding are re-resolved on every attempt, because a daemon that
     is still restoring may move its socket or be reached through a different
     state root between attempts.  The restore budget's deadline stays
-    anchored to the clock resolved at the first attempt.
+    anchored to the clock resolved at the first attempt. ``timeout_allowance``
+    extends the resolved per-attempt timeout once, without changing restore wait.
     """
 
     resolve_clock = clock if callable(clock) else (lambda: clock)
@@ -182,6 +175,8 @@ def daemon_request(
     active = time if active is None else active
     if timeout is None:
         timeout = _daemon_ipc_roundtrip_seconds()
+    if timeout_allowance:
+        timeout += timeout_allowance
     budget = _restore_wait_budget() if restore_wait is None else restore_wait
     deadline = active.monotonic() + budget
     while True:
@@ -223,8 +218,12 @@ def daemon_request_once(
     frame: JsonObject = {"version": 1, "id": request_id, "method": method}
     if params is not None:
         frame["params"] = params
-    client: socket.socket | None = None
+    client: "LocalIpcStream | None" = None
+    cancellation = current_request_cancellation() if method == "agent.secret.provider-test" else None
+    unsubscribe = None
     try:
+        if cancellation is not None and cancellation.cancelled:
+            raise ipc_errors.DaemonDisconnectedError("credential probe cancelled before dispatch")
         try:
             client = _connect_daemon_socket(socket_path, timeout, clock=clock)
         except OSError as error:
@@ -237,6 +236,14 @@ def daemon_request_once(
                 f"cannot connect to the Harness daemon socket "
                 f"{socket_path}: {error}"
             ) from error
+        if cancellation is not None:
+            def disconnect() -> None:
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+            unsubscribe = cancellation.subscribe(disconnect)
         try:
             client.sendall(json.dumps(frame, separators=(",", ":")).encode() + b"\n")
         except OSError as error:
@@ -308,5 +315,7 @@ def daemon_request_once(
             f"{socket_path} to answer method {method!r}",
         ) from error
     finally:
+        if unsubscribe is not None:
+            unsubscribe()
         if client is not None:
             client.close()

@@ -30,7 +30,6 @@ class StatefulResumeDaemon:
                 "cwd": str(cwd),
                 "provider": "openai",
                 "model": "gpt-6-astra",
-                "pinnedAdapters": ["isolated-test-adapter"],
                 "capabilities": {
                     "harness": "codex",
                     "provider": "openai",
@@ -426,7 +425,6 @@ def test_interactive_codex_resume_precommit_failures_preserve_all_persistent_sta
 
     assert raised.value.code == "CODEX_RESUME_TUI_ATTACH_FAILED"
     assert daemon.snapshot() == before
-    assert before["agent"]["pinnedAdapters"] == ["isolated-test-adapter"]  # type: ignore[index]
     assert "session.register_guarded" not in [method for method, _ in daemon.calls]
     assert len(processes) == 1
 

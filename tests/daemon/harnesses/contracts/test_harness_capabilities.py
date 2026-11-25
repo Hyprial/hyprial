@@ -28,16 +28,14 @@ EXPECTED_ROWS = {
     ("pi", True),
     ("codex", False),
     ("codex", True),
-    ("dsh", False),
-    ("dsh", True),
     ("jev", False),
     ("jev", True),
-    ("user-proxy", False),
-    ("user-proxy", True),
+    ("agy", False),
+    ("agy", True),
 }
 
 KNOWN_MECHANISMS = frozenset(
-    {"channel", "agent_sdk", "rpc", "app_server", "dsh_api", "dsh_tui", "pty", "extension", "python_worker"}
+    {"channel", "agent_sdk", "rpc", "app_server", "extension", "python_worker", "acp"}
 )
 
 # Mechanism -> implementation symbols that must exist (declaration drift
@@ -53,22 +51,17 @@ MECHANISM_IMPLEMENTATIONS = {
         ("hyprial.daemon.impl.harnesses.codex", "CodexAppServerProcess"),
         ("hyprial.shell.impl.cli.commands.agent.runtime.sessions", "_start_interactive_codex"),
     ],
-    "dsh_api": [("hyprial.daemon.impl.harnesses.dsh", "DshHarnessProcess")],
-    "dsh_tui": [
-        ("hyprial.shell.impl.cli.commands.agent.runtime.dsh", "_start_interactive_dsh"),
-        ("hyprial.daemon.impl.harnesses.dsh_tui", "DshCarrierAdapter"),
-    ],
-    "pty": [("hyprial.daemon.impl.harnesses.protocol.common", "PtyHarnessProcess")],
     "extension": [
         ("hyprial.shell.impl.cli.commands.agent.runtime.sessions", "_start_interactive_pi"),
         ("hyprial.daemon.impl.harnesses.pi", "PI_HARNESS_ATTACH_EXTENSION"),
     ],
     "python_worker": [("hyprial.daemon.impl.harnesses.python_worker", "PythonHarnessProcess")],
+    "acp": [("hyprial.daemon.impl.harnesses.agy", "AgyAcpProcess")],
 }
 
 
 def test_every_declared_row_is_one_of_the_expected_pairs() -> None:
-    for harness in ("claude", "pi", "codex", "dsh", "jev", "user-proxy"):
+    for harness in ("claude", "pi", "codex", "jev", "agy"):
         for headless in (False, True):
             row = declare(harness, headless=headless)
             assert isinstance(row, dict)
@@ -93,7 +86,7 @@ def test_capability_support_rejects_unknown_mechanism() -> None:
 
 def test_capability_support_requires_note_when_degraded() -> None:
     with pytest.raises(ValueError, match="must note"):
-        CapabilitySupport(SupportLevel.DEGRADED, "pty")
+        CapabilitySupport(SupportLevel.DEGRADED, "channel")
 
 
 def test_declared_mechanisms_have_implementation_symbols() -> None:
@@ -114,28 +107,17 @@ def test_undeclared_harness_raises() -> None:
     # lark is an adapter, not a harness, and has no row tonight.
     with pytest.raises(KeyError):
         declare("lark", headless=True)
+    with pytest.raises(KeyError):
+        declare("user-proxy", headless=True)
 
 
-def test_jev_and_user_proxy_declare_bounded_python_workers() -> None:
+def test_jev_declares_a_bounded_python_worker() -> None:
     from hyprial.daemon.impl.harnesses.capabilities import HarnessConcurrency, concurrency
 
     jev = support("jev", headless=True, capability=Capability.HEADLESS_EXEC)
     assert jev is not None and jev.level is SupportLevel.NATIVE
     assert jev.mechanism == "python_worker"
     assert concurrency("jev", headless=True) == HarnessConcurrency("pool", 10)
-    proxy = support("user-proxy", headless=True, capability=Capability.HEADLESS_EXEC)
-    assert proxy is not None and proxy.level is SupportLevel.NATIVE
-    assert proxy.mechanism == "python_worker"
-    # A relay must keep order (design-user-proxy-harness.md §7).
-    assert concurrency("user-proxy", headless=True) == HarnessConcurrency("sequential", 1)
-
-
-def test_user_proxy_sends_only_as_a_forward() -> None:
-    send = support("user-proxy", headless=True, capability=Capability.PROACTIVE_SEND)
-    assert send is not None and send.level is SupportLevel.DEGRADED
-    assert "forward" in (send.note or "")
-    model = support("user-proxy", headless=True, capability=Capability.MODEL_SELECT)
-    assert model is not None and model.level is SupportLevel.UNSUPPORTED
 
 
 # --- Golden baseline assertions (change table + tests together to unlock) ---
@@ -253,12 +235,6 @@ def test_golden_codex_interactive_wake_push_is_app_server() -> None:
             frozenset({"skill", "pi-extension"}),
         ),
         ("codex", SupportLevel.DEGRADED, "app_server", frozenset({"mcp"})),
-        (
-            "dsh",
-            SupportLevel.DEGRADED,
-            "dsh_tui",
-            frozenset({"mcp"}),
-        ),
     ),
 )
 def test_golden_interactive_plugin_injection_is_declared_once(
@@ -302,73 +278,6 @@ def test_golden_codex_interactive_session_lifecycle_supports_exact_resume() -> N
     assert "daemon-restart recovery" in (entry.note or "")
 
 
-def test_golden_dsh_interactive_attach_is_the_tui_carrier() -> None:
-    entry = support("dsh", headless=False, capability=Capability.INTERACTIVE_ATTACH)
-    assert entry is not None
-    assert entry.level is SupportLevel.NATIVE
-    assert entry.mechanism == "dsh_tui"
-
-
-@pytest.mark.parametrize(
-    "capability",
-    [
-        Capability.WAKE_PUSH,
-        Capability.PROACTIVE_SEND,
-        Capability.TOOL_INJECTION,
-    ],
-)
-def test_golden_dsh_interactive_carrier_is_coordinator_capable(
-    capability: Capability,
-) -> None:
-    entry = support("dsh", headless=False, capability=capability)
-    assert entry is not None
-    assert entry.level is SupportLevel.NATIVE
-    assert entry.mechanism == "dsh_tui"
-
-
-def test_golden_dsh_interactive_model_selection_is_owned_by_the_tui() -> None:
-    entry = support("dsh", headless=False, capability=Capability.MODEL_SELECT)
-    assert entry is not None
-    assert entry.level is SupportLevel.UNSUPPORTED
-    assert "dsh-tui" in (entry.note or "")
-
-
-def test_golden_dsh_interactive_session_lifecycle_is_degraded_until_proven() -> None:
-    entry = support("dsh", headless=False, capability=Capability.SESSION_LIFECYCLE)
-    assert entry is not None
-    assert entry.level is SupportLevel.DEGRADED
-    assert entry.mechanism == "dsh_tui"
-    assert "daemon-restart recovery" in (entry.note or "")
-
-
-def test_golden_dsh_headless_exec_is_native_api() -> None:
-    entry = support("dsh", headless=True, capability=Capability.HEADLESS_EXEC)
-    assert entry is not None
-    assert entry.level is SupportLevel.NATIVE
-    assert entry.mechanism == "dsh_api"
-
-
-@pytest.mark.parametrize(
-    "capability", [Capability.PROACTIVE_SEND, Capability.TOOL_INJECTION]
-)
-def test_golden_dsh_headless_worker_tools_are_native_api(
-    capability: Capability,
-) -> None:
-    entry = support("dsh", headless=True, capability=capability)
-    assert entry is not None
-    assert entry.level is SupportLevel.NATIVE
-    assert entry.mechanism == "dsh_api"
-
-
-def test_golden_dsh_worker_session_is_not_resumed_across_daemon_restart() -> None:
-    entry = support("dsh", headless=True, capability=Capability.SESSION_LIFECYCLE)
-    assert entry is not None
-    assert entry.level is SupportLevel.DEGRADED
-    assert entry.mechanism == "dsh_api"
-    assert "fresh worker MCP identity" in (entry.note or "")
-    assert "daemon restart" in (entry.note or "")
-
-
 @pytest.mark.parametrize(
     "capability", [Capability.PROACTIVE_SEND, Capability.TOOL_INJECTION]
 )
@@ -381,7 +290,7 @@ def test_golden_codex_headless_worker_tools_are_native_app_server(
     assert entry.mechanism == "app_server"
 
 
-def test_golden_cc_managed_pi_and_dsh_can_coordinate() -> None:
+def test_golden_cc_managed_pi_and_codex_can_coordinate() -> None:
     """Coordinator = attach-or-exec plus wake/send/tools, all native.
 
     Pi headless joined the coordinator-capable set when the RPC worker grew
@@ -426,6 +335,5 @@ def test_golden_cc_managed_pi_and_dsh_can_coordinate() -> None:
         ("pi", True),
         ("codex", False),
         ("codex", True),
-        ("dsh", False),
-        ("dsh", True),
+        ("agy", True),
     }

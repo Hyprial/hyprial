@@ -1,4 +1,4 @@
-"""Contract Mock behavior: explicit scenarios, envelopes and fail-closed auth."""
+"""Contract Mock example loading and validation (the served mock is JavaScript)."""
 
 from __future__ import annotations
 
@@ -7,133 +7,67 @@ from pathlib import Path
 
 import pytest
 
-from contract_mock import ContractError, Envelope, MockService, load_contract
-from contract_mock.sensitive import SensitiveMaterialError
+import contract_mock.checks as checks
+from contract_mock import SCENARIOS, ContractError, check_contract, load_contract
+from contract_mock.contract import DEFAULT_CONTRACT
+from contract_mock.sensitive import SENTINEL, SensitiveMaterialError
 
-TOKEN = "mock-test-token"
+
+PROVIDER_KEY_METHODS = (
+    "agent.provider.allow", "agent.provider.revoke", "agent.provider.status",
+    "user.provider.list", "user.provider.login", "user.provider.logout", "user.provider.rotate",
+)
 
 
 def _contract(path: Path):
     return load_contract(path)
 
 
-def _service(
-    path: Path,
-    scenario: str = "success",
-    **overrides,
-) -> MockService:
-    contract = _contract(path)
-    return MockService(
-        contract,
-        Envelope(contract),
-        scenario=scenario,
-        token=TOKEN,
-        **overrides,
-    )
-
-
-def _envelope_validator(contract, kind: str):
-    from jsonschema import Draft202012Validator
-
-    return Draft202012Validator(contract.envelope_schema["$defs"][kind])
+@pytest.mark.parametrize("method", PROVIDER_KEY_METHODS)
+def test_local_operator_provider_key_examples(method: str) -> None:
+    document = json.loads(DEFAULT_CONTRACT.read_text(encoding="utf-8"))
+    declaration = next(item for item in document["x-hyprial-methods"] if item["name"] == method)
+    operation = document["paths"][f"/daemon/request/{method}"]["post"]
+    assert declaration["audience"] == ["local-operator"]
+    cases = operation.get("x-hyprial-examples", [])
+    assert {"success", "invalid-params", "domain-error"} <= {case["kind"] for case in cases}
+    assert cases == declaration["x-hyprial-examples"]
+    failures = {case["error"]["code"] for case in cases if case["kind"] == "domain-error"}
+    assert "CALLER_NOT_AUTHORIZED" in failures
+    assert failures - {"CALLER_NOT_AUTHORIZED"}
+    for case in cases:
+        for field in ("secret", "replaceSecret"):
+            if field in case["params"]:
+                assert case["params"][field] == SENTINEL
+        assert SENTINEL not in json.dumps(case.get("result", case.get("error")))
 
 
 def test_contract_loads_the_business_projection(contract_file: Path) -> None:
     contract = _contract(contract_file)
     assert set(contract.methods) == {"demo.list", "demo.write"}
-    assert contract.digest.startswith("sha256:")
     assert contract.contract_version == "1"
-    assert contract.methods["demo.list"].available_scenarios() == (
-        "success",
-        "empty",
-        "error",
-    )
+    assert [
+        scenario for scenario in SCENARIOS if contract.methods["demo.list"].cases_for(scenario)
+    ] == ["success", "empty", "error"]
     assert contract.methods["demo.write"].gap_for("empty")
 
 
-def test_success_envelope_matches_the_pinned_schema(contract_file: Path) -> None:
-    service = _service(contract_file)
-    response = service.handle("demo.list", {"filter": None}, f"Bearer {TOKEN}")
-    assert response.status == 200
-    assert response.payload["ok"] is True
-    assert response.payload["method"] == "demo.list"
-    assert response.payload["dispatch"] == "dispatched"
-    assert response.payload["result"] == {"ok": True, "items": ["alpha"]}
-    _envelope_validator(service.contract, "success").validate(response.payload)
-
-
-def test_empty_is_a_legal_success_and_unconfigured_is_explicit(
+def test_a_case_is_found_by_name_and_an_unknown_one_is_refused(
     contract_file: Path,
 ) -> None:
-    empty = _service(contract_file, scenario="empty")
-    response = empty.handle("demo.list", {"filter": "missing"}, f"Bearer {TOKEN}")
-    assert response.status == 200
-    assert response.payload["result"] == {"ok": True, "items": []}
-    missing = empty.handle("demo.write", {"actor": "a", "setupToken": "example-not-a-credential"}, f"Bearer {TOKEN}")
-    assert missing.status == 409
-    assert missing.payload["code"] == "MOCK_SCENARIO_MISSING"
-    assert "no legal empty result" in missing.payload["message"]
+    contract = _contract(contract_file)
+    assert contract.case("demo.list", "all")["kind"] == "success"
+    with pytest.raises(ContractError, match="no example case named"):
+        contract.case("demo.list", "no-such-case")
+    with pytest.raises(ContractError, match="unknown method"):
+        contract.case("no.such", "all")
 
 
-def test_domain_error_is_dispatched_with_the_transport_status(
-    contract_file: Path,
-) -> None:
-    service = _service(contract_file, scenario="error")
-    response = service.handle("demo.list", {"filter": None}, f"Bearer {TOKEN}")
-    assert response.status == 503
-    assert response.payload["ok"] is False
-    assert response.payload["code"] == "DAEMON_NOT_READY"
-    assert response.payload["dispatch"] == "dispatched"
-    assert response.payload["data"] == {"reason": "restore"}
-    _envelope_validator(service.contract, "error").validate(response.payload)
+def test_the_synthetic_contract_passes_the_checks(contract_file: Path) -> None:
+    check_contract(_contract(contract_file))
 
 
-def test_invalid_params_are_refused_before_dispatch(contract_file: Path) -> None:
-    service = _service(contract_file)
-    response = service.handle("demo.list", {"filter": 5}, f"Bearer {TOKEN}")
-    assert response.status == 400
-    assert response.payload["code"] == "INVALID_ARGUMENT"
-    assert response.payload["dispatch"] == "not-dispatched"
-    assert response.payload["method"] == "demo.list"
-    _envelope_validator(service.contract, "error").validate(response.payload)
-
-
-def test_auth_is_required_and_never_self_reported(contract_file: Path) -> None:
-    service = _service(contract_file)
-    for header in (None, "Bearer wrong", TOKEN):
-        response = service.handle("demo.list", {"filter": None}, header)
-        assert response.status == 401
-        assert response.payload["code"] == "HTTP_UNAUTHORIZED"
-        assert response.payload["dispatch"] == "not-dispatched"
-
-
-def test_unknown_method_is_a_404_without_dispatch(contract_file: Path) -> None:
-    service = _service(contract_file)
-    response = service.handle("demo.missing", {}, f"Bearer {TOKEN}")
-    assert response.status == 404
-    assert response.payload["code"] == "METHOD_NOT_FOUND"
-    assert response.payload["dispatch"] == "not-dispatched"
-
-
-def test_an_explicit_case_wins_over_the_global_scenario(
-    contract_file: Path,
-) -> None:
-    service = _service(
-        contract_file, scenario="success", method_cases={"demo.list": "daemon-restoring"}
-    )
-    response = service.handle("demo.list", {"filter": None}, f"Bearer {TOKEN}")
-    assert response.status == 503
-    assert response.payload["code"] == "DAEMON_NOT_READY"
-
-
-def test_an_unavailable_explicit_scenario_fails_at_startup(
-    contract_file: Path,
-) -> None:
-    with pytest.raises(ContractError, match="no legal empty result|no empty"):
-        _service(contract_file, method_scenarios={"demo.write": "empty"})
-
-
-def test_sensitive_material_is_rejected_before_serving(
+def test_sensitive_material_is_rejected_by_the_checks(
     contract_file: Path, tmp_path: Path
 ) -> None:
     document = json.loads(contract_file.read_text(encoding="utf-8"))
@@ -143,12 +77,27 @@ def test_sensitive_material_is_rejected_before_serving(
     tampered.write_text(json.dumps(document), encoding="utf-8")
     contract = load_contract(tampered)
     with pytest.raises(SensitiveMaterialError, match="synthetic sentinel"):
-        MockService(
-            contract,
-            Envelope(contract),
-            scenario="success",
-            token=TOKEN,
-        )
+        check_contract(contract)
+
+
+def test_check_contract_covers_the_real_projection(monkeypatch) -> None:
+    contract = load_contract()
+    built: list[str] = []
+    original = checks.Envelope
+
+    class Counting(original):
+        def success(self, method, request_id, result):
+            built.append(method)
+            return super().success(method, request_id, result)
+
+        def error(self, request_id, code, message, dispatch="not-dispatched", **kwargs):
+            built.append(kwargs["method"])
+            return super().error(request_id, code, message, dispatch, **kwargs)
+
+    monkeypatch.setattr(checks, "Envelope", Counting)
+    check_contract(contract)
+    assert len(built) == sum(len(method.examples) for method in contract.methods.values())
+    assert set(built) == set(contract.methods)
 
 
 def test_no_product_import_is_used_by_the_mock(contract_file: Path) -> None:
@@ -159,15 +108,6 @@ def test_no_product_import_is_used_by_the_mock(contract_file: Path) -> None:
         assert "import hyprial" not in text, source
 
 
-def test_contract_metadata_reports_scenarios_and_gaps(contract_file: Path) -> None:
-    service = _service(contract_file, scenario="empty")
-    document = service.contract_document()
-    assert document["mock"] is True
-    assert document["scenario"] == "empty"
-    assert document["methods"]["demo.list"]["scenarios"] == ["success", "empty", "error"]
-    assert document["methods"]["demo.write"]["gaps"]["empty"]
-    assert document["unsupportedForScenario"] == ["demo.write"]
-    assert document["skipped"] == {}
 
 
 def test_a_method_without_examples_is_skipped_not_faked(
@@ -197,79 +137,229 @@ def test_examples_without_any_mockable_method_are_blocked(
         load_contract(blocked)
 
 
-def test_the_mock_check_mode_is_explicit(contract_file: Path) -> None:
-    from contract_mock.server import main
-
-    exit_code = main(
-        [
-            "--openapi",
-            str(contract_file),
-            "--scenario",
-            "success",
-            "--token",
-            TOKEN,
-            "--check",
-        ]
-    )
-    assert exit_code == 0
-
-
-def test_a_schema_valid_semantic_error_is_served_as_dispatched(
-    contract_file: Path,
-) -> None:
-    service = _service(
-        contract_file,
-        scenario="error",
-        method_cases={"demo.list": "unknown-filter"},
-    )
-    response = service.handle(
-        "demo.list", {"filter": "unknown"}, f"Bearer {TOKEN}"
-    )
-    assert response.status == 400
-    assert response.payload["code"] == "INVALID_ARGUMENT"
-    assert response.payload["dispatch"] == "dispatched"
-    _envelope_validator(service.contract, "error").validate(response.payload)
-
-
-def test_non_object_schema_negative_survives_projection_and_pre_dispatch(
-    contract_file: Path,
-) -> None:
-    service = _service(contract_file)
-    cases = {case["name"]: case for case in service.contract.methods["demo.list"].examples}
-    assert cases["non-object-body"]["params"] == []
-    response = service.handle("demo.list", [], f"Bearer {TOKEN}")
-    assert response.status == 400
-    assert response.payload["code"] == "INVALID_ARGUMENT"
-    assert response.payload["dispatch"] == "not-dispatched"
-
-
-def test_the_real_five_method_projection_loads_and_serves_success(
+def test_the_real_registered_method_projection_loads_and_passes_the_checks(
     tmp_path: Path,
 ) -> None:
     from hyprial.daemon import daemon_openapi
 
+    document = daemon_openapi()
     path = tmp_path / "openapi.json"
-    path.write_text(json.dumps(daemon_openapi()), encoding="utf-8")
+    path.write_text(json.dumps(document), encoding="utf-8")
     contract = load_contract(path)
-    assert set(contract.methods) == {
+    expected_http_methods = {
+        *PROVIDER_KEY_METHODS,
+        "adapter.identities.list",
+        "adapter.identities.sync",
+        "adapter.register",
+        "adapter.authorization.status",
+        "adapter.authorization.begin",
+        "adapter.authorization.operation",
+        "adapter.authorization.cancel",
+        "adapter.onboard.begin",
+        "adapter.onboard.operation",
+        "adapter.onboard.cancel",
+        "adapter.routes.list",
+        "adapter.routes.candidates",
+        "adapter.routes.add",
+        "adapter.routes.remove",
+        "adapter.reload",
+        "management.adapter.remove",
+        "management.adapter.remove.preview",
+        "adapter.start",
+        "adapter.stop",
+        "adapter.list",
+        "adapter.status",
+        "agent.cell.get",
+        "agent.cell.update",
+        "message.history",
+        "message.query",
+        "message.send",
+        "message.send.key_lookup",
+        "message.send.lookup",
+        "targets",
+        "progress.list",
+        "agent.home-census",
         "agent.list",
         "agent.secret.list",
+        "agent.secret.grant",
+        "agent.secret.provider-write",
+        "agent.secret.provider-list",
+        "agent.secret.provider-configure",
+        "agent.secret.provider-test",
+        "agent.secret.revoke",
+        "agent.create",
+        "agent.destroy.preview",
+        "agent.destroy",
+        "agent.stop",
+        "agent.start",
         "agent.provider.default",
+        "agent.provider.auth.list",
         "agent.provider.login",
         "agent.provider.logout",
+        "routine.list",
+        "routine.status",
+        "workflow.list",
+        # The declared onboarding/auth methods are http_exposed and carry
+        # examples now, so the real projection is mockable for them too.
+        "onboarding.status",
+        "onboarding.device.ensure",
+        "onboarding.initialize",
+        "onboarding.firstRun.begin",
+        "onboarding.firstRun.bind",
+        "onboarding.firstRun.confirm",
+        "onboarding.firstRun.cancel",
+        "onboarding.firstRun.skip",
+        "auth.login.begin",
+        "auth.logout",
+        "auth.operation.cancel",
+        "auth.operation.get",
+        "auth.relogin",
+        "org.create",
+        "org.fetch",
+        "org.invite",
+        "org.join",
+        "org.list",
+        "org.invites.list",
+        "hosts",
+        "autoupdate.status",
+        "daemon.status",
+        "identity.users.list",
+        "log.page",
+        "upgrade.steps.status",
+        "identity.users.add",
+        "org.delete",
+        "org.execute",
+        "org.leave",
+        "org.network",
+        "org.publish",
+        "org.remove",
+        "org.repair",
+        "orgfs.checkout",
+        "orgfs.create",
+        "orgfs.export",
+        "orgfs.history",
+        "orgfs.import",
+        "orgfs.invite",
+        "orgfs.join",
+        "orgfs.ls",
+        "orgfs.members",
+        "orgfs.mkdir",
+        "orgfs.move",
+        "orgfs.purge",
+        "orgfs.purge_plan",
+        "orgfs.purge_status",
+        "orgfs.read",
+        "orgfs.read_at",
+        "orgfs.remove",
+        "orgfs.remove_member",
+        "orgfs.resolve",
+        "orgfs.restore",
+        "orgfs.serve",
+        "orgfs.space_purge",
+        "orgfs.spaces",
+        "orgfs.stat",
+        "orgfs.stat_at",
+        "orgfs.status",
+        "orgfs.trash",
+        "orgfs.unban",
+        "orgfs.watch",
+        "orgfs.write",
+        "top.snapshot",
+        "agent.rename",
+        # cell-model phase B first slice: HTTP-exposed conversation reads.
+        "conversations.history",
+        "conversations.list",
+        "conversations.create",
+        "conversations.get",
+        "conversations.members.add",
+        "conversations.members.remove",
+        "conversations.post",
     }
-    assert contract.skipped == {
-        "link.list": "no x-hyprial-examples",
-        "link.stats": "no x-hyprial-examples",
+    declarations = document["x-hyprial-methods"]
+    http_with_examples = {
+        entry["name"] for entry in declarations
+        if entry["httpExposed"] and entry.get("x-hyprial-examples")
     }
+    ipc_with_examples = {
+        entry["name"] for entry in declarations
+        if not entry["httpExposed"] and entry.get("x-hyprial-examples")
+    }
+    ipc_without_examples = {
+        entry["name"] for entry in declarations
+        if not entry["httpExposed"] and not entry.get("x-hyprial-examples")
+    }
+    assert http_with_examples == expected_http_methods
+    assert set(contract.methods) == expected_http_methods | ipc_with_examples
+    assert ipc_without_examples.isdisjoint(contract.methods)
+    for name in ipc_with_examples | ipc_without_examples:
+        assert f"/daemon/request/{name}" not in document["paths"]
+    assert contract.skipped == {}
     assert contract.methods["agent.provider.login"].gap_for("empty")
-    assert "unconfigured" in contract.methods["agent.provider.default"].available_scenarios()
-    service = MockService(
-        contract, Envelope(contract), scenario="success", token=TOKEN
-    )
+    assert contract.methods["agent.provider.default"].cases_for("unconfigured")
+    assert contract.methods["org.list"].cases_for("empty")
+    assert contract.methods["org.fetch"].cases_for("empty")
     for method in sorted(contract.methods):
-        case = service.selected_case(method)
-        assert case is not None, method
-        response = service.handle(method, case["params"], f"Bearer {TOKEN}")
-        assert response.status == 200, method
-        assert response.payload["ok"] is True, method
+        assert contract.methods[method].cases_for("success"), method
+    assert contract.methods["message.send"].echo == {"idempotencyKey": "operationId"}
+    assert contract.methods["message.send.key_lookup"].echo == {"operationKey": "commandId"}
+    assert contract.methods["message.send.lookup"].echo == {"idempotencyKey": "commandId"}
+    assert contract.methods["conversations.post"].echo == {"idempotencyKey": "operationId"}
+    check_contract(contract)
+
+
+def test_echo_validation_rejects_unknown_param_or_result_fields(
+    contract_file: Path, tmp_path: Path
+) -> None:
+    document = json.loads(contract_file.read_text(encoding="utf-8"))
+    operation = document["paths"]["/daemon/request/demo.write"]["post"]
+    operation["x-hyprial-mock-echo"] = {"actor": "missingResultField"}
+    bad_result = tmp_path / "bad-echo-result.json"
+    bad_result.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError, match="x-hyprial-mock-echo"):
+        load_contract(bad_result)
+
+    operation["x-hyprial-mock-echo"] = {"missingParam": "actor"}
+    bad_param = tmp_path / "bad-echo-param.json"
+    bad_param.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError, match="x-hyprial-mock-echo"):
+        load_contract(bad_param)
+
+
+@pytest.mark.parametrize("echo", [None, {}], ids=["null", "empty"])
+@pytest.mark.parametrize("location", ["path", "declaration"])
+def test_echo_validation_rejects_explicit_null_and_empty_mapping(
+    contract_file: Path, tmp_path: Path, echo: object, location: str
+) -> None:
+    document = json.loads(contract_file.read_text(encoding="utf-8"))
+    operation = document["paths"]["/daemon/request/demo.write"]["post"]
+    declaration = next(
+        entry for entry in document["x-hyprial-methods"] if entry["name"] == "demo.write"
+    )
+    if location == "path":
+        operation["x-hyprial-mock-echo"] = echo
+    else:
+        del operation["x-hyprial-examples"]
+        declaration["httpExposed"] = False
+        declaration["x-hyprial-mock-echo"] = echo
+    bad_echo = tmp_path / f"bad-echo-{location}-{echo is None}.json"
+    bad_echo.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError, match="x-hyprial-mock-echo"):
+        load_contract(bad_echo)
+
+
+def test_echo_validation_accepts_missing_echo_on_path_and_declaration(
+    contract_file: Path, tmp_path: Path
+) -> None:
+    document = json.loads(contract_file.read_text(encoding="utf-8"))
+    operation = document["paths"]["/daemon/request/demo.write"]["post"]
+    declaration = next(
+        entry for entry in document["x-hyprial-methods"] if entry["name"] == "demo.write"
+    )
+    operation.pop("x-hyprial-mock-echo", None)
+    del operation["x-hyprial-examples"]
+    declaration["httpExposed"] = False
+    declaration.pop("x-hyprial-mock-echo", None)
+    missing_echo = tmp_path / "missing-echo.json"
+    missing_echo.write_text(json.dumps(document), encoding="utf-8")
+    contract = load_contract(missing_echo)
+    assert contract.methods["demo.write"].echo == {}

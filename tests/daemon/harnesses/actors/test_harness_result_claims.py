@@ -9,6 +9,7 @@ from hyprial.daemon.impl.composition import CorrelatedDomainEvents, HarnessPortC
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.harnesses.actor import HarnessRuntimeActor
 from hyprial.daemon.impl.harnesses.runtime.ports import ClaimHarnessResultsCommand
+from tests.daemon.harnesses.actors.authority.support import _envelope, _steer_envelope
 
 
 class _Process:
@@ -75,13 +76,13 @@ def test_steer_routes_to_the_live_process_and_reports_acceptance() -> None:
         delivery = HarnessDelivery(
             "delivery-1", "conversation-1", "sender", "worker", "work"
         )
-        assert facade.dispatch("worker", delivery)
-        assert facade.steer("worker", "delivery-1") is True
+        assert facade.dispatch(_envelope(delivery))
+        assert facade.steer(_steer_envelope("worker", "delivery-1")) is True
         assert launcher.process.steers == ["delivery-1"]
         launcher.process.steer_answer = False
-        assert facade.steer("worker", "delivery-1") is False
+        assert facade.steer(_steer_envelope("worker", "delivery-1")) is False
         # An unknown name has no live process: explicit not-accepted.
-        assert facade.steer("nobody", "delivery-1") is False
+        assert facade.steer(_steer_envelope("nobody", "delivery-1")) is False
     finally:
         facade.stop(2.0)
 
@@ -110,16 +111,16 @@ def test_steer_port_client_reaches_the_live_actor_process() -> None:
     )
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
         # The bridge reads this exact attribute off this exact object.
         steer = getattr(client, "steer", None)
         assert callable(steer), "the live harnesses port exposes no steer"
-        assert steer("worker", delivery.delivery_id) is True
+        assert steer(_steer_envelope("worker", delivery.delivery_id)) is True
         assert launcher.process.steers == [delivery.delivery_id]
         launcher.process.steer_answer = False
-        assert steer("worker", delivery.delivery_id) is False
+        assert steer(_steer_envelope("worker", delivery.delivery_id)) is False
         # No live process under that name: explicit not-accepted, not silence.
-        assert steer("nobody", delivery.delivery_id) is False
+        assert steer(_steer_envelope("nobody", delivery.delivery_id)) is False
     finally:
         client.stop(2.0)
 
@@ -136,19 +137,19 @@ def test_claim_retains_delivery_fence_after_native_drain() -> None:
     )
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert client.dispatch("worker", delivery)
-        assert not client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
+        assert not client.dispatch(_envelope(delivery))
         claims = client.claim_results()
         assert len(claims) == 1
         first = claims[0]
         assert first.result.delivery_id == delivery.delivery_id
         assert launcher.process.results == []
         assert client.pending_result_delivery_ids() == frozenset({"delivery-1"})
-        assert not client.dispatch("worker", delivery)
+        assert not client.dispatch(_envelope(delivery))
         assert client.claim_results()[0].claim_token == first.claim_token
         assert client.settle_result(first.claim_token, "delivery-1")
         assert client.pending_result_delivery_ids() == frozenset()
-        assert client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
         second = client.claim_results()[0]
         assert second.claim_token != first.claim_token
         assert not client.settle_result(first.claim_token, "delivery-1")
@@ -172,11 +173,11 @@ def test_late_claim_completion_replays_without_releasing_offer_fence() -> None:
     launcher.process.drain_gate = gate
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
         assert actor.submit(ClaimHarnessResultsCommand("claim-late", 1)) is PortAdmission.ACCEPTED
         assert launcher.process.drain_entered.wait(1)
         assert client.pending_result_delivery_ids() == frozenset({"late-delivery"})
-        assert not client.dispatch("worker", delivery)
+        assert not client.dispatch(_envelope(delivery))
         gate.set()
         deadline = time.monotonic() + 1
         while not actor._claimed_results and time.monotonic() < deadline:
@@ -201,10 +202,10 @@ def test_bounded_claim_drains_only_admitted_results() -> None:
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
         for index in range(3):
-            assert client.dispatch("worker", HarnessDelivery(
+            assert client.dispatch(_envelope(HarnessDelivery(
                 f"bounded-{index}", f"conversation-{index}",
                 "sender", "worker", "work",
-            ))
+            )))
         first = client.claim_results(limit=1)
         assert len(first) == 1
         assert len(launcher.process.results) == 2
@@ -237,7 +238,7 @@ def test_old_claim_settlement_does_not_clear_replacement_reservation() -> None:
     )
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
         claim = client.claim_results()[0]
         original = actor._delivery_reservations[delivery.delivery_id]
         # Simulates a confirmed stop and new generation offer after the old
@@ -266,7 +267,7 @@ def test_confirmed_stop_waits_for_inflight_claim_before_reopening_offer() -> Non
     launcher.process.drain_gate = gate
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
         assert actor.submit(ClaimHarnessResultsCommand("claim-before-stop", 1)) is PortAdmission.ACCEPTED
         assert launcher.process.drain_entered.wait(1)
         reservation = actor._delivery_reservations[delivery.delivery_id]
@@ -306,10 +307,10 @@ def test_batch_dispatch_reserves_every_member() -> None:
     )
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
         assert launcher.process.deliveries == ["r1"]
         assert client.pending_result_delivery_ids() == frozenset({"r1", "r2"})
-        assert not client.dispatch("worker", delivery)
+        assert not client.dispatch(_envelope(delivery))
         claim = client.claim_results()[0]
         assert client.settle_result(claim.claim_token, "r1")
         assert client.pending_result_delivery_ids() == frozenset()
@@ -336,12 +337,12 @@ def test_claimed_batch_survives_worker_removal_and_restart() -> None:
     )
     try:
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert client.dispatch("worker", delivery)
+        assert client.dispatch(_envelope(delivery))
         claim = client.claim_results()[0]
         assert client.pending_result_delivery_ids() == frozenset({"r1", "r2"})
         assert client.remove("pi", "worker")
         assert client.start(HarnessLaunchSpec("pi", "worker", True))
-        assert not client.dispatch("worker", delivery)
+        assert not client.dispatch(_envelope(delivery))
         assert client.pending_result_delivery_ids() == frozenset({"r1", "r2"})
         assert client.settle_result(claim.claim_token, "r1")
         assert client.pending_result_delivery_ids() == frozenset()

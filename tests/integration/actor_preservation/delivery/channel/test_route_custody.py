@@ -32,6 +32,7 @@ from .support import (
     _RouteTransport,
     _close_application_domains as _close_application_domains,
     application,
+    official_address,
     pending_message,
 )
 
@@ -205,7 +206,8 @@ def test_late_real_route_receipt_does_not_hold_global_route_lock(
             },
         )
 
-    app._close_interactive_route(CANONICAL, sessions["alice"])
+    sink.held_route = official_address(app)
+    app._close_interactive_route(sink.held_route, sessions["alice"])
     sink.block = True
     alice_done = threading.Event()
     failures: list[BaseException] = []
@@ -370,8 +372,9 @@ def test_route_overload_after_session_commit_retains_exact_reconciliation(
             item.session_ref == "route-overload-session"
             for item in app._agent_session_domains.session.read_sessions()
         )
+        address = official_address(app)
         assert not registration_done.is_set()
-        assert CANONICAL not in client.registered()
+        assert address not in client.registered()
     finally:
         sink.release.set()
 
@@ -381,7 +384,7 @@ def test_route_overload_after_session_commit_retains_exact_reconciliation(
     assert registration_done.is_set()
     assert not blocker.is_alive()
     assert not registration.is_alive()
-    assert CANONICAL in client.registered()
+    assert address in client.registered()
     assert failures == []
 
 
@@ -414,12 +417,14 @@ def test_takeover_during_route_io_withdraws_only_the_old_session_declaration(
     app._lifecycle_router = router
     app._routes = RouteRegistrationClient(io, router, timeout=0.01)
     app.handle("agent.create", {"name": "alice"})
+    address = official_address(app)
+    sink.held_route = address
     app.handle("session.register", {
         "actor": "alice", "sessionRef": "session-1", "cwd": "/work/alice",
         "command": ["claude"], "source": "claude-channel", "channelConfirmed": True,
     })
-    app._close_interactive_route(CANONICAL, "session-1")
-    app._drop_persona_route(CANONICAL)
+    app._close_interactive_route(address, "session-1")
+    app._drop_persona_route(address)
     transport.block = True
     sink.block = True
     failures = []
@@ -434,8 +439,8 @@ def test_takeover_during_route_io_withdraws_only_the_old_session_declaration(
     worker.start()
     try:
         assert entered.wait(10), failures
-        app._agent_liveness.release(CANONICAL)
-        app._agent_liveness.bind(CANONICAL, harness="codex", runtime="headless",
+        app._agent_liveness.release(address)
+        app._agent_liveness.bind(address, harness="codex", runtime="headless",
                                  session_id="headless-1")
         taken_over.set()
         release_io.set()
@@ -445,7 +450,7 @@ def test_takeover_during_route_io_withdraws_only_the_old_session_declaration(
         assert not worker.is_alive()
         assert len(failures) == 1
         assert failures[0].code == "AGENT_ALREADY_RUNNING"
-        assert "session-1" not in " ".join(app._routes.owners(CANONICAL))
+        assert "session-1" not in " ".join(app._routes.owners(address))
     finally:
         release_io.set()
         sink.release.set()
@@ -467,12 +472,14 @@ def test_headless_lifecycle_route_survives_old_session_cleanup(
     app._lifecycle_router = router
     app._routes = RouteRegistrationClient(io, router, timeout=0.01)
     app.handle("agent.create", {"name": "alice"})
+    address = official_address(app)
+    sink.held_route = address
     app.handle("session.register", {
         "actor": "alice", "sessionRef": "session-1", "cwd": "/work/alice",
         "command": ["claude"], "source": "claude-channel", "channelConfirmed": True,
     })
-    app._ensure_interactive_route(CANONICAL, "session-1")
-    app._drop_persona_route(CANONICAL)
+    app._ensure_interactive_route(address, "session-1")
+    app._drop_persona_route(address)
 
     headless = app._lifecycle_spec(HarnessLaunchSpec("codex", "alice", True))
     app._settled_route_mutation(
@@ -480,12 +487,12 @@ def test_headless_lifecycle_route_survives_old_session_cleanup(
         operation_id="headless-takeover-route",
         generation=0,
         version=0,
-        actor=CANONICAL,
-        owner_lease=f"managed:{CANONICAL}",
+        actor=address,
+        owner_lease=f"managed:{address}",
         ensure_spec=headless.route,
     )
     app._close_interactive_route_effect(
-        CANONICAL, "session-1",
+        address, "session-1",
         operation_id="old-session-cleanup", generation=0, version=0,
     )
-    assert app._routes.owners(CANONICAL) == (f"managed:{CANONICAL}",)
+    assert app._routes.owners(address) == (f"managed:{address}",)

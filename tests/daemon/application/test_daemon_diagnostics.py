@@ -175,8 +175,8 @@ def test_macos_cpu_probe_is_one_ps_call_capped_at_registered_second(
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, "  01:02.50\n", "")
 
-    monkeypatch.setattr(process_diagnostics.sys, "platform", "darwin")
-    monkeypatch.setattr(process_diagnostics.subprocess, "run", run)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(subprocess, "run", run)
 
     assert process_diagnostics.process_cpu_seconds(4242) == 62.5
     assert calls == [
@@ -190,6 +190,20 @@ def test_macos_cpu_probe_is_one_ps_call_capped_at_registered_second(
             },
         )
     ]
+
+
+def test_windows_cpu_probe_delegates_to_manysys_without_ps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hyprial.kernel.impl.manysys.process.windows_process as windows_process
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        windows_process,
+        "windows_process_cpu_sample",
+        lambda pid: ("win-filetime:777", 4.5) if pid == 4242 else None,
+    )
+    assert process_diagnostics.process_cpu_seconds(4242) == 4.5
 
 
 def test_thread_stack_names_the_event_blocking_frame() -> None:

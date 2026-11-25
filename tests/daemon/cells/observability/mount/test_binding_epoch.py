@@ -11,8 +11,7 @@ from tests.daemon.cells.observability.mount.test_mount import composed as compos
 @pytest.mark.parametrize("first_read", ["snapshot", "observe", "open"])
 def test_same_source_rebinding_invalidates_old_cursor(composed, mode, first_read):
     app, launcher, *_ = composed
-    app.agents.create("terminal")
-    actor = "agent:owner:node:terminal"
+    actor = app.agents.create("terminal").uri
     domains = app._agent_session_domains
     domains.call_session(RegisterSessionCommand(
         "register-binding-epoch", actor, "/tmp", ("claude",), "claude-channel",

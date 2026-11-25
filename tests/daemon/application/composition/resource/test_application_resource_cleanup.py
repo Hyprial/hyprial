@@ -51,18 +51,31 @@ def _open_real_application(root: Path) -> DaemonApplication:
     return app
 
 
-def _owned_snapshot() -> tuple[set[int], set[int]]:
-    threads = {id(thread) for thread in threading.enumerate() if thread.is_alive()}
-    return _fd_set(), threads
+def _owned_threads() -> dict[int, str]:
+    # A native worker thread registers a ``threading._DummyThread`` the first
+    # time it calls into Python (logging, callbacks). That entry is a daemon
+    # marker for a thread Python did not start and cannot join -- it is not an
+    # application thread, and the native backend necessarily produces one. The
+    # assertion below is about threads the application owned and must close.
+    dummy_thread = getattr(threading, "_DummyThread", ())
+    return {
+        id(thread): thread.name
+        for thread in threading.enumerate()
+        if thread.is_alive() and not isinstance(thread, dummy_thread)
+    }
 
 
-def _assert_returned(baseline: tuple[set[int], set[int]]) -> None:
+def _owned_snapshot() -> tuple[set[int], dict[int, str]]:
+    return _fd_set(), _owned_threads()
+
+
+def _assert_returned(baseline: tuple[set[int], dict[int, str]]) -> None:
     before_fds, before_threads = baseline
     added_fds = _fd_set() - before_fds
     added_threads = [
-        thread.name
-        for thread in threading.enumerate()
-        if thread.is_alive() and id(thread) not in before_threads
+        name
+        for thread_id, name in _owned_threads().items()
+        if thread_id not in before_threads
     ]
     assert not added_fds and not added_threads, (
         f"application retained fd={sorted(added_fds)} threads={added_threads}"
@@ -96,7 +109,11 @@ def test_resource_assertion_detects_skipped_agent_domain_then_owner_recovers(
         # The mutant lies about one owned domain closing. The independent
         # resource assertion must reject it before we restore that owner.
         with monkeypatch.context() as patch:
-            patch.setattr(domains, "close", lambda timeout=5.0: True)
+            patch.setattr(
+                domains,
+                "close",
+                lambda timeout=5.0, shutdown_hosts=True: True,
+            )
             try:
                 app._close()
             finally:

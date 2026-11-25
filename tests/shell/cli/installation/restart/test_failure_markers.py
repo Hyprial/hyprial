@@ -17,7 +17,6 @@ from .support import (
     _fake_upgrade,
     _locked_constraints as _locked_constraints,
     _read_failure_marker,
-    _silence_owner_alert,
     _start_failed_entry,
 )
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
@@ -37,7 +36,6 @@ def test_restart_failure_marker_names_the_root_cause_not_only_the_symptom(
     look. This is the gap the spec closes, asserted on the real CLI path.
     """
 
-    _silence_owner_alert(monkeypatch)
     fail_launch = _fail_launch_writing_log(
         tmp_path,
         lambda: _start_failed_entry(
@@ -71,7 +69,6 @@ def test_restart_failure_marker_says_there_is_no_start_failure_record_yet(
 ) -> None:
     """No log record at all: the marker states that, and invents nothing."""
 
-    _silence_owner_alert(monkeypatch)
     _fake_upgrade(
         monkeypatch, tmp_path, launch=_fail_launch_writing_log(tmp_path, None)
     )
@@ -94,11 +91,10 @@ def test_restart_failure_marker_does_not_borrow_a_previous_launchs_failure(
 
     `latest_start_failure` is bounded by the parent-side launch time on purpose
     (the previous spec's mutation check exercises the same boundary for the
-    alert). This asserts the boundary holds on the marker path too, where a
+    failure detail). This asserts the boundary holds on the marker path too, where a
     stale cause would otherwise be indistinguishable from the real one.
     """
 
-    _silence_owner_alert(monkeypatch)
     fail_launch = _fail_launch_writing_log(
         tmp_path,
         lambda: _start_failed_entry(
@@ -132,7 +128,6 @@ def test_survivor_marker_omits_start_failure_instead_of_claiming_a_search(
     absent, and this test exercises the real call site, not the helper alone.
     """
 
-    _silence_owner_alert(monkeypatch)
     _fake_upgrade(monkeypatch, tmp_path)
 
     def stop_with_survivor(*, require_exit: bool = True) -> dict[str, Any]:

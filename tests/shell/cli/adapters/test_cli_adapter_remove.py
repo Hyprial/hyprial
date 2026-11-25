@@ -17,7 +17,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +28,7 @@ from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
+from tests.support.runtime.environment import home_with_node_id
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -36,7 +36,7 @@ SECRET = "remove-secret-must-never-be-printed-7d2a"
 
 
 def _env(home: Path) -> dict[str, str]:
-    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    home_with_node_id(home)
     environment = {
         **os.environ,
         "HYPRIAL_HOME": str(home),
@@ -79,15 +79,12 @@ def _seed_adapter(home: Path, name: str = "feishu") -> None:
     )
 
 
-def _seed_desired_state(home: Path, *, provider: bool = True, pin: bool = True) -> None:
+def _seed_desired_state(home: Path, *, provider: bool = True) -> None:
     from hyprial.daemon.impl.desired_state import DesiredStateStore
 
     store = DesiredStateStore(home / "desired-state.json")
     if provider:
         store.set_adapter("feishu", True)
-    if pin:
-        store.set_channel_pin("feishu", "some-actor")
-    store.set_channel_pin("#keep", "other-actor")
 
 
 def _desired_state_json(home: Path) -> dict[str, Any]:
@@ -119,8 +116,6 @@ def test_remove_cleans_channels_secret_and_desired_state(tmp_path: Path) -> None
         "channelsEntry": True,
         "secretFile": True,
         "desiredStateProvider": True,
-        "adapterPin": True,
-        "pinnedActor": "some-actor",
     }
     # The note points at a hot reload, never at a full daemon restart.
     assert "hyprial adapter reload" in body["note"]
@@ -130,35 +125,44 @@ def test_remove_cleans_channels_secret_and_desired_state(tmp_path: Path) -> None
     assert _channels_json(home) == {"version": 1, "gateways": []}
     # The credential file is gone.
     assert not (home / "secrets" / "lark-feishu.json").exists()
-    # Desired state: provider and adapter pin removed, unrelated pin kept.
     state = _desired_state_json(home)
     assert state["providers"] == []
-    assert state["channelPins"] == {"#keep": "other-actor"}
+    assert "channelPins" not in state
 
 
-def test_remove_strips_the_pin_from_the_agents_database(tmp_path: Path) -> None:
-    """Pins live in agents.sqlite3 now; removing the adapter must not leave
-    a pin row pointing at a gateway that no longer exists."""
+def test_remove_never_touches_the_agents_database(tmp_path: Path) -> None:
+    """Adapter bindings live in cell documents now; removal touches no agent
+    record, and the registry schema no longer creates a pins table."""
+
+    import sqlite3
 
     from hyprial.identity.impl.agents import AgentRegistry
 
     home = tmp_path / "home"
     _seed_adapter(home)
     registry = AgentRegistry(home / "agents.sqlite3", owner="alice", machine="node-1")
-    registry.create("worker")
-    registry.pin("feishu", "worker")
+    address = registry.create("worker").uri
     registry.close()
 
     result = run_remove(home, "feishu", "--json")
     assert result.returncode == 0, result.stderr
     body = payload(result)
-    assert body["removed"]["adapterPin"] is True
-    assert body["removed"]["pinnedActor"] == "agent:alice:node-1:worker"
+    assert "adapterPin" not in body["removed"]
+    assert "pinnedActor" not in body["removed"]
 
     reloaded = AgentRegistry(home / "agents.sqlite3", owner="alice", machine="node-1")
-    assert reloaded.pins() == {}
-    # The agent record itself is untouched -- only its pin went.
-    assert reloaded.require("worker").uri == "agent:alice:node-1:worker"
+    try:
+        assert reloaded.require("worker").uri == address
+    finally:
+        reloaded.close()
+    with sqlite3.connect(home / "agents.sqlite3") as database:
+        tables = {
+            row[0]
+            for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "pins" not in tables
 
 
 def test_remove_leaves_other_gateways_loadable(tmp_path: Path) -> None:
@@ -313,8 +317,7 @@ def test_channels_bytes_match_shared_atomic_writer(tmp_path: Path) -> None:
 
 
 def _isolate(monkeypatch: Any, tmp_path: Path) -> Path:
-    home = tmp_path / "home"
-    home.mkdir(parents=True, mode=0o700)
+    home = home_with_node_id(tmp_path / "home")
     monkeypatch.setenv("HYPRIAL_HOME", str(home))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(home))
     monkeypatch.delenv("HYPRIAL_ZENOH_LISTEN", raising=False)
@@ -346,10 +349,11 @@ def _management_remove(home: Path):  # type: ignore[no-untyped-def]
     def remove(params: dict[str, Any]) -> dict[str, object]:
         from hyprial.daemon.impl.bootstrap.adapter_registration import remove_lark_gateway
 
+        assert params == {"operationId": "remove-preview"}
         return remove_lark_gateway(
             hyprial_home=home,
             state_dir=home,
-            name=str(params["name"]),
+            name="feishu",
         )
 
     return remove
@@ -434,6 +438,7 @@ def test_remove_force_stops_first_then_removes(
         {
             "adapter.status": _running_status(),
             "adapter.stop": _stopped_status(),
+            "management.adapter.remove.preview": {"ok": True, "operationId": "remove-preview"},
             "management.adapter.remove": _management_remove(home),
             "adapter.reload": {"ok": True, "removed": ["feishu"]},
         },
@@ -447,6 +452,7 @@ def test_remove_force_stops_first_then_removes(
     assert calls == [
         "adapter.status",
         "adapter.stop",
+        "management.adapter.remove.preview",
         "management.adapter.remove",
         "adapter.reload",
     ]
@@ -454,7 +460,7 @@ def test_remove_force_stops_first_then_removes(
     assert body["ok"] is True
     assert not (home / "secrets" / "lark-feishu.json").exists()
     assert _channels_json(home) == {"version": 1, "gateways": []}
-    assert _desired_state_json(home)["channelPins"] == {"#keep": "other-actor"}
+    assert "channelPins" not in _desired_state_json(home)
 
 
 def test_remove_force_aborts_when_stop_does_not_stop(
@@ -488,14 +494,14 @@ def test_remove_proceeds_when_daemon_unavailable(
         monkeypatch,
         {
             "adapter.status": ipc_errors.DaemonUnavailableError("no daemon"),
-            "management.adapter.remove": ipc_errors.DaemonUnavailableError("no daemon"),
+            "management.adapter.remove.preview": ipc_errors.DaemonUnavailableError("no daemon"),
         },
         calls,
     )
 
     result = CliRunner().invoke(_cli_root_app, ["adapter", "remove", "feishu", "--json"])
     assert result.exit_code == 0, result.output
-    assert calls == ["adapter.status", "management.adapter.remove"]
+    assert calls == ["adapter.status", "management.adapter.remove.preview"]
     assert json.loads(result.stdout)["ok"] is True
     assert not (home / "secrets" / "lark-feishu.json").exists()
 
@@ -516,7 +522,7 @@ def test_remove_daemon_start_race_fails_without_offline_writes(
         monkeypatch,
         {
             "adapter.status": ipc_errors.DaemonUnavailableError("starting"),
-            "management.adapter.remove": ipc_errors.DaemonUnavailableError("starting"),
+            "management.adapter.remove.preview": ipc_errors.DaemonUnavailableError("starting"),
         },
         calls,
     )
@@ -526,34 +532,28 @@ def test_remove_daemon_start_race_fails_without_offline_writes(
 
     assert result.exit_code != 0
     assert json.loads(result.stdout)["code"] == "DAEMON_OWNERSHIP_BUSY"
-    assert calls == ["adapter.status", "management.adapter.remove"]
+    assert calls == ["adapter.status", "management.adapter.remove.preview"]
     assert (home / "channels.json").read_bytes() == before_channels
     assert (home / "secrets" / "lark-feishu.json").read_bytes() == before_secret
     assert _desired_state_json(home) == before_desired
 
 
-def test_remove_proceeds_when_daemon_snapshot_lacks_adapter(
+def test_remove_requires_reload_when_daemon_snapshot_lacks_adapter(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
-    """A daemon that never saw this gateway cannot be running it."""
-
     home = _isolate(monkeypatch, tmp_path)
     _seed_adapter(home)
+    before = (home / "channels.json").read_bytes()
     calls: list[str] = []
-    _daemon_script(
-        monkeypatch,
-        {
-            "adapter.status": _cli_get_services().CliError("ADAPTER_NOT_FOUND", "not configured"),
-            "management.adapter.remove": _management_remove(home),
-            "adapter.reload": {"ok": True, "removed": ["feishu"]},
-        },
-        calls,
-    )
-
+    _daemon_script(monkeypatch, {
+        "adapter.status": _cli_get_services().CliError("ADAPTER_NOT_FOUND", "not configured"),
+        "management.adapter.remove.preview": _cli_get_services().CliError("PREVIEW_STALE", "reload before deletion"),
+    }, calls)
     result = CliRunner().invoke(_cli_root_app, ["adapter", "remove", "feishu", "--json"])
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["ok"] is True
-    assert not (home / "secrets" / "lark-feishu.json").exists()
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["code"] == "PREVIEW_STALE"
+    assert (home / "channels.json").read_bytes() == before
+    assert (home / "secrets" / "lark-feishu.json").exists()
 
 
 def test_remove_stopped_adapter_via_daemon_then_files(
@@ -568,6 +568,7 @@ def test_remove_stopped_adapter_via_daemon_then_files(
         monkeypatch,
         {
             "adapter.status": _stopped_status(),
+            "management.adapter.remove.preview": {"ok": True, "operationId": "remove-preview"},
             "management.adapter.remove": _management_remove(home),
             "adapter.reload": {"ok": True, "removed": ["feishu"]},
         },
@@ -576,7 +577,7 @@ def test_remove_stopped_adapter_via_daemon_then_files(
 
     result = CliRunner().invoke(_cli_root_app, ["adapter", "remove", "feishu", "--json"])
     assert result.exit_code == 0, result.output
-    assert calls == ["adapter.status", "management.adapter.remove", "adapter.reload"]
+    assert calls == ["adapter.status", "management.adapter.remove.preview", "management.adapter.remove", "adapter.reload"]
     assert not (home / "secrets" / "lark-feishu.json").exists()
 
 
@@ -595,381 +596,6 @@ def test_other_daemon_errors_propagate(monkeypatch: Any, tmp_path: Path) -> None
     assert (home / "secrets" / "lark-feishu.json").exists()
 
 
-# ---------------------------------------------------------------------------
-# Rollback: a failed remove must be a byte-exact no-op.
-# ---------------------------------------------------------------------------
-
-
-def test_rollback_when_desired_state_save_fails(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    import pytest
-
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.daemon.impl import desired_state
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    before_channels = (home / "channels.json").read_bytes()
-    before_versioned = _desired_state_json(home)
-
-    def failing_save(self: Any, state: Any) -> None:
-        raise OSError("simulated desired-state write failure")
-
-    monkeypatch.setattr(desired_state.DesiredStateStore, "save", failing_save)
-
-    with pytest.raises(OSError):
-        adapter_registration.remove_lark_gateway(
-            hyprial_home=home, state_dir=home, name="feishu"
-        )
-
-    assert (home / "channels.json").read_bytes() == before_channels
-    assert _desired_state_json(home) == before_versioned
-    assert (home / "secrets" / "lark-feishu.json").exists()
-
-
-def test_rollback_preserves_permission_error_fields_from_desired_state(
-    monkeypatch: Any, tmp_path: Path,
-) -> None:
-    import errno
-    import pytest
-
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.daemon.impl import desired_state
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    before_channels = (home / "channels.json").read_bytes()
-    before_versioned = _desired_state_json(home)
-    blocked_path = home / "desired-state.json.v1"
-
-    def failing_save(self: Any, state: Any) -> None:
-        raise PermissionError(errno.EACCES, "synthetic permission denial", str(blocked_path))
-
-    monkeypatch.setattr(desired_state.DesiredStateStore, "save", failing_save)
-    with pytest.raises(PermissionError) as caught:
-        adapter_registration.remove_lark_gateway(
-            hyprial_home=home, state_dir=home, name="feishu"
-        )
-    assert caught.value.errno == errno.EACCES
-    assert caught.value.filename == str(blocked_path)
-    assert caught.value.strerror == "synthetic permission denial"
-    assert (home / "channels.json").read_bytes() == before_channels
-    assert _desired_state_json(home) == before_versioned
-    assert (home / "secrets" / "lark-feishu.json").exists()
-
-
-def test_rollback_when_secret_delete_fails(monkeypatch: Any, tmp_path: Path) -> None:
-    import pytest
-
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.identity.impl.agents import AgentRegistry
-    from hyprial.kernel import resolve_node_id
-    from hyprial.daemon.impl.configuration.identity import resolve_node_owner
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    owner = resolve_node_owner()
-    monkeypatch.setenv("HYPRIAL_NODE_ID", "adapter-rollback-fixture")
-    machine = resolve_node_id()
-    registry = AgentRegistry(home / "agents.sqlite3", owner=owner, machine=machine)
-    worker = registry.create("worker")
-    registry.pin("feishu", "worker")
-    registry.close()
-    before_channels = (home / "channels.json").read_bytes()
-    before_versioned = _desired_state_json(home)
-    secret_path = home / "secrets" / "lark-feishu.json"
-    before_secret = secret_path.read_bytes()
-
-    real_unlink = Path.unlink
-
-    def failing_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
-        if self == secret_path:
-            raise OSError("simulated secret delete failure")
-        real_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", failing_unlink)
-
-    with pytest.raises(OSError):
-        adapter_registration.remove_lark_gateway(
-            hyprial_home=home, state_dir=home, name="feishu"
-        )
-
-    # Everything is back: channels entry, desired-state provider + pin, secret.
-    assert (home / "channels.json").read_bytes() == before_channels
-    assert _desired_state_json(home) == before_versioned
-    assert secret_path.read_bytes() == before_secret
-    assert secret_path.stat().st_mode & 0o777 == 0o600
-    reloaded = AgentRegistry(home / "agents.sqlite3", owner=owner, machine=machine)
-    assert reloaded.pins() == {"feishu": worker.uri}
-    reloaded.close()
-
-
-def test_rollback_after_database_unpin_mutates_then_raises(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    """A late actor-port failure must restore all four removal surfaces.
-
-    This is deliberately stronger than making ``unpin_if`` fail before doing
-    anything: the pin row is removed first and only then does the port raise.
-    The compensation path therefore has to recreate the exact binding as well
-    as restore desired state and the two files.
-    """
-
-    import pytest
-
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.identity.impl.agents import AgentRegistry
-    from hyprial.daemon.impl.composition import AgentDirectoryFacade
-    from hyprial.kernel import resolve_node_id
-    from hyprial.daemon.impl.configuration.identity import resolve_node_owner
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    owner = resolve_node_owner()
-    monkeypatch.setenv("HYPRIAL_NODE_ID", "adapter-rollback-fixture")
-    machine = resolve_node_id()
-    registry = AgentRegistry(home / "agents.sqlite3", owner=owner, machine=machine)
-    worker = registry.create("worker")
-    registry.pin("feishu", "worker")
-    registry.close()
-
-    before_channels = (home / "channels.json").read_bytes()
-    before_secret = (home / "secrets" / "lark-feishu.json").read_bytes()
-    before_desired = _desired_state_json(home)
-    real_unpin_if = AgentDirectoryFacade.unpin_if
-
-    def mutate_then_fail(
-        self: AgentDirectoryFacade, adapter: str, expected_actor: str | None
-    ) -> str | None:
-        real_unpin_if(self, adapter, expected_actor)
-        raise OSError("simulated post-unpin port failure")
-
-    monkeypatch.setattr(AgentDirectoryFacade, "unpin_if", mutate_then_fail)
-
-    with pytest.raises(OSError, match="post-unpin"):
-        adapter_registration.remove_lark_gateway(
-            hyprial_home=home, state_dir=home, name="feishu"
-        )
-
-    assert (home / "channels.json").read_bytes() == before_channels
-    assert (home / "secrets" / "lark-feishu.json").read_bytes() == before_secret
-    assert _desired_state_json(home) == before_desired
-    reloaded = AgentRegistry(home / "agents.sqlite3", owner=owner, machine=machine)
-    assert reloaded.pins() == {"feishu": worker.uri}
-    reloaded.close()
-
-
-def test_rollback_after_desired_removal_mutates_then_raises(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    """A lost actor reply after durable desired-state removal is compensated."""
-
-    import pytest
-
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.daemon.impl.harnesses.runtime.ports import HarnessAdapterRegistrationProjection
-    from hyprial.daemon.impl.processes.supervisor import ManagedHarnessRuntime
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    before_channels = (home / "channels.json").read_bytes()
-    before_secret = (home / "secrets" / "lark-feishu.json").read_bytes()
-    before_desired = _desired_state_json(home)
-    real_remove = ManagedHarnessRuntime.remove_adapter_registration
-
-    def mutate_then_fail(
-        self: ManagedHarnessRuntime,
-        snapshot: HarnessAdapterRegistrationProjection,
-    ) -> bool:
-        real_remove(self, snapshot)
-        raise TimeoutError("simulated lost harness actor reply")
-
-    monkeypatch.setattr(
-        ManagedHarnessRuntime, "remove_adapter_registration", mutate_then_fail
-    )
-
-    with pytest.raises(TimeoutError, match="lost harness actor reply"):
-        adapter_registration.remove_lark_gateway(
-            hyprial_home=home, state_dir=home, name="feishu"
-        )
-
-    assert (home / "channels.json").read_bytes() == before_channels
-    assert (home / "secrets" / "lark-feishu.json").read_bytes() == before_secret
-    assert _desired_state_json(home) == before_desired
-
-
-def test_channels_write_failure_never_mutates_any_registry(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    """The first file write is the transaction admission point."""
-
-    import socket
-
-    import pytest
-
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.identity.impl.agents import AgentRegistry
-    from hyprial.daemon.impl.configuration.identity import resolve_node_owner
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    owner = resolve_node_owner()
-    machine = socket.gethostname()
-    registry = AgentRegistry(home / "agents.sqlite3", owner=owner, machine=machine)
-    worker = registry.create("worker")
-    registry.pin("feishu", "worker")
-    registry.close()
-
-    before_channels = (home / "channels.json").read_bytes()
-    before_secret = (home / "secrets" / "lark-feishu.json").read_bytes()
-    before_desired = _desired_state_json(home)
-
-    def fail_channels_write(_path: Path, _payload: object) -> None:
-        raise OSError("simulated channels write failure")
-
-    monkeypatch.setattr(adapter_registration, "atomic_json_write", fail_channels_write)
-
-    with pytest.raises(OSError, match="channels write"):
-        adapter_registration.remove_lark_gateway(
-            hyprial_home=home, state_dir=home, name="feishu"
-        )
-
-    assert (home / "channels.json").read_bytes() == before_channels
-    assert (home / "secrets" / "lark-feishu.json").read_bytes() == before_secret
-    assert _desired_state_json(home) == before_desired
-    reloaded = AgentRegistry(home / "agents.sqlite3", owner=owner, machine=machine)
-    assert reloaded.pins() == {"feishu": worker.uri}
-    reloaded.close()
-
-
-def test_concurrent_force_add_waits_for_remove_and_keeps_replacement(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.kernel import PersistentConfigStore
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    at_unlink = threading.Event()
-    release_unlink = threading.Event()
-    remove_result: list[dict[str, object]] = []
-    add_result: list[dict[str, object]] = []
-    errors: list[BaseException] = []
-    real_unlink = adapter_registration._unlink_if_current
-
-    def paused_unlink(path: Path, expected: bytes | None) -> None:
-        at_unlink.set()
-        assert release_unlink.wait(2.0)
-        real_unlink(path, expected)
-
-    monkeypatch.setattr(adapter_registration, "_unlink_if_current", paused_unlink)
-
-    def remove() -> None:
-        try:
-            remove_result.append(
-                adapter_registration.remove_lark_gateway(
-                    hyprial_home=home, state_dir=home, name="feishu"
-                )
-            )
-        except BaseException as error:
-            errors.append(error)
-
-    def replace() -> None:
-        try:
-            add_result.append(
-                adapter_registration.add_lark_gateway(
-                    hyprial_home=home,
-                    name="feishu",
-                    app_id="replacement-app",
-                    app_secret="replacement-secret",
-                    routes=[
-                        adapter_registration.RouteInput(
-                            name="dm", native_id="oc_replacement"
-                        )
-                    ],
-                    force=True,
-                )
-            )
-        except BaseException as error:
-            errors.append(error)
-
-    removing = threading.Thread(target=remove)
-    replacing = threading.Thread(target=replace)
-    removing.start()
-    assert at_unlink.wait(2.0)
-    replacing.start()
-    replacing.join(0.1)
-    assert replacing.is_alive(), "force-add must wait for remove's config lease"
-    release_unlink.set()
-    removing.join(3.0)
-    replacing.join(3.0)
-
-    assert not errors
-    assert len(remove_result) == len(add_result) == 1
-    gateway = _channels_json(home)["gateways"][0]
-    assert gateway["appId"] == "replacement-app"
-    assert (home / "secrets" / "lark-feishu.json").read_text(encoding="utf-8").find(
-        "replacement-secret"
-    ) >= 0
-    loaded = PersistentConfigStore(home, home).load()
-    assert loaded.channels.gateways[0].app_id == "replacement-app"
-
-
-def test_rollback_cas_preserves_uncoordinated_replacement(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    import pytest
-
-    import hyprial.daemon.impl.bootstrap.adapter_registration as adapter_registration
-    from hyprial.kernel import atomic_json_write
-
-    home = tmp_path / "home"
-    _seed_adapter(home)
-    _seed_desired_state(home)
-    secret_path = home / "secrets" / "lark-feishu.json"
-    replacement_channels = {
-        "version": 1,
-        "gateways": [
-            {
-                "provider": "lark",
-                "name": "feishu",
-                "appId": "replacement-app",
-                "credentialRef": "lark-feishu",
-                "routes": [{"name": "dm", "type": "direct", "nativeId": "oc_new"}],
-                "defaultRoute": "dm",
-            }
-        ],
-    }
-
-    def replace_then_fail(_path: Path, _expected: bytes | None) -> None:
-        atomic_json_write(home / "channels.json", replacement_channels)
-        atomic_json_write(secret_path, {"appSecret": "replacement-secret"})
-        raise OSError("simulated failure after uncoordinated replacement")
-
-    monkeypatch.setattr(adapter_registration, "_unlink_if_current", replace_then_fail)
-
-    with pytest.raises(adapter_registration.AdapterConfigConflictError) as caught:
-        adapter_registration.remove_lark_gateway(
-            hyprial_home=home, state_dir=home, name="feishu"
-        )
-
-    assert isinstance(caught.value.__cause__, BaseExceptionGroup)
-    assert any(
-        isinstance(error, adapter_registration.AdapterConfigConflictError)
-        for error in caught.value.__cause__.exceptions
-    )
-    assert _channels_json(home) == replacement_channels
-    assert "replacement-secret" in secret_path.read_text(encoding="utf-8")
-
-
 def test_corrupt_channels_fails_closed(tmp_path: Path) -> None:
     """An unparseable channels.json is never rewritten by remove."""
 
@@ -981,3 +607,19 @@ def test_corrupt_channels_fails_closed(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert payload(result)["code"] == "INVALID_ARGUMENT"
     assert (home / "channels.json").read_text(encoding="utf-8") == "{not json"
+
+
+def test_malformed_preview_never_executes_or_falls_back(tmp_path, monkeypatch):
+    cli_home = _isolate(monkeypatch, tmp_path)
+    _seed_adapter(cli_home)
+    for token in (None, "", 123):
+        calls = []
+        _daemon_script(monkeypatch, {
+            "adapter.status": {"ok": True, "adapter": {"online": False, "desired": False}},
+            "management.adapter.remove.preview": {"ok": True, "operationId": token},
+        }, calls)
+        result = CliRunner().invoke(_cli_root_app, ["adapter", "remove", "feishu", "--json"])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["code"] == "INVALID_RESPONSE"
+        assert calls == ["adapter.status", "management.adapter.remove.preview"]
+        assert (cli_home / "secrets/lark-feishu.json").exists()

@@ -44,7 +44,7 @@ def install(
             "COMING_SOON", "hyprial socialware install is coming soon"
         )
 
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False)
 
 
 def _running_daemon_before_upgrade(version: str) -> JsonObject | None:

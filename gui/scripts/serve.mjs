@@ -1,37 +1,57 @@
 #!/usr/bin/env node
 
+// Decisions (gui dev/product parity, docs/design/gui-dev-product-parity-2026-11-09.md):
+// - `--mode dist-parity` serves the separate dist-parity test artifact (PROD
+//   build + DCE with the composition-root parity input, no dev tools). It is
+//   the production side of the browser parity gate and is never a release
+//   artifact: the release artifact gate scans only `dist`.
+// - Serving dist-parity requires HYPRIAL_GUI_PARITY=1 (the WP2 build/serving
+//   convention) and a built dist-parity/index.html; both fail closed so the
+//   gate can never serve a stale or missing parity artifact.
+// - The regular production/development modes are unchanged and keep serving
+//   `dist` / the vite dev server respectively.
+// - 2026-11-16 (PR 1e-4): `startGuiServer` takes no extra Vite plugins; the
+//   development server mounts only what gui/vite.config.ts declares. Browser
+//   tests reach data through the Python session host or the Contract Mock.
+// - 2026-11-16 (one launch path, PR 3): this script no longer hosts data. The
+//   Python session host serves gui/dist and /daemon/*, and relays to the
+//   development server started here for `hyprial gui dev`. The production mode
+//   and `npm start` are gone, and a backend driver in the environment is
+//   refused instead of being ignored: a Vite process that held a driver, an
+//   endpoint or a bearer would be a second host. The ready line therefore
+//   always reports driver null; the launcher refuses one that does not.
 import { existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer, loadEnv, preview } from 'vite';
-import { createAuthMiddleware } from '../server/auth/middleware.mjs';
-import { createSetupService } from '../server/setup/service.mjs';
+import { createServer, preview } from 'vite';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 const guiDir = realpathSync(fileURLToPath(new URL('..', import.meta.url)));
+const SERVE_MODES = new Set(['development', 'dist-parity']);
 
 function usage() {
   return [
-    'Usage: node scripts/serve.mjs --mode production|development [options]',
+    'Usage: node scripts/serve.mjs --mode development|dist-parity [options]',
     '',
     'Options:',
     '  --host HOST          loopback host (default 127.0.0.1)',
     '  --port PORT          TCP port, 0 for ephemeral (default 4173)',
     '  --strict-port        fail instead of choosing another port (default)',
     '  --no-strict-port     allow Vite to choose another port',
-    '  --mode MODE          production (preview dist) or development',
+    '  --mode MODE          development (the Vite dev server, default) or',
+    '                       dist-parity (preview the dist-parity test artifact;',
+    '                       requires HYPRIAL_GUI_PARITY=1 and a built artifact)',
     '  --help               show this help',
     '',
     'Environment: HYPRIAL_GUI_HOME (this GUI package or its worktree root),',
-    '             HYPRIAL_BACKEND_ENDPOINT (http(s) loopback origin with port).',
-    '             HYPRIAL_GUI_AUTH=local enables local account authorization.',
-    '             HYPRIAL_GUI_AUTH_PYTHON and HYPRIAL_HOME must then be absolute.',
-    '             HYPRIAL_GUI_SETUP=daemon enables Pi first-run through the public daemon client.',
+    '             HYPRIAL_GUI_PARITY=1 (dist-parity serving only).',
+    '             This server holds no backend: it refuses HYPRIAL_GUI_BACKEND_DRIVER.',
+    '             `hyprial gui` serves the built GUI and /daemon/* through the Python host.',
   ].join('\n');
 }
 
 export function parseArgs(argv) {
-  let mode = 'production';
+  let mode = 'development';
   let host = '127.0.0.1';
   let port = 4173;
   let strictPort = true;
@@ -79,8 +99,8 @@ export function parseArgs(argv) {
     throw new Error(`unknown argument: ${argument}`);
   }
 
-  if (mode !== 'production' && mode !== 'development') {
-    throw new Error('--mode must be production or development');
+  if (!SERVE_MODES.has(mode)) {
+    throw new Error('--mode must be development or dist-parity');
   }
   if (!LOOPBACK_HOSTS.has(host)) {
     throw new Error(
@@ -123,39 +143,6 @@ function validateGuiHome(configured) {
   );
 }
 
-function parseBackendEndpoint(raw) {
-  const value = raw?.trim();
-  if (!value) {
-    return null;
-  }
-
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(
-      'HYPRIAL_BACKEND_ENDPOINT must be an absolute http(s) loopback URL',
-    );
-  }
-
-  if (
-    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
-    !LOOPBACK_HOSTS.has(parsed.hostname) ||
-    parsed.username !== '' ||
-    parsed.password !== '' ||
-    parsed.pathname !== '/' ||
-    parsed.search !== '' ||
-    parsed.hash !== '' ||
-    parsed.port === ''
-  ) {
-    throw new Error(
-      'HYPRIAL_BACKEND_ENDPOINT must be http(s)://<loopback-host>:<port> with no path, query, fragment or credentials',
-    );
-  }
-
-  return parsed.origin;
-}
-
 function endpointFor(host, port) {
   const hostPart = host.includes(':') ? `[${host}]` : host;
   return `http://${hostPart}:${port}`;
@@ -164,66 +151,35 @@ function endpointFor(host, port) {
 export async function startGuiServer(options) {
   const { mode, host, port, strictPort } = options;
   const guiHome = validateGuiHome(process.env.HYPRIAL_GUI_HOME);
-  const fileEnv = loadEnv(mode, guiDir, '');
-  const backendEndpoint = parseBackendEndpoint(
-    process.env.HYPRIAL_BACKEND_ENDPOINT ?? fileEnv.HYPRIAL_BACKEND_ENDPOINT,
-  );
+  if (process.env.HYPRIAL_GUI_BACKEND_DRIVER?.trim()) {
+    throw new Error(
+      'HYPRIAL_GUI_BACKEND_DRIVER is not accepted: the Vite server hosts no backend; use `hyprial gui` (the Python session host serves /daemon/*)',
+    );
+  }
+  if (process.env.HYPRIAL_GUI_AUTH || process.env.HYPRIAL_GUI_SETUP || process.env.HYPRIAL_GUI_SETUP_CLI) {
+    throw new Error('account authentication and first-run setup are not implemented in the M1 GUI');
+  }
 
-  if (mode === 'production') {
-    const indexFile = resolve(guiDir, 'dist', 'index.html');
-    if (!existsSync(indexFile)) {
+  if (mode === 'dist-parity') {
+    if (process.env.HYPRIAL_GUI_PARITY !== '1') {
+      throw new Error(
+        'dist-parity serving requires HYPRIAL_GUI_PARITY=1 (build with npm run build:dist-parity first)',
+      );
+    }
+    const parityIndexFile = resolve(guiDir, 'dist-parity', 'index.html');
+    if (!existsSync(parityIndexFile)) {
       throw Object.assign(
-        new Error('production assets are missing; run npm run build first'),
+        new Error('dist-parity assets are missing; run npm run build:dist-parity first'),
         { code: 'BUILD_MISSING' },
       );
     }
   }
 
-  // Authentication is independent of the placeholder business backend. Only
-  // trusted launcher environment selects the local runtime and instance home.
-  const authEnabled = process.env.HYPRIAL_GUI_AUTH === 'local';
-  if (process.env.HYPRIAL_GUI_AUTH && !authEnabled) {
-    throw new Error('HYPRIAL_GUI_AUTH must be local or unset');
-  }
-  if (authEnabled && (
-    !isAbsolute(process.env.HYPRIAL_GUI_AUTH_PYTHON ?? '') ||
-    !isAbsolute(process.env.HYPRIAL_HOME ?? '')
-  )) {
-    throw new Error('Local authentication requires absolute HYPRIAL_GUI_AUTH_PYTHON and HYPRIAL_HOME');
-  }
-  let authOrigin = '';
-  const setupMode = process.env.HYPRIAL_GUI_SETUP;
-  if (process.env.HYPRIAL_GUI_SETUP_CLI) {
-    throw new Error('HYPRIAL_GUI_SETUP_CLI is unsupported; use HYPRIAL_GUI_SETUP=daemon');
-  }
-  if (setupMode && (setupMode !== 'daemon' || !authEnabled)) {
-    throw new Error('Pi first-run requires HYPRIAL_GUI_SETUP=daemon and local authentication');
-  }
-  const setupRunner = options.setupRunner ?? (setupMode ? createSetupService({
-    pythonExecutable: process.env.HYPRIAL_GUI_AUTH_PYTHON,
-    hyprialHome: process.env.HYPRIAL_HOME,
-  }) : null);
-  const auth = createAuthMiddleware({
-    enabled: authEnabled,
-    origin: () => authOrigin,
-    pythonExecutable: process.env.HYPRIAL_GUI_AUTH_PYTHON,
-    hyprialHome: process.env.HYPRIAL_HOME,
-    runner: options.authRunner,
-    setupRunner,
-  });
-  const installAuth = (viteServer) => {
-    viteServer.middlewares.use(auth.middleware);
-  };
   const common = {
     root: guiDir,
     configFile: resolve(guiDir, 'vite.config.ts'),
-    mode,
+    mode: mode === 'dist-parity' ? 'production' : mode,
     logLevel: 'warn',
-    plugins: [{
-      name: 'hyprial-local-auth',
-      configureServer: installAuth,
-      configurePreviewServer: installAuth,
-    }],
   };
 
   let server;
@@ -236,8 +192,13 @@ export async function startGuiServer(options) {
     await server.listen();
     close = () => server.close();
   } else {
+    const previewConfig = {};
+    if (mode === 'dist-parity') {
+      previewConfig.outDir = resolve(guiDir, 'dist-parity');
+    }
     server = await preview({
       ...common,
+      build: Object.keys(previewConfig).length > 0 ? previewConfig : undefined,
       preview: { host, port, strictPort },
     });
     close = async () => {
@@ -262,10 +223,8 @@ export async function startGuiServer(options) {
     await close();
     throw new Error('GUI server did not bind a TCP port');
   }
-  authOrigin = endpointFor(address.address, address.port);
   const closeServer = close;
   close = async () => {
-    await auth.close();
     await closeServer();
   };
 
@@ -275,11 +234,10 @@ export async function startGuiServer(options) {
     host: address.address,
     port: address.port,
     url: endpointFor(address.address, address.port),
-    backendEndpoint,
-    dataMode: process.env.HYPRIAL_GUI_BACKEND_DRIVER === 'daemon' ? 'live' : 'fixture',
-    backendConfigured: process.env.HYPRIAL_GUI_BACKEND_DRIVER === 'daemon' || backendEndpoint !== null,
-    authConfigured: authEnabled,
-    setupConfigured: setupRunner !== null,
+    driver: null,
+    dataMode: process.env.HYPRIAL_GUI_DEV_PREVIEW === '1' && mode === 'development' ? 'fixture' : 'unavailable',
+    backendConfigured: false,
+    session: 'unavailable',
     close,
   };
 }
@@ -292,10 +250,9 @@ function readyLine(started) {
     host: started.host,
     port: started.port,
     url: started.url,
+    driver: started.driver,
     backendConfigured: started.backendConfigured,
-    authConfigured: started.authConfigured,
-    setupConfigured: started.setupConfigured,
-    backendEndpoint: started.backendEndpoint,
+    session: started.session,
     guiHome: started.guiHome,
   })}`;
 }

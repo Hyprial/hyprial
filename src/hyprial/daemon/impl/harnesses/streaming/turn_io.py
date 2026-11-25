@@ -13,7 +13,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from hyprial.kernel import PortAdmission, PortCommandRejected
+from hyprial.kernel import PortAdmission, PortCommandRejected, capped_exponential
 
 from hyprial.daemon.impl.api import (
     HarnessDelivery,
@@ -48,6 +48,40 @@ class _SteerUnknown(RuntimeError):
 
 
 class _SequentialTurnIoMixin:
+        def _prepare_stop_wakeup(self) -> asyncio.Future[None]:
+            stop_wakeup: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            with self._lock:
+                self._stop_wakeup = stop_wakeup
+                stopping = self._stopping.is_set()
+            if stopping:
+                stop_wakeup.set_result(None)
+            return stop_wakeup
+
+        @staticmethod
+        def _resolve_stop_wakeup(stop_wakeup: asyncio.Future[None]) -> None:
+            if not stop_wakeup.done():
+                stop_wakeup.set_result(None)
+
+        @staticmethod
+        async def _wait_for_backoff(stop_wakeup: asyncio.Future[None], delay: float) -> None:
+            # asyncio.wait leaves the future pending on timeout, so one future
+            # serves every backoff of this pump.
+            await asyncio.wait({stop_wakeup}, timeout=delay)
+
+        def _backoff_delay(self, failures: int) -> float:
+            """Exponential retry spacing prevents immediate identical turn replay."""
+
+            if failures <= 1:
+                return self._reconnect_delay_seconds
+            return min(
+                capped_exponential(
+                    self._reconnect_delay_seconds,
+                    self._reconnect_delay_max_seconds,
+                    failures - 1,
+                ),
+                self._reconnect_delay_max_seconds,
+            )
+
         @staticmethod
         def _member_deliveries(delivery):  # type: ignore[no-untyped-def]
             """Project one batch turn onto each of its real member IDs."""
@@ -309,12 +343,15 @@ class _SequentialTurnIoMixin:
                 first_request = not self._stopping.is_set()
                 self._stopping.set()
                 loop = self._loop
+                stop_wakeup = getattr(self, "_stop_wakeup", None)
                 client = self._client
                 active = self._active_delivery_id
                 if first_request and active is None and loop is not None and client is not None:
                     # query() may be in flight; interrupt only after it has minted
                     # the native turn, preserving prompt-before-abort ordering.
                     self._stop_interrupt_pending = True
+            if loop is not None and stop_wakeup is not None:
+                loop.call_soon_threadsafe(self._resolve_stop_wakeup, stop_wakeup)
             if first_request and active is not None and loop is not None and client is not None:
                 asyncio.run_coroutine_threadsafe(client.interrupt(), loop)
             try:

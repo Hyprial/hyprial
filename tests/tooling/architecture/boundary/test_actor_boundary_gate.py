@@ -1,11 +1,18 @@
-"""Actor-runtime static boundaries and controlled-mutation proofs."""
+"""Actor-runtime static boundaries and controlled-mutation proofs.
+
+P8 removed the pykka backend, so pykka is now refused everywhere rather than
+only outside the sanctioned backend site.
+"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from tests.support.gates.actor_boundary_gate import scan_actor_boundaries, validate_legacy_manifest
+from tests.support.gates.actor_boundary_gate import (
+    scan_actor_boundaries,
+    validate_legacy_manifest,
+)
 
 ROOT = Path(__file__).resolve().parents[4]
 SRC = ROOT / "src" / "hyprial"
@@ -39,26 +46,27 @@ def test_mutation_rejects_pykka_import_outside_the_backend(tmp_path: Path) -> No
     assert "pykka-import" in _rules(tmp_path)
 
 
-def test_mutation_allows_pykka_import_only_in_the_backend(tmp_path: Path) -> None:
+def test_mutation_rejects_pykka_import_at_the_deleted_backend_site(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "kernel/impl/actor_runtime/backends/pykka.py",
         "import pykka\n_private_ref: pykka.ActorRef[object]\n",
     )
-    assert scan_actor_boundaries(tmp_path) == []
+    violations = scan_actor_boundaries(tmp_path)
+    assert {violation.rule for violation in violations} == {"pykka-import"}
 
 
-def test_mutation_rejects_every_raw_domain_type(tmp_path: Path) -> None:
+def test_mutation_rejects_every_raw_capability_import(tmp_path: Path) -> None:
     capabilities = ("ActorRef", "ActorProxy", "Future", "ThreadingActor", "ActorInbox")
     for index, capability in enumerate(capabilities):
-        _write_module(
-            tmp_path,
-            f"domain/handler_{index}.py",
-            "from hyprial.kernel.impl.actor_runtime.backends.pykka import " f"{capability}\n",
-        )
+        _write_module(tmp_path, f"domain/handler_{index}.py", f"from pykka import {capability}\n")
     violations = scan_actor_boundaries(tmp_path)
-    for capability in capabilities:
-        assert any(capability in violation.detail for violation in violations)
+    for index, capability in enumerate(capabilities):
+        assert any(
+            violation.rule == "pykka-import"
+            and violation.path == f"src/hyprial/domain/handler_{index}.py"
+            for violation in violations
+        ), capability
 
 
 def test_mutation_rejects_raw_pykka_proxy_access(tmp_path: Path) -> None:
@@ -84,19 +92,20 @@ def test_mutation_rejects_raw_pykka_mailbox_access(tmp_path: Path) -> None:
 def test_mutation_rejects_public_annotation_leaks(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
-        "kernel/impl/actor_runtime/backends/pykka.py",
+        "domain/leak.py",
         "from pykka import ActorRef as RawRef\n"
         "\n"
         "def leaked(ref: RawRef[object]) -> RawRef[object]:\n"
         "    return ref\n",
     )
-    assert "public-api-leak" in _rules(tmp_path)
+    rules = _rules(tmp_path)
+    assert {"pykka-import", "public-api-leak"} <= rules
 
 
 def test_mutation_rejects_all_exports_of_pykka_types(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
-        "kernel/impl/actor_runtime/backends/pykka.py",
+        "domain/exports.py",
         "from pykka import ActorProxy as RawProxy\n\n__all__ = [\"RawProxy\"]\n",
     )
     violations = scan_actor_boundaries(tmp_path)
@@ -119,6 +128,73 @@ def test_mutation_rejects_blocking_ask_but_not_explicit_nonblocking_ask(
     blocking = [item for item in violations if item.rule == "blocking-ask"]
     assert len(blocking) == 1
     assert blocking[0].line == 2
+
+
+def test_mutation_allows_blocking_ask_only_in_the_sanctioned_port_implementations(
+    tmp_path: Path,
+) -> None:
+    for name in ("port/cell.py", "port/engine.py", "backends/abi.py"):
+        _write_module(
+            tmp_path,
+            f"kernel/impl/actor_runtime/{name}",
+            "def ask(engine: object, command: object) -> object:\n"
+            "    return engine.ask(command)\n",
+        )
+    assert scan_actor_boundaries(tmp_path) == []
+
+
+def test_mutation_rejects_blocking_ask_in_backend_siblings(tmp_path: Path) -> None:
+    names = ("native.py", "reference_abi.py", "_reference_engine.py")
+    for name in names:
+        _write_module(
+            tmp_path,
+            f"kernel/impl/actor_runtime/backends/{name}",
+            "def call(engine: object) -> object:\n"
+            "    return engine.ask({\"command\": \"run\"})\n",
+        )
+    blocking = [
+        violation
+        for violation in scan_actor_boundaries(tmp_path)
+        if violation.rule == "blocking-ask"
+    ]
+    assert len(blocking) == len(names)
+
+
+def test_mutation_rejects_blocking_ask_in_a_same_region_non_target(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "kernel/impl/actor_runtime/guardian.py",
+        "def guard(engine: object) -> object:\n"
+        "    return engine.ask({\"command\": \"run\"})\n",
+    )
+    assert "blocking-ask" in _rules(tmp_path)
+
+
+def test_mutation_rejects_blocking_ask_in_a_port_non_target(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "kernel/impl/actor_runtime/port/host.py",
+        "def call(engine: object) -> object:\n"
+        "    return engine.ask({\"command\": \"run\"})\n",
+    )
+    assert "blocking-ask" in _rules(tmp_path)
+
+
+def test_mutation_rejects_blocking_ask_through_a_symlinked_exempt_path(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path.parent / f"outside-{tmp_path.name}.py"
+    outside.write_text(
+        "def blocked(engine: object) -> object:\n"
+        "    return engine.ask({\"command\": \"run\"})\n",
+        encoding="utf-8",
+    )
+    link = tmp_path / "kernel/impl/actor_runtime/port/cell.py"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside)
+    assert "blocking-ask" in _rules(tmp_path)
 
 
 def test_mutation_rejects_new_unmanifested_legacy_symbol(tmp_path: Path) -> None:

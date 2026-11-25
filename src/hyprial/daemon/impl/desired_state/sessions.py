@@ -128,43 +128,25 @@ class _DesiredStateSessionsMixin:
             self.save(updated)
             return updated
 
-    def adapter_registration(
-        self, name: str
-    ) -> tuple[AdapterSpec | None, str | None]:
-        """Read adapter intent and staged legacy pin atomically."""
-
-        with self._lock:
-            state = self.load()
-            spec = next((item for item in state.adapters if item.name == name), None)
-            return spec, dict(state.channel_pins).get(name)
-
     def remove_adapter_registration(
         self,
         name: str,
         *,
         expected_spec: AdapterSpec | None,
-        expected_legacy_pin: str | None,
     ) -> DesiredState:
         """Remove one adapter's desired rows behind an exact compare fence."""
 
         with self._lock:
             state = self.load()
             current_spec = next((item for item in state.adapters if item.name == name), None)
-            pins = dict(state.channel_pins)
-            current_pin = pins.get(name)
-            if current_spec != expected_spec or current_pin != expected_legacy_pin:
+            if current_spec != expected_spec:
                 raise DesiredStateError(
                     f"adapter {name!r} registry changed during removal"
                 )
-            pins.pop(name, None)
             adapters = tuple(item for item in state.adapters if item.name != name)
-            if adapters == state.adapters and current_pin is None:
+            if adapters == state.adapters:
                 return state
-            updated = replace(
-                state,
-                adapters=adapters,
-                channel_pins=tuple(sorted(pins.items())),
-            )
+            updated = replace(state, adapters=adapters)
             self.save(updated)
             return updated
 
@@ -173,18 +155,15 @@ class _DesiredStateSessionsMixin:
         name: str,
         *,
         spec: AdapterSpec | None,
-        legacy_pin: str | None,
     ) -> DesiredState:
         """Rollback one removal without overwriting a concurrent replacement."""
 
         with self._lock:
             state = self.load()
             current_spec = next((item for item in state.adapters if item.name == name), None)
-            pins = dict(state.channel_pins)
-            current_pin = pins.get(name)
-            if current_spec == spec and current_pin == legacy_pin:
+            if current_spec == spec:
                 return state
-            if current_spec is not None or current_pin is not None:
+            if current_spec is not None:
                 raise DesiredStateError(
                     f"adapter {name!r} registry replacement blocks rollback"
                 )
@@ -193,18 +172,15 @@ class _DesiredStateSessionsMixin:
                 if spec.name != name:
                     raise DesiredStateError("adapter registration name mismatch")
                 adapters.append(spec)
-            if legacy_pin is not None:
-                pins[name] = legacy_pin
             updated = replace(
                 state,
                 adapters=tuple(sorted(adapters, key=lambda item: item.name)),
-                channel_pins=tuple(sorted(pins.items())),
             )
             self.save(updated)
             return updated
 
     def sync_harness_session_refs(
-        self, refs: Mapping[tuple[str, str], str]
+        self, refs: Mapping[tuple[str, str, str], str]
     ) -> DesiredState:
         """Persist runtime-learned session refs, touching nothing else.
 
@@ -227,7 +203,7 @@ class _DesiredStateSessionsMixin:
             changed = False
             harnesses: list[HarnessLaunchSpec] = []
             for spec in state.harnesses:
-                ref = refs.get((spec.harness, spec.name))
+                ref = refs.get((spec.harness, spec.name, spec.member or spec.name))
                 if ref is not None and ref != spec.session_ref:
                     spec = replace(spec, session_ref=ref)
                     changed = True
@@ -555,45 +531,6 @@ class _DesiredStateSessionsMixin:
                 replace(state, pending_session_agent_effects=remaining)
             )
             return True
-
-    def set_channel_pin(
-        self, channel: str, agent: str
-    ) -> tuple[DesiredState, str | None]:
-        with self._lock:
-            state = self.load()
-            pins = dict(state.channel_pins)
-            previous = pins.get(channel)
-            pins[channel] = agent
-            updated = replace(state, channel_pins=tuple(sorted(pins.items())))
-            self.save(updated)
-            return updated, previous
-
-    def remove_channel_pin(self, channel: str) -> tuple[DesiredState, str | None]:
-        with self._lock:
-            state = self.load()
-            pins = dict(state.channel_pins)
-            previous = pins.pop(channel, None)
-            updated = replace(state, channel_pins=tuple(sorted(pins.items())))
-            self.save(updated)
-            return updated, previous
-
-    def remove_matching_channel_pins(
-        self, matches: tuple[tuple[str, str], ...]
-    ) -> DesiredState:
-        """Retire migrated pins without replacing another writer's document."""
-
-        with self._lock:
-            state = self.load()
-            pins = dict(state.channel_pins)
-            for channel, expected in matches:
-                if pins.get(channel) == expected:
-                    pins.pop(channel)
-            updated = tuple(sorted(pins.items()))
-            if updated == state.channel_pins:
-                return state
-            result = replace(state, channel_pins=updated)
-            self.save(result)
-            return result
 
     def normalize_interactive_sessions(
         self,

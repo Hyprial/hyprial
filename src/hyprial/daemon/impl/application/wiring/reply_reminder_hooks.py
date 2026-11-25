@@ -32,18 +32,21 @@ def wire_reply_reminder_hooks(
     consumer_factory: ReplyReminderConsumerFactory | None,
     daemon_hooks: Any,
     logger: Callable[..., None] | None = None,
+    read_keys: Callable[[str], tuple[str, ...]] | None = None,
 ) -> None:
     """Register the daemon-level reminder consumer, or do nothing.
 
     ``consumer_factory is None`` means the shell did not supply the biz
     consumer (tests, or a build without the reminder feature): no lane is
-    registered and turn events behave exactly as before.
+    registered and turn events behave exactly as before.  ``read_keys`` is
+    the daemon's consumer read-key helper (integrator decision D9).
     """
 
     if consumer_factory is None:
         return
     port = InboxReplyReminders(
-        inbox, node_id=node_id, clock_ms=clock_ms, logger=logger
+        inbox, node_id=node_id, clock_ms=clock_ms, logger=logger,
+        read_keys=read_keys,
     )
     daemon_hooks.register_consumer(
         "reply-reminder", consumer_factory(port), REPLY_REMINDER_EVENT_NAMES

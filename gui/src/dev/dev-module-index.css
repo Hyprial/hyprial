@@ -1,0 +1,340 @@
+/*
+ * Dev tools floating layer CSS (WP2, gui-dev-product-parity-2026-11-09):
+ * - The layer is position:fixed at the bottom-right corner with safe-area
+ *   insets and portals outside the product root; it never changes product
+ *   layout. The resident dev chrome selectors (preview frame, toolbar and
+ *   footer) are removed with that chrome and must not return.
+ * - The panel is non-modal, capped in width/height with internal scrolling,
+ *   and adapts at 760px, 640px and 375px; 1440px stays on the base rules.
+ *   At ≤640px the collapsed layer lifts above the PR-E fixed bottom nav
+ *   (56px + safe area), so the default state intercepts no fixed product control; the product
+ *   navigation is never hidden or moved to make room.
+ * - The layer sits above every product layer, toasts included, because it
+ *   is development-only UI that must stay reachable: its z-index is the toast
+ *   token plus a margin, so raising the product tokens cannot bury it. The
+ *   artifact gate keeps this file out of production builds.
+ */
+.dev-tools-layer {
+  position: fixed;
+  right: calc(10px + env(safe-area-inset-right, 0px));
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: calc(var(--ui-z-toast) + 100);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.dev-tools-layer > * {
+  pointer-events: auto;
+}
+
+.dev-tools-fab {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgb(120 113 108 / 40%);
+  border-radius: 999px;
+  background: #292524;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgb(28 25 23 / 24%);
+  cursor: pointer;
+}
+
+.dev-tools-fab:focus-visible {
+  outline: 2px solid #6d28d9;
+  outline-offset: 2px;
+}
+
+.dev-tools-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 20px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+  max-height: min(60dvh, calc(100dvh - 80px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px)));
+  padding: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid rgb(120 113 108 / 28%);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 98%);
+  box-shadow: 0 12px 32px rgb(28 25 23 / 18%);
+}
+
+.dev-tools-panel:focus-visible {
+  outline: 2px solid #6d28d9;
+  outline-offset: 2px;
+}
+
+.dev-tools-scenarios {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dev-tools-tabs {
+  display: flex;
+  gap: var(--ui-space-1);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.dev-tools-tabs [role="tab"] {
+  flex: 1;
+  min-height: var(--ui-control-height-sm);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ui-ink-2);
+  font: inherit;
+  font-size: var(--ui-text-xs);
+  cursor: pointer;
+}
+
+.dev-tools-tabs [aria-selected="true"] {
+  border-bottom-color: var(--ui-accent);
+  color: var(--ui-ink-1);
+}
+
+.dev-tools-archive-note {
+  margin: 0;
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-xs);
+}
+
+.dev-tools-archive-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ui-control-height-sm);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-surface-muted);
+  color: var(--ui-ink-1);
+  font-size: var(--ui-text-xs);
+  text-decoration: none;
+}
+
+.dev-tools-tabs [role="tab"]:focus-visible,
+.dev-tools-archive-link:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+.dev-tools-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dev-tools-scenario-preset {
+  padding: 4px 8px;
+  border: 1px solid rgb(120 113 108 / 32%);
+  border-radius: 8px;
+  background: #fff;
+  color: #292524;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.dev-tools-scenario-preset[aria-pressed="true"] {
+  border-color: #6d28d9;
+  background: #f5f3ff;
+  color: #4c1d95;
+}
+
+.dev-tools-scenario-preset:focus-visible {
+  outline: 2px solid #6d28d9;
+  outline-offset: 2px;
+}
+
+.dev-scenario {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  color: #57534e;
+  font-size: 12px;
+}
+
+.dev-scenario span {
+  flex: none;
+}
+
+.dev-scenario select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  padding: 4px 7px;
+  border: 1px solid rgb(120 113 108 / 32%);
+  border-radius: 8px;
+  background: #fff;
+  color: #292524;
+  font: inherit;
+}
+
+.dev-scenario select:focus-visible {
+  outline: 2px solid #6d28d9;
+  outline-offset: 2px;
+}
+
+.dev-data-source {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  pointer-events: none;
+  padding: 6px 10px;
+  overflow-wrap: anywhere;
+  border: 1px solid rgb(120 113 108 / 24%);
+  border-radius: 10px;
+  background: #f5f5f4;
+  color: #57534e;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.dev-module-dock {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dev-module-index {
+  display: flex;
+  max-width: 100%;
+  box-sizing: border-box;
+  gap: 6px;
+  padding: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid rgb(120 113 108 / 24%);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 94%);
+}
+
+.dev-module-index:focus-visible {
+  outline: 2px solid #6d28d9;
+  outline-offset: 2px;
+}
+
+.dev-module-scroll-hint {
+  display: none;
+  flex: 0 0 auto;
+  color: #57534e;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.dev-module-entry {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #f5f5f4;
+  color: #44403c;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.dev-module-entry strong {
+  color: #6d28d9;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 760px) {
+  .dev-tools-layer {
+    right: calc(8px + env(safe-area-inset-right, 0px));
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .dev-tools-panel {
+    width: calc(100vw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    max-height: min(70dvh, calc(100dvh - 72px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px)));
+    padding: 10px;
+  }
+
+  .dev-tools-fab {
+    min-width: 40px;
+    height: 40px;
+  }
+
+  .dev-module-dock {
+    justify-items: stretch;
+  }
+
+  .dev-module-index {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .dev-module-scroll-hint {
+    display: inline;
+  }
+}
+
+@media (max-width: 640px) {
+  .dev-tools-layer {
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 8px);
+  }
+
+  .dev-tools-panel {
+    max-height: min(
+      66dvh,
+      calc(100dvh - 124px - env(safe-area-inset-bottom, 0px) - 16px - env(safe-area-inset-top, 0px))
+    );
+  }
+}
+
+@media (max-width: 375px) {
+  .dev-tools-layer {
+    right: calc(6px + env(safe-area-inset-right, 0px));
+    gap: 6px;
+  }
+
+  .dev-tools-panel {
+    width: calc(100vw - 12px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .dev-tools-fab {
+    min-width: 36px;
+    height: 36px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .dev-scenario {
+    font-size: 11px;
+  }
+
+  .dev-scenario select {
+    max-width: 180px;
+    padding: 3px 6px;
+  }
+
+  .dev-data-source {
+    font-size: 10px;
+  }
+
+  .dev-module-entry {
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+
+  .dev-module-entry strong {
+    font-size: 9px;
+  }
+}

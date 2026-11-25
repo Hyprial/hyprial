@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hyprial.kernel import ProcessFileLock, ipc_errors
+from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
 from hyprial.identity import EXPECTED_IDENTITY_GENERATION_ENV
 from hyprial.shell.impl.login.generation import (
@@ -24,18 +24,8 @@ from hyprial.shell.impl.login.generation import (
     verify_expected_generation,
 )
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
-from tests.fixtures.network.fake_oidc import fake_oidc  # noqa: E402
 
-from .support import _environment, _invoke_login, _launch_result, _profile
-
-
-def _later_login_commits(home: Path, generation: int) -> None:
-    """What a concurrent login B leaves: the next generation in login.json."""
-
-    path = home / "secrets" / "login.json"
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["identityGeneration"] = generation
-    path.write_text(json.dumps(record), encoding="utf-8")
+from .support import _environment
 
 
 def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,89 +36,6 @@ def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
             ipc_errors.DaemonUnavailableError("stopped")
         ),
     )
-
-
-def test_login_releases_the_lock_and_launches_with_its_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home, _state = _environment(tmp_path, monkeypatch)
-    _no_daemon(monkeypatch)
-    seen: list[dict[str, object]] = []
-
-    with fake_oidc() as server:
-        profile = _profile(server)
-
-        def launch(**kwargs):
-            seen.append(
-                {
-                    **kwargs,
-                    "lock": ProcessFileLock(
-                        home / ".identity-transaction.lock"
-                    ).probe(),
-                    "onDisk": read_identity_generation(home),
-                }
-            )
-            return _launch_result(profile)
-
-        result = _invoke_login(server, monkeypatch, launch=launch)
-
-    assert result.exit_code == 0, result.output
-    assert len(seen) == 1
-    # The daemon acquires the lock itself: the launcher holds nothing.
-    assert seen[0]["lock"] == "free"
-    assert "identity_transaction" not in seen[0]
-    assert seen[0]["expected_identity_generation"] == 1
-    assert seen[0]["onDisk"] == 1
-    assert next_identity_generation(home) == 2
-
-
-def test_a_later_login_in_the_gap_reports_this_one_superseded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home, _state = _environment(tmp_path, monkeypatch)
-    _no_daemon(monkeypatch)
-
-    with fake_oidc() as server:
-
-        def launch(**kwargs):
-            _later_login_commits(home, kwargs["expected_identity_generation"] + 1)
-            # The launched daemon found the newer generation and exited stale.
-            raise _cli_get_services().CliError(
-                "IDENTITY_SUPERSEDED", "launched daemon exited as stale"
-            )
-
-        result = _invoke_login(server, monkeypatch, launch=launch)
-
-    assert result.exit_code == 1, result.output
-    payload = json.loads(result.stdout)
-    assert payload["code"] == "IDENTITY_SUPERSEDED"
-    assert payload["data"]["superseded"] is True
-    assert payload["data"]["identityGeneration"] == 1
-    assert payload["data"]["currentIdentityGeneration"] == 2
-
-
-def test_a_later_daemon_answering_for_another_owner_is_superseded_not_unverified(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home, _state = _environment(tmp_path, monkeypatch)
-    _no_daemon(monkeypatch)
-
-    with fake_oidc() as server:
-        profile = _profile(server)
-
-        def launch(**kwargs):
-            _later_login_commits(home, kwargs["expected_identity_generation"] + 1)
-            winner = _launch_result(profile).to_payload()
-            winner["owner"] = "bob"
-            from hyprial.kernel import DaemonLaunchResult
-
-            return DaemonLaunchResult.existing(winner)
-
-        result = _invoke_login(server, monkeypatch, launch=launch)
-
-    payload = json.loads(result.stdout)
-    assert payload["code"] == "IDENTITY_SUPERSEDED", payload
-    assert payload["data"]["currentIdentityGeneration"] == 2
 
 
 def test_generation_helpers_pop_and_clear_the_expectation(tmp_path: Path) -> None:

@@ -1,4 +1,10 @@
-"""Public compatibility facade over the canonical harness runtime actor."""
+"""Public compatibility facade over the canonical harness runtime actor.
+
+Decision record (cell model I5-2 part B): ``dispatch`` and ``steer`` accept
+one cell dispatch envelope and nothing else.  The target harness is selected
+inside the actor from the envelope's stamp member; a worker name or a bare
+delivery is not a parameter of either surface.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,6 @@ import time
 import uuid
 from typing import TYPE_CHECKING, cast
 from hyprial.daemon.impl.api  import (
-    HarnessDelivery,
     HarnessResult,
 )
 from hyprial.kernel import DesiredStateError
@@ -51,6 +56,9 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     StageHarnessDesiredCommand,
     WaitHarnessReadyCommand,
 )
+if TYPE_CHECKING:
+    from hyprial.daemon.impl.cells.actor.contracts import CellDispatchEnvelope
+
 from hyprial.kernel import PortCommandRejected
 from hyprial.kernel import ReadinessReport
 
@@ -64,6 +72,7 @@ from .contracts import (
     _launch_projection,
 )
 from .io_port import validate_harness_cwd
+from hyprial.kernel import ipc_errors
 
 if TYPE_CHECKING:  # pragma: no cover - annotation-only, same package
     from hyprial.daemon.impl.harnesses.actor.actor import HarnessRuntimeActor
@@ -158,9 +167,9 @@ class HarnessRuntimeFacade:
         )
         return cast(HarnessMutationCompleted, event).changed
 
-    def remove(self, harness: str, name: str) -> bool:
+    def remove(self, harness: str, name: str, member: str | None = None) -> bool:
         event = self._request(
-            RemoveHarnessCommand(uuid.uuid4().hex, harness, name),
+            RemoveHarnessCommand(uuid.uuid4().hex, harness, name, member=member),
             HarnessMutationCompleted,
         )
         return cast(HarnessMutationCompleted, event).changed
@@ -185,14 +194,14 @@ class HarnessRuntimeFacade:
     def streaming_actors(self) -> tuple[str, ...]:
         return self.projection.streaming_actors()
 
-    def session_refs(self) -> dict[tuple[str, str], str]:
+    def session_refs(self) -> dict[tuple[str, str, str], str]:
         self._request(
             RefreshHarnessProjectionsCommand(uuid.uuid4().hex),
             HarnessProjectionsRefreshed,
         )
         return self.projection.session_refs()
 
-    def reconcile_session_refs(self) -> dict[tuple[str, str], str]:
+    def reconcile_session_refs(self) -> dict[tuple[str, str, str], str]:
         event = cast(
             HarnessSessionRefsReconciled,
             self._request(
@@ -203,7 +212,8 @@ class HarnessRuntimeFacade:
         if event.error is not None:
             raise DesiredStateError(event.error)
         return {
-            (item.harness, item.name): item.session_ref for item in event.refs
+            (item.harness, item.name, item.member or item.name): item.session_ref
+            for item in event.refs
         }
 
     def stage_harness_desired(self, spec: HarnessLaunchSpec) -> bool:
@@ -304,7 +314,6 @@ class HarnessRuntimeFacade:
                     uuid.uuid4().hex,
                     snapshot.name,
                     snapshot.spec,
-                    snapshot.legacy_pin,
                 ),
                 HarnessDesiredStateManaged,
             ),
@@ -322,7 +331,6 @@ class HarnessRuntimeFacade:
                     uuid.uuid4().hex,
                     snapshot.name,
                     snapshot.spec,
-                    snapshot.legacy_pin,
                 ),
                 HarnessDesiredStateManaged,
             ),
@@ -338,15 +346,15 @@ class HarnessRuntimeFacade:
         )
         return cast(HarnessReadyObserved, event).ready
 
-    def dispatch(self, name: str, delivery: HarnessDelivery) -> bool:
+    def dispatch(self, envelope: CellDispatchEnvelope) -> bool:
         event = self._request(
-            DispatchHarnessDeliveryCommand(uuid.uuid4().hex, name, delivery),
+            DispatchHarnessDeliveryCommand(uuid.uuid4().hex, envelope),
             HarnessDeliveryAdmitted,
         )
         return cast(HarnessDeliveryAdmitted, event).accepted
 
-    def steer(self, name: str, delivery_id: str, timeout: float = 5.0) -> bool:
-        """Fold ``delivery_id`` into this actor's running turn; False if not.
+    def steer(self, envelope: CellDispatchEnvelope, timeout: float = 5.0) -> bool:
+        """Fold the envelope's delivery id into this actor's running turn.
 
         ``timeout`` is the actor reply budget.  The native steer itself has
         its own bounded wait inside the process; this only decides how long
@@ -354,7 +362,7 @@ class HarnessRuntimeFacade:
         """
 
         event = self._request(
-            SteerHarnessDeliveryCommand(uuid.uuid4().hex, name, delivery_id),
+            SteerHarnessDeliveryCommand(uuid.uuid4().hex, envelope),
             HarnessDeliverySteered,
             timeout=max(timeout + 1.0, self._reply_timeout),
         )
@@ -443,12 +451,12 @@ class HarnessRuntimeFacade:
                 return
             self._pending.pop(correlation_id, None)
         if isinstance(event, PortCommandRejected):
-            if event.code == "HARNESS_START_TIMEOUT":
+            if event.code == ipc_errors.HARNESS_START_TIMEOUT:
                 reply.fail(TimeoutError(event.detail))
             elif event.code in {
-                "PORT_CLOSING",
-                "PORT_OVERLOADED",
-                "HARNESS_COMPLETION_HANDOFF_FAILED",
+                ipc_errors.PORT_CLOSING,
+                ipc_errors.PORT_OVERLOADED,
+                ipc_errors.HARNESS_COMPLETION_HANDOFF_FAILED,
                 "HARNESS_GENERATION_RESTARTED",
                 "HARNESS_RUNTIME_STOPPED",
             }:

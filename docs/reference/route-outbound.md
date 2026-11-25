@@ -1,4 +1,11 @@
-# Proactive route outbound: `route:<adapter>:<route>`
+# Proactive route outbound: `route:<adapter>:<route>` (retired)
+
+> **Retired by I4b (2026-11-24).** `message.send` no longer accepts `route:` targets
+> (`UNSUPPORTED_TARGET`); text and attachments to a person go to `user:<owner>` and the
+> sender cell's push, and the local operator posts to a named adapter route with
+> `adapter.routes.send`. See `docs/guides/migration-route-uri-retired.md`. The text below is
+> the historical description of the deleted front door; the resolution, fanout and
+> Lark error mapping it describes live on in `network/route_push.py`.
 
 `message.send` accepts `route:<adapter>:<route>` targets. The daemon resolves
 the adapter against the local `channels.json` gateway list and the route

@@ -8,7 +8,6 @@ from dataclasses import replace
 import pytest
 
 from hyprial.daemon.impl.inbox.actor.custody.notices import DeliveryCustodyNoticesMixin
-from hyprial.daemon.impl.inbox.service import InboxService
 
 from ..support import _message, authority as authority
 from .test_no_change import _observe_global_reads, _stored, _wait_for_restart
@@ -61,8 +60,6 @@ def test_expiry_still_commits_ledger_and_wakes_once(authority, terminal):
     ]
     assert facade.pending_messages(message.recipient) == ()
     assert facade.system_notices(message.sender) == ()
-    rows = facade.link_ledger_snapshot(0)
-    assert len(rows) == 1 and rows[0].state == "expired"
     assert facade.prune_inbox(now_ms=expiry + 1) == ()
     assert facade.version == version + 1
 
@@ -79,7 +76,7 @@ def test_expiry_keeps_local_sender_notice(authority):
     assert facade.version == version + 1
 
 
-@pytest.mark.parametrize("phase", ["forget", "notice"])
+@pytest.mark.parametrize("phase", ["notice"])
 def test_expiry_commit_is_published_before_later_failure(authority, monkeypatch, phase):
     facade, coordinator, _, _ = authority
     message = _message("post-commit-expiry")
@@ -91,10 +88,7 @@ def test_expiry_commit_is_published_before_later_failure(authority, monkeypatch,
     def fail(*args, **kwargs):
         raise RuntimeError("injected after expiry commit")
 
-    if phase == "forget":
-        monkeypatch.setattr(InboxService, "_forget_admission", fail)
-    else:
-        monkeypatch.setattr(DeliveryCustodyNoticesMixin, "_stage_expired_sender_notices", fail)
+    monkeypatch.setattr(DeliveryCustodyNoticesMixin, "_stage_expired_sender_notices", fail)
     with pytest.raises(RuntimeError, match="DELIVERY_COMMAND_FAILED"):
         facade.prune_inbox(now_ms=expiry)
     _wait_for_restart(coordinator)
@@ -109,11 +103,16 @@ def test_failed_expiry_transaction_does_not_publish(authority, monkeypatch):
     before, version = _stored(coordinator), facade.version
     expiry = 11 + coordinator._active_handler._service.durable_ttl_ms
 
-    def fail(*args, **kwargs):
-        raise RuntimeError("injected before expiry commit")
-
-    monkeypatch.setattr(InboxService, "_ledger_expire_inbound_locked", fail)
+    coordinator._active_handler._service._db.execute(
+        """CREATE TRIGGER fail_before_expiry BEFORE DELETE ON inbox
+           BEGIN
+               SELECT RAISE(ABORT, 'injected before expiry commit');
+           END"""
+    )
     with pytest.raises(RuntimeError, match="DELIVERY_COMMAND_FAILED"):
         facade.prune_inbox(now_ms=expiry)
     _wait_for_restart(coordinator)
+    coordinator._active_handler._service._db.execute(
+        "DROP TRIGGER IF EXISTS fail_before_expiry"
+    )
     assert _stored(coordinator) == before and facade.version == version

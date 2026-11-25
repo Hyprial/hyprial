@@ -6,16 +6,20 @@ import threading
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from hyprial.kernel import (
     STATE_AUTHORITY,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult,
     ExpectedActorError,
 )
 from hyprial.kernel import PortAdmission
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.daemon.impl.api import HarnessDelivery
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 from hyprial.daemon.impl.harnesses.carrier.codex_carrier_store  import CodexCarrierStore
 
@@ -559,11 +563,12 @@ class InteractiveCarrierRuntime:
         session_ref: str,
         store: CodexCarrierStore,
         capacity: int = 128,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self._capacity = capacity
         self._projection = _Projection(effect_capacity=max(16, capacity * 4))
         self._generation = 0
-        self._runtime = ActorRuntime()
+        self._hosts = ActorHostCustody(actor_host, owner="interactive-carrier")
 
         def factory() -> _CarrierShard:
             self._generation += 1
@@ -578,7 +583,7 @@ class InteractiveCarrierRuntime:
                 projection=self._projection,
             )
 
-        self._handle = self._runtime.start(
+        self._handle = self._hosts.host.spawn(
             ActorSpec(
                 name=f"interactive-carrier:{name}",
                 handler_factory=factory,
@@ -599,7 +604,7 @@ class InteractiveCarrierRuntime:
         # these completions would lose the only transition to settlement.
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
-            result = self._runtime.tell(self._handle, command)
+            result = self._handle.tell(command)
             if result is AdmissionResult.ACCEPTED:
                 return PortAdmission.ACCEPTED
             if result is AdmissionResult.CLOSED:
@@ -650,7 +655,8 @@ class InteractiveCarrierRuntime:
             return tuple(effects)
 
     def drain(self, timeout: float) -> bool:
-        return self._runtime.drain(timeout).complete
+        complete = self._handle.drain(timeout).complete
+        return complete and self._hosts.shutdown(timeout)
 
 
 __all__ = [

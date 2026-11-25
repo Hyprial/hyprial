@@ -743,7 +743,7 @@ class LarkStateStore(_PendingRecoveryState, _LarkStateSchema):
 
         A repeat observation refreshes ``last_seen_ms`` (and the display name
         and union_id when the observation carries them) but never moves
-        ``first_seen_ms``.  A ``verified`` row keeps its standing, owner and
+        ``first_seen_ms``.  A ``verified`` row keeps its standing and
         source: observations may only add platform facts, never overwrite a
         human confirmation.
         """
@@ -756,9 +756,8 @@ class LarkStateStore(_PendingRecoveryState, _LarkStateSchema):
             db.execute(
                 """INSERT INTO identities(
                        adapter, kind, platform_id, display_name, union_id,
-                       hyprial_owner, standing, source, first_seen_ms,
-                       last_seen_ms
-                   ) VALUES (?, ?, ?, ?, ?, NULL, 'observed', ?, ?, ?)
+                       standing, source, first_seen_ms, last_seen_ms
+                   ) VALUES (?, ?, ?, ?, ?, 'observed', ?, ?, ?)
                    ON CONFLICT(adapter, kind, platform_id) DO UPDATE SET
                        display_name = COALESCE(
                            NULLIF(excluded.display_name, ''),
@@ -794,7 +793,7 @@ class LarkStateStore(_PendingRecoveryState, _LarkStateSchema):
     ) -> Identity:
         """Authoritatively write one identity mapping (operator surface).
 
-        Unlike :meth:`observe_identity` this overwrites display name, owner,
+        Unlike :meth:`observe_identity` this overwrites display name,
         standing and source -- it is the only path that may set or revoke
         ``verified``.  ``first_seen_ms`` is preserved for an existing row
         unless the caller supplies one explicitly.
@@ -817,15 +816,13 @@ class LarkStateStore(_PendingRecoveryState, _LarkStateSchema):
             db.execute(
                 """INSERT INTO identities(
                        adapter, kind, platform_id, display_name, union_id,
-                       hyprial_owner, standing, source, first_seen_ms,
-                       last_seen_ms
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       standing, source, first_seen_ms, last_seen_ms
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(adapter, kind, platform_id) DO UPDATE SET
                        display_name = excluded.display_name,
                        union_id = COALESCE(
                            excluded.union_id, identities.union_id
                        ),
-                       hyprial_owner = excluded.hyprial_owner,
                        standing = excluded.standing,
                        source = excluded.source,
                        first_seen_ms = CASE
@@ -841,7 +838,6 @@ class LarkStateStore(_PendingRecoveryState, _LarkStateSchema):
                     identity.platform_id,
                     identity.display_name,
                     identity.union_id,
-                    identity.hyprial_owner,
                     identity.standing,
                     identity.source,
                     first_seen,

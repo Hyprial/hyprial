@@ -188,10 +188,12 @@ def test_sustained_actor_overload_has_hard_deadline_and_does_not_hang_stop(
         session_ref="session",
         store=store,
     )
-    original_tell = runtime._runtime.tell  # type: ignore[attr-defined]
-    runtime._runtime.tell = (  # type: ignore[method-assign,attr-defined]
-        lambda handle, command: AdmissionResult.OVERLOADED
-    )
+    class _OverloadedCell:
+        def tell(self, command: object) -> AdmissionResult:
+            return AdmissionResult.OVERLOADED
+
+    original_handle = runtime._handle  # type: ignore[attr-defined]
+    runtime._handle = _OverloadedCell()  # type: ignore[assignment,attr-defined]
     started = time.monotonic()
     assert runtime.submit(
         CarrierReconcileError(
@@ -201,7 +203,7 @@ def test_sustained_actor_overload_has_hard_deadline_and_does_not_hang_stop(
     ) is PortAdmission.OVERLOADED
     assert time.monotonic() - started < 0.2
 
-    runtime._runtime.tell = original_tell  # type: ignore[method-assign,attr-defined]
+    runtime._handle = original_handle  # type: ignore[attr-defined]
     assert runtime.drain(1.0) is True
     store.close()
 

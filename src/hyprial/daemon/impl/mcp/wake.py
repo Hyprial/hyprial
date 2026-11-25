@@ -86,6 +86,7 @@ class _BatchCustody:
     consumed: bool = False
     replay: bool = False
     generation: str | None = None
+    signalled_at: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,10 +239,13 @@ class WakeCoordinator:
             return False
         self._keys.add(key)
         queue = self._queues.get(actor)
+        gated = None
         if queue is None:
             queue = deque()
             self._queues[actor] = queue
             self._actors.append(actor)
+        else:
+            gated = _signalled_batch_unconsumed(queue)
         queue.append(
             _QueuedWake(
                 actor=actor,
@@ -257,6 +261,8 @@ class WakeCoordinator:
             )
         )
         self._pending_count += 1
+        if gated is not None:
+            self._log_gated(gated, now=self._clock())
         return True
 
     def _batch_item(self, actor: str, cursor: str) -> _QueuedWake | None:
@@ -470,30 +476,18 @@ class WakeCoordinator:
         for _ in range(visits):
             actor = self._actors.popleft()
             queue = self._queues[actor]
-            if _signalled_batch_unconsumed(queue):
-                # One accepted model-input edge is unconsumed here: count
-                # changes, the old short resignal cadence and every overdue
-                # recovery timer make zero driver calls, across cursors.
+            gated = _signalled_batch_unconsumed(queue)
+            if gated is not None and gated.not_before > now:
                 self._actors.append(actor)
                 continue
-            due_index = None
-            for index, queued_item in enumerate(queue):
-                if (
-                    queued_item.batch is not None
-                    and queued_item.state == WakeDeliveryState.SIGNALLED
-                    and not queued_item.batch.replay
-                ):
-                    # A signalled batch is never re-sent on a timer; only an
-                    # explicit generation rearm or a restart recovery replays.
-                    continue
-                if queued_item.not_before <= now:
-                    due_index = index
-                    break
-                # Read custody silences only this item. An unread item that is
-                # waiting on its normal retry cadence still gates later unread
-                # items, preserving the single outstanding wake edge.
-                if queued_item.state != WakeDeliveryState.AWAITING_ACK:
-                    break
+            due_index = queue.index(gated) if gated is not None else None
+            if due_index is None:
+                for index, queued_item in enumerate(queue):
+                    if queued_item.not_before <= now:
+                        due_index = index
+                        break
+                    if queued_item.state != WakeDeliveryState.AWAITING_ACK:
+                        break
             if due_index is None:
                 self._actors.append(actor)
                 continue
@@ -528,9 +522,6 @@ class WakeCoordinator:
             next_attempt = item.attempt + 1
             batch = item.batch
             if batch is not None and attempt.status == WakeStatus.ACCEPTED:
-                # An accepted batch edge is not settlement. It is SIGNALLED
-                # (or stays AWAITING_ACK for an explicit recovery replay) and
-                # keeps its exact cursor/text; no timer may re-send it.
                 queue.insert(
                     due_index,
                     replace(
@@ -547,10 +538,27 @@ class WakeCoordinator:
                             if item.state == WakeDeliveryState.AWAITING_ACK
                             else self._resignal_delay(next_attempt)
                         ),
-                        batch=replace(batch, replay=False),
+                        batch=replace(
+                            batch,
+                            replay=False,
+                            signalled_at=(
+                                batch.signalled_at
+                                if batch.signalled_at is not None
+                                else now
+                            ),
+                        ),
                     ),
                 )
                 outcomes[-1] = replace(outcomes[-1], status=WakeStatus.SIGNALLED)
+            elif batch is not None and item.state == WakeDeliveryState.SIGNALLED:
+                queue.insert(
+                    due_index,
+                    replace(
+                        item,
+                        attempt=next_attempt,
+                        not_before=now + self._retry_delay(next_attempt),
+                    ),
+                )
             elif item.state == WakeDeliveryState.AWAITING_ACK:
                 # Read custody is proof the session saw this delivery; this
                 # wake was the long-timeout fallback for a session that may
@@ -595,6 +603,33 @@ class WakeCoordinator:
             self._log_outcome(outcomes[-1], attempt=next_attempt)
         return outcomes
 
+    def _log_gated(self, item: _QueuedWake, *, now: float) -> None:
+        logger = self._logger
+        batch = item.batch
+        if logger is None or batch is None:
+            return
+        waited = (
+            0.0
+            if batch.signalled_at is None
+            else max(0.0, now - batch.signalled_at)
+        )
+        try:
+            logger.log(
+                "info",
+                "wake.gated",
+                messageId=item.message_id,
+                correlationId=item.message_id,
+                node="wake",
+                actorId=item.actor,
+                deliveryId=item.delivery_id,
+                cursor=batch.cursor,
+                waitedSeconds=waited,
+            )
+        except (NameError, ImportError):
+            raise
+        except OSError:
+            return
+
     def _log_outcome(self, outcome: WakeOutcome, *, attempt: int) -> None:
         logger = self._logger
         if logger is None:
@@ -621,14 +656,21 @@ class WakeCoordinator:
             return
 
 
-def _signalled_batch_unconsumed(queue: Sequence[_QueuedWake]) -> bool:
-    """True while one accepted batch here has no proof of model consumption."""
+def _signalled_batch_unconsumed(
+    queue: Sequence[_QueuedWake],
+) -> _QueuedWake | None:
+    """Return the accepted batch whose model consumption is still unproven."""
 
-    return any(
-        item.batch is not None
-        and item.state == WakeDeliveryState.SIGNALLED
-        and not item.batch.replay
-        for item in queue
+    return next(
+        (
+            item
+            for item in queue
+            if item.batch is not None
+            and not item.batch.consumed
+            and item.state == WakeDeliveryState.SIGNALLED
+            and not item.batch.replay
+        ),
+        None,
     )
 
 

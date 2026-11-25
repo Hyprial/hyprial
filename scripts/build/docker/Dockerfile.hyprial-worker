@@ -20,9 +20,20 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 # embed the commit this daemon's protocol-v3 client is built for.
 FROM --platform=$BUILDPLATFORM golang:1.27.1 AS tailcat
 ARG TARGETARCH
+# Optional Go module proxy for this build ONLY.  Default is empty, which leaves
+# the toolchain's own default (https://proxy.golang.org) untouched: an empty
+# value runs no `go env -w`, so nothing about the previous behaviour changes.
+# Measured 2026-11-04 on the build host: `go mod download` against the default
+# proxy failed with `dial tcp 142.250.69.177:443: i/o timeout` while the same
+# command with GOPROXY=https://goproxy.cn,direct finished in 6 s.  go.sum still
+# verifies every module, so a mirror can only change availability, never
+# content.  Pass it as a build arg, never bake a mirror into the image default.
+ARG GOPROXY=""
 WORKDIR /src
 COPY sidecar/hyprial-tailcat/go.mod sidecar/hyprial-tailcat/go.sum ./
-RUN go mod download
+RUN [ -z "${GOPROXY}" ] || go env -w GOPROXY="${GOPROXY}"; \
+    echo "go mod download: GOPROXY=$(go env GOPROXY)"; \
+    go mod download
 COPY sidecar/hyprial-tailcat/cmd ./cmd
 COPY sidecar/hyprial-tailcat/internal ./internal
 # One engine, one pin: the module version in go.mod and the commit the binary
@@ -40,10 +51,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" \
 
 FROM node:22-bookworm-slim
 
+# CLAUDE_VERSION is the npm `claude` CLI for the interactive claude harness.
+# The Agent SDK worker does not use it: it runs the CLI bundled inside
+# claude-agent-sdk (AGENT_SDK_VERSION) unless HYPRIAL_CLAUDE_EXECUTABLE is set,
+# so the bundled-CLI floor in _agent_sdk_worker.py applies to the SDK only.
 ARG CLAUDE_VERSION=2.1.241
 ARG CODEX_VERSION=0.147.0
 ARG PI_VERSION=0.84.3
-ARG AGENT_SDK_VERSION=0.2.125
+ARG AGENT_SDK_VERSION=0.2.178
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git python3 python3-venv util-linux \
@@ -88,8 +103,15 @@ COPY src /tmp/hyprial-src/src
 # whose package cannot resolve a sidecar, and the pinning step below refuses a
 # sidecar from the wrong engine commit.
 # Published wheels keep carrying the sidecar (scripts/ci/verify_tailcat_wheels.py).
+# The worker wheel keeps the native actor engine stage (hyprial._core.actors,
+# compiled from crates/ by cargo), but this image has no Rust toolchain and
+# its context carries no crates/ yet, so the build opts out explicitly with
+# HYPRIAL_BUILD_SKIP_NATIVE=1.  That is sound only while the Python engine is
+# the default actor backend; the default switch must first add a Rust
+# wheel-builder stage here and drop the opt-out (pending HQ ratification).
 RUN set -e; \
     export HYPRIAL_BUILD_WORKER_WHEEL=1; \
+    export HYPRIAL_BUILD_SKIP_NATIVE=1; \
     if [ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ]; then export UV_PYTHON_INSTALL_MIRROR; else unset UV_PYTHON_INSTALL_MIRROR; fi; \
     if [ -n "${UV_INDEX_URL:-}" ]; then export UV_INDEX_URL; else unset UV_INDEX_URL; fi; \
     uv venv --python 3.12 /opt/hyprial/venv \
@@ -115,6 +137,8 @@ RUN set -e; \
       "from pathlib import Path; from hyprial.daemon.impl.network.tailcat.binary import verify_tailcat_sidecar; print(verify_tailcat_sidecar(Path('/root')))"
 COPY src/hyprial/daemon/impl/harnesses/agent_sdk/_agent_sdk_worker.py /opt/hyprial/_agent_sdk_worker.py
 COPY src/hyprial/daemon/impl/harnesses/pi/resources/pi_harness_bridge.ts /opt/hyprial/pi_harness_bridge.ts
+COPY src/hyprial/daemon/impl/harnesses/pi/resources/pi_daemon_ipc.ts /opt/hyprial/pi_daemon_ipc.ts
+COPY src/hyprial/daemon/impl/harnesses/pi/resources/pi_local_ipc.ts /opt/hyprial/pi_local_ipc.ts
 COPY scripts/build/docker/container-entrypoint.sh /opt/hyprial/container-entrypoint.sh
 RUN chmod 755 /opt/hyprial/container-entrypoint.sh
 
@@ -130,5 +154,9 @@ RUN set -e; \
        "claude-agent-sdk==${AGENT_SDK_VERSION}" \
     || { rc=$?; echo 'uv setup failed: check UV_PYTHON_INSTALL_MIRROR and UV_INDEX_URL build args (empty values are unset)' >&2; exit "$rc"; }; \
     chmod -R a+rX /opt/hyprial
+# Build-time proof that the worker's bundled-CLI floor is live: the SDK must
+# expose _cli_version (a missing module only warns at run time) and the worker's
+# own check must accept the bundled version.
+RUN /opt/hyprial/sdk-venv/bin/python -c "import importlib.util as u, claude_agent_sdk._cli_version as c; s = u.spec_from_file_location('w', '/opt/hyprial/_agent_sdk_worker.py'); w = u.module_from_spec(s); s.loader.exec_module(w); print('sdk bundled claude code', c.__cli_version__); w._require_supported_bundled_cli()"
 
 ENTRYPOINT ["/opt/hyprial/container-entrypoint.sh"]

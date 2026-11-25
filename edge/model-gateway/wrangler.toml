@@ -1,0 +1,18 @@
+name = "model-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"  # ⚠️ 不要写"今天"：runtime（workerd）只支持到某个日期为止，未来日期会拒绝启动/部署（实测 wrangler dev 报 "newest date supported ... is 2026-07-07"）
+
+# 会员入口：model.hyprial.ai（自定义域 ⇒ CF 自动建 DNS 记录与证书）
+# ⚠️ custom domain 与 routes 两种写法二选一，部署前由 infra-ops 确认
+routes = [{ pattern = "model.hyprial.ai", custom_domain = true }]
+
+[vars]
+GATEWAY_ID = "default"                                   # 与本 Worker 同账户
+CASDOOR_ISSUER = "https://auth.hyprial.com"
+CASDOOR_JWKS_URL = "https://auth.hyprial.com/.well-known/jwks"  # ✅ 2026-10-13 实测：1 把 key, kid=cert-built-in, kty=RSA, alg=RS256
+CASDOOR_AUDIENCE = "2cdd1defc1a0e219fafb"              # ✅ 2026-10-13 实测（app-hyprial 的 clientId；infra-ops 从真实 refresh token 的 aud 字段只读解出）
+
+# ⭐ AI Gateway binding：预认证、不走公网 ⇒ Worker 不需要任何 CF 凭据
+# 依据：CF《Workers Bindings》(2026-10-02)；实测 gateway 详情 byok="default" ⇒ 用我们的 BYOK key
+[ai]
+binding = "AI"

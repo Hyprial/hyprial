@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dev-02 Agent 页原型（设计参考）</title>
+<style>
+  :root {
+    color-scheme: light;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --ink: #17131f;
+    --ink-soft: #4d4d54;
+    --muted: #70727a;
+    --line: #d7d8d5;
+    --line-soft: #e9eae7;
+    --paper: #f5f6f3ee;
+    --card: #fcfdfa;
+    --green: #dff493;
+    --green-wash: #edf2e7;
+    --green-line: #d5e5af;
+    --green-ink: #3f5326;
+    --lilac: #d9d4f2;
+    --lilac-wash: #eeecf7;
+    --lilac-line: #cfc8ea;
+    --lilac-ink: #463e6b;
+    --peach: #f7dccb;
+    --peach-wash: #f9ece2;
+    --peach-line: #eed2bc;
+    --peach-ink: #7a4a26;
+    --grey: #e2e3e0;
+    --grey-wash: #f0f1ee;
+    --grey-line: #d9dad6;
+    --grey-ink: #55565c;
+    --warn: #b3541e;
+    --warn-wash: #fbeee4;
+    --warn-line: #eed2bc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--font-ui);
+    color: var(--ink);
+    background: var(--paper);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .spec { max-width: 1080px; margin: 0 auto; padding: 24px 20px 80px; }
+  .spec-head { margin-bottom: 18px; }
+  .spec-head h1 { font-size: 20px; margin: 0 0 4px; }
+  .spec-head p { color: var(--muted); margin: 0; }
+  .spec-note {
+    background: var(--grey-wash);
+    border: 1px solid var(--grey-line);
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: var(--ink-soft);
+    margin-bottom: 20px;
+    font-size: 13px;
+  }
+  .spec-note code { font-family: var(--font-mono); font-size: 12px; }
+
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab {
+    border: 1px solid var(--line);
+    background: var(--card);
+    border-radius: 999px;
+    padding: 6px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+  .tab[aria-selected="true"] {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: #fff;
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* ---- 与现有 GUI 一致的通用件 ---- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 20px;
+  }
+  .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .section-heading h2 { font-size: 17px; margin: 0; }
+  .section-heading p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .button {
+    font: inherit;
+    border: 1px solid var(--line);
+    background: #fff;
+    border-radius: 10px;
+    padding: 7px 14px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  .button-strong { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .button-secondary { background: #fff; }
+  .button[disabled] { opacity: 0.55; cursor: not-allowed; }
+  .badge {
+    display: inline-block;
+    border: 1px solid var(--grey-line);
+    background: var(--grey-wash);
+    color: var(--grey-ink);
+    border-radius: 999px;
+    font-size: 12px;
+    padding: 1px 9px;
+    white-space: nowrap;
+  }
+  .badge[data-availability="available"] { background: var(--green-wash); border-color: var(--green-line); color: var(--green-ink); }
+  .badge[data-availability="needs-connection"] { background: var(--warn-wash); border-color: var(--warn-line); color: var(--warn); }
+  .badge[data-availability="disabled"] { background: var(--grey-wash); border-color: var(--grey-line); color: var(--grey-ink); }
+  .badge[data-runtime="online"] { background: var(--green-wash); border-color: var(--green-line); color: var(--green-ink); }
+  .badge[data-runtime="offline"] { background: var(--grey-wash); border-color: var(--grey-line); color: var(--grey-ink); }
+  .badge[data-runtime="unknown"] { background: var(--lilac-wash); border-color: var(--lilac-line); color: var(--lilac-ink); }
+  .badge[data-credential="ok"] { background: var(--green-wash); border-color: var(--green-line); color: var(--green-ink); }
+  .badge[data-credential="missing"] { background: var(--warn-wash); border-color: var(--warn-line); color: var(--warn); }
+  .badge[data-credential="revoked"] { background: var(--grey-wash); border-color: var(--grey-line); color: var(--grey-ink); }
+  .badge[data-credential="recipient-pending"] { background: var(--lilac-wash); border-color: var(--lilac-line); color: var(--lilac-ink); }
+  .badge[data-credential="unseal-failed"] { background: var(--peach-wash); border-color: var(--peach-line); color: var(--peach-ink); }
+  .badge[data-credential="unknown"] { background: var(--grey-wash); border-color: var(--grey-line); color: var(--grey-ink); }
+  .badge-preset { background: var(--peach-wash); border-color: var(--peach-line); color: var(--peach-ink); }
+
+  /* ---- 列表 ---- */
+  .contacts-tools { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .search-box {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--line); border-radius: 10px; background: #fff;
+    padding: 5px 10px; min-width: 260px;
+  }
+  .search-box input { border: 0; outline: 0; font: inherit; flex: 1; background: transparent; }
+  .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .filter-chip {
+    border: 1px solid var(--line); background: #fff; border-radius: 999px;
+    padding: 4px 12px; font-size: 12.5px; cursor: pointer; color: var(--ink-soft);
+  }
+  .filter-chip[aria-pressed="true"] { background: var(--green); border-color: var(--green-line); color: var(--green-ink); }
+  .result-count { color: var(--muted); font-size: 12.5px; margin: 6px 0 10px; }
+  .agent-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .contact-card {
+    display: flex; gap: 12px; align-items: flex-start; text-align: left;
+    border: 1px solid var(--line); border-radius: 12px; background: #fff;
+    padding: 12px 14px; cursor: pointer; font: inherit; color: inherit;
+  }
+  .contact-card:hover { border-color: var(--green-line); }
+  .avatar {
+    width: 40px; height: 40px; border-radius: 12px; flex: none;
+    display: flex; align-items: center; justify-content: center; font-weight: 600;
+  }
+  .avatar-green { background: var(--green); color: var(--green-ink); }
+  .avatar-lilac { background: var(--lilac); color: var(--lilac-ink); }
+  .avatar-peach { background: var(--peach); color: var(--peach-ink); }
+  .avatar-grey { background: var(--grey); color: var(--grey-ink); }
+  .contact-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .contact-name-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .contact-name-row strong { font-size: 14.5px; }
+  .contact-role { color: var(--muted); font-size: 12.5px; }
+  .contact-badges { display: flex; gap: 5px; flex-wrap: wrap; }
+  .contact-capabilities { display: flex; gap: 5px; flex-wrap: wrap; }
+  .capability-chip {
+    border: 1px dashed var(--line); border-radius: 999px; color: var(--muted);
+    font-size: 11.5px; padding: 0 8px;
+  }
+
+  /* ---- 详情 / 管理 ---- */
+  .agent-detail-head { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
+  .agent-detail-title h2 { margin: 0; font-size: 18px; }
+  .agent-detail-title p { margin: 2px 0 0; color: var(--muted); }
+  .agent-detail-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px; margin: 0 0 14px;
+  }
+  .agent-detail-grid > div {
+    border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px 12px; background: #fff;
+  }
+  .agent-detail-grid dt { color: var(--muted); font-size: 12px; margin-bottom: 3px; }
+  .agent-detail-grid dd { margin: 0; font-weight: 600; font-size: 13.5px; }
+  .agent-detail-grid .source { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+  .manage-section { border-top: 1px solid var(--line-soft); padding-top: 14px; margin-top: 4px; }
+  .manage-section h3 { font-size: 14px; margin: 0 0 8px; }
+  .runtime-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .runtime-note { color: var(--muted); font-size: 12.5px; }
+  .grant-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .grant-list li {
+    display: flex; justify-content: space-between; gap: 10px; align-items: center;
+    border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 12px; background: #fff;
+    font-size: 13px;
+  }
+  .grant-id { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .cred-box {
+    border: 1px solid var(--line-soft); border-radius: 12px; background: #fff;
+    padding: 12px 14px; margin-top: 8px;
+  }
+  .cred-box .cred-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  .cred-desc { color: var(--muted); font-size: 12.5px; margin: 4px 0 10px; }
+  .cli-hint {
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft);
+    background: var(--grey-wash); border: 1px solid var(--grey-line);
+    border-radius: 8px; padding: 6px 10px; overflow-x: auto; white-space: nowrap;
+  }
+  .placeholder-note { color: var(--warn); font-size: 12.5px; }
+  .agent-detail-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+  /* ---- 表单 ---- */
+  .agent-form { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
+  .agent-form label { font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; }
+  .agent-form input, .agent-form select {
+    font: inherit; border: 1px solid var(--line); border-radius: 10px;
+    background: #fff; padding: 7px 10px;
+  }
+  .field-hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .agent-form-actions { display: flex; gap: 8px; margin-top: 14px; }
+  .field-error { color: var(--warn); font-size: 12.5px; margin: 2px 0 0; }
+  .form-note {
+    border: 1px solid var(--warn-line); background: var(--warn-wash); color: var(--warn);
+    border-radius: 10px; padding: 8px 12px; font-size: 12.5px; margin-top: 10px;
+  }
+
+  .caption { color: var(--muted); font-size: 12px; margin: 22px 0 8px; font-weight: 600; }
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="spec">
+  <div class="spec-head">
+    <h1>dev-02 · Agent 页原型</h1>
+    <p>设计参考稿 · 2026-10-29 · 林懿伦（feat/gui-dev-02）。视觉 token 与现有 GUI 一致；本文件不进生产路由，仅作组件实施与瑞华视觉评审的共同参照。</p>
+  </div>
+  <div class="spec-note">
+    状态文案为硬规则：未连接模型 → <strong>需连接模型服务</strong>；未连接渠道 → <strong>未连接渠道</strong>；
+    状态未知 → <strong>状态未确认</strong>；停用 → <strong>已停用</strong>。未接后端的动作一律显示
+    <strong>暂不可用</strong>，绝不显示成功。模型凭据遵循 0.5.5.3 设计（provider-key-ownership）：秘钥属于用户、
+    Agent 只持授权（grant）；界面永不显示明文，非主人只看到「由谁授权」，无操作按钮。
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-view="list">① 列表</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="detail">② 详情 / 管理</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="form">③ 创建表单</button>
+  </div>
+
+  <!-- ============ ① 列表 ============ -->
+  <section class="view active" id="view-list">
+    <div class="card">
+      <div class="section-heading">
+        <div>
+          <h2>我的 Agent</h2>
+          <p>4 个 Agent</p>
+        </div>
+        <button class="button button-strong">创建 Agent</button>
+      </div>
+
+      <div class="contacts-tools">
+        <span class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input type="search" placeholder="按名称、角色、模型或能力搜索" />
+        </span>
+        <span class="filter-row" role="group" aria-label="Agent 筛选">
+          <button class="filter-chip" aria-pressed="true">全部</button>
+          <button class="filter-chip" aria-pressed="false">可用</button>
+          <button class="filter-chip" aria-pressed="false">需要连接</button>
+          <button class="filter-chip" aria-pressed="false">已停用</button>
+        </span>
+      </div>
+      <p class="result-count">找到 4 个，共 4 个</p>
+
+      <div class="agent-list">
+        <button class="contact-card">
+          <span class="avatar avatar-green">Sq</span>
+          <span class="contact-main">
+            <span class="contact-name-row">
+              <strong>Squire</strong>
+              <span class="badge badge-preset">预配置</span>
+              <span class="badge" data-runtime="online">在线</span>
+              <span class="badge" data-availability="available">可用</span>
+            </span>
+            <span class="contact-role">个人助理 · 统一入口</span>
+            <span class="contact-badges">
+              <span class="badge">个人 org</span>
+              <span class="badge">已连接</span>
+            </span>
+            <span class="contact-capabilities">
+              <span class="capability-chip">日程整理</span>
+              <span class="capability-chip">消息归档</span>
+            </span>
+          </span>
+        </button>
+
+        <button class="contact-card">
+          <span class="avatar avatar-lilac">研</span>
+          <span class="contact-main">
+            <span class="contact-name-row">
+              <strong>研发助手</strong>
+              <span class="badge" data-runtime="offline">离线</span>
+              <span class="badge" data-availability="available">可用</span>
+            </span>
+            <span class="contact-role">代码评审 · 变更跟踪</span>
+            <span class="contact-badges">
+              <span class="badge">设计组</span>
+              <span class="badge">未连接渠道</span>
+            </span>
+            <span class="contact-capabilities">
+              <span class="capability-chip">代码评审</span>
+            </span>
+          </span>
+        </button>
+
+        <button class="contact-card">
+          <span class="avatar avatar-peach">运</span>
+          <span class="contact-main">
+            <span class="contact-name-row">
+              <strong>运营执行</strong>
+              <span class="badge" data-runtime="unknown">状态未确认</span>
+              <span class="badge" data-availability="disabled">已停用</span>
+            </span>
+            <span class="contact-role">内容分发</span>
+            <span class="contact-badges">
+              <span class="badge">未连接渠道</span>
+            </span>
+            <span class="contact-capabilities">
+              <span class="capability-chip">内容分发</span>
+            </span>
+          </span>
+        </button>
+
+        <button class="contact-card">
+          <span class="avatar avatar-grey">档</span>
+          <span class="contact-main">
+            <span class="contact-name-row">
+              <strong>档案整理</strong>
+              <span class="badge" data-runtime="unknown">状态未确认</span>
+              <span class="badge" data-availability="needs-connection">需连接模型服务</span>
+            </span>
+            <span class="contact-role">资料归档</span>
+            <span class="contact-badges">
+              <span class="badge">状态未确认</span>
+            </span>
+            <span class="contact-capabilities">
+              <span class="capability-chip">归档</span>
+            </span>
+          </span>
+        </button>
+      </div>
+    </div>
+    <p class="caption">新增元素：①「预配置」徽标（Squire）；②卡片运行状态徽标（在线 / 离线 / 状态未确认，对应 <code>agent list</code> 的真实 online/offline）；③ org 标签（来自共享 seed 的 organizations；个人 org 固定第一位）。availability 仍由共享选择器从模型连接推导，不新增来源。</p>
+  </section>
+
+  <!-- ============ ② 详情 / 管理 ============ -->
+  <section class="view" id="view-detail">
+    <div class="duo">
+      <div class="card">
+        <div class="agent-detail-head">
+          <span class="avatar avatar-green">Sq</span>
+          <div class="agent-detail-title">
+            <h2>Squire <span class="badge badge-preset">预配置</span></h2>
+            <p>个人助理 · 统一入口</p>
+          </div>
+        </div>
+
+        <dl class="agent-detail-grid">
+          <div>
+            <dt>消息渠道</dt>
+            <dd data-connection="channel">已连接<span class="source">飞书连接</span></dd>
+          </div>
+          <div>
+            <dt>所属组织</dt>
+            <dd>设计组</dd>
+          </div>
+          <div>
+            <dt>首选 harness</dt>
+            <dd>claude<span class="source">默认 harness，非绑定</span></dd>
+          </div>
+        </dl>
+
+        <div class="manage-section">
+          <h3>运行</h3>
+          <div class="runtime-row">
+            <span class="badge" data-runtime="online">在线</span>
+            <button class="button button-secondary" disabled title="未接后端">停止</button>
+            <button class="button button-secondary" disabled title="未接后端">重启</button>
+            <span class="runtime-note">启动 / 停止对应 <code>agent start / stop</code>；未接后端时按钮禁用或点击后提示「暂不可用」，不显示成功。</span>
+          </div>
+        </div>
+
+        <div class="manage-section">
+          <h3>模型凭据</h3>
+          <div class="cred-box">
+            <div class="cred-line">
+              <span class="badge" data-credential="ok">已授权</span>
+              <span class="grant-id">anthropic · 主人：林懿伦 · keyId …a3f2 · r2</span>
+            </div>
+            <p class="cred-desc">
+              秘钥属于授权人（按其账号计费），Agent 只持有授权（grant），可单独撤销；界面不显示秘钥内容。
+            </p>
+            <div class="cred-line">
+              <button class="button button-secondary">授权使用我的秘钥</button>
+              <button class="button button-secondary">撤销授权</button>
+              <span class="placeholder-note">点击后提示「凭据操作暂不可用」（对应 <code>agent provider allow / revoke</code>）。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="manage-section">
+          <h3>授权（grants）</h3>
+          <ul class="grant-list">
+            <li>
+              <span>消息渠道 · 飞书</span>
+              <span class="badge">已授权</span>
+              <span class="grant-id">grant-feishu-r2</span>
+            </li>
+            <li>
+              <span>共享路径 · 工作区读取</span>
+              <span class="badge">已授权</span>
+              <span class="grant-id">grant-ws-read</span>
+            </li>
+          </ul>
+          <p class="runtime-note" style="margin-top:8px">
+            只读展示（对应 <code>agent grants</code>）；授予 / 撤销入口为占位动作。无数据时显示「暂无授权记录，状态未确认」。
+          </p>
+        </div>
+
+        <div class="agent-detail-actions">
+          <button class="button button-secondary">编辑</button>
+          <button class="button button-secondary">删除</button>
+          <button class="button" style="border:0;background:none;color:var(--muted);cursor:pointer;padding-left:0">返回列表</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="agent-detail-head">
+            <span class="avatar avatar-grey">档</span>
+            <div class="agent-detail-title">
+              <h2>档案整理</h2>
+              <p>资料归档</p>
+            </div>
+          </div>
+          <dl class="agent-detail-grid">
+            <div>
+              <dt>模型服务</dt>
+              <dd data-connection="credential" style="color:var(--warn)">需绑定模型凭据<span class="source">凭据由账号授权（allow）</span></dd>
+            </div>
+            <div>
+              <dt>消息渠道</dt>
+              <dd data-connection="channel" style="color:var(--warn)">未连接渠道</dd>
+            </div>
+          </dl>
+
+          <div class="manage-section">
+            <h3>运行</h3>
+            <div class="runtime-row">
+              <span class="badge" data-runtime="unknown">状态未确认</span>
+            </div>
+          </div>
+
+          <div class="manage-section">
+            <h3>模型凭据</h3>
+            <div class="cred-box">
+              <div class="cred-line">
+                <span class="badge" data-credential="missing">未授权</span>
+              </div>
+              <p class="cred-desc">
+                Agent 还没有可用的模型凭据。秘钥保存在你的账号下；授权后 Agent 才能调用模型。
+              </p>
+              <div class="cred-line">
+                <button class="button button-strong">去连接页登录服务商</button>
+                <span class="runtime-note">跳转「连接」页（dev-01 域）完成服务商登录（<code>user provider login</code>）。</span>
+              </div>
+              <p class="cred-desc" style="margin-top:10px">账号已有秘钥时，可直接授权给该 Agent：</p>
+              <div class="cli-hint">hyprial agent provider allow --actor 档案整理 --provider anthropic</div>
+            </div>
+          </div>
+        </div>
+        <p class="caption">右卡示范「未绑定」引导态：主按钮跳连接页（<code>navigate → connections</code>），CLI 行仅作文案引导。左卡示范已绑定态与占位动作文案。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ③ 创建表单 ============ -->
+  <section class="view" id="view-form">
+    <div class="card" style="max-width:640px">
+      <div class="section-heading">
+        <div>
+          <h2>创建 Agent</h2>
+          <p>名称与职责必填。模型凭据不在此处配置：创建后到详情页授予。字段对齐 <code>hyprial agent create</code>（hyprial 只有 agent / harness / model 三级概念）。</p>
+        </div>
+      </div>
+      <form class="agent-form" onsubmit="return false">
+        <label for="p-name">名称</label>
+        <input id="p-name" placeholder="机器上唯一的 Agent 名" />
+        <p class="field-hint">对应 --name：Agent 在本机的身份名，被删除前不可复用。</p>
+
+        <label for="p-role">职责</label>
+        <input id="p-role" placeholder="例如：代码评审 · 变更跟踪" />
+
+        <label for="p-provider">服务商（provider）</label>
+        <select id="p-provider">
+          <option>跟随所选模型服务</option>
+          <option>claude</option>
+          <option>codex</option>
+          <option>pi</option>
+        </select>
+        <p class="field-hint">对应 --provider：模型厂商偏好；默认跟随所选模型服务。</p>
+
+        <label for="p-model">模型（model）</label>
+        <input id="p-model" placeholder="留空使用服务商默认模型" />
+        <p class="field-hint">对应 --model：模型 id 偏好，可留空。</p>
+
+        <label for="p-harness">首选 harness</label>
+        <select id="p-harness">
+          <option>未指定</option>
+          <option>claude</option>
+          <option>codex</option>
+          <option>pi</option>
+        </select>
+        <p class="field-hint">对应 --preferred-harness：仅作为默认，Agent 不被绑定到该 harness。</p>
+
+        <label for="p-org">所属组织</label>
+        <select id="p-org">
+          <option>不加入组织</option>
+          <option>设计组</option>
+        </select>
+
+        <div class="form-note">
+          创建凭据说明：若账号已记录默认服务商登录，新 Agent 将自动获得授权；否则创建完成后在详情页引导绑定。
+        </div>
+
+        <div class="agent-form-actions">
+          <button class="button button-strong">创建 Agent</button>
+          <button class="button button-secondary">取消</button>
+        </div>
+      </form>
+    </div>
+    <p class="caption">「模型服务」概念已删除：无模型服务下拉，创建不被模型凭据门控；新增服务商 / 模型 / 首选 harness 三项偏好（均可选）。提交仍走网关接缝，未接后端显示「Agent 创建暂不可用」。</p>
+  </section>
+</div>
+
+<script>
+  var tabs = document.querySelectorAll('.tab');
+  var views = document.querySelectorAll('.view');
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t === tab)); });
+      views.forEach(function (v) {
+        v.classList.toggle('active', v.id === 'view-' + tab.dataset.view);
+      });
+    });
+  });
+</script>
+</body>
+</html>

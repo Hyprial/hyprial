@@ -1,51 +1,46 @@
+# Decision record (native_credential, W1E-1 2026-11-21):
+# - Per Owner Shell-2 ruling, removed POSIX-only descriptor-relative traversal
+#   (dir_fd, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK, fchmod) and the
+#   _require_private_descriptor_io UNSUPPORTED gate so Windows and POSIX share
+#   one portable implementation.
+# - Inner-home redundant st_uid and 0o600/0o700 mode assertions are dropped in
+#   favor of the HYPRIAL_HOME root boundary, while preserving the per-harness
+#   filename allowlist (NATIVE_CREDENTIAL_FILES), single-pass lstat +
+#   manysys.path_is_reparse link/reparse rejection, and all-or-nothing
+#   .incoming/.previous os.replace staging with rollback.
+# - Post-promotion .previous backup cleanup converts OSError (such as Windows
+#   sharing violations or read-only attributes) into NativeCredentialError with
+#   DAEMON_ERROR without unlinking already-promoted targets, preventing
+#   multi-file partial-unlink data loss while keeping leftover .previous files
+#   visible as partial state, keeping import_record invalidated, and cleaning
+#   stale .incoming/.previous residue across the full plan on subsequent runs.
 """Install harness-native credentials into an agent's secrets tree.
 
 An agent runs in an isolated HOME, so it does not inherit the operator's
-``~/.claude``/``~/.codex``/pi configuration.  Nothing in the product used to
-write the canonical native tree (``<agent_home>/secrets/native/<harness>/``)
-that the runtime reads, which is why claude agents start with
-``CLAUDE_CREDENTIAL_MISSING``; this module is that writer.
+``~/.claude``/``~/.codex``/pi configuration.  This module writes and inspects
+the canonical native tree (``<agent_home>/secrets/native/<harness>/``) that the
+runtime consumes.
 
-Shape rules come from the read side and are enforced here, not assumed:
+Preserved invariants:
 
-- the runtime reads a **regular file**, never a symlink, with mode **0600**
-  (``daemon/impl/harnesses/claude/runtime.py`` rejects anything else);
-- the runtime projects this tree into the isolated HOME
-  (``identity/impl/agents/runtime/context.py``), so one write is enough;
 - filenames are constrained to the per-harness allowlist below, so this API
-  can never be used to plant an arbitrary file inside the secrets tree.
+  can never be used to plant an arbitrary file inside the secrets tree;
+- every traversed directory and target entry is checked with ``lstat`` and
+  ``manysys.path_is_reparse`` so symlinks and Windows junctions/reparse points
+  are refused rather than followed;
+- :func:`install_native_credential_set` stages every file as
+  ``<name>.incoming``, moves existing files aside to ``<name>.previous`` with
+  ``os.replace``, promotes the new set with ``os.replace`` (rolling the whole
+  set back if staging or promotion fails), and raises ``DAEMON_ERROR`` if
+  post-promotion ``.previous`` cleanup fails so partial backup residue never
+  retains or acquires import provenance.  No error message ever carries
+  credential bytes.
 
-Path safety (review of 95c1b8b45, B2/B3).  The agent can write inside its own
-home, so ``secrets`` or ``secrets/native`` may have been replaced by a symlink
-into another agent's home.  Every access therefore walks from the agent home
-with ``O_DIRECTORY | O_NOFOLLOW`` one component at a time, requires each level
-to be a directory owned by this uid with mode 0700 (the same rule as the
-runtime's ``_ensure_private_directory``), creates a missing level with
-``mkdir`` + ``fchmod 0700`` so the umask cannot loosen it, and performs every
-create, rename, read and unlink relative to the final directory descriptor.
-Nothing is resolved through a path string after the walk.
-
-:func:`install_native_credential_set` is the seeding entry point: it takes every
-file the harness reads (pi has two) and checks the whole set -- names,
-emptiness, existing targets -- before it writes the first file.  It then stages
-every document as ``<name>.incoming`` (registered for cleanup before its first
-byte is written), moves each file it replaces aside to ``<name>.previous``,
-and only then renames the staged files into place.  Any I/O error removes what
-this run installed and staged and renames the ``.previous`` copies back, so the
-directory holds either the whole new set or the whole old one; the error says
-so, and names any old file it could not put back (kept as ``.previous``).  A
-process crash mid-run is the one case not rolled back: stale ``.incoming`` and
-``.previous`` files (possibly plaintext) are removed by the next seed and by
-logout.  The agent home itself must also be a 0700 directory of this uid (the
-provisioner creates it so; the runtime's own check starts below it).  A target whose bytes already equal the incoming
-document is reported ``unchanged`` and not rewritten, which makes a repeat seed
-idempotent.  :func:`remove_native_credentials` is the revoke side.  No message
-raised here ever contains document content.
-
-Platform support.  Descriptor-relative no-follow I/O is a POSIX capability.  The
-module still imports where it is absent -- the daemon imports this surface while
-starting -- but the writers refuse with ``UNSUPPORTED`` rather than falling back
-to a weaker path-based write.
+Native import records are stored by the Agent registry outside the native tree.
+All entry points share a per-home/harness lock.  A registry record binds the
+Agent incarnation, home resource and bounded file digest; invalidation precedes
+writes, and a failed write restores old provenance only after matching the old
+digest.
 """
 
 from __future__ import annotations
@@ -53,49 +48,24 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from hyprial.kernel import current_uid, ipc_errors, posix_metadata_enforced
+from hyprial.kernel import ipc_errors, manysys
+from .native_imports import NativeImportRecord, serialized
+from .native_imports.manifest import document_digest, observe
 
-#: Credential file names the runtime reads per harness.  A caller may install
-#: only these names, and only under their own harness directory.  ``pi`` keeps
-#: a second file (``models-store.json``) because an empty pair is exactly the
-#: 2026-10-13 autodl failure: the credential alone is not enough.
 NATIVE_CREDENTIAL_FILES: dict[str, frozenset[str]] = {
     "claude": frozenset({".credentials.json"}),
     "codex": frozenset({"auth.json"}),
     "pi": frozenset({"auth.json", "models-store.json"}),
+    "agy": frozenset({"antigravity-oauth-token"}),
 }
 
 _STAGING_SUFFIX = ".incoming"
 _PREVIOUS_SUFFIX = ".previous"
-
-
-def _directory_flags() -> int:
-    # O_DIRECTORY/O_NOFOLLOW are POSIX-only; computing them unguarded makes this
-    # module unimportable on Windows, where the daemon imports it at start-up.
-    return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-
-
-def _private_descriptor_io() -> bool:
-    """Whether every descriptor-relative primitive this writer relies on exists."""
-
-    return (
-        hasattr(os, "O_DIRECTORY")
-        and hasattr(os, "O_NOFOLLOW")
-        and hasattr(os, "O_NONBLOCK")
-        and hasattr(os, "fchmod")
-        and hasattr(os, "getuid")
-        and all(
-            function in getattr(os, "supports_dir_fd", frozenset())
-            for function in (os.open, os.stat, os.unlink, os.rename, os.mkdir)
-        )
-    )
-
-
-_DIRECTORY_FLAGS = _directory_flags()
-_PRIVATE_DESCRIPTOR_IO = _private_descriptor_io()
+_CLAUDE_LAUNCH_PROVISIONED = ".hyprial-launch-provisioned"
 
 
 class NativeCredentialError(Exception):
@@ -107,24 +77,10 @@ class NativeCredentialError(Exception):
         self.message = message
 
 
-def _require_private_descriptor_io() -> None:
-    if _PRIVATE_DESCRIPTOR_IO:
-        return
-    raise NativeCredentialError(
-        ipc_errors.UNSUPPORTED,
-        "native credential writes need descriptor-relative no-follow I/O "
-        "that this platform does not provide",
-    )
-
-
 def native_secrets_root(agent_home: Path, harness: str) -> Path:
     """The canonical directory the runtime reads for ``harness``."""
 
     return Path(agent_home) / "secrets" / "native" / harness
-
-
-# Non-secret negative provenance, not a credential or a login-success marker.
-_CLAUDE_LAUNCH_PROVISIONED = ".hyprial-launch-provisioned"
 
 
 def prepare_legacy_claude_native_root(agent_home: Path) -> tuple[Path, bool]:
@@ -134,58 +90,46 @@ def prepare_legacy_claude_native_root(agent_home: Path) -> tuple[Path, bool]:
     across retries until an explicit native installation removes the marker.
     Only the actor lifecycle owner calls this on its verified home.
     """
-    import uuid
 
-    _require_private_descriptor_io()
-    root = native_secrets_root(agent_home, "claude")
-    current = os.open(agent_home, _DIRECTORY_FLAGS)
-    temporary = None
+    home = Path(agent_home)
+    _require_real_directory(home, is_home=True)
+    native_parent = home
+    for part in ("secrets", "native"):
+        native_parent = _ensure_child_directory(native_parent / part, create=True)
+        assert native_parent is not None
+    root = native_parent / "claude"
+    temporary: Path | None = None
     try:
-        _require_private_directory(current, Path(agent_home))
-        shown = Path(agent_home)
-        for part in ("secrets", "native"):
-            shown /= part
-            child = _open_or_create_directory(part, current, shown, create=True)
-            os.close(current)
-            current = child
-        if _lstat_at("claude", current) is None:
-            temporary = ".claude-launch-" + uuid.uuid4().hex
-            os.mkdir(temporary, 0o700, dir_fd=current)
-            staging = _open_directory_or_refuse(temporary, current, root)
+        if _lstat_entry(root) is None:
+            temporary = native_parent / f".claude-launch-{uuid.uuid4().hex}"
+            temporary.mkdir(mode=0o700)
+            _require_real_directory(temporary)
+            _create_private_at(_CLAUDE_LAUNCH_PROVISIONED, b"", temporary)
+            manysys.fsync_directory(temporary)
             try:
-                _create_private_at(_CLAUDE_LAUNCH_PROVISIONED, b"", staging)
-                os.fsync(staging)
-            finally:
-                os.close(staging)
-            try:
-                os.rename(temporary, "claude", src_dir_fd=current, dst_dir_fd=current)
+                os.rename(temporary, root)
                 temporary = None
-                os.fsync(current)
+                manysys.fsync_directory(native_parent)
             except OSError as error:
-                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY, errno.EACCES) and _lstat_entry(root) is None:
                     raise
-        directory = _open_directory_or_refuse("claude", current, root)
-        try:
-            _require_private_directory(directory, root)
-            provisioned = _lstat_at(_CLAUDE_LAUNCH_PROVISIONED, directory) is not None
-        finally:
-            os.close(directory)
+        _require_real_directory(root)
+        provisioned = _lstat_at(_CLAUDE_LAUNCH_PROVISIONED, root) is not None
         return root, provisioned
     finally:
         if temporary is not None:
-            staging = _open_directory_or_refuse(temporary, current, root)
+            _unlink_quietly(_CLAUDE_LAUNCH_PROVISIONED, temporary)
             try:
-                _unlink_quietly(_CLAUDE_LAUNCH_PROVISIONED, staging)
-            finally:
-                os.close(staging)
-            os.rmdir(temporary, dir_fd=current)
-        os.close(current)
+                temporary.rmdir()
+            except FileNotFoundError:
+                pass
 
 
 def supported_harnesses() -> tuple[str, ...]:
     return tuple(sorted(NATIVE_CREDENTIAL_FILES))
 
 
+@serialized
 def install_native_credential(
     agent_home: Path,
     harness: str,
@@ -202,71 +146,123 @@ def install_native_credential(
     return {"provider": harness, **files[0]}
 
 
+@serialized
 def install_native_credential_set(
     agent_home: Path,
     harness: str,
     documents: Sequence[tuple[str, bytes]],
     *,
     force: bool = False,
+    import_record: NativeImportRecord | None = None,
 ) -> dict[str, object]:
     """Write every credential file ``harness`` reads, or none of them."""
 
-    return _install(agent_home, harness, documents, force=force, whole_set=True)
+    return _install(agent_home, harness, documents, force=force, whole_set=True, import_record=import_record)
 
 
+@serialized
 def read_native_credential_set(agent_home: Path, harness: str) -> list[tuple[str, bytes]]:
     """Read only an explicitly authorized owner's private native files."""
+
     allowed = _allowed(harness)
-    _require_private_descriptor_io()
     directory = _open_private_chain(Path(agent_home), harness, create=False)
     if directory is None:
         raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default source is absent")
-    try:
-        documents = []
+    documents: list[tuple[str, bytes]] = []
+    for name in sorted(allowed):
+        metadata = _lstat_at(name, directory)
+        if metadata is None:
+            raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is absent")
+        if _is_link_or_non_regular(metadata):
+            raise NativeCredentialError(ipc_errors.PROVIDER_UNSAFE_PATH, "native default file is not private")
+        content = _read_at(name, directory)
+        if not content:
+            raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is empty")
+        documents.append((name, content))
+    return documents
+
+
+@serialized
+def inspect_native_credentials(
+    agent_home: Path, harness: str, *, import_record: NativeImportRecord | None = None,
+) -> dict[str, object]:
+    """Observe allowlisted private files and bounded import provenance.
+
+    File timestamps do not establish import provenance or authentication.
+    A supplied registry record permits internal digest reads up to 1 MiB per
+    file. Only basenames, completeness and an observed import time are returned;
+    unsafe paths raise rather than being reported as an empty inventory.
+    """
+
+    allowed = _allowed(harness)
+    directory = _open_private_chain(Path(agent_home), harness, create=False)
+    present: list[str] = []
+    imported_at = None
+    confirmed_at = None
+    if directory is not None:
         for name in sorted(allowed):
             metadata = _lstat_at(name, directory)
             if metadata is None:
-                raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is absent")
-            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600
-                    or metadata.st_uid != os.getuid()):
-                raise NativeCredentialError(ipc_errors.PROVIDER_UNSAFE_PATH, "native default file is not private")
-            content = _read_at(name, directory)
-            if not content:
-                raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is empty")
-            documents.append((name, content))
-        return documents
-    finally:
-        os.close(directory)
+                continue
+            if _is_link_or_non_regular(metadata):
+                raise NativeCredentialError(ipc_errors.PROVIDER_UNSAFE_PATH, "native credential file is not private")
+            if metadata.st_size > 0:
+                present.append(name)
+        incomplete = any(
+            _lstat_at(name + suffix, directory) is not None
+            for name in allowed for suffix in (_STAGING_SUFFIX, _PREVIOUS_SUFFIX)
+        )
+        exists = any(_lstat_at(name, directory) is not None for name in allowed)
+        if (import_record is not None and not incomplete and set(present) == allowed
+                and import_record.exists(harness)):
+            manifest = observe(directory, allowed)
+            imported_at = import_record.read(harness, manifest)
+            confirmed_at = import_record.confirmed_at(harness, manifest)
+    else:
+        incomplete = exists = False
+    missing = sorted(allowed.difference(present))
+    state = "partial" if incomplete or (exists and missing) else "stored" if present else "absent"
+    result: dict[str, object] = {"state": state, "files": present, "missingFiles": missing}
+    if import_record is not None:
+        result["importedAt"] = imported_at
+        result["startupConfirmedAt"] = confirmed_at
+    return result
 
 
-def remove_native_credentials(agent_home: Path, harness: str) -> dict[str, object]:
+@serialized
+def remove_native_credentials(
+    agent_home: Path, harness: str, *, import_record: NativeImportRecord | None = None,
+) -> dict[str, object]:
     """Delete the credential files ``harness`` reads; report which existed."""
 
     allowed = _allowed(harness)
-    _require_private_descriptor_io()
     root = native_secrets_root(agent_home, harness)
     directory = _open_private_chain(Path(agent_home), harness, create=False)
     removed: list[str] = []
     absent: list[str] = []
-    if directory is None:
-        absent = [str(root / name) for name in sorted(allowed)]
-        return {"provider": harness, "removed": removed, "absent": absent}
     try:
+        if import_record is not None:
+            import_record.clear(harness)
+        if directory is None:
+            absent = [str(root / name) for name in sorted(allowed)]
+            return {"provider": harness, "removed": removed, "absent": absent}
         for name in sorted(allowed):
             _unlink_quietly(name + _STAGING_SUFFIX, directory)
             _unlink_quietly(name + _PREVIOUS_SUFFIX, directory)
-            if _lstat_at(name, directory) is None:
+            metadata = _lstat_at(name, directory)
+            if metadata is None:
                 absent.append(str(root / name))
             else:
-                os.unlink(name, dir_fd=directory)
+                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode) and manysys.path_is_reparse(metadata):
+                    manysys.unlink_directory_link(directory / name)
+                else:
+                    (directory / name).unlink()
                 removed.append(str(root / name))
     except OSError as error:
         raise NativeCredentialError(
             ipc_errors.DAEMON_ERROR,
             f"cannot remove credentials under {root}: {error.strerror}",
         ) from error
-    finally:
-        os.close(directory)
     return {"provider": harness, "removed": removed, "absent": absent}
 
 
@@ -288,9 +284,9 @@ def _install(
     *,
     force: bool,
     whole_set: bool,
+    import_record: NativeImportRecord | None = None,
 ) -> dict[str, object]:
     allowed = _allowed(harness)
-    _require_private_descriptor_io()
     names = [name for name, _content in documents]
     if whole_set:
         if len(set(names)) != len(names) or set(names) != allowed:
@@ -310,28 +306,48 @@ def _install(
             )
 
     root = native_secrets_root(agent_home, harness)
+    expected = document_digest(documents) if import_record is not None else None
     directory = _open_private_chain(Path(agent_home), harness, create=False)
+    plan: list[tuple[str, bytes, bool, bool]] = []
+    for name, content in documents:
+        existed, unchanged = _inspect_target(name, content, directory, root)
+        if existed and not unchanged and not force:
+            raise NativeCredentialError(
+                ipc_errors.PROVIDER_CREDENTIAL_EXISTS,
+                f"{root / name} already exists; re-run with --force to replace it",
+            )
+        plan.append((name, content, existed, unchanged))
+    if directory is None:
+        directory = _open_private_chain(Path(agent_home), harness, create=True)
+    assert directory is not None
+    old_manifest = observe(directory, allowed) if import_record is not None else None
+    old_time = import_record.read(harness, old_manifest) if import_record is not None else None
+    old_snapshot = import_record.snapshot(harness, old_manifest) if import_record is not None else None
+    old_confirmation = import_record.confirmed_at(harness, old_manifest) if import_record is not None else None
+    update_record = import_record is not None and (old_time is None or any(not row[3] for row in plan))
+    if update_record:
+        import_record.clear(harness)
     try:
-        plan: list[tuple[str, bytes, bool, bool]] = []
-        for name, content in documents:
-            existed, unchanged = _inspect_target(name, content, directory, root)
-            if existed and not unchanged and not force:
-                raise NativeCredentialError(
-                    ipc_errors.PROVIDER_CREDENTIAL_EXISTS,
-                    f"{root / name} already exists; re-run with --force to replace it",
-                )
-            plan.append((name, content, existed, unchanged))
-        if directory is None:
-            directory = _open_private_chain(Path(agent_home), harness, create=True)
-        assert directory is not None
         _write_plan(plan, directory, root)
+    except NativeCredentialError:
+        if update_record and old_time is not None and old_snapshot is not None and observe(directory, allowed) == old_manifest:
+            import_record.restore(harness, old_snapshot, old_time, old_confirmation)
+        raise
+    try:
         if harness == "claude":
-            # A failed/partial installation must never authorize a launch root.
             _unlink_quietly(_CLAUDE_LAUNCH_PROVISIONED, directory)
-            os.fsync(directory)
-    finally:
-        if directory is not None:
-            os.close(directory)
+            manysys.fsync_directory(directory)
+        if update_record and expected is not None:
+            if observe(directory, allowed) != expected:
+                raise NativeCredentialError(ipc_errors.DAEMON_ERROR, "native files changed before recording their import")
+            manysys.fsync_directory(directory)
+            import_record.write(harness, expected)
+    except OSError as error:
+        detail = error.strerror or str(error)
+        raise NativeCredentialError(
+            ipc_errors.DAEMON_ERROR,
+            f"finalizing credentials under {root} failed ({detail})",
+        ) from error
     receipts = [
         {
             "path": str(root / name),
@@ -345,24 +361,24 @@ def _install(
 
 
 def _inspect_target(
-    name: str, content: bytes, directory: int | None, root: Path
+    name: str, content: bytes, directory: Path | None, root: Path
 ) -> tuple[bool, bool]:
     if directory is None:
         return False, False
     metadata = _lstat_at(name, directory)
     if metadata is None:
         return False, False
-    if not stat.S_ISREG(metadata.st_mode):
+    if _is_link_or_non_regular(metadata):
         raise NativeCredentialError(
             ipc_errors.PROVIDER_UNSAFE_PATH, f"{root / name} is not a regular file"
         )
-    if stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size != len(content):
+    if metadata.st_size != len(content):
         return True, False
     return True, _read_at(name, directory) == content
 
 
 def _write_plan(
-    plan: list[tuple[str, bytes, bool, bool]], directory: int, root: Path
+    plan: list[tuple[str, bytes, bool, bool]], directory: Path, root: Path
 ) -> None:
     pending = [
         (name, content, existed)
@@ -373,7 +389,7 @@ def _write_plan(
     aside: list[str] = []
     installed: list[str] = []
     try:
-        for name, _content, _existed in pending:
+        for name, _content, _existed, _unchanged in plan:
             _unlink_quietly(name + _STAGING_SUFFIX, directory)
             _unlink_quietly(name + _PREVIOUS_SUFFIX, directory)
         for name, content, _existed in pending:
@@ -381,14 +397,16 @@ def _write_plan(
             _create_private_at(name + _STAGING_SUFFIX, content, directory)
         for name, _content, existed in pending:
             if existed:
-                os.rename(name, name + _PREVIOUS_SUFFIX, src_dir_fd=directory, dst_dir_fd=directory)
+                os.replace(directory / name, directory / (name + _PREVIOUS_SUFFIX))
                 aside.append(name)
         for name, _content, _existed in pending:
-            os.rename(name + _STAGING_SUFFIX, name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.replace(directory / (name + _STAGING_SUFFIX), directory / name)
             staged.remove(name + _STAGING_SUFFIX)
             installed.append(name)
     except OSError as error:
-        kept = _roll_back(directory, staged=staged, aside=aside, installed=installed)
+        kept, unremoved = _roll_back(
+            directory, staged=staged, aside=aside, installed=installed
+        )
         state = (
             "the previous files are back in place"
             if not kept
@@ -396,123 +414,126 @@ def _write_plan(
             + ", ".join(kept)
             + f"; the previous copies are kept as <name>{_PREVIOUS_SUFFIX}"
         )
+        run_state = (
+            "nothing from this run was kept"
+            if not unremoved
+            else "rollback could not remove " + ", ".join(unremoved)
+        )
+        detail = error.strerror or str(error)
         raise NativeCredentialError(
             ipc_errors.DAEMON_ERROR,
-            f"writing credentials under {root} failed ({error.strerror}); "
-            f"nothing from this run was kept and {state}",
+            f"writing credentials under {root} failed ({detail}); "
+            f"{run_state} and {state}",
         ) from error
+    lingering: list[str] = []
+    cleanup_error: OSError | None = None
     for name in aside:
-        _unlink_quietly(name + _PREVIOUS_SUFFIX, directory)
+        backup = name + _PREVIOUS_SUFFIX
+        try:
+            _unlink_quietly(backup, directory)
+        except OSError as error:
+            lingering.append(backup)
+            if cleanup_error is None:
+                cleanup_error = error
     for name, _content, _existed in pending:
         metadata = _lstat_at(name, directory)
-        if (
-            metadata is None
-            or not stat.S_ISREG(metadata.st_mode)
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-        ):
+        if metadata is None or _is_link_or_non_regular(metadata):
             raise NativeCredentialError(
                 ipc_errors.PROVIDER_UNSAFE_PATH,
-                f"{root / name} is not a 0600 regular file after writing",
+                f"{root / name} is not a regular file after writing",
             )
+    if cleanup_error is not None:
+        detail = cleanup_error.strerror or str(cleanup_error)
+        raise NativeCredentialError(
+            ipc_errors.DAEMON_ERROR,
+            f"cleaning previous credentials under {root} failed ({detail}); "
+            f"new files are in place and leftover backups remain: {', '.join(lingering)}",
+        ) from cleanup_error
 
 
 def _roll_back(
-    directory: int, *, staged: list[str], aside: list[str], installed: list[str]
-) -> list[str]:
+    directory: Path, *, staged: list[str], aside: list[str], installed: list[str]
+) -> tuple[list[str], list[str]]:
+    unremoved: list[str] = []
     for name in installed:
-        _unlink_quietly(name, directory)
+        try:
+            _unlink_quietly(name, directory)
+        except (OSError, NativeCredentialError):
+            unremoved.append(name)
     for staging in staged:
-        _unlink_quietly(staging, directory)
+        try:
+            _unlink_quietly(staging, directory)
+        except (OSError, NativeCredentialError):
+            unremoved.append(staging)
     kept: list[str] = []
     for name in aside:
         try:
-            os.rename(name + _PREVIOUS_SUFFIX, name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.replace(directory / (name + _PREVIOUS_SUFFIX), directory / name)
         except OSError:
             kept.append(name)
-    return kept
+        else:
+            if name in unremoved:
+                unremoved.remove(name)
+    return kept, unremoved
 
 
-def _open_private_chain(agent_home: Path, harness: str, *, create: bool) -> int | None:
-    """Open ``secrets/native/<harness>`` under the home without following links."""
+def _open_private_chain(agent_home: Path, harness: str, *, create: bool) -> Path | None:
+    """Validate ``secrets/native/<harness>`` under the home without following links."""
 
-    try:
-        current = os.open(agent_home, _DIRECTORY_FLAGS)
-    except OSError as error:
-        raise NativeCredentialError(
-            ipc_errors.PROVIDER_UNSAFE_PATH,
-            f"agent home {agent_home} is not a real directory ({error.strerror})",
-        ) from error
+    _require_real_directory(agent_home, is_home=True)
     shown = agent_home
-    try:
-        _require_private_directory(current, shown)
-        for part in ("secrets", "native", harness):
-            shown = shown / part
-            child = _open_or_create_directory(part, current, shown, create=create)
-            os.close(current)
-            current = -1
-            if child is None:
-                return None
-            current = child
-        result, current = current, -1
-        return result
-    finally:
-        if current != -1:
-            os.close(current)
+    for part in ("secrets", "native", harness):
+        child = _ensure_child_directory(shown / part, create=create)
+        if child is None:
+            return None
+        shown = child
+    return shown
 
 
-def _open_or_create_directory(
-    part: str, parent: int, shown: Path, *, create: bool
-) -> int | None:
-    made = False
-    try:
-        child = os.open(part, _DIRECTORY_FLAGS, dir_fd=parent)
-    except FileNotFoundError:
+def _ensure_child_directory(shown: Path, *, create: bool) -> Path | None:
+    metadata = _lstat_entry(shown)
+    if metadata is None:
         if not create:
             return None
         try:
-            os.mkdir(part, 0o700, dir_fd=parent)
+            shown.mkdir(mode=0o700)
         except OSError as error:
             raise NativeCredentialError(
                 ipc_errors.PROVIDER_UNSAFE_PATH,
                 f"cannot create {shown}: {error.strerror}",
             ) from error
-        made = True
-        child = _open_directory_or_refuse(part, parent, shown)
-    except OSError as error:
-        raise _unsafe(shown, error) from error
-    try:
-        if made:
-            os.fchmod(child, 0o700)
-        _require_private_directory(child, shown)
-    except BaseException:
-        os.close(child)
-        raise
-    return child
-
-
-def _require_private_directory(descriptor: int, shown: Path) -> None:
-    metadata = os.fstat(descriptor)
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or (
-            posix_metadata_enforced()
-            and (
-                metadata.st_uid != current_uid()
-                or stat.S_IMODE(metadata.st_mode) != 0o700
-            )
-        )
-    ):
+        metadata = _lstat_entry(shown)
+    if metadata is None or stat.S_ISLNK(metadata.st_mode) or manysys.path_is_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
         raise NativeCredentialError(
             ipc_errors.PROVIDER_UNSAFE_PATH,
-            f"{shown} must be a 0700 directory owned by this user",
+            f"{shown} is a symlink or not a directory; refusing to follow it",
+        )
+    return shown
+
+
+def _require_real_directory(shown: Path, *, is_home: bool = False) -> None:
+    try:
+        metadata = shown.lstat()
+    except OSError as error:
+        if is_home:
+            raise NativeCredentialError(
+                ipc_errors.PROVIDER_UNSAFE_PATH,
+                f"agent home {shown} is not a real directory ({error.strerror})",
+            ) from error
+        raise _unsafe(shown, error) from error
+    if stat.S_ISLNK(metadata.st_mode) or manysys.path_is_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise NativeCredentialError(
+            ipc_errors.PROVIDER_UNSAFE_PATH,
+            f"{shown} is a symlink or not a directory; refusing to follow it",
         )
 
 
-def _open_directory_or_refuse(part: str, parent: int, shown: Path) -> int:
-    try:
-        return os.open(part, _DIRECTORY_FLAGS, dir_fd=parent)
-    except OSError as error:
-        raise _unsafe(shown, error) from error
+def _is_link_or_non_regular(metadata: os.stat_result) -> bool:
+    return (
+        stat.S_ISLNK(metadata.st_mode)
+        or manysys.path_is_reparse(metadata)
+        or not stat.S_ISREG(metadata.st_mode)
+    )
 
 
 def _unsafe(shown: Path, error: OSError) -> NativeCredentialError:
@@ -526,50 +547,54 @@ def _unsafe(shown: Path, error: OSError) -> NativeCredentialError:
     )
 
 
-def _lstat_at(name: str, directory: int) -> os.stat_result | None:
+def _lstat_entry(path: Path) -> os.stat_result | None:
     try:
-        return os.stat(name, dir_fd=directory, follow_symlinks=False)
+        return path.lstat()
     except FileNotFoundError:
         return None
+    except OSError as error:
+        raise _unsafe(path, error) from error
 
 
-def _read_at(name: str, directory: int) -> bytes:
-    descriptor = os.open(
-        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
-    )
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+def _lstat_at(name: str, directory: Path) -> os.stat_result | None:
+    return _lstat_entry(directory / name)
+
+
+def _read_at(name: str, directory: Path) -> bytes:
+    target = directory / name
+    metadata = _lstat_at(name, directory)
+    if metadata is None or _is_link_or_non_regular(metadata):
+        raise NativeCredentialError(
+            ipc_errors.PROVIDER_UNSAFE_PATH, f"{name} is not a regular file"
+        )
+    with target.open("rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise NativeCredentialError(
                 ipc_errors.PROVIDER_UNSAFE_PATH, f"{name} is not a regular file"
             )
-        chunks = []
-        while chunk := os.read(descriptor, 65536):
-            chunks.append(chunk)
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
+        return stream.read()
 
 
-def _create_private_at(name: str, content: bytes, directory: int) -> None:
-    descriptor = os.open(
-        name,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
-        dir_fd=directory,
-    )
-    try:
-        os.fchmod(descriptor, 0o600)
+def _create_private_at(name: str, content: bytes, directory: Path) -> None:
+    target = directory / name
+    with open(target, "xb", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+        descriptor = stream.fileno()
         view = memoryview(content)
         while view:
             written = os.write(descriptor, view)
             view = view[written:]
         os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
-def _unlink_quietly(name: str, directory: int) -> None:
+def _unlink_quietly(name: str, directory: Path) -> None:
+    target = directory / name
+    metadata = _lstat_at(name, directory)
+    if metadata is None:
+        return
+    if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode) and manysys.path_is_reparse(metadata):
+        manysys.unlink_directory_link(target)
+        return
     try:
-        os.unlink(name, dir_fd=directory)
+        target.unlink()
     except FileNotFoundError:
         pass

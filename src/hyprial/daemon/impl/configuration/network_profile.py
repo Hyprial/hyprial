@@ -23,19 +23,19 @@ There is deliberately no ``HYPRIAL_PROFILE`` variable and no machine-level
 service unit's ``HYPRIAL_HOME``, and a second selector would let the CLI point
 at home A while the daemon runs in home B.
 
-Naming landmine (spec §2): the word "profile" already exists in this
-repository meaning the host-side Squire user dossier (``UserProfileStore``,
-``state/users.json``).  Everything here is a **NetworkProfile**; the two have
-nothing to do with each other, one home holds exactly one owner and one
-network profile, and nothing here reads or writes ``users.json``.
+Naming: everything here is a **NetworkProfile**; one home holds exactly one
+owner and one network profile.
 
 DEFAULT_PROFILE
     The built-in ``hyprial`` record, returned by :func:`resolve_profile` for
-    any home that has no ``profile.json``.  Its issuer domain literal 在整个
-    src/ 树里唯一允许出现的地方就是 DEFAULT_PROFILE 这一处:U2 起所有代码
-    一律读 ``profile.issuer``,不得另抄字面量——判据测试
-    (tests/test_network_profile.py 的 T9)会扫描全 src/ 并锚定本段,注记与
-    绊线互指,两个都不能单独消失。
+    any home that has no ``profile.json``.  默认 OIDC issuer 配置的域名字面量
+    在 src/ 树里唯一允许出现的地方就是 DEFAULT_PROFILE 这一处；U2 起配置
+    消费者一律读 ``profile.issuer``。固定 SAN 协议标识另由 identity 的
+    ``binding/profile.py`` 单次声明 ``BINDING_URI_NAMESPACE``，它独立于配置
+    issuer 与 ``policyIssuer``，不能从运行时端点派生。T9 扫描全 src/，只精确
+    接受该完整协议常量赋值，然后保留默认 issuer 的全部唯一性约束；额外复制
+    issuer 或 namespace 均拒绝。tests/daemon/network/test_network_profile.py
+    的 T9 与本段互指，两个都不能单独消失。
 """
 
 from __future__ import annotations

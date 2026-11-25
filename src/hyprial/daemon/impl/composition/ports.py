@@ -17,6 +17,8 @@ from hyprial.daemon.impl.adapters.lark.ports.ports import (
     AdapterHealthEventsCompleted,
     AdapterTimerElapsedCommand,
     AdapterMutationCompleted,
+    BeginAdapterRemovalCommand,
+    FinishAdapterRemovalCommand,
     DeliverLarkAlarmCommand,
     DeliverLarkMessageCommand,
     DrainAdapterHealthCommand,
@@ -99,6 +101,22 @@ class LarkPortClient:
     def reload(self) -> AdapterMutationCompleted:
         return self.call(
             ReloadAdaptersCommand(f"lark:reload:{uuid.uuid4().hex}"),
+            AdapterMutationCompleted,
+        )
+
+    def begin_removal(
+        self, name: str, token: str, *, expected_generation: int, expected_version: int,
+    ) -> AdapterMutationCompleted:
+        return self.call(
+            BeginAdapterRemovalCommand(
+                f"lark:removal:{uuid.uuid4().hex}", name, token, expected_generation, expected_version,
+            ),
+            AdapterMutationCompleted,
+        )
+
+    def finish_removal(self, name: str, token: str, *, committed: bool) -> AdapterMutationCompleted:
+        return self.call(
+            FinishAdapterRemovalCommand(f"lark:removal-finish:{uuid.uuid4().hex}", name, token, committed),
             AdapterMutationCompleted,
         )
 

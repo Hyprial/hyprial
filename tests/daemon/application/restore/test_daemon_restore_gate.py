@@ -41,6 +41,7 @@ from hyprial.daemon.impl.inbox import (
 )
 
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _app_injections
+from tests.support.actor_hosts import new_actor_host
 
 
 class _FakeHarnesses:
@@ -166,7 +167,7 @@ def _running_app(
     coordinator = DeliveryCustodyCoordinator(
         database,
         MemoryDeliveryTransport(),
-        _InboxEvents(),
+        _InboxEvents(), actor_host=new_actor_host(),
     )
     app._inbox_coordinator = coordinator
     app._inbox = DeliveryCustodyFacade(coordinator, database)
@@ -265,6 +266,7 @@ def test_daemon_json_published_before_restore_completes(
         marker = json.loads((app.state_dir / "daemon.json").read_text(encoding="utf-8"))
         assert marker["pid"] == os.getpid()
         assert marker["nodeId"] == "restore-gate-test"
+        assert marker["epoch"] == app.epoch
         assert not blocked.finished.is_set()
     finally:
         _stop(app, daemon, blocked)

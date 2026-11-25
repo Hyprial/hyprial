@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 
 import hyprial.shell.impl.cli.commands.daemon.service as service_module
 from hyprial.daemon.impl.operations import service as ops_service_module
+import hyprial.daemon.impl.operations.service.supervisor as ops_service_supervisor
 from hyprial.daemon.impl.operations.service import ServiceConfig, ServiceManager
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
@@ -89,6 +91,7 @@ def test_daemon_service_install_waits_for_supervisor_custody(
 ) -> None:
     calls: list[str] = []
     manager = SimpleNamespace(
+        capture_unit_state=lambda: (None, False),
         install=lambda: calls.append("install") or status(changed=True),
         wait_for_custody=lambda serving_pid: (
             calls.append("wait") or status(changed=True, serving_pid=serving_pid())
@@ -109,13 +112,16 @@ def test_daemon_service_install_waits_for_supervisor_custody(
 def test_daemon_service_install_fails_if_custody_is_not_established(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    reverted: list[tuple[str | None, bool]] = []
     manager = SimpleNamespace(
+        capture_unit_state=lambda: (None, False),
         install=lambda: status(changed=True),
         wait_for_custody=lambda _serving_pid: status(
             changed=True,
             serving_pid=9001,
             supervision="lost",
         ),
+        revert_install=lambda state: reverted.append(state) or "removed",
     )
     monkeypatch.setattr(service_module, "_service_manager", lambda: manager)
 
@@ -127,6 +133,9 @@ def test_daemon_service_install_fails_if_custody_is_not_established(
     payload = json.loads(result.stdout)
     assert payload["code"] == "SERVICE_SUPERVISION_LOST"
     assert payload["data"]["supervision"] == "lost"
+    assert payload["data"]["install"] == {"supervision": "lost", "reverted": "removed"}
+    assert "unloaded and its file removed" in payload["error"]
+    assert reverted == [(None, False)]
 
 
 def test_daemon_service_unsupported_platform_is_stable_error(
@@ -389,7 +398,7 @@ def test_service_doctor_distinguishes_missing_service_from_manager_failure(
     config = ServiceConfig(
         executable=Path("/opt/hyprial/bin/hyprial"),
         home=tmp_path,
-        hyprial_home=tmp_path / "hyprial",
+        hyprial_home=tmp_path / ".hyprial",
         state_dir=tmp_path / "state",
     )
 
@@ -416,7 +425,7 @@ def test_service_doctor_distinguishes_missing_service_from_manager_failure(
     # Keep the bus probe deterministic: this case is about the supervisor's
     # answer, not about whether a session bus exists on the test host.
     monkeypatch.setattr(
-        ops_service_module,
+        ops_service_supervisor,
         "user_bus_state",
         lambda *a, **k: (
             "address-unreachable"
@@ -491,3 +500,189 @@ def test_service_doctor_separates_never_installed_from_linger_off(
     assert linger_off["status"] == "warn"
     assert linger_off["metrics"]["reason"] == "linger-off"
     assert "enable-linger" in linger_off["action"]["command"]
+
+
+def test_daemon_program_uses_the_console_script_only_for_this_interpreter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import sys
+
+    console_script = tmp_path / "bin" / "hyprial"
+    console_script.parent.mkdir()
+    console_script.write_text(f"#!{sys.executable}\nimport sys\n")
+    scripts = {"hyprial": str(console_script)}
+
+    def fake_which(name: str) -> str | None:
+        return scripts.get(name)
+
+    monkeypatch.setattr(service_module.shutil, "which", fake_which)
+
+    executable, daemon_args = service_module._daemon_program()
+
+    assert daemon_args == ("daemon", "run")
+    assert executable == console_script.resolve()
+
+    foreign_interpreter = tmp_path / "other-venv" / "bin" / "python3.12"
+    foreign_interpreter.parent.mkdir(parents=True)
+    foreign_interpreter.write_text("#!stub\n")
+    console_script.write_text(f"#!{foreign_interpreter}\nimport sys\n")
+
+    executable, daemon_args = service_module._daemon_program()
+
+    assert daemon_args == ("-m", "hyprial.cli", "daemon", "run")
+    assert executable == Path(os.path.abspath(sys.executable))
+
+    console_script.write_text("#!/usr/bin/env python3\nimport sys\n")
+    scripts["python3"] = str(foreign_interpreter)
+
+    executable, daemon_args = service_module._daemon_program()
+
+    assert daemon_args == ("-m", "hyprial.cli", "daemon", "run")
+
+    scripts.clear()
+    scripts["python3"] = sys.executable
+
+    executable, daemon_args = service_module._daemon_program()
+
+    assert daemon_args == ("-m", "hyprial.cli", "daemon", "run")
+    assert executable == Path(os.path.abspath(sys.executable))
+
+
+def test_daemon_program_falls_back_to_the_module_form_without_a_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    monkeypatch.setattr(service_module.shutil, "which", lambda name: None)
+
+    executable, daemon_args = service_module._daemon_program()
+
+    assert daemon_args == ("-m", "hyprial.cli", "daemon", "run")
+    assert executable == Path(os.path.abspath(sys.executable))
+
+
+def test_a_script_without_a_shebang_is_not_this_installation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+
+    plain = tmp_path / "hyprial"
+    plain.write_text("import sys\n")
+    monkeypatch.setattr(service_module.shutil, "which", lambda name: str(plain))
+
+    _executable, daemon_args = service_module._daemon_program()
+
+    assert daemon_args == ("-m", "hyprial.cli", "daemon", "run")
+
+
+def test_service_manager_wires_the_resolved_program(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict = {}
+
+    class FakeManager:
+        def __init__(self, config, **kwargs):
+            captured["config"] = config
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("hyprial.daemon.ServiceManager", FakeManager)
+    services = SimpleNamespace(
+        _hyprial_home=lambda: tmp_path / ".hyprial",
+        _state_dir=lambda: tmp_path / "state",
+    )
+    monkeypatch.setattr(service_module, "get_services", lambda: services)
+    monkeypatch.setattr(
+        service_module,
+        "_daemon_program",
+        lambda: (Path("/opt/python"), ("-m", "hyprial.cli", "daemon", "run")),
+    )
+
+    service_module._service_manager()
+
+    config = captured["config"]
+    assert config.executable == Path("/opt/python")
+    assert config.daemon_args == ("-m", "hyprial.cli", "daemon", "run")
+    assert config.hyprial_home == tmp_path / ".hyprial"
+
+
+def test_supervised_start_and_stop_address_the_status_unit(monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def fake_runner(command, *, timeout=None):
+        del timeout
+        commands.append(tuple(command))
+        return subprocess.CompletedProcess(tuple(command), 0, "", "")
+
+    manager = SimpleNamespace(platform="systemd", runner=fake_runner)
+    status = SimpleNamespace(
+        platform="systemd",
+        unit="hyprial-abc123def456.service",
+        loaded=True,
+        unit_path=Path("/u/hyprial-abc123def456.service"),
+    )
+
+    service_module.request_supervised_start((manager, status))
+
+    assert commands == [
+        ("systemctl", "--user", "start", "hyprial-abc123def456.service")
+    ]
+
+    service_module.stop_supervised_daemon((manager, status))
+
+    assert commands[-1] == (
+        "systemctl",
+        "--user",
+        "stop",
+        "hyprial-abc123def456.service",
+    )
+
+
+def test_supervised_launchd_start_kickstarts_the_status_unit() -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def fake_runner(command, *, timeout=None):
+        del timeout
+        commands.append(tuple(command))
+        return subprocess.CompletedProcess(tuple(command), 0, "", "")
+
+    manager = SimpleNamespace(platform="launchd", runner=fake_runner, uid=501)
+    status = SimpleNamespace(
+        platform="launchd",
+        unit="com.hyprial.hyprial.daemon.abc123def456",
+        loaded=True,
+        unit_path=Path("/u/com.hyprial.hyprial.daemon.abc123def456.plist"),
+    )
+
+    service_module.request_supervised_start((manager, status))
+
+    assert commands == [
+        (
+            "launchctl",
+            "kickstart",
+            "gui/501/com.hyprial.hyprial.daemon.abc123def456",
+        )
+    ]
+
+
+
+def test_console_script_interpreter_reads_a_bounded_first_line(tmp_path: Path) -> None:
+    interpreter = tmp_path / "py"
+    script = tmp_path / "hyprial"
+    script.write_bytes(f"#!{interpreter}\nrest\n".encode())
+    assert service_module._console_script_interpreter(script) == interpreter
+
+    assert service_module._console_script_interpreter(tmp_path / "missing") is None
+    assert service_module._console_script_interpreter(tmp_path) is None
+
+    script.write_bytes(b"\xff\xfe\x00binary\n")
+    assert service_module._console_script_interpreter(script) is None
+
+    script.write_bytes(b"#!" + b"\xff" * 8 + b"\n")
+    assert service_module._console_script_interpreter(script) is not None
+
+    script.write_bytes(b"import sys\n")
+    assert service_module._console_script_interpreter(script) is None
+
+    script.write_bytes(b"#!" + b"/" + b"a" * 100000 + b"\nrest")
+    resolved = service_module._console_script_interpreter(script)
+    assert resolved is not None
+    assert len(str(resolved)) <= 4096 + 1

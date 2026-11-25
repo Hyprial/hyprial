@@ -35,8 +35,7 @@ from hyprial.daemon.impl.inbox import (
 )
 from hyprial.daemon.impl.application.messaging.inbox_surface import queries
 from tests.daemon.delivery.origin.test_inbound_origin import _app  # type: ignore[import-not-found]
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
-from tests.support.links.gate import PermissiveLinkGate
+from tests.support.actor_hosts import new_actor_host
 
 READER = "agent:op:node-1:reader"
 SESSION = {"from": "reader", "sessionRef": "session-reader"}
@@ -47,12 +46,14 @@ class _Events:
         pass
 
 
-def _message(message_id: str, *, intent: str = "request") -> InboxMessage:
+def _message(
+    message_id: str, *, intent: str = "request", recipient: str = READER
+) -> InboxMessage:
     return InboxMessage(
         message_id=message_id,
         conversation_id="conversation-1",
         sender="agent:op:node-1:driver",
-        recipient=READER,
+        recipient=recipient,
         payload=json.dumps({"message": message_id}).encode(),
         intent=intent,
         lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -65,14 +66,12 @@ def app(tmp_path: Path):  # type: ignore[no-untyped-def]
     application = _app(tmp_path)
     application._inbox.close()
     path = tmp_path / "custody.sqlite3"
-    slot = LinkAdmission()
-    application._link_admission = slot
     facade = DeliveryCustodyFacade(
         DeliveryCustodyCoordinator(
             path,
             MemoryDeliveryTransport(),
             _Events(),
-            service_options={"link_admission": slot},
+            actor_host=new_actor_host(),
         ),
         path,
     )
@@ -80,9 +79,14 @@ def app(tmp_path: Path):  # type: ignore[no-untyped-def]
     application._inbox_coordinator = facade._coordinator  # type: ignore[attr-defined]
     # driver->reader is agent-to-agent, so the explicit permissive premise
     # keeps this doorbell test about the doorbell (wp4 T13 supplement).
-    slot.bind(PermissiveLinkGate())
     # The owned-application teardown closes the inbox and agents.
     return application
+
+
+def _reader(app: DaemonApplication) -> str:
+    """The reader's official address, where its rows are queued."""
+
+    return app.agents.get("reader").uri
 
 
 def _wait(app: DaemonApplication, known: list[str], hold_ms: int) -> tuple[dict, float]:
@@ -105,7 +109,7 @@ def _later(seconds: float, action) -> threading.Thread:  # type: ignore[no-untyp
 
 
 def test_a_message_already_unseen_answers_without_holding(app) -> None:  # type: ignore[no-untyped-def]
-    app._inbox.receive(_message("m-1"))
+    app._inbox.receive(_message("m-1", recipient=_reader(app)))
 
     result, elapsed = _wait(app, [], 5_000)
 
@@ -117,7 +121,7 @@ def test_a_message_arriving_during_the_hold_ends_it_promptly(app, monkeypatch) -
     # A long slice separates "woken by the notification" (~0.1 s) from "found
     # by the next slice's own rescan" (~2 s) by more than any runner jitter.
     monkeypatch.setattr(queries, "MESSAGE_WAIT_SLICE_SECONDS", 2.0)
-    arrival = _later(0.1, lambda: app._inbox.receive(_message("m-2")))
+    arrival = _later(0.1, lambda: app._inbox.receive(_message("m-2", recipient=_reader(app))))
 
     result, elapsed = _wait(app, [], 5_000)
     arrival.join()
@@ -127,7 +131,7 @@ def test_a_message_arriving_during_the_hold_ends_it_promptly(app, monkeypatch) -
 
 
 def test_messages_the_caller_already_saw_do_not_end_the_hold(app) -> None:  # type: ignore[no-untyped-def]
-    app._inbox.receive(_message("m-3"))
+    app._inbox.receive(_message("m-3", recipient=_reader(app)))
 
     result, elapsed = _wait(app, ["m-3"], 400)
 
@@ -136,7 +140,7 @@ def test_messages_the_caller_already_saw_do_not_end_the_hold(app) -> None:  # ty
 
 
 def test_a_new_notice_ends_the_hold_and_is_left_for_the_list(app) -> None:  # type: ignore[no-untyped-def]
-    notice = _later(0.2, lambda: app._inbox.receive_system_notice(_message("n-1", intent="system")))
+    notice = _later(0.2, lambda: app._inbox.receive_system_notice(_message("n-1", intent="system", recipient=_reader(app))))
 
     result, _elapsed = _wait(app, [], 5_000)
     notice.join()
@@ -207,7 +211,7 @@ def test_idle_waits_do_not_create_projection_changes(
         )
     known = []
     if known_message:
-        app._inbox.receive(_message("already-known"))
+        app._inbox.receive(_message("already-known", recipient=_reader(app)))
         known = ["already-known"]
     coordinator = app._inbox_coordinator
     handler = coordinator._active_handler
@@ -231,56 +235,12 @@ def test_idle_waits_do_not_create_projection_changes(
         results = list(pool.map(lambda _: wait(), range(waiters)))
 
     assert all(result["held"] and not result["changed"] for result in results)
-    max_checks = waiters * (
-        1 + math.ceil(hold_ms / 1_000 / queries.MESSAGE_WAIT_SLICE_SECONDS)
+    read_keys = app._consumer_read_keys(app._agent_address("reader"))
+    assert read_keys == (app.agents.get("reader").uri,)
+    max_checks = (
+        waiters
+        * len(read_keys)
+        * (1 + math.ceil(hold_ms / 1_000 / queries.MESSAGE_WAIT_SLICE_SECONDS))
     )
     assert app._inbox.version == version, dict(counts)
     assert counts["AdmittedPendingCommand"] <= max_checks, dict(counts)
-
-
-def test_real_link_window_stays_serial_and_wait_observes_memory_release(
-    tmp_path, monkeypatch
-) -> None:
-    from tests.daemon.links.composition import test_drained_read_back as composition
-    from tests.support.links.org import establish
-
-    now = time.time_ns() // 1_000_000
-    monkeypatch.setattr(composition, "NOW", now)
-    app, facade, harness = composition._composed(tmp_path)
-    try:
-        establish(harness.fs, READER, composition.DRIVER, now_ms=now)
-        harness.tick(now)
-        gate = harness.service
-        with gate._mem:
-            state = gate._state(READER)
-            gate._ensure_controller(state, now)
-            state.limits = replace(state.limits, w=1)
-        assert facade.receive(composition._request("seat-1"), now_ms=now).accepted
-        assert facade.receive(composition._request("seat-2"), now_ms=now).accepted
-        version = facade.version
-
-        def admitted(operation):
-            return tuple(
-                message.message_id
-                for message in getattr(facade, operation)(READER, now_ms=now)
-            )
-
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            batches = list(pool.map(admitted, (
-                "admitted_pending", "admitted_dispatchable", "admitted_pending",
-            )))
-        assert batches == [("seat-1",)] * 3
-        assert facade.version == version
-
-        def release_memory_window() -> None:
-            with gate._mem:
-                state.limits = replace(state.limits, w=2)
-
-        release = _later(0.1, release_memory_window)
-        result, _elapsed = _wait(app, ["seat-1"], 2_000)
-        release.join()
-        assert result["changed"] and result["held"]
-        assert facade.version == version
-        assert admitted("admitted_pending") == ("seat-1", "seat-2")
-    finally:
-        harness.service.close()

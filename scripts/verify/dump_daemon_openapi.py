@@ -3,7 +3,9 @@
 
 The export is pure declaration data: this script does not start a daemon, read
 the operator's home or open a socket.  ``--check`` is the CI/test-facing mode;
-``--write`` is the reviewed regeneration step.
+``--write`` is the reviewed regeneration step.  The full registry
+self-check (``verify_registry``: meta-schema verdicts and validator
+construction) no longer runs at import, so this gate runs it explicitly.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from hyprial.daemon import daemon_openapi  # noqa: E402
+from hyprial.daemon.impl.request_catalog.registry import verify_registry  # noqa: E402
 
 TARGET = ROOT / "contract" / "daemon-request" / "openapi.json"
 
@@ -31,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--check", action="store_true", help="compare the snapshot")
     mode.add_argument("--write", action="store_true", help="rewrite the snapshot")
     args = parser.parse_args(argv)
+    verify_registry()
     expected = dumps(daemon_openapi())
     if args.write:
         TARGET.parent.mkdir(parents=True, exist_ok=True)

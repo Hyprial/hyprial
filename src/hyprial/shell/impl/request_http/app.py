@@ -21,7 +21,6 @@ scope without a new whitelist entry (whitelist only shrinks).
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from copy import deepcopy
 import json
 import re
 import secrets
@@ -30,6 +29,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
 import anyio
+import asyncio
 from fastapi import Depends, FastAPI, Request, Response, Security
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -41,7 +41,11 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from hyprial import __version__
-from hyprial.kernel import ipc_errors
+from hyprial.daemon import daemon_catalog as local_daemon_catalog, daemon_openapi as local_daemon_openapi
+from hyprial.kernel import ipc_errors, RequestCancellation, request_cancellation
+from hyprial.shell.impl.http_contract import project_catalog
+
+from .catalog import HTTP_CONTRACT_VERSION
 
 from .errors import HttpFailure
 from .server import _Envelope
@@ -379,8 +383,17 @@ class RequestContextMiddleware:
             name = host.split("]", 1)[0] + "]"
         if name not in self.server.config.allowed_hosts:
             raise HttpFailure("HTTP_HOST_DENIED", "Host is not allowed", status=403)
-        if origin is not None and origin not in self.server.config.allowed_origins:
-            raise HttpFailure("HTTP_ORIGIN_DENIED", "Origin is not allowed", status=403)
+        if origin is not None:
+            allowed = origin in self.server.config.allowed_origins
+            if not allowed:
+                try:
+                    allowed = origin == self.server.endpoint
+                except (AssertionError, RuntimeError):
+                    allowed = False
+            if not allowed:
+                raise HttpFailure(
+                    "HTTP_ORIGIN_DENIED", "Origin is not allowed", status=403
+                )
 
     def _validate_route(self, scope: Scope) -> None:
         path = str(scope.get("path", ""))
@@ -552,93 +565,40 @@ async def _read_params(server: RequestHttpServer, request: Request) -> dict[str,
     return params
 
 
-def _success_schema(route: Any) -> dict[str, Any]:
-    schema = deepcopy(SuccessEnvelope.model_json_schema())
-    properties = schema.setdefault("properties", {})
-    properties["result"] = deepcopy(dict(route.result_schema))
-    return schema
+def _owner_map() -> dict[str, str]:
+    owners: dict[str, str] = {}
+    for entry in local_daemon_catalog().get("methods", []):
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            owner = entry.get("owner")
+            if isinstance(name, str) and isinstance(owner, str):
+                owners[name] = owner
+    return owners
 
 
-def _method_openapi(route: Any) -> dict[str, Any]:
-    return {
-        "requestBody": {
-            "required": True,
-            "content": {
-                "application/json": {
-                    "schema": deepcopy(dict(route.params_schema)),
-                    "description": (
-                        "Method-specific body from daemon.catalog. A missing "
-                        "local-operator selector is injected with principal.actor "
-                        "before validation."
-                    ),
-                }
-            },
-        },
-        "x-hyprial-method": route.name,
-        "x-hyprial-state": route.state,
-        "x-hyprial-http-binding": deepcopy(dict(route.http_binding)),
-        "x-hyprial-identity": deepcopy(dict(route.http_binding["identity"])),
-        "x-hyprial-errors": deepcopy(list(route.errors)),
-        "responses": {
-            "200": {
-                "description": "Successful safe unary read",
-                "content": {
-                    "application/json": {"schema": _success_schema(route)}
-                },
-            },
-            "400": {"description": "Local schema refusal", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "401": {"description": "Missing or wrong bearer", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "403": {"description": "Host, Origin or selector refusal", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "404": {"description": "Unknown or unexposed method", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "409": {"description": "Catalog/version mismatch", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "413": {"description": "Request body too large", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "415": {"description": "Unsupported media type", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "429": {"description": "Concurrency budget exhausted", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "500": {"description": "Daemon/internal failure", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "502": {"description": "Invalid daemon response", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "503": {"description": "Not ready/unavailable", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-            "504": {"description": "Daemon timeout", "content": {"application/json": {"schema": ErrorEnvelope.model_json_schema()}}},
-        },
-    }
+def _canonical_openapi(server: RequestHttpServer) -> dict[str, Any]:
+    """Project the served catalog through the H-03 canonical seam."""
 
-
-def _decorate_openapi(schema: dict[str, Any], server: RequestHttpServer) -> None:
-    schema["info"]["description"] = (
-        "Hyprial local-operator HTTP request entry. Transport envelopes are typed "
-        "here; per-method request/result JSON Schemas and membership come from the "
-        "authoritative daemon catalog at GET /daemon/request."
-    )
     view = server.current_view()
-    for route in view.routes.values():
-        item = schema.get("paths", {}).get(route.path, {}).get("post")
-        if item is None:
-            continue
-        item["summary"] = f"Invoke {route.name}"
-        item["x-hyprial-method"] = route.name
-        item["x-hyprial-state"] = route.state
-        item["x-hyprial-http-binding"] = deepcopy(dict(route.http_binding))
-        item["x-hyprial-identity"] = deepcopy(dict(route.http_binding["identity"]))
-        item["x-hyprial-errors"] = deepcopy(list(route.errors))
-        item["description"] = (
-            f"State `{route.state}` from daemon.catalog. The body schema is the "
-            "daemon-declared paramsSchema; the result schema is the declared "
-            "resultSchema wrapped in the typed success envelope."
-        )
-        item["requestBody"] = {
-            "required": True,
-            "content": {
-                "application/json": {
-                    "schema": deepcopy(dict(route.params_schema)),
-                    "description": (
-                        "A missing local-operator selector is injected with "
-                        "principal.actor before validation."
-                    ),
-                }
-            },
+    methods = [
+        {
+            **route.public_json(),
+            "x-hyprial-http-host-only": sorted(route.http_forbidden),
         }
-        item.setdefault("responses", {}).setdefault("200", {})["content"] = {
-            "application/json": {"schema": _success_schema(route)}
-        }
+        for route in view.routes.values()
+    ]
+    source = local_daemon_openapi()
+    examples = {
+        operation["operationId"]: operation["x-hyprial-examples"]
+        for path in source["paths"].values()
+        for operation in path.values()
+        if "x-hyprial-examples" in operation
+    }
+    return project_catalog(
+        {"httpContractVersion": HTTP_CONTRACT_VERSION, "methods": methods},
+        owners=_owner_map(),
+        examples=examples,
+    )
 
 
 def build_app(server: RequestHttpServer) -> FastAPI:
@@ -774,14 +734,31 @@ def build_app(server: RequestHttpServer) -> FastAPI:
     def method_endpoint(name: str) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
             params = await _read_params(server, request)
-            envelope = await run_in_threadpool(
-                server._invoke,
-                name,
-                _request_id(request),
-                _started(request),
-                params,
-                _first_header(list(request.scope["headers"]), b"x-hyprial-catalog-digest"),
-            )
+            async def invoke():
+                return await run_in_threadpool(
+                    server._invoke, name, _request_id(request), _started(request), params,
+                    _first_header(list(request.scope["headers"]), b"x-hyprial-catalog-digest"),
+                )
+
+            if name == "agent.secret.provider-test":
+                cancellation = RequestCancellation()
+
+                async def watch_disconnect():
+                    while True:
+                        if (await request.receive())["type"] == "http.disconnect":
+                            cancellation.cancel()
+                            return
+
+                with request_cancellation(cancellation):
+                    watcher = asyncio.create_task(watch_disconnect())
+                    try:
+                        envelope = await invoke()
+                    finally:
+                        cancellation.cancel()
+                        watcher.cancel()
+                        await asyncio.gather(watcher, return_exceptions=True)
+            else:
+                envelope = await invoke()
             return _render(server, envelope, _request_id(request), name)
 
         return endpoint
@@ -831,7 +808,7 @@ def build_app(server: RequestHttpServer) -> FastAPI:
             methods=["POST"],
             response_model=SuccessEnvelope,
             dependencies=[Depends(_require_bearer), Depends(_require_json_framing)],
-            openapi_extra=_method_openapi(route),
+            openapi_extra={"x-hyprial-method": route.name},
             include_in_schema=True,
             tags=["methods"],
         )
@@ -870,13 +847,10 @@ def build_app(server: RequestHttpServer) -> FastAPI:
         include_in_schema=False,
     )
 
-    original_openapi = app.openapi
-
     def custom_openapi() -> dict[str, Any]:
         if app.openapi_schema is not None:
             return app.openapi_schema
-        schema = original_openapi()
-        _decorate_openapi(schema, server)
+        schema = _canonical_openapi(server)
         app.openapi_schema = schema
         return schema
 

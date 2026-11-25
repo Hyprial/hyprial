@@ -47,41 +47,32 @@ def _snapshot(*origins: dict[str, object]) -> BatchSnapshot:
 
 _CASES = (
     (
-        {"standing": "verified", "owner": "user:owner"},
-        "origin: owner=user:owner, standing=verified",
+        {
+            "chatKind": "dm",
+            "sender": {"kind": "user", "platformId": "ou_sender", "displayName": "Ann"},
+        },
+        "origin: chatKind=dm, sender=Ann (via adapter:lark:test, account ou_sender)",
     ),
     (
-        {"standing": "observed"},
-        "origin: standing=observed (NOT verified)",
+        {
+            "chatKind": "group",
+            "sender": {"kind": "user", "platformId": "ou_sender", "displayName": None},
+        },
+        "origin: chatKind=group, sender=ou_sender (via adapter:lark:test, account ou_sender)",
     ),
     (
         {
             "sender": {
+                "platformId": "ou_owner",
                 "displayName": "Recorded Owner",
                 "standing": "verified",
                 "owner": "user:owner",
             }
         },
-        "origin: sender=Recorded Owner (owner user:owner, verified)",
+        "origin: sender=Recorded Owner (via adapter:lark:test, account ou_owner)",
     ),
-    (
-        {"sender": {"displayName": "Claimed Owner", "standing": "observed"}},
-        "origin: sender=Claimed Owner (NOT verified: display name only, no owner)",
-    ),
-    (
-        {"sender": {"platformId": "ou_sender", "standing": "unresolved", "lookupFailed": True}},
-        "origin: sender=ou_sender (NOT verified: identity lookup failed)",
-    ),
-    (
-        {"sender": {"platformId": "ou_sender", "standing": "unresolved"}},
-        "origin: sender=ou_sender (NOT verified: sender unresolved)",
-    ),
-    (
-        {"sender": {"platformId": "ou_sender", "standing": "unresolved", "lookupFailed": "true"}},
-        "origin: sender=ou_sender (NOT verified: sender unresolved)",
-    ),
-    ({"via": "adapter"}, "origin: via=adapter (NOT verified)"),
-    ({}, "origin: (unrecorded; NOT verified)"),
+    ({"via": "adapter"}, "origin: via=adapter\n"),
+    ({}, "origin: (unrecorded)\n"),
 )
 
 
@@ -138,3 +129,4 @@ def test_each_text_block_and_wire_item_are_derived_from_the_same_origin() -> Non
         block = text[start:end]
         assert response["items"][index - 1]["origin"] == origin
         assert expected_line in block
+    assert "verified" not in text

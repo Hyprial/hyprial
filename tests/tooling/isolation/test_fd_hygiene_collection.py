@@ -14,12 +14,76 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[3]
 PROBE_TIMEOUT_S = 120
+
+
+@pytest.mark.parametrize("returncode", [-15, 137])
+def test_worker_failure_reports_exit_status_without_changing_it(
+    capsys, monkeypatch, tmp_path, returncode
+) -> None:
+    from tests.conftest import _CiTestProfile
+
+    (tmp_path / "memory.events").write_text("oom_kill 5\n")
+    monkeypatch.setenv("CI_CGROUP_ROOT", str(tmp_path))
+
+    class Process:
+        pid = 1234
+
+        def wait(self, timeout):
+            assert timeout == 1.0
+            return returncode
+
+    node = SimpleNamespace(
+        gateway=SimpleNamespace(id="gw0", _io=SimpleNamespace(popen=Process())),
+        workeroutput={},
+    )
+    profile = _CiTestProfile(SimpleNamespace(getoption=lambda *a, **k: 2))
+    profile.oom_kill_start = 3
+    profile.pytest_testnodedown(node, object())
+    line = capsys.readouterr().out
+    data = json.loads(line.removeprefix("CI_WORKER_EXIT "))
+    assert data == {
+        "worker": "gw0",
+        "pid": 1234,
+        "returncode": returncode,
+        "signal": 15 if os.name == "posix" and returncode == -15 else None,
+        "oom_kill": 5,
+        "oom_kill_since_start": 2,
+    }
+
+
+def test_worker_exit_missing_process_or_timeout_is_unknown(capsys, monkeypatch, tmp_path) -> None:
+    from tests.conftest import _CiTestProfile
+
+    monkeypatch.setenv("CI_CGROUP_ROOT", str(tmp_path / "absent"))
+
+    class Process:
+        pid = 1234
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("worker", timeout)
+
+    profile = _CiTestProfile(SimpleNamespace(getoption=lambda *a, **k: 2))
+    for io, expected_pid in ((object(), None), (SimpleNamespace(popen=Process()), 1234)):
+        node = SimpleNamespace(gateway=SimpleNamespace(id="gw0", _io=io), workeroutput={})
+        profile.pytest_testnodedown(node, object())
+        data = json.loads(capsys.readouterr().out.removeprefix("CI_WORKER_EXIT "))
+        assert data == {
+            "worker": "gw0",
+            "pid": expected_pid,
+            "returncode": None,
+            "signal": None,
+            "oom_kill": None,
+            "oom_kill_since_start": None,
+        }
+        profile.pytest_testnodedown(node, None)
+        assert capsys.readouterr().out == ""
 
 
 def _probe(
@@ -126,6 +190,22 @@ def test_second(tmp_path):
     assert crashed.returncode == 1, crashed.stdout + crashed.stderr
     assert "INTERNALERROR" not in crashed.stdout + crashed.stderr
     assert "test_crash" in crashed.stdout
+    crash_exit = next(line for line in crashed.stdout.splitlines() if line.startswith("CI_WORKER_EXIT "))
+    assert json.loads(crash_exit.removeprefix("CI_WORKER_EXIT "))["returncode"] == 7
+
+    if os.name == "posix":
+        signaled = _probe(
+            "import os, signal\ndef test_crash():\n    os.kill(os.getpid(), signal.SIGTERM)\n",
+            other_source="def test_survivor():\n    pass\n",
+            workers=2,
+        )
+        assert signaled.returncode == 1, signaled.stdout + signaled.stderr
+        assert "INTERNALERROR" not in signaled.stdout + signaled.stderr
+        assert "test_crash" in signaled.stdout
+        crash_exit = next(line for line in signaled.stdout.splitlines() if line.startswith("CI_WORKER_EXIT "))
+        data = json.loads(crash_exit.removeprefix("CI_WORKER_EXIT "))
+        assert data["returncode"] == -signal.SIGTERM
+        assert data["signal"] == signal.SIGTERM
 
 
 def test_guard_still_rejects_a_reachable_file_leak() -> None:

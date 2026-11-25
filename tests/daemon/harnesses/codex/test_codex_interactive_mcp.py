@@ -379,11 +379,11 @@ def test_interactive_start_requests_on_request_approval(
     assert _approval(seen["tui_argv"]) == ["on-request"]
 
 
-def test_interactive_resume_requests_on_request_approval(
+def test_interactive_resume_omits_tui_approval_and_keeps_rpc_policy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     seen = _launch(monkeypatch, tmp_path, resume=THREAD_ID)
-    assert _approval(seen["tui_argv"]) == ["on-request"]
+    assert _approval(seen["tui_argv"]) == []
     assert _approval(seen["resume_args"]) == ["on-request"]
 
 

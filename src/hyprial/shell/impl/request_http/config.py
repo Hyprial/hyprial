@@ -1,4 +1,14 @@
-"""Configuration, runtime directory, single-instance lock and capability file."""
+"""Configuration, runtime directory, single-instance lock and capability file.
+
+Decision: request-http-transport-block-removed-20261120 (owner-approved).  The
+``transport`` block (controller binding, written by the retired GUI launcher) is
+no longer a config key and publishes nothing in ``server.json``.  A config file
+that still carries it is refused like any other unknown key (``CONFIG_INVALID``,
+exit 2), the same as the retired ``nativeHost`` block.  No tolerance is kept: the
+only writer ever emitted ``transport`` together with ``principal.kind:
+"local-gui"``, which ``serve`` now refuses anyway, so ignoring the key would help
+no real file.
+"""
 
 from __future__ import annotations
 
@@ -15,12 +25,27 @@ from urllib.parse import urlsplit
 from hyprial.kernel import (
     FileLockBusy,
     ProcessFileLock,
-    canonical_agent_uri,
-    parse_agent_uri,
+    canonical_user_uri,
+    fsync_directory,
+    path_is_reparse,
+    private_config_file_violation,
+    private_tree_violation,
 )
 
 CONFIG_KEYS = frozenset(
-    {"schemaVersion", "backend", "principal", "listen", "security", "budgets", "runtime"}
+    {
+        "schemaVersion",
+        "backend",
+        "principal",
+        "listen",
+        "security",
+        "budgets",
+        "runtime",
+        # Explicit GUI locations (local-gui only): never derived from the path
+        # of this config file and never re-inferred from the child's env.
+        "home",
+        "stateDir",
+    }
 )
 BUDGET_KEYS = frozenset(
     {
@@ -54,6 +79,39 @@ DEFAULT_BUDGETS = {
 _SECRET_WORDS = ("token", "secret", "password")
 
 
+def _private_failure(
+    violation: str,
+    *,
+    subject: str,
+    code: str,
+    exit_code: int,
+    mode_message: str,
+    wrong_owner_message: str | None = None,
+) -> ConfigFailure:
+    """Translate one kernel private-path category into this entry's refusal."""
+
+    if violation == "unsafe-mode":
+        message = mode_message
+    elif violation == "wrong-owner":
+        message = wrong_owner_message or (
+            f"{subject} must be owned by the current user or a Windows "
+            "machine authority"
+        )
+    elif violation == "unsafe-reparse":
+        message = f"{subject} must not be a symlink or reparse point"
+    elif violation == "unsupported-private-acl":
+        message = (
+            f"cannot inspect {subject} security descriptor: the Windows "
+            "security modules are unavailable"
+        )
+    else:
+        message = (
+            f"{subject} must not be writable by other principals and must "
+            "grant the current user access"
+        )
+    return ConfigFailure(code, message, exit_code=exit_code)
+
+
 class ConfigFailure(Exception):
     """A startup refusal carrying its process exit code and stable code."""
 
@@ -78,8 +136,8 @@ class Budgets:
 @dataclass(frozen=True, slots=True)
 class RequestHttpConfig:
     socket_path: Path
-    owner: str
-    actor: str
+    owner: str | None
+    actor: str | None
     host: str
     port: int
     allowed_origins: tuple[str, ...]
@@ -87,6 +145,21 @@ class RequestHttpConfig:
     budgets: Budgets
     runtime_dir: Path
     source: Path
+    principal_kind: str = "local-operator"
+    #: The GUI home the child serves (``local-gui`` only).  ``source`` stays the
+    #: config file path; a host must never be opened on that path.
+    home: Path | None = None
+    #: The daemon state directory when it is not ``home/state`` (admission
+    #: supports an explicit ``HARNESS_STATE_DIR`` override), else None.
+    state_dir: Path | None = None
+
+
+def _optional_path(value: Any, where: str) -> Path | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ConfigFailure("CONFIG_INVALID", f"{where} must be a non-empty path string")
+    return Path(value)
 
 
 def _reject_secret_keys(value: Any, where: str) -> None:
@@ -154,18 +227,20 @@ def _host(value: Any, where: str) -> str:
 
 def _actor(value: Any, owner: str) -> str:
     text = _string(value, "principal.actor")
-    parsed = parse_agent_uri(text)
-    if parsed is None:
+    if text != canonical_user_uri(owner):
         raise ConfigFailure(
             "CONFIG_INVALID",
-            "principal.actor must be a canonical agent:<owner>:<node>:<actor> URI",
+            "principal.actor must be the canonical user:<owner> identity",
         )
-    if canonical_agent_uri(*parsed) != text:
-        raise ConfigFailure("CONFIG_INVALID", "principal.actor is not canonical")
-    if parsed[0] != owner:
-        raise ConfigFailure(
-            "CONFIG_INVALID", "principal.actor owner must equal principal.owner"
-        )
+    return text
+
+
+def _token(value: Any, where: str, *, maximum: int = 256) -> str:
+    text = _string(value, where)
+    if len(text) > maximum or not text.isascii() or any(
+        not char.isprintable() for char in text
+    ):
+        raise ConfigFailure("CONFIG_INVALID", f"{where} must be a bounded printable token")
     return text
 
 
@@ -197,10 +272,24 @@ def load_config(path: Path) -> RequestHttpConfig:
         info = path.lstat()
     except OSError as error:
         raise ConfigFailure("CONFIG_INVALID", f"cannot stat config {path}: {error.strerror}") from error
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise ConfigFailure("CONFIG_INVALID", "config must be a regular file, not a symlink")
-    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        raise ConfigFailure("CONFIG_INVALID", "config must not be group/world writable")
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or path_is_reparse(info)
+        or not stat.S_ISREG(info.st_mode)
+    ):
+        raise ConfigFailure(
+            "CONFIG_INVALID",
+            "config must be a regular file, not a symlink or reparse point",
+        )
+    violation = private_config_file_violation(path, info)
+    if violation is not None:
+        raise _private_failure(
+            violation,
+            subject="config",
+            code="CONFIG_INVALID",
+            exit_code=2,
+            mode_message="config must not be group/world writable",
+        )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -222,12 +311,28 @@ def load_config(path: Path) -> RequestHttpConfig:
     socket_path = _absolute(backend["socket"], "backend.socket")
 
     principal = _object(root["principal"], frozenset({"kind", "owner", "actor"}), "principal")
-    if principal["kind"] != "local-operator":
-        raise ConfigFailure("UNSUPPORTED_PRINCIPAL", "principal.kind must be local-operator", exit_code=3)
-    owner = _string(principal["owner"], "principal.owner")
-    if ":" in owner:
-        raise ConfigFailure("CONFIG_INVALID", "principal.owner must not contain ':'")
-    actor = _actor(principal["actor"], owner)
+    principal_kind = _string(principal["kind"], "principal.kind")
+    if principal_kind not in {"local-operator", "local-gui"}:
+        raise ConfigFailure(
+            "UNSUPPORTED_PRINCIPAL",
+            "principal.kind must be local-operator or local-gui",
+            exit_code=3,
+        )
+    if principal_kind == "local-gui":
+        # The GUI host admits its own phase and owner from durable state; the
+        # config may name the expected owner but never supplies one for an
+        # empty home.  No actor selector is accepted on this surface.
+        raw_owner = principal["owner"]
+        owner = None if raw_owner is None else _string(raw_owner, "principal.owner")
+        if owner is not None and ":" in owner:
+            raise ConfigFailure("CONFIG_INVALID", "principal.owner must not contain ':'")
+        raw_actor = principal["actor"]
+        actor = None if raw_actor is None else _actor(raw_actor, owner or "")
+    else:
+        owner = _string(principal["owner"], "principal.owner")
+        if ":" in owner:
+            raise ConfigFailure("CONFIG_INVALID", "principal.owner must not contain ':'")
+        actor = _actor(principal["actor"], owner)
 
     listen = _object(
         root.get("listen", {"host": "127.0.0.1", "port": 0}),
@@ -271,6 +376,21 @@ def load_config(path: Path) -> RequestHttpConfig:
     runtime = _object(root["runtime"], frozenset({"dir"}), "runtime")
     runtime_dir = _absolute(runtime["dir"], "runtime.dir")
 
+    home = _optional_path(payload.get("home"), "home")
+    state_dir = _optional_path(payload.get("stateDir"), "stateDir")
+    if principal_kind == "local-gui":
+        # The GUI host is opened on the home and reads its state from the state
+        # directory; a missing or unusable value is refused here, before any host
+        # is built, never guessed from the config path.
+        if home is None or not home.is_dir():
+            raise ConfigFailure(
+                "CONFIG_INVALID", "local-gui requires an existing home"
+            )
+        if state_dir is not None and not state_dir.is_dir():
+            raise ConfigFailure(
+                "CONFIG_INVALID", "stateDir must be an existing directory"
+            )
+
     return RequestHttpConfig(
         socket_path=socket_path,
         owner=owner,
@@ -282,11 +402,14 @@ def load_config(path: Path) -> RequestHttpConfig:
         budgets=budgets,
         runtime_dir=runtime_dir,
         source=path,
+        principal_kind=principal_kind,
+        home=home,
+        state_dir=state_dir,
     )
 
 
 def prepare_runtime_dir(config: RequestHttpConfig) -> None:
-    """Create/validate the private runtime directory (0700, current uid)."""
+    """Create/validate the private runtime directory (POSIX 0700, Windows DACL)."""
 
     directory = config.runtime_dir
     try:
@@ -296,12 +419,26 @@ def prepare_runtime_dir(config: RequestHttpConfig) -> None:
         raise ConfigFailure(
             "RUNTIME_UNAVAILABLE", f"cannot prepare runtime dir: {error.strerror}", exit_code=4
         ) from error
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ConfigFailure("RUNTIME_UNAVAILABLE", "runtime.dir must be a real directory", exit_code=4)
-    if info.st_uid != os.getuid():
-        raise ConfigFailure("RUNTIME_UNAVAILABLE", "runtime.dir must be owned by the current uid", exit_code=4)
-    if info.st_mode & 0o077:
-        raise ConfigFailure("RUNTIME_UNAVAILABLE", "runtime.dir must be mode 0700", exit_code=4)
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or path_is_reparse(info)
+        or not stat.S_ISDIR(info.st_mode)
+    ):
+        raise ConfigFailure(
+            "RUNTIME_UNAVAILABLE",
+            "runtime.dir must be a real directory",
+            exit_code=4,
+        )
+    violation = private_tree_violation(directory, info)
+    if violation is not None:
+        raise _private_failure(
+            violation,
+            subject="runtime.dir",
+            code="RUNTIME_UNAVAILABLE",
+            exit_code=4,
+            mode_message="runtime.dir must be mode 0700",
+            wrong_owner_message="runtime.dir must be owned by the current user",
+        )
 
 
 class RuntimeLock:
@@ -351,11 +488,7 @@ def write_server_json(directory: Path, document: dict[str, Any]) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
-        directory_fd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        fsync_directory(directory)
     except OSError:
         try:
             temporary.unlink()

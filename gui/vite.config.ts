@@ -1,53 +1,59 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { defineConfig, loadEnv, type Plugin } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
-import { liveBackendPlugin } from './server/live/index.mjs';
-import { referenceHttpPlugin } from './server/reference/index';
 
+/*
+ * WP2 decisions (gui-dev-product-parity-2026-11-09, third integration round):
+ * - CSS runs one transformer (lightningcss) with one explicit target set for
+ *   dev serving and both production artifacts, so -webkit-backdrop-filter and
+ *   the ordering of the fixed ≤640 nav rules cannot drift between dev and
+ *   build output (targets keep 100dvh native via safari/ios_saf 15.4+).
+ * - HYPRIAL_GUI_PARITY=1 (production mode only) defines __HYPRIAL_PARITY__=true
+ *   and emits dist-parity for the browser parity gate; the normal build emits
+ *   dist with the token false. Dev preview logic is unchanged.
+ * - Developer tool layer (PR 4b-G, 2026-11-15): a chunk whose modules all live
+ *   under src/dev/, and a stylesheet that originates there, are emitted under
+ *   dist/dev-tools/ instead of dist/assets/. The only entry that loads that
+ *   chunk is the dynamic import in src/main.tsx, so index.html never
+ *   references it and the host can gate the prefix as one unit.
+ * - Swagger UI (PR 4b-G): the release build copies four files of the exact
+ *   devDependency swagger-ui-dist (bundle, stylesheet, LICENSE, NOTICE) to
+ *   dist/dev-tools/docs/ at build time. The plugin is build-only and defines
+ *   no dev or preview server hook; the dist-parity test artifact does not
+ *   carry it. The artifact gate pins the file set and the hashes.
+ * - One launch path (2026-11-16): this configuration serves no backend. The
+ *   Python session host (src/hyprial/shell/impl/gui/host) owns /daemon/* and
+ *   serves gui/dist, or relays to this dev server for `hyprial gui dev`, so the
+ *   Node daemon-request plugin is gone and /__gui/healthz here reports only the
+ *   dataless dev server (dataMode fixture or unavailable, no driver).
+ */
 const guiDir = fileURLToPath(new URL('.', import.meta.url));
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
-function parseBackendEndpoint(
-  raw: string | undefined,
-): string | null {
-  const value = raw?.trim();
-  if (!value) {
-    return null;
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(
-      'HYPRIAL_BACKEND_ENDPOINT must be an absolute http(s) loopback URL',
-    );
-  }
-
-  if (
-    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
-    !LOOPBACK_HOSTS.has(parsed.hostname) ||
-    parsed.username !== '' ||
-    parsed.password !== '' ||
-    parsed.pathname !== '/' ||
-    parsed.search !== '' ||
-    parsed.hash !== '' ||
-    parsed.port === ''
-  ) {
-    throw new Error(
-      'HYPRIAL_BACKEND_ENDPOINT must be http(s)://<loopback-host>:<port> with no path, query, fragment or credentials',
-    );
-  }
-
-  return parsed.origin;
+function toolLayerOnly(moduleIds: readonly string[]): boolean {
+  return moduleIds.length > 0 && moduleIds.every((id) => id.includes('/src/dev/'));
 }
 
-function guiHealthPlugin(
-  mode: string,
-  backendEndpoint: string | null,
-  liveEnabled: boolean,
-): Plugin {
+const SWAGGER_UI_FILES = ['swagger-ui-bundle.js', 'swagger-ui.css', 'LICENSE', 'NOTICE'] as const;
+
+function swaggerUiAssetsPlugin(): Plugin {
+  return {
+    name: 'hyprial-swagger-ui-assets',
+    apply: 'build',
+    generateBundle() {
+      for (const name of SWAGGER_UI_FILES) {
+        this.emitFile({
+          type: 'asset',
+          fileName: `dev-tools/docs/${name}`,
+          source: new Uint8Array(readFileSync(resolve(guiDir, 'node_modules/swagger-ui-dist', name))),
+        });
+      }
+    },
+  };
+}
+
+function guiHealthPlugin(mode: string, dataMode: 'fixture' | 'unavailable'): Plugin {
   const handler = (
     request: { method?: string; url?: string },
     response: {
@@ -64,16 +70,15 @@ function guiHealthPlugin(
     response.statusCode = 200;
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
     response.setHeader('Cache-Control', 'no-store');
-    response.end(
-      JSON.stringify({
-        ok: true,
-        service: 'hyprial-gui',
-        mode,
-        dataMode: liveEnabled ? 'live' : 'fixture',
-        backendConfigured: liveEnabled || backendEndpoint !== null,
-        backendEndpoint,
-      }),
-    );
+    response.end(JSON.stringify({
+      ok: true,
+      service: 'hyprial-gui',
+      mode,
+      dataMode,
+      driver: null,
+      backendConfigured: false,
+      session: 'unavailable',
+    }));
   };
 
   return {
@@ -88,59 +93,67 @@ function guiHealthPlugin(
 }
 
 export default defineConfig(({ mode }) => {
-  const fileEnv = loadEnv(mode, guiDir, '');
-  const devModuleLabelsRequested =
-    process.env.HYPRIAL_DEV_MODULE_LABELS ??
-    fileEnv.HYPRIAL_DEV_MODULE_LABELS ??
-    '1';
-  const devModuleLabels =
-    mode === 'development' && devModuleLabelsRequested !== '0';
-  const backendEndpoint = parseBackendEndpoint(
-    process.env.HYPRIAL_BACKEND_ENDPOINT ?? fileEnv.HYPRIAL_BACKEND_ENDPOINT,
-  );
-  const liveEnabled = process.env.HYPRIAL_GUI_BACKEND_DRIVER === 'daemon';
-  if (liveEnabled && backendEndpoint) {
-    throw new Error('Choose the owned daemon backend or HYPRIAL_BACKEND_ENDPOINT, not both');
+  const devPreview = mode === 'development' && process.env.HYPRIAL_GUI_DEV_PREVIEW === '1';
+  const parityRequested = process.env.HYPRIAL_GUI_PARITY === '1';
+  if (parityRequested && mode !== 'production') {
+    throw new Error('HYPRIAL_GUI_PARITY requires the production build mode');
   }
-  const proxy = backendEndpoint
-    ? {
-        '/api/gui/v1': {
-          target: backendEndpoint,
-          changeOrigin: false,
-          ws: false,
-        },
-      }
-    : undefined;
+  const parityBuild = parityRequested;
+  const dataMode = devPreview ? 'fixture' : 'unavailable';
+  const cssTargets = {
+    chrome: 107 << 16,
+    edge: 107 << 16,
+    firefox: 106 << 16,
+    safari: (15 << 16) | (4 << 8),
+    ios_saf: (15 << 16) | (4 << 8),
+    opera: 93 << 16,
+  };
 
   return {
     base: './',
     resolve: { alias: { '@': resolve(guiDir, 'src') } },
+    css: {
+      transformer: 'lightningcss',
+      lightningcss: {
+        targets: cssTargets,
+      },
+    },
     server: {
       host: '127.0.0.1',
       port: 4173,
       strictPort: true,
-      proxy,
     },
     preview: {
       host: '127.0.0.1',
       port: 4173,
       strictPort: true,
-      proxy,
     },
     define: {
-      __HYPRIAL_LIVE_ENABLED__: JSON.stringify(liveEnabled),
-      __HYPRIAL_REFERENCE_HTTP__: JSON.stringify(Boolean(process.env.HYPRIAL_GUI_REFERENCE_CONFIG)),
-      __HYPRIAL_BACKEND_ENDPOINT__: JSON.stringify(backendEndpoint ?? ''),
-      __HYPRIAL_DEV_MODULE_LABELS__: JSON.stringify(devModuleLabels),
-      __HYPRIAL_DEV_PREVIEW__: JSON.stringify(mode === 'development'),
+      __HYPRIAL_DEV_PREVIEW__: JSON.stringify(devPreview),
+      __HYPRIAL_PARITY__: JSON.stringify(parityBuild),
     },
-    plugins: [tailwindcss(), liveBackendPlugin(liveEnabled), referenceHttpPlugin(process.env.HYPRIAL_GUI_REFERENCE_CONFIG, mode === 'development'), guiHealthPlugin(mode, backendEndpoint, liveEnabled)],
+    plugins: [
+      tailwindcss(),
+      guiHealthPlugin(mode, dataMode),
+      ...(parityBuild ? [] : [swaggerUiAssetsPlugin()]),
+    ],
     build: {
-      outDir: 'dist',
+      outDir: parityBuild ? 'dist-parity' : 'dist',
       emptyOutDir: true,
+      cssMinify: 'lightningcss',
       rollupOptions: {
         input: {
           main: resolve(guiDir, 'index.html'),
+        },
+        output: {
+          chunkFileNames: (chunk: { moduleIds: readonly string[] }) => (
+            toolLayerOnly(chunk.moduleIds) ? 'dev-tools/[name]-[hash].js' : 'assets/[name]-[hash].js'
+          ),
+          assetFileNames: (asset: { originalFileNames?: readonly string[] }) => (
+            (asset.originalFileNames ?? []).some((name) => name.includes('src/dev/'))
+              ? 'dev-tools/[name]-[hash][extname]'
+              : 'assets/[name]-[hash][extname]'
+          ),
         },
       },
     },

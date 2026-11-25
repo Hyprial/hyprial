@@ -1,7 +1,7 @@
 """Device selection with real OrgFS/journal and an explicit sidecar double.
 
-SQLiteGroups proves durable group writes across client reconstruction. It is
-an isolated Casdoor protocol adapter, not acceptance of a deployed Casdoor.
+OC3 keeps membership authority in the org-cell roster. Casdoor is an optional
+read-only compatibility adapter and is never mutated by removal operations.
 """
 # ruff: noqa: F811
 import json
@@ -62,8 +62,6 @@ def setup(runtime, home, devices=('b1', 'b2')):
 def assert_member(runtime, home, present=True):
     assert (USER in _member_users(runtime, ORG)) is present
     assert (USER in _acl_member_users(runtime, ORG)) is present
-    assert SQLiteGroups(home / 'groups.sqlite').member_state(GROUP, 'hyprial/' + BOB) == (
-        'member' if present else 'not-member')
 
 
 def test_selected_device_preserves_durable_group_directory_and_acl(runtime, home):
@@ -152,7 +150,7 @@ def test_default_still_removes_all_devices_and_memberships(runtime, home):
     assert 'selectedDeviceIds' not in preview
     assert 'membershipAction' not in preview
     result = service.remove(ORG, USER, confirmed=True, **confirmation(preview))
-    assert result['casdoorGroup'] == 'removed from ' + GROUP
+    assert result['casdoorGroup'] == 'not-configured'
     assert 'membershipAction' not in result
     assert table['members']['b1']['state'] == table['members']['b2']['state'] == 'tombstone'
     assert_member(runtime, home, False)
@@ -290,12 +288,12 @@ def test_membership_action_trace_positive_and_negative_controls(runtime, home, m
     if selected:
         assert groups.deletes == []
         assert writes == []
-        assert before == after == 'member'
+        assert before == after == 'not-member'
         assert_member(runtime, home)
     else:
-        assert groups.deletes == [('DELETE', GROUP, 'hyprial/' + BOB)]
+        assert groups.deletes == []
         assert writes == [(ORG, result['spaceId'], USER)]
-        assert before == 'member' and after == 'not-member'
+        assert before == after == 'not-member'
         assert_member(runtime, home, False)
     print(json.dumps({'selected': selected, 'targets': result['deviceIds'],
                       'casdoorDeleteCalls': groups.deletes, 'orgfsRemoveCalls': writes,

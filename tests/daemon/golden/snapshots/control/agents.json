@@ -1,0 +1,1055 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "control",
+ "scenario": "agents",
+ "steps": [
+  {
+   "step": 1,
+   "method": "agent.list",
+   "origin": "ipc",
+   "params": {},
+   "result": {
+    "ok": true,
+    "agents": [
+     {
+      "uri": "agent:op:node-1:alpha",
+      "actor": "alpha",
+      "owner": "op",
+      "machine": "node-1",
+      "cwd": "<tmp>/work",
+      "config": {
+       "sources": [
+        {
+         "path": "<tmp>/home/agents/alpha/config",
+         "required": true
+        }
+       ],
+       "discovery": "explicit-only"
+      },
+      "provider": null,
+      "model": null,
+      "capabilities": {
+       "harness": "claude",
+       "interactive": true,
+       "model": null,
+       "proactive_send": true,
+       "provider": null,
+       "tier": null,
+       "tool_injection": true,
+       "updated_at_ms": 1800000000000
+      },
+      "harnessArgs": {},
+      "preferredHarness": "claude",
+      "lastHarness": "claude",
+      "lastSessionId": "session-alpha",
+      "lastActiveAtMs": 1800000000000,
+      "createdAtMs": 1800000000000,
+      "hosted": false,
+      "hostedBy": null,
+      "agentId": "a.xa4pwi5jeushubtbdk6brszvne",
+      "displayName": null,
+      "activityHints": {
+       "createdAtMs": 1800000000000,
+       "hasLastSessionId": true,
+       "agentHomeMtimeMs": "<fs-mtime-ms:int>"
+      },
+      "status": "online",
+      "harness": "claude",
+      "runtime": "interactive",
+      "sessionId": "session-alpha",
+      "heartbeatAgeSeconds": "<monotonic-age-s:float>",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "09d4626153dcaeff0b2c4c0e51570ec6",
+       "epoch": "<uuid4#1>",
+       "revision": 4
+      }
+     },
+     {
+      "uri": "agent:op:node-1:beta",
+      "actor": "beta",
+      "owner": "op",
+      "machine": "node-1",
+      "cwd": "<tmp>/work",
+      "config": {
+       "sources": [
+        {
+         "path": "<tmp>/home/agents/beta/config",
+         "required": true
+        }
+       ],
+       "discovery": "explicit-only"
+      },
+      "provider": null,
+      "model": null,
+      "capabilities": {
+       "harness": "claude",
+       "interactive": true,
+       "model": null,
+       "proactive_send": true,
+       "provider": null,
+       "tier": null,
+       "tool_injection": true,
+       "updated_at_ms": 1800000000000
+      },
+      "harnessArgs": {},
+      "preferredHarness": "claude",
+      "lastHarness": "claude",
+      "lastSessionId": "session-beta",
+      "lastActiveAtMs": 1800000000000,
+      "createdAtMs": 1800000000000,
+      "hosted": false,
+      "hostedBy": null,
+      "agentId": "a.lh4ntqrpwqlevs6xu57drajbdm",
+      "displayName": null,
+      "activityHints": {
+       "createdAtMs": 1800000000000,
+       "hasLastSessionId": true,
+       "agentHomeMtimeMs": "<fs-mtime-ms:int>"
+      },
+      "status": "online",
+      "harness": "claude",
+      "runtime": "interactive",
+      "sessionId": "session-beta",
+      "heartbeatAgeSeconds": "<monotonic-age-s:float>",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "adbbfa596c92e8647f0380a26b2016f5",
+       "epoch": "<uuid4#1>",
+       "revision": 4
+      }
+     },
+     {
+      "uri": "agent:op:node-1:gamma",
+      "actor": "gamma",
+      "owner": "op",
+      "machine": "node-1",
+      "cwd": "<tmp>/work",
+      "config": {
+       "sources": [
+        {
+         "path": "<tmp>/home/agents/gamma/config",
+         "required": true
+        }
+       ],
+       "discovery": "explicit-only"
+      },
+      "provider": null,
+      "model": null,
+      "capabilities": {
+       "harness": "claude",
+       "interactive": true,
+       "model": null,
+       "proactive_send": true,
+       "provider": null,
+       "tier": null,
+       "tool_injection": true,
+       "updated_at_ms": 1800000000000
+      },
+      "harnessArgs": {},
+      "preferredHarness": "claude",
+      "lastHarness": "claude",
+      "lastSessionId": "session-gamma",
+      "lastActiveAtMs": 1800000000000,
+      "createdAtMs": 1800000000000,
+      "hosted": false,
+      "hostedBy": null,
+      "agentId": "a.wuelf3hfdltue656ff5jjzbcoy",
+      "displayName": null,
+      "activityHints": {
+       "createdAtMs": 1800000000000,
+       "hasLastSessionId": true,
+       "agentHomeMtimeMs": "<fs-mtime-ms:int>"
+      },
+      "status": "online",
+      "harness": "claude",
+      "runtime": "interactive",
+      "sessionId": "session-gamma",
+      "heartbeatAgeSeconds": "<monotonic-age-s:float>",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "6600a9fc2adc0171f4bcf03421f79b25",
+       "epoch": "<uuid4#1>",
+       "revision": 4
+      }
+     }
+    ],
+    "agentsWithoutRoutine": [
+     "agent:op:node-1:alpha",
+     "agent:op:node-1:beta",
+     "agent:op:node-1:gamma"
+    ]
+   }
+  },
+  {
+   "step": 2,
+   "method": "agent.get",
+   "origin": "ipc",
+   "params": {
+    "name": "alpha"
+   },
+   "result": {
+    "ok": true,
+    "agent": {
+     "uri": "agent:op:node-1:alpha",
+     "actor": "alpha",
+     "owner": "op",
+     "machine": "node-1",
+     "cwd": "<tmp>/work",
+     "config": {
+      "sources": [
+       {
+        "path": "<tmp>/home/agents/alpha/config",
+        "required": true
+       }
+      ],
+      "discovery": "explicit-only"
+     },
+     "provider": null,
+     "model": null,
+     "capabilities": {
+      "harness": "claude",
+      "interactive": true,
+      "model": null,
+      "proactive_send": true,
+      "provider": null,
+      "tier": null,
+      "tool_injection": true,
+      "updated_at_ms": 1800000000000
+     },
+     "harnessArgs": {},
+     "preferredHarness": "claude",
+     "lastHarness": "claude",
+     "lastSessionId": "session-alpha",
+     "createdAtMs": 1800000000000,
+     "hosted": false,
+     "hostedBy": null,
+     "agentId": "a.xa4pwi5jeushubtbdk6brszvne",
+     "displayName": null,
+     "status": "online",
+     "harness": "claude",
+     "runtime": "interactive",
+     "sessionId": "session-alpha",
+     "heartbeatAgeSeconds": "<monotonic-age-s:float>",
+     "runState": {
+      "state": "unknown",
+      "baseState": "unknown",
+      "reason": "source-unavailable",
+      "certainty": "unknown",
+      "scope": "whole-session",
+      "observedAtMs": 1800000000000,
+      "sinceMs": null,
+      "turnAgeMs": null,
+      "lastActivityAtMs": null,
+      "coverage": {
+       "turnBoundaries": false,
+       "permissionWait": false,
+       "producerActivity": false,
+       "processExit": false
+      },
+      "observationHealth": "unavailable",
+      "suspicions": [],
+      "policyRevision": 1,
+      "providerBlocked": false,
+      "thresholds": {
+       "turnLongAfterMs": 1800000,
+       "permissionLongAfterMs": 300000,
+       "quietAfterMs": null
+      },
+      "lastKnown": null,
+      "runtimeIncarnation": "09d4626153dcaeff0b2c4c0e51570ec6",
+      "epoch": "<uuid4#1>",
+      "revision": 5
+     }
+    }
+   }
+  },
+  {
+   "step": 3,
+   "method": "agent.resolve",
+   "origin": "ipc",
+   "params": {
+    "name": "alpha"
+   },
+   "result": {
+    "ok": true,
+    "input": "alpha",
+    "resolved": "agent:op:node-1:alpha",
+    "known": true,
+    "reason": "alias"
+   }
+  },
+  {
+   "step": 4,
+   "method": "agent.create",
+   "origin": "ipc",
+   "params": {
+    "name": "delta"
+   },
+   "result": {
+    "ok": true,
+    "created": true,
+    "agent": {
+     "uri": "agent:op:node-1:delta",
+     "actor": "delta",
+     "owner": "op",
+     "machine": "node-1",
+     "cwd": "<tmp>/home/agents/delta/workspace",
+     "config": {
+      "sources": [
+       {
+        "path": "<tmp>/home/agents/delta/config",
+        "required": true
+       }
+      ],
+      "discovery": "explicit-only"
+     },
+     "provider": null,
+     "model": null,
+     "capabilities": {},
+     "harnessArgs": {},
+     "preferredHarness": null,
+     "lastHarness": null,
+     "lastSessionId": null,
+     "createdAtMs": 1800000000000,
+     "hosted": false,
+     "hostedBy": null,
+     "agentId": "a.pc6pkqhuopzxey2tasj3mfsoka",
+     "displayName": null,
+     "status": "offline",
+     "harness": null,
+     "runtime": null,
+     "sessionId": null,
+     "heartbeatAgeSeconds": null,
+     "runState": {
+      "state": "unknown",
+      "baseState": "unknown",
+      "reason": "source-unavailable",
+      "certainty": "unknown",
+      "scope": "whole-session",
+      "observedAtMs": 1800000000000,
+      "sinceMs": null,
+      "turnAgeMs": null,
+      "lastActivityAtMs": null,
+      "coverage": {
+       "turnBoundaries": false,
+       "permissionWait": false,
+       "producerActivity": false,
+       "processExit": false
+      },
+      "observationHealth": "unavailable",
+      "suspicions": [],
+      "policyRevision": 1,
+      "providerBlocked": false,
+      "thresholds": {
+       "turnLongAfterMs": 1800000,
+       "permissionLongAfterMs": 300000,
+       "quietAfterMs": null
+      },
+      "lastKnown": null,
+      "runtimeIncarnation": "c2000bfe537b5adc34494c3c53f880e3",
+      "epoch": "<uuid4#1>",
+      "revision": 6
+     }
+    },
+    "routineWarning": {
+     "code": "AGENT_DEFAULT_ROUTINE_UNAVAILABLE",
+     "message": "agent was created without a routine because the routine service is unavailable; repair the service, then bind one with `hyprial routine add`"
+    },
+    "providerDefault": null
+   }
+  },
+  {
+   "step": 5,
+   "method": "agent.create",
+   "label": "duplicate",
+   "origin": "ipc",
+   "params": {
+    "name": "delta"
+   },
+   "error": {
+    "code": "AGENT_EXISTS",
+    "message": "the name 'delta' is already taken on this node (op@node-1) — agent:op:node-1:delta exists. One name is one agent, whether or not anything is currently running under it. To reuse the name, destroy that agent first ('hyprial agent destroy delta', which is irreversible); to run this agent on a different harness, just start it there — that is a rebinding of the same agent, not a new one.",
+    "data": {
+     "actor": "agent:op:node-1:delta",
+     "agent": "delta"
+    }
+   }
+  },
+  {
+   "step": 6,
+   "method": "agent.create",
+   "label": "reuse",
+   "origin": "ipc",
+   "params": {
+    "name": "delta",
+    "existing": "reuse"
+   },
+   "result": {
+    "ok": true,
+    "created": false,
+    "agent": {
+     "uri": "agent:op:node-1:delta",
+     "actor": "delta",
+     "owner": "op",
+     "machine": "node-1",
+     "cwd": "<tmp>/home/agents/delta/workspace",
+     "config": {
+      "sources": [
+       {
+        "path": "<tmp>/home/agents/delta/config",
+        "required": true
+       }
+      ],
+      "discovery": "explicit-only"
+     },
+     "provider": null,
+     "model": null,
+     "capabilities": {},
+     "harnessArgs": {},
+     "preferredHarness": null,
+     "lastHarness": null,
+     "lastSessionId": null,
+     "createdAtMs": 1800000000000,
+     "hosted": false,
+     "hostedBy": null,
+     "agentId": "a.pc6pkqhuopzxey2tasj3mfsoka",
+     "displayName": null,
+     "status": "offline",
+     "harness": null,
+     "runtime": null,
+     "sessionId": null,
+     "heartbeatAgeSeconds": null,
+     "runState": {
+      "state": "unknown",
+      "baseState": "unknown",
+      "reason": "source-unavailable",
+      "certainty": "unknown",
+      "scope": "whole-session",
+      "observedAtMs": 1800000000000,
+      "sinceMs": null,
+      "turnAgeMs": null,
+      "lastActivityAtMs": null,
+      "coverage": {
+       "turnBoundaries": false,
+       "permissionWait": false,
+       "producerActivity": false,
+       "processExit": false
+      },
+      "observationHealth": "unavailable",
+      "suspicions": [],
+      "policyRevision": 1,
+      "providerBlocked": false,
+      "thresholds": {
+       "turnLongAfterMs": 1800000,
+       "permissionLongAfterMs": 300000,
+       "quietAfterMs": null
+      },
+      "lastKnown": null,
+      "runtimeIncarnation": "c2000bfe537b5adc34494c3c53f880e3",
+      "epoch": "<uuid4#1>",
+      "revision": 7
+     }
+    },
+    "providerDefault": null
+   }
+  },
+  {
+   "step": 7,
+   "method": "agent.get",
+   "label": "missing",
+   "origin": "ipc",
+   "params": {
+    "name": "nobody"
+   },
+   "error": {
+    "code": "AGENT_NOT_FOUND",
+    "message": "no agent named 'nobody' on this machine"
+   }
+  },
+  {
+   "step": 8,
+   "method": "agent.list",
+   "label": "after-create",
+   "origin": "ipc",
+   "params": {},
+   "result": {
+    "ok": true,
+    "agents": [
+     {
+      "uri": "agent:op:node-1:alpha",
+      "actor": "alpha",
+      "owner": "op",
+      "machine": "node-1",
+      "cwd": "<tmp>/work",
+      "config": {
+       "sources": [
+        {
+         "path": "<tmp>/home/agents/alpha/config",
+         "required": true
+        }
+       ],
+       "discovery": "explicit-only"
+      },
+      "provider": null,
+      "model": null,
+      "capabilities": {
+       "harness": "claude",
+       "interactive": true,
+       "model": null,
+       "proactive_send": true,
+       "provider": null,
+       "tier": null,
+       "tool_injection": true,
+       "updated_at_ms": 1800000000000
+      },
+      "harnessArgs": {},
+      "preferredHarness": "claude",
+      "lastHarness": "claude",
+      "lastSessionId": "session-alpha",
+      "lastActiveAtMs": 1800000000000,
+      "createdAtMs": 1800000000000,
+      "hosted": false,
+      "hostedBy": null,
+      "agentId": "a.xa4pwi5jeushubtbdk6brszvne",
+      "displayName": null,
+      "activityHints": {
+       "createdAtMs": 1800000000000,
+       "hasLastSessionId": true,
+       "agentHomeMtimeMs": "<fs-mtime-ms:int>"
+      },
+      "status": "online",
+      "harness": "claude",
+      "runtime": "interactive",
+      "sessionId": "session-alpha",
+      "heartbeatAgeSeconds": "<monotonic-age-s:float>",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "09d4626153dcaeff0b2c4c0e51570ec6",
+       "epoch": "<uuid4#1>",
+       "revision": 9
+      }
+     },
+     {
+      "uri": "agent:op:node-1:beta",
+      "actor": "beta",
+      "owner": "op",
+      "machine": "node-1",
+      "cwd": "<tmp>/work",
+      "config": {
+       "sources": [
+        {
+         "path": "<tmp>/home/agents/beta/config",
+         "required": true
+        }
+       ],
+       "discovery": "explicit-only"
+      },
+      "provider": null,
+      "model": null,
+      "capabilities": {
+       "harness": "claude",
+       "interactive": true,
+       "model": null,
+       "proactive_send": true,
+       "provider": null,
+       "tier": null,
+       "tool_injection": true,
+       "updated_at_ms": 1800000000000
+      },
+      "harnessArgs": {},
+      "preferredHarness": "claude",
+      "lastHarness": "claude",
+      "lastSessionId": "session-beta",
+      "lastActiveAtMs": 1800000000000,
+      "createdAtMs": 1800000000000,
+      "hosted": false,
+      "hostedBy": null,
+      "agentId": "a.lh4ntqrpwqlevs6xu57drajbdm",
+      "displayName": null,
+      "activityHints": {
+       "createdAtMs": 1800000000000,
+       "hasLastSessionId": true,
+       "agentHomeMtimeMs": "<fs-mtime-ms:int>"
+      },
+      "status": "online",
+      "harness": "claude",
+      "runtime": "interactive",
+      "sessionId": "session-beta",
+      "heartbeatAgeSeconds": "<monotonic-age-s:float>",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "adbbfa596c92e8647f0380a26b2016f5",
+       "epoch": "<uuid4#1>",
+       "revision": 9
+      }
+     },
+     {
+      "uri": "agent:op:node-1:delta",
+      "actor": "delta",
+      "owner": "op",
+      "machine": "node-1",
+      "cwd": "<tmp>/home/agents/delta/workspace",
+      "config": {
+       "sources": [
+        {
+         "path": "<tmp>/home/agents/delta/config",
+         "required": true
+        }
+       ],
+       "discovery": "explicit-only"
+      },
+      "provider": null,
+      "model": null,
+      "capabilities": {},
+      "harnessArgs": {},
+      "preferredHarness": null,
+      "lastHarness": null,
+      "lastSessionId": null,
+      "lastActiveAtMs": null,
+      "createdAtMs": 1800000000000,
+      "hosted": false,
+      "hostedBy": null,
+      "agentId": "a.pc6pkqhuopzxey2tasj3mfsoka",
+      "displayName": null,
+      "activityHints": {
+       "createdAtMs": 1800000000000,
+       "hasLastSessionId": false,
+       "agentHomeMtimeMs": "<fs-mtime-ms:int>"
+      },
+      "status": "offline",
+      "harness": null,
+      "runtime": null,
+      "sessionId": null,
+      "heartbeatAgeSeconds": null,
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "c2000bfe537b5adc34494c3c53f880e3",
+       "epoch": "<uuid4#1>",
+       "revision": 9
+      }
+     },
+     {
+      "uri": "agent:op:node-1:gamma",
+      "actor": "gamma",
+      "owner": "op",
+      "machine": "node-1",
+      "cwd": "<tmp>/work",
+      "config": {
+       "sources": [
+        {
+         "path": "<tmp>/home/agents/gamma/config",
+         "required": true
+        }
+       ],
+       "discovery": "explicit-only"
+      },
+      "provider": null,
+      "model": null,
+      "capabilities": {
+       "harness": "claude",
+       "interactive": true,
+       "model": null,
+       "proactive_send": true,
+       "provider": null,
+       "tier": null,
+       "tool_injection": true,
+       "updated_at_ms": 1800000000000
+      },
+      "harnessArgs": {},
+      "preferredHarness": "claude",
+      "lastHarness": "claude",
+      "lastSessionId": "session-gamma",
+      "lastActiveAtMs": 1800000000000,
+      "createdAtMs": 1800000000000,
+      "hosted": false,
+      "hostedBy": null,
+      "agentId": "a.wuelf3hfdltue656ff5jjzbcoy",
+      "displayName": null,
+      "activityHints": {
+       "createdAtMs": 1800000000000,
+       "hasLastSessionId": true,
+       "agentHomeMtimeMs": "<fs-mtime-ms:int>"
+      },
+      "status": "online",
+      "harness": "claude",
+      "runtime": "interactive",
+      "sessionId": "session-gamma",
+      "heartbeatAgeSeconds": "<monotonic-age-s:float>",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "6600a9fc2adc0171f4bcf03421f79b25",
+       "epoch": "<uuid4#1>",
+       "revision": 9
+      }
+     }
+    ],
+    "agentsWithoutRoutine": [
+     "agent:op:node-1:alpha",
+     "agent:op:node-1:beta",
+     "agent:op:node-1:delta",
+     "agent:op:node-1:gamma"
+    ]
+   }
+  },
+  {
+   "step": 9,
+   "method": "agent.cell.get",
+   "origin": "ipc",
+   "params": {
+    "name": "delta"
+   },
+   "result": {
+    "ok": true,
+    "cell": {
+     "cellId": "c.ofjqueljvybcmngsefai4w3g6a",
+     "revision": 1,
+     "members": [
+      {
+       "ref": "agent:op:node-1:delta",
+       "role": "harness"
+      }
+     ],
+     "params": {}
+    },
+    "snapshot": {
+     "cellId": "c.ofjqueljvybcmngsefai4w3g6a",
+     "epoch": "ce-00000000000000000001-<uuid4#2>",
+     "sequence": 1,
+     "revision": 1,
+     "effectiveRevision": 1,
+     "observedDocumentDigest": "a4ac7107d80eb8e7adc5e5728c4f500cb5fa2794cc304efe7a80a1cc9e45d018",
+     "effectiveDocumentDigest": "a4ac7107d80eb8e7adc5e5728c4f500cb5fa2794cc304efe7a80a1cc9e45d018",
+     "entryMember": "agent:op:node-1:delta",
+     "state": "active",
+     "reason": null,
+     "sourceStale": false,
+     "updatedAtMs": 1800000000000,
+     "members": [
+      {
+       "name": "agent:op:node-1:delta",
+       "role": "harness",
+       "kind": null,
+       "phase": "missing",
+       "running": false,
+       "workId": null,
+       "lastError": null,
+       "policyRevision": null,
+       "policyDigest": null
+      }
+     ],
+     "activeWork": null,
+     "queuedWork": 0,
+     "completedWork": 0,
+     "lastTerminal": null,
+     "connections": [],
+     "failOpen": null
+    }
+   }
+  },
+  {
+   "step": 10,
+   "method": "agent.cell.update",
+   "label": "bind-adapter",
+   "origin": "ipc",
+   "params": {
+    "name": "delta",
+    "expectedRevision": 1,
+    "members": [
+     {
+      "ref": "delta",
+      "role": "harness"
+     },
+     {
+      "ref": "lark-golden",
+      "role": "adapter"
+     }
+    ],
+    "params": {
+     "cell.entry": "delta",
+     "cell.members": {
+      "delta": {},
+      "lark-golden": {
+       "adapter": "lark-golden"
+      }
+     }
+    }
+   },
+   "result": {
+    "ok": true,
+    "cellId": "c.ofjqueljvybcmngsefai4w3g6a",
+    "revision": 2,
+    "appliedRevision": 1,
+    "state": "active"
+   }
+  },
+  {
+   "step": 11,
+   "method": "agent.cell.get",
+   "label": "after-bind",
+   "origin": "ipc",
+   "params": {
+    "name": "delta"
+   },
+   "result": {
+    "ok": true,
+    "cell": {
+     "cellId": "c.ofjqueljvybcmngsefai4w3g6a",
+     "revision": 2,
+     "members": [
+      {
+       "ref": "delta",
+       "role": "harness"
+      },
+      {
+       "ref": "lark-golden",
+       "role": "adapter"
+      }
+     ],
+     "params": {
+      "cell.entry": "delta",
+      "cell.members": {
+       "delta": {},
+       "lark-golden": {
+        "adapter": "lark-golden"
+       }
+      }
+     }
+    },
+    "snapshot": {
+     "cellId": "c.ofjqueljvybcmngsefai4w3g6a",
+     "epoch": "ce-00000000000000000001-<uuid4#2>",
+     "sequence": 1,
+     "revision": 1,
+     "effectiveRevision": 1,
+     "observedDocumentDigest": "a4ac7107d80eb8e7adc5e5728c4f500cb5fa2794cc304efe7a80a1cc9e45d018",
+     "effectiveDocumentDigest": "a4ac7107d80eb8e7adc5e5728c4f500cb5fa2794cc304efe7a80a1cc9e45d018",
+     "entryMember": "agent:op:node-1:delta",
+     "state": "active",
+     "reason": null,
+     "sourceStale": false,
+     "updatedAtMs": 1800000000000,
+     "members": [
+      {
+       "name": "agent:op:node-1:delta",
+       "role": "harness",
+       "kind": null,
+       "phase": "missing",
+       "running": false,
+       "workId": null,
+       "lastError": null,
+       "policyRevision": null,
+       "policyDigest": null
+      }
+     ],
+     "activeWork": null,
+     "queuedWork": 0,
+     "completedWork": 0,
+     "lastTerminal": null,
+     "connections": [],
+     "failOpen": null
+    }
+   }
+  },
+  {
+   "step": 12,
+   "method": "agent.cell.update",
+   "label": "cas-conflict",
+   "origin": "ipc",
+   "params": {
+    "name": "delta",
+    "expectedRevision": 9,
+    "cellName": "stale"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "cell revision conflict: expected 9, current 2",
+    "data": {
+     "expected": 9,
+     "current": 2
+    }
+   }
+  },
+  {
+   "step": 13,
+   "method": "agent.cell.get",
+   "label": "missing",
+   "origin": "ipc",
+   "params": {
+    "name": "nobody"
+   },
+   "error": {
+    "code": "AGENT_NOT_FOUND",
+    "message": "no agent named 'nobody' on this machine"
+   }
+  }
+ ]
+}

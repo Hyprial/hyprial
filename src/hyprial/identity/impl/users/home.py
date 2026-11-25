@@ -1,3 +1,8 @@
+# Decision record (W2A-LOGIN-INPROC, 2026-11-21):
+# - _replace_private_json opens the exclusive temporary file via open(..., "xb",
+#   opener=...) with capability-probed getattr(os, "O_NOFOLLOW", 0) and mode
+#   0o600, so Windows gets binary exclusive creation without AttributeError on
+#   missing os.O_NOFOLLOW while POSIX retains 0o600 | O_NOFOLLOW from birth.
 """User-home provisioning: ``H/users/<user_key>/``, fenced like agent homes.
 
 The user store (``state/users.sqlite3``) is the authority.  This module only
@@ -16,7 +21,6 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,7 +29,7 @@ from uuid import uuid4
 from hyprial.identity.impl.agents.home.provisioner import AgentHomeError, AgentHomeProvisioner
 
 if TYPE_CHECKING:
-    from hyprial.identity.impl.users.store._base  import User, UserAccount
+    from hyprial.identity.impl.users.store._base  import User
 
 __all__ = ["PROFILE_NAME", "UserHomeError", "ensure_user_home"]
 
@@ -50,17 +54,12 @@ class UserHomeError(RuntimeError):
         )
 
 
-def ensure_user_home(
-    hyprial_home: Path,
-    user: User,
-    accounts: Sequence[UserAccount] = (),
-) -> Path:
+def ensure_user_home(hyprial_home: Path, user: User) -> Path:
     """Create or validate ``H/users/<key>/{config,secrets,state}``; refresh
     ``profile.json``.  Returns the user's home directory.
 
     Idempotent: existing directories are validated, never recreated.  The
-    mirror carries no secrets -- account rows hold platform ids and who
-    confirmed them, nothing that authenticates.
+    mirror carries names only, nothing that authenticates.
     """
 
     home = Path(hyprial_home)
@@ -78,7 +77,7 @@ def ensure_user_home(
     _ensure_directory(root, key, "user-root", mode=0o700)
     for name in _USER_SUBDIRECTORIES:
         _ensure_directory(root / name, key, f"user-{name}", mode=0o700)
-    _replace_private_json(root / PROFILE_NAME, _profile(user, accounts), key)
+    _replace_private_json(root / PROFILE_NAME, _profile(user), key)
     return root
 
 
@@ -98,7 +97,7 @@ def _ensure_directory(
         raise UserHomeError(error.category, key, phase) from error
 
 
-def _profile(user: User, accounts: Sequence[UserAccount]) -> dict[str, object]:
+def _profile(user: User) -> dict[str, object]:
     return {
         "schemaVersion": _PROFILE_SCHEMA,
         # Says so in the file: an operator reading it must not edit it
@@ -110,18 +109,6 @@ def _profile(user: User, accounts: Sequence[UserAccount]) -> dict[str, object]:
         "nickname": user.nickname,
         "realName": user.real_name,
         "displayName": user.display_name,
-        "accounts": [
-            {
-                "platform": account.platform,
-                "adapter": account.adapter,
-                "openId": account.open_id,
-                "unionId": account.union_id,
-                "confirmedBy": account.confirmed_by,
-                "confirmedAtMs": account.confirmed_at_ms,
-                "source": account.source,
-            }
-            for account in accounts
-        ],
         "updatedAt": datetime.fromtimestamp(user.updated_at_ms / 1000, UTC)
         .isoformat()
         .replace("+00:00", "Z"),
@@ -140,16 +127,14 @@ def _replace_private_json(path: Path, value: object, key: str) -> None:
     encoded = (json.dumps(value, sort_keys=True, ensure_ascii=False) + "\n").encode()
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
-        descriptor = os.open(
-            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-        )
-        try:
-            with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-        finally:
-            os.close(descriptor)
+        with open(
+            temporary,
+            "xb",
+            opener=lambda p, f: os.open(p, f | getattr(os, "O_NOFOLLOW", 0), 0o600),
+        ) as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     except OSError as error:
         try:

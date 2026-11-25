@@ -9,13 +9,14 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from hyprial.kernel import DomainEffectClaim
+from hyprial.kernel import DomainEffectClaim, LifecycleMutationCompleted
 from hyprial.identity import (
     AgentActor,
     AgentRegistry,
 )
 from hyprial.identity import (
     AgentEvent,
+    AgentMutationCompleted,
     AgentLifecycleReceiptCompleted,
     RetireAgentLifecycleReceiptCommand,
     ConfirmAgentLifecycleReceiptCommand,
@@ -27,10 +28,12 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
     RetireLifecycleReceiptCommand,
 )
 from hyprial.daemon.impl.desired_state  import DesiredStateStore
+from hyprial.daemon.impl.harnesses.agy import prepare_agy_runtime_context
 from hyprial.daemon.impl.harnesses.claude.runtime import prepare_claude_runtime_context
 from hyprial.daemon.impl.harnesses.codex.native_env import prepare_codex_runtime_context
 from hyprial.daemon.impl.session_actor  import SessionActor
 
+from .actors import ActorHostRegistry
 from .events import (
     CorrelatedDomainEvents,
     DomainCommandError,
@@ -84,6 +87,12 @@ def _import_legacy_session_agents(
     return tuple(imported)
 
 
+def _is_agent_mutation(event: object) -> bool:
+    if isinstance(event, LifecycleMutationCompleted):
+        return isinstance(event.payload, AgentMutationCompleted)
+    return isinstance(event, AgentMutationCompleted)
+
+
 class AgentSessionDomains:
     """Own the private Agent registry and the Agent/Session actor fan-out."""
 
@@ -102,6 +111,7 @@ class AgentSessionDomains:
         persistence_late_result: Callable[[str], object | None] | None = None,
         session_desired_state: object | None = None,
         agent_runtime_notice_reporter: Callable[[object], None] | None = None,
+        actor_hosts: ActorHostRegistry | None = None,
     ) -> None:
         cell_policies = RunPolicies.load(hyprial_home)
         registry = AgentRegistry(
@@ -115,15 +125,22 @@ class AgentSessionDomains:
         self._registry = registry
         self._domains_closed = False
         self._close_lock = threading.Lock()
+        self.actor_hosts = (
+            ActorHostRegistry() if actor_hosts is None else actor_hosts
+        )
         self._agent_events = CorrelatedDomainEvents()
         self._session_events = CorrelatedDomainEvents()
         self._session: SessionActor | None = None
+        self._mutation_listeners: tuple[Callable[[], None], ...] = ()
+        self._listeners_lock = threading.Lock()
 
         def agent_event(event: AgentEvent) -> None:
             self._agent_events.publish(event)
             session = self._session
             if session is not None:
                 session.accept_agent_event(event)
+            if _is_agent_mutation(event):
+                self._notify_mutation()
 
         def session_originated(correlation_id: str) -> bool:
             session = self._session
@@ -133,6 +150,7 @@ class AgentSessionDomains:
 
         self.agent = AgentActor(
             registry,
+            actor_host=self.actor_hosts.host_for("agent-session"),
             event_sink=agent_event,
             desired_state=desired_state,
             worker_running=worker_running,
@@ -142,11 +160,13 @@ class AgentSessionDomains:
             home_runtime_preparers={
                 "claude": prepare_claude_runtime_context,
                 "codex": prepare_codex_runtime_context,
+                "agy": prepare_agy_runtime_context,
             },
             home_notice_reporter=agent_runtime_notice_reporter,
         )
         self.session = SessionActor(
             desired_state if session_desired_state is None else session_desired_state,
+            actor_host=self.actor_hosts.host_for("agent-session"),
             daemon_epoch=daemon_epoch,
             event_sink=self._session_events.publish,
             agent_commands=self.agent,
@@ -158,6 +178,32 @@ class AgentSessionDomains:
         self.cells = CellObservationView(self.agent, self.session, node_id, policies=cell_policies)
         self.agents = AgentDirectoryFacade(self)
         self.liveness = AgentLivenessProjectionFacade(self)
+
+    def on_agent_mutation(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Call *listener* after each completed agent mutation; returns the unregister.
+
+        The listener runs on the agent actor thread after the projection
+        moved, takes no arguments (it re-reads ``agents.list()``), must be
+        quick, and is fenced: a raising listener never reaches the actor.
+        """
+
+        with self._listeners_lock:
+            self._mutation_listeners = (*self._mutation_listeners, listener)
+
+        def unregister() -> None:
+            with self._listeners_lock:
+                self._mutation_listeners = tuple(
+                    item for item in self._mutation_listeners if item is not listener
+                )
+
+        return unregister
+
+    def _notify_mutation(self) -> None:
+        for listener in self._mutation_listeners:
+            try:
+                listener()
+            except Exception:  # noqa: BLE001 - a listener never breaks the agent actor
+                pass
 
     def call_agent(
         self,
@@ -317,10 +363,12 @@ class AgentSessionDomains:
             event, "session", generation, attempt_token, resource_token, "confirm"
         )
 
-    def close(self, timeout: float = 5.0) -> bool:
+    def close(
+        self, timeout: float = 5.0, *, shutdown_hosts: bool = True
+    ) -> bool:
         with self._close_lock:
             if self._domains_closed:
-                return True
+                return self.actor_hosts.shutdown(timeout) if shutdown_hosts else True
             started = time.monotonic()
             self.cells.close()
             session = self.session.drain(timeout * 0.6)
@@ -330,8 +378,11 @@ class AgentSessionDomains:
             agent = self.agent.drain(remaining)
             if not agent.complete:
                 return False
+            hosts_stopped = (
+                self.actor_hosts.shutdown(timeout) if shutdown_hosts else True
+            )
             self._session_events.close()
             self._agent_events.close()
             self._registry.close()
             self._domains_closed = True
-            return True
+            return hosts_stopped

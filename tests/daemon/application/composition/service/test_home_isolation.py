@@ -10,36 +10,126 @@ from hyprial.daemon.impl.operations.service import (
     ServiceManager,
     ServiceOwnershipError,
 )
+from hyprial.daemon.impl.operations.service import identity
+
+
+def _not_loaded_answer(platform, command):
+    command = tuple(command)
+    if platform == "launchd" and command[:2] == ("launchctl", "print"):
+        label = command[2].rsplit("/", 1)[-1]
+        return CompletedProcess(
+            command,
+            113,
+            "",
+            f'Could not find service "{label}" in domain for user gui: 501',
+        )
+    if platform == "systemd" and command[:3] == ("systemctl", "--user", "show"):
+        return CompletedProcess(command, 4, "", "nicht gefunden")
+    if platform == "systemd" and command[:2] == ("loginctl", "show-user"):
+        return CompletedProcess(command, 0, "no\n", "")
+    return CompletedProcess(command, 0, "", "")
+
+
+@pytest.mark.parametrize("platform", ["launchd", "systemd"])
+def test_nondefault_home_install_reaches_the_fake_runner(
+    tmp_path, platform
+):
+    """A home inside the operating home installs its derived unit; the old
+    service-home-nondefault refusal is gone. The real protections (outside
+    operating home, HOME-vs-passwd-home, unit-directory tripwire) live in the
+    neighboring tests and stay."""
+
+    commands = []
+
+    def runner(command, **kwargs):
+        del kwargs
+        command = tuple(command)
+        commands.append(command)
+        return _not_loaded_answer(platform, command)
+
+    manager = ServiceManager(
+        ServiceConfig(
+            Path("/opt/hyprial"), tmp_path, tmp_path / "test-home", tmp_path / "state"
+        ),
+        platform=platform,
+        runner=runner,
+        uid=501,
+        username="tester",
+        sleep=lambda _seconds: None,
+    )
+
+    status = manager.install()
+
+    assert commands != []
+    assert status.installed is True
+    assert status.loaded is False
+    assert manager.unit_path.is_file()
+    written = manager.unit_path.read_text(encoding="utf-8")
+    assert "HYPRIAL_SERVICE_UNIT" in written
+    if platform == "systemd":
+        assert (
+            "systemctl",
+            "--user",
+            "enable",
+            "--now",
+            identity.systemd_unit(manager.config),
+        ) in commands
+        assert identity.systemd_unit(manager.config) in written
+        assert manager.unit_path.name == identity.systemd_unit(manager.config)
+    else:
+        assert any(
+            command[:2] == ("launchctl", "bootstrap")
+            and str(manager.unit_path) in command
+            for command in commands
+        )
+        assert f"<string>{identity.launchd_label(manager.config)}</string>" in written
+        assert manager.unit_path.name == (
+            f"{identity.launchd_label(manager.config)}.plist"
+        )
 
 
 @pytest.mark.parametrize("platform", ["launchd", "systemd"])
 @pytest.mark.parametrize("operation", ["install", "uninstall", "restart", "reconcile"])
-def test_nondefault_home_refused_before_runner(tmp_path, platform, operation):
+def test_a_home_outside_the_operating_home_is_still_refused_before_any_command(
+    tmp_path, platform, operation
+):
     commands = []
 
     def runner(command, **kwargs):
+        del kwargs
         commands.append(command)
         return CompletedProcess(command, 0, "", "")
 
+    operating_home = tmp_path / "operating-home"
+    operating_home.mkdir()
+    config = ServiceConfig(
+        Path("/opt/hyprial"),
+        operating_home,
+        tmp_path / "elsewhere" / "hyprial",
+        tmp_path / "elsewhere" / "hyprial" / "state",
+    )
     manager = ServiceManager(
-        ServiceConfig(Path("/opt/hyprial"), tmp_path, tmp_path / "test-home", tmp_path / "state"),
-        platform=platform, runner=runner,
+        config,
+        platform=platform,
+        runner=runner,
     )
     with pytest.raises(ServiceOwnershipError) as caught:
         if operation == "restart":
             manager.restart(lambda: pytest.fail("must not probe daemon"))
         elif operation == "reconcile":
-            manager.reconcile(lambda: pytest.fail("must not probe daemon"), stop_stray=lambda _: None)
+            manager.reconcile(
+                lambda: pytest.fail("must not probe daemon"), stop_stray=lambda _: None
+            )
         else:
             getattr(manager, operation)()
-    assert caught.value.reason == "service-home-nondefault"
+    assert caught.value.reason == "hyprial-home-outside-operating-home"
     assert commands == []
     assert not manager.unit_path.exists()
 
 
 @pytest.mark.parametrize("platform", ["launchd", "systemd"])
 def test_fake_home_cannot_reach_real_user_manager(tmp_path, monkeypatch, platform):
-    import hyprial.daemon.impl.operations.service as service
+    import hyprial.daemon.impl.operations.service.supervisor as service
 
     monkeypatch.setattr(service.subprocess, "run", lambda *a, **k: pytest.fail("real manager invoked"))
     manager = ServiceManager(
@@ -56,7 +146,7 @@ def test_fake_home_cannot_reach_real_user_manager(tmp_path, monkeypatch, platfor
 def test_default_account_home_still_reaches_runner(tmp_path, monkeypatch, platform):
     import pwd
     from types import SimpleNamespace
-    import hyprial.daemon.impl.operations.service as service
+    import hyprial.daemon.impl.operations.service.supervisor as service
 
     commands = []
     monkeypatch.setattr(pwd, "getpwuid", lambda _: SimpleNamespace(pw_dir=str(tmp_path)))
@@ -102,9 +192,9 @@ def test_additional_daemon_builders_own_home_and_xdg(tmp_path, monkeypatch, buil
             assert Path(env[key]).resolve().is_relative_to(root.resolve()), (builder, key)
 
     if builder == "link-parity":
-        from tests.integration.cli.link.test_link_daemon_parity import _environment
+        from tests.integration.cli.isolated_daemon import environment
 
-        assert_root_local(_environment(tmp_path), tmp_path)
+        assert_root_local(environment(tmp_path), tmp_path)
     elif builder == "codex-preflight":
         from tests.integration.e2e.e2e019.test_codex_credential_preflight import IsolatedCodexNode
 

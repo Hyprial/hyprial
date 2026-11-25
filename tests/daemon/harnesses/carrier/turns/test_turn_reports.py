@@ -24,6 +24,7 @@ from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage
 from hyprial.daemon.impl.inbox.service import InboxService
 from hyprial.kernel import DaemonRequestError, HookBus, canonical_agent_uri
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _daemon_dependencies
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 
 NODE = "wp5a-turns"
 OWNER = "wp5a-owner"
@@ -87,18 +88,8 @@ class _Recorder:
 
 
 def _inbox(tmp_path: Path) -> InboxService:
-    from hyprial.daemon.impl.dispatch.admission import LinkAdmission
-    from tests.support.links.gate import PermissiveLinkGate
-
     transport = _LoopbackTransport()
-    # The batch read runs link admission (design §3.3); these fixtures use
-    # canonical agent URIs on both ends, so bind the permissive gate the
-    # durable batch fixtures use instead of the fail-closed default.
-    admission = LinkAdmission()
-    admission.bind(PermissiveLinkGate())
-    service = InboxService(
-        tmp_path / "inbox.sqlite3", transport, link_admission=admission
-    )
+    service = InboxService(tmp_path / "inbox.sqlite3", transport)
     transport.bind(service)
     return service
 
@@ -111,6 +102,7 @@ class _TurnApp:
         tmp_path: Path,
         clock: dict[str, int],
         *,
+        actor_host=None,
         inbox_path: Path | None = None,
         reminder_factory: Any = None,
     ) -> None:
@@ -133,11 +125,14 @@ class _TurnApp:
         self.app._inbox = self.inbox
         self.app._presence = object()
         self.app._harnesses = object()
+        self.app._cell_delivery = AdmittingCellDelivery()
         self.app._adapters = None
         if self.app.agents.get(A_NAME) is None:
             self.app.handle("agent.create", {"name": A_NAME})
 
-        self.bus = HookBus()
+        if actor_host is None:
+            actor_host = self.app._agent_session_domains.actor_hosts.host_for("hooks")
+        self.bus = HookBus(actor_host=actor_host)
         self.hooks = DaemonHookService(
             bus=self.bus,
             config_path_for_agent=lambda _actor: tmp_path / "absent" / "hooks.json",
@@ -159,6 +154,18 @@ class _TurnApp:
                 consumer_factory=reminder_factory,
                 daemon_hooks=self.hooks,
             )
+
+    @property
+    def a_uri(self) -> str:
+        """Carrier A's official address: its agent record's URI.
+
+        Once id-form minting is on this is the ``a.`` id URI, not the name
+        URI ``A_URI`` spells (the ruling-X read-only alias).
+        """
+
+        agent = self.app.agents.get(A_NAME)
+        assert agent is not None
+        return agent.uri
 
     def register(self, *, session_ref: str = "session-1", runtime: str = "pi_interactive") -> None:
         self.app.handle(
@@ -204,7 +211,7 @@ class _TurnApp:
                 message_id=message_id,
                 conversation_id="conv-turns",
                 sender=X_URI,
-                recipient=A_URI,
+                recipient=self.a_uri,
                 payload=json.dumps({"message": "please answer"}).encode(),
                 intent="request",
                 lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -214,9 +221,9 @@ class _TurnApp:
         )
 
 
-def test_started_and_ended_publish_daemon_stamped_events(tmp_path: Path) -> None:
+def test_started_and_ended_publish_daemon_stamped_events(actor_host, tmp_path: Path) -> None:
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
         # Carrier-sent seq/source/startedAtMs are noise: never read.
@@ -234,7 +241,7 @@ def test_started_and_ended_publish_daemon_stamped_events(tmp_path: Path) -> None
         completed = app.recorder.of("turn.completed")
         assert len(started) == 1 and len(completed) == 1
         for item in (started[0], completed[0]):
-            assert item["actor"] == A_URI
+            assert item["actor"] == app.a_uri
             assert item["source"] == "daemon.turns"
         assert started[0]["payload"]["startedAtMs"] == 5_000  # the daemon's
         assert started[0]["payload"]["startedAtMs"] != 1  # not the carrier's
@@ -245,9 +252,9 @@ def test_started_and_ended_publish_daemon_stamped_events(tmp_path: Path) -> None
         app.close()
 
 
-def test_turn_reports_are_fenced(tmp_path: Path) -> None:
+def test_turn_reports_are_fenced(actor_host, tmp_path: Path) -> None:
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         # No session registered at all: a transient re-register signal.
         with pytest.raises(DaemonRequestError) as unregistered:
@@ -272,9 +279,9 @@ def test_turn_reports_are_fenced(tmp_path: Path) -> None:
         app.close()
 
 
-def test_turn_reports_are_idempotent_per_report_id(tmp_path: Path) -> None:
+def test_turn_reports_are_idempotent_per_report_id(actor_host, tmp_path: Path) -> None:
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
         first = app.started("t1")
@@ -298,9 +305,9 @@ def test_turn_reports_are_idempotent_per_report_id(tmp_path: Path) -> None:
         app.close()
 
 
-def test_claude_stop_pulse_publishes_completed(tmp_path: Path) -> None:
+def test_claude_stop_pulse_publishes_completed(actor_host, tmp_path: Path) -> None:
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register(runtime="claude_interactive")
         app.started("s1")
@@ -319,9 +326,9 @@ def test_claude_stop_pulse_publishes_completed(tmp_path: Path) -> None:
         app.close()
 
 
-def test_failed_status_publishes_turn_failed(tmp_path: Path) -> None:
+def test_failed_status_publishes_turn_failed(actor_host, tmp_path: Path) -> None:
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
         app.started("f1")
@@ -351,9 +358,9 @@ def _wall_clock() -> dict[str, int]:
     return {"now": time.time_ns() // 1_000_000}
 
 
-def test_interactive_turn_drives_reply_reminder(tmp_path: Path) -> None:
+def test_interactive_turn_drives_reply_reminder(actor_host, tmp_path: Path) -> None:
     clock = _wall_clock()
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
         app.seed_request("r1")
@@ -368,9 +375,9 @@ def test_interactive_turn_drives_reply_reminder(tmp_path: Path) -> None:
         app.ended(["w1"])
 
         assert app.recorder.wait_for(
-            lambda: len(app.inbox.system_notices(A_URI)) == 1
+            lambda: len(app.inbox.system_notices(app.a_uri)) == 1
         )
-        notice = app.inbox.system_notices(A_URI)[0]
+        notice = app.inbox.system_notices(app.a_uri)[0]
         assert "r1" in notice.summary
 
         # The explicit reply closes the item: the next turn does not remind.
@@ -389,14 +396,14 @@ def test_interactive_turn_drives_reply_reminder(tmp_path: Path) -> None:
         clock["now"] = clock["now"] + 60_000
         app.ended(["w2"])
         time.sleep(0.3)
-        assert len(app.inbox.system_notices(A_URI)) == 1
+        assert len(app.inbox.system_notices(app.a_uri)) == 1
     finally:
         app.close()
 
 
-def test_started_after_fetch_misses_the_window(tmp_path: Path) -> None:
+def test_started_after_fetch_misses_the_window(actor_host, tmp_path: Path) -> None:
     clock = _wall_clock()
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
         app.seed_request("r1")
@@ -413,14 +420,14 @@ def test_started_after_fetch_misses_the_window(tmp_path: Path) -> None:
 
         app.recorder.wait_for(lambda: len(app.recorder.of("turn.completed")) == 1)
         time.sleep(0.3)
-        assert app.inbox.system_notices(A_URI) == ()
+        assert app.inbox.system_notices(app.a_uri) == ()
     finally:
         app.close()
 
 
-def test_ended_retry_after_lost_response_publishes_once(tmp_path: Path) -> None:
+def test_ended_retry_after_lost_response_publishes_once(actor_host, tmp_path: Path) -> None:
     clock = _wall_clock()
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
         app.seed_request("r1")
@@ -439,14 +446,14 @@ def test_ended_retry_after_lost_response_publishes_once(tmp_path: Path) -> None:
             lambda: len(app.recorder.of("turn.completed")) == 1
         )
         time.sleep(0.2)
-        assert len(app.inbox.system_notices(A_URI)) == 1  # exactly one reminder
+        assert len(app.inbox.system_notices(app.a_uri)) == 1
     finally:
         app.close()
 
 
-def test_started_dedup_is_per_session_and_report(tmp_path: Path) -> None:
+def test_started_dedup_is_per_session_and_report(actor_host, tmp_path: Path) -> None:
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register()
         app.started("x")
@@ -465,11 +472,11 @@ def test_started_dedup_is_per_session_and_report(tmp_path: Path) -> None:
 
         # After the session is replaced, old-sessionRef reports are rejected
         # and cannot touch the new session's ledger.
-        assert (A_URI, "session-1") in app.app._carrier_turn_ledgers
+        assert (app.a_uri, "session-1") in app.app._carrier_turn_ledgers
         app.register(session_ref="session-2")
         # P5: a same-actor generation change drops the superseded session's
         # ledger instead of letting it live until daemon exit.
-        assert (A_URI, "session-1") not in app.app._carrier_turn_ledgers
+        assert (app.a_uri, "session-1") not in app.app._carrier_turn_ledgers
         with pytest.raises(DaemonRequestError):
             app.started("z", session_ref="session-1")
         with pytest.raises(DaemonRequestError):
@@ -481,7 +488,7 @@ def test_started_dedup_is_per_session_and_report(tmp_path: Path) -> None:
         app.close()
 
 
-def test_a_new_runtime_needs_no_contract_change(tmp_path: Path) -> None:
+def test_a_new_runtime_needs_no_contract_change(actor_host, tmp_path: Path) -> None:
     """K8: an unknown runtime works through the same neutral contract."""
 
     from hyprial.daemon.impl.harnesses.carrier.contract import (
@@ -490,7 +497,7 @@ def test_a_new_runtime_needs_no_contract_change(tmp_path: Path) -> None:
     )
 
     clock = {"now": 5_000}
-    app = _TurnApp(tmp_path, clock)
+    app = _TurnApp(tmp_path, clock, actor_host=actor_host)
     try:
         app.register(runtime="zz_test_interactive")
         app.seed_request("r1", summary="S")

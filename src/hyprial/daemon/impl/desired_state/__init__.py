@@ -22,7 +22,6 @@ from .documents import (  # noqa: F401
     _optional_string,
     _record,
     _string,
-    _string_map,
 )
 from .services import (  # noqa: F401
     ServiceConnection,

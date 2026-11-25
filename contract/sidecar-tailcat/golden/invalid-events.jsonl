@@ -1,0 +1,14 @@
+{"v":5,"event":"exited"}
+{"v":6,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"derp","cause":"deadline-exceeded","proxy":"configured","bytesReceived":33}}
+{"v":6,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"control","cause":"proxy-rejected","proxy":"configured","bytesReceived":33}}
+{"v":6,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"control","cause":"deadline-exceeded","proxy":"configured","bytesReceived":-1}}
+{"v":6,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"control","cause":"deadline-exceeded","proxy":"configured","bytesReceived":1048578}}
+{"v":6,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"control","cause":"deadline-exceeded","proxy":"configured","bytesReceived":0.5}}
+{"v":6,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"control","cause":"deadline-exceeded","proxy":"configured","bytesReceived":null}}
+{"v":6,"event":"client-key-derived","requestId":"request-derive","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+{"v":6,"event":"client-key-derived","requestId":"request-derive","serverPublic":"nodekey:a","clientPublic":"nodekey:b","clientPrivate":"secret"}
+{"v":6,"event":"state","state":"Running","serverPublic":"nodekey:a","clientPublic":"nodekey:b","peers":[{"peer":"dev-alice-laptop","localPort":51023}]}
+{"v":6,"event":"peer-mapped","requestId":"request-map-peer","peer":"dev-alice-laptop","localPort":51023}
+{"v":6,"event":"membership-result","op":"roster-fetch","data":{}}
+{"v":6,"event":"readiness","readiness":{"sidecar":true,"control":true}}
+{"v":6,"event":"membership-changed","requestId":"not-an-event","tailnetId":"space","revision":1,"code":null}

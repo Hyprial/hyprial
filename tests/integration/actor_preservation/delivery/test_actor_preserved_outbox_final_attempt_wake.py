@@ -32,6 +32,7 @@ from hyprial.daemon.impl.transport.presence_actor import (
     PresenceProjection,
 )
 from hyprial.daemon.impl.transport.zenoh.presence import LivelinessDirectory
+from tests.support.actor_hosts import new_actor_host
 
 SENDER = "agent:owner:node-a:sender"
 RECIPIENT = "agent:owner:node-b:recipient"
@@ -98,7 +99,7 @@ class _Events:
 def test_actor_authority_last_round_matches_the_service_contract(tmp_path: Path) -> None:
     transport = MemoryDeliveryTransport()
     database = tmp_path / "authority.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, _Events())
+    coordinator = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
     facade = DeliveryCustodyFacade(coordinator, database)
     try:
         now_ms = time.time_ns() // 1_000_000
@@ -452,7 +453,7 @@ def test_new_online_sequence_retains_successor_after_old_sql_completion(
     transport = MemoryDeliveryTransport()
     database = tmp_path / "wake-successor.sqlite3"
     router = _HoldingWakeRouter()
-    inbox_coordinator = DeliveryCustodyCoordinator(database, transport, router)
+    inbox_coordinator = DeliveryCustodyCoordinator(database, transport, router, actor_host=new_actor_host())
     inbox = DeliveryCustodyFacade(inbox_coordinator, database)
     sink = _RecordingWakeSink(inbox_coordinator)
     projection = {
@@ -750,7 +751,7 @@ class _UndeliveredOnceSink(_WakeSink):
                     domain="inbox",
                     generation=2,
                     version=0,
-                    code="ACTOR_RESTARTED_UNDELIVERED",
+                    code="ACTOR_STOPPED_UNDELIVERED",
                     detail="accepted wake never began",
                     admission=PortAdmission.CLOSING,
                 )
@@ -779,7 +780,7 @@ def test_never_begun_generation_fault_retries_exact_wake() -> None:
 def test_outbox_recipient_pages_are_bounded_and_stable(tmp_path: Path) -> None:
     transport = MemoryDeliveryTransport()
     database = tmp_path / "recipient-pages.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, _Events())
+    coordinator = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
     inbox = DeliveryCustodyFacade(coordinator, database)
     try:
         now_ms = time.time_ns() // 1_000_000
@@ -820,7 +821,7 @@ def test_production_presence_progresses_while_inbox_wake_is_stalled(
     transport = MemoryDeliveryTransport()
     database = tmp_path / "production-wake.sqlite3"
     events = CorrelatedInboxEventRouter()
-    inbox_coordinator = DeliveryCustodyCoordinator(database, transport, events)
+    inbox_coordinator = DeliveryCustodyCoordinator(database, transport, events, actor_host=new_actor_host())
     inbox = DeliveryCustodyFacade(inbox_coordinator, database)
     session = _PresenceSession()
     directory = LivelinessDirectory(session)  # type: ignore[arg-type]
@@ -863,7 +864,7 @@ def test_online_transition_wake_delivers_on_next_pump(tmp_path: Path) -> None:
     transport = MemoryDeliveryTransport()
     database = tmp_path / "online-next-pump.sqlite3"
     events = CorrelatedInboxEventRouter()
-    inbox_coordinator = DeliveryCustodyCoordinator(database, transport, events)
+    inbox_coordinator = DeliveryCustodyCoordinator(database, transport, events, actor_host=new_actor_host())
     inbox = DeliveryCustodyFacade(inbox_coordinator, database)
     session = _PresenceSession()
     directory = LivelinessDirectory(session)  # type: ignore[arg-type]

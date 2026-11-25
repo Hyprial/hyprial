@@ -27,7 +27,7 @@ def _stored(coordinator) -> tuple[str, ...]:
 
 def _wait_for_restart(coordinator) -> None:
     def restarted() -> bool:
-        snapshot = coordinator._runtime.snapshot(coordinator._handle)
+        snapshot = coordinator._cell.snapshot()
         return snapshot.generation > 1 and snapshot.state is ActorState.RUNNING
 
     _wait_until(restarted)
@@ -244,7 +244,7 @@ def test_rolled_back_fetch_does_not_publish_a_change(authority, monkeypatch) -> 
     def fail_ledger(*args, **kwargs):
         raise RuntimeError("injected ledger failure before commit")
 
-    monkeypatch.setattr(InboxService, "_write_inbound_ledger_locked", fail_ledger)
+    monkeypatch.setattr(InboxService, "_clear_nonterminal_failures", fail_ledger)
     with pytest.raises(RuntimeError, match="DELIVERY_COMMAND_FAILED"):
         facade.fetch_pending(message.recipient, now_ms=20)
 

@@ -1,3 +1,11 @@
+"""Observer recovery checks drain the idle turn runtime before their deadline.
+
+The observer cases deliberately exhaust a 10 ms reclaim budget. They first
+drain the independent actor/relay owner so scheduler delay there cannot replace
+the observer failure under test. The separate false-drain case retains coverage
+of a turn runtime that cannot settle.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -95,6 +103,8 @@ def test_overloaded_observer_exits_after_refused_sentinel_and_owner_recovery() -
     observer_queue = process._observer_queue
     assert observer_thread is not None and observer_queue is not None
     try:
+        assert process._turn_runtime.drain(2.0)
+        process._turn_runtime_drained.set()
         process._dispatch_turn_failure("held observation")
         assert observed.wait(timeout=2.0)
         while not observer_queue.full():
@@ -137,6 +147,8 @@ def test_observer_drain_failure_still_cancels_timers_and_releases_waiters() -> N
         interrupt_outcome,
     )
     try:
+        assert process._turn_runtime.drain(2.0)
+        process._turn_runtime_drained.set()
         process._dispatch_turn_failure("held observation")
         assert observed.wait(timeout=2.0)
 

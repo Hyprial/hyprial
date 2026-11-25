@@ -195,7 +195,7 @@ def test_hung_history_holds_only_that_chat_and_other_chats_keep_flowing(
     adapter, lark, harness, routes = make_adapter(
         tmp_path, actor, inline_backfill_budget=1.0,
     )
-    routes.pins["lark:oc_chat2:oc_chat2"] = actor
+    routes.bindings["lark:oc_chat2:oc_chat2"] = actor
     assert adapter.handle_inbound(inbound_message(
         "before", chat_type="p2p", create_time=str(NOW_MS - 60_000)
     )).status == "forwarded"

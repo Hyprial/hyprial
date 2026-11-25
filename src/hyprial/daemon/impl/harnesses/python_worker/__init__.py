@@ -1,9 +1,7 @@
-"""Managed parent process for the packaged python workers (jev, user-proxy).
+"""Managed parent process for the packaged python worker (jev).
 
-Both kinds share the v1 JSONL wire, admission, and custody.  They differ in
-the ready frame, the call payload, and one terminal frame: user-proxy may
-answer ``forward`` -- "send this AS me to X" -- which the daemon executes
-(``HarnessResult.forward_to``); the child never holds a send path.
+The child speaks the v1 JSONL wire under daemon-owned admission and custody;
+it never holds a send path.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,8 +39,11 @@ from hyprial.daemon.impl.harnesses.streaming.protocol  import TurnCompletedObser
 from hyprial.daemon.impl.harnesses.worker_channel  import WorkerChannel
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
-_HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _MAX_LINE_BYTES = 8 * 1024 * 1024
+MAX_TERMINAL_ID_LEN = 256
+MAX_ROUTE_LABEL_LEN = 128
+MAX_TERMINAL_OUTPUT_BYTES = 262_144
+TERMINAL_ID_DEDUP_CAP = 10_000
 _DEFAULT_COMMAND = (
     sys.executable,
     "-m",
@@ -75,9 +77,7 @@ def _ready_emitted_at_ms(stderr: bytes) -> int | None:
 #: is truly broken, and the lifecycle deadline still bounds the start.
 PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT = 60.0
 
-#: The kinds this parent can host.  user-proxy has no default command: its
-#: child needs the person's ``--route``, which only the start request knows.
-PYTHON_WORKER_KINDS = frozenset({"jev", "user-proxy"})
+PYTHON_WORKER_KINDS = frozenset({"jev"})
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -118,7 +118,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if spec.harness not in PYTHON_WORKER_KINDS or not spec.headless:
-            raise ValueError("python worker requires a managed headless jev or user-proxy spec")
+            raise ValueError("python worker requires a managed headless jev spec")
         if complete_launch is not None and env is not None:
             raise ValueError("complete child environment cannot be combined with a partial env mapping")
         if startup_timeout_seconds <= 0 or stop_timeout_seconds <= 0:
@@ -129,7 +129,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         self.worker_channel = worker_channel
         self.max_in_flight = concurrency(self.kind, headless=True).concurrency
         self.command = tuple(
-            command or spec.command or (_DEFAULT_COMMAND if self.kind == "jev" else ())
+            command or spec.command or _DEFAULT_COMMAND
         )
         if not self.command:
             raise ValueError("python worker command must not be empty")
@@ -152,6 +152,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         self._ready_error: str | None = None
         self._started = False
         self._terminal_ids: set[str] = set()
+        self._terminal_id_order: deque[str] = deque()
         self._process: subprocess.Popen[bytes] | None = None
         self.last_error: str | None = None
         self.startup: dict[str, object] | None = None
@@ -304,20 +305,10 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                     )
                     return True
             payload: object
-            if self.kind == "user-proxy":
-                # A relay needs who sent it and the text, nothing else.
-                payload = {
-                    "from": delivery.sender,
-                    "to": delivery.recipient,
-                    "message": delivery.message,
-                }
-            else:
-                try:
-                    payload = json.loads(delivery.message)
-                except (TypeError, ValueError):
-                    # Keep the turn accepted so the child owns the decode failure;
-                    # the daemon must see a failed turn, not a lost inbox row.
-                    payload = delivery.message
+            try:
+                payload = json.loads(delivery.message)
+            except (TypeError, ValueError):
+                payload = delivery.message
             self._records[delivery.delivery_id] = _DeliveryState(
                 delivery,
                 time.monotonic(),
@@ -445,7 +436,20 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         if self.startup is None:
             detail = self._ready_error or "worker ready frame was invalid"
             self.stop()
-            raise HarnessStartError(self.kind, self.command, detail)
+            process = self._process
+            returncode = process.poll() if process is not None else None
+            if returncode is None and process is not None:
+                try:
+                    returncode = process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    returncode = None
+            raise HarnessStartError(
+                self.kind,
+                self.command,
+                detail,
+                returncode=returncode,
+                stderr_tail=summarize_stderr(bytes(self._stderr)),
+            )
 
     def _write_frame(self, frame: dict[str, object]) -> None:
         process = self._process
@@ -508,9 +512,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         if frame_type == "metric":
             self._handle_metric(frame)
             return
-        if frame_type in {"result", "error"} or (
-            frame_type == "forward" and self.kind == "user-proxy"
-        ):
+        if frame_type in {"result", "error", "route"}:
             self._handle_terminal(frame)
             return
         self._protocol_failure("worker emitted an unknown frame type")
@@ -519,20 +521,13 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         if self._ready.is_set():
             self._protocol_failure("worker emitted duplicate ready frame")
             return
-        if self.kind == "user-proxy":
-            self._handle_user_proxy_ready(frame)
-            return
-        required = {"v", "type", "kind", "pid", "effectiveConfig", "hyprialCommit", "typesafeSdkVersion", "scriptSha256", "startupHash", "credentialSource"}
+        required = {"v", "type", "kind", "pid", "effectiveConfig", "typesafeSdkVersion", "scriptSha256", "startupHash", "credentialSource"}
         if set(frame) != required or frame.get("kind") != "jev":
             self._ready_error = "worker ready frame has invalid fields"
             self._protocol_failure(self._ready_error)
             return
         if not isinstance(frame.get("pid"), int) or frame["pid"] <= 0:
             self._ready_error = "worker ready pid is invalid"
-            self._protocol_failure(self._ready_error)
-            return
-        if not isinstance(frame.get("hyprialCommit"), str) or not _HEX40.fullmatch(frame["hyprialCommit"]):
-            self._ready_error = "worker ready commit is invalid"
             self._protocol_failure(self._ready_error)
             return
         for field in ("scriptSha256", "startupHash"):
@@ -563,7 +558,6 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             self._protocol_failure(self._ready_error)
             return
         startup_input = {
-            "hyprialCommit": frame["hyprialCommit"],
             "kind": frame["kind"],
             "effectiveConfig": config,
             "typesafeSdkVersion": frame["typesafeSdkVersion"],
@@ -584,7 +578,6 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             actorId=self._actor_id,
             kind=self.kind,
             pid=frame["pid"],
-            hyprialCommit=frame["hyprialCommit"],
             effectiveConfig=config,
             typesafeSdkVersion=frame["typesafeSdkVersion"],
             scriptSha256=frame["scriptSha256"],
@@ -598,43 +591,6 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             kind=self.kind,
             pid=frame["pid"],
             generation=1,
-            hyprialCommit=frame["hyprialCommit"],
-            **self._ready_timing(frame),
-        )
-
-    def _handle_user_proxy_ready(self, frame: dict[str, object]) -> None:
-        if set(frame) != {"v", "type", "kind", "pid", "hyprialCommit", "scriptSha256"} or frame.get("kind") != "user-proxy":
-            self._ready_error = "worker ready frame has invalid fields"
-            self._protocol_failure(self._ready_error)
-            return
-        pid = frame.get("pid")
-        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-            self._ready_error = "worker ready pid is invalid"
-            self._protocol_failure(self._ready_error)
-            return
-        if not isinstance(frame.get("hyprialCommit"), str) or not _HEX40.fullmatch(frame["hyprialCommit"]):
-            self._ready_error = "worker ready commit is invalid"
-            self._protocol_failure(self._ready_error)
-            return
-        from hyprial.daemon.impl.harnesses.python_worker  import _user_proxy_worker
-
-        expected_script_hash = hashlib.sha256(
-            Path(_user_proxy_worker.__file__).read_bytes()
-        ).hexdigest()
-        if frame.get("scriptSha256") != expected_script_hash:
-            self._ready_error = "worker ready script hash is invalid"
-            self._protocol_failure(self._ready_error)
-            return
-        self.startup = dict(frame)
-        self._ready.set()
-        self._log_event(
-            "worker.started",
-            node="worker-process",
-            actorId=self._actor_id,
-            kind=self.kind,
-            pid=pid,
-            generation=1,
-            hyprialCommit=frame["hyprialCommit"],
             **self._ready_timing(frame),
         )
 
@@ -656,94 +612,138 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             return
         self._log_script_metric(record.delivery, frame)
 
+    def _record_terminal_id(self, request_id: str) -> None:
+        order = getattr(self, "_terminal_id_order", None)
+        if order is None:
+            order = self._terminal_id_order = deque()
+        if request_id not in self._terminal_ids:
+            self._terminal_ids.add(request_id)
+            order.append(request_id)
+        while len(order) > TERMINAL_ID_DEDUP_CAP:
+            self._terminal_ids.discard(order.popleft())
+
+    @staticmethod
+    def _valid_route_label(value: object) -> str | None:
+        if (
+            not isinstance(value, str)
+            or not value
+            or not value.strip()
+            or len(value) > MAX_ROUTE_LABEL_LEN
+        ):
+            return None
+        return value
+
+    def _encode_bounded_output(self, output: object) -> str | None:
+        if not isinstance(output, dict):
+            return None
+        text = json.dumps(
+            output, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        if len(text.encode("utf-8")) > MAX_TERMINAL_OUTPUT_BYTES:
+            return None
+        return text
+
+    def _parse_terminal_result_or_route(
+        self, frame: dict[str, object], request_id: str, recipient: str
+    ) -> tuple[HarnessResult | None, str | None]:
+        frame_type = frame.get("type")
+        keys = set(frame)
+        if frame_type == "result":
+            if (
+                keys not in ({"v", "type", "id", "ok", "output"}, {"v", "type", "id", "ok", "output", "label"})
+                or frame.get("ok") is not True
+                or not isinstance(frame.get("output"), dict)
+            ):
+                return None, "worker result frame is invalid"
+            output = frame["output"]
+            label: str | None = None
+            if "label" in frame:
+                label = self._valid_route_label(frame["label"])
+                if label is None:
+                    return None, "worker result label is invalid"
+            text = self._encode_bounded_output(output) or ""
+            if not text and output != {}:
+                return None, "worker result output exceeds bound"
+            if len(text.encode("utf-8")) > MAX_TERMINAL_OUTPUT_BYTES:
+                return None, "worker result output exceeds bound"
+            return HarnessResult(
+                request_id, recipient, HarnessResultStatus.COMPLETED,
+                output=text, route_label=label, route_outcome="next" if label is not None else "done",
+            ), None
+        outcome = frame.get("outcome")
+        if (
+            not ({"v", "type", "id", "ok", "outcome"} <= keys <= {"v", "type", "id", "ok", "outcome", "label", "output"})
+            or outcome not in {"done", "next", "refused"}
+            or not isinstance(frame.get("ok"), bool)
+            or (outcome != "refused" and frame["ok"] is not True)
+        ):
+            return None, "worker route frame is invalid"
+        route_label: str | None = None
+        if outcome == "next":
+            route_label = self._valid_route_label(frame.get("label"))
+            if route_label is None:
+                return None, "worker route label is invalid"
+        elif "label" in frame:
+            return None, "worker route label is invalid for non-next outcome"
+        text = ""
+        if "output" in frame:
+            encoded = self._encode_bounded_output(frame["output"])
+            if encoded is None:
+                return None, "worker route output exceeds bound"
+            text = encoded
+        return HarnessResult(
+            request_id, recipient, HarnessResultStatus.COMPLETED,
+            output=text, route_label=route_label, route_outcome=str(outcome),
+        ), None
+
     def _handle_terminal(self, frame: dict[str, object]) -> None:
         request_id = frame.get("id")
-        if not isinstance(request_id, str) or not request_id:
+        if not isinstance(request_id, str) or not request_id or len(request_id) > MAX_TERMINAL_ID_LEN:
             self._protocol_failure("worker terminal id is invalid")
             return
         with self._lock:
             record = self._records.get(request_id)
-            duplicate = record is not None and record.terminal
+            duplicate = (record is not None and record.terminal) or request_id in self._terminal_ids
         if record is None or duplicate:
             self._protocol_failure("worker terminal id is not reserved")
             return
         send_started = time.monotonic()
-        if frame.get("type") == "forward":
-            to = frame.get("to")
-            message = frame.get("message")
-            if (
-                set(frame) != {"v", "type", "id", "ok", "to", "message"}
-                or frame.get("ok") is not True
-                or not isinstance(to, str)
-                or not to
-                or not isinstance(message, str)
-            ):
-                self._protocol_failure("worker forward frame is invalid")
+        frame_type = frame.get("type")
+        if frame_type in {"result", "route"}:
+            parsed, err = self._parse_terminal_result_or_route(frame, request_id, record.delivery.recipient)
+            if err is not None or parsed is None:
+                self._protocol_failure(err or "worker result frame is invalid")
                 return
-            result = HarnessResult(
-                request_id,
-                record.delivery.recipient,
-                HarnessResultStatus.COMPLETED,
-                output=message,
-                forward_to=to,
-            )
-            self._log_turn("worker.turn.completed", record.delivery, forwardTo=to)
-        elif frame.get("type") == "result":
-            output = frame.get("output")
-            if frame.get("ok") is not True or not isinstance(output, dict):
-                self._protocol_failure("worker result frame is invalid")
-                return
-            if self.kind == "user-proxy":
-                # The person reads this directly (the "name a recipient"
-                # hint), so it is the text, not a JSON rendering of it.
-                if set(output) != {"message"} or not isinstance(output["message"], str):
-                    self._protocol_failure("worker result frame is invalid")
-                    return
-                text = output["message"]
-            else:
-                text = json.dumps(output, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            result = HarnessResult(request_id, record.delivery.recipient, HarnessResultStatus.COMPLETED, output=text)
+            result = parsed
             self._log_turn("worker.turn.completed", record.delivery)
         else:
-            code = frame.get("code")
-            message = frame.get("message")
-            stage = frame.get("stage")
-            retryable = frame.get("retryable")
-            if frame.get("ok") is not False or not isinstance(code, str) or not isinstance(message, str) or stage not in {"decode", "call", "send", "protocol"} or not isinstance(retryable, bool):
+            code, message, stage, retryable = (
+                frame.get("code"), frame.get("message"), frame.get("stage"), frame.get("retryable")
+            )
+            if (
+                set(frame) != {"v", "type", "id", "ok", "stage", "code", "message", "retryable"}
+                or frame.get("ok") is not False or not isinstance(code, str)
+                or not isinstance(message, str) or stage not in {"decode", "call", "send", "protocol"}
+                or not isinstance(retryable, bool)
+            ):
                 self._protocol_failure("worker error frame is invalid")
                 return
             result = HarnessResult(
-                request_id,
-                record.delivery.recipient,
-                HarnessResultStatus.FAILED,
-                error=message[:500],
-                failure_code=code or classify_harness_failure(message),
+                request_id, record.delivery.recipient, HarnessResultStatus.FAILED,
+                error=message[:500], failure_code=code or classify_harness_failure(message),
             )
             self._log_turn("worker.turn.failed", record.delivery, failure=message[:500], failureCode=code)
             if stage == "decode":
-                self._log_script_metric(
-                    record.delivery,
-                    {
-                        "segment": "call",
-                        "durationMs": 0,
-                        "ok": False,
-                        "skipped": True,
-                    },
-                )
+                self._log_script_metric(record.delivery, {"segment": "call", "durationMs": 0, "ok": False, "skipped": True})
             self._log_event(
-                "script.error",
-                **self._delivery_fields(record.delivery),
-                node="script-worker",
-                kind=self.kind,
-                stage=stage,
-                code=code,
-                retryable=retryable,
+                "script.error", **self._delivery_fields(record.delivery), node="script-worker",
+                kind=self.kind, stage=stage, code=code, retryable=retryable,
                 errorType="TypeSafeError" if stage == "call" and self.kind == "jev" else "WorkerError",
                 message=message[:500],
             )
         with self._lock:
             record.terminal = True
-            self._terminal_ids.add(request_id)
+            self._record_terminal_id(request_id)
         self._results.put(result)
         self._log_script_send(record.delivery, result.status is HarnessResultStatus.COMPLETED, started=send_started)
 
@@ -757,7 +757,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             )
             for record in records:
                 record.terminal = True
-            self._terminal_ids.update(item.delivery.delivery_id for item in records)
+                self._record_terminal_id(record.delivery.delivery_id)
         self._ready_error = self.last_error
         startup_failure = not self._ready.is_set()
         self._ready.set()
@@ -767,7 +767,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                 node="script-worker",
                 kind=self.kind,
                 stage="protocol",
-                code=ipc_errors.HARNESS_START_FAILED if startup_failure else ipc_errors.HARNESS_TRANSIENT_FAILURE,
+                code=ipc_errors.HARNESS_START_FAILED if startup_failure else "HARNESS_TRANSIENT_FAILURE",
                 retryable=not startup_failure,
                 errorType="ProtocolError",
                 message=detail[:500],
@@ -898,4 +898,11 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
 PythonHarnessProcess = PythonWorkerTurnAdapter
 
 
-__all__ = ["PythonHarnessProcess", "PythonWorkerTurnAdapter"]
+__all__ = [
+    "MAX_ROUTE_LABEL_LEN",
+    "MAX_TERMINAL_ID_LEN",
+    "MAX_TERMINAL_OUTPUT_BYTES",
+    "PythonHarnessProcess",
+    "PythonWorkerTurnAdapter",
+    "TERMINAL_ID_DEDUP_CAP",
+]

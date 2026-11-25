@@ -5,7 +5,7 @@ from __future__ import annotations
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from datetime import datetime
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
@@ -23,14 +23,14 @@ def _parse_boundary(flag: str, value: str | None) -> datetime | None:
         return None
     if not RFC3339.fullmatch(value):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"{flag} requires an RFC 3339 timestamp with a timezone",
         )
     try:
         return datetime.fromisoformat(value)
     except ValueError as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, f"{flag} requires a valid RFC 3339 timestamp"
+            codes.INVALID_ARGUMENT, f"{flag} requires a valid RFC 3339 timestamp"
         ) from error
 
 
@@ -48,13 +48,13 @@ def _log_result(
     services = get_services()
     if level is not None and level not in {"debug", "info", "warn", "error"}:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, "--level must be debug, info, warn, or error"
+            codes.INVALID_ARGUMENT, "--level must be debug, info, warn, or error"
         )
     since_at = _parse_boundary("--since", since)
     until_at = _parse_boundary("--until", until)
     if since_at is not None and until_at is not None and since_at > until_at:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, "--since must not be later than --until"
+            codes.INVALID_ARGUMENT, "--since must not be later than --until"
         )
 
     history, skipped = _read_log_history()

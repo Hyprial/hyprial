@@ -96,12 +96,14 @@ type InviteV2 struct {
 	ExpiresAtMs int64     `json:"expiresAtMs"`
 }
 type Tailnet struct {
-	TailnetID string            `json:"tailnetId"`
-	Authority Authority         `json:"authority"`
-	Revision  uint64            `json:"revision"`
-	Members   map[string]Member `json:"members"`
-	Migration Migration         `json:"migration"`
-	Invites   map[string]Invite `json:"invites"`
+	TailnetID  string            `json:"tailnetId"`
+	Authority  Authority         `json:"authority"`
+	Revision   uint64            `json:"revision"`
+	Members    map[string]Member `json:"members"`
+	Migration  Migration         `json:"migration"`
+	Invites    map[string]Invite `json:"invites"`
+	Closed     bool              `json:"closed,omitempty"`
+	ClosedAtMs int64             `json:"closedAtMs,omitempty"`
 }
 type Receipt struct {
 	OperationID string          `json:"operationId"`
@@ -173,6 +175,18 @@ type RepinParams struct {
 	ExpectedRevision uint64    `json:"expectedRevision"`
 	Confirmed        bool      `json:"confirmed"`
 }
+type ShutdownParams struct {
+	OperationID      string `json:"operationId"`
+	TailnetID        string `json:"tailnetId"`
+	ExpectedRevision uint64 `json:"expectedRevision"`
+	Confirmed        bool   `json:"confirmed"`
+	Reason           string `json:"reason"`
+}
+type ForgetParams struct {
+	OperationID string `json:"operationId"`
+	TailnetID   string `json:"tailnetId"`
+	OrgDeleted  bool   `json:"orgDeleted"`
+}
 type Roster struct {
 	TailnetID    string    `json:"tailnetId"`
 	Authority    Authority `json:"authority"`
@@ -180,6 +194,8 @@ type Roster struct {
 	Members      []Member  `json:"members"`
 	LeaseSeconds int       `json:"leaseSeconds"`
 	DeviceID     string    `json:"deviceId,omitempty"`
+	Closed       bool      `json:"closed,omitempty"`
+	ClosedAtMs   int64     `json:"closedAtMs,omitempty"`
 }
 type RevokeResult struct {
 	TailnetID   string   `json:"tailnetId"`
@@ -202,6 +218,7 @@ type TailnetStatus struct {
 	LeaseRemainingSeconds *int     `json:"leaseRemainingSeconds"`
 	ActiveCount           int      `json:"activeCount"`
 	TombstoneCount        int      `json:"tombstoneCount"`
+	Closed                bool     `json:"closed"`
 	Code                  *string  `json:"code"`
 	Members               []Member `json:"members"`
 }

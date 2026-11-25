@@ -1,3 +1,10 @@
+# Decision record (UUID addressing lane C, 2026-11-03):
+# - ``deviceUid`` is an additive output field (ruling: devices only gain
+#   output fields, their routing keys do not change).  The ``org network``
+#   self block always names the local uid.
+# - The published directory row carries it only once id-form minting is on:
+#   an older reader rejects a device row with an unknown key, so the switch
+#   keeps today's published document byte-identical until the flip.
 """Org lifecycle and network views over OrgFS with injected transport hooks."""
 
 from __future__ import annotations
@@ -13,7 +20,13 @@ from typing import Any
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.daemon.impl.org.network.casdoor import CasdoorGroups, CasdoorMembershipMixin, casdoor_group
-from hyprial.daemon.impl.org.network.binding import resolve_org_acl_space
+from hyprial.daemon.impl.org.network.binding import (
+    find_org_space,
+    require_org_acl_space,
+    require_org_space,
+    resolve_org_acl_space,
+    store_org_invite,
+)
 from hyprial.daemon.impl.org.network.create import (
     OrgCreateResumeDenied,
     prepare_create,
@@ -23,6 +36,16 @@ from hyprial.daemon.impl.org.network.create import (
     space_json,
     unfinished_create_reason,
     write_default_acl_policy,
+)
+from hyprial.daemon.impl.org.network.create.sub_org import (
+    create_meta_payload,
+    effective_tailnet_id,
+    link_tailnet_id,
+    list_orgs_payload,
+    resolve_sub_org_context,
+    sub_org_binding,
+    validate_join_identity_flow,
+    walk_parent_chain,
 )
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
@@ -42,8 +65,10 @@ from hyprial.daemon.impl.org.network.status.view import network_view
 from hyprial.kernel import canonical_user_uri, ipc_errors, parse_user_uri
 from hyprial.identity import (
     DeviceRecord,
+    id_form_minting,
     mark_first_published,
     read_device_record,
+    JoinTokenLedger,
 )
 from hyprial.identity import (
     ACTION_INVITE,
@@ -68,6 +93,17 @@ from hyprial.identity import (
 
 from .tailnet import TailnetLifecycle
 from .tailnet.budget import JoinBudget
+from .lifecycle import (
+    annotate_deleted_orgs,
+    annotate_unbound_org_cells,
+    delete_org,
+    depart_deleted_org,
+    refuse_deleted_or_unbound,
+    refuse_resurrected_org,
+    require_bound_org_cell,
+    require_roster_write_authority,
+    skip_unbound_leave_processing,
+)
 
 JOIN_RETRY_SECONDS = 0.5
 DEFAULT_JOIN_TIMEOUT_SECONDS = 30.0
@@ -117,12 +153,18 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         casdoor: CasdoorGroups | None = None,
         forwarding_status: Callable[[], Mapping[str, Any] | None] | None = None,
         membership_request: Callable[[str, dict], dict] | None = None,
+        network_probe: Callable[[], dict] | None = None,
         network_isolated: bool = False,
         logger: _Logger | None = None,
         invite_ttl_seconds: float = DEFAULT_INVITE_TTL_SECONDS,
         join_timeout_seconds: float = DEFAULT_JOIN_TIMEOUT_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        ensure_owner_cell: Callable[[str, str], Mapping[str, Any] | None] | None = None,
+        owner_cell_roster: Callable[[str], Mapping[str, Any] | None] | None = None, oidc_issuer: Callable[[str], str | None] | None = None,
+        oidc_roster: Callable[[str], Mapping[str, Mapping[str, Any]]] | None = None,
+        org_cell_bound: Callable[[str, str], bool | None] | None = None,
+        owner_cell_binding: Callable[[str], Mapping[str, Any] | None] | None = None,
     ) -> None:
         self._fs = fs
         self._home = Path(home)
@@ -157,18 +199,25 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         self._casdoor = casdoor
         self._forwarding_status = forwarding_status
         self._membership_request = membership_request
+        self._network_probe = network_probe
         self._network_isolated = network_isolated
         self._invite_ttl_seconds = invite_ttl_seconds
         self._join_timeout_seconds = join_timeout_seconds
         self._join_budget: JoinBudget | None = None
         self._sleep = sleep
         self._now = now
+        self._ensure_owner_cell, self._read_owner_cell_roster = ensure_owner_cell, owner_cell_roster
+        self._oidc_issuer, self._oidc_roster = oidc_issuer, oidc_roster
+        self._org_cell_bound = org_cell_bound
+        self._owner_cell_binding = owner_cell_binding
+        self._join_tokens = JoinTokenLedger(self._home / "org" / "join-consumed.json")
 
     @serialized_create
-    def create(self, org: str) -> dict[str, Any]:
+    def create(self, org: str, *, parent: str | None = None) -> dict[str, Any]:
         """Create or resume the creator's org directory and ACL spaces."""
 
         name = org_space_name(org)
+        refuse_resurrected_org(self, org)
         existing = self._find_space(name)
         pending = org_create_intent(self._home, org)
         binding_reason: str | None = None
@@ -186,6 +235,14 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         binding_reason = binding_reason or incomplete_reason
         needs_policy = acl_info is None or incomplete_reason == "missing-acl-policy"
         needs_finalize = acl_info is None or pending is not None or incomplete_reason is not None
+        sub_context = resolve_sub_org_context(
+            self,
+            org,
+            explicit_parent=parent,
+            existing=existing,
+            pending=pending,
+            existing_active=existing is not None and not needs_finalize,
+        )
         if needs_finalize:
             try:
                 intent = prepare_create(
@@ -199,6 +256,9 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                     binding_reason=binding_reason,
                     now=self._now,
                     log=self._log,
+                    parent=sub_context.parent_org if sub_context else None,
+                    parent_space_id=sub_context.parent_space_id if sub_context else None,
+                    tailnet_id=sub_context.tailnet_id if sub_context else None,
                 )
             except OrgCreateResumeDenied as error:
                 raise OrgNetworkError("ORG_ACTION_NOT_AUTHORIZED", str(error)) from error
@@ -211,7 +271,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         else:
             info = existing
         if needs_finalize:
-            self._store.put_org_meta(org, {"state": "creating"})
+            self._store.put_org_meta(org, create_meta_payload("creating", sub_context))
         if acl_info is None:
             assert intent is not None
             try:
@@ -225,7 +285,9 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                 write_default_acl_policy(self._fs, acl_info.space_id)
             self._fs.update_space_meta(info.space_id, {"aclSpaceId": acl_info.space_id})
         self._store.ensure_org_directory_roots(org)
-        if not self._network_isolated:
+        if (existing is None or pending is not None) and self._ensure_owner_cell is not None:
+            self._ensure_owner_cell(org, info.space_id)
+        if not self._network_isolated and sub_context is None:
             self._ensure_new_tailnet(info)
         finish_org_create(self._home, org)
         if self._network_isolated:
@@ -234,15 +296,16 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         else:
             tailnet_initialized = True
             try:
-                published = self._publish_into(org)
+                self._publish_into(org)
+                published = True
             except OrgNetworkError as error:
                 published = False
                 self._log(
                     "warn", "org", "org.create.publish-skipped", org=org, reason=error.code
                 )
-        self._store.put_org_meta(org, {"state": "active"})
+        self._store.put_org_meta(org, create_meta_payload("active", sub_context))
         self._log("info", "org", "org.create", org=org, spaceId=info.space_id)
-        return {
+        result = {
             "org": org,
             "spaceId": info.space_id,
             "aclSpaceId": acl_info.space_id,
@@ -255,11 +318,28 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             "published": published,
             "devicePublished": published,
         }
+        if sub_context is not None:
+            result["parent"] = sub_context.parent_org
+            result["parentSpaceId"] = sub_context.parent_space_id
+            result["tailnetId"] = sub_context.tailnet_id
+        return result
+
+    def repair_candidates(self, org: str | None = None) -> list[dict[str, Any]]:
+        """Return creator-owned org repair candidates without applying them."""
+
+        return repair_candidates(
+            self._fs,
+            home=self._home,
+            node_id=self._node_id,
+            owner=self._owner,
+            org=org,
+            service=self,
+        )
 
     def repair(self, org: str | None = None, *, apply: bool = False) -> dict[str, Any]:
         """Preview or resume incomplete creator-owned org creations."""
 
-        candidates = repair_candidates(self._fs, home=self._home, node_id=self._node_id, owner=self._owner, org=org)
+        candidates = self.repair_candidates(org)
         repaired: list[dict[str, Any]] = []
         if apply:
             for candidate in candidates:
@@ -291,8 +371,17 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         # joining daemon presents as its OrgFS author; a bare name would be a
         # member nobody can ever act as (E2E-025: "not-a-member").
         acl_space = self._require_acl_space(org)
+        refuse_deleted_or_unbound(self, org, space.space_id)
+        sub_parent, _ = sub_org_binding(self._fs, self._home, org, space_id=space.space_id)
+        if sub_parent is not None:
+            sub_ctx = walk_parent_chain(
+                self, child_org=org, parent_org=sub_parent, member_uri=member_uri
+            )
+            tailnet_id = sub_ctx.tailnet_id
+        else:
+            tailnet_id = space.space_id
         tailnet_invite = self._tailnet_call('invite-create', {
-            'operationId': uuid.uuid4().hex, 'tailnetId': space.space_id,
+            'operationId': uuid.uuid4().hex, 'tailnetId': tailnet_id,
             'owner': member_uri.removeprefix('user:'),
             'expiresAtMs': int((self._now().timestamp() + min(3600, self._invite_ttl_seconds)) * 1000),
         })['invite']
@@ -320,11 +409,13 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             workflow_sha256=hashlib.sha256(workflow_yaml.encode("utf-8")).hexdigest(),
             expires_at=expires_at,
             tailnet=tailnet_invite,
+            parent_org=sub_parent,
         )
         # The raw token never lands in the directory — only its digest, so
         # the pending-invite document cannot leak the bearer secret.
         token_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        self._store_put_invite(
+        store_org_invite(
+            self,
             org,
             token_id,
             {
@@ -368,15 +459,18 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             },
         }
 
-    def execute(self, link: str) -> dict[str, Any]:
+    def execute(self, link: str, *, claims: Mapping[str, Any] | None = None, oidc_claims: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Decode a link and run its declarative join workflow (§2.5)."""
 
         parsed = decode_invite(link)
+        if claims is None:
+            claims = oidc_claims
+        self._validate_join_identity(parsed, claims)
         self._join_budget = JoinBudget()
         try:
             self._redeem_tailnet(parsed)
             self._join_budget.remaining("member-announce")
-            self._announce_tailnet(parsed.space_id)
+            self._announce_tailnet(link_tailnet_id(parsed))
             steps = parse_bootstrap_yaml(parsed.workflow_yaml)
             executed: list[dict[str, Any]] = []
             for step in steps:
@@ -391,7 +485,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         finally:
             self._join_budget = None
 
-    def join(self, link: str) -> dict[str, Any]:
+    def join(self, link: str, *, claims: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Join via any invite form — bare token, https URL, deep link (§5.1).
 
         Equivalent to :meth:`execute`; :func:`decode_invite` accepts all
@@ -399,7 +493,36 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         surface (``hyprial org join '<链接>'``).
         """
 
-        return self.execute(link)
+        return self.execute(link, claims=claims)
+
+    def _validate_join_identity(self, parsed: Any, claims: Mapping[str, Any] | None) -> None:
+        validate_join_identity_flow(self, parsed, claims)
+
+    def invite_missing_step(self, link: str) -> str | None:
+        """Read back directory, ACL membership/policy and their exact binding."""
+        from ..membership.invites.recovery import device_committed, missing_membership_step
+
+        parsed = decode_invite(link)
+        missing = missing_membership_step(self, parsed)
+        if missing is None:
+            try:
+                if not device_committed(self, parsed):
+                    return "register-device"
+            except OrgFsError:
+                return "register-device"
+        return missing
+
+    def accept_invite(self, link: str, *, claims: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Resume the confirmed invite; the caller owns its single flight."""
+        from hyprial.identity import invite_identifier
+        from ..membership.invites.journal import AcceptJournal
+        from ..membership.invites.recovery import run_bootstrap
+
+        parsed = decode_invite(link)
+        self._validate_join_identity(parsed, claims)
+        journal = AcceptJournal(self._home, invite_identifier(link))
+        journal.start()
+        return run_bootstrap(self, parsed, journal)
 
     def leave(self, org: str, *, confirmed: bool = False,
               operation_id: str | None = None, device_ids: list[str] | None = None) -> dict[str, Any]:
@@ -413,6 +536,10 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
 
         self._require_allows(org=org, action=ACTION_LEAVE, resource=RESOURCE_ORG_SELF)
         space = self._require_space(org)
+        departed = depart_deleted_org(self, org, space)
+        if departed is not None:
+            return departed
+        require_bound_org_cell(self, org, space.space_id)
         operation = self._removal(org, self._owner, confirmed=confirmed, self_leave=True,
                                   operation_id=operation_id, device_ids=device_ids)
         if operation['phase'] == 'complete':
@@ -428,6 +555,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             org=org, action=ACTION_REMOVE, resource=RESOURCE_ORG_MEMBERS
         )
         space = self._require_space(org)
+        refuse_deleted_or_unbound(self, org, space.space_id)
         operation = self._removal(org, user, confirmed=confirmed,
                                   operation_id=operation_id, device_ids=device_ids)
         result = {'org': org, 'spaceId': space.space_id, 'user': user, **operation}
@@ -438,44 +566,41 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                 result['casdoorGroup'] = self._casdoor_removal_note(org)
         return result
 
-    def delete(self, org: str) -> dict[str, Any]:
-        """Mark ``org`` deleted and drop every non-owner member (owner only)."""
+    @serialized_create
+    def delete(self, org: str, *, confirmed: bool = False,
+               operation_id: str | None = None) -> dict[str, Any]:
+        """Preview or confirmed-execute the org deletion (owner only, W9/D1)."""
 
         self._require_allows(org=org, action="delete", resource="org")
-        raise OrgNetworkError("LAST_AUTHORITY_REFUSED", "Tailnet deletion requires a separate confirmed shutdown maintenance procedure.")
+        return delete_org(self, org, confirmed=confirmed, operation_id=operation_id)
 
     def list(self) -> dict[str, Any]:
-        """This node's orgs ({org, spaceId, role, devices, state} each) and left orgs."""
+        """List this node's orgs and its intentionally left organizations."""
 
-        items: list[dict[str, Any]] = []
-        for org in self._orgs():
-            space = self._find_space(org_space_name(org))
-            try:
-                devices = len(self._store.list_devices(org))
-            except (OrgFsError, ValueError) as error:
-                self._log(
-                    "warn", "org", "org.list.directory-failed", org=org, detail=str(error)
-                )
-                devices = 0
-            items.append(
-                {
-                    "org": org,
-                    "spaceId": space.space_id if space is not None else None,
-                    "role": self._role_of(org),
-                    "devices": devices,
-                    "state": self._org_state(org),
-                }
+        return list_orgs_payload(self)
+
+    def leave_request_orgs(self) -> tuple[str, ...]:
+        """Return owner/admin orgs eligible for maintenance leave processing."""
+
+        return tuple(
+            org
+            for org in self._orgs()
+            if self._policy.allows(
+                org=org,
+                subject=self._owner,
+                action=ACTION_REMOVE,
+                resource=RESOURCE_ORG_MEMBERS,
             )
-        # leftOrgs lets the invite pickup (shell) tell "left on purpose"
-        # from "never joined" without a write to the account (2026-10-04).
-        return {"orgs": items, "leftOrgs": read_left_orgs(self._home)}
+        )
 
-    def process_leave_requests(self) -> dict[str, Any]:
+    def process_leave_requests(self, org: str | None = None) -> dict[str, Any]:
         """Owner/admin reconcile: fulfill every pending leave request."""
 
         processed: list[dict[str, Any]] = []
         skipped: list[str] = []
-        for org in self._orgs():
+        unbound: list[str] = []
+        orgs = (org,) if org is not None else self._orgs()
+        for org in orgs:
             if not self._policy.allows(
                 org=org,
                 subject=self._owner,
@@ -483,6 +608,10 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                 resource=RESOURCE_ORG_MEMBERS,
             ):
                 continue  # not this node's job: only owner/admin process leaves
+            space = self._require_space(org)
+            if skip_unbound_leave_processing(self, org, space.space_id):
+                unbound.append(org)
+                continue
             try:
                 requests = self._store.list_leave_requests(org)
             except (OrgFsError, ValueError) as error:
@@ -499,7 +628,10 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                 if not leave_request_admitted(self._store, self._log, org, user):
                     continue
                 try:
-                    operation = self._removal(org, user, confirmed=False)
+                    is_sub = sub_org_binding(self._fs, self._home, org)[0] is not None
+                    operation = self._removal(
+                        org, user, confirmed=False, process_leave=is_sub
+                    )
                     if operation['phase'] != 'complete':
                         skipped.append(org)
                         continue
@@ -517,24 +649,42 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                 )
         if processed:
             self._log("info", "org", "org.leaves.processed", count=len(processed))
-        return {"processed": processed, "skipped": skipped}
+        return {"processed": processed, "skipped": skipped, "unbound": unbound}
 
     def network(self, org: str | None = None) -> dict[str, Any]:
         """The three-pane network view (§2.6), each pane with its source."""
 
-        return network_view(
+        orgs = [org] if org is not None else self._orgs()
+        record = self._require_device_record()
+        view = network_view(
             fs=self._fs,
             store=self._store,
             node_id=self._node_id,
             owner=self._owner,
-            orgs=[org] if org is not None else self._orgs(),
+            orgs=orgs,
             org=org,
             require_allows=self._require_allows,
             authorization_error=OrgNetworkError,
             forwarding_status=self._forwarding_status,
             own_address=self._own_address,
-            server_public=self._require_device_record().server_public,
+            server_public=record.server_public,
             logger=self._log,
+            device_uid=record.device_uid,
+        )
+        annotate_unbound_org_cells(self, view, orgs)
+        annotate_deleted_orgs(self, view, org)
+        return view
+
+    def require_roster_write_authority(self, org: str, space_id: str) -> None:
+        """M2: refuse org-cell roster writes off the tailnet authority device."""
+
+        from .create.sub_org import effective_tailnet_id
+
+        tailnet_id = effective_tailnet_id(self._fs, self._home, org, space_id=space_id)
+        if self._network_isolated and tailnet_id != space_id:
+            return
+        require_roster_write_authority(
+            self._tailnet_call, org, tailnet_id, inherited=tailnet_id != space_id
         )
 
     def publish_self(self) -> dict[str, Any]:
@@ -564,7 +714,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
 
     def _execute_step(self, link: InviteLink, kind: str) -> str:
         if kind == "connect-inviter":
-            for peer, address in sorted(self._tailnet_candidates(link.space_id).items()):
+            for peer, address in sorted(self._tailnet_candidates(link_tailnet_id(link)).items()):
                 self._require_map_peer()(peer, address)
             if self._request_redial is not None:
                 self._request_redial()
@@ -676,6 +826,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             client_public_by_server=client_public_by_server,
             machine_fingerprint=binding.machine_fingerprint,
             first_published_at=binding.first_published_at,
+            device_uid=record.device_uid if id_form_minting() else None,
         )
         # A member writes only their *own* device row (the owner check is
         # the caller's half of "member 只能写自己的设备记录"); anything
@@ -698,13 +849,17 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             and current.key_generation == device.key_generation
             and current.machine_fingerprint == device.machine_fingerprint
             and current.first_published_at == device.first_published_at
+            and current.device_uid == device.device_uid
         ):
             return False
         self._store.put_device(org, device)
         return True
 
     def _directory_peers_of(self, org: str) -> dict[str, str]:
-        return self._tailnet_candidates(self._require_space(org).space_id)
+        space_id = self._require_space(org).space_id
+        return self._tailnet_candidates(
+            effective_tailnet_id(self._fs, self._home, org, space_id=space_id)
+        )
 
     def _add_directory_peer(
         self,
@@ -825,40 +980,12 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         return secrets.token_urlsafe(24)
 
     def _find_space(self, name: str) -> Any | None:
-        matches = [space for space in self._fs.spaces() if space.name == name]
-        if len(matches) > 1:
-            raise OrgFsError(
-                "ambiguous-space", {"space": name, "count": len(matches)}
-            )
-        return matches[0] if matches else None
+        return find_org_space(self._fs, name)
 
     def _require_space(self, org: str) -> Any:
-        name = org_space_name(org)
-        space = self._find_space(name)
-        if space is None:
-            raise OrgFsError("unknown-space", {"org": org, "space": name})
-        return space
+        return require_org_space(self, org)
 
     def _require_acl_space(self, org: str) -> Any:
-        space, reason = resolve_org_acl_space(self._fs, org)
-        if space is None:
-            self._log(
-                "warn",
-                "org",
-                "policy.grants-unavailable",
-                org=org,
-                reason=reason or "missing-acl-space",
-            )
-            raise OrgFsError(
-                "unknown-space", {"org": org, "reason": reason or "missing-acl-space"}
-            )
-        return space
-
-    def _store_put_invite(self, org: str, token_id: str, record: dict[str, Any]) -> None:
-        put = getattr(self._store, "put_invite", None)
-        if put is None:  # a store that implements only the §4.1 port
-            self._log("warn", "org", "org.invite.registration-unsupported", org=org)
-            return
-        put(org, token_id, record)
+        return require_org_acl_space(self, org)
 
 __all__ = ["OrgNetworkError", "OrgNetworkService", "OrgFsDirectoryStore"]

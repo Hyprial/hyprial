@@ -15,6 +15,7 @@ class Capability(StrEnum):
     TURN_CONTROL = "turn_control"  # interrupt (steer/follow_up optional supersets)
     EVENT_STREAM = "event_stream"  # structured events (completion, observability)
     MODEL_SELECT = "model_select"  # provider+model and endpoint selection
+    PERMISSION_SET = "permission_set"  # launch-time allow/deny set, acknowledged after restart
 
 
 

@@ -44,7 +44,6 @@ def test_adapter_command_tree_has_only_the_consolidated_entries() -> None:
         "identities",
         "list",
         "media",
-        "pin",
         "reload",
         "remove",
         "route",
@@ -52,10 +51,10 @@ def test_adapter_command_tree_has_only_the_consolidated_entries() -> None:
         "start",
         "status",
         "stop",
-        "unpin",
         "user-auth",
     }
     assert "lark-auth" not in root.commands
+    assert not {"pin", "unpin", "pins"} & set(adapter.commands)
 
     scopes = adapter.commands["scopes"]
     assert hasattr(scopes, "commands")
@@ -134,13 +133,26 @@ def test_adapter_list_projects_each_bound_agent() -> None:
         def to_payload(self) -> dict[str, object]:
             return {"provider": "lark", "name": self.name, "status": "stopped"}
 
+    from hyprial.kernel import subject_cell_id
+    from tests.support.identity.cell_runtime import bound_cell, cell_runtime_stub
+
+    agent_id = "a." + "a" * 26
+    agent = SimpleNamespace(
+        agent_id=agent_id,
+        cell_id=subject_cell_id("agent", agent_id),
+        owner="alice",
+        actor="worker",
+        uri="agent:alice:node-1:worker",
+    )
     subject = SimpleNamespace(
         _lark_client=SimpleNamespace(
             read_adapters=lambda: [FakeAdapter("feishu"), FakeAdapter("alerts")]
         ),
-        agents=SimpleNamespace(
-            pins=lambda: {"feishu": "agent:alice:node-1:squire"}
-        ),
+        agents=SimpleNamespace(list=lambda: [agent]),
+        _cell_runtime=cell_runtime_stub((bound_cell(agent, ("feishu",)),)),
+    )
+    subject._adapter_routed_agents = (
+        lambda: _AdapterAdminMixin._adapter_routed_agents(subject)
     )
 
     payload = _AdapterAdminMixin._ipc_adapter_list(subject)
@@ -152,7 +164,7 @@ def test_adapter_list_projects_each_bound_agent() -> None:
                 "provider": "lark",
                 "name": "feishu",
                 "status": "stopped",
-                "agent": "agent:alice:node-1:squire",
+                "agent": "agent:alice:node-1:worker",
             },
             {
                 "provider": "lark",

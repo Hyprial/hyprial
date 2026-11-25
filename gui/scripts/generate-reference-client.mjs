@@ -1,44 +1,58 @@
 /**
- * Generate all declared business types from MethodSpec, including IPC-only writes.
- * A generated method is not HTTP admission: H-01 still rejects hidden writes.
- * Development examples are emitted separately and cannot enter the live bundle.
+ * Generate all HTTP-exposed business types from MethodSpec.
+ * IPC-only declarations (ACL, daemon.catalog, message.send.lookup) are left out
+ * of the GUI reference client so no browser surface can even name them.
+ * A generated method is still not HTTP admission: H-01 separately rejects
+ * hidden writes.
+ *
+ * It also writes the Contract Mock table the browser form serves
+ * (`src/dev/contract-mock/contract.generated.json`): the same `projectContract`
+ * the Node form applies to `openapi.json` at start, so the two forms cannot
+ * read different facts. `--check` fails on any byte difference.
  */
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkDirectory, generateToDirectory } from './generate-client.mjs';
 
 const source = new URL('../../contract/daemon-request/openapi.json', import.meta.url);
 const document = JSON.parse(await readFile(source, 'utf8'));
 const projection = { openapi: document.openapi, info: document.info, paths: {} };
-for (const entry of document['x-hyprial-methods']) {
+const httpMethods = document['x-hyprial-methods'].filter(entry => entry.httpExposed === true);
+for (const entry of httpMethods) {
+  const path = document.paths?.[`/daemon/request/${entry.name}`]?.post;
+  const httpParams = path?.requestBody?.content?.['application/json']?.schema;
   projection.paths[`/daemon/request/${entry.name}`] = { post: {
     operationId: entry.name,
     'x-hyprial-mutates': entry.mutates,
     'x-hyprial-retry': entry.retry,
     'x-hyprial-http-binding': entry.httpBinding,
     'x-hyprial-errors': entry.errors,
-    requestBody: { content: { 'application/json': { schema: entry.paramsSchema } } },
+    // HTTP-exposed methods use the listener projection (host-injected fields
+    // removed); IPC-only methods keep their full declaration.
+    requestBody: { content: { 'application/json': { schema: httpParams ?? entry.paramsSchema } } },
     responses: { 200: { content: { 'application/json': { schema: {
       type: 'object', properties: { result: entry.resultSchema }, required: ['result'],
     } } } } },
   } };
 }
 const output = fileURLToPath(new URL('../src/client/generated', import.meta.url));
-const options = { source: 'contract/daemon-request/openapi.json (all declarations; not HTTP admission)' };
+const options = { source: 'contract/daemon-request/openapi.json (HTTP-exposed declarations)' };
 if (process.argv.includes('--check')) {
   const drift = await checkDirectory(projection, output, options);
   if (drift.length) throw new Error(`Generated reference client drift: ${drift.join(', ')}`);
 } else {
   await generateToDirectory(projection, output, options);
 }
-const exampleFile = new URL('../src/features/agent-provider/api/examples.generated.json', import.meta.url);
-const examples = Object.fromEntries(document['x-hyprial-methods']
-  .filter(entry => entry['x-hyprial-examples'])
-  .map(entry => [entry.name, entry['x-hyprial-examples']]));
-const text = `${JSON.stringify(examples, null, 2)}\n`;
+const tableFile = new URL('../src/dev/contract-mock/contract.generated.json', import.meta.url);
+const { projectContract } = await import('../contract-mock/contract.ts');
+const envelope = JSON.parse(await readFile(new URL('../../contract/daemon-request/http-envelope.schema.json', import.meta.url), 'utf8'));
+const text = `${JSON.stringify(projectContract(document, envelope), null, 2)}\n`;
 if (process.argv.includes('--check')) {
-  if (await readFile(exampleFile, 'utf8') !== text) throw new Error('Reference example drift');
+  const current = await readFile(tableFile, 'utf8').catch(() => null);
+  if (current !== text) throw new Error('Contract table drift');
 } else {
-  await writeFile(exampleFile, text);
+  await mkdir(dirname(fileURLToPath(tableFile)), { recursive: true });
+  await writeFile(tableFile, text);
 }
-console.log('Reference client and examples match MethodSpec');
+console.log('Reference client and contract table match MethodSpec');

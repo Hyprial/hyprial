@@ -1,5 +1,8 @@
 # Core / Power Pack 当前架构说明
 
+> **2026-11-14 已被取代：** 本文描述的原生壳（`clients/native/`）与打包线（`packaging/clients/`）已整体删除，
+> 其安排由 `docs/design/gui-single-launch-2026-11-14.md` 取代。以下内容仅作历史记录保留，文中路径在当前树内不存在。
+
 日期：2026-10-19。范围：官方 harness-bridge 的五端客户端。
 源码快照：`intg/gui-app-core-20261008` @ `b02b3b13273978dc07e86dd1ed8ab04c2a66cd5e`。
 本文是当前实现与目标差距的说明，不修改接口、身份协议或本地工作流规则。

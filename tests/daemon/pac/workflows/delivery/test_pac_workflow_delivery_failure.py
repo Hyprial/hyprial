@@ -291,7 +291,10 @@ def _downgrade_notifications_to_v16(database: Path) -> None:
         for table, columns in (
             ("workflow_outcome_receipts", ("expansion_digest", "node_id", "graph_id")),
             ("remote_workflow_outbox", ("attempt_no", "expansion_digest", "expansion_text")),
-            ("workflow_graphs", ("expansion_deadline_ms", "parent_node_id", "parent_graph_id")),
+            ("workflow_graphs", (
+                "held_at_ms",  # v20 (#1803): newer than this v16 fixture
+                "expansion_deadline_ms", "parent_node_id", "parent_graph_id",
+            )),
         ):
             for column in columns:
                 connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
@@ -351,7 +354,7 @@ def test_v16_pending_alert_migrates_and_remains_eligible(tmp_path: Path) -> None
     try:
         store = second._open(read_only=True)
         try:
-            assert store._db.execute("PRAGMA user_version").fetchone()[0] == 19
+            assert store._db.execute("PRAGMA user_version").fetchone()[0] == 20
         finally:
             store.close()
         second._tick()

@@ -1,3 +1,7 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Delegates executable suffix naming, windowless subprocess flags, and mode
+#   significance checks to hyprial.kernel.{executable_filename,
+#   hidden_subprocess_kwargs, file_modes_are_significant}.
 """Locating and verifying the ``hyprial-tailcat`` sidecar binary.
 
 The Go sidecar ships inside the wheel (``hyprial/_bin``), may be installed
@@ -13,9 +17,14 @@ import json
 import os
 import stat
 import subprocess
-import sys
 from collections.abc import Mapping
 from pathlib import Path
+
+from hyprial.kernel import (
+    executable_filename,
+    file_modes_are_significant,
+    hidden_subprocess_kwargs,
+)
 
 TAILCAT_COMMIT = "b4dc28e8aa8936f0a90a41ad8293a64e3d6b645f"
 """The Tailcat engine commit this daemon's protocol v6 client is built for."""
@@ -43,8 +52,7 @@ class TailcatSidecarError(RuntimeError):
 def sidecar_binary_name() -> str:
     """Return the sidecar filename for the current runtime platform."""
 
-    suffix = ".exe" if sys.platform == "win32" else ""
-    return f"{SIDECAR_BINARY_NAME}{suffix}"
+    return executable_filename(SIDECAR_BINARY_NAME)
 
 
 def no_console_window_kwargs() -> dict[str, int]:
@@ -56,9 +64,7 @@ def no_console_window_kwargs() -> dict[str, int]:
     that must stay invisible passes these kwargs.
     """
 
-    if sys.platform != "win32":
-        return {}
-    return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return dict(hidden_subprocess_kwargs())
 
 
 def sidecar_binary_path(home: Path) -> Path:
@@ -91,7 +97,7 @@ def _executable(candidate: Path) -> bool:
         return False
     if not stat.S_ISREG(info.st_mode):
         return False
-    return sys.platform == "win32" or os.access(candidate, os.X_OK)
+    return not file_modes_are_significant() or os.access(candidate, os.X_OK)
 
 
 def locate_tailcat_sidecar(

@@ -2,7 +2,7 @@
 
 Windows compatibility is a property of the libraries chosen, not of per-call
 patches: ``filelock`` owns the flock/LockFileEx split, and only the kernel
-wrapper (``kernel/impl/platform/file_lock.py``) may construct it, because the
+wrapper (``kernel/impl/manysys/fs/file_lock.py``) may construct it, because the
 library defaults (soft fallback, thread-local, unlink on release) are wrong for
 an ownership lock.  The second rule catches the anti-pattern that broke
 ``request_http`` on Windows: an unconditional module-level import of a
@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = ROOT / "src" / "hyprial"
-WRAPPER = SOURCE / "kernel" / "impl" / "platform" / "file_lock.py"
+WRAPPER = SOURCE / "kernel" / "impl" / "manysys" / "fs" / "file_lock.py"
 POSIX_ONLY_MODULES = frozenset({"fcntl", "termios", "pwd", "grp", "resource", "posix"})
 
 

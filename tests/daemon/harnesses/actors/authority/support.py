@@ -41,6 +41,40 @@ class _Process:
         self.running = False
 
 
+def _envelope(delivery: Any, *, member: str = "worker") -> Any:
+    """A production-shaped dispatch envelope around one captured delivery."""
+
+    from hyprial.daemon.impl.cells.actor.contracts import (
+        CellDispatchEnvelope,
+        CellDispatchStamp,
+    )
+
+    ids = tuple(delivery.message_ids) if delivery.message_ids else ()
+    origin = ids if ids else (delivery.delivery_id,)
+    return CellDispatchEnvelope(
+        stamp=CellDispatchStamp(
+            "c.test", member, "ce-1", 1, origin
+        ),
+        input=delivery,
+    )
+
+
+def _steer_envelope(member: str, delivery_id: str) -> Any:
+    """A production-shaped steer envelope for one in-flight delivery id."""
+
+    from hyprial.daemon.impl.cells.actor.contracts import (
+        CellDispatchEnvelope,
+        CellDispatchStamp,
+        DISPATCH_STEER,
+    )
+
+    return CellDispatchEnvelope(
+        stamp=CellDispatchStamp("c.test", member, "ce-1", 1, (delivery_id,)),
+        input=None,
+        dispatch_kind=DISPATCH_STEER,
+    )
+
+
 class _Launcher:
     def __init__(self) -> None:
         self.processes: list[_Process] = []
@@ -57,6 +91,9 @@ class _AgentIdentity:
 
     def entity_token(self, _actor: str) -> str | None:
         return self.token
+
+    def actor_name(self, actor: str) -> str | None:
+        return actor
 
 
 def _spec(name: str = "worker") -> HarnessLaunchSpec:
@@ -101,13 +138,14 @@ def _dead_pid() -> int:
     return child.pid
 
 
-def _stopping_port(identity_reader: Any) -> ProcessIoPort:
+def _stopping_port(identity_reader: Any, actor_host: Any) -> ProcessIoPort:
     return ProcessIoPort(
         _Launcher(),
         emit=lambda event: (PortAdmission.ACCEPTED, 0),
         delivery_failed=lambda event, error: None,
         generation_reader=lambda: 0,
         identity_reader=identity_reader,
+        actor_host=actor_host,
     )
 
 
@@ -219,9 +257,11 @@ __all__ = [
     '_Process',
     '_actor_dispatch_source',
     '_dead_pid',
+    '_envelope',
     '_handled_frozen_commands',
     '_safety_contract_errors',
     '_spec',
+    '_steer_envelope',
     '_stopping_port',
     '_wait_for',
 ]

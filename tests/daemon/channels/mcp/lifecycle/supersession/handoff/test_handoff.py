@@ -12,6 +12,7 @@ import pytest
 from mcp.client.session import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 from hyprial.daemon.impl.application import DaemonRequestError
+from tests.support.agent_destroy import destroy_agent
 from hyprial.daemon.impl.inbox_watch import Ok, Rejected, Unreachable
 from hyprial.daemon.impl.mcp import SESSION_SUPERSEDED_CODE, DaemonRequestRejected, StatelessDaemonProxy, UnixDaemonConnectionFactory, run_channel_session
 from hyprial.daemon.impl.mcp.channel import ownership as channel_module
@@ -76,6 +77,12 @@ async def test_daemon_unregistered_actor_is_stale_not_superseded(
 async def test_same_session_ref_rename_retires_old_actor_registration(
     tmp_path: Path, own_daemon_application,
 ) -> None:
+    """One harness session moves to a new name; the old name is destroyed later.
+
+    The ref the old name's destroy retires is still held by new-name's own
+    live session history, so new-name keeps the session (NF1 H1).
+    """
+
     app = _daemon_app(tmp_path, own_daemon_application)
     # These are local agents: #1753 authenticates their live Agent bindings.
     old_actor = f"agent:{app.owner}:{app.node_id}:old-name"
@@ -94,13 +101,15 @@ async def test_same_session_ref_rename_retires_old_actor_registration(
             },
         )
 
-    assert registered["supersededActors"] == [old_actor]
+    old_address = app.agents.get("old-name").uri
+    new_address = app.agents.get("new-name").uri
+    assert registered["supersededActors"] == [old_address]
     assert [
         (session.actor, session.session_ref)
         for session in app.desired_state.load().interactive_sessions
-    ] == [(new_actor, "same-cc-session")]
-    assert app._agent_session_domains.session.read_runtime(old_actor) is None
-    assert app._agent_session_domains.session.read_runtime(new_actor) is not None
+    ] == [(new_address, "same-cc-session")]
+    assert app._agent_session_domains.session.read_runtime(old_address) is None
+    assert app._agent_session_domains.session.read_runtime(new_address) is not None
 
     with pytest.raises(DaemonRequestError) as rejected:
         app.handle(
@@ -113,6 +122,28 @@ async def test_same_session_ref_rename_retires_old_actor_registration(
         "message.pending.list",
         {"actor": new_actor, "sessionRef": "same-cc-session"},
     )["ok"] is True
+
+    destroy_agent(app, "old-name")
+    assert app.agents.get("old-name") is None
+    assert app.handle(
+        "message.pending.list",
+        {"actor": new_actor, "sessionRef": "same-cc-session"},
+    )["ok"] is True
+    app.handle(
+        "session.heartbeat", {"actor": new_actor, "sessionRef": "same-cc-session"}
+    )
+    app.handle(
+        "session.register",
+        {
+            "actor": new_actor,
+            "sessionRef": "same-cc-session",
+            "cwd": "/work",
+            "command": ["claude"],
+            "source": "claude-channel",
+            "channelConfirmed": True,
+        },
+    )
+    assert app._agent_session_domains.session.read_runtime(new_address) is not None
 
 
 async def test_poll_loop_goes_quiet_on_supersede_without_reregistering() -> None:

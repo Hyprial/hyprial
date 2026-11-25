@@ -78,19 +78,51 @@ def test_the_two_reads_are_declared_by_exact_name_and_the_family_stays_open() ->
     assert "agent.list" in METHOD_REGISTRY
     assert "agent.secret.list" in METHOD_REGISTRY
     assert agent_catalog.PARTIAL_MIGRATED_METHODS == frozenset(
-        {"agent.list", "agent.secret.list"}
+        {
+            "agent.list",
+            "agent.resolve",
+            "agent.secret.list",
+            "agent.home-census",
+            "agent.harness-args.get",
+            "agent.harness-args.validate",
+            "agent.harness-args.set",
+            "agent.harness-args.clear",
+            "agent.cell.get",
+            "agent.cell.update",
+        }
     )
     assert "agent" not in MIGRATED_FAMILIES
-    assert "link" in MIGRATED_FAMILIES
+    assert "link" not in MIGRATED_FAMILIES
     assert {
         name for name in METHOD_REGISTRY.names if name.startswith("agent.")
     } == set(agent_catalog.PARTIAL_MIGRATED_METHODS) | {
+        "agent.grant.check",
+        "agent.grant.visibility",
+        "agent.provider.allow",
+        "agent.provider.auth.list",
         "agent.provider.default",
         "agent.provider.login",
         "agent.provider.logout",
+        "agent.attach",
+        "agent.detach",
+        "agent.create",
+        "agent.destroy.preview",
+        "agent.destroy",
+        "agent.stop",
+        "agent.start",
+        "agent.secret.grant",
+        "agent.secret.provider-write",
+        "agent.secret.provider-list",
+        "agent.secret.provider-configure",
+        "agent.secret.provider-test",
+        "agent.secret.revoke",
+        "agent.rename",
+        "agent.provider.revoke",
+        "agent.provider.status",
     }
     assert METHOD_REGISTRY.get("agent.get") is None
-    assert METHOD_REGISTRY.get("agent.secret.grant") is None
+    for name in ("agent.secret.grant", "agent.secret.provider-write"):
+        assert METHOD_REGISTRY.get(name).spec.mutates is True
 
 
 def test_the_declarations_are_read_only_and_http_projectable() -> None:
@@ -122,6 +154,7 @@ def test_the_declarations_are_read_only_and_http_projectable() -> None:
         assert {error.code for error in spec.errors} <= {
             ipc_errors.INVALID_ARGUMENT,
             ipc_errors.AGENT_NOT_FOUND,
+            ipc_errors.AGENT_INCARNATION_MISMATCH,
             "AGENT_ERROR",
         }
         assert ipc_errors.INVALID_ARGUMENT in {error.code for error in spec.errors}
@@ -129,11 +162,12 @@ def test_the_declarations_are_read_only_and_http_projectable() -> None:
 
 def test_agent_secret_list_targets_one_agent_and_never_a_caller_identity() -> None:
     spec = agent_catalog.AGENT_SECRET_LIST_SPEC
-    assert set(spec.params_schema["properties"]) == {"actor"}
+    assert set(spec.params_schema["properties"]) == {"actor", "expectedAgent"}
     assert spec.params_schema.get("required", []) == []
     assert set(agent_catalog.AGENT_LIST_SPEC.params_schema["properties"]) == {
         "inactiveSince",
         "excludeWf",
+        "includeUserAgent",
     }
 
 
@@ -309,3 +343,35 @@ def test_an_unmigrated_agent_method_still_routes_through_the_legacy_branch(
     app.agents.create("alpha")
     routed = app.handle("agent.get", {"name": "alpha"})
     assert routed["agent"]["actor"] == "alpha"
+
+
+def test_start_failure_projection_is_fenced_and_does_not_echo_worker_output():
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from hyprial.daemon.impl.application.messaging.status.snapshots import _WorkerSnapshotMixin
+    from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation
+    from tests.daemon.lifecycle.process.manager.support import _spec
+
+    target = _spec("worker")
+    operation = replace(LifecycleOperation.create("failed", target),
+                        observed_entity_token="incarnation")
+    snapshot = SimpleNamespace(start_failures={target.actor: (operation,
+        "configured Pi model is unavailable; secret=do-not-display", 42)})
+    app = SimpleNamespace(_current_worker_snapshot=lambda: snapshot)
+    agent = SimpleNamespace(uri=target.actor, entity_token="incarnation", model=None,
+                            provider=None, cwd=None, preferred_harness="codex", last_harness=None)
+    def read():
+        return _WorkerSnapshotMixin._startup_failure_field(app, agent)
+    assert read()["startupFailure"]["failedAtMs"] == 42
+    assert "do-not-display" not in str(read())
+    agent.entity_token = "new-incarnation"
+    assert read() == {}
+    agent.entity_token = "incarnation"
+    agent.model = "changed"
+    assert read() == {}
+    agent.model = None
+    agent.provider = "changed"
+    assert read() == {}
+    agent.provider = None
+    agent.cwd = "/new/location"
+    assert read() == {}

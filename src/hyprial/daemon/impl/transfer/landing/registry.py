@@ -26,6 +26,11 @@ reverse on any failure:
 
 The two-machine run, container materialisation and strict resume named by card
 356 are not part of this slice.
+
+UA1b (2026-11-18): a bundle whose actor is the user agent's reserved name is
+refused before the row is minted.  Every machine ensures its own user agent,
+so one never travels, and a landed row would hold the name without the
+``template: user`` fact.
 """
 
 from __future__ import annotations
@@ -33,12 +38,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol, Sequence, runtime_checkable
 
 from hyprial.identity import HomePayloadFile, SecretSource, snapshot_home_payload
+from hyprial.kernel import harden_private_path, path_is_reparse
 from hyprial.daemon.impl.transfer.archive.bundle import validate_bundle
 from hyprial.daemon.impl.transfer.archive.envelope import (
     RecipientKeyError,
@@ -48,26 +55,23 @@ from hyprial.daemon.impl.transfer.archive.envelope import (
 from hyprial.daemon.impl.transfer.landing.credentials import (
     CredentialApplyResult,
     CredentialBinding,
+    CredentialLanding,
     apply_credential_landing,
     plan_credential_landing,
 )
-from hyprial.daemon.impl.transfer.landing.owner import (
-    LandingActorMismatch,
-    LandingError,
-    LandingFailed,
-    LandingNameTaken,
-    LandingResult)
 from hyprial.daemon.impl.transfer.landing.receive import receive_bundle
-from hyprial.daemon.impl.transfer.landing.signature_gate import (
-    SignaturePolicy,
-    require_trusted_signature)
 from hyprial.daemon.impl.transfer.manifest_reading import load_sealed_manifest
 
 __all__ = [
     "CUSTODY_RECEIPT",
     "HOME_TOPOLOGY",
+    "LandingActorMismatch",
+    "LandingError",
+    "LandingFailed",
     "LandingGrantInvalid",
+    "LandingNameTaken",
     "LandingOwnerMismatch",
+    "LandingResult",
     "RegistryLandingAuthority",
     "land_bundle_into_registry",
 ]
@@ -80,6 +84,70 @@ CUSTODY_RECEIPT = "state/home-receipt.json"
 #: extra top-level entries, so landing one would create an agent that cannot
 #: be destroyed without operator surgery.
 HOME_TOPOLOGY = ("state", "config", "secrets", "workspace")
+
+
+class LandingError(Exception):
+    """Base class for the identity half of a receive."""
+
+    code = "landing_error"
+
+
+class LandingNameTaken(LandingError):
+    """The target already speaks for this actor; a transfer never overwrites."""
+
+    code = "landing_name_taken"
+
+
+class LandingActorMismatch(LandingError):
+    """The bundle carries a different actor than the caller expects."""
+
+    code = "landing_actor_mismatch"
+
+
+class LandingFailed(LandingError):
+    """The landing did not complete; every trace of the attempt was undone."""
+
+    code = "landing_failed"
+
+
+@dataclass(frozen=True)
+class LandingResult:
+    """What a successful landing did (or would do, with ``dry_run``)."""
+
+    actor: str
+    owner: str
+    source_machine: str
+    destination: Path
+    files: int
+    bytes: int
+    grants: tuple[str, ...]
+    identity_rebound: bool
+    dry_run: bool
+    credential_policy: str = ""
+    credentials: tuple[CredentialLanding, ...] = ()
+
+    @property
+    def needs_reauth(self) -> tuple[str, ...]:
+        """Credentials the target must re-authenticate before it can use them."""
+
+        return tuple(item.name for item in self.credentials)
+
+    def as_dict(self) -> dict[str, object]:
+        """A serialisable receipt without incarnation authority tokens."""
+
+        return {
+            "actor": self.actor,
+            "owner": self.owner,
+            "source_machine": self.source_machine,
+            "destination": str(self.destination),
+            "files": self.files,
+            "bytes": self.bytes,
+            "grants": list(self.grants),
+            "identityRebound": self.identity_rebound,
+            "dryRun": self.dry_run,
+            "credentialPolicy": self.credential_policy,
+            "credentials": [item.as_dict() for item in self.credentials],
+        }
 
 
 class LandingOwnerMismatch(LandingError):
@@ -215,6 +283,13 @@ class RegistryLandingAuthority:
                 f"this target speaks for owner {self.registry.owner!r}; the "
                 f"bundle carries {owner!r}, and a cross-owner landing is not "
                 "this slice"
+            )
+        from hyprial.daemon.impl.user_agent.naming import USER_AGENT_NAME
+
+        if actor == USER_AGENT_NAME:
+            raise LandingError(
+                f"{actor!r} is reserved for the owner's user agent, which every "
+                "machine creates for itself; it is never landed"
             )
         if self._expected_files is None:
             self._expected_files = snapshot_home_payload(Path(home))
@@ -362,7 +437,6 @@ def land_bundle_into_registry(
     cwd: str | None = None,
     harness: str | None = None,
     dry_run: bool = False,
-    signature: SignaturePolicy,
 ) -> LandingResult:
     """Land a bundle on this target: fresh incarnation, payload, grants.
 
@@ -382,8 +456,6 @@ def land_bundle_into_registry(
     and policed, and every credential stops at ``reauth-required``.
     """
 
-    # One reading of the manifest, threaded through validation, the gate and
-    # the receive below: what is validated is what is attested is what lands.
     reading = load_sealed_manifest(bundle_dir)
     manifest = validate_bundle(bundle_dir, manifest=reading.manifest)
     wiring = _launch_wiring(manifest.identity)
@@ -393,12 +465,6 @@ def land_bundle_into_registry(
             f"but this landing is for {harness!r}; refusing to bind one "
             "harness's provider/model to another harness"
         )
-    attestation = require_trusted_signature(
-        bundle_dir,
-        policy=signature,
-        credential_envelope=manifest.credential_envelope or None,
-        sealed=reading,
-    )
     if expected_actor is not None and manifest.actor != expected_actor:
         raise LandingActorMismatch(
             f"bundle carries actor {manifest.actor!r}, expected {expected_actor!r}"
@@ -413,9 +479,6 @@ def land_bundle_into_registry(
             f"this target speaks for owner {registry.owner!r}; the bundle "
             f"carries {manifest.owner!r}"
         )
-    # Credentials are decided in the same pre-write phase as the name check, so
-    # a policy this target cannot honour refuses while the registry and the
-    # disk are untouched -- and the receipt says so either way.
     credential_plan = plan_credential_landing(
         manifest, bundle_dir, recipient_key=_machine_recipient_key(machine_home)
     )
@@ -427,13 +490,14 @@ def land_bundle_into_registry(
         )
     total_bytes = sum(entry.size for entry in manifest.entries)
     if dry_run:
-        # Parity with the real landing: ``materialise_payload`` refuses a
-        # payload outside ``HOME_TOPOLOGY`` while it writes, so a dry run that
-        # reported ok for the same bundle was a false green -- the operator's
-        # pre-flight said yes to a landing that could only fail (two-machine
-        # reading 2026-10-12).
         for entry in manifest.entries:
             _check_topology(Path(entry.path))
+        if _manifest_carries_exclusions(manifest):
+            _validate_carried_org_exclusions(
+                Path(bundle_dir) / "payload",
+                require_private_dirs=False,
+                require_present=True,
+            )
         return LandingResult(
             actor=manifest.actor,
             owner=manifest.owner,
@@ -446,18 +510,37 @@ def land_bundle_into_registry(
             dry_run=True,
             credential_policy=credential_plan.policy.strategy,
             credentials=credential_plan.credentials,
-            signature=attestation,
         )
 
+    if _manifest_carries_exclusions(manifest):
+        try:
+            _validate_carried_org_exclusions(
+                Path(bundle_dir) / "payload",
+                require_private_dirs=False,
+                require_present=True,
+            )
+        except LandingError as error:
+            raise LandingFailed(
+                f"landing {manifest.actor!r} failed; rollback attempted: {error}"
+            ) from error
+
+    staging_existed = Path(staging).exists()
     staged = receive_bundle(
-        bundle_dir, staging, expect_actor=manifest.actor, signature=signature,
-        sealed=reading,
+        bundle_dir, staging, expect_actor=manifest.actor, sealed=reading,
     )
     grants: list[str] = []
     secret_grants: list[str] = []
+    adopted_exclusions: list[_ExclusionUndoHandle] = []
     applied: CredentialApplyResult | None = None
     adopted = False
     try:
+        if _manifest_carries_exclusions(manifest):
+            _harden_staging_exclusions_dirs(
+                staged.destination, harden_root=not staging_existed
+            )
+            _validate_carried_org_exclusions(
+                staged.destination, require_present=True
+            )
         authority.adopt_agent(
             manifest.actor,
             owner=manifest.owner,
@@ -475,15 +558,24 @@ def land_bundle_into_registry(
                 grants.append(grant_id)
         _prune(staged.destination)
         authority.confirm_landing(manifest.actor)
-        # Only now is the home receipt ``ready``, which is exactly what a
-        # secret grant validates against: install what the envelope opened,
-        # then bind each env entry to the incarnation this landing minted.
         applied = apply_credential_landing(dest, credential_plan)
         for binding in applied.bindings:
             secret_grants.append(authority.bind_secret(manifest.actor, binding))
+        _adopt_carried_org_exclusions(
+            dest=dest,
+            machine_home=machine_home,
+            registry=registry,
+            actor=manifest.actor,
+            adopted_exclusions=adopted_exclusions,
+        )
     except BaseException as error:
         problems = _undo(
-            authority, manifest.actor, staged.destination, grants, secret_grants
+            authority,
+            manifest.actor,
+            staged.destination,
+            grants,
+            secret_grants,
+            adopted_exclusions,
         )
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
@@ -508,8 +600,13 @@ def land_bundle_into_registry(
             if applied is not None
             else credential_plan.credentials
         ),
-        signature=attestation,
     )
+
+
+class _ExclusionUndoHandle(Protocol):
+    agent_id: str
+
+    def undo(self) -> bool: ...
 
 
 def _undo(
@@ -518,10 +615,18 @@ def _undo(
     staging: os.PathLike[str] | str,
     grants: Sequence[str],
     secret_grants: Sequence[str] = (),
+    adopted_exclusions: Sequence[_ExclusionUndoHandle] = (),
 ) -> list[str]:
     """Take back, in reverse, whatever the attempt already did."""
 
     problems: list[str] = []
+    for handle in reversed(adopted_exclusions):
+        try:
+            handle.undo()
+        except Exception as error:  # noqa: BLE001 - reported, never masked
+            problems.append(
+                f"rollback org exclusions for {handle.agent_id!r}: {error}"
+            )
     if secret_grants:
         try:
             authority.revoke_secret_grants(actor, list(secret_grants))
@@ -560,6 +665,106 @@ def _prune(staged_root: os.PathLike[str] | str) -> None:
         shutil.rmtree(staged_root)
     except FileNotFoundError:
         pass
+
+
+def _manifest_carries_exclusions(manifest: object) -> bool:
+    from hyprial.daemon.impl.org.network.member_agents.exclusions import (
+        TRANSFER_EXCLUSIONS_RELPATH,
+    )
+
+    entries = getattr(manifest, "entries", ())
+    return any(
+        getattr(entry, "path", None) == TRANSFER_EXCLUSIONS_RELPATH
+        for entry in entries
+    )
+
+
+def _harden_staging_exclusions_dirs(root: Path, *, harden_root: bool) -> None:
+    targets = (root, root / "state") if harden_root else (root / "state",)
+    for candidate in targets:
+        try:
+            info = candidate.lstat()
+        except FileNotFoundError:
+            return
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or path_is_reparse(info)
+            or not stat.S_ISDIR(info.st_mode)
+        ):
+            return
+        harden_private_path(candidate, mode=0o700)
+
+
+def _validate_carried_org_exclusions(
+    root: Path,
+    *,
+    require_private_dirs: bool = True,
+    require_present: bool = False,
+) -> tuple[str, ...] | None:
+    from hyprial.daemon.impl.org.network.member_agents.exclusions import (
+        OrgAgentExclusionStorageError,
+        read_carried_exclusion_spaces,
+    )
+
+    try:
+        spaces = read_carried_exclusion_spaces(
+            root, require_private_dirs=require_private_dirs
+        )
+    except (OSError, ValueError, OrgAgentExclusionStorageError) as error:
+        raise LandingError(
+            f"invalid carried org agent exclusions: {error}"
+        ) from error
+    if require_present and spaces is None:
+        raise LandingError(
+            "invalid carried org agent exclusions: missing carried exclusions file"
+        )
+    return spaces
+
+
+def _adopt_carried_org_exclusions(
+    *,
+    dest: Path,
+    machine_home: os.PathLike[str] | str | None,
+    registry: RegistryPort,
+    actor: str,
+    adopted_exclusions: list[_ExclusionUndoHandle] | None = None,
+) -> None:
+    from hyprial.daemon.impl.org.network.member_agents.exclusions import (
+        TRANSFER_EXCLUSIONS_RELPATH,
+        OrgAgentExclusionAdoption,
+        OrgAgentExclusionStorageError,
+        OrgAgentExclusionStore,
+        read_carried_exclusion_spaces,
+    )
+
+    spaces = read_carried_exclusion_spaces(dest)
+    if spaces is None or machine_home is None or not spaces:
+        return
+    carried = dest / TRANSFER_EXCLUSIONS_RELPATH
+    landed = registry.require(actor)
+    store = OrgAgentExclusionStore(Path(machine_home))
+    recorded = False
+
+    def _record(adoption: OrgAgentExclusionAdoption) -> None:
+        nonlocal recorded
+        if not recorded and adoption.changed and adopted_exclusions is not None:
+            adopted_exclusions.append(adoption)
+            recorded = True
+
+    try:
+        adoption = store.adopt_for_agent(
+            landed.agent_id,
+            spaces,
+            on_committed=_record,
+        )
+    except OrgAgentExclusionStorageError as error:
+        committed = getattr(error, "committed_adoption", None)
+        if committed is not None:
+            _record(committed)
+        raise
+    if isinstance(adoption, OrgAgentExclusionAdoption):
+        _record(adoption)
+    carried.unlink()
 
 
 def _check_topology(relative: Path) -> None:

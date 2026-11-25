@@ -1,16 +1,41 @@
+# Decision record (harnesses/claude/runtime, W1E-1 2026-11-21):
+# - Implements Owner 5A portability ruling to eliminate unprivileged Windows
+#   os.symlink failures (SeCreateSymbolicLinkPrivilege / WinError 1314):
+#   1. Receipt-named non-secret projection files are atomically copied as
+#      private regular files into native_root and tracked in
+#      .hyprial-projection.json so same-revision drift is rejected, authority-
+#      prepared views stay read-only, and stale items from prior config
+#      revisions are pruned without disturbing runtime-writable .claude.json or
+#      .credentials.json.
+#   2. P22 (identity/impl/agents/runtime/context.py), CLI session resume, and
+#      transfer archiving (daemon/impl/transfer/archive/session_files.py)
+#      require transcripts to live under the separate physical session_root
+#      (<agent_home>/state/sessions/claude) outside secrets/native/claude.
+#      Therefore <native_root>/projects uses manysys.link_directory /
+#      manysys.is_directory_link / manysys.unlink_directory_link (POSIX directory
+#      symlink, Windows unprivileged NTFS junction).
 """Claude-specific consumption of the shared agent-home P2 runtime context."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import stat
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
-from hyprial.kernel import private_metadata_violation
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    harden_private_path,
+    manysys,
+    private_metadata_violation,
+)
 
 from hyprial.identity import (
-    AgentConfigError, NativeCredentialError, prepare_legacy_claude_native_root,
+    AgentConfigError,
+    NativeCredentialError,
+    prepare_legacy_claude_native_root,
     verify_native_projection,
 )
 from hyprial.identity import (
@@ -20,7 +45,12 @@ from hyprial.identity import (
 
 CLAUDE_RUNTIME_ENVIRONMENT = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 _SESSION_LINK = "projects"
-_RESERVED_PROJECTION_ROOTS = frozenset({_SESSION_LINK, ".credentials.json"})
+_PROJECTION_STATE_FILE = ".hyprial-projection.json"
+_LAUNCH_PROVISIONED_MARKER = ".hyprial-launch-provisioned"
+_RESERVED_PROJECTION_ROOTS = frozenset(
+    {_SESSION_LINK, ".credentials.json", _PROJECTION_STATE_FILE, _LAUNCH_PROVISIONED_MARKER}
+)
+_RUNTIME_WRITABLE_PATHS = frozenset({".claude.json"})
 _DEAD_AUTH_NAME = "ANTHROPIC_OAUTH_TOKEN"
 _OAUTH_AUTH_NAME = "CLAUDE_CODE_OAUTH_TOKEN"
 _EXPLICIT_AUTH_NAMES = (
@@ -53,7 +83,7 @@ def prepare_claude_runtime_context(context: AgentRuntimeContext) -> None:
     adapter copies only the receipt-named non-secret projection files into the
     already-resolved native root, where Claude can load them alongside its
     separately authorized credential state. The ``projects`` entry is a
-    harness-specific indirection to P22's session root.
+    harness-specific directory link to P22's session root.
     """
 
     try:
@@ -85,44 +115,55 @@ def _prepare_claude_runtime_context(context: AgentRuntimeContext) -> None:
     _require_private_directory(native_root, "native")
     _require_private_directory(session_root, "session")
 
-    projected_roots: dict[str, Path] = {}
     for item in context.projection.items:
         parts = PurePosixPath(item.native_path).parts
         if not parts or parts[0] in _RESERVED_PROJECTION_ROOTS:
             raise ClaudeRuntimeError(
                 f"Claude projected path {item.native_path!r} is runtime-reserved"
             )
-        projected_roots[parts[0]] = projection_root / parts[0]
 
-    planned = [
-        _plan_projection_link(
-            native_root / name,
-            source,
-            context,
-        )
-        for name, source in sorted(projected_roots.items())
-    ]
     _verify_or_plan_session_link(native_root / _SESSION_LINK, session_root)
-    stale = [
+    state = _read_projection_state(native_root)
+    legacy_links = [
         entry
         for entry in native_root.iterdir()
-        if entry.name not in projected_roots
-        and entry.name not in _RESERVED_PROJECTION_ROOTS
+        if entry.name not in _RESERVED_PROJECTION_ROOTS
         and _is_managed_projection_link(entry, context)
     ]
+
     if context.authority_prepared:
-        # The Agent home owner already materialized this exact incarnation.
-        # Consumers verify drift but must not recreate a revoked or removed view.
-        if any(replace for _path, _source, replace in planned) or stale:
+        if legacy_links or not _authority_projection_matches(context, state):
             raise ClaudeRuntimeError("authority-prepared Claude native projection drifted")
-        if not (native_root / _SESSION_LINK).is_symlink():
+        if not manysys.is_directory_link(native_root / _SESSION_LINK):
             raise ClaudeRuntimeError("authority-prepared Claude projects link is missing")
         return
-    for path, source, replace in planned:
-        if replace:
-            _replace_projection_link(path, source)
-    for path in stale:
-        path.unlink()
+
+    if (
+        state is not None
+        and not legacy_links
+        and state[0] == context.projection.digest
+    ):
+        _verify_copied_projection(context, state[1])
+        _ensure_session_link(native_root / _SESSION_LINK, session_root)
+        return
+
+    previous_paths = state[1] if state is not None else frozenset()
+    legacy_roots = {entry.name for entry in legacy_links}
+    _check_projection_collisions(context, previous_paths, legacy_roots)
+
+    for entry in legacy_links:
+        entry.unlink()
+
+    current_paths = frozenset(item.native_path for item in context.projection.items)
+    for stale_rel in sorted(previous_paths - current_paths):
+        _remove_projected_file(native_root, stale_rel)
+
+    for item in context.projection.items:
+        source = projection_root.joinpath(*PurePosixPath(item.native_path).parts)
+        destination = native_root.joinpath(*PurePosixPath(item.native_path).parts)
+        _copy_projection_item(native_root, source, destination)
+
+    _write_projection_state(native_root, context.projection.digest, sorted(current_paths))
     _ensure_session_link(native_root / _SESSION_LINK, session_root)
 
 
@@ -181,7 +222,7 @@ def validate_claude_auth_environment(
         raise ClaudeRuntimeError(
             f"cannot inspect Claude native credentials file: {error}"
         ) from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+    if stat.S_ISLNK(metadata.st_mode) or manysys.path_is_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
         raise ClaudeRuntimeError(
             "Claude native credentials path must be a regular file"
         )
@@ -224,10 +265,7 @@ def validate_legacy_claude_auth(environment: dict[str, str]) -> str:
     _prepare_legacy_session_root(Path(home), native_root)
     if not selected and provisioned:
         raise _missing_claude_credential(native_root / ".credentials.json")
-    # A configuration-scoped Keychain login in a pre-existing root need not
-    # have a file. Creation alone is not authorization for a new empty root.
     credentials = native_root / ".credentials.json"
-    # Preserve P1 explicit-auth precedence; P2 alone rejects native/env coexistence.
     if not selected and (credentials.exists() or credentials.is_symlink()):
         validate_claude_auth_environment(native_root, environment)
     return "env-grant" if selected else "agent-native"
@@ -237,7 +275,9 @@ def _prepare_legacy_session_root(home: Path, native_root: Path) -> None:
     session_root = home / "state" / "sessions" / "claude"
     try:
         for root in (home / "state", home / "state/sessions", session_root):
-            root.mkdir(mode=0o700, exist_ok=True)
+            if not root.exists() and not root.is_symlink():
+                root.mkdir(mode=0o700, exist_ok=True)
+                _harden_private(root, mode=0o700, label="session root")
             _require_private_directory(root, "session")
         _ensure_session_link(native_root / _SESSION_LINK, session_root)
     except OSError as error:
@@ -255,12 +295,19 @@ def _missing_claude_credential(credentials: Path) -> ClaudeRuntimeError:
     )
 
 
+def _harden_private(path: Path, *, mode: int, label: str) -> None:
+    try:
+        harden_private_path(path, mode=mode)
+    except PrivateAccessUnsupported as error:
+        raise ClaudeRuntimeError(f"Claude {label} cannot be made account-private: {error}") from error
+
+
 def _require_private_directory(path: Path, label: str) -> None:
     try:
         metadata = path.lstat()
     except OSError as error:
         raise ClaudeRuntimeError(f"cannot inspect Claude {label} root: {error}") from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+    if stat.S_ISLNK(metadata.st_mode) or manysys.path_is_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
         raise ClaudeRuntimeError(f"Claude {label} root must be a real directory")
     try:
         violation = private_metadata_violation(path, metadata, mode=0o700)
@@ -276,23 +323,181 @@ def _require_private_directory(path: Path, label: str) -> None:
         )
 
 
-def _plan_projection_link(
-    path: Path, source: Path, context: AgentRuntimeContext
-) -> tuple[Path, Path, bool]:
-    if not path.exists() and not path.is_symlink():
-        return path, source, True
-    if not path.is_symlink():
-        raise ClaudeRuntimeError(
-            f"Claude native path {path.name!r} collides with projected config"
-        )
-    target = Path(os.readlink(path))
-    if target == source:
-        return path, source, False
-    if not _is_managed_projection_target(target, context):
-        raise ClaudeRuntimeError(
-            f"Claude native path {path.name!r} is not a managed projection link"
-        )
-    return path, source, True
+def _read_projection_state(native_root: Path) -> tuple[str, frozenset[str]] | None:
+    state_path = native_root / _PROJECTION_STATE_FILE
+    try:
+        metadata = state_path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or manysys.path_is_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+        raise ClaudeRuntimeError("Claude projection state file is not a regular file")
+    violation = private_metadata_violation(state_path, metadata, mode=0o600)
+    if violation is not None:
+        raise ClaudeRuntimeError(f"Claude projection state file must be private ({violation})")
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeError) as error:
+        raise ClaudeRuntimeError("Claude projection state file is malformed") from error
+    if not isinstance(payload, dict):
+        raise ClaudeRuntimeError("Claude projection state file is malformed")
+    digest = payload.get("projectionDigest")
+    paths = payload.get("paths")
+    if (
+        not isinstance(digest, str)
+        or not digest
+        or not isinstance(paths, list)
+        or any(not isinstance(item, str) or not item for item in paths)
+    ):
+        raise ClaudeRuntimeError("Claude projection state file is malformed")
+    return digest, frozenset(paths)
+
+
+def _write_projection_state(native_root: Path, digest: str, paths: list[str]) -> None:
+    encoded = (
+        json.dumps({"projectionDigest": digest, "paths": paths}, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    _atomic_write_private_file(native_root / _PROJECTION_STATE_FILE, encoded)
+
+
+def _authority_projection_matches(
+    context: AgentRuntimeContext, state: tuple[str, frozenset[str]] | None
+) -> bool:
+    expected_paths = frozenset(item.native_path for item in context.projection.items)
+    if state is None or state[0] != context.projection.digest or state[1] != expected_paths:
+        return False
+    try:
+        _verify_copied_projection(context, state[1])
+    except ClaudeRuntimeError:
+        return False
+    return True
+
+
+def _verify_copied_projection(
+    context: AgentRuntimeContext, recorded_paths: frozenset[str]
+) -> None:
+    expected_paths = frozenset(item.native_path for item in context.projection.items)
+    if recorded_paths != expected_paths:
+        raise ClaudeRuntimeError("Claude native projection drifted")
+    native_root = context.roots.native_root
+    for item in context.projection.items:
+        parts = PurePosixPath(item.native_path).parts
+        current = native_root
+        for directory_part in parts[:-1]:
+            current = current / directory_part
+            _require_private_directory(current, "native projection")
+        candidate = native_root.joinpath(*parts)
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError as error:
+            raise ClaudeRuntimeError(
+                f"Claude native projection drifted: {item.native_path}"
+            ) from error
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or manysys.path_is_reparse(metadata)
+            or not stat.S_ISREG(metadata.st_mode)
+            or private_metadata_violation(candidate, metadata, mode=0o600) is not None
+        ):
+            raise ClaudeRuntimeError(
+                f"Claude native projection drifted: {item.native_path}"
+            )
+        if item.native_path in _RUNTIME_WRITABLE_PATHS:
+            continue
+        body = candidate.read_bytes()
+        if len(body) != item.size or hashlib.sha256(body).hexdigest() != item.digest:
+            raise ClaudeRuntimeError(
+                f"Claude native projection drifted: {item.native_path}"
+            )
+
+
+def _check_projection_collisions(
+    context: AgentRuntimeContext,
+    previous_paths: frozenset[str],
+    legacy_roots: set[str],
+) -> None:
+    native_root = context.roots.native_root
+    previous_dirs = {
+        PurePosixPath(*PurePosixPath(rel).parts[:depth]).as_posix()
+        for rel in previous_paths
+        for depth in range(1, len(PurePosixPath(rel).parts))
+    }
+    for item in context.projection.items:
+        parts = PurePosixPath(item.native_path).parts
+        if parts[0] in legacy_roots:
+            continue
+        for depth in range(1, len(parts)):
+            prefix = PurePosixPath(*parts[:depth]).as_posix()
+            parent = native_root.joinpath(*parts[:depth])
+            try:
+                meta = parent.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(meta.st_mode) or manysys.path_is_reparse(meta) or not stat.S_ISDIR(meta.st_mode):
+                raise ClaudeRuntimeError(
+                    f"Claude native path {parts[0]!r} collides with projected config"
+                )
+            if prefix not in previous_dirs and item.native_path not in previous_paths:
+                raise ClaudeRuntimeError(
+                    f"Claude native path {parts[0]!r} collides with projected config"
+                )
+        destination = native_root.joinpath(*parts)
+        try:
+            dest_meta = destination.lstat()
+        except FileNotFoundError:
+            continue
+        if (
+            item.native_path not in previous_paths
+            or stat.S_ISLNK(dest_meta.st_mode)
+            or manysys.path_is_reparse(dest_meta)
+            or not stat.S_ISREG(dest_meta.st_mode)
+        ):
+            raise ClaudeRuntimeError(
+                f"Claude native path {parts[0]!r} collides with projected config"
+            )
+
+
+def _copy_projection_item(native_root: Path, source: Path, destination: Path) -> None:
+    relative_parent = destination.parent.relative_to(native_root)
+    current = native_root
+    for part in relative_parent.parts:
+        current = current / part
+        if not current.exists() and not current.is_symlink():
+            current.mkdir(mode=0o700)
+            _harden_private(current, mode=0o700, label=f"projection directory {part}")
+        _require_private_directory(current, "native projection")
+    _atomic_write_private_file(destination, source.read_bytes())
+
+
+def _atomic_write_private_file(destination: Path, body: bytes) -> None:
+    temporary = destination.with_name(f".{destination.name}.hyprial-{os.getpid()}")
+    temporary.unlink(missing_ok=True)
+    try:
+        with open(temporary, "xb", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _harden_private(temporary, mode=0o600, label=f"projected file {destination.name}")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _remove_projected_file(native_root: Path, relative_path: str) -> None:
+    parts = PurePosixPath(relative_path).parts
+    target = native_root.joinpath(*parts)
+    try:
+        metadata = target.lstat()
+    except FileNotFoundError:
+        metadata = None
+    if metadata is not None and stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode) and not manysys.path_is_reparse(metadata):
+        target.unlink()
+    parent = target.parent
+    while parent != native_root:
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
 
 
 def _is_managed_projection_link(path: Path, context: AgentRuntimeContext) -> bool:
@@ -312,33 +517,38 @@ def _is_managed_projection_target(
     return target.parent.name == "claude" and target.parent.parent.name == "native"
 
 
-def _replace_projection_link(path: Path, source: Path) -> None:
-    temporary = path.with_name(f".{path.name}.hyprial-{os.getpid()}")
-    try:
-        os.symlink(source, temporary, target_is_directory=source.is_dir())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _verify_or_plan_session_link(path: Path, session_root: Path) -> None:
-    if not path.exists() and not path.is_symlink():
-        return
     try:
         metadata = path.lstat()
+    except FileNotFoundError:
+        return
     except OSError as error:
         raise ClaudeRuntimeError(f"cannot inspect Claude session link: {error}") from error
-    if not stat.S_ISLNK(metadata.st_mode) or os.readlink(path) != str(session_root):
+    if not manysys.is_directory_link(path):
+        raise ClaudeRuntimeError(
+            "Claude native projects entry does not name the authorized session root"
+        )
+    try:
+        resolved = path.resolve(strict=True)
+        expected = session_root.resolve(strict=True)
+    except OSError as error:
+        raise ClaudeRuntimeError(
+            "Claude native projects entry does not name the authorized session root"
+        ) from error
+    if resolved != expected or (
+        stat.S_ISLNK(metadata.st_mode) and not Path(os.readlink(path)).is_absolute()
+    ):
         raise ClaudeRuntimeError(
             "Claude native projects entry does not name the authorized session root"
         )
 
 
 def _ensure_session_link(path: Path, session_root: Path) -> None:
-    if path.exists() or path.is_symlink():
-        _verify_or_plan_session_link(path, session_root)
-        return
     try:
-        os.symlink(session_root, path, target_is_directory=True)
-    except FileExistsError:
-        _verify_or_plan_session_link(path, session_root)
+        path.lstat()
+    except FileNotFoundError:
+        try:
+            manysys.link_directory(session_root, path)
+        except FileExistsError:
+            pass
+    _verify_or_plan_session_link(path, session_root)

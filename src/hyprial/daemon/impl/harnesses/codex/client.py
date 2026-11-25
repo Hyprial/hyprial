@@ -1,8 +1,6 @@
 """CodexAppServerClient and the CodexAppServerProcess driver."""
 from __future__ import annotations
 
-from hyprial.daemon.impl.harnesses.smolvm_runtime  import SmolvmWorkerRuntime
-
 import asyncio
 import json
 import os
@@ -10,7 +8,7 @@ import sys as sys
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from hyprial import __version__
 from hyprial.identity import (
@@ -43,6 +41,9 @@ from hyprial.daemon.impl.harnesses.model_provider  import codex_provider_configu
 from hyprial.kernel import (
     OwnedProcessGroup,
 )
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 from hyprial.daemon.impl.harnesses.codex.native_env import (
     CodexAgentHomeError,
     CodexNativeLoadEvidence,
@@ -99,7 +100,6 @@ class CodexAppServerClient(
             worker_channel: WorkerChannel | None = None,
             request_timeout_seconds: float = REQUEST_TIMEOUT_SECONDS_DEFAULT,
             thread_start_timeout_seconds: float = THREAD_START_TIMEOUT_SECONDS_DEFAULT,
-            execution_runtime: "SmolvmWorkerRuntime | None" = None,
             turn_idle_timeout_seconds: float | None = None,
             process_group: OwnedProcessGroup | None = None,
             logger: Logger | None = None,
@@ -110,13 +110,6 @@ class CodexAppServerClient(
         ) -> None:
             self.spec = spec
             self._complete_launch = complete_launch
-            self._execution_runtime = execution_runtime
-            if spec.execution_runtime is not None and execution_runtime is None:
-                raise ValueError("smolvm requires an owned runtime; no host fallback")
-            if execution_runtime is not None:
-                from hyprial.daemon.impl.harnesses.smolvm_runtime  import guest_channel
-                assert worker_channel is not None and spec.execution_runtime is not None
-                worker_channel = guest_channel(worker_channel, spec.execution_runtime)
             self._runtime_launch_custody = runtime_launch_custody
             if complete_launch is not None and env is not None:
                 raise ValueError(
@@ -154,16 +147,11 @@ class CodexAppServerClient(
                     raise CodexAgentHomeError(
                         "complete child environment disagrees with Codex runtime context"
                     )
-                # Lazily, like the home preparer: only an arg0 alias needs it,
-                # and an unresolvable command must not pre-empt the provider
-                # grant check below with an unmapped error.
-                codex_executable = (
-                    (lambda: resolve_codex_executable(base_environment, command[0]))
-                    if execution_runtime is None
-                    else Path(command[0])
-                )
                 prepare_codex_runtime_context(
-                    runtime_context, codex_executable=codex_executable
+                    runtime_context,
+                    codex_executable=lambda: resolve_codex_executable(
+                        base_environment, command[0]
+                    ),
                 )
                 launch_command = command
             else:
@@ -312,8 +300,6 @@ class CodexAppServerClient(
         async def _enter_process(self) -> Self:
             environment = self._spawn_environment()
             command = self.command
-            if self._execution_runtime is not None:
-                command, environment = self._execution_runtime.start(command, environment or {})
             custody = (
                 nullcontext()
                 if self._runtime_context is None or self._runtime_launch_custody is None
@@ -403,6 +389,13 @@ class CodexAppServerClient(
                         model_provider=self.spec.model_provider,
                         shared_credential=self._shared_credential, logger=self._logger,
                     )
+                    proof = getattr(self._complete_launch, "native_auth_launch", None)
+                    if proof is not None:
+                        evidence = self._native_load_evidence
+                        proof.select(self._native_root if (
+                            evidence.auth_store == "file" and evidence.requires_openai_auth
+                            and evidence.account_type is not None and self._shared_credential is None
+                        ) else None)
                     if self._logger is not None:
                         evidence = self._native_load_evidence
                         self._logger.info(
@@ -795,7 +788,6 @@ class CodexAppServerProcess(StreamingTurnProcess):
         command: tuple[str, ...] = ("codex",),
         env: Mapping[str, str] | None = None,
         worker_channel: WorkerChannel | None = None,
-        daemon_epoch: str | None = None,
         reconnect_delay_seconds: float = 0.25,
         reconnect_delay_max_seconds: float = 30.0,
         max_delivery_attempts: int = 5,
@@ -805,6 +797,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
         runtime_launch_custody: (
             Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
         ) = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         if spec.harness != "codex" or not spec.headless:
             raise ValueError("Codex app-server requires a managed headless spec")
@@ -826,27 +819,14 @@ class CodexAppServerProcess(StreamingTurnProcess):
             if worker_channel is not None
             else None
         )
-        self._execution_runtime = None
 
         def make_client():
-            runtime = None
-            if spec.execution_runtime is not None:
-                if worker_channel is None or complete_launch is None or not daemon_epoch:
-                    raise ValueError("smolvm requires daemon epoch, P2 channel and complete environment")
-                runtime = SmolvmWorkerRuntime(spec.execution_runtime, worker_channel, daemon_epoch, spec.cwd)
-                self._execution_runtime = runtime
             return CodexAppServerClient(
                 spec, session=self._session, command=command, env=env,
                 worker_channel=worker_channel, process_group=self._process_group,
                 logger=logger, complete_launch=self._complete_launch,
-                execution_runtime=runtime,
                 runtime_launch_custody=self._runtime_launch_custody,
             )
-
-        def force_stop():
-            self._process_group.force_close()
-            if self._execution_runtime is not None:
-                self._execution_runtime.close()
 
         super().__init__(
             harness="codex",
@@ -858,10 +838,8 @@ class CodexAppServerProcess(StreamingTurnProcess):
             reconnect_delay_max_seconds=reconnect_delay_max_seconds,
             max_delivery_attempts=max_delivery_attempts,
             stop_timeout_seconds=PROCESS_STOP_TIMEOUT_SECONDS,
-            force_stop=force_stop,
-            force_stopped=lambda: self._process_group.stopped() and (
-                self._execution_runtime is None or self._execution_runtime.cleanup_complete
-            ),
+            force_stop=self._process_group.force_close,
+            force_stopped=self._process_group.stopped,
             force_stop_join_seconds=PROCESS_FORCE_JOIN_SECONDS,
             liveness_probe=self._process_group.liveness,
             on_turn_failure=(
@@ -883,6 +861,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
                 else None
             ),
             on_turn_completed=on_turn_completed,
+            actor_host=actor_host,
         )
 
     @property

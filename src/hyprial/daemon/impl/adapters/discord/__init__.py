@@ -1,0 +1,85 @@
+"""Discord Gateway adapter implementation."""
+
+from .codec import (
+    CAPABILITY_REVISION,
+    DecodedDiscordEvent,
+    DiscordEventCodec,
+    MAX_FRAME_BYTES,
+    require_integer,
+    require_map,
+    require_text,
+)
+from .components import (
+    FATAL_CLOSE_CODES,
+    GatewayAction,
+    GatewayDecision,
+    HeartbeatSupervisor,
+    IDENTIFY_CLOSE_CODES,
+    NONCE_RETENTION_MS,
+    NonceLedger,
+    RESUME_CLOSE_CODES,
+    RateRejection,
+    DiscordRateLimits,
+    classify_gateway_close,
+    discord_nonce,
+)
+from .errors import (
+    DiscordConnectionClosed,
+    DiscordFatalCloseError,
+    DiscordMediaScopeError,
+    DiscordProtocolError,
+)
+from .media import DiscordMedia, DiscordMediaScopeFacts, MAX_DISCORD_UPLOAD_BYTES
+from .provider import (
+    DiscordCheckpointLedger,
+    DiscordCredentialResolver,
+    DiscordCredentials,
+    DiscordGatewayRuntime,
+    DiscordOnboarding,
+    DiscordTransport,
+)
+from .transport import (
+    DiscordEndpointPolicy,
+    DiscordGatewayTransport,
+    DiscordRestOutcome,
+    OFFICIAL_REST_BASE_URL,
+)
+
+__all__ = [
+    "CAPABILITY_REVISION",
+    "DecodedDiscordEvent",
+    "DiscordCheckpointLedger",
+    "DiscordConnectionClosed",
+    "DiscordCredentials",
+    "DiscordCredentialResolver",
+    "DiscordEndpointPolicy",
+    "DiscordEventCodec",
+    "DiscordFatalCloseError",
+    "DiscordGatewayRuntime",
+    "DiscordGatewayTransport",
+    "DiscordMedia",
+    "DiscordMediaScopeError",
+    "DiscordMediaScopeFacts",
+    "DiscordOnboarding",
+    "DiscordProtocolError",
+    "DiscordRestOutcome",
+    "DiscordTransport",
+    "FATAL_CLOSE_CODES",
+    "GatewayAction",
+    "GatewayDecision",
+    "HeartbeatSupervisor",
+    "IDENTIFY_CLOSE_CODES",
+    "MAX_DISCORD_UPLOAD_BYTES",
+    "MAX_FRAME_BYTES",
+    "NONCE_RETENTION_MS",
+    "NonceLedger",
+    "OFFICIAL_REST_BASE_URL",
+    "RESUME_CLOSE_CODES",
+    "RateRejection",
+    "DiscordRateLimits",
+    "classify_gateway_close",
+    "discord_nonce",
+    "require_integer",
+    "require_map",
+    "require_text",
+]

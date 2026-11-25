@@ -53,6 +53,34 @@ class RemovalJournal:
             unlock(descriptor)
             os.close(descriptor)
 
+    def forget_tailnet(self, tailnet_id: str) -> int:
+        """Drop every pending/completed journal entry for a deleted tailnet.
+
+        Each entry is re-read and unlinked under its own operation lock, and
+        the lock file itself is kept, so a concurrent ``remove`` on the same
+        operation never races the deletion or locks a fresh inode.
+        """
+
+        if not self.root.exists():
+            return 0
+        removed = 0
+        for path in sorted(self.root.glob('*.json')):
+            descriptor = os.open(path.with_suffix('.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                lock_exclusive(descriptor)
+                try:
+                    operation = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(operation, dict) or operation.get('tailnetId') != tailnet_id:
+                    continue
+                path.unlink(missing_ok=True)
+                removed += 1
+            finally:
+                unlock(descriptor)
+                os.close(descriptor)
+        return removed
+
     def _refresh_revision(self, operation):
         # Only an explicit REVISION_CONFLICT response proves the exact request
         # has no committed receipt (Go replays receipts before revision checks).

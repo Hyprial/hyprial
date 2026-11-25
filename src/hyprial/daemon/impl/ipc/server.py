@@ -1,8 +1,10 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Derives _accept_reserve_fd_supported from hyprial.kernel.local_ipc_path_limit()
+#   is not None (POSIX AF_UNIX socket accept reserve vs Windows named pipe).
 """The Unix-socket IPC server: accept loop, client workers, response framing and timed handling."""
 
 from __future__ import annotations
 
-from __future__ import annotations
 import errno
 import json
 import os
@@ -13,7 +15,17 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
-from hyprial.kernel import AdmissionResult, MEMBERSHIP_BUDGETS
+from hyprial.kernel import (
+    AdmissionResult,
+    LocalIpcPeer,
+    LocalIpcStream,
+    MEMBERSHIP_BUDGETS,
+    TELEPORT_BUDGET,
+    listen_local_ipc,
+    local_ipc_path_limit,
+    RequestCancellation,
+    request_cancellation,
+)
 from hyprial.daemon.impl.ipc.ipc_request_owner  import IpcRequestOwner
 from hyprial.daemon.impl.dispatch.runtime.diagnostics  import DispatchDiagnostics
 from hyprial.kernel import ipc_errors
@@ -43,8 +55,9 @@ _IPC_RESPONSE_WRITE_TIMEOUT = 15.0
 
 _IPC_CLIENT_POLL_INTERVAL = 0.1
 
-def _windows_ipc_enabled() -> bool:
-    return os.name == "nt"
+def _accept_reserve_fd_supported() -> bool:
+    """The EMFILE accept reserve applies only to POSIX AF_UNIX socket listeners."""
+    return local_ipc_path_limit() is not None
 
 _IPC_CLIENT_SHUTDOWN_GRACE = 0.1
 
@@ -62,24 +75,10 @@ def _write_ipc_response(
         )
     if not isinstance(connection, socket.socket):
         raise TypeError("IPC stream has no safe response writer")
-    deadline = time.monotonic() + timeout
-    offset = 0
-    view = memoryview(frame)
-    while offset < len(view):
-        if should_stop():
-            return False
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("daemon IPC response write deadline expired")
-        connection.settimeout(min(poll_interval, remaining))
-        try:
-            count = connection.send(view[offset:])
-        except TimeoutError:
-            continue
-        if count == 0:
-            raise BrokenPipeError("daemon IPC response wrote zero bytes")
-        offset += count
-    return True
+    return LocalIpcStream(connection).send_response(
+        frame, timeout=timeout, poll_interval=poll_interval,
+        should_stop=should_stop,
+    )
 
 class _IpcStream(Protocol):
     def settimeout(self, timeout: float | None) -> None: ...
@@ -99,6 +98,7 @@ class _IpcResponseWriter(Protocol):
 
 class _IpcListener(Protocol):
     def accept(self) -> tuple[_IpcStream, object]: ...
+    def settimeout(self, timeout: float | None) -> None: ...
     def close(self) -> None: ...
 
 
@@ -129,26 +129,18 @@ class _IpcServerMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _start_server(self) -> None:
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.socket_path.unlink(missing_ok=True)
-        posix_listener = not _windows_ipc_enabled()
-        if posix_listener:
-            server: _IpcListener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        else:
-            from hyprial.kernel import listen_named_pipe as PipeListener
-
-            server = PipeListener(
-                self.socket_path,
-                gui_write_sid=os.environ.get("HYPRIAL_WINDOWS_GUI_WRITE_SID"),
-            )
+        server: _IpcListener = listen_local_ipc(
+            self.socket_path,
+            backlog=32,
+            gui_write_sid=os.environ.get("HYPRIAL_WINDOWS_GUI_WRITE_SID"),
+        )
         try:
-            if posix_listener:
-                server.bind(str(self.socket_path))  # type: ignore[attr-defined]
-                os.chmod(self.socket_path, 0o600)
-                server.listen(32)  # type: ignore[attr-defined]
-                server.settimeout(0.25)  # type: ignore[attr-defined]
-            self._ipc_request_owner = IpcRequestOwner(capacity=_IPC_MAX_CLIENTS)
-            self._dispatch_diagnostics = DispatchDiagnostics()
+            server.settimeout(0.25)
+            actor_host = self._agent_session_domains.actor_hosts.host_for("ipc")
+            self._ipc_request_owner = IpcRequestOwner(
+                capacity=_IPC_MAX_CLIENTS, actor_host=actor_host,
+            )
+            self._dispatch_diagnostics = DispatchDiagnostics(actor_host=actor_host)
         except BaseException:
             server.close()
             if self._dispatch_diagnostics is not None:
@@ -162,7 +154,7 @@ class _IpcServerMixin:
         # Keep one descriptor in reserve so an EMFILE accept can discard one
         # queued peer and return to bounded retrying instead of spinning or
         # permanently terminating the dispatcher.
-        if posix_listener:
+        if _accept_reserve_fd_supported():
             self._accept_reserve_fd = os.open(os.devnull, os.O_RDONLY)
 
     def _serve(self) -> None:
@@ -178,9 +170,10 @@ class _IpcServerMixin:
         accept_retry = _IPC_ACCEPT_RETRY_INITIAL
         while not self.stop_event.is_set():
             try:
-                connection, _ = self._server.accept()
+                connection, peer = self._server.accept()
             except TimeoutError:
                 connection = None
+                peer = None
             except OSError as error:
                 if self.stop_event.is_set() or error.errno in {
                     errno.EBADF,
@@ -201,7 +194,7 @@ class _IpcServerMixin:
                 raise
             if connection is not None:
                 accept_retry = _IPC_ACCEPT_RETRY_INITIAL
-                self._start_ipc_client(connection)
+                self._start_ipc_client(connection, peer)
 
     def _log_accept_resource_exhausted(
         self, error_type: str, error_code: str
@@ -242,7 +235,9 @@ class _IpcServerMixin:
                 # prevents restoring the reserve immediately.
                 self._accept_reserve_fd = None
 
-    def _start_ipc_client(self, connection: _IpcStream) -> None:
+    def _start_ipc_client(
+        self, connection: _IpcStream, peer: LocalIpcPeer | None = None
+    ) -> None:
         """Admit one peer atomically with shutdown, within a fixed cap.
 
         Capacity is an explicit local IPC contract: when all 64 client slots
@@ -252,11 +247,12 @@ class _IpcServerMixin:
 
         capacity_exhausted = False
         connected_since_ms = time.time_ns() // 1_000_000
-        peer_pid = (
-            _peer_process_id(connection)
-            if isinstance(connection, socket.socket)
-            else None
-        )
+        if peer is not None:
+            peer_pid = peer.pid
+        elif isinstance(connection, socket.socket):
+            peer_pid = _peer_process_id(connection)
+        else:
+            peer_pid = None
         rejected_state = _IpcClientState(peer_pid, connected_since_ms)
         active_clients: list[JsonObject] = []
         with self._ipc_clients_lock:
@@ -489,6 +485,9 @@ class _IpcServerMixin:
 
     @staticmethod
     def _ipc_peer_disconnected(connection: _IpcStream) -> bool:
+        stream_probe = getattr(connection, "peer_disconnected", None)
+        if callable(stream_probe):
+            return stream_probe()
         if not isinstance(connection, socket.socket):
             return False
         try:
@@ -498,22 +497,41 @@ class _IpcServerMixin:
             return connection.recv(1, socket.MSG_PEEK) == b""
         except (OSError, ValueError):
             return True
-        except TimeoutError:
-            return False
 
     @staticmethod
     def _ipc_timeout_response(
-        request_id: object, method: str | None
+        request_id: object, method: str | None, *, version: int = 1
     ) -> JsonObject:
         label = repr(method) if method is not None else "<unknown>"
         error = ipc_errors.IpcTimeoutError(
             f"daemon IPC request deadline expired for method {label}"
         )
         return {
-            "version": 1,
+            "version": version,
             "id": request_id,
             "error": {"code": error.code, "message": str(error)},
         }
+
+    @staticmethod
+    def _auth_operation_get_timeout(line: bytes) -> float | None:
+        try:
+            request = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(request, dict) or request.get("method") != "auth.operation.get":
+            return None
+        params = request.get("params")
+        if not isinstance(params, dict):
+            return None
+        wait_seconds = params.get("waitSeconds")
+        if (
+            isinstance(wait_seconds, bool)
+            or not isinstance(wait_seconds, (int, float))
+            or wait_seconds <= 0
+            or wait_seconds > 900
+        ):
+            return None
+        return float(wait_seconds) + 15.0
 
     def _dispatch_ipc_response(
         self,
@@ -523,15 +541,22 @@ class _IpcServerMixin:
         request_id: object,
         method: str | None,
         peer_pid: int | None,
+        handler: Callable[[], JsonObject] | None = None,
+        response_version: int = 1,
     ) -> JsonObject | None:
         """Keep transport slots bounded independently of domain settlement."""
 
         result = _IpcRequestResult()
+        cancellation = RequestCancellation()
 
         def invoke() -> None:
             self._ipc_peer.pid = peer_pid
             try:
-                result.response = self._response(line)
+                if method == "agent.secret.provider-test":
+                    with request_cancellation(cancellation):
+                        result.response = self._response(line) if handler is None else handler()
+                else:
+                    result.response = self._response(line) if handler is None else handler()
             except BaseException as error:
                 result.error = error
             finally:
@@ -543,22 +568,35 @@ class _IpcServerMixin:
             name="hyprial-daemon-ipc-request",
             daemon=True,
         ).start()
+        wait_timeout = (
+            self._auth_operation_get_timeout(line)
+            if method == "auth.operation.get"
+            else None
+        )
         timeout = (
-            MEMBERSHIP_BUDGETS["join-ipc"].seconds
+            wait_timeout
+            if wait_timeout is not None
+            else MEMBERSHIP_BUDGETS["join-ipc"].seconds
             if method in {"org.join", "org.execute"}
+            else TELEPORT_BUDGET.ipc_seconds
+            if method == "teleport.run"
             else _IPC_REQUEST_TIMEOUT
         )
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return self._ipc_timeout_response(request_id, method)
+                cancellation.cancel()
+                return self._ipc_timeout_response(
+                    request_id, method, version=response_version
+                )
             if result.ready.wait(min(_IPC_CLIENT_POLL_INTERVAL, remaining)):
                 if result.error is not None:
                     raise result.error
                 assert result.response is not None
                 return result.response
             if self._ipc_peer_disconnected(connection):
+                cancellation.cancel()
                 return None
 
     def _ipc_client_status(self) -> JsonObject:
@@ -686,10 +724,7 @@ class _IpcServerMixin:
                 assert self._harnesses is not None
                 management = RegistryManagementHandler(
                     self._harnesses,
-                    self.agents,
-                    start_harness=lambda spec: self.handle(
-                        "lifecycle.start-smolvm" if spec.execution_runtime else "lifecycle.start", spec.to_json()
-                    ),
+                    actor_host=self._agent_session_domains.actor_hosts.host_for("ipc"),
                 )
                 self._registry_management = management
             return management

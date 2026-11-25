@@ -499,7 +499,7 @@ def test_overview_show_through_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
         },
         "workflow.node.inspect": {"node": {"outputText": "done", "flagSetAt": 5}},
         "routine.list": {"routines": []},
-        "org.list": {"orgs": [{"org": "group-acme", "spaceId": "space-work"}]},
+        "org.list": {"orgs": [{"org": "group-acme", "spaceId": "space-work"}]}, "org.resolve": {"ok": True, "org": "group-acme", "spaceId": "space-work", "notices": []},
         "orgfs.ls": {"nodes": []},
     }
     seen: list[tuple[str, dict[str, Any]]] = []
@@ -565,7 +565,7 @@ def test_publishing_the_same_space_to_another_path_writes_there(
         if method.startswith("orgfs."):
             return space(method, params or {})
         return {
-            "org.list": {"orgs": [{"org": "group-acme", "spaceId": "space-work"}]},
+            "org.list": {"orgs": [{"org": "group-acme", "spaceId": "space-work"}]}, "org.resolve": {"ok": True, "org": "group-acme", "spaceId": "space-work", "notices": []},
             "ps": {"daemon": {"nodeId": NODE}},
             "workflow.list": listed,
             "workflow.status": {"nodes": [], "edges": []},
@@ -725,6 +725,7 @@ def test_without_missions_the_model_is_unchanged() -> None:
 def _cli_responses(extra: dict[str, Any]) -> dict[str, Any]:
     return {
         "org.list": {"orgs": [{"org": "group-acme", "spaceId": "space-m"}]},
+        "org.resolve": {"ok": True, "org": "group-acme", "spaceId": "space-m", "notices": []},
         "ps": {"daemon": {"nodeId": NODE}},
         "workflow.list": {"runs": [dict(_run("wf-a", "fix-login"), createdAtMs=10**13)]},
         "workflow.status": {"nodes": [], "edges": [], "roster": {"nodes": []}},
@@ -778,7 +779,7 @@ def test_an_unreadable_work_directory_leaves_lines_inferred(monkeypatch: pytest.
     assert "no missions dir" in payload["missionsError"]
 
 
-def test_overview_flags_raw_invalid_work_items(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_overview_keeps_unparseable_document_text_and_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = _invoke_show(
         monkeypatch,
         _cli_responses(
@@ -787,22 +788,22 @@ def test_overview_flags_raw_invalid_work_items(monkeypatch: pytest.MonkeyPatch) 
                     "nodes": [{"name": "M-owner-0001.md", "node_id": "n1"}]
                 },
                 "orgfs.read": {
-                    "text": "## broken\n\n```yaml\nid: M-owner-0001\nstatus: bogus\n```\n",
+                    "text": "## broken\n\n```yaml\nid: [broken\n```\nbody remains",
                     "version": "v1",
                 },
             }
         ),
     )
 
-    assert payload["invalidWorkItems"] == [
-        {
-            "path": "work/M-owner-0001.md",
-            "reason": "status must be one of todo, doing, blocked, done, dropped",
-        }
-    ]
+    assert payload["workDocumentDiagnostics"][0]["path"] == "work/M-owner-0001.md"
+    assert "optional YAML" in payload["workDocumentDiagnostics"][0]["reason"]
+    assert payload["workItems"][0]["documentText"].endswith("body remains")
+    assert payload["workItems"][0]["diagnostics"]
+    assert "invalidWorkItems" not in payload
+    assert payload["missions"] == []
 
 
-def test_overview_flags_unverified_operator_completion(
+def test_overview_keeps_old_owner_records_as_plain_document_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     text = (
@@ -823,10 +824,10 @@ def test_overview_flags_unverified_operator_completion(
         ),
     )
 
-    assert payload["missions"][0]["unverifiedOperator"] is True
+    assert "unverifiedOperator" not in payload["missions"][0]
+    assert "unverifiedOperator" not in payload["workItems"][0]
+    assert payload["workItems"][0]["documentText"] == text
 
-
-# --- page behaviour (Allen 2026-09-30: explanations behind tips; idle agent lines fold) ---
 
 _PAGE = resources.files('hyprial.daemon.impl.pac.views').joinpath("overview_page.html").read_text("utf-8")
 _HOUR = 3600_000
@@ -851,14 +852,14 @@ def _work_item_warnings_js() -> str:
     return match.group(1)
 
 
-def test_page_renders_unverified_and_invalid_work_item_fields() -> None:
+def test_page_renders_optional_document_diagnostics() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
     model = {
         "missions": [{"id": "M-owner-0001", "unverifiedOperator": True}],
-        "invalidWorkItems": [
-            {"path": "work/M-broken-0002.md", "reason": "owner action missing"}
+        "workDocumentDiagnostics": [
+            {"path": "work/M-broken-0002.md", "reason": "optional metadata unavailable"}
         ],
     }
     script = (
@@ -870,12 +871,12 @@ def test_page_renders_unverified_and_invalid_work_item_fields() -> None:
         [node, "-e", script], capture_output=True, text=True, check=True
     ).stdout
 
-    assert "M-owner-0001" in rendered
+    assert "M-owner-0001" not in rendered
     assert "work/M-broken-0002.md" in rendered
-    assert "owner action missing" in rendered
+    assert "optional metadata unavailable" in rendered
 
 
-def test_page_qualifies_verified_owner_actions_as_lax() -> None:
+def test_page_does_not_interpret_old_approval_fields() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
@@ -893,7 +894,7 @@ def test_page_qualifies_verified_owner_actions_as_lax() -> None:
                 ],
             }
         ],
-        "invalidWorkItems": [],
+        "workDocumentDiagnostics": [],
     }
     script = (
         "const esc = s => String(s ?? '');\n"
@@ -904,8 +905,7 @@ def test_page_qualifies_verified_owner_actions_as_lax() -> None:
         [node, "-e", script], capture_output=True, text=True, check=True
     ).stdout
 
-    assert "verified (LAX same-uid)" in rendered
-    assert "M-owner-0001" in rendered
+    assert rendered == ""
 
 
 def _has_tasks(runs: list[dict[str, Any]], routine_runs: list[dict[str, Any]]) -> bool:

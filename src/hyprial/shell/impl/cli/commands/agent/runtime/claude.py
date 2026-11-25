@@ -7,13 +7,13 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from typing import Any
 from pathlib import Path
 from hyprial.kernel import child_state_environment
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import json
 import os
 import subprocess
 import sys
 
-from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _channel_registration_confirmed, _handover_prompt, _interactive_actor, _interactive_actor_name, _interactive_cli_identity, _launch_detached_tui, _plugin_skip_warnings, _publish_session_ref, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings, _write_launch_config
+from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _channel_registration_confirmed, _handover_prompt, _interactive_actor, _interactive_actor_name, _interactive_cli_identity, _plugin_skip_warnings, _publish_session_ref, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings, _write_launch_config
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 _CLAUDE_HARNESS_TOOLS = (
     "harness_ack",
@@ -38,7 +38,7 @@ def _reject_claude_session_identity_args(runtime_args: tuple[str, ...]) -> None:
         flag = arg.split("=", 1)[0]
         if flag in _CLAUDE_SESSION_IDENTITY_FLAGS:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 f"{flag} changes Claude session identity, which hyprial owns; "
                 "resume a session with `hyprial agent start claude --resume <session-id>`",
             )
@@ -92,7 +92,7 @@ def _legacy_pty_admission(
             source = validate_legacy_claude_auth(candidate)
         except runtime_error as error:
             if managed:
-                raise services.CliError(error.code or ipc_errors.INVALID_ARGUMENT, str(error)) from error
+                raise services.CliError(error.code or codes.INVALID_ARGUMENT, str(error)) from error
         else:
             environment.update(candidate)
     finally:
@@ -109,7 +109,7 @@ def _start_interactive_claude(
     model_provider: str | None,
     model: str | None,
     json_output: bool,
-    tmux: bool = False,
+    ignore_stored_args: bool = False,
 ) -> JsonObject:
     """Launch a real CC TUI with one session-owned Harness Channel server."""
     services = get_services()
@@ -140,7 +140,11 @@ def _start_interactive_claude(
         else ()
     )
     runtime_payload = services._runtime_context_environment(
-        name=name, harness="claude", cwd=cwd, include_projection=True
+        name=name,
+        harness="claude",
+        cwd=cwd,
+        json_output=json_output,
+        include_projection=True,
     )
     runtime_projection = (
         runtime_payload
@@ -172,7 +176,7 @@ def _start_interactive_claude(
                 )
         except SessionFileError as error:
             raise services.CliError(
-                ipc_errors.RESUME_SESSION_NOT_FOUND,
+                codes.RESUME_SESSION_NOT_FOUND,
                 f"cannot resume Claude session {resume!r}: {error}; "
                 "no Agent was changed and nothing was started",
             ) from error
@@ -184,20 +188,27 @@ def _start_interactive_claude(
         provider=model_provider,
         model=model,
     )
-    stored_args = tuple(creation.get("agent", {}).get("harnessArgs", {}).get("claude", ()))
+    available_stored_args = tuple(
+        creation.get("agent", {}).get("harnessArgs", {}).get("claude", ())
+    )
+    stored_args = () if ignore_stored_args else available_stored_args
     try:
         provider_spec = provider_spec.with_default_args(stored_args)
     except ValueError as error:
-        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
     runtime_args = provider_spec.args
     _reject_claude_session_identity_args(runtime_args)
-    if stored_args:
+    if available_stored_args:
         from hyprial.shell.impl.cli.output import notice
 
-        notice(
-            "Using stored harness_args for claude; explicit launch options take precedence. "
-            "Persistent harness_args currently has no CLI editing option."
+        message = (
+            "Ignoring stored harness_args for this start only; stored map unchanged."
+            if ignore_stored_args
+            else "Using stored harness_args for claude; explicit launch options "
+            "take precedence. Inspect or change them with "
+            "hyprial agent args show|set|clear."
         )
+        notice(message)
     handover = _handover_prompt(creation)
     runtime_environment = (
         runtime_payload
@@ -250,35 +261,19 @@ def _start_interactive_claude(
         "--turn-signal-dir",
         str(turn_signal_dir),
     ]
-    tmux_session_name: str | None = None
-    if tmux:
-        from hyprial.daemon import session_name_for_actor
+    from hyprial.daemon import read_process_identity as _read_process_identity
 
-        # Detached mode: this launcher exits right after spawn, so it can
-        # never be the channel's owner fence. The carrier receives the tmux
-        # session name instead -- the daemon records it on the registration
-        # and the carrier fences on the pane's top process, which lives
-        # exactly as long as the tmux session.
-        tmux_session_name = session_name_for_actor(actor)
-        server_args.extend(["--tmux-session", tmux_session_name])
-    else:
-        # The launcher lives exactly as long as the Claude process it waits
-        # for. Passing both PID and birth marker lets a slowly starting
-        # channel detect owner death even after reparenting, without
-        # mistaking PID reuse for life.
-        from hyprial.daemon import read_process_identity as _read_process_identity
-
-        owner_pid = os.getpid()
-        owner_identity = _read_process_identity(owner_pid)
-        if owner_identity is not None:
-            server_args.extend(
-                [
-                    "--owner-pid",
-                    str(owner_pid),
-                    "--owner-identity",
-                    owner_identity,
-                ]
-            )
+    owner_pid = os.getpid()
+    owner_identity = _read_process_identity(owner_pid)
+    if owner_identity is not None:
+        server_args.extend(
+            [
+                "--owner-pid",
+                str(owner_pid),
+                "--owner-identity",
+                owner_identity,
+            ]
+        )
     config = {
         "mcpServers": {
             "harness-bridge": {
@@ -301,7 +296,7 @@ def _start_interactive_claude(
     try:
         plugin_plan = claude_plan(load_manifest(services._hyprial_home()))
     except PluginManifestError as error:
-        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
     plugin_warnings = _plugin_skip_warnings(plugin_plan.skipped)
     _announce_plugin_skips(plugin_warnings)
     # HYPRIAL_HOME-declared MCP servers ride the same per-launch --mcp-config file
@@ -459,7 +454,7 @@ def _start_interactive_claude(
             # type so callers can name it; only argument errors are rewrapped.
             if getattr(error, "permanent_start_failure", False):
                 raise
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
         launch_environment = apply_runtime_environment_profile(
             os.environ,
             runtime_environment,
@@ -471,7 +466,7 @@ def _start_interactive_claude(
             native_root = runtime_environment.get("CLAUDE_CONFIG_DIR")
             if not native_root:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "Claude P2 runtime context is missing CLAUDE_CONFIG_DIR",
                 )
             source = "missing"
@@ -484,7 +479,7 @@ def _start_interactive_claude(
                 )) else "agent-native"
             except ClaudeRuntimeError as error:
                 raise services.CliError(
-                    error.code or ipc_errors.INVALID_ARGUMENT, str(error)
+                    error.code or codes.INVALID_ARGUMENT, str(error)
                 ) from error
             finally:
                 _log_credential_source(state_dir, name=name, source=source, runtime_mode="p2")
@@ -502,27 +497,6 @@ def _start_interactive_claude(
         launch_environment.update(
             _interactive_cli_identity(actor, session_ref_file)
         )
-        if tmux_session_name is not None:
-            return _launch_detached_tui(
-                argv=argv,
-                env=launch_environment,
-                cwd=cwd,
-                actor=actor,
-                session_ref=session_ref,
-                session_name=tmux_session_name,
-                harness="claude",
-                registration_deadline_seconds=60.0,
-                is_session_registered=lambda status: _channel_registration_confirmed(
-                    actor, session_ref, status
-                ),
-                registration_failure=(
-                    f"Claude exited or timed out before Channel registration for {actor}"
-                ),
-                config=config,
-                config_path=config_path,
-                recovery_path=recovery_path,
-                warnings=plugin_warnings,
-            )
         try:
             _write_launch_config(config_path, config)
             process = subprocess.Popen(
@@ -543,14 +517,8 @@ def _start_interactive_claude(
         registered = False
         deadline = services.time.monotonic() + 60.0
         while services.time.monotonic() < deadline:
-            status = services.runtime.request("ps")
-            sessions = status.get("interactiveSessions", [])
-            registered = isinstance(sessions, list) and any(
-                isinstance(item, dict)
-                and item.get("actor") == actor
-                and item.get("sessionRef") == session_ref
-                and item.get("channelConfirmed") is True
-                for item in sessions
+            registered = _channel_registration_confirmed(
+                actor, session_ref, services.runtime.request("ps")
             )
             if registered or process.poll() is not None:
                 break

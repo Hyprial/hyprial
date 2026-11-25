@@ -184,7 +184,7 @@ def test_headless_start_warning_is_in_json_or_stderr(calls, monkeypatch, json_ou
 
     def daemon(method, params=None, **kwargs):
         result = original(method, params, **kwargs)
-        if method == "lifecycle.start":
+        if method == "agent.start":
             result["warnings"] = [warning]
         return result
 
@@ -215,7 +215,6 @@ def test_headless_unknown_resume_keeps_existing_agent_unchanged(
         "provider": "openai",
         "model": "gpt-6-astra",
         "capabilities": {"harness": harness, "tier": "super"},
-        "pinnedAdapters": ["adapter-a"],
     }
     before = deepcopy(existing)
 
@@ -261,7 +260,6 @@ def test_headless_resume_preflight_to_start_race_restores_agent(
         "provider": "openai",
         "model": "gpt-6-astra",
         "capabilities": {"harness": harness, "tier": "super"},
-        "pinnedAdapters": ["adapter-a"],
     }
     concurrent = deepcopy(existing)
     concurrent["harnessArgs"] = {"codex": ["--legitimate-concurrent-write"]}
@@ -436,7 +434,8 @@ def test_headless_resume_reports_new_agent_without_rollback_snapshot(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["agent", "start", "dsh", "--name", "wk", "--headless", "--resume", "s"],
+        ["agent", "start", "jev", "--name", "wk", "--headless", "--resume", "s"],
+        ["agent", "start", "agy", "--name", "wk", "--headless", "--resume", "s"],
         ["agent", "start", "claude", "--name", "wk", "--headless", "--resume", "  "],
     ],
 )
@@ -444,3 +443,14 @@ def test_unsupported_resume_is_refused_before_contacting_the_daemon(calls, argv)
     result = CliRunner().invoke(_cli_root_app, [*argv, "--json"])
     assert result.exit_code != 0
     assert calls == []
+
+
+def test_agy_headless_start_routes_to_agent_start(calls, monkeypatch) -> None:
+    monkeypatch.setattr(_cli_shutil, "which", lambda name: f"/test/bin/{name}")
+    result = CliRunner().invoke(
+        _cli_root_app,
+        ["agent", "start", "agy", "--name", "wk", "--headless", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == "agent.start"
+    assert calls[0][1] == {"name": "wk", "harness": "agy"}

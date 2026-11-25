@@ -23,6 +23,7 @@ from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
 import hyprial.shell.impl.cli.commands.doctor.commands as _cli_owner_1
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
+from tests.support.identity.cell_runtime import RegistryCellRuntime
 
 
 USER = "user:test"
@@ -47,6 +48,7 @@ class Application:
             machine="machine",
             hyprial_home=home,
         )
+        self._cell_runtime: Any = RegistryCellRuntime(self.agents)
         self.destroyed: list[str] = []
 
     def _destroy_agent(
@@ -312,7 +314,31 @@ def test_never_activated_worker_without_incarnation_receipt_is_preserved(tmp_pat
         application.agents.close()
 
 
-def test_pinned_and_online_workers_are_skipped_with_reasons(tmp_path: Path) -> None:
+def test_gc_skips_a_worker_whose_cell_bindings_are_unknown(tmp_path: Path) -> None:
+    application = Application(tmp_path)
+    application._cell_runtime = None
+    service = _service(tmp_path)
+    try:
+        graph_id = _start_owned(service, "unknown-bindings")
+        store = PacGraphStore(service.database)
+        try:
+            _close(store, graph_id)
+            worker, _ = _register_owned_worker(application, store, graph_id)
+        finally:
+            store.close()
+
+        report = _gc(tmp_path, application, Runtime(), []).run_pass()
+
+        assert report["removed"] == 0
+        assert report["skipped"] == {"adapter-bindings-unknown": 1}
+        assert application.destroyed == []
+        assert application.agents.get(worker) is not None
+    finally:
+        service.close()
+        application.agents.close()
+
+
+def test_bound_and_online_workers_are_skipped_with_reasons(tmp_path: Path) -> None:
     application = Application(tmp_path)
     runtime = Runtime()
     service = _service(tmp_path)
@@ -327,13 +353,16 @@ def test_pinned_and_online_workers_are_skipped_with_reasons(tmp_path: Path) -> N
             online, _ = _register_owned_worker(application, store, online_graph)
         finally:
             store.close()
-        application.agents.pin("test-adapter", pinned)
+        from tests.support.identity.cell_runtime import bind_adapters
+
+        bound_agent = application.agents.require(pinned)
+        bind_adapters(application, bound_agent, ("test-adapter",))
         runtime.present.add(online)
 
         report = _gc(tmp_path, application, runtime, []).run_pass()
 
         assert report["removed"] == 0
-        assert report["skipped"] == {"online": 1, "pinned": 1}
+        assert report["skipped"] == {"online": 1, "adapter-bound": 1}
         assert application.agents.get(pinned) is not None
         assert application.agents.get(online) is not None
     finally:
@@ -557,9 +586,9 @@ def test_gc_does_not_destroy_replacement_after_selection(tmp_path: Path) -> None
         def select_then_replace():
             selected = select()
             assert len(selected.candidates) == 1
-            _original = application.agents.require(actor_name)
-            application.agents.destroy(actor_name)
-            replacement = application.agents.create(actor_name)
+            original = application.agents.require(actor_name)
+            replacement = application.agents.rotate_secret_authority(actor_name)
+            assert replacement.entity_token != original.entity_token
             replacement_tokens.append(replacement.entity_token)
             return selected
 

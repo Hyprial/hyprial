@@ -19,6 +19,8 @@
 // projection tests in node); wiring is one delegated click handler.  Every
 // field goes through ctx.esc: work-item text is user-written and crosses
 // node boundaries.
+// Current documents remain readable when optional field parsing fails.
+// Legacy ownerActions are document text, never an approval-verification signal.
 (() => {
   const STATUS_ORDER = ["doing", "blocked", "todo", "done", "dropped"];
   const STATUS_ZH = { doing: "进行中", blocked: "受阻", todo: "待办", done: "已完成", dropped: "已放弃" };
@@ -29,6 +31,7 @@
   const str = v => (v == null ? "" : String(v));
   const listOf = v => (Array.isArray(v) ? v : []);
   const num = v => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const statusLabel = status => Object.hasOwn(STATUS_ZH, status) ? STATUS_ZH[status] : status;
 
   // Every node reads the same org space, so a merged DATA can carry one item
   // several times.  Dedupe by id (first publisher wins) and normalise; a
@@ -43,7 +46,7 @@
       out.push({
         id,
         title: str(raw.title) || id,
-        status: str(raw.status || "todo"),
+        status: str(raw.status) || "未指定状态",
         owner: str(raw.owner),
         assignee: raw.assignee == null ? null : str(raw.assignee),
         checklist: raw.checklist && typeof raw.checklist === "object"
@@ -61,7 +64,10 @@
         log: listOf(raw.log).map(str),
         opened: num(raw.opened),
         closed: num(raw.closed),
-        unverifiedOperator: raw.unverifiedOperator === true,
+        path: str(raw.path),
+        documentText: typeof raw.documentText === "string" ? raw.documentText : null,
+        documentTruncated: raw.documentTruncated === true,
+        diagnostics: listOf(raw.diagnostics).filter(value => typeof value === "string"),
       });
     }
     return out;
@@ -105,7 +111,7 @@
       ${item.depends.length ? `<span class="wi-cell"><span class="wi-cell-k">依赖</span>${item.depends.map(id => depPart(esc, id, ids)).join("")}</span>` : ""}
       ${item.lastLog ? `<span class="wi-cell wi-log" title="${esc(item.lastLog.line)}"><span class="wi-cell-k">最近</span>${esc(item.lastLog.text)}</span>` : ""}
       ${item.pacs.length ? `<span class="wi-cell"><span class="wi-cell-k">PAC</span>${item.pacs.map(id => pacPart(ctx, item, id)).join("")}</span>` : ""}
-      ${item.unverifiedOperator ? `<span class="tag" title="owner action 是未经验证的 operator 写入">未验证 operator</span>` : ""}
+      ${item.diagnostics.length ? `<span class="tag">解析提示</span>` : ""}
     </div>`;
   }
 
@@ -144,7 +150,7 @@
       const archived = rows.filter(item => archivedOf(item, cutoff));
       const shown = withArchived ? rows : rows.filter(item => !archivedOf(item, cutoff));
       const fold = archived.length ? `<button type="button" class="fold" data-arch="1" aria-pressed="${withArchived}"><span class="caret" aria-hidden="true">${withArchived ? "▾" : "▸"}</span>${withArchived ? "收起" : "另有"} ${archived.length} 个已归档</button>` : "";
-      return `<div class="section-label wi-label">${esc(STATUS_ZH[status] || status)}<span>${shown.length} 个</span>${fold}</div>
+      return `<div class="section-label wi-label">${esc(statusLabel(status))}<span>${shown.length} 个</span>${fold}</div>
         ${shown.length ? groupsHtml(ctx, shown, ids) : `<div class="wi-none">这一组的工作项都已归档。</div>`}`;
     }).join("");
   }
@@ -159,12 +165,12 @@
     const cl = item.checklist.total ? `${item.checklist.done}/${item.checklist.total}` : "—";
     return `<div class="linehead">
       <div>
-        <div class="who" style="margin-bottom:6px"><span class="tag">工作项</span><span class="tag">${esc(STATUS_ZH[item.status] || item.status)}</span><span class="mono">${esc(item.id)}</span>${item.unverifiedOperator ? `<span class="tag" title="owner action 是未经验证的 operator 写入">未验证 operator</span>` : ""}</div>
+        <div class="who" style="margin-bottom:6px"><span class="tag">工作项</span><span class="tag">${esc(statusLabel(item.status))}</span><span class="mono">${esc(item.id)}</span></div>
         <h2>${esc(item.title)}</h2>
         <p>${esc(item.owner)}${item.assignee ? " → " + esc(item.assignee) : ""}${item.opened != null ? " · 打开 " + esc(full(item.opened)) : ""}${item.closed != null ? " · 关闭 " + esc(full(item.closed)) : ""}</p>
       </div>
       <div class="box"><dl class="kv">
-        <dt>状态</dt><dd>${esc(STATUS_ZH[item.status] || item.status)}</dd>
+        <dt>状态</dt><dd>${esc(statusLabel(item.status))}</dd>
         <dt>负责人</dt><dd>${esc(item.owner)}</dd>
         <dt>指派</dt><dd>${item.assignee ? esc(item.assignee) : "—"}</dd>
         <dt>清单</dt><dd class="mono">${esc(cl)}</dd>
@@ -172,6 +178,8 @@
         <dt>关闭</dt><dd class="mono">${item.closed != null ? esc(full(item.closed)) : "—"}</dd>
       </dl></div>
     </div>
+    ${item.diagnostics.length ? `<div class="note"><b>可选解析提示</b><p>文档仍可读取；部分内容无法用于摘要。</p><ul>${item.diagnostics.map(message => `<li>${esc(message)}</li>`).join("")}</ul></div>` : ""}
+    ${item.documentText !== null ? `<div class="section-label">文档原文预览</div>${item.path ? `<p class="mono">${esc(item.path)}</p>` : ""}<p class="wi-none">此处为脱敏预览，完整内容保留在原文件中。${item.documentTruncated ? "预览已截断，请查看原文件。" : ""}</p><pre class="wi-document">${esc(item.documentText || "（空文档）")}</pre>` : ""}
     <div class="section-label">清单<span>${item.checklist.done}/${item.checklist.total}</span></div>
     ${item.checklistItems.length
       ? `<ul class="wi-check">${item.checklistItems.map(c => `<li class="${c.done ? "done" : ""}"><span class="wi-mark" aria-hidden="true">${c.done ? "✓" : "○"}</span>${esc(c.text)}</li>`).join("")}</ul>`
@@ -212,6 +220,7 @@
 .wi-accept { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 14px; max-width: 90ch; }
 .wi-logbox { display: grid; gap: 3px; margin-bottom: 10px; }
 .wi-log-line { font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+.wi-document { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--mono); margin: 0 0 14px; }
 `;
   let styled = false;
   function ensureStyle() {

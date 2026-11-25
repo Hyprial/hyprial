@@ -19,8 +19,8 @@ from hyprial.daemon.impl.inbox import (
     MemoryDeliveryTransport,
 )
 from hyprial.kernel import HarnessLaunchSpec
-from hyprial.daemon.impl.harnesses import HarnessLauncher, PtyHarnessProcess, is_streaming_spec
-from hyprial.daemon.impl.harnesses.codex import APP_SERVER_STARTUP_MARGIN_SECONDS, APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT, REQUEST_TIMEOUT_SECONDS_DEFAULT, THREAD_START_TIMEOUT_SECONDS_DEFAULT, HARNESS_BRIDGE_MCP_SERVER_NAME, _sandbox_writable_roots_config, _server_request_response, _worker_channel_config, CodexAgentHomeError, CodexAppServerClient, CodexAppServerProcess, _OwnedProcessGroup, _darwin_group_has_live_members, _linux_group_has_live_members, _parse_linux_process_stat, _process_birth_identity
+from hyprial.daemon.impl.harnesses import HarnessLauncher, is_streaming_spec
+from hyprial.daemon.impl.harnesses.codex import APP_SERVER_STARTUP_MARGIN_SECONDS, APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT, REQUEST_TIMEOUT_SECONDS_DEFAULT, THREAD_START_TIMEOUT_SECONDS_DEFAULT, HARNESS_BRIDGE_MCP_SERVER_NAME, _sandbox_writable_roots_config, _server_request_response, _worker_channel_config, CodexAgentHomeError, CodexAppServerClient, CodexAppServerProcess, CodexInteractiveAppServer, _OwnedProcessGroup, _darwin_group_has_live_members, _linux_group_has_live_members, _parse_linux_process_stat, _process_birth_identity
 from hyprial.daemon.impl.harnesses.streaming import StreamingTurnProcess
 from hyprial.kernel.impl.log import Logger
 
@@ -158,7 +158,7 @@ def test_skill_loader_failure_still_starts_with_warning_and_daemon_log(tmp_path,
     asyncio.run(drive())
 
 
-def test_ready_codex_process_publishes_startup_warnings_to_process_owner():
+def test_ready_codex_process_publishes_startup_warnings_to_process_owner(actor_host):
     from hyprial.daemon.impl.processes.process_owner import ProcessOwner
 
     warning = "Codex skills/list reported loader errors: missing YAML frontmatter delimited by ---"
@@ -173,7 +173,7 @@ def test_ready_codex_process_publishes_startup_warnings_to_process_owner():
             spec(), command=(sys.executable, str(FAKE_CODEX)),
         ),
     )
-    owner = ProcessOwner(process)
+    owner = ProcessOwner(process, actor_host=actor_host)
     try:
         assert owner.wait_ready(timeout=3)
         assert owner.startup_warnings == (warning,)
@@ -298,7 +298,7 @@ def test_darwin_process_scan_distinguishes_zombie_only_and_live_groups(
         )
     )
     monkeypatch.setattr(
-        "hyprial.kernel.impl.processes.owned_process.subprocess.run", lambda *_args, **_kwargs: next(outcomes)
+        "hyprial.kernel.impl.manysys.process.owned_process.subprocess.run", lambda *_args, **_kwargs: next(outcomes)
     )
 
     assert not _darwin_group_has_live_members(4242)
@@ -325,7 +325,7 @@ def test_linux_birth_identity_fails_safe_when_proc_is_unreadable(
         Path, "read_text", lambda *_a, **_k: (_ for _ in ()).throw(OSError())
     )
     monkeypatch.setattr(
-       "hyprial.kernel.impl.processes.owned_process.subprocess.run",
+       "hyprial.kernel.impl.manysys.process.owned_process.subprocess.run",
        lambda *_a, **_k: pytest.fail("Linux identity must not fall back to ps"),
     )
 
@@ -337,7 +337,7 @@ def test_macos_birth_identity_fails_safe_when_ps_times_out(
 ) -> None:
     monkeypatch.setattr("hyprial.daemon.impl.harnesses.codex.process.sys.platform", "darwin")
     monkeypatch.setattr(
-       "hyprial.kernel.impl.processes.owned_process.subprocess.run",
+       "hyprial.kernel.impl.manysys.process.owned_process.subprocess.run",
        lambda *_a, **_k: (_ for _ in ()).throw(subprocess.TimeoutExpired("ps", 1)),
     )
 
@@ -729,14 +729,14 @@ def test_codex_client_configuration_error_fails_start_once_and_is_logged(
     backoff_started = threading.Event()
     release_backoff = threading.Event()
 
-    async def controlled_backoff(delay: float) -> None:
+    async def controlled_backoff(_stop_wakeup: object, delay: float) -> None:
         backoffs.append(delay)
         backoff_started.set()
         await asyncio.to_thread(release_backoff.wait)
 
-    import hyprial.daemon.impl.harnesses.streaming.process as streaming_process_module
-
-    monkeypatch.setattr(streaming_process_module.asyncio, "sleep", controlled_backoff)
+    monkeypatch.setattr(
+        StreamingTurnProcess, "_wait_for_backoff", staticmethod(controlled_backoff)
+    )
 
     class RecordingLogger:
         def __init__(self) -> None:
@@ -786,12 +786,12 @@ def test_transient_client_construction_error_is_still_retried(
     attempts = 0
     backoffs: list[float] = []
 
-    async def controlled_backoff(delay: float) -> None:
+    async def controlled_backoff(_stop_wakeup: object, delay: float) -> None:
         backoffs.append(delay)
 
-    import hyprial.daemon.impl.harnesses.streaming.process as streaming_process_module
-
-    monkeypatch.setattr(streaming_process_module.asyncio, "sleep", controlled_backoff)
+    monkeypatch.setattr(
+        StreamingTurnProcess, "_wait_for_backoff", staticmethod(controlled_backoff)
+    )
 
     class ReadyClient:
         async def __aenter__(self):
@@ -819,17 +819,6 @@ def test_transient_client_construction_error_is_still_retried(
         assert attempts == 2
         assert backoffs == [0.25]
         assert process.last_error is None
-    finally:
-        process.stop()
-
-
-def test_overridden_codex_command_keeps_the_pty_seam() -> None:
-    launcher = HarnessLauncher(
-        commands={"codex": (sys.executable, "-c", "import time; time.sleep(30)")}
-    )
-    process = launcher.start(spec())
-    try:
-        assert isinstance(process, PtyHarnessProcess)
     finally:
         process.stop()
 
@@ -960,3 +949,17 @@ def test_launcher_codex_startup_budget_is_the_composed_default() -> None:
         .default
     )
     assert default == APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT
+
+
+def test_interactive_app_server_budgets_cover_provider_prewarm() -> None:
+    """Interactive resume performs provider prewarm before thread discovery.
+
+    The OpenAI prewarm round trip can exceed the old 30 s socket / 15 s RPC
+    budgets on a slow link, which surfaced as ``Codex exited before
+    interactive thread discovery``.  The interactive server owns both waits,
+    so its defaults must leave room for that prewarm.
+    """
+
+    parameters = inspect.signature(CodexInteractiveAppServer.__init__).parameters
+    assert parameters["startup_timeout_seconds"].default == 120.0
+    assert parameters["request_timeout_seconds"].default == 120.0

@@ -91,17 +91,6 @@ class CreateTransferHostedAgentCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class CreateHostInvitedAgentCommand:
-    correlation_id: str
-    name: str
-    pinned_owner: str
-    entity_token: str
-    cwd: str | None = None
-    harness_args: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    preferred_harness: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class DestroyAgentCommand:
     correlation_id: str
     name: str
@@ -153,6 +142,27 @@ class UpdateAgentCommand:
 
     def capabilities_payload(self) -> dict[str, object]:
         return {key: _thaw_json(value) for key, value in self.capabilities}
+
+
+@dataclass(frozen=True, slots=True)
+class SetHarnessArgsCommand:
+    correlation_id: str
+    actor: str
+    harness: str | None
+    args: tuple[str, ...] | None
+    expected_harness_args: tuple[tuple[str, tuple[str, ...]], ...]
+    operator: str
+    reason: str | None = None
+    confirmed_dangerous: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RenameAgentCommand:
+    """U2: change one agent's display name; its actor key never moves."""
+
+    correlation_id: str
+    name: str
+    display_name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,25 +247,6 @@ class BlockAgentCommand:
 class UnblockAgentCommand:
     correlation_id: str
     actor: str
-
-
-@dataclass(frozen=True, slots=True)
-class PinAgentAdapterCommand:
-    correlation_id: str
-    actor: str
-    adapter: str
-    expected_actor: str | None = None
-    compare: bool = False
-    strict_compare: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class UnpinAgentAdapterCommand:
-    correlation_id: str
-    adapter: str
-    expected_actor: str | None = None
-    compare: bool = False
-    strict_compare: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +345,8 @@ class GrantAgentSecretCommand:
     revision: int
     prevalidated_home_token: str | None = None
     owner_actor: str | None = None
+    target_entity_token: str | None = None
+    route_required: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,8 +377,9 @@ class RevokeAgentSecretCommand:
 AgentCommand: TypeAlias = (
     CreateAgentCommand
     | CreateTransferHostedAgentCommand
-    | CreateHostInvitedAgentCommand
     | UpdateAgentCommand
+    | SetHarnessArgsCommand
+    | RenameAgentCommand
     | BindAgentConfigCommand
     | DestroyAgentCommand
     | SettleAgentDestroyCommand
@@ -398,8 +392,6 @@ AgentCommand: TypeAlias = (
     | ClearRestoreDispositionCommand
     | BlockAgentCommand
     | UnblockAgentCommand
-    | PinAgentAdapterCommand
-    | UnpinAgentAdapterCommand
     | AcquireAgentRuntimeLaunchCommand
     | ReleaseAgentRuntimeLaunchCommand
     | ReserveAgentDestroyCommand
@@ -456,11 +448,11 @@ class AgentProjection:
     last_harness: str | None = None
     last_session_id: str | None = None
     last_active_at_ms: int | None = None
-    pinned_adapters: tuple[str, ...] = ()
     created_at_ms: int = 0
     hosted_by: str | None = None
     restore_disposition: RestoreDispositionProjection | None = None
     block: AgentBlockProjection | None = None
+    display_name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -469,6 +461,20 @@ class AgentProjection:
         object.__setattr__(self, "capabilities", tuple(
             (key, _freeze_json(value)) for key, value in self.capabilities
         ))
+
+    @property
+    def agent_id(self) -> str | None:
+        """The ``a.`` id this incarnation derives, None for a malformed token."""
+
+        from hyprial.identity.impl.agents.registry._base import (
+            AgentError,
+            agent_id_for_entity_token,
+        )
+
+        try:
+            return agent_id_for_entity_token(self.entity_token)
+        except AgentError:
+            return None
 
     def config_payload(self) -> object:
         return _thaw_json(self.config)
@@ -495,10 +501,11 @@ class AgentProjection:
             "lastHarness": self.last_harness,
             "lastSessionId": self.last_session_id,
             "lastActiveAtMs": self.last_active_at_ms,
-            "pinnedAdapters": list(self.pinned_adapters),
             "createdAtMs": self.created_at_ms,
             "hosted": self.hosted_by is not None,
             "hostedBy": self.hosted_by,
+            "agentId": self.agent_id,
+            "displayName": self.display_name,
         }
 
 
@@ -584,6 +591,16 @@ class AgentMutationCompleted:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentHarnessArgsUpdated:
+    correlation_id: str
+    generation: int
+    version: int
+    changed: bool
+    agent: AgentProjection
+    audit_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AgentLivenessIoCompleted:
     correlation_id: str
     generation: int
@@ -666,6 +683,7 @@ class AgentDestroySettled:
 
 AgentEvent: TypeAlias = (
     AgentMutationCompleted
+    | AgentHarnessArgsUpdated
     | AgentLivenessIoCompleted
     | AgentLifecycleReceiptCompleted
     | AgentCapabilityGrantCompleted

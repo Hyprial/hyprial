@@ -1,4 +1,11 @@
-"""One physical IPC helper owner, with unchanged parameter and peer-PID semantics."""
+"""One physical IPC helper owner, with unchanged parameter and peer-PID semantics.
+
+The peer-PID reader physically lives in the kernel local IPC seam
+(``hyprial.kernel.impl.manysys.ipc.posix``) since the ipc-seam slice;
+``params._peer_process_id`` keeps the name as a thin forward to it.  The
+credential semantics below are asserted against the seam, and the forward is
+pinned by its own test.
+"""
 from __future__ import annotations
 
 import ast
@@ -12,6 +19,7 @@ import pytest
 
 from hyprial.daemon.impl.ipc import params
 from hyprial.kernel import DaemonRequestError, ipc_errors
+from hyprial.kernel.impl.manysys.ipc import posix as local_ipc_posix
 
 HELPERS = (
     "_required_string", "_optional_string_param", "_optional_positive_integer",
@@ -126,11 +134,11 @@ class _CredentialSocket:
 def test_peer_credentials_take_precedence_without_darwin_fallback(
     monkeypatch, platform, credential, payload, expected,
 ) -> None:
-    # Rebind only the consumer's module globals, never shared socket/sys state.
-    monkeypatch.setattr(params, "socket", SimpleNamespace(SOL_SOCKET=77, SO_PEERCRED=credential))
-    monkeypatch.setattr(params, "sys", SimpleNamespace(platform=platform))
+    """Only the reader's module globals are rebound, never shared socket/sys state."""
+    monkeypatch.setattr(local_ipc_posix, "socket", SimpleNamespace(SOL_SOCKET=77, SO_PEERCRED=credential))
+    monkeypatch.setattr(local_ipc_posix, "sys", SimpleNamespace(platform=platform))
     connection = _CredentialSocket(payload)
-    assert params._peer_process_id(connection) == expected
+    assert local_ipc_posix.peer_process_id(connection) == expected
     assert connection.calls == [(77, credential, 12)]
 
 
@@ -139,17 +147,24 @@ def test_peer_credentials_take_precedence_without_darwin_fallback(
     (struct.pack("i", -1), None), (b"short", None), (OSError("unavailable"), None),
 ])
 def test_darwin_local_peerpid_keeps_positive_and_fail_closed_semantics(monkeypatch, payload, expected) -> None:
-    monkeypatch.setattr(params, "socket", SimpleNamespace(SOL_SOCKET=77))
-    monkeypatch.setattr(params, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(local_ipc_posix, "socket", SimpleNamespace(SOL_SOCKET=77))
+    monkeypatch.setattr(local_ipc_posix, "sys", SimpleNamespace(platform="darwin"))
     connection = _CredentialSocket(payload)
-    assert params._peer_process_id(connection) == expected
+    assert local_ipc_posix.peer_process_id(connection) == expected
     assert connection.calls == [(0, 0x002, 4)]
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
 def test_unsupported_peer_pid_is_none_without_any_socket_operation(monkeypatch, platform) -> None:
-    monkeypatch.setattr(params, "socket", SimpleNamespace(SOL_SOCKET=77, SO_PEERCRED=None))
-    monkeypatch.setattr(params, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(local_ipc_posix, "socket", SimpleNamespace(SOL_SOCKET=77, SO_PEERCRED=None))
+    monkeypatch.setattr(local_ipc_posix, "sys", SimpleNamespace(platform=platform))
     connection = _CredentialSocket(OSError("must not be called"))
-    assert params._peer_process_id(connection) is None
+    assert local_ipc_posix.peer_process_id(connection) is None
     assert connection.calls == []
+
+
+def test_peer_pid_name_forwards_to_the_platform_seam(monkeypatch) -> None:
+    seen: list[object] = []
+    monkeypatch.setattr(params, "local_ipc_peer_pid", lambda connection: seen.append(connection) or 321)
+    assert params._peer_process_id("socket-ish") == 321
+    assert seen == ["socket-ish"]

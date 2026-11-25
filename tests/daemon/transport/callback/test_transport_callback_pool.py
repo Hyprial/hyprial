@@ -8,6 +8,7 @@ import time
 import pytest
 
 from hyprial.kernel.impl.actor_runtime import AdmissionResult
+from hyprial.kernel.impl.actor_runtime.port import ActorHost
 from hyprial.daemon.impl.transport.api import TransportSample
 
 from hyprial.daemon.impl.inbox.links.zenoh_link import ZenohInboxEndpoint
@@ -49,7 +50,15 @@ class _Native:
         self.closed = True
 
 
-def test_320_production_route_pairs_fit_fixed_callback_workers() -> None:
+def test_320_production_route_pairs_fit_fixed_callback_workers(monkeypatch) -> None:
+    spawned: list[str] = []
+    real_spawn = ActorHost.spawn
+
+    def counting_spawn(host, spec):
+        spawned.append(spec.name)
+        return real_spawn(host, spec)
+
+    monkeypatch.setattr(ActorHost, "spawn", counting_spawn)
     native = _Native()
     owner = TransportSessionAuthority(native)
     startup = []
@@ -71,10 +80,11 @@ def test_320_production_route_pairs_fit_fixed_callback_workers() -> None:
         assert (snapshot.registrations, snapshot.outstanding, snapshot.workers) == (335, 0, 4)
         assert len(owner._callback_pool._lane._threads) == 4
         assert all(thread.is_alive() for thread in owner._callback_pool._lane._threads)
-        with owner._runtime._guardian._lock:
-            # Only the transport control actor exists: route growth does not
-            # quietly reintroduce one backend actor/thread per callback cell.
-            assert len(owner._runtime._guardian._children) == 1
+        # The authority borrows one host and spawns exactly one actor: route
+        # growth must not reintroduce one backend actor per callback cell.
+        # Counting the public spawn seam keeps this assertion backend-neutral;
+        # neither engine enumerates its children through the port.
+        assert spawned == ["transport-session"]
         assert len(native.registrations) == 15 + 320 * 2
     finally:
         for token, endpoint in reversed(routes):

@@ -71,7 +71,6 @@ _TURN_REFRESH_UNSUPPORTED_CODES = frozenset({
 class RuntimeKind(StrEnum):
     CLAUDE_INTERACTIVE = "claude_interactive"
     CLAUDE_MANAGED_HEADLESS = "claude_managed_headless"
-    DSH_INTERACTIVE = "dsh_interactive"
     LEGACY = "legacy"
 
 def _install_legacy_discover_handler(lowlevel: Server[Any]) -> None:
@@ -151,7 +150,6 @@ class ClaudeChannelAdapter:
         command: tuple[str, ...],
         owner_fence: bool = False,
         lease_token: str | None = None,
-        tmux_session: str | None = None,
         turn_signal_dir: Path | None = None,
         poll_interval_ms: int = 500,
         heartbeat_interval_ms: int = int(CHANNEL_HEARTBEAT_INTERVAL_SECONDS * 1000),
@@ -167,7 +165,6 @@ class ClaudeChannelAdapter:
         self.cwd = cwd
         self.command = command
         self.owner_fence = owner_fence
-        self.tmux_session = tmux_session
         self._lease_token = lease_token or secrets.token_urlsafe(32)
         self._message_deliveries: dict[str, str] = {}
         #: cursor -> ordered member ids of the snapshot that cursor froze.
@@ -270,11 +267,6 @@ class ClaudeChannelAdapter:
                         "processIdentity": harness_identity,
                     }
                     if harness_pid > 1 and harness_identity is not None
-                    else {}
-                ),
-                **(
-                    {"tmuxSession": self.tmux_session}
-                    if self.tmux_session is not None
                     else {}
                 ),
             },
@@ -481,11 +473,26 @@ class ClaudeChannelAdapter:
         return result
 
     async def harness_reply(
-        self, message_id: str, summary: str, message: str
+        self,
+        message_id: str,
+        summary: str,
+        message: str,
+        *,
+        mentions: list[str] | None = None,
+        no_mention: bool = False,
     ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "messageId": message_id,
+            "summary": summary,
+            "message": message,
+        }
+        if mentions:
+            params["mentions"] = list(mentions)
+        if no_mention:
+            params["noMention"] = True
         result = await self._tool_call(
             "message.reply",
-            {"messageId": message_id, "summary": summary, "message": message},
+            params,
             mutation=True,
         )
         self._complete_if_terminal(message_id, result)

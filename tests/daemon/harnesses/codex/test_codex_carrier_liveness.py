@@ -1,4 +1,10 @@
-"""Real daemon/Session/Agent contracts for a Codex carrier with a fake clock."""
+"""Real daemon/Session/Agent contracts for a Codex carrier with a fake clock.
+
+The carrier speaks the name-composed URI the CLI mints (``ACTOR``); the
+daemon canonicalizes it at the boundary and keeps Session, binding,
+runtime and route state under the official address the registration
+answers with (``_Rig.uri``, the ``a.`` id URI under id-form minting).
+"""
 from __future__ import annotations
 
 from collections import Counter
@@ -26,11 +32,14 @@ class _Clock:
 
 
 class _Directory:
+    def __init__(self, online):
+        self.online = online
+
     def actor_online(self, actor):
-        return actor == ACTOR
+        return actor in self.online
 
     def online_actors(self):
-        return (ACTOR,)
+        return tuple(sorted(self.online))
 
     def online_mailboxes(self):
         return ()
@@ -59,6 +68,8 @@ class _Rig:
         self.errors = []
         self.error_calls = []
         self.carrier = None
+        self.online = set()
+        self.uri = None
         self.app = self._application()
         self.register(REF)
         self.carrier = CodexInteractiveCarrier(
@@ -79,16 +90,21 @@ class _Rig:
         app._inbox = InboxService(self.home / "state/inbox.sqlite3", MemoryDeliveryTransport())
         app._harnesses = _NoWorkers()
         app._presence = _LocalPresence(
-            _Directory(), app.node_id, interactive_liveness=app._interactive_actor_liveness,
+            _Directory(self.online), app.node_id, interactive_liveness=app._interactive_actor_liveness,
         )
         return app
 
     def register(self, session_ref):
-        return self.app.handle("session.register", {
+        result = self.app.handle("session.register", {
             "actor": ACTOR, "sessionRef": session_ref, "cwd": str(self.root),
             "command": ["codex", "--remote", "fake-only"],
             "source": "codex-app-server", "runtime": "codex_interactive",
         })
+        self.uri = result["actor"]
+        assert self.uri == self.app.agents.get("codex-probe").uri
+        self.online.clear()
+        self.online.add(self.uri)
+        return result
 
     def request(self, method, params):
         self.calls.append((self.clock.now, method, dict(params)))
@@ -111,11 +127,11 @@ class _Rig:
         return [method for _time, method, _params in self.calls]
 
     def assert_online(self):
-        runtime = self.app._agent_session_domains.agent.read_runtime(ACTOR)
+        runtime = self.app._agent_session_domains.agent.read_runtime(self.uri)
         assert runtime.online is True, runtime.to_payload()
-        assert self.app._presence.actor_online(ACTOR)
+        assert self.app._presence.actor_online(self.uri)
         ps = self.app.handle("ps", {})
-        row = next(item for item in ps["interactiveSessions"] if item["actor"] == ACTOR)
+        row = next(item for item in ps["interactiveSessions"] if item["actor"] == self.uri)
         assert row["online"] is True
 
     def restart_daemon(self):
@@ -197,7 +213,7 @@ def test_daemon_replacement_refreshes_existing_session_without_reregistering(rig
     assert rig.methods() == ["session.heartbeat", "session.refresh"]
     rig.carrier._poll_once()
     assert rig.methods() == ["session.heartbeat", "session.refresh", "message.pending.list"]
-    assert rig.app._agent_session_domains.session.read_session(ACTOR).session_ref == REF
+    assert rig.app._agent_session_domains.session.read_session(rig.uri).session_ref == REF
     rig.assert_online()
     rig.calls.clear()
     rig.clock.now += CHANNEL_HEARTBEAT_INTERVAL_SECONDS - .001
@@ -219,7 +235,7 @@ def test_superseded_codex_session_stops_without_registering_over_new_owner(rig, 
     rig.carrier._poll_main()
     assert rig.errors == ["SESSION_SUPERSEDED"]
     assert rig.methods() == ["session.heartbeat" if already_refreshed else "session.refresh"]
-    assert rig.app._agent_session_domains.session.read_session(ACTOR).session_ref == "replacement-thread"
+    assert rig.app._agent_session_domains.session.read_session(rig.uri).session_ref == "replacement-thread"
 
 
 def test_stopped_codex_carrier_sends_no_more_heartbeats_or_polls(rig):

@@ -1,3 +1,6 @@
+# Decision record (W2B-2, 2026-11-21):
+# - _adapter_config_mutation and _restore_bytes delegate file hardening to
+#   hyprial.kernel.harden_private_path instead of direct os.chmod(0o600).
 """Register and de-register external-platform (Lark) adapters in local config.
 
 This is the file-level half of the adapter lifecycle: it writes exactly the
@@ -10,6 +13,7 @@ snapshot, so lifecycle visibility changes only take effect after a restart.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -21,7 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from hyprial.kernel import lock_exclusive, resolve_node_id, unlock
+from hyprial.kernel import harden_private_path, lock_exclusive, resolve_node_id, unlock
 from hyprial.kernel import (
     ChannelConfiguration,
     ChannelRouteConfig,
@@ -78,12 +82,14 @@ def _adapter_config_mutation(hyprial_home: Path) -> Iterator[None]:
     path = home / ".adapter-config.lock"
     with _config_thread_lock(path):
         stream = path.open("a+b")
-        os.chmod(path, 0o600)
         try:
+            harden_private_path(path, mode=0o600)
             lock_exclusive(stream.fileno())
-            yield
+            try:
+                yield
+            finally:
+                unlock(stream.fileno())
         finally:
-            unlock(stream.fileno())
             stream.close()
 
 
@@ -161,7 +167,7 @@ def _restore_bytes(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
+        harden_private_path(temporary, mode=0o600)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -380,7 +386,8 @@ def _add_lark_gateway_unlocked(
             "Run 'hyprial adapter reload' so a running daemon refreshes its "
             "snapshot of the gateway list and 'hyprial adapter start' sees "
             "this adapter without a daemon restart ('hyprial adapter add' "
-            "already attempts that reload), then 'hyprial adapter pin'."
+            "already attempts that reload), then bind it to an agent with "
+            "'hyprial agent cell apply'."
         )
         + (
             ""
@@ -436,6 +443,12 @@ def remove_lark_gateway(
             )
 
     with _adapter_config_mutation(Path(hyprial_home)):
+        from hyprial.daemon.impl.operations.adapter_removal.journal import AdapterRemovalJournal
+        from hyprial.daemon.impl.state_db import StateDatabase
+
+        database = Path(state_dir) / "lifecycle-operations.sqlite3"
+        if database.exists() and AdapterRemovalJournal(StateDatabase(database)).pending():
+            raise AdapterConfigConflictError("adapter removal requires daemon recovery")
         return _remove_lark_gateway_unlocked(
             hyprial_home=hyprial_home,
             state_dir=state_dir,
@@ -555,17 +568,11 @@ def _remove_lark_gateway_unlocked(
 
     assert registry_snapshot is not None
     harness_present = registry_snapshot.harness.spec is not None
-    legacy_pinned_actor = registry_snapshot.harness.legacy_pin
-    database_pin = registry_snapshot.agent_pin
-    pinned_actor = database_pin or legacy_pinned_actor
     removed: dict[str, object] = {
         "channelsEntry": True,
         "secretFile": delete_secret and backups[secret_path] is not None,
         "desiredStateProvider": harness_present,
-        "adapterPin": pinned_actor is not None,
     }
-    if pinned_actor is not None:
-        removed["pinnedActor"] = pinned_actor
     result: dict[str, object] = {
         "ok": True,
         "adapter": {"provider": "lark", "name": name},
@@ -647,6 +654,16 @@ def list_gateway_routes(
     }
 
 
+def gateway_routes_revision(summary: dict[str, object]) -> str:
+    """Opaque expectation for one complete configured gateway, without secrets."""
+    return hashlib.sha256(json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _check_route_revision(gateway: LarkGatewayConfig, expected: str | None) -> None:
+    if expected is not None and expected != gateway_routes_revision(_gateway_summary(gateway)):
+        raise AdapterConfigConflictError("adapter routes changed; read the current configuration")
+
+
 def _write_gateway_routes(
     *,
     hyprial_home: Path,
@@ -717,6 +734,7 @@ def add_gateway_route(
     route: RouteInput,
     make_default: bool = False,
     force: bool = False,
+    expected_revision: str | None = None,
 ) -> dict[str, object]:
     """Bind one named route on an existing gateway.
 
@@ -731,6 +749,7 @@ def add_gateway_route(
     with _adapter_config_mutation(Path(hyprial_home)):
         existing = _load_existing(Path(hyprial_home) / "channels.json")
         gateway = _require_gateway(existing, name)
+        _check_route_revision(gateway, expected_revision)
         present = next(
             (item for item in gateway.routes if item.name == route.name), None
         )
@@ -763,6 +782,7 @@ def remove_gateway_route(
     name: str,
     route_name: str,
     force: bool = False,
+    expected_revision: str | None = None,
 ) -> dict[str, object]:
     """Unbind one named route.
 
@@ -775,6 +795,7 @@ def remove_gateway_route(
     with _adapter_config_mutation(Path(hyprial_home)):
         existing = _load_existing(Path(hyprial_home) / "channels.json")
         gateway = _require_gateway(existing, name)
+        _check_route_revision(gateway, expected_revision)
         if all(item.name != route_name for item in gateway.routes):
             bound = ", ".join(item.name for item in gateway.routes) or "(none)"
             raise RouteNotFoundError(

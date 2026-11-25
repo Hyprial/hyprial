@@ -3,6 +3,7 @@
 Behavior clusters live in turn_io.py / failure.py as explicit mixins;
 all instance state is created and owned by this class's ``__init__``.
 """
+from __future__ import annotations
 
 import asyncio
 import queue
@@ -14,7 +15,6 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from hyprial.kernel import AdmissionResult
-from hyprial.kernel import capped_exponential
 from hyprial.kernel import PortAdmission
 from hyprial.daemon.impl.api import (
     HarnessDelivery,
@@ -27,7 +27,8 @@ from hyprial.daemon.impl.inbox.tracking.progress import ProgressEvent
 from hyprial.kernel import Logger
 
 if TYPE_CHECKING:
-    pass
+    from hyprial.kernel import ActorHost
+
 from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports import (
     CloseTurnPumpCommand,
     EnqueueTurnCommand,
@@ -82,6 +83,7 @@ class SequentialTurnProcess(
             on_turn_started: TurnStartedObserver | None = None,
             on_turn_failure: Callable[[str], AdmissionResult | None] | None = None,
             on_turn_completed: TurnCompletedObserver | None = None,
+            actor_host: ActorHost | None = None,
         ) -> None:
             if reconnect_delay_seconds < 0:
                 raise ValueError("reconnect delay must not be negative")
@@ -197,6 +199,8 @@ class SequentialTurnProcess(
                 max_delivery_attempts=max_delivery_attempts,
                 event_sink=self._on_turn_event,
                 capacity=_TURN_DELIVERY_MAX,
+                # P7: the daemon's one host; standalone callers keep the fallback.
+                actor_host=actor_host,
             )
             self._turn_runtime_drained = threading.Event()
             self._thread = threading.Thread(
@@ -447,7 +451,9 @@ class SequentialTurnProcess(
                     self._force_stop()
                     self._thread.join(timeout=self._force_stop_join_seconds)
                     assert self._force_stopped is not None
-                    if self._thread.is_alive() or not self._force_stopped():
+                    thread_alive = self._thread.is_alive()
+                    force_stopped = self._force_stopped()
+                    if thread_alive or not force_stopped:
                         raise RuntimeError(
                             f"{self.label} did not stop after forced cleanup"
                         )
@@ -466,6 +472,7 @@ class SequentialTurnProcess(
 
         async def _run(self) -> None:
             self._loop = asyncio.get_running_loop()
+            stop_wakeup = self._prepare_stop_wakeup()
             current: HarnessDelivery | None = None
             current_fence: tuple[int, int] | None = None
             turn_started = False
@@ -759,7 +766,9 @@ class SequentialTurnProcess(
                                 # never returned to a workable range.  (Observed
                                 # only; how much any single compaction reclaimed
                                 # was not measured.)
-                                await asyncio.sleep(self._backoff_delay(repeats))
+                                await self._wait_for_backoff(
+                                    stop_wakeup, self._backoff_delay(repeats)
+                                )
                 except (NameError, ImportError):
                     # Programming/import defects are never transient harness loss;
                     # surfacing them terminates the pump instead of retrying forever.
@@ -862,22 +871,10 @@ class SequentialTurnProcess(
                         break
                     if self._stopping.is_set():
                         break
-                    await asyncio.sleep(self._backoff_delay(failures_for_delay))
+                    await self._wait_for_backoff(
+                        stop_wakeup, self._backoff_delay(failures_for_delay)
+                    )
             self._loop = None
-
-        def _backoff_delay(self, failures: int) -> float:
-            """Exponential retry spacing prevents immediate identical turn replay."""
-
-            if failures <= 1:
-                return self._reconnect_delay_seconds
-            return min(
-                capped_exponential(
-                    self._reconnect_delay_seconds,
-                    self._reconnect_delay_max_seconds,
-                    failures - 1,
-                ),
-                self._reconnect_delay_max_seconds,
-            )
 
         def _log_turn(
             self, event: str, delivery: HarnessDelivery, **fields: object

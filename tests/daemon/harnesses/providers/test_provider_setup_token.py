@@ -60,18 +60,25 @@ def test_setup_token_cli_single_store_and_clear(provider_app, monkeypatch):
     assert app._agent_registry.secret_inventory("wf-default")
 
 
-def test_native_default_seeds_pac_and_cli(provider_app):
+@pytest.mark.parametrize("payload", [b'{"synthetic":true}', b"x" * (1024 * 1024 + 1)], ids=["bounded", "large"])
+def test_native_default_seeds_pac_and_cli(provider_app, monkeypatch, payload):
     app = provider_app
+    at = [1000]
+    monkeypatch.setattr(app._agent_registry, "_clock", lambda: at[0])
     result = app.handle("agent.provider.login", {"actor": "worker", "provider": "claude",
-        "files": [{"filename": ".credentials.json", "contentBase64": base64.b64encode(b'{"synthetic":true}').decode()}],
+        "files": [{"filename": ".credentials.json", "contentBase64": base64.b64encode(payload).decode()}],
         "makeDefault": True})
     assert result["default"]["credentialSource"] == "native"
+    at[0] = 2000
     app._ensure_agent("wf-native", harness="claude", interactive=False)
     app.handle("agent.create", {"name": "cli-native", "preferredHarness": "claude"})
     for actor in ("wf-native", "cli-native"):
         root = Path(app._agent_registry.home_receipt(actor).path)
-        assert (root / "secrets/native/claude/.credentials.json").is_file()
+        assert (root / "secrets/native/claude/.credentials.json").read_bytes() == payload
         assert not app._agent_registry.secret_inventory(actor)
+        record, = app.handle("agent.provider.auth.list", {"actor": actor, "harness": "claude"})["records"]
+        assert record["importedAt"] == (2000 if len(payload) <= 1024 * 1024 else None)
+        assert record["startupConfirmedAt"] is None
 
 
 def test_default_token_requires_operator(provider_app):
@@ -134,7 +141,7 @@ def test_default_excludes_visitors_and_other_harnesses(provider_app, native):
             "makeDefault": True})
     else:
         login(app)
-    app.handle("agent.host-invite", {"name": "visitor", "owner": "visitor-owner", "preferredHarness": "claude"})
+    app.agents.create_transfer_hosted("visitor", pinned_owner="visitor-owner", preferred_harness="claude")
     app.handle("agent.create", {"name": "pi-user", "preferredHarness": "pi"})
     for actor in ("visitor", "pi-user"):
         assert not app._agent_registry.secret_inventory(actor)

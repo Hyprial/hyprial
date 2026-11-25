@@ -13,6 +13,49 @@ CALLER = "agent:test:node:caller"
 OTHER = "agent:test:node:other"
 
 
+def _routine_row(name: str, owner: str, actor: str, outcomes: list[str]) -> dict:
+    """One routine projection row with the real producer's required keys."""
+
+    return {
+        "name": name,
+        "owner": owner,
+        "enabled": True,
+        "nextDueMs": 1_000,
+        "sourceErrorStreak": 0,
+        "outcomes": outcomes,
+        "registrationId": None,
+        "mode": "source",
+        "role": "dispatch",
+        "actor": actor,
+        "actorOwnership": "external",
+        "launch": None,
+        "overlap": None,
+        "missedPeriods": None,
+        "inFlight": [],
+        "lastDispatchAtMs": None,
+        "lastOutcome": None,
+    }
+
+
+def _run_row(graph_id: str, sender: str) -> dict:
+    """One workflow.list run row with the real producer's required keys."""
+
+    return {
+        "runId": graph_id,
+        "graphId": graph_id,
+        "backend": "pac",
+        "name": "overview",
+        "state": "running",
+        "sender": sender,
+        "createdAtMs": 1_000,
+        "closedAtMs": None,
+        "onFailure": "terminate",
+        "routineName": None,
+        "lastProgressAtMs": None,
+        "currentNode": None,
+    }
+
+
 class _Workflows:
     def __init__(self) -> None:
         self.viewers: list[str | None] = []
@@ -20,8 +63,8 @@ class _Workflows:
     def list(self, *, limit: int, viewer: str | None):
         self.viewers.append(viewer)
         rows = [
-            {"graphId": "wf-caller", "sender": CALLER},
-            {"graphId": "wf-other", "sender": OTHER},
+            _run_row("wf-caller", CALLER),
+            _run_row("wf-other", OTHER),
         ]
         return {
             "runs": rows
@@ -37,24 +80,9 @@ class _Routines:
     def list(self):
         return {
             "routines": [
-                {
-                    "name": "mine",
-                    "owner": CALLER,
-                    "actor": CALLER,
-                    "outcomes": ["done"],
-                },
-                {
-                    "name": "theirs",
-                    "owner": OTHER,
-                    "actor": OTHER,
-                    "outcomes": [],
-                },
-                {
-                    "name": "delegated",
-                    "owner": OTHER,
-                    "actor": CALLER,
-                    "outcomes": ["escalated"],
-                },
+                _routine_row("mine", CALLER, CALLER, ["done"]),
+                _routine_row("theirs", OTHER, OTHER, []),
+                _routine_row("delegated", OTHER, CALLER, ["escalated"]),
             ]
         }
 

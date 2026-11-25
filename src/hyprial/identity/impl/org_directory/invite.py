@@ -17,10 +17,15 @@ import binascii
 import hashlib
 import json
 import re
+import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from hyprial.identity.impl.org_directory.models import org_space_name
+from hyprial.kernel import ProcessFileLock, atomic_json_write, fsync_directory, ipc_errors
 from .tailnet_invite import validate_tailnet_invite
 
 __all__ = [
@@ -70,6 +75,9 @@ _RECORD_KEYS = frozenset(
 )
 
 
+_OPTIONAL_RECORD_KEYS = frozenset({"parent"})
+
+
 class InviteError(ValueError):
     """A link that cannot be trusted or executed; ``code`` names why."""
 
@@ -97,6 +105,7 @@ class InviteLink:
     workflow_sha256: str
     expires_at: str
     tailnet: dict | None = None
+    parent_org: str | None = None
 
 
 def encode_invite(link: InviteLink) -> str:
@@ -245,8 +254,12 @@ def _extract_payload(text: object) -> str:
 
 def _link_record(link: InviteLink) -> dict[str, object]:
     """The camelCase payload, after checking every field's shape."""
-    return {
-        "org": _org(link.org),
+    org = _org(link.org)
+    parent_org = None if link.parent_org is None else _org(link.parent_org)
+    if parent_org is not None and parent_org == org:
+        raise ValueError("invite parent cannot equal org")
+    record: dict[str, object] = {
+        "org": org,
         "spaceId": _field(link.space_id, "spaceId"),
         "aclSpaceId": _field(link.acl_space_id, "aclSpaceId"),
         "inviter": _field(link.inviter, "inviter"),
@@ -256,8 +269,15 @@ def _link_record(link: InviteLink) -> dict[str, object]:
         "workflowYaml": _field(link.workflow_yaml, "workflowYaml"),
         "workflowSha256": _digest(link.workflow_sha256),
         "expiresAt": _canonical_timestamp(link.expires_at),
-        "tailnet": validate_tailnet_invite(link.tailnet, space_id=link.space_id),
+        "tailnet": validate_tailnet_invite(
+            link.tailnet,
+            space_id=link.space_id,
+            allow_inherited=parent_org is not None,
+        ),
     }
+    if parent_org is not None:
+        record["parent"] = parent_org
+    return record
 
 
 def _link_from_record(value: object) -> InviteLink:
@@ -268,15 +288,19 @@ def _link_from_record(value: object) -> InviteLink:
         )
     if set(value) == _RECORD_KEYS - {'tailnet'}:
         raise InviteError('INVITE_VERSION_UNSUPPORTED', 'Old invitation rejected; ask the authority for a v2 invitation.')
-    unknown = sorted(set(value) - _RECORD_KEYS)
+    unknown = sorted(set(value) - (_RECORD_KEYS | _OPTIONAL_RECORD_KEYS))
     if unknown:
         raise InviteError(INVITE_MALFORMED, f"invite payload has unknown keys: {unknown}")
     missing = sorted(_RECORD_KEYS - set(value))
     if missing:
         raise InviteError(INVITE_MALFORMED, f"invite payload is missing keys: {missing}")
     try:
+        org = _org(value["org"])
+        parent_org = None if "parent" not in value else _org(value["parent"])
+        if parent_org is not None and parent_org == org:
+            raise ValueError("invite parent cannot equal org")
         return InviteLink(
-            org=_org(value["org"]),
+            org=org,
             space_id=_field(value["spaceId"], "spaceId"),
             acl_space_id=_field(value["aclSpaceId"], "aclSpaceId"),
             inviter=_field(value["inviter"], "inviter"),
@@ -286,7 +310,12 @@ def _link_from_record(value: object) -> InviteLink:
             workflow_yaml=_field(value["workflowYaml"], "workflowYaml"),
             workflow_sha256=_digest(value["workflowSha256"]),
             expires_at=_timestamp(value["expiresAt"]),
-            tailnet=validate_tailnet_invite(value['tailnet'], space_id=value['spaceId']),
+            tailnet=validate_tailnet_invite(
+                value["tailnet"],
+                space_id=value["spaceId"],
+                allow_inherited=parent_org is not None,
+            ),
+            parent_org=parent_org,
         )
     except ValueError as error:
         raise InviteError(INVITE_MALFORMED, str(error)) from error
@@ -347,3 +376,108 @@ def _parse_utc(text: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset().total_seconds() != 0:
         raise ValueError("expiresAt must carry a UTC (zero) offset")
     return parsed
+
+
+class JoinIdentityError(ValueError):
+    """A join claim that cannot be bound to the owner roster."""
+
+    def __init__(self, code: str, message: str, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
+
+
+def validate_oidc_join(
+    claims: Mapping[str, Any],
+    *,
+    issuer: str,
+    members: Mapping[str, Mapping[str, Any]],
+    max_members: int = 64,
+) -> dict[str, str]:
+    """Validate issuer, subject and username against an owner roster."""
+
+    token_issuer = claims.get("iss")
+    subject = claims.get("sub")
+    username = claims.get("preferred_username")
+    for field, value in (("issuer", token_issuer), ("sub", subject), ("preferred_username", username)):
+        if not isinstance(value, str) or not value.strip():
+            raise JoinIdentityError(
+                ipc_errors.IDENTITY_CONFLICT,
+                f"OIDC claim {field} is required",
+                {"conflictField": field},
+            )
+    if token_issuer != issuer:
+        raise JoinIdentityError(
+            ipc_errors.IDENTITY_CONFLICT,
+            "OIDC issuer does not match the organization",
+            {"conflictField": "issuer"},
+        )
+    uid_ref = f"u.{subject}"
+    by_uid = members.get(uid_ref)
+    by_username = next(
+        (uid for uid, row in members.items() if row.get("username") == username),
+        None,
+    )
+    if by_uid is not None and by_uid.get("username") != username:
+        raise JoinIdentityError(
+            ipc_errors.IDENTITY_CONFLICT,
+            "subject is bound to another username",
+            {"conflictField": "preferred_username"},
+        )
+    if by_username is not None and by_username != uid_ref:
+        raise JoinIdentityError(
+            ipc_errors.IDENTITY_CONFLICT,
+            "username is bound to another subject",
+            {"conflictField": "sub"},
+        )
+    if by_uid is None and len(members) >= max_members:
+        raise JoinIdentityError(
+            "MEMBERSHIP_LIMIT_EXCEEDED",
+            "organization member limit exceeded",
+            {"limit": max_members, "current": len(members)},
+        )
+    return {"uidRef": uid_ref, "username": username, "issuer": token_issuer}
+
+
+class JoinTokenLedger:
+    """Atomic durable token consumption used by the owner actor."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._lock = threading.Lock()
+        self._consumed: set[str] = set()
+        self._path = Path(path) if path is not None else None
+        self._lock_path = self._path.with_name(self._path.name + ".lock") if self._path is not None else None
+
+    def _read(self) -> set[str]:
+        if self._path is None or not self._path.exists():
+            return set()
+        try:
+            loaded = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise JoinIdentityError("INVITE_INVALID", "join token ledger is unreadable") from error
+        if not isinstance(loaded, list) or any(not isinstance(item, str) or not item for item in loaded):
+            raise JoinIdentityError("INVITE_INVALID", "join token ledger is corrupt")
+        return set(loaded)
+
+    def consume(self, token_id: str) -> None:
+        if not isinstance(token_id, str) or not token_id:
+            raise JoinIdentityError("INVITE_INVALID", "join token is empty")
+        with self._lock:
+            if self._path is None:
+                if token_id in self._consumed:
+                    raise JoinIdentityError("INVITE_CONSUMED", "join token was already consumed")
+                self._consumed.add(token_id)
+                return
+            self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with ProcessFileLock(self._lock_path) as lock:
+                lock.acquire(timeout=30.0)
+                consumed = self._read()
+                if token_id in consumed:
+                    raise JoinIdentityError("INVITE_CONSUMED", "join token was already consumed")
+                consumed.add(token_id)
+                atomic_json_write(self._path, sorted(consumed))
+                fsync_directory(self._path.parent)
+                self._consumed = consumed
+
+
+__all__ = ["JoinIdentityError", "JoinTokenLedger", "validate_oidc_join"]

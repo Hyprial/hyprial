@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "ad4ce68b6ccd08bd64dd9fdce448dd91a8329f43",
+  "description": "DEMONSTRATION-ONLY preview at unified baseline ad4ce68b. Every rule is draft; target modules are placeholders from the C0 design example, NOT approved domain decisions. Scope policy excludes WORM (docs/notes/) and GUI (src/gui/) trees; excluded consumer sites need approved compatibility decisions, not silent rewrites.",
+  "evidence": {
+    "references_path": "docs/evidence/refactor-c0-ad4ce68b-2026-10-01/references.json",
+    "summary": "Counts from the ad4ce68b C0 scan (imports.json / references.json)."
+  },
+  "rules": [
+    {
+      "rule_id": "demo.desired-state.launch-spec-imports",
+      "kind": "import_symbol",
+      "stage": "S1",
+      "status": "draft",
+      "expected_matches": 97,
+      "reason": "DEMONSTRATION ONLY: shared launch contract candidate (C0 design example section 5). Count 98 = all tracked import sites at ad4ce68b; WORM/GUI-scope sites are excluded from rewriting by policy and reported separately. Target module is a placeholder. In-scope count 97 = 98 total minus 1 WORM site (docs/notes/ipc_cost_bench.py); GUI trees hold no sites for this symbol but are excluded by policy anyway. Cross-line (src/gui) and WORM consumers require approved compatibility decisions.",
+      "source_path": "src/hyprial/daemon/desired_state.py",
+      "source_sha256": "c9caa142fd321ec322073eb4e39faec63777cf151fcc59ca716347e39c08c735",
+      "old_module": "hyprial.daemon.desired_state",
+      "old_symbol": "HarnessLaunchSpec",
+      "new_module": "hyprial.kernel",
+      "new_symbol": "HarnessLaunchSpec"
+    },
+    {
+      "rule_id": "demo.cli.warm-import-string",
+      "kind": "reference_rule",
+      "stage": "S2",
+      "status": "draft",
+      "expected_matches": 1,
+      "reason": "DEMONSTRATION ONLY: the active module-string warm-import site in src/hyprial/cli.py recorded by the C0 reference scan. Target module is a placeholder.",
+      "source_path": "src/hyprial/cli.py",
+      "format": "python",
+      "operations": [
+        {
+          "op": "module_string",
+          "old": "hyprial.daemon.desired_state",
+          "new": "hyprial.kernel",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}

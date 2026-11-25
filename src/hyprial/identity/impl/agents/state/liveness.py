@@ -34,6 +34,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from hyprial.kernel import agent_uri_actor
+
 __all__ = [
     "AGENT_HEARTBEAT_TTL_SECONDS",
     "RUNTIME_HEADLESS",
@@ -92,15 +94,29 @@ class AgentAlreadyRunning(RuntimeError):
 
     Guarantees the property the whole change exists for: at most one connector
     speaks for an actor at any time.
+
+    ``name`` is the agent name the remedy tells the operator to stop.  Callers
+    holding the record pass its name; without one the remedy names the
+    actor segment of ``actor`` as read by the URI module (the ``a.`` id for an
+    id-form address, which ``hyprial agent stop`` resolves through the
+    registry), or ``actor`` itself when it is not an agent URI.
     """
 
     code = "AGENT_ALREADY_RUNNING"
 
-    def __init__(self, actor: str, existing: AgentBinding, harness: str) -> None:
+    def __init__(
+        self,
+        actor: str,
+        existing: AgentBinding,
+        harness: str,
+        *,
+        name: str | None = None,
+    ) -> None:
+        stop_name = name or agent_uri_actor(actor) or actor
         where = (
             "exit that session"
             if existing.runtime == RUNTIME_INTERACTIVE
-            else f"run 'hyprial agent stop {actor.rsplit(':', 1)[-1]}'"
+            else f"run 'hyprial agent stop {stop_name}'"
         )
         super().__init__(
             f"agent {actor} already has a live connector on "

@@ -141,10 +141,6 @@ DEFAULT_BOUNDARY_POINTS = (
     ),
     FunctionPoint(
         "lark_api",
-        "hyprial.daemon.impl.adapters.lark.outbound.sdk:LarkSdkGateway.send_owner_dm",
-    ),
-    FunctionPoint(
-        "lark_api",
         "hyprial.daemon.impl.adapters.lark.outbound.sdk:LarkSdkGateway.send_chat",
     ),
     FunctionPoint(

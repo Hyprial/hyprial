@@ -33,7 +33,7 @@ def agent_create(
     provider: str | None = typer.Option(
         None,
         "--provider",
-        help="Model vendor preference (the squire harness/provider/model vocabulary).",
+        help="Model vendor preference (the harness/provider/model vocabulary).",
     ),
     model: str | None = typer.Option(None, "--model", help="Model id preference."),
     preferred_harness: str | None = typer.Option(
@@ -102,28 +102,6 @@ def agent_create(
             model_provider=provider,
         )
         return {**created, "providerSeed": seed}
-
-    services.runtime.execute(operation, json_output=json_output)
-
-@agent_app.command("host-invite")
-def agent_host_invite(
-    name: str = typer.Argument(..., help="Actor name, unique on this host."),
-    owner: str = typer.Option(..., "--owner", help="Visitor's owner identity, asserted by this host."),
-    cwd: Path | None = typer.Option(None, "--cwd", help="Default working directory."),
-    preferred_harness: str | None = typer.Option(None, "--preferred-harness", help="Preferred harness for later starts."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Register a trusted visitor's agent; does not launch or isolate a worker."""
-    services = get_services()
-
-    def operation() -> Any:
-        services = get_services()
-        params: JsonObject = {"name": name, "owner": owner}
-        if cwd is not None:
-            params["cwd"] = str(cwd.expanduser().resolve())
-        if preferred_harness is not None:
-            params["preferredHarness"] = preferred_harness
-        return services.runtime.request("agent.host-invite", params)
 
     services.runtime.execute(operation, json_output=json_output)
 

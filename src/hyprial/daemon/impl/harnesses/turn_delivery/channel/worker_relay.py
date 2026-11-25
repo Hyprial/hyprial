@@ -2,7 +2,15 @@
 
 The guest mounts this socket, never the daemon socket or its state directory.
 The launcher supplies the binding; guests cannot register/refresh it. This
-relay is opt-in and is not yet wired to a persisted smolvm worker launch.
+relay is opt-in for scoped worker IPC channels.
+
+Decision record (ipc-seam 2026-11-19): both endpoints go through the
+kernel's one local-IPC seam.  The relay's own guard still runs first: the
+directory must not exist and is created ``0700``, so the seam's
+``mkdir(exist_ok=True)``/stale-endpoint removal can never adopt a path this
+relay did not create.  The socket identity ``(st_dev, st_ino)`` is recorded
+after the backend binds and gates the close-time unlink; endpoint hardening
+(``0600`` between bind and listen) is backend-owned.
 """
 
 from __future__ import annotations
@@ -18,13 +26,17 @@ from typing import Any
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import (
     MAX_FRAME_BYTES,
+    LocalIpcListener,
+    LocalIpcStream,
     WorkerBinding,
     WorkerChannelError,
     bound_request,
+    connect_local_ipc,
+    listen_local_ipc,
 )
 
 
-def _read_frame(client: socket.socket, timeout: float) -> bytes:
+def _read_frame(client: LocalIpcStream, timeout: float) -> bytes:
     deadline = time.monotonic() + timeout
     data = bytearray()
     while True:
@@ -73,9 +85,9 @@ class BoundWorkerRelay:
         self._slots = threading.BoundedSemaphore(max_clients)
         self._lock = threading.Lock()
         self._closed = threading.Event()
-        self._server: socket.socket | None = None
+        self._server: LocalIpcListener | None = None
         self._acceptor: threading.Thread | None = None
-        self._clients: set[socket.socket] = set()
+        self._clients: set[LocalIpcStream] = set()
         self._threads: set[threading.Thread] = set()
         self._socket_identity: tuple[int, int] | None = None
         self._started = False
@@ -99,14 +111,10 @@ class BoundWorkerRelay:
         self.directory.mkdir(mode=0o700)  # Never adopt a preexisting path/link.
         self._started = True
         try:
-            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self._server = server
-            server.bind(str(self.socket_path))
+            self._server = listen_local_ipc(self.socket_path, backlog=4)
             info = self.socket_path.lstat()
             self._socket_identity = (info.st_dev, info.st_ino)
-            self.socket_path.chmod(0o600)
-            server.listen(4)
-            server.settimeout(0.1)
+            self._server.settimeout(0.1)
             self._acceptor = threading.Thread(target=self._accept, daemon=True)
             self._acceptor.start()
         except BaseException:
@@ -117,7 +125,7 @@ class BoundWorkerRelay:
         assert self._server is not None
         while not self._closed.is_set():
             try:
-                client, _ = self._server.accept()
+                client, _peer = self._server.accept()
             except TimeoutError:
                 continue
             except OSError:
@@ -145,14 +153,12 @@ class BoundWorkerRelay:
             "method": "worker.channel.request",
             "params": self.binding.envelope(request),
         }
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream:
+        with connect_local_ipc(self.daemon_socket, self.timeout) as upstream:
             with self._lock:
                 if self._closed.is_set():
                     raise ConnectionError("Relay closed")
                 self._clients.add(upstream)
             try:
-                upstream.settimeout(self.timeout)
-                upstream.connect(str(self.daemon_socket))
                 upstream.sendall(json.dumps(wrapped).encode() + b"\n")
                 response = json.loads(_read_frame(upstream, self.timeout))
             finally:
@@ -182,7 +188,7 @@ class BoundWorkerRelay:
             raise ValueError("Invalid upstream result")
         return {"version": 1, "id": request_id, "result": response["result"]}
 
-    def _serve(self, client: socket.socket) -> None:
+    def _serve(self, client: LocalIpcStream) -> None:
         request_id = None
         try:
             try:

@@ -441,5 +441,57 @@ def test_identity_components_parses_legacy_and_opaque_markers() -> None:
         "darwin-starttime": "1:2",
         "ps-lstart": "Tue Aug 18 03:56:43 2026",
     }
-    # Unknown grammar opaques the whole marker instead of inventing a scheme.
+    assert _identity_components("linux:987654") == {
+        "proc-starttime": "987654"
+    }
+    assert _identity_components("proc:987654") == {
+        "proc-starttime": "987654"
+    }
+    assert _identity_components("darwin:1755490000:123") == {
+        "darwin-starttime": "1755490000:123"
+    }
+    assert _identity_components("darwin:1755490000") == {
+        "darwin-startsec": "1755490000"
+    }
+    assert _identity_components("win32:123456789") == {
+        "win-filetime": "123456789"
+    }
+    assert _identity_components("win32:100;win-filetime:200") == {
+        "raw": "win32:100;win-filetime:200"
+    }
     assert _identity_components("original-start") == {"raw": "original-start"}
+
+
+def test_legacy_platform_prefixed_markers_match_and_detect_reuse() -> None:
+    """Persisted linux:/darwin:/win32:/proc: records match current observations."""
+
+    darwin_live = (
+        "darwin-starttime:1755490000:123;darwin-startsec:1755490000;"
+        "ps-lstart:Tue Aug 18 03:56:43 2026"
+    )
+    assert _status("linux:987654", "proc-starttime:987654") is _OwnerProcessStatus.ALIVE
+    assert _status("proc:987654", "proc-starttime:987654") is _OwnerProcessStatus.ALIVE
+    assert (
+        _status("linux:987654", "proc-starttime:999999")
+        is _OwnerProcessStatus.IDENTITY_MISMATCH
+    )
+    assert (
+        _status("darwin:1755490000:123", darwin_live)
+        is _OwnerProcessStatus.ALIVE
+    )
+    assert (
+        _status("darwin:1755490000", darwin_live)
+        is _OwnerProcessStatus.ALIVE
+    )
+    assert (
+        _status("darwin:1755490000:999", darwin_live)
+        is _OwnerProcessStatus.IDENTITY_MISMATCH
+    )
+    assert (
+        _status("win32:123456789", "win-filetime:123456789")
+        is _OwnerProcessStatus.ALIVE
+    )
+    assert (
+        _status("win32:123456789", "win-filetime:999999999")
+        is _OwnerProcessStatus.IDENTITY_MISMATCH
+    )

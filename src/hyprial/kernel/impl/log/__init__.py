@@ -1,3 +1,8 @@
+# Decision record (W1E-2, 2026-11-21):
+# - Home/state_dir outer gates and process startup umask(0o077) enforce private
+#   permissions across POSIX and Windows, so Logger._append and log migration no
+#   longer issue per-line or per-directory os.chmod calls while preserving
+#   exclusive file locking and atomic metadata replacement.
 """Shared structured logging for every Harness Bridge component.
 
 ``Logger`` owns the JSONL schema, redaction, permissions, routing, and append
@@ -15,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -22,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from hyprial.kernel.impl.platform.file_lock import lock_exclusive, unlock
+from hyprial.kernel.impl.manysys.interface import lock_exclusive, unlock
 
 from hyprial.kernel.impl.log.writer import LogWriter, LogWriterStatus
 
@@ -177,13 +183,15 @@ def _migration_timestamp() -> str:
 
 
 def _write_migration_metadata(path: Path, payload: Mapping[str, Any]) -> None:
-    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
     try:
-        temporary.write_text(
-            json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        os.chmod(temporary, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n"
+            )
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -230,9 +238,7 @@ def migrate_pre_trajectory_logs(state_dir: Path) -> LogMigrationResult | None:
         return None
 
     logs_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(logs_dir, 0o700)
     archive.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(archive, 0o700)
     resuming = plan.exists()
     if resuming:
         files = _migration_plan_files(plan)
@@ -262,7 +268,6 @@ def migrate_pre_trajectory_logs(state_dir: Path) -> LogMigrationResult | None:
         source = logs_dir / relative
         destination = archive / relative
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(destination.parent, 0o700)
         if destination.exists():
             if resuming:
                 # A failed startup may already have archived the old file and
@@ -325,7 +330,7 @@ class Logger:
     @classmethod
     def daemon(
         cls, state_dir: Path, *, name: str, rotation_hook: RotationHook | None = None,
-        asynchronous: bool = False, capacity: int = 4096,
+        asynchronous: bool = False, capacity: int = 4096, actor_host=None,
     ) -> Self:
         logger = cls(
             state_dir,
@@ -335,13 +340,13 @@ class Logger:
             rotation_hook=rotation_hook,
         )
         if asynchronous:
-            logger._writer = LogWriter(logger._append, capacity=capacity)
+            logger._writer = LogWriter(logger._append, capacity=capacity, actor_host=actor_host)
         return logger
 
     @classmethod
     def adapter(
         cls, state_dir: Path, *, name: str, rotation_hook: RotationHook | None = None,
-        asynchronous: bool = False, capacity: int = 4096,
+        asynchronous: bool = False, capacity: int = 4096, actor_host=None,
     ) -> Self:
         logger = cls(
             state_dir,
@@ -351,7 +356,7 @@ class Logger:
             rotation_hook=rotation_hook,
         )
         if asynchronous:
-            logger._writer = LogWriter(logger._append, capacity=capacity)
+            logger._writer = LogWriter(logger._append, capacity=capacity, actor_host=actor_host)
         return logger
 
     @classmethod
@@ -453,16 +458,13 @@ class Logger:
         with _thread_lock(path):
             logs_dir = self.state_dir / "logs"
             logs_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(logs_dir, 0o700)
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(path.parent, 0o700)
             lock_fd = os.open(
                 lock_path,
                 os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
                 0o600,
             )
             try:
-                os.chmod(lock_path, 0o600)
                 lock_exclusive(lock_fd)
                 if self.rotation_hook is not None:
                     self.rotation_hook(path)
@@ -475,7 +477,6 @@ class Logger:
                     0o600,
                 )
                 try:
-                    os.chmod(path, 0o600)
                     view = memoryview(payload)
                     while view:
                         written = os.write(descriptor, view)

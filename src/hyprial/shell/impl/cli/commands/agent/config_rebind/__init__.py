@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.agent.admin import config_app
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import CliError
@@ -37,18 +37,18 @@ def agent_config_rebind(
     def operation() -> dict[str, object]:
         if (source is None) == (rollback is None):
             raise CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "exactly one of --source or --rollback is required",
             )
         if rollback is not None and dry_run:
             raise CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--dry-run cannot be combined with --rollback",
             )
         expanded_source = None if source is None else source.expanduser()
         if expanded_source is not None and not expanded_source.is_absolute():
             raise CliError(
-                ipc_errors.AGENT_CONFIG_REBIND_INVALID_SOURCE,
+                codes.AGENT_CONFIG_REBIND_INVALID_SOURCE,
                 "--source must be an absolute path",
             )
         return services.runtime.request(

@@ -92,3 +92,35 @@ def test_same_generation_changed_material_is_rejected_but_new_generation_is_allo
     path.write_text(json.dumps(value), encoding="utf-8")
     path.chmod(0o600)
     assert resolver.load().resolve_device("sub2api", 8080).generation == 8
+
+
+def test_relative_ancestor_symlink_hardlink_oversize_and_uid_mismatch_fail_closed(
+    tmp_path,
+) -> None:
+    path = tmp_path / "state" / "tailcat" / "service-access.json"
+    write_access(path)
+
+    with pytest.raises(ServiceConnectError, match="protected service access unavailable"):
+        ProtectedResolver("relative/service-access.json").load()
+
+    with pytest.raises(ServiceConnectError, match="protected service access unavailable"):
+        ProtectedResolver(path, expected_uid=os.getuid() + 1).load()
+
+    linked_dir = tmp_path / "state" / "linked-tailcat"
+    linked_dir.symlink_to(path.parent, target_is_directory=True)
+    with pytest.raises(ServiceConnectError, match="protected service access unavailable"):
+        ProtectedResolver(linked_dir / "service-access.json").load()
+    linked_dir.unlink()
+
+    hardlink = path.with_name("hardlink.json")
+    os.link(path, hardlink)
+    try:
+        with pytest.raises(ServiceConnectError, match="protected service access unavailable"):
+            ProtectedResolver(path).load()
+    finally:
+        hardlink.unlink()
+
+    path.write_bytes(b"{" + b" " * (1024 * 1024 + 10) + b"}")
+    path.chmod(0o600)
+    with pytest.raises(ServiceConnectError, match="protected service access unavailable"):
+        ProtectedResolver(path).load()

@@ -30,25 +30,42 @@ from hyprial.daemon.impl.state_persistence import (
     StatePersistenceTimeout,
     StatePersistenceVersionConflict,
 )
-from hyprial.identity.impl.agents.actor._core import AgentActor
-from hyprial.identity.impl.agents.registry._core import AgentRegistry
-from hyprial.identity.impl.agents.actor.ports import (
-    AgentMutationCompleted,
-    PinAgentAdapterCommand,
-    UpdateAgentCommand,
-)
 
 
-def _authority(tmp_path: Path, **kwargs) -> StatePersistenceAuthority:
+def _authority(tmp_path: Path, actor_host, **kwargs) -> StatePersistenceAuthority:
     state_db = StateDatabase(tmp_path / "lifecycle-operations.sqlite3")
     store = DesiredStateStore(tmp_path / "desired.json", state_db)
-    return StatePersistenceAuthority(store, **kwargs)
+    return StatePersistenceAuthority(store, actor_host=actor_host, **kwargs)
+
+
+def test_start_failures_are_readable_through_the_production_journal_port(tmp_path, actor_host):
+    from dataclasses import replace
+    from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation, LifecycleState
+    from tests.daemon.lifecycle.process.manager.support import _spec
+
+    authority = _authority(tmp_path, actor_host)
+    try:
+        assert authority.journal.read_start_failures() == {}
+        target = _spec("bad-model")
+        failed = replace(LifecycleOperation.create("bad-model-start", target),
+                         observed_entity_token="incarnation-1")
+        authority.journal.reserve(failed)
+        authority.journal.set_state(failed.operation_id, LifecycleState.COMPENSATED,
+                                    "configured Pi model is unavailable", "HARNESS_START_FAILED")
+        rows = authority.journal.read_start_failures()
+        assert rows[target.actor][0] == failed
+        assert rows[target.actor][1] == "configured Pi model is unavailable"
+        authority.journal.reserve(LifecycleOperation.create("retry", target))
+        assert authority.journal.read_start_failures() == {}
+    finally:
+        assert authority.close()
 
 
 def test_harness_restore_settlement_survives_authority_restart(
     tmp_path: Path,
+    actor_host,
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     try:
         desired = authority.settled_desired
         assert desired.harness_restore_settlement("restore-1") is None
@@ -61,7 +78,7 @@ def test_harness_restore_settlement_survives_authority_restart(
     finally:
         assert authority.close()
 
-    restarted = _authority(tmp_path)
+    restarted = _authority(tmp_path, actor_host)
     try:
         assert restarted.settled_desired.harness_restore_settlement(
             "restore-1"
@@ -70,20 +87,20 @@ def test_harness_restore_settlement_survives_authority_restart(
         assert restarted.close()
 
 
-def test_desired_and_journal_calls_share_one_owner_thread(tmp_path: Path, monkeypatch) -> None:
-    authority = _authority(tmp_path)
-    threads: list[str] = []
+def test_desired_and_journal_calls_share_one_owner_thread(tmp_path: Path, actor_host, monkeypatch) -> None:
+    authority = _authority(tmp_path, actor_host)
+    threads: list[int] = []
     desired = authority._desired_store
     journal = authority._journal_store
     original_desired = desired.set_mailbox_role
     original_journal = journal.next_generation
 
     def desired_write(enabled: bool):
-        threads.append(threading.current_thread().name)
+        threads.append(threading.get_ident())
         return original_desired(enabled)
 
     def journal_write():
-        threads.append(threading.current_thread().name)
+        threads.append(threading.get_ident())
         return original_journal()
 
     monkeypatch.setattr(desired, "set_mailbox_role", desired_write)
@@ -93,13 +110,13 @@ def test_desired_and_journal_calls_share_one_owner_thread(tmp_path: Path, monkey
         assert authority.desired.load().as_mailbox is True
         assert authority.journal.next_generation() == 1
         assert len(threads) == 2 and len(set(threads)) == 1
-        assert threads[0] != threading.current_thread().name
+        assert threads[0] != threading.get_ident()
     finally:
         assert authority.close()
 
 
-def test_timeout_keeps_late_state_completion_retrievable(tmp_path: Path, monkeypatch) -> None:
-    authority = _authority(tmp_path, call_timeout=0.02)
+def test_timeout_keeps_late_state_completion_retrievable(tmp_path: Path, actor_host, monkeypatch) -> None:
+    authority = _authority(tmp_path, actor_host, call_timeout=0.02)
     entered = threading.Event()
     release = threading.Event()
     original = authority._desired_store.set_mailbox_role
@@ -130,9 +147,9 @@ def test_timeout_keeps_late_state_completion_retrievable(tmp_path: Path, monkeyp
 
 
 def test_call_settled_joins_exact_accepted_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, actor_host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    authority = _authority(tmp_path, call_timeout=0.02)
+    authority = _authority(tmp_path, actor_host, call_timeout=0.02)
     entered = threading.Event()
     release = threading.Event()
     calls = 0
@@ -179,9 +196,9 @@ def test_call_settled_joins_exact_accepted_mutation(
 
 
 def test_state_cost_totals_survive_generation_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, actor_host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     original_record = authority.command_costs.record
     calls = 0
 
@@ -195,17 +212,16 @@ def test_state_cost_totals_survive_generation_restart(
     monkeypatch.setattr(
         authority.command_costs, "record", crash_after_record
     )
-    first_generation = authority._runtime.snapshot(authority._handle).generation
+    first_generation = authority._cell.snapshot().generation
     try:
-        assert authority._runtime.tell(
-            authority._handle,
+        assert authority._cell.tell(
             RecordSessionAgentEffects(
                 "cost-crash", (), StateCostOrigin.IPC
             ),
         ) is AdmissionResult.ACCEPTED
         deadline = time.monotonic() + 2.0
         while True:
-            snapshot = authority._runtime.snapshot(authority._handle)
+            snapshot = authority._cell.snapshot()
             if (
                 snapshot.generation > first_generation
                 and snapshot.state is ActorState.RUNNING
@@ -228,9 +244,9 @@ def test_state_cost_totals_survive_generation_restart(
 
 
 def test_state_cost_records_command_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, actor_host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
 
     def fail(_effects):  # type: ignore[no-untyped-def]
         raise RuntimeError("injected persistence failure")
@@ -252,98 +268,21 @@ def test_state_cost_records_command_error(
         assert authority.close()
 
 
-def test_agent_pin_state_effect_does_not_block_business_mailbox_and_joins_late_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    authority = _authority(tmp_path)
-    normal_timeout = authority._call_timeout
-    registry = None
-    actor = None
-    release = threading.Event()
-    try:
-        registry = AgentRegistry(
-            tmp_path / "agents.sqlite3", owner="owner", machine="node"
-        )
-        registry.create("worker")
-        authority.desired.set_channel_pin("work", "legacy")
-        entered = threading.Event()
-        original = authority._desired_store.remove_channel_pin
-
-        def slow_remove(channel: str):
-            entered.set()
-            assert release.wait(3.0)
-            return original(channel)
-
-        monkeypatch.setattr(authority._desired_store, "remove_channel_pin", slow_remove)
-        events: list[object] = []
-        actor = AgentActor(
-            registry, event_sink=events.append, desired_state=authority.desired
-        )
-        # Setup is not the 20ms observation-timeout scenario.
-        # Keep that exact budget only while the deliberately held effect runs.
-        authority._call_timeout = 0.02
-        assert actor.submit(PinAgentAdapterCommand(
-            "pin-slow", "worker", "work"
-        )) is PortAdmission.ACCEPTED
-        assert entered.wait(1.0)
-        assert actor.submit(UpdateAgentCommand(
-            "update-responsive", "worker", model="responsive"
-        )) is PortAdmission.ACCEPTED
-        deadline = time.monotonic() + 2.0
-        while not any(
-            isinstance(item, AgentMutationCompleted)
-            and item.correlation_id == "update-responsive"
-            for item in events
-        ):
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        assert not any(
-            isinstance(item, AgentMutationCompleted)
-            and item.correlation_id == "pin-slow"
-            for item in events
-        )
-        release.set()
-        deadline = time.monotonic() + 3.0
-        while not any(
-            isinstance(item, AgentMutationCompleted)
-            and item.correlation_id == "pin-slow"
-            for item in events
-        ):
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        authority._call_timeout = normal_timeout
-        assert authority.desired.load().channel_pins == ()
-        assert registry.pins()["work"].endswith(":worker")
-        assert authority._pending == {}
-    finally:
-        release.set()
-        authority._call_timeout = normal_timeout
-        try:
-            if actor is not None:
-                assert actor.drain(3.0).complete
-        finally:
-            try:
-                if registry is not None:
-                    registry.close()
-            finally:
-                assert authority.close()
-
-
-def test_state_command_rejects_caller_closure(tmp_path: Path) -> None:
-    authority = _authority(tmp_path)
+def test_state_command_rejects_caller_closure(tmp_path: Path, actor_host) -> None:
+    authority = _authority(tmp_path, actor_host)
     try:
         with pytest.raises(TypeError, match="executable callbacks"):
-            authority.call_desired(DesiredQuery.ADAPTER_REGISTRATION, lambda: True)
+            authority.call_desired(DesiredQuery.HARNESS_LIFECYCLE_RECEIPT, lambda: True)
         assert authority.projection().version == 0
     finally:
         assert authority.close()
 
 
-def test_state_read_catalogue_rejects_wrong_arity_before_mailbox(tmp_path: Path) -> None:
-    authority = _authority(tmp_path)
+def test_state_read_catalogue_rejects_wrong_arity_before_mailbox(tmp_path: Path, actor_host) -> None:
+    authority = _authority(tmp_path, actor_host)
     try:
         with pytest.raises(TypeError, match="one string key"):
-            authority.call_desired(DesiredQuery.ADAPTER_REGISTRATION)
+            authority.call_desired(DesiredQuery.HARNESS_LIFECYCLE_RECEIPT)
         with pytest.raises(TypeError, match="requires 3 string arguments"):
             authority.call_journal(JournalQuery.EFFECT_DONE, "operation", "step")
         with pytest.raises(TypeError, match="do not accept keyword"):
@@ -353,8 +292,8 @@ def test_state_read_catalogue_rejects_wrong_arity_before_mailbox(tmp_path: Path)
         assert authority.close()
 
 
-def test_desired_compare_and_save_fences_stale_projection(tmp_path: Path) -> None:
-    authority = _authority(tmp_path)
+def test_desired_compare_and_save_fences_stale_projection(tmp_path: Path, actor_host) -> None:
+    authority = _authority(tmp_path, actor_host)
     try:
         initial = authority.projection()
         authority.desired.set_mailbox_role(True)
@@ -367,25 +306,11 @@ def test_desired_compare_and_save_fences_stale_projection(tmp_path: Path) -> Non
         assert authority.close()
 
 
-def test_pin_retirement_matches_current_value_and_preserves_other_pins(
-    tmp_path: Path,
-) -> None:
-    authority = _authority(tmp_path)
-    try:
-        authority.desired.set_channel_pin("migrated", "old")
-        authority.desired.set_channel_pin("replaced", "new")
-        authority.desired.remove_matching_channel_pins(
-            (("migrated", "old"), ("replaced", "stale"))
-        )
-        assert authority.desired.load().channel_pins == (("replaced", "new"),)
-    finally:
-        assert authority.close()
-
-
 def test_session_normalization_fences_carrier_and_prefers_canonical_row(
     tmp_path: Path,
+    actor_host,
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     bare = InteractiveSession("agent:foo", "/tmp", ("codex",), "channel", "lease-1")
     canonical = InteractiveSession(
         "agent:owner:node:foo", "/new", ("codex",), "channel", "lease-2"
@@ -409,8 +334,9 @@ def test_session_normalization_fences_carrier_and_prefers_canonical_row(
 
 def test_session_mutation_and_receipt_retirement_use_typed_state_commands(
     tmp_path: Path,
+    actor_host,
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     payload = RegisterSessionCommand(
         "session-register", "agent:owner:node:foo", "/tmp", ("codex",),
         "codex-carrier", "session-1", manage_agent=False,
@@ -434,8 +360,9 @@ def test_session_mutation_and_receipt_retirement_use_typed_state_commands(
 
 def test_shared_domain_receipt_and_journal_retire_in_one_writer_transaction(
     tmp_path: Path,
+    actor_host,
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     payload = RegisterSessionCommand(
         "shared-register", "agent:owner:node:foo", "/tmp", ("codex",),
         "codex-carrier", "session-1", manage_agent=False,
@@ -473,8 +400,8 @@ def test_shared_domain_receipt_and_journal_retire_in_one_writer_transaction(
         assert authority.close()
 
 
-def test_session_actor_uses_shared_desired_authority(tmp_path: Path) -> None:
-    authority = _authority(tmp_path)
+def test_session_actor_uses_shared_desired_authority(tmp_path: Path, actor_host) -> None:
+    authority = _authority(tmp_path, actor_host)
     events: list[object] = []
     session = SessionActor(authority.desired, daemon_epoch="epoch", event_sink=events.append)
     try:
@@ -496,8 +423,9 @@ def test_session_actor_uses_shared_desired_authority(tmp_path: Path) -> None:
 
 def test_harness_lifecycle_receipt_and_running_row_share_one_commit(
     tmp_path: Path,
+    actor_host,
 ) -> None:
-    authority = _authority(tmp_path)
+    authority = _authority(tmp_path, actor_host)
     request = LifecycleMutationRequest(
         "harness-start", "harness-attempt", "harness-operation", None,
         EnsureHarnessCommand(

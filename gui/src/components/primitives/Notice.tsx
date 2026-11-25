@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Button } from './Button';
+import { Icon, type IconName } from './Icon';
 import { cx, type UiTone } from './types';
 
 export interface NoticeAction {
@@ -18,6 +19,14 @@ export interface NoticeProps {
   readonly role?: 'status' | 'alert';
   readonly className?: string;
 }
+
+const TONE_ICONS: Readonly<Record<UiTone, IconName>> = {
+  neutral: 'info',
+  info: 'info',
+  positive: 'check-circle',
+  warning: 'warning',
+  danger: 'warning-circle',
+};
 
 /** Inline status/alert copy with an optional explicit recovery action. */
 export function Notice({
@@ -40,7 +49,9 @@ export function Notice({
       aria-live={resolvedRole === 'alert' ? 'assertive' : 'polite'}
       aria-atomic="true"
     >
-      <span className="ui-notice__marker" aria-hidden="true" />
+      <span className="ui-notice__marker" aria-hidden="true">
+        <Icon name={TONE_ICONS[tone]} size="md" active />
+      </span>
       <div className="ui-notice__content">
         {title && <p className="ui-notice__title">{title}</p>}
         <div className="ui-notice__body">{children}</div>
@@ -64,7 +75,7 @@ export function Notice({
           aria-label={dismissLabel}
           onClick={onDismiss}
         >
-          <span aria-hidden="true">×</span>
+          <Icon name="x" size="sm" />
         </button>
       )}
     </div>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests.support.runtime.environment import home_with_node_id
 import json
 import subprocess
 import sys
@@ -14,8 +15,6 @@ import pytest
 
 
 import hyprial.daemon.impl.updates as updates
-from hyprial.daemon.impl.adapters.lark import sdk as lark_sdk
-from hyprial.daemon.impl.autoupdate.alert import AlertOutcome
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonLaunchResult
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
@@ -60,7 +59,7 @@ def _fake_upgrade(
     daemon_running: bool = True,
     launch: Callable[..., Any] | None = None,
 ) -> list[str]:
-    (tmp_path / "home").mkdir(mode=0o700)
+    home_with_node_id(tmp_path / "home")
     monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     # Guard 3's positive shape: this process sits inside the tool directory
@@ -151,6 +150,9 @@ def _fake_upgrade(
         timeout: float = 15.0,
         restore_wait: float | None = None,
     ) -> dict[str, Any]:
+        if method == "upgrade.steps.run":
+            assert params == {"apply": True}
+            return {"steps": [], "pending": ["org-membership-v1"]}
         del params
         events.append(f"{method}:{timeout:g}")
         if method == "ps":
@@ -177,8 +179,11 @@ def _fake_upgrade(
             return dict(FRESH_LAUNCH_PING, phase="reconciled")
         raise AssertionError(f"unexpected daemon request: {method}")
 
-    def default_launch(*, ready_timeout: float) -> DaemonLaunchResult:
+    def default_launch(
+        *, ready_timeout: float, autoinstall: bool = True
+    ) -> DaemonLaunchResult:
         events.append(f"launch:{ready_timeout:g}")
+        events.append(f"launchAutoinstall:{str(autoinstall).lower()}")
         return DaemonLaunchResult.launched(FRESH_LAUNCH_PING)
 
     monkeypatch.setattr(_cli_support, "_daemon_request", daemon_request)
@@ -207,23 +212,6 @@ def _start_failed_entry(
     }
 
 
-def _silence_owner_alert(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub only the send; the marker write and its write-back stay real."""
-
-    # ⚠️ `cli.AlertOutcome` does not exist -- `cli` re-exports several alert
-    # names but not this one. The first version used it anyway, so every caller
-    # raised AttributeError *after* `delivered.update(kwargs)`, and the tests
-    # that only read the marker passed without the write-back ever running.
-    # The real class keeps the stub's shape identical to production's.
-    monkeypatch.setattr(
-        _cli_get_services(),
-        "notify_upgrade_failure",
-        lambda **_kwargs: AlertOutcome(
-            attempted=True, delivered=True, message_id="om_fixture"
-        ),
-    )
-
-
 def _read_failure_marker(tmp_path: Path) -> dict[str, Any]:
     return json.loads(
         (tmp_path / "state" / "upgrade-restart-failed.json").read_text("utf-8")
@@ -241,7 +229,10 @@ def _fail_launch_writing_log(
     generation -- which is a real failure mode of the fixture, not of the code.
     """
 
-    def fail_launch(*, ready_timeout: float) -> None:
+    def fail_launch(
+        *, ready_timeout: float, autoinstall: bool = True
+    ) -> None:
+        del autoinstall
         assert ready_timeout == _cli_owner_1.DAEMON_START_HARD_CAP_SECONDS
         if entry is not None:
             log_path = tmp_path / "state" / "logs" / "daemon.jsonl"
@@ -257,94 +248,6 @@ def _fail_launch_writing_log(
     return fail_launch
 
 
-# --------------------------------------------------------------------------- #
-# Card 3c116ad2: confirmation reads ping's phase; the unconfirmed state gets
-# exactly one closing follow-up.  Only the daemon boundary is stubbed -- the
-# owner alert runs its real path (binding lookup, gateway resolution,
-# credential read) with the Lark SDK gateway substituted by a recorder.
-# --------------------------------------------------------------------------- #
-
-
-class _OwnerInbox:
-    """The recorder the fake gateway hands to the alert's sender seam."""
-
-    def __init__(self, sent: list[str]) -> None:
-        self._sent = sent
-
-    def send_owner_dm(
-        self, open_id: str, text: str, *, idempotency_key: str
-    ) -> str:
-        self._sent.append(text)
-        return "om_fake"
-
-
-def _bind_owner(tmp_path: Path) -> None:
-    """Bind an owner DM channel the alert's real lookup path can resolve."""
-
-    home = tmp_path / "home"
-    state = tmp_path / "state"
-    (home / "secrets").mkdir(parents=True, exist_ok=True)
-    state.mkdir(parents=True, exist_ok=True)
-    (home / "channels.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "gateways": [
-                    {
-                        "provider": "lark",
-                        "name": "allen-squire",
-                        "appId": "cli_test",
-                        "credentialRef": "lark-allen-squire",
-                        "routes": [
-                            {"name": "r", "type": "direct", "nativeId": "ou_x"}
-                        ],
-                    }
-                ],
-            }
-        ),
-        "utf-8",
-    )
-    (home / "secrets" / "lark-allen-squire.json").write_text(
-        json.dumps({"appSecret": "s"}), "utf-8"
-    )
-    (state / "users.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "users": [
-                    {
-                        "owner": "allen",
-                        "ownerKey": "allen",
-                        "loginName": "aaron@example",
-                        "agents": [],
-                        "preferredReceiver": {"machine": "m", "machineKey": "m"},
-                        "notificationRules": [],
-                        "ownerOpenId": {
-                            "channel": "allen-squire",
-                            "openId": "ou_allen",
-                            "boundAt": "2026-08-31T00:00:00Z",
-                        },
-                    }
-                ],
-            }
-        ),
-        "utf-8",
-    )
-
-
-def _record_owner_messages(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Substitute the Lark SDK gateway; record every owner DM it is asked for."""
-
-    sent: list[str] = []
-
-    class _RecordingGateway:
-        @classmethod
-        def from_credentials(cls, app_id: str, secret: str, **_kwargs: object):
-            del app_id, secret
-            return _OwnerInbox(sent)
-
-    monkeypatch.setattr(lark_sdk, "LarkSdkGateway", _RecordingGateway)
-    return sent
 
 
 def _seed_desired_rows(tmp_path: Path, count: int) -> None:

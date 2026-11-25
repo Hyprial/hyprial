@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import Any, TYPE_CHECKING
 from hyprial.kernel import AdmissionResult, HarnessLaunchSpec, runtime_cpu_counters
 from hyprial.daemon.impl.ipc.ipc_stats import owner_budget_rows
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     pass
 
 from hyprial.daemon.impl.application.messaging.operator_alarm import harness_failure_report
+from hyprial.daemon.impl.application.messaging.delivery.wake import observe_user_request
 from hyprial.daemon.impl.application.messaging.status.snapshots import (
     _WorkerStatusSnapshot,
 )
@@ -100,12 +102,14 @@ class _MaintenanceMixin:
             self._restore_wake_cadence = BoundedCadence(
                 "restore-wake",
                 self._restore_wake_scan,
+                actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
             )
         if self._dispatch_cadence is None:
             self._dispatch_cadence = BoundedCadence(
                 "dispatch-runtime",
                 self._runtime_timer,
                 self._on_dispatch_tick_completed,
+                actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
             )
         self._ensure_forwarding_cadence(require_supervisor=False)
         self._maintenance_generation += 1
@@ -614,15 +618,6 @@ class _MaintenanceMixin:
             admission = self._request_status_refresh()
             if not admission.accepted:
                 self._log("warn", "daemon", "status.refresh_overloaded")
-        if now >= self._profile_refresh_due:
-            self._profile_refresh_due = now + 30.0
-            try:
-                self.user_profiles.refresh(wait=False)
-            except Exception as error:
-                self._log(
-                    "warn", "daemon", "profile.refresh_overloaded",
-                    errorType=type(error).__name__,
-                )
         if now >= self._restore_policy_refresh_due:
             self._restore_policy_refresh_due = now + 30.0
             try:
@@ -754,6 +749,8 @@ class _MaintenanceMixin:
                 owner=self.owner,
                 node=self.node_id,
                 harness=harness,
+                observe=partial(observe_user_request, self, "operator-alarm",
+                                daemon_notice=True),
             )
         except Exception:  # noqa: BLE001 - alarming must never hurt the loop
             pass

@@ -198,7 +198,6 @@ def restart_daemon(
     before_pid: int | None,
     before_epoch: str | None = None,
     installed_version: str | None = None,
-    survivor_idempotency_scope: str,
     stop: bool = True,
 ) -> DaemonLaunchResult:
     """Shared restart skeleton: graceful stop, survivor bookkeeping, launch, verdicts.
@@ -210,15 +209,16 @@ def restart_daemon(
     drifted once in wording. This is the one copy; the callers keep their
     own result shapes and post-success bookkeeping.
 
-    - ``result`` receives ``stopWarning`` / ``survivingOldProcess`` /
-      ``survivorAlert`` exactly as before.
-    - ``survivor_idempotency_scope`` keeps each surface's alert key stable
-      (``hyprial-restart`` vs the resolution commit): deduplication windows
-      do not merge across commands.
+    - ``result`` receives ``stopWarning`` / ``survivingOldProcess`` exactly
+      as before; R2 (owner ruling 2026-11-19) removed ``survivorAlert``: a
+      survivor is recorded in the failure marker and sent nowhere.
     - ``before_pid=None`` (no before daemon to be fresh against) skips the
       fresh-pid verdict.
     - ``stop=False`` skips the graceful stop entirely (``hyprial daemon restart``
       with no running daemon never attempted a stop; keep it that way).
+    - Z-8c (2026-11-15): the launch runs with ``autoinstall=False`` -- a
+      restart keeps the supervision state it started with and never
+      registers a service unit.
 
     Returns the typed launch answer. Raises ``CliError(INVALID_RESPONSE)``
     on shape/running/freshness verdict failures. Stop errors are recorded,
@@ -291,7 +291,6 @@ def restart_daemon(
                 # the actual cost that day.
                 result["survivingOldProcess"] = True
                 survivor = services._describe_survivor(old_pid_from(stop_error))
-                marker_path: Path | None
                 try:
                     # ⛔ No `start_failure` argument, on purpose: a survivor is
                     # not a start failure, so the question does not apply. The
@@ -300,31 +299,14 @@ def restart_daemon(
                     # search this branch never runs. The omission is the honest
                     # record, and it keeps `null` meaning only "looked and there
                     # was none" on the restart-failure path below.
-                    marker_path = services.write_failure_marker(
+                    services.write_failure_marker(
                         state_dir=services._state_dir(),
                         host=socket.gethostname(),
                         summary="旧 daemon 拆解完成但进程没有退出",
                         detail=f"{stop_error}\n{survivor}",
                     )
                 except OSError:
-                    marker_path = None
-                survivor_alert = services.notify_upgrade_failure(
-                    hyprial_home=services._hyprial_home(),
-                    state_dir=services._state_dir(),
-                    host=socket.gethostname(),
-                    # ⭐ Deliberately not the same sentence as a stop timeout.
-                    # The two ask for different actions: a timeout means "wait,
-                    # it is probably fine"; this means "go find the survivor, it
-                    # will not leave on its own".
-                    summary="⚠️ 旧 daemon 拆解完成但【进程没有退出】—— 新 daemon 已启动",
-                    detail=f"{stop_error}\n{survivor}",
-                    idempotency_key=(
-                        f"daemon-stop-survivor:{survivor_idempotency_scope}:{stop_error.data}"
-                    ),
-                )
-                result["survivorAlert"] = survivor_alert.to_json()
-                if marker_path is not None:
-                    services.record_alert_outcome(marker_path, survivor_alert)
+                    pass
     # Upgrade adjudication uses the existing 120 second startup hard cap as
     # one bounded observation window.  The ordinary 30 second value is an
     # idle-progress budget for interactive start feedback, not evidence that
@@ -334,7 +316,8 @@ def restart_daemon(
     # extended here.
     if launched is None:
         launched = services._launch_daemon_process(
-            ready_timeout=DAEMON_START_HARD_CAP_SECONDS
+            ready_timeout=DAEMON_START_HARD_CAP_SECONDS,
+            autoinstall=False,
         )
     # F2 (2026-09-04): direct launch and supervisor custody must not grow
     # separate verdicts. Both feed this one typed fact check.
@@ -387,7 +370,6 @@ def _restart_daemon_onto_install(
             before_pid=before["pid"],
             before_epoch=before["epoch"],
             installed_version=installed_version,
-            survivor_idempotency_scope=str(resolution.commit),
         )
         after_pid = launched.pid
     except (services.CliError, ipc_errors.TransientDaemonError, OSError) as error:
@@ -398,8 +380,6 @@ def _restart_daemon_onto_install(
             **resolved,
             "restart": restart_result,
         }
-        if result.get("notification") is not None:
-            failure["notification"] = result["notification"]
         # ⭐ Write the fact down, *then* try to tell someone -- in that order,
         # never the reverse. The send can fail with nobody left to notice: there
         # is no daemon at this point, and the network is one of the things that
@@ -458,19 +438,7 @@ def _restart_daemon_onto_install(
             start_failure=start_failure,
             process=process_observation,
         )
-        alert = services.notify_upgrade_failure(
-            hyprial_home=services._hyprial_home(),
-            state_dir=services._state_dir(),
-            host=host,
-            summary=summary,
-            detail=detail,
-            idempotency_key=(
-                f"upgrade-restart-failed:{resolution.commit}:{installed_version}"
-            ),
-        )
-        failure["alert"] = alert.to_json()
-        if marker is not None:
-            services.record_alert_outcome(marker, alert)
+        failure["detail"] = detail
         raise services.CliError(
             "UPGRADE_RESTART_FAILED",
             f"upgrade completed at {resolution.tag} ({installed_version}), "

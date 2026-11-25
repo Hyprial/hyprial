@@ -24,6 +24,7 @@ from hyprial.daemon.impl.inbox.service.policy import (
     online_retry_next_attempt_ms,
 )
 from hyprial.daemon.impl.inbox.authority.errors import InboxSubmissionOutcomeUnknown
+from tests.support.actor_hosts import new_actor_host
 
 SENDER = "agent:owner:node-a:sender"
 RECIPIENT = "agent:owner:node-b:recipient"
@@ -59,7 +60,7 @@ def test_liveliness_flaps_cannot_terminalize_before_ttl(
         database,
         transport,
         _Events(),
-        retry_policy=policy,
+        retry_policy=policy, actor_host=new_actor_host(),
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     try:
@@ -226,7 +227,7 @@ def test_committed_submit_timeout_preserves_typed_unknown_with_message_id(
 ) -> None:
     transport = _BlockingCommittedTransport()
     database = tmp_path / "submit-timeout.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, _Events())
+    coordinator = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
     facade = DeliveryCustodyFacade(coordinator, database, timeout=0.05)
     from hyprial.daemon.impl.inbox.actor.internal import projection as actor_module
     wait = actor_module._SystemReply.wait

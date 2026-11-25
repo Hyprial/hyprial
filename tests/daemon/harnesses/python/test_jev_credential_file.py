@@ -192,7 +192,6 @@ def _base_environment(home: Path) -> dict[str, str]:
         if name in {"PATH", "LANG", "PYTHONPATH"}
     }
     environment["HOME"] = str(home)
-    environment["HYPRIAL_SOURCE_COMMIT"] = "3137ed2ad92e5bb2c4369661d660815b63ae787b"
     return environment
 
 

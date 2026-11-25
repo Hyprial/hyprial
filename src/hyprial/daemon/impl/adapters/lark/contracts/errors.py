@@ -16,4 +16,12 @@ class AdapterStartError(RuntimeError):
         self.code = code
 
 
-__all__ = ["AdapterStartError"]
+class AdapterRemovalError(RuntimeError):
+    """A deletion was refused before its runtime effect was admitted."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+__all__ = ["AdapterStartError", "AdapterRemovalError"]

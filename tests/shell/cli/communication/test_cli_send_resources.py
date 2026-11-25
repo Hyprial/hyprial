@@ -37,7 +37,7 @@ def test_send_file_and_image_reach_daemon_as_typed_absolute_resources(
             "--from",
             "agent:e2e:sender:worker",
             "--to",
-            "route:alicesmith-hyprial-e2e:py-test",
+            "user:alice",
             "--file",
             str(attachment),
             "--image",
@@ -56,7 +56,7 @@ def test_send_file_and_image_reach_daemon_as_typed_absolute_resources(
             "message.send",
             {
                 "from": "agent:e2e:sender:worker",
-                "to": ["route:alicesmith-hyprial-e2e:py-test"],
+                "to": ["user:alice"],
                 "message": "delivery proof",
                 "summary": "delivery proof",
                 "resourcePaths": [

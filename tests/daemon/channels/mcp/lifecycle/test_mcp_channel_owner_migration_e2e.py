@@ -1,17 +1,10 @@
-"""End-to-end: an owner switch must not strand a running claude Channel child.
+"""Shared isolated harness for real-daemon claude Channel lifecycle tests.
 
-The acceptance run for fix/mcp-actor-by-name (spec 2026-09-04, #352): a REAL
-daemon subprocess and a REAL ``python -m hyprial.daemon.impl.mcp.entry
-claude-channel`` stdio child, both under an
-isolated HYPRIAL_HOME/HARNESS_STATE_DIR/UV_TOOL_DIR. ``settings.json`` owner moves
-A -> B, the daemon restarts and runs the real owner migration, and the SAME
-channel process — never restarted — keeps read/reply working; a message
-addressed to ``agent:B:<node>:<name>`` is fetched and replied to by it.
-
-Before the fix this was the production incident: the channel's argv froze a
-minted four-segment URI, the first post-restart poll came back
-SESSION_SUPERSEDED (terminal: go quiet), and the session lost inbound until it
-was reopened by hand.
+``IsolatedHarness`` runs a REAL daemon subprocess and REAL ``python -m
+hyprial.daemon.impl.mcp.entry claude-channel`` stdio children under an isolated
+HYPRIAL_HOME/HARNESS_STATE_DIR/UV_TOOL_DIR; other channel tests import it.  The
+owner-switch scenario that once lived here was deleted with the owner migration
+(L3): a home is bound to one account and its owner never changes in place.
 """
 
 from __future__ import annotations
@@ -276,6 +269,22 @@ class IsolatedHarness:
                 f"diagnostics:\n{self.diagnostics()}"
             ) from error
 
+    async def registered_agent_uri(self, name: str) -> str:
+        """The official address of agent ``name`` once its record exists."""
+
+        found: list[str] = []
+
+        def recorded() -> bool:
+            try:
+                agent = self.ipc("agent.get", {"name": name})["agent"]
+            except (OSError, AssertionError):
+                return False
+            found.append(str(agent["uri"]))
+            return True
+
+        await _wait_until(recorded, timeout=45.0)
+        return found[-1]
+
     async def wait_for_registration(self, expected_actor: str) -> None:
         def confirmed() -> bool:
             sessions = self.ipc("ps", {}).get("interactiveSessions")
@@ -310,145 +319,3 @@ def harness() -> Iterator[IsolatedHarness]:
         if value.daemon is not None:
             value.stop_daemon()
         shutil.rmtree(root, ignore_errors=True)
-
-
-async def test_channel_survives_owner_migration_without_restart(
-    harness: IsolatedHarness,
-) -> None:
-    from mcp import StdioServerParameters
-
-    harness.write_owner(OWNER_A)
-    harness.start_daemon()
-
-    # A registered sender so message.send's resolve-or-reject boundary passes.
-    harness.ipc("agent.create", {"name": "sender"})
-    # WP2 §9: links need a writable org directory space (owner A).
-    harness.ipc("org.create", {"org": "group-links-e2e-a"})
-
-    # The channel child: spawned by the MCP stdio client, alive for the whole
-    # test regardless of what the daemon does.
-    child_log = (harness.root / "child.log").open("w")
-    params = StdioServerParameters(
-        command=sys.executable,
-        args=harness.channel_command()[1:],
-        env=harness.environment,
-        errlog=child_log,
-    )
-    try:
-        await _channel_e2e_body(harness, params)
-    finally:
-        child_log.close()
-
-
-async def _channel_e2e_body(harness: IsolatedHarness, params: Any) -> None:
-    from mcp import ClientSession
-    from mcp.client.stdio import stdio_client
-
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            # The child registered itself under the daemon's CURRENT owner.
-            await harness.wait_for_registration(ACTOR_A)
-
-            # A durable message to the pre-switch address.
-            sent_a = harness.ipc(
-                "message.send",
-                {"actor": "sender", "to": [ACTOR_A], "summary": "pre-switch", "message": "pre-switch"},
-            )
-            assert sent_a["ok"] is True
-
-            # Owner switch: settings.json A -> B, daemon restart (which runs
-            # the real owner migration over the shared state dir).
-            harness.stop_daemon()
-            harness.write_owner(OWNER_B)
-            harness.start_daemon()
-
-            # The same child must be genuinely live on the NEW generation
-            # (guarded refresh, current epoch) before the post-switch send:
-            # this is the "no session reopen needed" the fix promises.
-            await harness.wait_for_online(ACTOR_B)
-
-            # WP2 G7: the new owner cannot write the old owner's org space, so
-            # create one under owner B before the post-switch send (the
-            # service picks it up at its 5 s space refresh).
-            harness.ipc("org.create", {"org": "group-links-e2e-b"})
-
-            # A message to the POST-migration address must reach the same
-            # (never-restarted) channel process.
-            sent_b = harness.ipc(
-                "message.send",
-                {"actor": "sender", "to": [ACTOR_B], "summary": "post-switch", "message": "post-switch"},
-            )
-            assert sent_b["ok"] is True
-
-            # The still-running child re-establishes its route on the new
-            # daemon generation within a poll cycle; the sender-side outbox
-            # retries the B-addressed delivery until then, so the read is a
-            # bounded wait, not an instant one.
-            async def fetched_once() -> list[str]:
-                read_result = await session.call_tool("harness_read", {})
-                raw = read_result.content[0].text  # type: ignore[index, union-attr]
-                try:
-                    payload = json.loads(raw)
-                except ValueError:
-                    raise AssertionError(f"harness_read text was not JSON: {raw!r}") from None
-                return sorted(item["messageId"] for item in payload["items"])
-
-            fetched: list[str] = []
-
-            async def pre_switch_fetched() -> bool:
-                nonlocal fetched
-                fetched = await fetched_once()
-                return sent_a["messageId"] in fetched
-
-            async def post_switch_fetched() -> bool:
-                nonlocal fetched
-                fetched = await fetched_once()
-                return sent_b["messageId"] in fetched
-
-            try:
-                # WP2 real gate: the pre-switch request rode its hold across
-                # the restart and is released once the owner-B org space is
-                # found and the pair link mints (a few ticks).
-                await _wait_until(pre_switch_fetched, timeout=30.0, interval=0.5)
-
-                # A request occupies the pair's single in-flight slot until it
-                # is answered, so the same child settles the pre-switch one
-                # before the post-switch request can release (cwnd=1).
-                reply_a = await session.call_tool(
-                    "harness_reply",
-                    {"messageId": sent_a["messageId"], "summary": "ack from the same child", "message": "ack from the same child"},
-                )
-                reply_a_payload = json.loads(reply_a.content[0].text)  # type: ignore[index, union-attr]
-                assert reply_a_payload["ok"] is True
-                assert reply_a_payload["acknowledged"] is True
-
-                # A message to the POST-migration address must reach the same
-                # (never-restarted) channel process.
-                await _wait_until(post_switch_fetched, timeout=30.0, interval=0.5)
-            except AssertionError as error:
-                status_a = harness.ipc(
-                    "message.status", {"from": "sender", "messageId": sent_a["messageId"]}
-                )
-                status_b = harness.ipc(
-                    "message.status", {"from": "sender", "messageId": sent_b["messageId"]}
-                )
-                raise AssertionError(
-                    f"{error}\nfetched={fetched}\n"
-                    f"status_a={json.dumps(status_a)[:300]}\n"
-                    f"status_b={json.dumps(status_b)[:300]}\n"
-                    f"{harness.diagnostics()}"
-                ) from error
-            # sent_a was already settled by the child's reply above.
-            assert sent_b["messageId"] in fetched
-
-            reply = await session.call_tool(
-                "harness_reply",
-                {"messageId": sent_b["messageId"], "summary": "ack from the same child", "message": "ack from the same child"},
-            )
-            reply_payload = json.loads(reply.content[0].text)  # type: ignore[index, union-attr]
-            assert reply_payload["ok"] is True
-            assert reply_payload["acknowledged"] is True
-
-    # The child exited with the MCP session; the daemon is torn down by PID in
-    # the fixture.

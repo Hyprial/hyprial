@@ -28,7 +28,6 @@ can name the outcome; it is not a supervisor contract.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
@@ -63,41 +62,24 @@ def service_managed(environ: Mapping[str, str]) -> bool:
 def read_identity_generation(home: Path) -> int | None:
     """The committed generation in ``secrets/login.json``, or None (never raises)."""
 
-    from hyprial.shell.impl.login.flow import credential_path
+    from hyprial.identity import read_login_generation
 
-    try:
-        record = json.loads(
-            credential_path(hyprial_home=Path(home)).read_text(encoding="utf-8")
-        )
-    except (OSError, UnicodeError, ValueError):
-        return None
-    value = record.get(IDENTITY_GENERATION_KEY) if isinstance(record, dict) else None
-    if type(value) is int and value > 0:
-        return value
-    return None
-
-
-def _read_high_water(home: Path) -> int:
-    try:
-        record = json.loads((Path(home) / HIGH_WATER_FILENAME).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
-        return 0
-    value = record.get(IDENTITY_GENERATION_KEY) if isinstance(record, dict) else None
-    return value if type(value) is int and value > 0 else 0
+    return read_login_generation(Path(home))
 
 
 def next_identity_generation(home: Path) -> int:
     """Reserve the next generation (call under the identity lock, before commit).
 
     The high-water mark is advanced first, so a commit that then fails only
-    leaves a gap -- never a reused number.
+    leaves a gap -- never a reused number.  The rule lives in the identity
+    credential store so the CLI login and the identity worker commit share one
+    counter (merge of release/v0.5.5.3.4 into release/v0.5.5.4, per Allen
+    2026-11-07).
     """
 
-    from hyprial.kernel import atomic_json_write
+    from hyprial.identity import reserve_identity_generation
 
-    value = max(read_identity_generation(home) or 0, _read_high_water(home)) + 1
-    atomic_json_write(Path(home) / HIGH_WATER_FILENAME, {IDENTITY_GENERATION_KEY: value})
-    return value
+    return reserve_identity_generation(Path(home))
 
 
 def set_launch_generation(

@@ -20,14 +20,13 @@ class Harnesses(_ScriptedHarnesses):
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, *, actor_host):
     inbox = _inbox(tmp_path / "inbox.sqlite3")
     harnesses = Harnesses()
     logs = []
     bridge = _bridge(tmp_path, inbox, harnesses, {"now": 100},
-                     logs=lambda *a, **kw: logs.append((a, kw)))
+                     logs=lambda *a, **kw: logs.append((a, kw)), actor_host=actor_host)
     state = bridge.desired_state.load()
-    # Real persisted pin and legacy import precede every delivery assertion.
     from hyprial.identity.impl.agents.registry import AgentRegistry
     from hyprial.daemon.impl.desired_state import DesiredStateStore
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner="op", machine=NODE,
@@ -37,11 +36,10 @@ def runtime(tmp_path):
         source.mkdir()
         registry.create("sprite", config={"sources": [{"path": str(source), "required": True}],
                                           "discovery": "explicit-only"})
-        registry.pin("sprite", "sprite")
     finally:
         registry.close()
     collision = HarnessLaunchSpec(harness="lark", name="sprite", headless=True)
-    other = replace(state.harnesses[0], name="other")
+    other = replace(state.harnesses[0], name="other", member="other")
     legacy = state.to_json()
     legacy.pop("adapters")
     legacy.update(schemaVersion=2, providers=[s.to_json() for s in (collision, *state.harnesses, other)])
@@ -57,16 +55,15 @@ def runtime(tmp_path):
     inbox.close()
 
 
-def test_migrated_adapter_runs_and_keeps_pin_while_both_workers_receive(runtime, tmp_path):
-    import sqlite3
+def test_migrated_adapter_runs_and_both_workers_receive(runtime, tmp_path):
     from hyprial.daemon.impl.adapters.lark.runtime.runtime import AdapterRuntime
     from hyprial.daemon.impl.composition.ports import LarkDesiredStatePort
     from hyprial.kernel import ChannelConfiguration
     from tests.daemon.adapters.lark.actors.actor_domain.support import _Launcher, _gateway
 
     bridge, harnesses, _ = runtime
-    pins = tmp_path / "agents.sqlite3"
-    before = pins.read_bytes()
+    agents = tmp_path / "agents.sqlite3"
+    before = agents.read_bytes()
     adapter = AdapterRuntime(_Launcher(), ChannelConfiguration(gateways=(_gateway("sprite"),)),
                              desired_state=LarkDesiredStatePort(bridge.desired_state))
     try:
@@ -77,9 +74,7 @@ def test_migrated_adapter_runs_and_keeps_pin_while_both_workers_receive(runtime,
         assert "harness" not in status
         bridge.on_timer()
         assert {d.recipient.rsplit(":", 1)[1] for d in harnesses.dispatched} == {"sprite", "other"}
-        with sqlite3.connect(pins) as db:
-            assert db.execute("SELECT adapter,agent FROM pins").fetchall() == [("sprite", "sprite")]
-        assert pins.read_bytes() == before
+        assert agents.read_bytes() == before
         assert all(s.harness != "lark" for s in bridge.desired_state.load().harnesses)
     finally:
         adapter.stop()
@@ -164,8 +159,8 @@ def test_unknown_mechanism_is_safe(kind):
 
 
 @pytest.mark.parametrize("kind,eligible", [
-    ("claude", True), ("pi", True), ("codex", True), ("dsh", True),
-    ("jev", False), ("user-proxy", False),
+    ("claude", True), ("pi", True), ("codex", True),
+    ("jev", False),
 ])
 def test_declared_kinds_keep_batch_eligibility(runtime, monkeypatch, kind, eligible):
     bridge, _, _ = runtime
@@ -177,7 +172,7 @@ def test_declared_kinds_keep_batch_eligibility(runtime, monkeypatch, kind, eligi
     assert bridge._model_eligible(hook) is False
 
 
-@pytest.mark.parametrize("kind", ["claude", "pi", "codex", "dsh"])
+@pytest.mark.parametrize("kind", ["claude", "pi", "codex"])
 def test_declared_model_carrier_keeps_scalar_fallback_without_batch_port(
     runtime, monkeypatch, kind
 ):
@@ -186,8 +181,8 @@ def test_declared_model_carrier_keeps_scalar_fallback_without_batch_port(
     monkeypatch.setattr(bridge.inbox, "batch_snapshot", None)
     bridge.on_timer()
     assert len(harnesses.dispatched) == 2
-    assert all(not d.batch_cursor and not d.message_ids for d in harnesses.dispatched)
-    assert all(BODY not in d.message for d in harnesses.dispatched)
+    assert all(not d.input.batch_cursor and not d.message_ids for d in harnesses.dispatched)
+    assert all(BODY not in d.input.message for d in harnesses.dispatched)
 
 
 def test_unknown_kind_never_injects_body_and_warns_once(runtime, monkeypatch):
@@ -196,7 +191,7 @@ def test_unknown_kind_never_injects_body_and_warns_once(runtime, monkeypatch):
     bridge.on_timer()
     bridge.on_timer()
     assert harnesses.dispatched
-    assert all(BODY not in d.message for d in harnesses.dispatched)
+    assert all(BODY not in d.input.message for d in harnesses.dispatched)
     warnings = [kw for a, kw in logs if a[2] == "harness.kind.unknown"]
     assert len(warnings) == 2  # once per actor, not per tick/message
 
@@ -259,10 +254,10 @@ def test_one_actor_exception_does_not_abort_tick(runtime, monkeypatch, seam):
         monkeypatch.setattr(reconcile, "capture_batch", fail_capture)
     else:
         original = harnesses.dispatch
-        def fail_dispatch(actor, delivery):
-            if actor == "sprite":
+        def fail_dispatch(envelope):
+            if envelope.stamp.member == "sprite":
                 raise KeyError(("lark", True))
-            return original(actor, delivery)
+            return original(envelope)
         monkeypatch.setattr(harnesses, "dispatch", fail_dispatch)
     tail = []
     monkeypatch.setattr(bridge, "_kick_retry_pump", lambda: tail.append("retry"))

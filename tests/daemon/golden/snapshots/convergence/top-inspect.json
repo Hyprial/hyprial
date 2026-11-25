@@ -1,0 +1,198 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "convergence",
+ "scenario": "top-inspect",
+ "steps": [
+  {
+   "step": 1,
+   "method": "top.inspect",
+   "origin": "ipc",
+   "params": {},
+   "result": {
+    "daemon": {
+     "pid": "<pid>",
+     "nodeId": "node-1",
+     "owner": "op",
+     "epoch": "<uuid4#1>",
+     "dispatchWithoutPacCount": 0,
+     "dispatchConversationCount": 0
+    },
+    "nowMs": 1800000000000,
+    "actors": [
+     {
+      "actor": "agent:op:node-1:alpha",
+      "name": "alpha",
+      "runtime": "claude_interactive",
+      "status": "online",
+      "processState": "not_applicable",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "28735ee3675d34f45aebab5af97878b3",
+       "epoch": "<uuid4#2>",
+       "revision": 4
+      },
+      "sources": [
+       "interactive_session",
+       "presence",
+       "registry"
+      ],
+      "running": null,
+      "pid": null,
+      "processStartedAtMs": null,
+      "turnCount": null,
+      "lastTurnEndedAtMs": null,
+      "recentTurnDurationsMs": null,
+      "recentTurnOutcomes": null,
+      "recentFailureRatio": null,
+      "openTurnStartedAtMs": null,
+      "pendingCount": 0,
+      "oldestPendingAgeMs": null,
+      "state": "online",
+      "turnStatsUnavailableReason": "no-reporting-session-this-generation",
+      "processMetrics": null
+     },
+     {
+      "actor": "agent:op:node-1:beta",
+      "name": "beta",
+      "runtime": "claude_interactive",
+      "status": "online",
+      "processState": "not_applicable",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "2b54062b7c8d7d23e92e28a8c8bbeaed",
+       "epoch": "<uuid4#2>",
+       "revision": 4
+      },
+      "sources": [
+       "interactive_session",
+       "presence",
+       "registry"
+      ],
+      "running": null,
+      "pid": null,
+      "processStartedAtMs": null,
+      "turnCount": null,
+      "lastTurnEndedAtMs": null,
+      "recentTurnDurationsMs": null,
+      "recentTurnOutcomes": null,
+      "recentFailureRatio": null,
+      "openTurnStartedAtMs": null,
+      "pendingCount": 0,
+      "oldestPendingAgeMs": null,
+      "state": "online",
+      "turnStatsUnavailableReason": "no-reporting-session-this-generation",
+      "processMetrics": null
+     },
+     {
+      "actor": "agent:op:node-1:gamma",
+      "name": "gamma",
+      "runtime": "claude_interactive",
+      "status": "online",
+      "processState": "not_applicable",
+      "runState": {
+       "state": "unknown",
+       "baseState": "unknown",
+       "reason": "source-unavailable",
+       "certainty": "unknown",
+       "scope": "whole-session",
+       "observedAtMs": 1800000000000,
+       "sinceMs": null,
+       "turnAgeMs": null,
+       "lastActivityAtMs": null,
+       "coverage": {
+        "turnBoundaries": false,
+        "permissionWait": false,
+        "producerActivity": false,
+        "processExit": false
+       },
+       "observationHealth": "unavailable",
+       "suspicions": [],
+       "policyRevision": 1,
+       "providerBlocked": false,
+       "thresholds": {
+        "turnLongAfterMs": 1800000,
+        "permissionLongAfterMs": 300000,
+        "quietAfterMs": null
+       },
+       "lastKnown": null,
+       "runtimeIncarnation": "49d4f9166670ba50c11416784d0c5565",
+       "epoch": "<uuid4#2>",
+       "revision": 4
+      },
+      "sources": [
+       "interactive_session",
+       "presence",
+       "registry"
+      ],
+      "running": null,
+      "pid": null,
+      "processStartedAtMs": null,
+      "turnCount": null,
+      "lastTurnEndedAtMs": null,
+      "recentTurnDurationsMs": null,
+      "recentTurnOutcomes": null,
+      "recentFailureRatio": null,
+      "openTurnStartedAtMs": null,
+      "pendingCount": 0,
+      "oldestPendingAgeMs": null,
+      "state": "online",
+      "turnStatsUnavailableReason": "no-reporting-session-this-generation",
+      "processMetrics": null
+     }
+    ],
+    "stranded": [],
+    "quota": {
+     "sources": []
+    }
+   }
+  }
+ ]
+}

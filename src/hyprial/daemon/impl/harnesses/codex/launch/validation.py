@@ -1,4 +1,12 @@
-"""Validation of Codex native-load receipts against exact launch inputs."""
+"""Validation of Codex native-load receipts against exact launch inputs.
+
+Decision record (W2B-3 manysys sweep, 2026-11-21):
+- Eliminated the hardcoded POSIX /etc literal when validating the Codex
+  config/read system layer: platforms enforcing POSIX metadata keep the exact
+  Path("/", "etc", "codex", "config.toml") check, while non-POSIX platforms
+  accept the single external absolute config.toml reported by Codex outside
+  CODEX_HOME and the repository root.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +21,7 @@ from hyprial.identity import (
     SharedCredentialBinding,
     validate_shared_credential_binding,
 )
-from hyprial.kernel import Logger, private_metadata_violation, redact
+from hyprial.kernel import Logger, manysys, private_metadata_violation, redact
 
 from hyprial.daemon.impl.harnesses.codex.projection import CodexAgentHomeError
 
@@ -99,6 +107,31 @@ def _require_private(
         raise CodexAgentHomeError(f"{label} mode must be {mode:04o}")
     if violation is not None:
         raise CodexAgentHomeError(f"{label} must be account-private ({violation})")
+
+
+def _validate_codex_system_layer_files(
+    system_files: list[Path], *, expected_root: Path, project_root: Path
+) -> None:
+    if manysys.posix_metadata_enforced():
+        if system_files != [Path("/", "etc", "codex", "config.toml")]:
+            raise CodexAgentHomeError(
+                "Codex system config layer must remain /etc/codex/config.toml"
+            )
+        return
+    if len(system_files) != 1:
+        raise CodexAgentHomeError(
+            "Codex system config layer must contain exactly one system config.toml"
+        )
+    system_file = system_files[0]
+    if (
+        not system_file.is_absolute()
+        or system_file.name != "config.toml"
+        or _inside(system_file, expected_root)
+        or _inside(system_file, project_root)
+    ):
+        raise CodexAgentHomeError(
+            "Codex system config layer must be an external absolute config.toml"
+        )
 
 
 def _validate_codex_native_load(
@@ -216,10 +249,9 @@ def _validate_codex_native_load(
         raise CodexAgentHomeError(
             "Codex config/read must contain exactly one user and system layer"
         )
-    if system_files != [Path("/etc/codex/config.toml")]:
-        raise CodexAgentHomeError(
-            "Codex system config layer must remain /etc/codex/config.toml"
-        )
+    _validate_codex_system_layer_files(
+        system_files, expected_root=expected_root, project_root=project_root
+    )
     custom_provider = model_provider not in {None, "openai"}
     legacy_session_contract = expected_session_flags is None
     expected_flags = dict(expected_session_flags or {})

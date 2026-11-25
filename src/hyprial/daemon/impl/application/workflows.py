@@ -14,6 +14,7 @@ from hyprial.daemon.impl.pac.contracts.workflow import WorkflowSpec
 from hyprial.kernel import (
     canonical_user_uri,
     parse_agent_uri,
+    parse_user_uri,
 )
 if TYPE_CHECKING:
     pass
@@ -27,7 +28,7 @@ from hyprial.daemon.impl.ipc.params import (
 def _with_acting_principal(result: Any, principal: str) -> JsonObject:
     if not isinstance(result, dict):
         raise DaemonRequestError(
-            ipc_errors.INVALID_RESPONSE,
+            "INVALID_RESPONSE",
             "workflow operation returned a non-object",
         )
     return {**result, "actingPrincipal": principal}
@@ -113,6 +114,10 @@ class _WorkflowSurfaceMixin:
         except WorkflowSchemaError as error:
             raise DaemonRequestError(error.code, str(error)) from error
 
+    def _workflow_agent_reader(self):
+        registry = getattr(self, "agents", None)
+        return None if registry is None else registry.current
+
     def _ipc_workflow_expansion_plan(self, params) -> Any:
         from hyprial.daemon.impl.pac.graphs.authority.expansion import (
             expansion_preview,
@@ -157,7 +162,11 @@ class _WorkflowSurfaceMixin:
                     "expansion placeholder is unavailable",
                     {"field": "placeholder", "reason": "required"},
                 )
-            if source not in (graph["created_by"], predecessor["owner"]):
+            from hyprial.daemon.impl.pac.storage.agent_uris import resolved_node_owner
+            planner_owner = resolved_node_owner(
+                store, store.node(graph_id, predecessor["from_node"]), self._workflow_agent_reader()
+            )
+            if source not in (graph["created_by"], planner_owner):
                 raise PacError(
                     ipc_errors.CALLER_NOT_AUTHORIZED,
                     "only the creator or corresponding planner may preview expansion",
@@ -196,11 +205,12 @@ class _WorkflowSurfaceMixin:
                 graph_id=graph_id,
                 node_id=str(predecessor["from_node"]),
                 request_id=request_id,
-                actor=str(predecessor["owner"]),
+                actor=planner_owner or str(predecessor["owner"]),
                 at=now,
                 machine=self.node_id,
                 local_owner=self.owner,
                 persist_artifacts=False,
+                agent_reader=self._workflow_agent_reader(),
             )
             self._workflow_admit(context.spec, source)
             return expansion_preview(context, deadline_ms=deadline_ms)
@@ -295,6 +305,7 @@ class _WorkflowSurfaceMixin:
                     at=time.time_ns() // 1_000_000,
                     machine=self.node_id,
                     local_owner=self.owner,
+                    agent_reader=self._workflow_agent_reader(),
                 )
                 self._workflow_admit(context.spec, source)
             if authority is not None:
@@ -316,7 +327,7 @@ class _WorkflowSurfaceMixin:
             from hyprial.daemon.impl.pac.storage.store import PacGraphStore, default_database_path
             store = PacGraphStore(default_database_path(self.state_dir))
             try:
-                outcome = PacReactor(store, expansion_context=context).set_flag(graph_id, node_id, actor=source,
+                outcome = PacReactor(store, expansion_context=context, agent_reader=self._workflow_agent_reader()).set_flag(graph_id, node_id, actor=source,
                                                      reason_ref=reason, expected_request=request,
                                                      output_text=output_text,
                                                      expansion=expansion)
@@ -425,6 +436,9 @@ class _WorkflowSurfaceMixin:
                     surface=AliasSurface.PAC,
                     preserve_unknown=True,
                 )
+                from hyprial.daemon.impl.user_agent.naming import refuse_user_agent_work
+
+                refuse_user_agent_work(self.agents, node.owner)
                 if node.owner.startswith("user:"):
                     if node.owner != canonical_user_uri(self.owner):
                         raise DaemonRequestError(WORKFLOW_REMOTE_OWNER_UNSUPPORTED,
@@ -456,6 +470,95 @@ class _WorkflowSurfaceMixin:
                           human_gates_declared=node.human_gates is not None,
                           emit=self._log, source="pac.workflow.admission")
         return spec
+
+    def _compose_held_reminder(self) -> None:
+        """Wire the PAC held reminder onto the shared maintenance scheduler.
+
+        #1803: the reminder is PAC-owned.  The kernel scheduler stays generic
+        and is only borrowed here for one timer key, the same way the
+        forwarding supervisor borrows it.
+        """
+
+        from hyprial.daemon.impl.pac.held_reminder import (
+            HeldReminder,
+            HeldReminderConfig,
+        )
+
+        workflow = self._workflow_service
+        if workflow is None:
+            self._held_reminder = None
+            return
+        try:
+            self._held_reminder = HeldReminder(
+                database=workflow.database,
+                owner=self.owner,
+                config=HeldReminderConfig.from_environment(),
+                scheduler=self._maintenance_scheduler,
+                creator_exists=self._held_reminder_creator_exists,
+                operator_route=self._held_reminder_operator_route(),
+                wake_delivery=lambda: workflow.submit_timer(
+                    time.time_ns() // 1_000_000
+                ),
+                logger=self._log,
+            )
+        except Exception as error:  # noqa: BLE001 - telemetry must stay reachable
+            self._held_reminder = None
+            self._log(
+                "error",
+                "pac",
+                "workflow.held_reminder_unavailable",
+                errorType=type(error).__name__,
+                detail=str(error)[:500],
+                disabledCapabilities=("pac.held_reminder",),
+            )
+
+    def _start_held_reminder(self) -> None:
+        """Run the held reminder once, right after restore completes."""
+
+        reminder = self._held_reminder
+        if reminder is None:
+            return
+        try:
+            recorded = reminder.start_after_restore()
+        except Exception as error:  # noqa: BLE001 - restore has already succeeded
+            self._log(
+                "warn",
+                "pac",
+                "workflow.held_reminder_failed",
+                errorType=type(error).__name__,
+                detail=str(error)[:500],
+            )
+            return
+        if recorded:
+            self._log(
+                "info", "pac", "workflow.held_reminder_sent", notices=len(recorded)
+            )
+
+    def _held_reminder_creator_exists(self, actor: str) -> bool:
+        """Whether a creator can still be delivered to from this node.
+
+        Only a **local agent** identity can be proven absent here.  A
+        ``user:<owner>`` creator is a delivery target of its own (the owner DM
+        path), and a remote principal's absence is not provable from this
+        node's registry, so both stay delivery targets rather than being
+        silently rerouted to the operator.
+        """
+
+        if parse_user_uri(actor) is not None:
+            return True
+        principal = parse_agent_uri(actor)
+        if principal is not None and principal[:2] != (self.owner, self.node_id):
+            return True
+        try:
+            return bool(self.agents.exists(actor))
+        except Exception:  # noqa: BLE001 - an unreadable registry proves nothing
+            return True
+
+    def _held_reminder_operator_route(self) -> str | None:
+        try:
+            return canonical_user_uri(self.owner)
+        except ValueError:
+            return None
 
     def _workflow_caller(self, params: JsonObject) -> str:
         actor = params.get("actor")
@@ -605,6 +708,7 @@ class _WorkflowSurfaceMixin:
                     store,
                     sender=DaemonPacNotificationSender(self),
                     logger=self._log,
+                    agent_reader=self._workflow_agent_reader(),
                 )
                 try:
                     if method == "pac.flag.set":

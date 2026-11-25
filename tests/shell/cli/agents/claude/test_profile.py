@@ -169,8 +169,7 @@ def test_start_claude_interactive_reports_missing_p2_credential(
 
 
 @pytest.mark.parametrize("native", [False, True])
-@pytest.mark.parametrize("tmux", [False, True])
-def test_workflow_legacy_cli_checks_own_source_before_spawn(monkeypatch, tmp_path, native, tmux):
+def test_workflow_legacy_cli_checks_own_source_before_spawn(monkeypatch, tmp_path, native):
     home = tmp_path / "agent"
     home.mkdir(mode=0o700)
     if native:
@@ -192,9 +191,8 @@ def test_workflow_legacy_cli_checks_own_source_before_spawn(monkeypatch, tmp_pat
         spawned.append(kwargs["env"])
         raise RuntimeError("synthetic spawn reached")
     monkeypatch.setattr(_cli_subprocess, "Popen", spawn)
-    monkeypatch.setattr("hyprial.shell.impl.cli.commands.agent.runtime.claude._launch_detached_tui", spawn)
     result = CliRunner().invoke(_cli_root_app, ["agent", "start", "claude", "--name", "worker",
-                                        "--cwd", str(tmp_path), "--json", *(["--tmux"] if tmux else [])])
+                                        "--cwd", str(tmp_path), "--json"])
     if native:
         assert spawned and spawned[0]["CLAUDE_CONFIG_DIR"] == str(root)
     else:

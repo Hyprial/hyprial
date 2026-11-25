@@ -1,3 +1,8 @@
+# Decision record (W1E-2, 2026-11-21):
+# - Actor homes live inside the outer HYPRIAL_HOME privacy boundary and processes
+#   run under apply_private_umask(0o077), so spill publication removes inner
+#   os.geteuid / exact-0o700 mode checks and redundant os.chmod calls while
+#   retaining lstat + path_is_reparse real-directory/regular-file verification.
 """Private, bounded publication of an over-budget batch rendering.
 
 The files are a cache of live inbox data, never authority: losing one costs a
@@ -19,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hyprial.daemon.impl.inbox.batch.cursor import cursor_digest
+from hyprial.kernel import path_is_reparse
 
 __all__ = [
     "BATCH_DIRECTORY",
@@ -58,32 +64,24 @@ def _private_directory(directory: Path, *, create: bool) -> None:
             raise SpillUnavailable("actor state root is unavailable") from None
         directory.mkdir(mode=0o700, parents=False)
         info = directory.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+    if stat.S_ISLNK(info.st_mode) or path_is_reparse(info) or not stat.S_ISDIR(info.st_mode):
         raise SpillUnavailable("actor state root is not a real directory")
-    if info.st_uid != os.geteuid():
-        raise SpillUnavailable("actor state root is not owned by the daemon user")
-    mode = stat.S_IMODE(info.st_mode)
-    if mode != 0o700:
-        if not create:
-            raise SpillUnavailable("actor state root is not private")
-        # A directory this daemon owns and just had to tighten: make it
-        # private rather than silently writing a batch below a world-readable
-        # path.
-        os.chmod(directory, 0o700)
 
 
 def spill_directory(actor_home: Path) -> Path:
-    """``<actor-home>/state/inbox-batches``, verified private along the chain."""
+    """``<actor-home>/state/inbox-batches``, verified along the chain."""
 
     home = Path(actor_home)
     try:
         home_info = home.lstat()
     except FileNotFoundError:
         raise SpillUnavailable("actor home is unavailable") from None
-    if stat.S_ISLNK(home_info.st_mode) or not stat.S_ISDIR(home_info.st_mode):
+    if (
+        stat.S_ISLNK(home_info.st_mode)
+        or path_is_reparse(home_info)
+        or not stat.S_ISDIR(home_info.st_mode)
+    ):
         raise SpillUnavailable("actor home is not a real directory")
-    if home_info.st_uid != os.geteuid():
-        raise SpillUnavailable("actor home is not owned by the daemon user")
     directory = home
     for part in BATCH_DIRECTORY:
         directory = directory / part
@@ -105,8 +103,7 @@ def _entries(directory: Path) -> list[tuple[Path, os.stat_result]]:
             info = candidate.lstat()
         except OSError:
             continue
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            # Never follow, never delete: an unexpected entry is not ours.
+        if stat.S_ISLNK(info.st_mode) or path_is_reparse(info) or not stat.S_ISREG(info.st_mode):
             continue
         found.append((candidate, info))
     return found
@@ -172,11 +169,12 @@ def publish(actor_home: Path, cursor: str, text: str) -> SpillFile:
     )
     try:
         try:
-            os.write(descriptor, payload)
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(descriptor, view):]
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        os.chmod(scratch, 0o600)
         os.replace(scratch, target)
     except OSError as error:
         try:
@@ -185,10 +183,8 @@ def publish(actor_home: Path, cursor: str, text: str) -> SpillFile:
             pass
         raise SpillUnavailable(f"could not publish the batch spill file: {error}") from error
     info = target.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+    if stat.S_ISLNK(info.st_mode) or path_is_reparse(info) or not stat.S_ISREG(info.st_mode):
         raise SpillUnavailable("batch spill file is not a regular file")
-    if stat.S_IMODE(info.st_mode) != 0o600:
-        os.chmod(target, 0o600)
     prune(actor_home, keep=target)
     return SpillFile(
         path=target,

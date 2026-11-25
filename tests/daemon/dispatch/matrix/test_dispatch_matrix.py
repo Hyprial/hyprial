@@ -18,14 +18,14 @@ from typer.testing import CliRunner
 
 from hyprial.kernel import ipc_errors
 from hyprial.daemon.impl.dispatch import matrix
-from hyprial.daemon.impl.squire import probe as probe_module
-from hyprial.daemon.impl.squire.probe import (
+from hyprial.daemon.impl.harnesses import probe as probe_module
+from hyprial.daemon.impl.harnesses.probe import (
     ProbeRun,
     RuntimeProber,
     build_probe_command,
     classify_run,
 )
-from hyprial.identity import RuntimeCapability, UserProfileStore
+from hyprial.identity import RuntimeCapability, RuntimeCapabilityStore
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
@@ -117,11 +117,8 @@ def test_runtime_prober_delegates_the_verdict_to_classify_run(monkeypatch):
     )
 
 
-def profile_store():
-    store = UserProfileStore(Path(os.environ["HARNESS_STATE_DIR"]) / "users.json")
-    store.ensure(owner=os.environ["HYPRIAL_OWNER"], owner_key="owner-key", login_name="unit",
-                 machine="test-node", machine_key="machine-key")
-    return store
+def capability_store():
+    return RuntimeCapabilityStore(Path(os.environ["HARNESS_STATE_DIR"]) / "runtime-capabilities.json")
 
 
 def test_mark_is_recorded_and_cannot_change_selection():
@@ -132,29 +129,29 @@ def test_mark_is_recorded_and_cannot_change_selection():
     diagnosis).
     """
 
-    store = profile_store()
+    store = capability_store()
     marked = matrix.TIERS["super"][0]
-    store.set_runtime_capability("owner-key", RuntimeCapability(
+    store.set(os.environ["HYPRIAL_OWNER"], RuntimeCapability(
         harness=marked.harness, provider=marked.provider, model=marked.model,
         status="unavailable", reason="usage-limit", detail="quota readout",
         probed_at="2026-09-07T00:00:00Z",
     ))
     for candidate in matrix.TIERS["super"][1:]:
-        store.set_runtime_capability("owner-key", RuntimeCapability(
+        store.set(os.environ["HYPRIAL_OWNER"], RuntimeCapability(
             harness=candidate.harness, provider=candidate.provider,
             model=candidate.model, status="unavailable", reason="usage-limit",
             probed_at="2026-09-07T00:00:00Z",
         ))
     assert matrix.resolve("super").selected == marked
-    assert store.get("owner-key").runtime_capability(
-        marked.harness, marked.model, marked.provider
+    assert store.get(
+        os.environ["HYPRIAL_OWNER"], marked.harness, marked.model, marked.provider
     ).status == "unavailable"
 
 
 def test_agent_tiers_reads_recorded_availability_without_probing(monkeypatch):
-    store = profile_store()
+    store = capability_store()
     selected = matrix.TIERS["super"][0]
-    store.set_runtime_capability("owner-key", RuntimeCapability(
+    store.set(os.environ["HYPRIAL_OWNER"], RuntimeCapability(
         harness=selected.harness, provider=selected.provider, model=selected.model,
         status="unavailable", reason="usage-limit", detail="quota readout",
         retry_at="2026-10-11T00:00:00Z", probed_at="2026-10-10T00:00:00Z",

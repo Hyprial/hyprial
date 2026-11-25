@@ -7,7 +7,7 @@ from typing import Any
 
 import typer
 
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.output import CliResult, render_generic, warn
 
@@ -48,7 +48,7 @@ def workflow_gc(
         services = get_services()
         if not dry_run:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "PAC GC is daemon-owned; pass --dry-run to preview it",
             )
         preview = services.runtime.request("pac.gc.preview", {})
@@ -60,7 +60,7 @@ def workflow_gc(
             # The preview itself must survive a default cwd outside any git
             # repository; an explicit repository argument still errors, and
             # a real git failure inside a repository is not hidden.
-            if repos or error.code != ipc_errors.INVALID_ARGUMENT:
+            if repos or error.code != codes.INVALID_ARGUMENT:
                 raise
             warn(f"worktree advice skipped: {error}", json_output=json_output)
             results = []

@@ -1,0 +1,1377 @@
+{
+ "schema": "hyprial-golden-manifest/v1",
+ "harnessArtifacts": [
+  "No user profile or squire is configured: a user:op sender records replyPathUnavailable: true (message/operator.json) while the UserDelivery double still accepts user: sends; a real home without a squire refuses them with TARGET_UNRESOLVED (TARGET_SQUIRE_UNCONFIGURED before S10).",
+  "_adapters is None and no LarkReplyBridgeTransport is built: channel:lark reply bridging is not exercised, and route: sends reach the recording ChatGateway double.",
+  "The workflow service (control/workflows-live) runs without the PAC graph authority, PacActorService or RemoteWorkflow, and its cadence runs only at explicit _tick calls; production runs it on its own threads.",
+  "The link service thread is suppressed: every link pass is an explicit tick at a recorded point, so link states and inFlight counts are those after the ticks the scenario shows.",
+  "agents and workflows (control/agents.json, control/workflows.json) record a daemon with no routine or workflow service: AGENT_DEFAULT_ROUTINE_UNAVAILABLE and WORKFLOW_UNAVAILABLE are degraded-mode values; control/routines.json and control/workflows-live.json record the live services.",
+  "Presence is the production _LocalPresence over the registered session routes; there is no remote node, so node-offline and remote presence branches are not recorded.",
+  "retention/interaction-after-drop composes the S6 conversation recorder unstarted over an isolated in-process LocalOrgFs (no cell params, so the 7 d code default applies) and drives it and the inbox sweep at explicit steps; production runs both on their own threads and cadence.",
+  "Agents are minted in name form (addressing.ID_FORM_MINTING pinned False by the harness): the goldens were recorded before release/v0.5.5.4 made id-form minting the default (UUID addressing, #2546); release's own suites cover the id-form default.",
+  "convergence/top-inspect uses a controlled empty process sample for deterministic metrics; the actual host ps and socket are exercised by a separate integration test.",
+  "request_methods/pac-gc-preview uses a real PacGc, GraphWorkflowService and AgentRegistry, with the PAC GC test Application and Runtime ports instead of production cell observation composition; production projection revision is covered separately."
+ ],
+ "snapshots": {
+  "control/agents.json": "5db9eda96cc934e9a161be2ec0c2a3e18b70386f9e07d9c133361b162989273a",
+  "control/routines.json": "dc5d3cce407bb4408938e5035a09956f7fb27bddc36a522a3842b64a3801d1dc",
+  "control/sessions.json": "72da0bfff078a9ef08d1af99cda22ee4beb3b2c384d66ac9a43353a4c767a2e7",
+  "control/workflows-live.json": "5c7a60304479252b06728017ef81cc5395f3ba9844997bc458a75557b1c84c69",
+  "control/workflows.json": "387ff365e1b21b5b19707b958cca34e9809f70cbdce4822194081f86a644964c",
+  "convergence/top-inspect.json": "1c085ed0407925215dc41c4192ca06840dce8fbc567dd793d8603eaefd68f276",
+  "convergence/workflow-node-context.json": "8e08b9e858528b3f5f35778a5ee55024269f76797f9977e57d5801d598137559",
+  "message/agent-roundtrip-enforced.json": "b86326d63bdd519355ef4e1fe97b1caec9d05852d506801e61a89d116b6afd43",
+  "message/agent-roundtrip.json": "2f2b1a1bd04bd4417de219fdb90da39ab9fba920cac8c37dc1a7689fe8b752fa",
+  "message/operator.json": "96be5743d05a180ff17afe700b750ce4cf5f67c35296adf33621d8ea9748707f",
+  "message/refusals.json": "71643483d5d6a67dbc99e62ae5c0983bf60ea7045ac5d5b0b8ad7acd6264a340",
+  "message/user-and-route.json": "343007cec8cea2e749381a96576f2dbcdb73a43bda13f8d2108afc18bd3a7c2e",
+  "request_methods/grant-simulations.json": "9f1f1eaf5961bb0b2f03faf34985b391b8444ac220c3db070b8db6f46213f380",
+  "request_methods/pac-gc-preview.json": "1bccd58c810b5ccca2df5b0fe4598df81bfca847080a77ab3b499748b84a0c25",
+  "request_methods/routine-plan.json": "4c02b680543a1c951aecf130b4d07f77fb4eae05a8b1ba7b622a2f600e32d951",
+  "request_methods/workflow-history-list.json": "25a155ed1262e09686a84a0222f7828ed8ba3c19c8c463f1613227e50591ab4d",
+  "retention/interaction-after-drop.json": "89bae662b87df1a90e8b7edbf97d1ab69633cc388ba93a123332c6f34b899187"
+ },
+ "methods": {
+  "adapter.authorization.begin": {
+   "covered": false,
+   "reason": "Authorization operations are covered by isolated application, HTTP and owned-worker tests; this golden harness has no platform authorization effect."
+  },
+  "adapter.authorization.cancel": {
+   "covered": false,
+   "reason": "Authorization operations are covered by isolated application, HTTP and owned-worker tests; this golden harness has no platform authorization effect."
+  },
+  "adapter.authorization.operation": {
+   "covered": false,
+   "reason": "Authorization operations are covered by isolated application, HTTP and owned-worker tests; this golden harness has no platform authorization effect."
+  },
+  "adapter.authorization.status": {
+   "covered": false,
+   "reason": "Scope observations are covered by isolated application and HTTP tests with controlled platform responses; this golden harness has no configured platform scope client."
+  },
+  "adapter.identities.list": {
+   "covered": false,
+   "reason": "Platform identity inventory is covered by application and HTTP tests; this golden harness has no configured identity namespace."
+  },
+  "adapter.identities.sync": {
+   "covered": false,
+   "reason": "Platform collection is covered by isolated application and HTTP tests with a paginated SDK double; this golden harness has no platform credentials."
+  },
+  "adapter.list": {
+   "covered": false,
+   "reason": "Lark adapter runtime control; phase A does not change adapter lifecycle. Needs a supervised adapter worker."
+  },
+  "adapter.onboard.begin": {
+   "covered": false,
+   "reason": "new app operation lifecycle covered by isolated application, worker and HTTP/browser tests"
+  },
+  "adapter.onboard.cancel": {
+   "covered": false,
+   "reason": "new app operation lifecycle covered by isolated application, worker and HTTP/browser tests"
+  },
+  "adapter.onboard.operation": {
+   "covered": false,
+   "reason": "new app operation lifecycle covered by isolated application, worker and HTTP/browser tests"
+  },
+  "adapter.register": {
+   "covered": false,
+   "reason": "Registration is covered by isolated application and HTTP tests; this golden harness has no platform configuration writer or runtime reload port."
+  },
+  "adapter.reload": {
+   "covered": false,
+   "reason": "Lark adapter runtime control; phase A does not change adapter lifecycle. Needs a supervised adapter worker."
+  },
+  "adapter.routes.add": {
+   "covered": false,
+   "reason": "route config and observed candidate tests use isolated daemon requests; golden fixture has no configured app"
+  },
+  "adapter.routes.candidates": {
+   "covered": false,
+   "reason": "route config and observed candidate tests use isolated daemon requests; golden fixture has no configured app"
+  },
+  "adapter.routes.list": {
+   "covered": false,
+   "reason": "route config and observed candidate tests use isolated daemon requests; golden fixture has no configured app"
+  },
+  "adapter.routes.remove": {
+   "covered": false,
+   "reason": "route config and observed candidate tests use isolated daemon requests; golden fixture has no configured app"
+  },
+  "adapter.routes.send": {
+   "covered": false,
+   "reason": "posts to a configured Lark route; covered by tests/daemon/routing/route_send against the golden chat gateway double"
+  },
+  "adapter.start": {
+   "covered": false,
+   "reason": "Lark adapter runtime control; phase A does not change adapter lifecycle. Needs a supervised adapter worker."
+  },
+  "adapter.status": {
+   "covered": false,
+   "reason": "Lark adapter runtime control; phase A does not change adapter lifecycle. Needs a supervised adapter worker."
+  },
+  "adapter.stop": {
+   "covered": false,
+   "reason": "Lark adapter runtime control; phase A does not change adapter lifecycle. Needs a supervised adapter worker."
+  },
+  "agent.attach": {
+   "covered": false,
+   "reason": "Phase B S8 method added after G0; it has no pre-change behaviour to pin. Covered by tests/daemon/attach (registry-invoked flow, idempotency, refusals, OrgFS down) and tests/integration/cli/attach (real daemon and CLI end to end)."
+  },
+  "agent.cell.get": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/agents"
+   ],
+   "errorCodes": [
+    "AGENT_NOT_FOUND"
+   ]
+  },
+  "agent.cell.update": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/agents"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "agent.config.rebind": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.create": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/agents",
+    "control/routines"
+   ],
+   "errorCodes": [
+    "AGENT_EXISTS"
+   ]
+  },
+  "agent.destroy": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.destroy.preview": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.detach": {
+   "covered": false,
+   "reason": "Phase B S8 method added after G0; it has no pre-change behaviour to pin. Covered by tests/daemon/attach (registry-invoked flow, idempotency, refusals, OrgFS down) and tests/integration/cli/attach (real daemon and CLI end to end)."
+  },
+  "agent.ensure-home": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.get": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/agents"
+   ],
+   "errorCodes": [
+    "AGENT_NOT_FOUND"
+   ]
+  },
+  "agent.grant": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.grant.check": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "request_methods/grant-simulations"
+   ],
+   "errorCodes": [
+    "ENFORCEMENT_ERROR"
+   ]
+  },
+  "agent.grant.visibility": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "request_methods/grant-simulations"
+   ],
+   "errorCodes": [
+    "VISIBILITY_ERROR"
+   ]
+  },
+  "agent.grants": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.harness-args.clear": {
+   "covered": false,
+   "reason": "Persistent managed harness argument surface added by the harness-args integration after G0; no pre-change behaviour to pin. Covered by the harness-args lifecycle/CLI suites and the target-daemon integration tests."
+  },
+  "agent.harness-args.get": {
+   "covered": false,
+   "reason": "Persistent managed harness argument surface added by the harness-args integration after G0; no pre-change behaviour to pin. Covered by the harness-args lifecycle/CLI suites and the target-daemon integration tests."
+  },
+  "agent.harness-args.set": {
+   "covered": false,
+   "reason": "Persistent managed harness argument surface added by the harness-args integration after G0; no pre-change behaviour to pin. Covered by the harness-args lifecycle/CLI suites and the target-daemon integration tests."
+  },
+  "agent.harness-args.validate": {
+   "covered": false,
+   "reason": "Persistent managed harness argument surface added by the harness-args integration after G0; no pre-change behaviour to pin. Covered by the harness-args lifecycle/CLI suites and the target-daemon integration tests."
+  },
+  "agent.home-census": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.list": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/agents"
+   ],
+   "errorCodes": []
+  },
+  "agent.migrate.execute": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.migrate.preflight": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.migrate.rollback": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.provider.allow": {
+   "covered": false,
+   "reason": "Agent provider lifecycle was added after the G0 scenario set; no provider runtime is present in the isolated golden harness."
+  },
+  "agent.provider.auth.list": {
+   "covered": false,
+   "reason": "Native file inventory has no G0 snapshot scenario. tests/daemon/harnesses/providers/test_native_auth_inventory.py covers owner scope, private file metadata, partial/unsafe states and HTTP import/list/remove; those assertions are not golden coverage."
+  },
+  "agent.provider.default": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.provider.login": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.provider.logout": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.provider.revoke": {
+   "covered": false,
+   "reason": "Agent provider lifecycle was added after the G0 scenario set; no provider runtime is present in the isolated golden harness."
+  },
+  "agent.provider.status": {
+   "covered": false,
+   "reason": "Agent provider lifecycle was added after the G0 scenario set; no provider runtime is present in the isolated golden harness."
+  },
+  "agent.readiness": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.rename": {
+   "covered": false,
+   "reason": "Release UUID-addressing display rename (#2546); not part of the phase A cell-model surface the goldens gate. Covered by release's agent.rename suites."
+  },
+  "agent.resolve": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/agents"
+   ],
+   "errorCodes": []
+  },
+  "agent.restore-policy": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.restore-threshold": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.resume.restore": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.revoke": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.runtime-context": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.runtime-launch.acquire": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.runtime-launch.custody": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.runtime-launch.release": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.secret.grant": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.secret.list": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.secret.provider-configure": {
+   "covered": false,
+   "reason": "Configured model services are covered by isolated storage, launch admission and real request-http tests; this golden harness has no configured model service."
+  },
+  "agent.secret.provider-list": {
+   "covered": false,
+   "reason": "No golden scenario yet; private-store metadata and refusal boundaries are covered by tests/daemon/ipc/contracts/setup/test_secret_catalog.py and the real HTTP setup secret scenario."
+  },
+  "agent.secret.provider-test": {
+   "covered": false,
+   "reason": "Temporary model probes have no durable golden; protocol, redaction and operator refusals are covered by tests/daemon/model_probe and real HTTP to controlled loopback upstreams in tests/integration/request_http/setup/test_credential_probe_http.py."
+  },
+  "agent.secret.provider-write": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.secret.revoke": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.start": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.start.preflight": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.stop": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "agent.unblock": {
+   "covered": false,
+   "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
+  },
+  "auth.login.begin": {
+   "covered": false,
+   "reason": "Interactive owner authentication was added after G0; the golden harness has no login browser or credential authority."
+  },
+  "auth.logout": {
+   "covered": false,
+   "reason": "Interactive owner authentication was added after G0; the golden harness has no login browser or credential authority."
+  },
+  "auth.operation.cancel": {
+   "covered": false,
+   "reason": "Interactive owner authentication was added after G0; the golden harness has no login browser or credential authority."
+  },
+  "auth.operation.get": {
+   "covered": false,
+   "reason": "Interactive owner authentication was added after G0; the golden harness has no login browser or credential authority."
+  },
+  "auth.relogin": {
+   "covered": false,
+   "reason": "Interactive owner authentication was added after G0; the golden harness has no login browser or credential authority."
+  },
+  "autoupdate.status": {
+   "covered": false,
+   "reason": "Release tooling; not touched by phase A."
+  },
+  "autoupdate.trigger": {
+   "covered": false,
+   "reason": "Release tooling; not touched by phase A."
+  },
+  "conversations.create": {
+   "covered": false,
+   "reason": "slice GC2 new group conversation method (no pre-change behaviour to record); pinned by tests/daemon/conversations/group_requests"
+  },
+  "conversations.get": {
+   "covered": false,
+   "reason": "slice GC2 new group conversation method (no pre-change behaviour to record); pinned by tests/daemon/conversations/group_requests"
+  },
+  "conversations.history": {
+   "covered": false,
+   "reason": "phase B S6-read new read method (no pre-change behaviour to record); pinned by tests/daemon/conversations/read, including parity with message.history"
+  },
+  "conversations.list": {
+   "covered": false,
+   "reason": "phase B S6-read new read method (no pre-change behaviour to record); pinned by tests/daemon/conversations/read, including parity with message.history"
+  },
+  "conversations.members.add": {
+   "covered": false,
+   "reason": "slice GC2 new group conversation method (no pre-change behaviour to record); pinned by tests/daemon/conversations/group_requests"
+  },
+  "conversations.members.remove": {
+   "covered": false,
+   "reason": "slice GC2 new group conversation method (no pre-change behaviour to record); pinned by tests/daemon/conversations/group_requests"
+  },
+  "conversations.post": {
+   "covered": false,
+   "reason": "slice GH new group post method over HTTP (no pre-change behaviour to record); pinned by tests/daemon/conversations/group_surfaces"
+  },
+  "daemon.catalog": {
+   "covered": false,
+   "reason": "Pinned byte for byte by scripts/verify/dump_daemon_openapi.py --check and tests/daemon/ipc/contracts/test_daemon_catalog.py."
+  },
+  "daemon.status": {
+   "covered": false,
+   "reason": "Daemon status read added by release/v0.5.5.4 (gui-live); not touched by phase A."
+  },
+  "dispatch.matrix.resolve": {
+   "covered": false,
+   "reason": "Dispatch matrix resolution; not touched by S2-S7."
+  },
+  "down": {
+   "covered": false,
+   "reason": "Daemon/harness shutdown control; not touched by S2-S7."
+  },
+  "hosts": {
+   "covered": false,
+   "reason": "Node/host listing from presence; not touched by S2-S7."
+  },
+  "identity.users.add": {
+   "covered": false,
+   "reason": "Identity binding surface; not touched by S2-S7."
+  },
+  "identity.users.list": {
+   "covered": false,
+   "reason": "Identity binding surface; not touched by S2-S7."
+  },
+  "identity.whoami": {
+   "covered": false,
+   "reason": "Identity binding surface; not touched by S2-S7."
+  },
+  "lifecycle.resume.preflight": {
+   "covered": false,
+   "reason": "Harness launch; needs real harness supervisors; not touched by S2-S7."
+  },
+  "lifecycle.start": {
+   "covered": false,
+   "reason": "Harness launch; needs real harness supervisors; not touched by S2-S7."
+  },
+  "log.page": {
+   "covered": false,
+   "reason": "Maintenance log paging added by release/v0.5.5.4 (gui-live); not touched by phase A."
+  },
+  "management.adapter.remove": {
+   "covered": false,
+   "reason": "Confirmed local integration deletion has protocol and real HTTP tests; not yet recorded in the golden scenarios."
+  },
+  "management.adapter.remove.preview": {
+   "covered": false,
+   "reason": "Operator-bound expiring preview has protocol and real HTTP tests; not yet recorded in the golden scenarios."
+  },
+  "message.ack": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/operator",
+    "message/refusals",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": []
+  },
+  "message.history": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/operator",
+    "message/refusals",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "message.pending.batch": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/refusals",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "message.pending.list": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live",
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/operator",
+    "message/refusals",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": [
+    "SENDER_NOT_AUTHENTICATED"
+   ]
+  },
+  "message.pending.wait": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/refusals",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "message.query": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows-live",
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/operator",
+    "message/refusals"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "message.read_body": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows-live",
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/refusals",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": [
+    "MESSAGE_BODY_UNAVAILABLE",
+    "SENDER_NOT_AUTHENTICATED"
+   ]
+  },
+  "message.reply": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows-live",
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/refusals",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT",
+    "MESSAGE_REPLY_UNAVAILABLE"
+   ]
+  },
+  "message.send": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/operator",
+    "message/refusals",
+    "message/user-and-route",
+    "retention/interaction-after-drop"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT",
+    "SENDER_NOT_AUTHENTICATED",
+    "SESSION_SUPERSEDED",
+    "SUMMARY_REQUIRED",
+    "TARGET_UNRESOLVED",
+    "UNSUPPORTED_TARGET"
+   ]
+  },
+  "message.send.key_lookup": {
+   "covered": false,
+   "reason": "Operation-key send lookup added by release/v0.5.5.4 (gui-live); its answer after body release is pinned by tests/daemon/delivery/bodies/test_legacy_reads_after_drop.py."
+  },
+  "message.send.lookup": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/refusals",
+    "message/user-and-route"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "message.settle_hint": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/refusals"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "message.status": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows-live",
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced",
+    "message/operator",
+    "message/refusals"
+   ],
+   "errorCodes": []
+  },
+  "network.expose": {
+   "covered": false,
+   "reason": "Forwarding sidecar surface; network must not import cells/conversations (boundary rule B1) and is not touched."
+  },
+  "network.exposures": {
+   "covered": false,
+   "reason": "Forwarding sidecar surface; network must not import cells/conversations (boundary rule B1) and is not touched."
+  },
+  "network.peerKey": {
+   "covered": false,
+   "reason": "Forwarding sidecar surface; network must not import cells/conversations (boundary rule B1) and is not touched."
+  },
+  "network.unexpose": {
+   "covered": false,
+   "reason": "Forwarding sidecar surface; network must not import cells/conversations (boundary rule B1) and is not touched."
+  },
+  "onboarding.device.ensure": {
+   "covered": false,
+   "reason": "First-run onboarding was added after G0; the golden harness begins with an already constructed daemon home."
+  },
+  "onboarding.firstRun.begin": {
+   "covered": false,
+   "reason": "P3 first-run reply confirmation runs after login on a serving daemon; the golden harness starts with an already constructed home and does not exercise the GUI attempt lifecycle."
+  },
+  "onboarding.firstRun.bind": {
+   "covered": false,
+   "reason": "P3 first-run reply confirmation runs after login on a serving daemon; the golden harness starts with an already constructed home and does not exercise the GUI attempt lifecycle."
+  },
+  "onboarding.firstRun.cancel": {
+   "covered": false,
+   "reason": "P3 first-run reply confirmation runs after login on a serving daemon; the golden harness starts with an already constructed home and does not exercise the GUI attempt lifecycle."
+  },
+  "onboarding.firstRun.confirm": {
+   "covered": false,
+   "reason": "P3 first-run reply confirmation runs after login on a serving daemon; the golden harness starts with an already constructed home and does not exercise the GUI attempt lifecycle."
+  },
+  "onboarding.firstRun.skip": {
+   "covered": false,
+   "reason": "P3 first-run skip is a GUI shortcut on a serving daemon; the golden harness starts with an already constructed home and does not exercise the GUI attempt lifecycle."
+  },
+  "onboarding.initialize": {
+   "covered": false,
+   "reason": "First-run onboarding was added after G0; the golden harness begins with an already constructed daemon home."
+  },
+  "onboarding.status": {
+   "covered": false,
+   "reason": "First-run onboarding was added after G0; the golden harness begins with an already constructed daemon home."
+  },
+  "org.acl.grant": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.acl.ls": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.acl.revoke": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.create": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.delete": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.execute": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.fetch": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.invite": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.invites.accept": {
+   "covered": false,
+   "reason": "Personal-org invitation management was added after G0; the golden harness has no multi-owner invitation exchange."
+  },
+  "org.invites.list": {
+   "covered": false,
+   "reason": "Personal-org invitation management was added after G0; the golden harness has no multi-owner invitation exchange."
+  },
+  "org.join": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.leave": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.list": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.network": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.publish": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.remove": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.repair": {
+   "covered": false,
+   "reason": "Org lifecycle on OrgFS directory spaces; phase A leaves link/<actor>.json and the org directory unchanged (plan section 3). Needs the real OrgFS runtime."
+  },
+  "org.resolve": {
+   "covered": false,
+   "reason": "Organization resolution was added after G0; the golden harness does not seed the current-org selection state."
+  },
+  "org.use": {
+   "covered": false,
+   "reason": "Current organization selection was added after G0; the golden harness does not seed owner organization state."
+  },
+  "orgfs.checkout": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.create": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.export": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.history": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.import": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.invite": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.join": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.ls": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.members": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.mkdir": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.move": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.purge": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.purge_plan": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.purge_status": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.read": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.read_at": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.remove": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.remove_member": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.resolve": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.restore": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.serve": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.space_purge": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.spaces": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.stat": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.stat_at": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.status": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.trash": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.unban": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.watch": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "orgfs.write": {
+   "covered": false,
+   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
+  },
+  "outbox.list": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced"
+   ],
+   "errorCodes": []
+  },
+  "outbox.prune": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced"
+   ],
+   "errorCodes": []
+  },
+  "pac.actor.stop": {
+   "covered": true,
+   "coverage": "refusal-only",
+   "scenarios": [
+    "control/workflows"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT",
+    "PAC_NODE_NOT_FOUND"
+   ],
+   "reason": "Refusal-only: the harness has no PacActorService, so only the missing-actorName schema refusal and PAC_NODE_NOT_FOUND are pinned; a real worker stop is not."
+  },
+  "pac.flag.reset": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows"
+   ],
+   "errorCodes": []
+  },
+  "pac.flag.set": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows"
+   ],
+   "errorCodes": [
+    "PAC_GRAPH_NOT_FOUND"
+   ]
+  },
+  "pac.gc.preview": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "request_methods/pac-gc-preview"
+   ],
+   "errorCodes": [
+    "PAC_GC_UNAVAILABLE"
+   ]
+  },
+  "pac.graph.activate": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows"
+   ],
+   "errorCodes": [
+    "CALLER_NOT_AUTHORIZED",
+    "PAC_GRAPH_NOT_OWNER"
+   ]
+  },
+  "pac.graph.close": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows"
+   ],
+   "errorCodes": []
+  },
+  "ping": {
+   "covered": false,
+   "reason": "In-memory liveness probe carrying pid, epoch and live transport state; not touched by S2-S7."
+  },
+  "progress.list": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "message/agent-roundtrip",
+    "message/agent-roundtrip-enforced"
+   ],
+   "errorCodes": []
+  },
+  "ps": {
+   "covered": false,
+   "reason": "Process/status projection over live harness state; not touched by S2-S7."
+  },
+  "routine.add": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": [
+    "ROUTINE_EXISTS",
+    "ROUTINE_SCHEMA_ERROR",
+    "ROUTINE_UNAVAILABLE"
+   ]
+  },
+  "routine.audit": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": []
+  },
+  "routine.list": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": [
+    "ROUTINE_UNAVAILABLE"
+   ]
+  },
+  "routine.pause": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": []
+  },
+  "routine.plan": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "request_methods/routine-plan"
+   ],
+   "errorCodes": [
+    "ROUTINE_SCHEMA_ERROR"
+   ]
+  },
+  "routine.remove": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": [
+    "ROUTINE_LAST_BINDING"
+   ]
+  },
+  "routine.resume": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": []
+  },
+  "routine.set": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": []
+  },
+  "routine.status": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/routines"
+   ],
+   "errorCodes": [
+    "CALLER_NOT_AUTHORIZED",
+    "ROUTINE_NOT_FOUND"
+   ]
+  },
+  "service.connect": {
+   "covered": false,
+   "reason": "Service connect surface; not touched by S2-S7."
+  },
+  "service.disconnect": {
+   "covered": false,
+   "reason": "Service connect surface; not touched by S2-S7."
+  },
+  "service.guide": {
+   "covered": false,
+   "reason": "Service connect surface; not touched by S2-S7."
+  },
+  "service.list": {
+   "covered": false,
+   "reason": "Service connect surface; not touched by S2-S7."
+  },
+  "session.heartbeat": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": [
+    "SESSION_SUPERSEDED",
+    "STALE_SESSION"
+   ]
+  },
+  "session.refresh": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": []
+  },
+  "session.register": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "session.register_guarded": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": [
+    "AGENT_ALREADY_RUNNING",
+    "AGENT_NOT_FOUND"
+   ]
+  },
+  "session.turn.ended": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": []
+  },
+  "session.turn.refresh": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "session.turn.started": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT"
+   ]
+  },
+  "session.unregister": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/sessions"
+   ],
+   "errorCodes": []
+  },
+  "shutdown": {
+   "covered": false,
+   "reason": "Daemon shutdown control; S3/S6 add shutdown steps internally but not to this response."
+  },
+  "targets": {
+   "covered": false,
+   "reason": "Delivery target listing from presence and adapters; not touched by S2-S7."
+  },
+  "teleport.run": {
+   "covered": false,
+   "reason": "Moves an agent to another node; a real run needs two daemons, a reachable peer and real harness binaries. Pinned by tests/daemon/teleport/source (fake ports and link), not by a recorded golden."
+  },
+  "top.inspect": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "convergence/top-inspect"
+   ],
+   "errorCodes": []
+  },
+  "top.snapshot": {
+   "covered": false,
+   "reason": "Live resource snapshot; S4 keeps link_top_fields unchanged; not recorded here."
+  },
+  "upgrade.steps.run": {
+   "covered": false,
+   "reason": "Release tooling; not touched by phase A."
+  },
+  "upgrade.steps.status": {
+   "covered": false,
+   "reason": "Release tooling; not touched by phase A."
+  },
+  "user.provider.list": {
+   "covered": false,
+   "reason": "User provider credentials were added after G0; the golden harness has no external provider account."
+  },
+  "user.provider.login": {
+   "covered": false,
+   "reason": "User provider credentials were added after G0; the golden harness has no external provider account."
+  },
+  "user.provider.logout": {
+   "covered": false,
+   "reason": "User provider credentials were added after G0; the golden harness has no external provider account."
+  },
+  "user.provider.rotate": {
+   "covered": false,
+   "reason": "User provider credentials were added after G0; the golden harness has no external provider account."
+  },
+  "userKey.renew": {
+   "covered": false,
+   "reason": "User-key lifecycle was added after G0; the golden harness has no signed user-key authority."
+  },
+  "userKey.revoke": {
+   "covered": false,
+   "reason": "User-key lifecycle was added after G0; the golden harness has no signed user-key authority."
+  },
+  "userKey.rotate": {
+   "covered": false,
+   "reason": "User-key lifecycle was added after G0; the golden harness has no signed user-key authority."
+  },
+  "userKey.sign": {
+   "covered": false,
+   "reason": "User-key lifecycle was added after G0; the golden harness has no signed user-key authority."
+  },
+  "userKey.status": {
+   "covered": false,
+   "reason": "User-key lifecycle was added after G0; the golden harness has no signed user-key authority."
+  },
+  "worker.channel.request": {
+   "covered": false,
+   "reason": "Relay envelope that re-enters handle() with origin=worker; needs a managed worker binding (daemon epoch plus supervisor session)."
+  },
+  "workflow.cancel": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "WORKFLOW_NOT_OWNER",
+    "WORKFLOW_UNAVAILABLE"
+   ]
+  },
+  "workflow.complete": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "PAC_PRINCIPAL_UNVERIFIED",
+    "WORKFLOW_REQUEST_STALE",
+    "WORKFLOW_UNAVAILABLE"
+   ]
+  },
+  "workflow.expansion.plan": {
+   "covered": false,
+   "reason": "Not recorded: needs a graph with an expansion placeholder node and the PAC graph authority, which the golden WorkflowService runs without (see tests/support/golden/app.py)."
+  },
+  "workflow.fail": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "WORKFLOW_UNAVAILABLE"
+   ]
+  },
+  "workflow.history.list": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live",
+    "request_methods/workflow-history-list"
+   ],
+   "errorCodes": []
+  },
+  "workflow.history.status": {
+   "covered": true,
+   "coverage": "refusal-only",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "INVALID_ARGUMENT",
+    "WORKFLOW_NOT_FOUND"
+   ],
+   "reason": "Refusal-only: the legacy (pre-PAC) workflow history is empty in a fresh home, so only the missing-runId refusal and WORKFLOW_NOT_FOUND are pinned. Phase A does not write legacy history."
+  },
+  "workflow.list": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "WORKFLOW_UNAVAILABLE"
+   ]
+  },
+  "workflow.node.context": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "convergence/workflow-node-context"
+   ],
+   "errorCodes": []
+  },
+  "workflow.node.inspect": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "WORKFLOW_NODE_NOT_FOUND",
+    "WORKFLOW_UNAVAILABLE"
+   ]
+  },
+  "workflow.plan": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows"
+   ],
+   "errorCodes": [
+    "SENDER_UNRESOLVED",
+    "WORKFLOW_SCHEMA_ERROR"
+   ]
+  },
+  "workflow.remote.current": {
+   "covered": false,
+   "reason": "Not recorded: answers only through RemoteWorkflow over the zenoh transport, which the in-process harness does not build."
+  },
+  "workflow.start": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "WORKFLOW_UNAVAILABLE"
+   ]
+  },
+  "workflow.status": {
+   "covered": true,
+   "coverage": "result",
+   "scenarios": [
+    "control/workflows",
+    "control/workflows-live"
+   ],
+   "errorCodes": [
+    "CALLER_NOT_AUTHORIZED",
+    "WORKFLOW_NOT_FOUND",
+    "WORKFLOW_UNAVAILABLE"
+   ]
+  },
+  "workflow.worker.restart": {
+   "covered": false,
+   "reason": "Not recorded: needs the PacActorService and a supervised worker process (DaemonActorRuntime), absent in this harness."
+  },
+  "workflow.worker.stop": {
+   "covered": false,
+   "reason": "Not recorded: needs the PacActorService and a supervised worker process (DaemonActorRuntime), absent in this harness."
+  }
+ }
+}

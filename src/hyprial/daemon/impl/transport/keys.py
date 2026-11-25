@@ -7,6 +7,8 @@ import re
 
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._:-]+$")
 
+AGENT_TELEPORT_OPS = ("prepare", "chunk", "receive", "commit", "abort")
+
 
 def _orgfs_segment(value: str, *, name: str) -> str:
     if not isinstance(value, str) or _SAFE_SEGMENT.fullmatch(value) is None:
@@ -163,6 +165,21 @@ class KeySpace:
 
     def org_request_any(self) -> str:
         return f"{self.prefix}/org/request/*"
+
+    def agent_teleport(self, node: str, op: str, operation_id: str) -> str:
+        """One teleport request key addressed to a target node."""
+
+        if op not in AGENT_TELEPORT_OPS:
+            raise ValueError(f"unknown teleport op: {op!r}")
+        return (
+            f"{self.prefix}/agent-teleport/{self.encode_identity(node)}/"
+            f"{op}/{self.encode_identity(operation_id)}"
+        )
+
+    def agent_teleport_all(self, node: str) -> str:
+        """Declaration side: one handler serves every op of the local node."""
+
+        return f"{self.prefix}/agent-teleport/{self.encode_identity(node)}/**"
 
     # --- shared-folder (orgfs) ---------------------------------------------
 

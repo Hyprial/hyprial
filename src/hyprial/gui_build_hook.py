@@ -1,9 +1,42 @@
+# Decisions (native actor engine stage, build/distribution ADR section 3):
+# - initialize() first runs the native preflight (host-only target,
+#   crates/ sources, abi3 feature and interpreter, a cargo), so a wheel that
+#   cannot get its engine fails in seconds instead of after a Go cross-build
+#   and `npm ci && npm run build`.  The native stage itself still runs after
+#   tailcat and GUI so its cp312-abi3-<plat> tag is the final word; the tailcat stage's
+#   py3-none-<plat> remains only for a wheel built with the explicit
+#   HYPRIAL_BUILD_SKIP_NATIVE=1 opt-out.  The platform part comes from the
+#   same tailcat target table (one target description for both payloads).
+#   That declared platform tag also reaches cargo (macOS deployment target),
+#   and the stage prints the SHA-256 of the module it force-includes.
+# - The worker wheel (HYPRIAL_BUILD_WORKER_WHEEL=1) omits only the GUI and
+#   the image-supplied sidecar; it keeps the native stage.
+# - Editable builds verify an already staged src/hyprial/_core/actors.abi3.so
+#   against its stamp and ABI version.  With HYPRIAL_BUILD_NATIVE=1 they first
+#   rebuild a missing or stale module using the current build interpreter.
+#   Before building they touch scripts/build/native-engine.epoch: uv records
+#   its cache-key state before the hook runs, so without that tracked file a
+#   staged module deleted after the first build would match the recorded
+#   "no module" state and uv would never re-run this hook.
+# - The sdist carries crates/ through Hatch's default file selection; the
+#   hook only checks the workspace manifest and lockfile are present, and
+#   pyproject.toml excludes the cargo target directories.
+# - Clean-source probes force core.fileMode=true on POSIX so a worktree chmod
+#   cannot hide an edit.  On Windows (os.name == "nt") NTFS cannot represent
+#   Git's executable bit: a checkout sees every tracked 100755 file as 100644
+#   and the probe would refuse an otherwise clean target tree.  Windows runs
+#   the same probes with core.fileMode=false; chmod is not a permission
+#   boundary there, and content, index-flag and untracked-file guards remain
+#   in force.  Verified by a Windows-only fix landing alongside the desktop
+#   packaging line (2026-11-13).
 """Hatch adapter for the tailcat sidecar and the installed GUI assets.
 
-The wheel carries two independent payloads:
+The wheel carries three independent payloads:
 
-* the Go sidecar under ``hyprial/_bin``; and
-* a *built* GUI snapshot under ``hyprial/_gui`` with ``release.json``.
+* the Go sidecar under ``hyprial/_bin``;
+* a *built* GUI snapshot under ``hyprial/_gui`` with ``release.json``; and
+* the native actor engine ``hyprial/_core/actors.abi3.so`` (Windows:
+  ``actors.pyd``), compiled from ``crates/`` by cargo.
 
 The GUI snapshot is generated here from the exact clean Git tree being built.
 Its manifest records the full source commit, the trusted source remote, the
@@ -12,7 +45,8 @@ fatal: an installed ``hyprial gui`` must never silently serve an empty or
 fabricated asset directory.  The GUI build requires a tracked
 ``gui/package-lock.json`` and always runs a fresh ``npm ci --ignore-scripts``
 (never reusing an existing ``node_modules``) before ``npm run build``.  The thin
-worker wheel intentionally carries neither payload.
+worker wheel intentionally carries neither the GUI nor the sidecar, but it
+does carry the native engine.
 
 Decisions (2026-11-03, infra-ops/release-0.5.5.3.2, brief ``publish-gui``):
 
@@ -45,6 +79,27 @@ Decisions (2026-11-03, infra-ops/release-0.5.5.3.3, brief ``wheel-release``):
   length git may produce).  Any other tracked change, and any other VERSION
   content, still fails; the ``gui/`` untracked-file rules are unchanged;
   the snapshot-stamp path never sees a checkout and is untouched.
+
+Decisions (2026-11-16, release wheels and the GUI source remote):
+
+* A checkout build records ``remote.origin.url`` as ``sourceRemote``, which
+  is an intranet host for an internal builder and then reaches users through
+  ``hyprial gui --json``.  ``HYPRIAL_BUILD_SOURCE_REMOTE`` is the one explicit,
+  launcher-independent input that replaces it, read only here and only when
+  building from a checkout.  It accepts exactly ``PUBLIC_SOURCE_REMOTE``
+  (defined in ``shell/impl/gui/install/resources.py``, pinned equal to the
+  snapshot stamp's publish target by a test); an empty, credential-bearing or
+  any other value is a build error, as is setting it on a snapshot tree whose
+  stamp already decides.
+* Unset keeps the checkout remote so an internal developer's wheel still lets
+  the installed ``hyprial gui dev`` fetch the exact ``sourceCommit`` from that
+  remote; the stage prints a notice that such a wheel is for local use and must
+  not be distributed.  ``sourceCommit`` is never altered by this variable.
+* Every workflow step that builds a wheel which may be published sets the
+  variable, and ``scripts/ci/verify_tailcat_wheels.py``,
+  ``publish_wheels.py`` and ``attach_wheel_assets.py`` refuse a wheel whose
+  ``release.json`` records another remote (decisions in
+  ``.forgejo/workflows/README.md``).
 """
 
 from __future__ import annotations
@@ -57,6 +112,7 @@ import re
 import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
@@ -69,15 +125,27 @@ TailcatWheelError = _TAILCAT_TOOLS["TailcatWheelError"]
 _GUI_TOOLS = runpy.run_path(
     str(Path(__file__).parent / "shell/impl/gui/install/resources.py")
 )
+_NATIVE_TOOLS = runpy.run_path(
+    str(Path(__file__).parent / "shell/impl/packaging/native_engine.py")
+)
+NativeEngineError = _NATIVE_TOOLS["NativeEngineError"]
 build_gui_manifest = _GUI_TOOLS["build_manifest"]
 write_gui_manifest = _GUI_TOOLS["write_manifest"]
 validate_gui_source_remote = _GUI_TOOLS["validate_source_remote"]
+validate_build_source_remote = _GUI_TOOLS["validate_build_source_remote"]
+redact_gui_remote = _GUI_TOOLS["redact_remote"]
+PUBLIC_SOURCE_REMOTE = _GUI_TOOLS["PUBLIC_SOURCE_REMOTE"]
+SOURCE_REMOTE_ENV = _GUI_TOOLS["SOURCE_REMOTE_ENV"]
 GuiAssetError = _GUI_TOOLS["GuiAssetError"]
 
 WHEEL_BIN_DIR = "hyprial/_bin"
 WHEEL_GUI_DIR = "hyprial/_gui"
 ALLOW_MISSING_ENV = "HYPRIAL_TAILCAT_ALLOW_MISSING"
 WORKER_WHEEL_ENV = "HYPRIAL_BUILD_WORKER_WHEEL"
+SKIP_NATIVE_ENV = _NATIVE_TOOLS["SKIP_ENV"]
+BUILD_NATIVE_ENV = "HYPRIAL_BUILD_NATIVE"
+_NATIVE_BUILD_SCRIPT = "scripts/build/build_native_engine.sh"
+_NATIVE_EPOCH = "scripts/build/native-engine.epoch"
 _GUI_BUILD_TIMEOUT_SECONDS = 900.0
 _GENERATED_GUI_DIRS = frozenset({"node_modules", "dist"})
 _TRACKED_GUI_INPUTS = ("gui/package.json", "gui/package-lock.json")
@@ -85,15 +153,23 @@ SNAPSHOT_STAMP_SCHEMA = "hyprial.gui-snapshot/v1"
 SNAPSHOT_STAMP_NAME = "gui-source.json"
 _VERSION_WHITESPACE = re.compile(r"\s")
 _HEX_ABBREV = re.compile(r"[0-9a-f]+")
-# Every clean-source probe runs with fixed, trusted semantics: a checkout's
-# local config must not be able to hide edits from them (fsmonitor-valid
-# bits are dropped when fsmonitor is off; fileMode=false would hide chmod).
-_TRUSTED_GIT_CONFIG = (
-    "-c", "core.fsmonitor=false",
-    "-c", "core.fileMode=true",
-    "-c", "core.untrackedCache=false",
-    "-c", "diff.external=",
-)
+def _trusted_git_config(platform_name: str | None = None) -> tuple[str, ...]:
+    """Fixed, trusted Git semantics for every clean-source probe.
+
+    A checkout's local config must not be able to hide edits from them:
+    fsmonitor-valid bits are dropped when fsmonitor is off, and untracked
+    caches are ignored.  POSIX keeps fileMode=true so chmod stays visible;
+    Windows uses fileMode=false because NTFS cannot represent the executable
+    bit (decision block at the top of this module).
+    """
+    name = os.name if platform_name is None else platform_name
+    file_mode = "false" if name == "nt" else "true"
+    return (
+        "-c", "core.fsmonitor=false",
+        "-c", f"core.fileMode={file_mode}",
+        "-c", "core.untrackedCache=false",
+        "-c", "diff.external=",
+    )
 
 
 def _trusted_git_env() -> dict[str, str]:
@@ -146,23 +222,179 @@ def _porcelain_entries(output: str) -> list[tuple[str, str]]:
     return entries
 
 
+def _editable_build_interpreter() -> str:
+    """Return a stable interpreter path for the abi3 editable build."""
+
+    candidate = getattr(sys, "_base_executable", "") or sys.executable
+    return os.path.realpath(candidate)
+
+
 class GuiWheelError(RuntimeError):
     """The wheel cannot carry a trustworthy GUI snapshot."""
 
 
 class CustomBuildHook(BuildHookInterface):
     def initialize(self, version, build_data):
-        if version == "editable":
-            return  # Source development is not a product distribution.
+        self._validate_native_switches()
         root = Path(self.root)
-        self._stages: list[tempfile.TemporaryDirectory] = []
-        if os.environ.get(WORKER_WHEEL_ENV) == "1":
-            # Thin worker wheel (containerized-transfer image): no tailcat
-            # sidecar and no GUI assets.  The worker image supplies both.
+        if version == "editable":
+            self._verify_editable_native(root)
             return
-        self._stage_tailcat(root, build_data)
-        if self.target_name == "wheel":
-            self._stage_gui(root, build_data)
+        self._stages: list[tempfile.TemporaryDirectory] = []
+        self._preflight_native(root)
+        if os.environ.get(WORKER_WHEEL_ENV) != "1":
+            self._stage_tailcat(root, build_data)
+            if self.target_name == "wheel":
+                self._stage_gui(root, build_data)
+        self._stage_native(root, build_data)
+
+    def _validate_native_switches(self) -> None:
+        requested = os.environ.get(BUILD_NATIVE_ENV, "")
+        skip = os.environ.get(SKIP_NATIVE_ENV, "")
+        if requested and requested != "1":
+            raise NativeEngineError(
+                f"{BUILD_NATIVE_ENV} accepts only the value 1 when set; got {requested!r}"
+            )
+        if requested == "1" and skip == "1":
+            raise NativeEngineError(
+                f"{BUILD_NATIVE_ENV}=1 conflicts with {SKIP_NATIVE_ENV}=1"
+            )
+
+    def _preflight_native(self, root: Path) -> None:
+        tools = _NATIVE_TOOLS
+        if self.target_name != "wheel" or tools["skip_requested"]():
+            return
+        tailcat = _TAILCAT_TOOLS
+        target = tailcat["resolve_target"]()
+        if tools["prebuilt_directory"]() is not None:
+            tools["verify_prebuilt"](
+                root, target, platform_tag=tailcat["platform_tag"](target)
+            )
+            return
+        tools["preflight"](root, target, host=tailcat["host_target"]())
+
+    def _verify_editable_native(self, root: Path) -> None:
+        tools = _NATIVE_TOOLS
+        if tools["skip_requested"]():
+            print(
+                f"warning: {SKIP_NATIVE_ENV}=1 -- not verifying the editable "
+                f"{tools['MODULE_NAME']} module",
+                file=sys.stderr,
+            )
+            return
+        python = _editable_build_interpreter()
+        try:
+            status = tools["verify_editable"](root, python=python)
+        except NativeEngineError:
+            if os.environ.get(BUILD_NATIVE_ENV) != "1":
+                raise
+            status = None
+        if os.environ.get(BUILD_NATIVE_ENV) == "1" and status is None:
+            self._build_editable_native(root, python)
+            status = tools["verify_editable"](root, python=python)
+        if status is None:
+            print(
+                f"notice: no {tools['EDITABLE_MODULE']} is staged; the native "
+                "backend stays unavailable until `HYPRIAL_BUILD_NATIVE=1 uv sync` "
+                "or scripts/build/build_native_engine.sh builds it",
+                file=sys.stderr,
+            )
+            return
+        print(status, file=sys.stderr)
+
+    def _advance_native_epoch(self, root: Path) -> None:
+        epoch = root / _NATIVE_EPOCH
+        try:
+            if epoch.is_file():
+                os.utime(epoch)
+            else:
+                epoch.parent.mkdir(parents=True, exist_ok=True)
+                epoch.write_text(
+                    "mtime of this file marks the last editable native build\n",
+                    encoding="utf-8",
+                )
+        except OSError as error:
+            raise NativeEngineError(
+                f"cannot update {epoch}: {error}; without it uv cannot notice a "
+                "deleted staged module (recover with "
+                "`HYPRIAL_BUILD_NATIVE=1 uv sync --reinstall-package hyprial`)"
+            ) from error
+
+    def _build_editable_native(self, root: Path, python: str) -> None:
+        script = root / _NATIVE_BUILD_SCRIPT
+        if not script.is_file():
+            raise NativeEngineError(f"native build helper is missing: {script}")
+        self._advance_native_epoch(root)
+        environment = dict(os.environ)
+        environment["PYO3_PYTHON"] = python
+        try:
+            completed = subprocess.run(
+                [str(script)],
+                cwd=str(root),
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            raise NativeEngineError(f"cannot run native build helper {script}: {error}") from error
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()[-3000:]
+            raise NativeEngineError(
+                f"native editable build failed (exit {completed.returncode}): {detail}"
+            )
+        if completed.stdout:
+            print(completed.stdout, end="", file=sys.stderr)
+        if completed.stderr:
+            print(completed.stderr, end="", file=sys.stderr)
+
+    def _stage_native(self, root: Path, build_data: dict) -> None:
+        tools = _NATIVE_TOOLS
+        if tools["skip_requested"]():
+            print(
+                f"warning: {SKIP_NATIVE_ENV}=1 -- building without the native "
+                f"actor engine {tools['MODULE_NAME']}; this {self.target_name} "
+                "must not be published",
+                file=sys.stderr,
+            )
+            return
+        if self.target_name != "wheel":
+            tools["require_sources"](root)
+            return
+        tailcat = _TAILCAT_TOOLS
+        target = tailcat["resolve_target"]()
+        declared = tailcat["platform_tag"](target)
+        stage = tempfile.TemporaryDirectory(prefix="hyprial-native-")
+        try:
+            if tools["prebuilt_directory"]() is not None:
+                module, glibc = tools["stage_prebuilt"](
+                    root,
+                    target,
+                    output=Path(stage.name),
+                    platform_tag=declared,
+                )
+            else:
+                module, glibc = tools["build_extension"](
+                    root,
+                    target,
+                    host=tailcat["host_target"](),
+                    output=Path(stage.name),
+                    platform_tag=declared,
+                )
+        except BaseException:
+            stage.cleanup()
+            raise
+        self._stages.append(stage)
+        platform_tag, warning = tools["platform_tag_for_floor"](declared, glibc)
+        if warning:
+            print(warning, file=sys.stderr)
+        destination = tools["wheel_module_path"](target)
+        digest = hashlib.sha256(Path(module).read_bytes()).hexdigest()
+        print(f"{tools['MODULE_NAME']}: {destination} sha256 {digest}", file=sys.stderr)
+        build_data.setdefault("force_include", {})[str(module)] = destination
+        build_data["pure_python"] = False
+        build_data["tag"] = tools["wheel_tag"](platform_tag)
 
     def _stage_tailcat(self, root: Path, build_data: dict) -> None:
         tools = _TAILCAT_TOOLS
@@ -215,6 +447,7 @@ class CustomBuildHook(BuildHookInterface):
                 "reproducible"
             )
         checkout = (root / ".git").exists()
+        remote_override = self._source_remote_override(checkout)
         if checkout:
             try:
                 self._git(
@@ -251,9 +484,18 @@ class CustomBuildHook(BuildHookInterface):
         if checkout:
             self._require_clean_source(root, gui)
             commit = self._git(root, ["rev-parse", "HEAD"]).strip()
-            remote = self._git(
+            remote = remote_override or self._git(
                 root, ["config", "--get", "remote.origin.url"]
             ).strip()
+            if remote != PUBLIC_SOURCE_REMOTE:
+                print(
+                    "notice: this wheel records the GUI source remote "
+                    f"{redact_gui_remote(remote)}, which is not the public "
+                    f"repository {PUBLIC_SOURCE_REMOTE}; it is for local use "
+                    "and must not be distributed (a release build sets "
+                    f"{SOURCE_REMOTE_ENV}={PUBLIC_SOURCE_REMOTE})",
+                    file=sys.stderr,
+                )
         gui_version = json.loads(package_file.read_text(encoding="utf-8")).get(
             "version", ""
         )
@@ -284,6 +526,22 @@ class CustomBuildHook(BuildHookInterface):
                 continue
             relative = path.relative_to(staged).as_posix()
             force_include[str(path)] = f"{WHEEL_GUI_DIR}/{relative}"
+
+    def _source_remote_override(self, checkout: bool) -> str | None:
+        if SOURCE_REMOTE_ENV not in os.environ:
+            return None
+        if not checkout:
+            raise GuiWheelError(
+                f"{SOURCE_REMOTE_ENV} is set but this is a snapshot tree "
+                "without .git: its GUI provenance stamp already decides the "
+                "source remote; unset the variable"
+            )
+        value = os.environ[SOURCE_REMOTE_ENV]
+        try:
+            validate_build_source_remote(value)
+        except GuiAssetError as error:
+            raise GuiWheelError(f"{SOURCE_REMOTE_ENV} is not accepted: {error}") from error
+        return value
 
     def _require_snapshot_stamp(self, gui: Path) -> tuple[str, str]:
         """Validate the publish stamp and return its ``(commit, remote)``.
@@ -588,7 +846,7 @@ class CustomBuildHook(BuildHookInterface):
     def _git_result(self, root: Path, args: list[str]):
         try:
             return subprocess.run(
-                ["git", "-C", str(root), *_TRUSTED_GIT_CONFIG, *args],
+                ["git", "-C", str(root), *_trusted_git_config(), *args],
                 env=_trusted_git_env(),
                 check=False,
                 capture_output=True,

@@ -77,7 +77,7 @@ def _eventually(predicate, timeout: float = 2.0) -> None:  # type: ignore[no-unt
     assert predicate()
 
 
-def _application(tmp_path) -> DaemonApplication:  # type: ignore[no-untyped-def]
+def _application(tmp_path, *, actor_host) -> DaemonApplication:  # type: ignore[no-untyped-def]
     app = DaemonApplication(
         state_dir=tmp_path / "state",
         socket_path=tmp_path / "daemon.sock",
@@ -89,7 +89,7 @@ def _application(tmp_path) -> DaemonApplication:  # type: ignore[no-untyped-def]
     app._restore_done.set()
     from hyprial.daemon.impl.ipc.ipc_request_owner import IpcRequestOwner
 
-    app._ipc_request_owner = IpcRequestOwner()
+    app._ipc_request_owner = IpcRequestOwner(actor_host=actor_host)
     app.handle = (  # type: ignore[method-assign]
         lambda method, params, **kwargs: app._handle_orgfs(
             method, params, trusted_origin=kwargs.get("_trusted_message_origin")
@@ -99,9 +99,9 @@ def _application(tmp_path) -> DaemonApplication:  # type: ignore[no-untyped-def]
 
 
 def test_write_ipc_releases_capacity_while_real_mesh_broadcast_is_black_holed(
-    tmp_path,
+    tmp_path, *, actor_host
 ) -> None:
-    app = _application(tmp_path)
+    app = _application(tmp_path, actor_host=actor_host)
     session = _ControlledSession()
     runtime = app._require_orgfs_runtime()
     runtime.bind_transport(session, supplier_online=lambda _node: True)
@@ -222,13 +222,13 @@ def test_restart_binding_drains_the_durable_commit_journal(tmp_path) -> None:
 
 
 def test_a_burst_with_a_black_holed_mesh_keeps_the_network_queue_bounded(
-    tmp_path,
+    tmp_path, *, actor_host
 ) -> None:
     from hyprial.daemon.impl.orgfs.document.model import (
         _FACADE_NETWORK_EFFECT_CAPACITY,
     )
 
-    app = _application(tmp_path)
+    app = _application(tmp_path, actor_host=actor_host)
     session = _ControlledSession()
     runtime = app._require_orgfs_runtime()
     runtime.bind_transport(session, supplier_online=lambda _node: True)
@@ -293,14 +293,14 @@ def test_a_burst_with_a_black_holed_mesh_keeps_the_network_queue_bounded(
 
 @pytest.mark.parametrize("blocked", [False, True], ids=["unblocked", "blocked"])
 def test_forged_protected_alias_rejects_while_broadcast_is_black_holed(
-    tmp_path, blocked: bool
+    tmp_path, blocked: bool, *, actor_host
 ) -> None:
     from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
     from hyprial.identity import directory_device_path, protected_directory_doc_id
     from tests.daemon.orgfs.mesh.device_rows.test_round4 import _device, _receive
     from tests.daemon.orgfs.mesh.device_rows.test_round6 import _tree_envelope
 
-    app = _application(tmp_path)
+    app = _application(tmp_path, actor_host=actor_host)
     session = _ControlledSession()
     runtime = app._require_orgfs_runtime()
     runtime.bind_transport(session, supplier_online=lambda _node: True)

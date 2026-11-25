@@ -17,6 +17,7 @@ from hyprial.identity.impl.agents import (
     verify_fetch_claim,
 )
 from hyprial.kernel import HarnessLaunchSpec, PortAdmission
+from tests.support.identity.incarnations import rotate_incarnation
 
 from .support import (
     NODE,
@@ -24,9 +25,11 @@ from .support import (
     URI,
     _close_test_applications as _close_test_applications,
     application,
+    official_uri,
     register_interactive,
     start_headless,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_a_live_binding_is_reported_and_a_dead_one_is_not(tmp_path: Path) -> None:
@@ -89,7 +92,7 @@ def test_a_dead_interactive_carrier_does_not_block_start(
 
     assert app.handle("targets", {"kind": "agent"})["targets"][0]["status"] == "offline"
     started = start_headless(app, "pi", "foo")
-    assert started["actor"] == URI
+    assert started["actor"] == app.agents.get("foo").uri != URI
     # The new headless worker displaces the dead interactive carrier: it is
     # not merely marked offline, its stale session record is reaped too.
     assert app.handle("ps", {})["interactiveSessions"] == []
@@ -117,6 +120,7 @@ def test_replace_interactive_switches_the_same_actor_to_headless(
             "channelConfirmed": True,
         },
     )
+    from hyprial.daemon.impl.application.actors.agents_admin import destroys
     import hyprial.daemon.impl.mcp.channel.ownership as ownership
 
     class _Status:
@@ -124,38 +128,36 @@ def test_replace_interactive_switches_the_same_actor_to_headless(
             self.value = value
 
     state = {"value": "alive"}
-    kills: list[tuple[int, int]] = []
-    old_status = ownership._owner_process_status
-    old_kill = ownership.os.kill
-    try:
-        ownership._owner_process_status = lambda *_a, **_k: _Status(state["value"])  # type: ignore[assignment]
-        def record_kill(pid, sig):
-            kills.append((pid, sig))
-            state["value"] = "pid-missing"
+    kills: list[tuple[int, str | None]] = []
 
-        ownership.os.kill = record_kill  # type: ignore[assignment]
-        monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
-        app._harnesses.wait_ready = lambda *_args, **_kwargs: True  # type: ignore[attr-defined]
-        app._harnesses.session_refs = lambda: {("pi", "foo"): "resume-sid"}  # type: ignore[attr-defined]
-        started = app.handle(
+    def record_terminate(pid: int, *, birth_marker: str | None = None, **_kw: object) -> bool:
+        kills.append((pid, birth_marker))
+        state["value"] = "pid-missing"
+        return True
+
+    monkeypatch.setattr(
+        ownership, "_owner_process_status", lambda *_a, **_k: _Status(state["value"])
+    )
+    monkeypatch.setattr(destroys, "terminate_fenced_process", record_terminate)
+    monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
+    app._harnesses.wait_ready = lambda *_args, **_kwargs: True  # type: ignore[attr-defined]
+    app._harnesses.session_refs = lambda: {("pi", "foo"): "resume-sid"}  # type: ignore[attr-defined]
+    started = app.handle(
         "lifecycle.start",
-            {
-                "provider": "pi",
-                "name": "foo",
-                "headless": True,
-                "cwd": "/work",
-                "sessionRef": "resume-sid",
-                "replaceInteractive": True,
-            },
-        )
-    finally:
-        ownership._owner_process_status = old_status
-        ownership.os.kill = old_kill
+        {
+            "provider": "pi",
+            "name": "foo",
+            "headless": True,
+            "cwd": "/work",
+            "sessionRef": "resume-sid",
+            "replaceInteractive": True,
+        },
+    )
 
-    assert kills == [(424242, 15)]
-    assert started["actor"] == URI
+    assert kills == [(424242, "carrier-birth")]
+    assert started["actor"] == app.agents.get("foo").uri != URI
     assert started["sessionRef"] == "resume-sid"
-    assert app._agent_liveness.binding(URI).runtime == "headless"  # type: ignore[union-attr]
+    assert app._agent_liveness.binding(started["actor"]).runtime == "headless"  # type: ignore[union-attr]
     assert app.handle("ps", {})["interactiveSessions"] == []
 
 
@@ -238,6 +240,7 @@ def test_switch_failure_leaves_no_headless_binding(
             "channelConfirmed": True,
         },
     )
+    from hyprial.daemon.impl.application.actors.agents_admin import destroys
     import hyprial.daemon.impl.mcp.channel.ownership as ownership
 
     class _Status:
@@ -249,9 +252,11 @@ def test_switch_failure_leaves_no_headless_binding(
         ownership, "_owner_process_status", lambda *_a, **_k: _Status(state["value"])
     )
 
-    def record_kill(_pid, _sig):
+    def record_terminate(_pid: int, **_kw: object) -> bool:
         state["value"] = "pid-missing"
+        return True
 
+    monkeypatch.setattr(destroys, "terminate_fenced_process", record_terminate)
     monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
 
     def fail(*_args, **_kwargs):
@@ -263,13 +268,13 @@ def test_switch_failure_leaves_no_headless_binding(
     removed: list[tuple[str, str]] = []
     real_remove = app.desired_state.remove_harness
 
-    def record_remove(harness, name):
+    def record_remove(harness, name, member=None):
         removed.append((harness, name))
-        return real_remove(harness, name)
+        return real_remove(harness, name, member=member)
 
     monkeypatch.setattr(app.desired_state, "remove_harness", record_remove)
     monkeypatch.setattr(app, "_run_lifecycle_operation", fail)
-    with pytest.raises(DaemonRequestError):
+    with pytest.raises(DaemonRequestError) as raised:
         app.handle(
             "lifecycle.start",
             {
@@ -281,6 +286,7 @@ def test_switch_failure_leaves_no_headless_binding(
                 "replaceInteractive": True,
             },
         )
+    assert raised.value.code == "STRICT_RESUME_FAILED"
     binding = app._agent_liveness.binding(URI)
     assert binding is None
     assert ("pi", "foo") in removed
@@ -312,72 +318,14 @@ def test_switch_refusal_preserves_existing_headless_state(
     assert [(spec.harness, spec.name, spec.session_ref) for spec in specs] == [
         ("pi", "foo", "old-headless")
     ]
-    binding = app._agent_liveness.binding(URI)
-    assert binding is not None and binding.runtime == "interactive"
-
-
-def test_custody_refusal_happens_before_the_carrier_is_signalled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from types import SimpleNamespace
-
-    import hyprial.daemon.impl.mcp.channel.ownership as ownership
-
-    app = application(tmp_path)
-    app.handle("agent.create", {"name": "foo"})
-    app.handle(
-        "session.register",
-        {
-            "actor": URI,
-            "sessionRef": "interactive-sid",
-            "cwd": "/work",
-            "command": ["pi"],
-            "source": "pi-extension",
-            "runtime": "pi_interactive",
-            "processPid": 424242,
-            "processIdentity": "carrier-birth",
-            "channelConfirmed": True,
-        },
-    )
-    monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
-    monkeypatch.setattr(
-        app,
-        "_hydrate_transfer_source",
-        lambda *_args, **_kwargs: SimpleNamespace(blocks_start=True, state="held"),
-    )
-    class _Status:
-        value = "alive"
-
-    kills: list[tuple[int, int]] = []
-    old_status = ownership._owner_process_status
-    old_kill = ownership.os.kill
-    ownership._owner_process_status = lambda *_a, **_k: _Status()  # type: ignore[assignment]
-    ownership.os.kill = lambda pid, sig: kills.append((pid, sig))  # type: ignore[assignment]
-    try:
-        with pytest.raises(DaemonRequestError) as raised:
-            app.handle(
-                "lifecycle.start",
-                {
-                    "provider": "pi",
-                    "name": "foo",
-                    "headless": True,
-                    "cwd": "/work",
-                    "sessionRef": "resume-sid",
-                    "replaceInteractive": True,
-                },
-            )
-    finally:
-        ownership._owner_process_status = old_status
-        ownership.os.kill = old_kill
-    assert raised.value.code == "TRANSFER_STARTS_HELD"
-    assert kills == []
-    binding = app._agent_liveness.binding(URI)
+    binding = app._agent_liveness.binding(official_uri(app))
     assert binding is not None and binding.runtime == "interactive"
 
 
 def test_verify_failure_compensates_the_headless_intent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from hyprial.daemon.impl.application.actors.agents_admin import destroys
     import hyprial.daemon.impl.mcp.channel.ownership as ownership
 
     app = application(tmp_path)
@@ -400,36 +348,113 @@ def test_verify_failure_compensates_the_headless_intent(
             self.value = value
 
     state = {"value": "alive"}
-    old_status = ownership._owner_process_status
-    old_kill = ownership.os.kill
-    ownership._owner_process_status = lambda *_a, **_k: _Status(state["value"])  # type: ignore[assignment]
-    def record_kill(_pid, _sig):
+    monkeypatch.setattr(
+        ownership, "_owner_process_status", lambda *_a, **_k: _Status(state["value"])
+    )
+
+    def record_terminate(_pid: int, **_kw: object) -> bool:
         state["value"] = "pid-missing"
-    ownership.os.kill = record_kill  # type: ignore[assignment]
+        return True
+
+    monkeypatch.setattr(destroys, "terminate_fenced_process", record_terminate)
     monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
     monkeypatch.setattr(app, "_verify_started_resume", lambda *_a, **_k: (_ for _ in ()).throw(DaemonRequestError("STRICT_RESUME_FAILED", "not resumed")))
     removed: list[tuple[str, str]] = []
     real_remove = app.desired_state.remove_harness
-    monkeypatch.setattr(app.desired_state, "remove_harness", lambda h, n: (removed.append((h, n)), real_remove(h, n))[1])
-    try:
-        with pytest.raises(DaemonRequestError):
-            app.handle(
-                "lifecycle.start",
-                {
-                    "provider": "pi",
-                    "name": "foo",
-                    "headless": True,
-                    "cwd": "/work",
-                    "sessionRef": "resume-sid",
-                    "replaceInteractive": True,
-                },
-            )
-    finally:
-        ownership._owner_process_status = old_status
-        ownership.os.kill = old_kill
+    monkeypatch.setattr(
+        app.desired_state,
+        "remove_harness",
+        lambda h, n, member=None: (removed.append((h, n)), real_remove(h, n, member=member))[1],
+    )
+    with pytest.raises(DaemonRequestError) as raised:
+        app.handle(
+            "lifecycle.start",
+            {
+                "provider": "pi",
+                "name": "foo",
+                "headless": True,
+                "cwd": "/work",
+                "sessionRef": "resume-sid",
+                "replaceInteractive": True,
+            },
+        )
+    assert raised.value.code == "STRICT_RESUME_FAILED"
     assert ("pi", "foo") in removed
     binding = app._agent_liveness.binding(URI)
     assert binding is None
+
+
+def test_compensation_failure_does_not_mask_strict_resume_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hyprial.daemon.impl.application.actors.agents_admin import destroys
+    import hyprial.daemon.impl.mcp.channel.ownership as ownership
+
+    app = application(tmp_path)
+    app.handle(
+        "session.register",
+        {
+            "actor": URI,
+            "sessionRef": "interactive-sid",
+            "cwd": "/work",
+            "command": ["pi"],
+            "source": "pi-extension",
+            "runtime": "pi_interactive",
+            "processPid": 424242,
+            "processIdentity": "carrier-birth",
+            "channelConfirmed": True,
+        },
+    )
+
+    class _Status:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+    state = {"value": "alive"}
+    monkeypatch.setattr(ownership, "_owner_process_status", lambda *_a, **_k: _Status(state["value"]))
+
+    def record_terminate(_pid: int, **_kw: object) -> bool:
+        state["value"] = "pid-missing"
+        return True
+
+    monkeypatch.setattr(destroys, "terminate_fenced_process", record_terminate)
+    monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
+    monkeypatch.setattr(
+        app,
+        "_verify_started_resume",
+        lambda *_a, **_k: (_ for _ in ()).throw(DaemonRequestError("STRICT_RESUME_FAILED", "not resumed")),
+    )
+
+    def broken_remove(*_args, **_kwargs):
+        raise RuntimeError("compensation failed")
+
+    monkeypatch.setattr(app.desired_state, "remove_harness", broken_remove)
+    logged: list[tuple[str, str, str, dict[str, object]]] = []
+    real_log = app._log
+
+    def spy_log(level: str, component: str, event: str, **fields: object) -> None:
+        logged.append((level, component, event, dict(fields)))
+        real_log(level, component, event, **fields)
+
+    monkeypatch.setattr(app, "_log", spy_log)
+    with pytest.raises(DaemonRequestError) as raised:
+        app.handle(
+            "lifecycle.start",
+            {
+                "provider": "pi",
+                "name": "foo",
+                "headless": True,
+                "cwd": "/work",
+                "sessionRef": "resume-sid",
+                "replaceInteractive": True,
+            },
+        )
+    assert raised.value.code == "STRICT_RESUME_FAILED"
+    assert any(
+        event == "agent.switch.compensation_failed" and fields.get("agent_name") == app.agents.get("foo").actor
+        for _level, _component, event, fields in logged
+    )
+    assert app._agent_liveness.binding(URI) is None
 
 
 def test_switch_poll_unknown_is_not_treated_as_exit(
@@ -457,35 +482,33 @@ def test_switch_poll_unknown_is_not_treated_as_exit(
             self.value = value
 
     killed = {"value": False}
-    kills: list[tuple[int, int]] = []
+    kills: list[tuple[int, str | None]] = []
     def status(*_a, **_k):
         return _Status("unknown" if killed["value"] else "alive")
-    def record_kill(pid, sig):
-        kills.append((pid, sig))
+    def record_terminate(pid: int, *, birth_marker: str | None = None, **_kw: object) -> bool:
+        kills.append((pid, birth_marker))
         killed["value"] = True
+        return True
     from hyprial.daemon.impl.application.actors.agents_admin import destroys
 
     monkeypatch.setattr(ownership, "_owner_process_status", status)
-    monkeypatch.setattr(destroys.os, "kill", record_kill)
+    monkeypatch.setattr(destroys, "terminate_fenced_process", record_terminate)
     monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
-    try:
-        with pytest.raises(DaemonRequestError) as raised:
-            app.handle(
-                "lifecycle.start",
-                {
-                    "provider": "pi",
-                    "name": "foo",
-                    "headless": True,
-                    "cwd": "/work",
-                    "sessionRef": "resume-sid",
-                    "replaceInteractive": True,
-                },
-            )
-    finally:
-        pass
-    assert kills == [(424242, 15)]
+    with pytest.raises(DaemonRequestError) as raised:
+        app.handle(
+            "lifecycle.start",
+            {
+                "provider": "pi",
+                "name": "foo",
+                "headless": True,
+                "cwd": "/work",
+                "sessionRef": "resume-sid",
+                "replaceInteractive": True,
+            },
+        )
+    assert kills == [(424242, "carrier-birth")]
     assert raised.value.code == "INTERACTIVE_CARRIER_STOP_FAILED"
-    binding = app._agent_liveness.binding(URI)
+    binding = app._agent_liveness.binding(official_uri(app))
     assert binding is not None and binding.runtime == "interactive"
 
 
@@ -508,7 +531,7 @@ def test_switch_without_a_process_fence_is_refused(
             },
         )
     assert raised.value.code == "INTERACTIVE_CARRIER_STOP_FAILED"
-    binding = app._agent_liveness.binding(URI)
+    binding = app._agent_liveness.binding(official_uri(app))
     assert binding is not None and binding.runtime == "interactive"
 
 
@@ -530,65 +553,61 @@ def test_switch_timeout_refuses_and_keeps_the_interactive_state(
             "channelConfirmed": True,
         },
     )
+    from hyprial.daemon.impl.application.actors.agents_admin import destroys
     import hyprial.daemon.impl.mcp.channel.ownership as ownership
 
     class _Status:
         value = "alive"
 
-    old_status = ownership._owner_process_status
-    old_kill = ownership.os.kill
-    ownership._owner_process_status = lambda *_a, **_k: _Status()  # type: ignore[assignment]
-    ownership.os.kill = lambda *_a, **_k: None  # type: ignore[assignment]
+    monkeypatch.setattr(ownership, "_owner_process_status", lambda *_a, **_k: _Status())
+    monkeypatch.setattr(destroys, "terminate_fenced_process", lambda *_a, **_k: True)
     monkeypatch.setattr(app, "_require_resumable_session", lambda *_args: None)
-    try:
-        with pytest.raises(DaemonRequestError) as raised:
-            app.handle(
-                "lifecycle.start",
-                {
-                    "provider": "pi",
-                    "name": "foo",
-                    "headless": True,
-                    "cwd": "/work",
-                    "sessionRef": "resume-sid",
-                    "replaceInteractive": True,
-                },
-            )
-    finally:
-        ownership._owner_process_status = old_status
-        ownership.os.kill = old_kill
+    with pytest.raises(DaemonRequestError) as raised:
+        app.handle(
+            "lifecycle.start",
+            {
+                "provider": "pi",
+                "name": "foo",
+                "headless": True,
+                "cwd": "/work",
+                "sessionRef": "resume-sid",
+                "replaceInteractive": True,
+            },
+        )
     assert raised.value.code == "INTERACTIVE_CARRIER_STOP_FAILED"
-    binding = app._agent_liveness.binding(URI)
+    binding = app._agent_liveness.binding(app.agents.get("foo").uri)
     assert binding is not None and binding.runtime == "interactive"
 
 
-def test_interactive_carrier_is_signalled_and_waited() -> None:
+def test_interactive_carrier_is_signalled_and_waited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from types import SimpleNamespace
 
+    from hyprial.daemon.impl.application.actors.agents_admin import destroys
     import hyprial.daemon.impl.mcp.channel.ownership as ownership
 
-    app = application(Path("/tmp"))
-    calls: list[tuple[int, int]] = []
+    app = application(tmp_path)
+    calls: list[tuple[int, str | None]] = []
     statuses = iter(("alive", "pid-missing"))
 
     class _Status:
         def __init__(self, value: str) -> None:
             self.value = value
 
-    def monkeypatch_status(*_args, **_kwargs):
+    def monkeypatch_status(*_args: object, **_kwargs: object) -> _Status:
         return _Status(next(statuses))
 
-    old_status = ownership._owner_process_status
-    old_kill = ownership.os.kill
-    try:
-        ownership._owner_process_status = monkeypatch_status  # type: ignore[assignment]
-        ownership.os.kill = lambda pid, sig: calls.append((pid, sig))  # type: ignore[assignment]
-        app._terminate_interactive_carrier(
-            SimpleNamespace(actor=URI, process_pid=123, process_identity="x")
-        )
-    finally:
-        ownership._owner_process_status = old_status
-        ownership.os.kill = old_kill
-    assert calls == [(123, 15)]
+    monkeypatch.setattr(ownership, "_owner_process_status", monkeypatch_status)
+    monkeypatch.setattr(
+        destroys,
+        "terminate_fenced_process",
+        lambda pid, *, birth_marker=None, **_kw: (calls.append((pid, birth_marker)), True)[1],
+    )
+    app._terminate_interactive_carrier(
+        SimpleNamespace(actor=URI, process_pid=123, process_identity="x")
+    )
+    assert calls == [(123, "x")]
 
 
 def test_ps_is_observational_for_a_dead_interactive_carrier(tmp_path: Path) -> None:
@@ -722,16 +741,16 @@ def test_local_actors_lists_every_actor_this_machine_speaks_for(
     tmp_path: Path,
 ) -> None:
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
-    registry.create("foo")
-    registry.create("bar")
+    foo = registry.create("foo")
+    bar = registry.create("bar")
     set_default_registry(registry)
     try:
-        assert local_actors() == (
-            f"agent:{OWNER}:{NODE}:bar",
-            URI,
-        )
+        assert local_actors() == (bar.uri, foo.uri)
+        assert URI not in local_actors()
+        assert all(uri.startswith(f"agent:{OWNER}:{NODE}:a.") for uri in local_actors())
     finally:
         set_default_registry(None)
+        registry.close()
 
 
 def test_verify_fetch_claim_rejects_anything_but_a_local_agent(
@@ -784,7 +803,7 @@ def test_bindings_are_reseeded_so_a_restart_still_refuses(tmp_path: Path) -> Non
     second = application(tmp_path)
     second._harnesses.running[("pi", "foo")] = True  # type: ignore[union-attr]
     second._seed_agent_bindings()
-    assert second._agent_liveness.binding(URI).harness == "pi"  # type: ignore[union-attr]
+    assert second._agent_liveness.binding(official_uri(second)).harness == "pi"  # type: ignore[union-attr]
 
     with pytest.raises(DaemonRequestError) as failure:
         register_interactive(second, URI)
@@ -869,7 +888,7 @@ def test_agent_migration_effect_keeps_mailbox_live_and_close_pending(
         return MigrationOutcome.success({"ok": True})
 
     monkeypatch.setattr(actor_module, "run_migration_effect", held_effect)
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     settled: list[object] = []
     waiter = threading.Thread(
         target=lambda: settled.append(
@@ -908,7 +927,7 @@ def test_agent_migration_effect_keeps_mailbox_live_and_close_pending(
     assert writer_threads and all(thread_id != effect_threads[0] for thread_id in writer_threads)
 
 
-@pytest.mark.parametrize("change", ["replace", "pin", "online"])
+@pytest.mark.parametrize("change", ["replace", "adapter-bound", "online"])
 def test_gc_destroy_rechecks_selection_after_reservation(tmp_path, monkeypatch, change):
     """A scan result cannot authorize effects on changed ownership/liveness."""
     from hyprial.daemon.impl.pac.actors.daemon import DaemonActorRuntime
@@ -922,12 +941,14 @@ def test_gc_destroy_rechecks_selection_after_reservation(tmp_path, monkeypatch, 
     release = app._release_agent_destroy_reservation
 
     def reserve_then_change(actor):
-        if change == "pin":
-            app.agents.pin("gc-test-adapter", "foo")
+        if change == "adapter-bound":
+            from tests.support.identity.cell_runtime import bind_adapters
+
+            agent = app.agents.require("foo")
+            bind_adapters(app, agent, ("gc-test-adapter",))
         token = reserve(actor)
         if change == "replace":
-            app.agents.destroy("foo", expected_entity_token=selected.entity_token)
-            app.handle("agent.create", {"name": "foo"})
+            rotate_incarnation(app, "foo")
         return token
 
     def observe(_self, actor):
@@ -956,26 +977,13 @@ def test_gc_destroy_rechecks_selection_after_reservation(tmp_path, monkeypatch, 
 
 
 def test_gc_destroy_exact_eligible_incarnation_succeeds(tmp_path):
+    from tests.support.identity.cell_runtime import registry_cell_runtime
+
     app = application(tmp_path)
+    registry_cell_runtime(app)
     app.handle("agent.create", {"name": "foo"})
     selected = app.agents.require("foo")
     result = app._destroy_agent(selected.uri, expected_entity_token=selected.entity_token,
                                 require_unpinned=True, require_offline=True)
     assert result["destroyed"] is True
     assert app.agents.get("foo") is None
-
-
-def test_destroy_reservation_rejects_late_adapter_pin_until_release(tmp_path):
-    app = application(tmp_path)
-    app.handle("agent.create", {"name": "foo"})
-    selected = app.agents.require("foo")
-    reservation = app._reserve_agent_destroy(selected.actor)
-    try:
-        with pytest.raises(Exception, match="destroy is already reserved"):
-            app.agents.pin("gc-late-pin", "foo")
-        assert app.agents.require("foo").pinned_adapters == ()
-    finally:
-        app._release_agent_destroy_reservation(reservation.reservation_token)
-    app.agents.pin("gc-late-pin", "foo")
-    assert "gc-late-pin" in app.agents.require("foo").pinned_adapters
-

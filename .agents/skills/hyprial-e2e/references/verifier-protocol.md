@@ -24,7 +24,7 @@ reported as release approval.
 ## Attended real-environment watch procedure
 
 Treat the required `[REAL ENV]` scenario rows (E2E-001 attended two-host form,
-E2E-004, E2E-006, E2E-012, E2E-013, and E2E-014) as attended release-gate
+E2E-004, E2E-006, E2E-012, and E2E-013) as attended release-gate
 rows, not background smoke tests. E2E-011's automated seam stops at the
 verification URL; if the release owner requires real App creation, its human
 approval boundary must be attended and reported explicitly. E2E-008's
@@ -47,7 +47,7 @@ The evidence comment must record the reviewed SHA, each scenario ID with its
 command and final `RESULT` line, per-assertion classifications where the
 runner emits them, the visible Feishu side effects and their markers, and the
 cleanup result including the Docker leak self-check for E2E-001. Any leaked
-daemon, adapter, container, tmux session, or route is `REQUEST_CHANGES`, not
+daemon, adapter, container, or route is `REQUEST_CHANGES`, not
 a partial pass.
 
 ## API authentication

@@ -13,6 +13,7 @@ this host exceeds it.
 
 from __future__ import annotations
 
+from tests.support.identity.cell_runtime import registry_cell_runtime
 from tests.support.runtime._tmp import hyprial_test_tmp_root
 
 import json
@@ -36,6 +37,7 @@ from hyprial.biz.impl.routine.execution.service import RoutineService
 
 
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _app_injections
+from tests.support.actor_hosts import new_actor_host
 
 #: How long `routine.remove` may take while the source query is blocked.  It
 #: bounds a hang, ⛔ not the machine: the assertion that follows it is about
@@ -71,6 +73,9 @@ class _FakeAdapters:
     def stop(self) -> None:
         pass
 
+    def read_adapters(self) -> tuple[()]:
+        return ()
+
 
 class _InboxEvents:
     def publish(self, _event: object) -> None:
@@ -104,7 +109,7 @@ def _wire(app: DaemonApplication, root: Path) -> None:
     coordinator = DeliveryCustodyCoordinator(
         database,
         MemoryDeliveryTransport(),
-        _InboxEvents(),
+        _InboxEvents(), actor_host=new_actor_host(),
     )
     app._inbox_coordinator = coordinator
     app._inbox = DeliveryCustodyFacade(coordinator, database)
@@ -367,6 +372,8 @@ def test_slow_workflow_tick_does_not_block_daemon_ipc() -> None:
     _wire(app, root)
     app._runtime = _WorkingRuntime()  # type: ignore[assignment]
     app._adapters = _FakeAdapters()  # type: ignore[assignment]
+    app._lark_client = app._adapters  # type: ignore[assignment]
+    registry_cell_runtime(app)
     workflow_service = _BlockingWorkflowService()
     app._workflow_service = workflow_service  # type: ignore[assignment]
     app._start_server()
@@ -381,8 +388,8 @@ def test_slow_workflow_tick_does_not_block_daemon_ipc() -> None:
     try:
         assert workflow_service.started.wait(1.0), "workflow tick never started"
         started_at = time.monotonic()
-        response = _ipc_call(app.socket_path, "adapter.pins", timeout=0.5)
-        assert response["result"] == {"ok": True, "supportsExpectedActor": True, "pins": {}}
+        response = _ipc_call(app.socket_path, "adapter.list", timeout=0.5)
+        assert response["result"] == {"ok": True, "adapters": []}
         assert time.monotonic() - started_at < 0.5
     finally:
         workflow_service.release.set()
@@ -404,6 +411,8 @@ def test_workflow_status_waiting_for_tick_does_not_convoy_adapter_ipc() -> None:
     _wire(app, root)
     app._runtime = _WorkingRuntime()  # type: ignore[assignment]
     app._adapters = _FakeAdapters()  # type: ignore[assignment]
+    app._lark_client = app._adapters  # type: ignore[assignment]
+    registry_cell_runtime(app)
     workflow_service = _ConvoyWorkflowService()
     app._workflow_service = workflow_service  # type: ignore[assignment]
     app._start_server()
@@ -431,8 +440,8 @@ def test_workflow_status_waiting_for_tick_does_not_convoy_adapter_ipc() -> None:
         assert workflow_service.tick_started.wait(1.0), "workflow tick never started"
         status_thread.start()
         assert workflow_service.status_started.wait(1.0), "workflow.status never entered"
-        response = _ipc_call(app.socket_path, "adapter.pins", timeout=0.5)
-        assert response["result"] == {"ok": True, "supportsExpectedActor": True, "pins": {}}
+        response = _ipc_call(app.socket_path, "adapter.list", timeout=0.5)
+        assert response["result"] == {"ok": True, "adapters": []}
     finally:
         workflow_service.release_tick.set()
         status_thread.join(timeout=1.0)

@@ -1,0 +1,478 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hyprial HTTP request entry (synthetic H-02 fixture)",
+    "version": "0.0.0-h02-fixture",
+    "description": "Synthetic transport projection used only to verify the H-02 generator and client. It mirrors the served HTTP envelope shape but is not the accepted H-01/H-03 contract."
+  },
+  "paths": {
+    "/daemon/request/agent.list": {
+      "post": {
+        "summary": "Invoke agent.list",
+        "operationId": "agent_list",
+        "x-hyprial-method": "agent.list",
+        "x-hyprial-state": "callable",
+        "x-hyprial-retry": "safe",
+        "x-hyprial-mutates": false,
+        "x-hyprial-identity": { "mode": "none" },
+        "x-hyprial-errors": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful safe unary read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "SuccessEnvelope",
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "integer" },
+                    "ok": { "type": "boolean" },
+                    "method": { "type": "string" },
+                    "requestId": { "type": "string" },
+                    "dispatch": {
+                      "type": "string",
+                      "enum": ["not-dispatched", "dispatched", "unknown"]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "agents": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "actor": { "type": "string" },
+                              "uri": { "type": "string" },
+                              "name": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                              "provider": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+                            },
+                            "required": ["actor", "uri"]
+                          }
+                        }
+                      },
+                      "required": ["agents"]
+                    }
+                  },
+                  "required": ["schemaVersion", "ok", "method", "requestId", "dispatch", "result"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/daemon/request/agent.secret.list": {
+      "post": {
+        "summary": "Invoke agent.secret.list",
+        "operationId": "agent_secret_list",
+        "x-hyprial-method": "agent.secret.list",
+        "x-hyprial-state": "callable",
+        "x-hyprial-retry": "safe",
+        "x-hyprial-mutates": false,
+        "x-hyprial-identity": { "mode": "local-owner-user-selector", "selector": "actor" },
+        "x-hyprial-errors": [
+          { "code": "TARGET_NOT_AUTHORIZED", "message": "the principal may not inspect this agent" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": { "type": "string", "description": "Business target agent; never the caller identity." }
+                },
+                "required": ["actor"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful safe unary read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "SuccessEnvelope",
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "integer" },
+                    "ok": { "type": "boolean" },
+                    "method": { "type": "string" },
+                    "requestId": { "type": "string" },
+                    "dispatch": {
+                      "type": "string",
+                      "enum": ["not-dispatched", "dispatched", "unknown"]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "grants": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "grantId": { "type": "string" },
+                              "source": { "type": "string" },
+                              "fieldName": { "type": "string" },
+                              "environmentNames": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                              }
+                            },
+                            "required": ["grantId", "source", "fieldName", "environmentNames"]
+                          }
+                        }
+                      },
+                      "required": ["grants"]
+                    }
+                  },
+                  "required": ["schemaVersion", "ok", "method", "requestId", "dispatch", "result"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/daemon/request/agent.provider.default": {
+      "post": {
+        "summary": "Invoke agent.provider.default",
+        "operationId": "agent_provider_default",
+        "x-hyprial-method": "agent.provider.default",
+        "x-hyprial-state": "callable",
+        "x-hyprial-retry": "never",
+        "x-hyprial-mutates": true,
+        "x-hyprial-identity": { "mode": "local-owner-user-selector", "selector": "actor" },
+        "x-hyprial-errors": [
+          { "code": "INVALID_ARGUMENT", "message": "clear only accepts a boolean" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": { "type": "string" },
+                  "clear": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mixed read/write method",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "SuccessEnvelope",
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "integer" },
+                    "ok": { "type": "boolean" },
+                    "method": { "type": "string" },
+                    "requestId": { "type": "string" },
+                    "dispatch": {
+                      "type": "string",
+                      "enum": ["not-dispatched", "dispatched", "unknown"]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "actor": { "type": "string" },
+                        "provider": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+                      },
+                      "required": ["actor", "provider"]
+                    }
+                  },
+                  "required": ["schemaVersion", "ok", "method", "requestId", "dispatch", "result"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/daemon/request/agent.provider.login": {
+      "post": {
+        "summary": "Invoke agent.provider.login",
+        "operationId": "agent_provider_login",
+        "x-hyprial-method": "agent.provider.login",
+        "x-hyprial-state": "callable",
+        "x-hyprial-retry": "never",
+        "x-hyprial-mutates": true,
+        "x-hyprial-identity": { "mode": "local-owner-user-selector", "selector": "actor" },
+        "x-hyprial-errors": [
+          { "code": "PROVIDER_UNSUPPORTED", "message": "the provider is not known" },
+          { "code": "PROVIDER_CREDENTIAL_EXISTS", "message": "credentials already exist for this provider" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": { "type": "string" },
+                  "provider": { "type": "string" },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "filename": { "type": "string" },
+                        "contentBase64": { "type": "string" }
+                      },
+                      "required": ["filename", "contentBase64"],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["actor", "provider", "files"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "SuccessEnvelope",
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "integer" },
+                    "ok": { "type": "boolean" },
+                    "method": { "type": "string" },
+                    "requestId": { "type": "string" },
+                    "dispatch": {
+                      "type": "string",
+                      "enum": ["not-dispatched", "dispatched", "unknown"]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "actor": { "type": "string" },
+                        "provider": { "type": "string" },
+                        "installed": { "type": "boolean" }
+                      },
+                      "required": ["actor", "provider", "installed"]
+                    }
+                  },
+                  "required": ["schemaVersion", "ok", "method", "requestId", "dispatch", "result"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/daemon/request/agent.provider.logout": {
+      "post": {
+        "summary": "Invoke agent.provider.logout",
+        "operationId": "agent_provider_logout",
+        "x-hyprial-method": "agent.provider.logout",
+        "x-hyprial-state": "callable",
+        "x-hyprial-retry": "never",
+        "x-hyprial-mutates": true,
+        "x-hyprial-identity": { "mode": "local-owner-user-selector", "selector": "actor" },
+        "x-hyprial-errors": [
+          { "code": "TARGET_NOT_AUTHORIZED", "message": "the principal may not modify this agent" },
+          { "code": "PROVIDER_UNSUPPORTED", "message": "the provider is not known" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": { "type": "string" },
+                  "provider": { "type": "string" }
+                },
+                "required": ["actor", "provider"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "SuccessEnvelope",
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "integer" },
+                    "ok": { "type": "boolean" },
+                    "method": { "type": "string" },
+                    "requestId": { "type": "string" },
+                    "dispatch": {
+                      "type": "string",
+                      "enum": ["not-dispatched", "dispatched", "unknown"]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "actor": { "type": "string" },
+                        "provider": { "type": "string" },
+                        "revoked": { "type": "boolean" }
+                      },
+                      "required": ["actor", "provider", "revoked"]
+                    }
+                  },
+                  "required": ["schemaVersion", "ok", "method", "requestId", "dispatch", "result"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/daemon/request/demo.ping": {
+      "post": {
+        "summary": "Invoke demo.ping",
+        "operationId": "demo_ping",
+        "x-hyprial-method": "demo.ping",
+        "x-hyprial-state": "callable",
+        "x-hyprial-retry": "safe",
+        "x-hyprial-mutates": false,
+        "x-hyprial-identity": { "mode": "none" },
+        "x-hyprial-errors": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "properties": {}, "additionalProperties": false }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful safe unary read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "SuccessEnvelope",
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "integer" },
+                    "ok": { "type": "boolean" },
+                    "method": { "type": "string" },
+                    "requestId": { "type": "string" },
+                    "dispatch": {
+                      "type": "string",
+                      "enum": ["not-dispatched", "dispatched", "unknown"]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "pong": { "const": true }
+                      },
+                      "required": ["pong"]
+                    }
+                  },
+                  "required": ["schemaVersion", "ok", "method", "requestId", "dispatch", "result"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Local schema refusal",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing or wrong bearer",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+        }
+      },
+      "Forbidden": {
+        "description": "Host, Origin or selector refusal",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+        }
+      },
+      "Internal": {
+        "description": "Daemon/internal failure",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+        }
+      }
+    },
+    "schemas": {
+      "ErrorEnvelope": {
+        "title": "ErrorEnvelope",
+        "type": "object",
+        "properties": {
+          "schemaVersion": { "type": "integer" },
+          "ok": { "type": "boolean" },
+          "requestId": { "type": "string" },
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "dispatch": {
+            "type": "string",
+            "enum": ["not-dispatched", "dispatched", "unknown"]
+          },
+          "method": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+          "data": {
+            "anyOf": [
+              { "type": "object", "additionalProperties": true },
+              { "type": "null" }
+            ]
+          }
+        },
+        "required": ["schemaVersion", "ok", "requestId", "code", "message", "dispatch"]
+      }
+    }
+  }
+}

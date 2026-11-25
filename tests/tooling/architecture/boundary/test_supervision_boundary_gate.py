@@ -62,7 +62,7 @@ NAMED_BY_THE_STANDARD = (
     ("src/hyprial/daemon/impl/processes/supervisor.py", "_start_timeout_seconds"),
     ("src/hyprial/daemon/impl/harnesses/actor/actor.py", "start_timeout_seconds"),
     ("src/hyprial/daemon/impl/harnesses/actor/behaviors/lifecycle.py", "_starts_in_flight"),
-    ("src/hyprial/daemon/impl/harnesses/actor/behaviors/delivery.py", "_on_start_timeout"),
+    ("src/hyprial/daemon/impl/harnesses/actor/behaviors/delivery/__init__.py", "_on_start_timeout"),
     ("src/hyprial/daemon/impl/harnesses/runtime/ports.py", "HarnessStartTimerElapsedCommand"),
     ("src/hyprial/daemon/impl/adapters/lark/worker/process.py", "startup_timeout"),
     ("src/hyprial/shell/impl/cli/commands/common/support.py", "DAEMON_START_HARD_CAP_SECONDS"),

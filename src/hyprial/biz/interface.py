@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from hyprial.biz.impl.workflow.identity import check_actor_claim as check_actor_claim
     from hyprial.biz.impl.routine.contracts.schema import load_routine as load_routine
     from hyprial.biz.impl.routine.contracts.schema import load_routine_text as load_routine_text
+    from hyprial.biz.impl.routine.storage.agent_uris import migrate_routine_agent_uris as migrate_routine_agent_uris
     from hyprial.biz.impl.routine.execution.coordinator import remove_command as remove_command
     from hyprial.biz.impl.routine.templates import render_template as render_template
     from hyprial.biz.impl.turn_pulse import signal_turn_ended as signal_turn_ended
@@ -63,6 +64,7 @@ _FACADE_EXPORTS = {
     'check_actor_claim': ('hyprial.biz.impl.workflow.identity', 'check_actor_claim'),
     'load_routine': ('hyprial.biz.impl.routine.contracts.schema', 'load_routine'),
     'load_routine_text': ('hyprial.biz.impl.routine.contracts.schema', 'load_routine_text'),
+    'migrate_routine_agent_uris': ('hyprial.biz.impl.routine.storage.agent_uris', 'migrate_routine_agent_uris'),
     'remove_command': ('hyprial.biz.impl.routine.execution.coordinator', 'remove_command'),
     'render_template': ('hyprial.biz.impl.routine.templates', 'render_template'),
     'signal_turn_ended': ('hyprial.biz.impl.turn_pulse', 'signal_turn_ended'),
@@ -116,6 +118,7 @@ __all__ = [
     'ServiceDiscoveryError',
     'load_routine',
     'load_routine_text',
+    'migrate_routine_agent_uris',
     'remove_command',
     'render_template',
     'signal_turn_ended',

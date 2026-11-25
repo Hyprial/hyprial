@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import Any
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.identity import org_space_name
+
+
+INVITE_SPACE_MODES = MappingProxyType({"directory": "rw", "acl": "ro"})
 
 
 def resolve_org_directory_space(
@@ -49,4 +53,35 @@ def resolve_org_acl_space(fs: OrgFs, org: str) -> tuple[Any | None, str | None]:
     return acl_space, None
 
 
-__all__ = ["resolve_org_acl_space", "resolve_org_directory_space"]
+def store_org_invite(service: Any, org: str, token_id: str, record: dict[str, Any]) -> None:
+    put = getattr(service._store, "put_invite", None)
+    if put is None:
+        service._log("warn", "org", "org.invite.registration-unsupported", org=org)
+        return
+    put(org, token_id, record)
+
+
+def find_org_space(fs: OrgFs, name: str) -> Any | None:
+    matches = [space for space in fs.spaces() if space.name == name]
+    if len(matches) > 1:
+        raise OrgFsError("ambiguous-space", {"space": name, "count": len(matches)})
+    return matches[0] if matches else None
+
+
+def require_org_space(service: Any, org: str) -> Any:
+    name = org_space_name(org)
+    space = find_org_space(service._fs, name)
+    if space is None:
+        raise OrgFsError("unknown-space", {"org": org, "space": name})
+    return space
+
+
+def require_org_acl_space(service: Any, org: str) -> Any:
+    space, reason = resolve_org_acl_space(service._fs, org)
+    if space is None:
+        service._log("warn", "org", "policy.grants-unavailable", org=org, reason=reason or "missing-acl-space")
+        raise OrgFsError("unknown-space", {"org": org, "reason": reason or "missing-acl-space"})
+    return space
+
+
+__all__ = ["INVITE_SPACE_MODES", "find_org_space", "require_org_acl_space", "require_org_space", "resolve_org_acl_space", "resolve_org_directory_space", "store_org_invite"]

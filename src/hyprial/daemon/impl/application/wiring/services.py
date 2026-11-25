@@ -1,10 +1,16 @@
+# Decision record (service startup ordering):
+# - Legacy workflow cutover and UUID-addressing P4 stores migration run
+#   before body retention binding, conversation recorder composition, and
+#   PacGraphAuthority construction.
+# - T1c removed the internal link service composition; bind_body_retention_params
+#   and compose_conversation_recorder continue to run after stored_agent_uris.
 """Runtime graph composition, service phases: lifecycle/PAC/workflow/routine adoption and startup finalization."""
 
 from __future__ import annotations
 
 from __future__ import annotations
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from hyprial.daemon.impl.pac.workflows.runtime import GraphWorkflowService
 from hyprial.daemon.impl.dispatch.alarm import DispatchAlarm
 from hyprial.daemon.impl.application.ports import RoutineRuntimeDeps
@@ -30,9 +36,15 @@ class _WiringServicesMixin:
         from hyprial.daemon.impl.pac.storage.store import default_database_path
         from hyprial.daemon.impl.pac.actors.gc  import PacGc
         from hyprial.kernel import HookEventPublisher
-        from hyprial.daemon.impl.composition.links import compose_link_service
+        from hyprial.daemon.impl.composition.delivery_params import (
+            bind_body_retention_params,
+        )
+        from hyprial.daemon.impl.application.actors import stored_agent_uris
+        from hyprial.identity import id_form_minting
 
-        compose_link_service(self, graph)  # WP2: before PAC (W10); never raises
+        from hyprial.daemon.impl.user_key.ipc import compose as compose_user_key
+
+        compose_user_key(self)  # U1: default-off, no binding/publication network I/O.
 
         # H5: one publisher over the same HookBus DaemonHookService owns, so
         # PAC graph/worker facts and turn facts share one bus and one daemon
@@ -102,6 +114,12 @@ class _WiringServicesMixin:
                     at=self._legacy_workflow_cutover["at"],
                 )
 
+        stored_agent_uris.migrate_stored_agent_uris(self, pac=workflow_cutover_ok)
+        bind_body_retention_params(self)
+        from hyprial.daemon.impl.composition.conversations import compose_conversation_recorder
+
+        compose_conversation_recorder(self)
+
         workflow_disabled = (
             "workflow.dispatch",
             "workflow.mutation",
@@ -158,7 +176,7 @@ class _WiringServicesMixin:
                 # an undrained destructive collector can still be using.
                 for attribute in (
                     "_pac_actor_service", "_pac_graph_authority",
-                    "_remote_workflow", "_workflow_service",
+                    "_remote_workflow", "_workflow_service", "_held_reminder",
                 ):
                     handle = getattr(self, attribute)
                     setattr(self, attribute, None)
@@ -196,6 +214,22 @@ class _WiringServicesMixin:
                     self._degraded_workflow_handles.append(remote)
             workflow_service = self._workflow_service
             self._workflow_service = None
+            # #1803: the reminder only reads the PAC database and owns a timer;
+            # it must not keep running against a degraded workflow surface.
+            held_reminder = self._held_reminder
+            self._held_reminder = None
+            if held_reminder is not None:
+                try:
+                    held_reminder.close()
+                except Exception as error:  # noqa: BLE001 - preserve startup
+                    self._log(
+                        "error",
+                        "pac",
+                        "workflow.degrade_cleanup_failed",
+                        phase="held-reminder",
+                        exceptionClass=type(error).__name__,
+                        detail=str(error),
+                    )
             if workflow_service is not None:
                 try:
                     if workflow_service.close() is False:
@@ -221,6 +255,8 @@ class _WiringServicesMixin:
                     DaemonPacNotificationSender(self),
                     logger=self._log,
                     hook_publisher=pac_hook_publisher,
+                    agent_reader=self.agents.current,
+                    actor_host=self._actor_hosts.host_for("pac"),
                 )
             except Exception as error:
                 self._log(
@@ -280,6 +316,7 @@ class _WiringServicesMixin:
                     delivery_receipt=self._pac_graph_authority,
                     graph_authority=self._pac_graph_authority,
                     hook_publisher=pac_hook_publisher,
+                    agent_reader=self.agents.current,
                 )
             except Exception as error:  # noqa: BLE001 - autoupdate must remain reachable
                 self._log(
@@ -328,6 +365,9 @@ class _WiringServicesMixin:
                 else:
                     if adopted:
                         self._log("info", "daemon", "workflow.recovered", runs=adopted)
+                    # #1803: PAC's held reminder; it owns one kernel timer
+                    # key and runs once more as soon as restore completes.
+                    self._compose_held_reminder()
 
         # Self-drive routines (design-selfdrive-routine): deterministic duty
         # cycles producing one PAC graph per task (U3).  The old dispatcher is
@@ -349,6 +389,7 @@ class _WiringServicesMixin:
                         deliver_task=self._deliver_routine_task,
                         clock_ms=lambda: time.time_ns() // 1_000_000,
                         resolve_principal=self._resolve_routine_principal,
+                        resolve_routine_target=lambda name, target: stored_agent_uris.resolve_routine_target(self, name, target),
                         # Stored bare-name addresses migrate ONLY via this
                         # machine's agents registry (approved plan Q1).
                         migrate_address=self._migrate_stored_routine_address,
@@ -364,6 +405,11 @@ class _WiringServicesMixin:
                             else None
                         ),
                         compensate_agent=self._compensate_default_agent_incarnation,
+                        stored_agent_uri=stored_agent_uris.stored_agent_uri_mapping(self)
+                        if id_form_minting()
+                        else None,
+                        binding_key=self._routine_binding_key,
+                        actor_host=self._actor_hosts.host_for("routine"),
                     )
                 )
                 assert routine_runtime is not None, (
@@ -419,8 +465,56 @@ class _WiringServicesMixin:
                 inFlight=list(dropped["inFlight"]),
             )
 
+    _teleport_target: Any = None
+
+    def _start_teleport_target(self, transport: Any) -> None:
+        """Purge teleport staging and register the target query handler.
+
+        A failure is logged and startup continues: teleport is an optional
+        capability and must never keep the daemon from coming up.
+        """
+
+        import shutil
+
+        from hyprial.daemon.impl.teleport.wiring.routines import AppTargetRoutines
+        from hyprial.daemon.impl.teleport.wiring.target import (
+            RegistryTargetHost,
+            start_teleport_target,
+        )
+
+        try:
+            host = RegistryTargetHost(
+                node_id=self.node_id,
+                owner=self.owner,
+                registry=self.agents,
+                activation_registry=self._agent_registry,
+                hyprial_home=self.hyprial_home,
+                state_dir=self.state_dir,
+                runtime_available=lambda harness: shutil.which(harness) is not None,
+                launch=lambda params: self.handle("lifecycle.start", params),
+                down=lambda params: self.handle("down", params),
+                notice_reporter=self._report_agent_runtime_notices,
+            )
+            self._teleport_target = start_teleport_target(
+                transport,
+                host=host,
+                hyprial_home=self.hyprial_home,
+                state_dir=self.state_dir,
+                routines=AppTargetRoutines(self),
+            )
+        except Exception as error:  # noqa: BLE001 - teleport is optional
+            self._teleport_target = None
+            self._log(
+                "error",
+                "teleport",
+                "teleport.target.unavailable",
+                exceptionClass=type(error).__name__,
+                detail=str(error),
+            )
+
     def _startup_finalize_runtime(self, graph: _StartupGraph) -> None:
         """Restore persona routes, seed bindings, report recovery completion."""
+        self._start_teleport_target(graph.transport)
         self._restore_persona_routes()
         try:
             try:
@@ -456,10 +550,6 @@ class _WiringServicesMixin:
                         "agents.sqlite3; originals kept as *.json.imported"
                     ),
                 )
-            # Adapter pins moved into the agents database; drain any legacy
-            # desired-state entries before adapters (their workers query the
-            # daemon's pin index) come up.
-            self._migrate_legacy_channel_pins()
         except BaseException:
             self._close()
             raise

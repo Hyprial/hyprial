@@ -1,0 +1,4 @@
+# wrangler 的本地状态与依赖：⛔ 不进库。
+# 这两类都曾被整目录 add 卷进来（.wrangler 里有 account id/name 与二进制缓存）。
+.wrangler/
+node_modules/

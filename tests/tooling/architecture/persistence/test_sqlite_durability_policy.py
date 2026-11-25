@@ -18,7 +18,8 @@ or OFF.  Stores that do not use WAL keep SQLite's default and are left alone.
 
 Exception (Allen 2026-09-23, "unless there is an explicit reason"): a line may
 ask for FULL only if it carries, on the same line, a marker
-``# durability: FULL -- <reason>`` with a non-empty reason, so the choice is
+``# durability: FULL -- <reason>`` or SQL ``-- durability: FULL -- <reason>``
+with a non-empty reason, so the choice is
 written down where a reviewer reads it.  OFF has no exception.
 """
 
@@ -34,7 +35,7 @@ _WAL = re.compile(r"PRAGMA\s+journal_mode\s*=\s*WAL", re.IGNORECASE)
 _SYNC = re.compile(r"PRAGMA\s+synchronous\s*=\s*([A-Za-z0-9]+)", re.IGNORECASE)
 # The reason must start with a word character: a separator alone, or dashes
 # only, is not a reason (an earlier `\S` accepted "-- " by matching a dash).
-_JUSTIFIED_FULL = re.compile(r"#\s*durability:\s*FULL\s*(?:--|—)\s*\w")
+_JUSTIFIED_FULL = re.compile(r"(?:#|--)\s*durability:\s*FULL\s*(?:--|—)\s*\w")
 
 
 def _violations(text: str) -> list[str]:
@@ -100,6 +101,8 @@ def test_only_a_written_reason_admits_full() -> None:
     empty_reason = 'db.execute("PRAGMA synchronous=FULL")  # durability: FULL -- '
     assert _violations(bare) == ["FULL@1"]
     assert _violations(justified) == []
+    assert _violations("PRAGMA synchronous=FULL; -- durability: FULL -- durable receipts") == []
+    assert _violations("PRAGMA synchronous=FULL; -- durability: FULL -- ") == ["FULL@1"]
     assert _violations(empty_reason) == ["FULL@1"]
     # OFF has no exception, even with a marker.
     assert _violations('db.execute("PRAGMA synchronous=OFF")  # durability: FULL -- x') == [

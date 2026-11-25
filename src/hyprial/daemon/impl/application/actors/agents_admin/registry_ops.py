@@ -1,7 +1,14 @@
+# Decision record (UA1b, 2026-11-18; UA1c; UA1f): ``agent.list`` hides this
+# machine's user agent by default, so a user who created no agents still gets
+# an empty list; ``includeUserAgent: true`` (read with ``is True`` like
+# ``excludeWf``) adds its row, marked ``userAgent: true``.  It is never in
+# ``agentsWithoutRoutine`` (it has no model, so it is never offered a routine)
+# nor in the ``inactiveSince`` cleanup listing (it is never active and can
+# never be destroyed), opt-in or not.  ``agent.get`` by name answers it, and
+# the whole-node ``agent.home-census`` leaves it out unless its ``actor``
+# selector names it.
 """Agent administration: registry verbs, migration, destroy/stop and runtime-launch custody."""
-
 from __future__ import annotations
-
 import contextlib
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,6 +23,7 @@ from hyprial.identity import (
     AgentHomeError,
     HandoverNotice,
     normalize_capabilities,
+    name_taken_remedy,
     normalize_harness_args,
 )
 from hyprial.kernel import DaemonRequestError, DurationParseError, ipc_errors, parse_duration
@@ -26,7 +34,6 @@ from hyprial.daemon.impl.configuration.identity import (
     normalize_agent_recipient,
 )
 from hyprial.kernel import (
-    canonical_agent_uri,
     canonical_user_uri,
 )
 from hyprial.daemon.impl.ipc.params import (
@@ -35,10 +42,10 @@ from hyprial.daemon.impl.ipc.params import (
     _optional_string_param,
     _required_string,
 )
+from hyprial.daemon.impl.provider_keys.legacy import LEGACY_SECRET_METHODS, NOT_HANDLED, dispatch as dispatch_legacy_secret
 
 from .policies import handle_restore_policy
-
-
+from .secret_fences import expected_secret_target
 
 _AGENT_OPERATION_NAMESPACE = "agent"
 _RESUME_COMMIT_GUARD_VERSION = 1
@@ -57,12 +64,17 @@ def _canonical_holder_name(name: str) -> str:
 class _AgentRegistryOpsMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
-    def _handle_agent(self, method: str, params: JsonObject) -> Any:
-        if method in {"agent.create", "agent.start.preflight", "agent.host-invite"}:
+    def _handle_agent(self, method: str, params: JsonObject, *, expected_secret_agent=None) -> Any:
+        target = expected_secret_target(self, method, params, expected_secret_agent)
+        if method in {"agent.create", "agent.start.preflight"}:
             from hyprial.daemon.impl.bootstrap.names import require_agent_name_available
+            from hyprial.daemon.impl.cells.runtime.agents import refuse_custody_launch
 
-            require_agent_name_available(self, self.agents.native_actor(
-                _required_string(params.get("name"), "name")))
+            name = self.agents.native_actor(_required_string(params.get("name"), "name"))
+            require_agent_name_available(self, name)
+            refuse_custody_launch(
+                self.agents.get(name), method, params, owner=self.owner
+            )
         if method == "agent.resume.restore":
             name = self.agents.native_actor(
                 _required_string(params.get("name"), "name")
@@ -171,6 +183,12 @@ class _AgentRegistryOpsMixin:
                 return {"ok": True, "grants": [grant.to_json() for grant in grants]}
             except (ValueError, TypeError, AgentError) as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        if method in LEGACY_SECRET_METHODS:
+            secret_params = (dict(params, expectedAgent=expected_secret_agent)
+                             if expected_secret_agent is not None else params)
+            handled = dispatch_legacy_secret(self, method, secret_params)
+            if handled is not NOT_HANDLED:
+                return handled
         if method == "agent.secret." + "provider-write":
             from hyprial.identity import SecretResolver
 
@@ -194,7 +212,8 @@ class _AgentRegistryOpsMixin:
                 )
             except (ValueError, TypeError, OSError) as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
-            return {"ok": True, "entryId": entry_id, "fieldNames": [field_name]}
+            saved = resolver.model_service_metadata(entry_id)
+            return {"ok": True, "entryId": entry_id, "fieldNames": saved["fieldNames"]}
         if method == "agent.secret.grant":
             from hyprial.identity import SecretSource
             from hyprial.identity import (
@@ -219,6 +238,11 @@ class _AgentRegistryOpsMixin:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "revision is required")
             try:
                 source = SecretSource(source_raw)
+                from hyprial.identity import SecretResolver
+
+                route_required = source is SecretSource.USER_PROVIDER and SecretResolver(
+                    self.hyprial_home, self._agent_registry,
+                ).model_route_required(entry_id, field_name)
                 home_token = (
                     self._agent_session_domains.agent.prevalidate_home(actor).entity_token
                     if source in {SecretSource.AGENT_PRIVATE, SecretSource.AGENT_SHARED} else None
@@ -229,6 +253,8 @@ class _AgentRegistryOpsMixin:
                         f"{_AGENT_OPERATION_NAMESPACE}:secret-grant:{uuid4().hex}", actor, grant_id,
                         source, entry_id, field_name, tuple(raw_names), revision,
                         home_token, _optional_string_param(params.get("ownerActor"), "ownerActor"),
+                        target_entity_token=None if target is None else target.entity_token,
+                        route_required=route_required,
                     ),
                     AgentSecretGrantCompleted,
                 )
@@ -259,7 +285,15 @@ class _AgentRegistryOpsMixin:
             actor = params.get("actor")
             if actor is not None and (not isinstance(actor, str) or not actor):
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "actor must be a non-empty string")
-            grants = self._agent_session_domains.agent.read_secret_inventory(actor)
+            constraints = {} if target is None else {
+                "expected_uri": str(target.uri), "expected_created_at_ms": target.created_at_ms,
+            }
+            try:
+                grants = self._agent_session_domains.agent.read_secret_inventory(actor, **constraints)
+            except AgentError as error:
+                if target is None:
+                    raise
+                raise DaemonRequestError(getattr(error, "code", "AGENT_ERROR"), str(error)) from error
             return {
                 "ok": True,
                 "grants": [
@@ -301,33 +335,7 @@ class _AgentRegistryOpsMixin:
             except AgentError as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
             return {"ok": True, "revoked": revoked}
-        if method == "agent.host-invite":
-            # Host-controlled creation is separate from ordinary create/start:
-            # neither a URI nor a caller-supplied flag confers hosting authority.
-            agent = self.agents.create_host_invited(
-                _required_string(params.get("name"), "name"),
-                pinned_owner=_required_string(params.get("owner"), "owner"),
-                cwd=_optional_string_param(params.get("cwd"), "cwd"),
-                preferred_harness=_optional_string_param(
-                    params.get("preferredHarness"), "preferredHarness"
-                ),
-            )
-            routine_warning = self._finish_resident_agent_creation(agent)
-            self._declare_persona_route(agent.uri)
-            return {
-                "ok": True,
-                "created": True,
-                "agent": self._agent_status_json(agent),
-                **(
-                    {"routineWarning": routine_warning}
-                    if routine_warning is not None
-                    else {}
-                ),
-            }
         if method == "agent.start.preflight":
-            name = self.agents.native_actor(
-                _required_string(params.get("name"), "name")
-            )
             agent = self.agents.get(name)
             if agent is None:
                 raise DaemonRequestError(
@@ -335,6 +343,10 @@ class _AgentRegistryOpsMixin:
                     f"no agent named {name!r} on this machine",
                 )
             harness = _required_string(params.get("harness"), "harness")
+            self._effective_harness_args(
+                agent.actor, harness, (),
+                ignore_stored=params.get("ignoreStoredHarnessArgs") is True,
+            )
             runtime = str(params.get("runtime") or RUNTIME_HEADLESS)
             with self._interactive_route_effect(agent.uri):
                 self._refuse_if_running(
@@ -349,10 +361,12 @@ class _AgentRegistryOpsMixin:
             # Decision A5: the one creation path. `hyprial agent create` calls it
             # directly; `hyprial agent start` calls it first and only then launches a
             # harness, so a connector can never exist without an identity.
-            name = self.agents.native_actor(
-                _required_string(params.get("name"), "name")
-            )
             reuse = params.get("existing") == "reuse"
+            if "org" in params:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "agent.create does not accept an organization",
+                )
             existing = self.agents.current(name)
             if existing is not None and not reuse:
                 raise DaemonRequestError(
@@ -360,9 +374,8 @@ class _AgentRegistryOpsMixin:
                     f"the name {name!r} is already taken on this node "
                     f"({self.owner}@{self.node_id}) — {existing.uri} "
                     f"exists. One name is one agent, whether or not anything "
-                    f"is currently running under it. To reuse the name, "
-                    f"destroy that agent first ('hyprial agent destroy {name}', "
-                    f"which is irreversible); to run this agent on a different "
+                    f"is currently running under it. {name_taken_remedy(name)}; "
+                    f"to run this agent on a different "
                     f"harness, just start it there — that is a rebinding of "
                     f"the same agent, not a new one.",
                     {"actor": existing.uri, "agent": name},
@@ -395,9 +408,6 @@ class _AgentRegistryOpsMixin:
                     or harness_name,
                 )
                 routine_warning = self._finish_resident_agent_creation(agent)
-                # A legacy pin naming this agent could not migrate while the
-                # record did not exist; it can now.
-                self._migrate_legacy_channel_pins()
                 self._declare_persona_route(agent.uri)
             else:
                 agent = existing
@@ -493,24 +503,34 @@ class _AgentRegistryOpsMixin:
                     int(seconds * 1_000),
                 )
             with self._worker_status_snapshot():
+                from hyprial.daemon.impl.user_agent.naming import is_user_agent
+
                 agents = []
                 visible_actors: list[str] = []
+                user_agents: set[str] = set()
                 for agent in self.agents.list():
+                    if is_user_agent(agent):
+                        if params.get("includeUserAgent") is not True:
+                            continue
+                        user_agents.add(agent.uri)
                     if params.get("excludeWf") is True and agent.actor.startswith("wf-"):
                         continue
                     hints = self._agent_session_domains.agent.read_activity_hints(
                         agent.actor
                     ).to_payload()
-                    if inactivity_filter is not None and not self._agent_is_inactive(
-                        agent,
-                        now_ms=inactivity_filter[0],
-                        threshold_ms=inactivity_filter[1],
+                    if inactivity_filter is not None and (
+                        agent.uri in user_agents
+                        or not self._agent_is_inactive(
+                            agent,
+                            now_ms=inactivity_filter[0],
+                            threshold_ms=inactivity_filter[1],
+                        )
                     ):
                         continue
                     agents.append(self._agent_status_json(agent, activity_hints=hints))
                     visible_actors.append(agent.uri)
                 bound_actors = {
-                    binding
+                    self._routine_actor_key(binding)
                     for routine in (
                         self._routine_service.list()["routines"]
                         if self._routine_service is not None
@@ -523,7 +543,10 @@ class _AgentRegistryOpsMixin:
                     "ok": True,
                     "agents": agents,
                     "agentsWithoutRoutine": [
-                        actor for actor in visible_actors if actor not in bound_actors
+                        actor
+                        for actor in visible_actors
+                        if self._routine_actor_key(actor) not in bound_actors
+                        and actor not in user_agents
                     ],
                 }
         if method == "agent.ensure-home":
@@ -535,7 +558,7 @@ class _AgentRegistryOpsMixin:
             # validated and returned unchanged.  Legacy agents otherwise have
             # no official rebuild path once a restart takes the P2 branch
             # (`not-provisioned` on every read).
-            name = self.agents.normalize_actor(
+            name = self.agents.actor_key(
                 _required_string(params.get("name"), "name")
             )
             receipt = self._agent_registry.ensure_home(name)
@@ -548,6 +571,8 @@ class _AgentRegistryOpsMixin:
             }
         if method == "agent.home-census":
             from collections import Counter
+
+            from hyprial.daemon.impl.user_agent.runtime import census_agents
 
             from hyprial.identity import agent_home_mode
 
@@ -569,7 +594,7 @@ class _AgentRegistryOpsMixin:
                 else self.hyprial_home / "agents"
             )
             unprovisioned = 0
-            for agent in self.agents.list():
+            for agent in census_agents(self.agents.list(), params.get("actor")):
                 # The census measures the legacy population too: a missing
                 # home row is a finding (``homeProvisioned: false``), not a
                 # reason to fail the whole read (the pre-fix command died on
@@ -606,10 +631,7 @@ class _AgentRegistryOpsMixin:
                             else inside_home(agent.config.source, home)
                         ),
                         "cwdInsideHome": inside_home(agent.cwd, home),
-                        # The durable registry intentionally has no resident
-                        # column while G-R is unresolved. DSH is the only
-                        # honest registry-derived member of this guard class.
-                        "residentOrDsh": harness == "dsh",
+                        "residentOrDsh": False,
                         "transferReceived": agent.hosted_by == "transfer-receive",
                         "mode": mode,
                         "legacyReason": reason,
@@ -643,7 +665,7 @@ class _AgentRegistryOpsMixin:
                 submit_wake=self._submit_restore_wake,
             )
         if method == "agent.unblock":
-            name = self.agents.normalize_actor(
+            name = self.agents.actor_key(
                 _required_string(params.get("name"), "name")
             )
             self.agents.require(name)
@@ -655,7 +677,7 @@ class _AgentRegistryOpsMixin:
             # Non-secret interactive-launch handoff.  The daemon remains the
             # sole root/profile resolver; this projection deliberately omits
             # entity tokens, grant values, and credential material (T16).
-            name = self.agents.normalize_actor(
+            name = self.agents.actor_key(
                 _required_string(params.get("name"), "name")
             )
             harness = _required_string(params.get("harness"), "harness")
@@ -758,7 +780,7 @@ class _AgentRegistryOpsMixin:
                 "released": not released.acquired,
             }
         if method == "agent.get":
-            name = self.agents.normalize_actor(
+            name = self.agents.actor_key(
                 _required_string(params.get("name"), "name")
             )
             with self._worker_status_snapshot():
@@ -790,78 +812,12 @@ class _AgentRegistryOpsMixin:
                 "known": reason != "unknown",
                 "reason": reason,
             }
-        if method == "agent.destroy.preview":
-            requested = _required_string(params.get("name"), "name")
-            agent = self.agents.require(requested)
-            return {
-                "ok": True,
-                "actor": agent.uri,
-                "agent": agent.actor,
-                "workspace": self._agent_session_domains.agent.read_workspace_summary(
-                    agent.actor
-                ).to_json(),
-            }
         if method == "pac.gc.preview":
             if self._pac_gc is None:
                 raise DaemonRequestError(
                     "PAC_GC_UNAVAILABLE", "PAC GC service is unavailable"
                 )
             return self._pac_gc.preview()
-        if method == "agent.destroy":
-            # Resolve the exact identity before dropping URI ownership. Hosted
-            # URIs are valid; unrelated same-name foreign URIs are not.
-            requested = _required_string(params.get("name"), "name")
-            agent = self.agents.get(requested)
-            if agent is None:
-                from hyprial.identity import (
-                    AgentMutationCompleted,
-                    CleanupRevokedAgentHomeCommand,
-                )
-
-                generation = self._agent_session_domains.agent.generation
-                cleaned = self._agent_session_domains.call_agent(
-                    CleanupRevokedAgentHomeCommand(
-                        f"{_AGENT_OPERATION_NAMESPACE}:cleanup-home:{uuid4().hex}", requested
-                    ),
-                    AgentMutationCompleted,
-                )
-                if (
-                    cleaned.generation != generation
-                    or cleaned.operation != "cleanup-home"
-                ):
-                    raise DomainCommandError(
-                        "STALE_AGENT_HOME_CLEANUP",
-                        "agent home cleanup completion fence mismatch",
-                    )
-                if not cleaned.changed:
-                    self.agents.require(requested)
-                    raise AssertionError("require() returned for a missing agent")
-                cleaned_actor = self.agents.normalize_actor(requested)
-                actor = canonical_agent_uri(
-                    self.owner, self.node_id, cleaned_actor
-                )
-                self._log(
-                    "warn",
-                    "agents",
-                    "agent.destroyed",
-                    actor=actor,
-                    stopped=[],
-                    destroyedMessages=0,
-                    unpinnedAdapters=[],
-                    cleanupResumed=True,
-                )
-                return {
-                    "ok": True,
-                    "destroyed": False,
-                    "cleanupResumed": True,
-                    "actor": actor,
-                    "agent": cleaned_actor,
-                    "stopped": [],
-                    "destroyedMessages": 0,
-                    "unpinnedAdapters": [],
-                    "irreversible": True,
-                }
-            return self._destroy_agent(agent.actor)
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
 
     def _acquire_agent_runtime_launch(
@@ -957,7 +913,7 @@ class _AgentRegistryOpsMixin:
         launch_token = getattr(context, "launch_token", None)
         if not isinstance(launch_token, str) or not launch_token:
             raise DomainCommandError(
-                "AGENT_RUNTIME_CONTEXT_STALE",
+                ipc_errors.AGENT_RUNTIME_CONTEXT_STALE,
                 "authority-prepared runtime context has no launch token",
             )
         lease, _secret_environment = self._acquire_agent_runtime_launch(
@@ -980,8 +936,3 @@ class _AgentRegistryOpsMixin:
                     errorType=type(error).__name__,
                     detail=str(error),
                 )
-
-    def _host_invited_owner(self, name: str) -> str | None:
-        """Read the admitted visitor owner; transfer-receive grants no start authority."""
-        agent = self.agents.get(self.agents.uri_for(name))
-        return agent.owner if agent is not None and agent.hosted_by == "host-invite" else None

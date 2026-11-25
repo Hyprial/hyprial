@@ -1,12 +1,12 @@
 """AT11 leave-half: destroy clears a gone home, refuses an unreadable one.
 
-Split verbatim out of ``test_transfer_daemon.py`` so the merged tree stays
-inside the structural line budget (#1446's destroy tests met #1469's TUI
-tests in the same module); the ``make_app`` fixture and ``_seed_worker``
-helper are imported from the sibling module.
+The ``make_app`` fixture and ``_seed_worker`` helper are imported from
+``daemon_support``.
 """
 
 from __future__ import annotations
+
+from tests.support.agent_destroy import destroy_agent
 
 import os
 import shutil
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.daemon.impl.application import DaemonRequestError
-from tests.integration.transfer.lifecycle.test_transfer_daemon import (  # noqa: F401 - fixtures/helpers
+from tests.integration.transfer.lifecycle.daemon_support import (  # noqa: F401 - fixtures/helpers
     SOURCE,
     _seed_worker,
     make_app,
@@ -44,7 +44,7 @@ def test_destroy_finishes_a_transfer_out_whose_home_is_already_gone(make_app) ->
     assert home.is_dir()
     shutil.rmtree(home)
 
-    result = app.handle("agent.destroy", {"name": "wk"})
+    result = destroy_agent(app, "wk")
 
     assert result["ok"] is True
     assert result["destroyed"] is True
@@ -136,7 +136,7 @@ def test_destroy_still_refuses_a_home_it_cannot_read(make_app, monkeypatch) -> N
     monkeypatch.setattr(os, "lstat", denied_lstat)
 
     with pytest.raises(DaemonRequestError):
-        app.handle("agent.destroy", {"name": "wk"})
+        destroy_agent(app, "wk")
 
     assert hits["path"] >= 1
     assert app.agents.get("wk") is not None
@@ -156,7 +156,7 @@ def test_destroy_still_refuses_a_home_that_is_not_absent(make_app) -> None:  # n
 
     try:
         with pytest.raises(DaemonRequestError):
-            app.handle("agent.destroy", {"name": "wk"})
+            destroy_agent(app, "wk")
         assert app.agents.get("wk") is not None
     finally:
         home.unlink()

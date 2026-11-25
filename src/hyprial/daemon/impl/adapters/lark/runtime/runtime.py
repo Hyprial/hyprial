@@ -19,18 +19,20 @@ import time
 import uuid
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from dataclasses import replace
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.kernel import (
     PROCESS_LIFECYCLE,
-    ActorHandle,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult,
 )
 from hyprial.kernel import DEFAULT_POLICIES
 from hyprial.kernel import PortAdmission, PortCommandRejected
 from hyprial.kernel import ChannelConfiguration
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 from hyprial.daemon.impl.adapters.lark.contracts.wire import (
     ActorTarget,
@@ -47,22 +49,24 @@ from hyprial.daemon.impl.adapters.lark.ports.ports import (
     AdapterProjection,
     AdapterReloadProjection,
     AdapterTimerElapsedCommand,
+    BeginAdapterRemovalCommand,
+    FinishAdapterRemovalCommand,
     DeliverLarkMessageCommand,
     DeliverLarkAlarmCommand,
     DrainAdapterHealthCommand,
     LarkCommand,
     LarkEvent,
     LarkEventSink,
-    PinAdapterCommand,
     ReloadAdaptersCommand,
     StartAdapterCommand,
     StopAdapterCommand,
-    UnpinAdapterCommand,
 )
 from hyprial.daemon.impl.adapters.lark.runtime.commands import (
     AdapterDesiredStatePort,
     AdapterRestoreSummary,
     _DeliverAlarm,
+    _BeginRemoval,
+    _FinishRemoval,
     _DeliverReply,
     _DrainEvents,
     _IoResult,
@@ -136,7 +140,7 @@ class _PortEventDispatcher:
 
 
 class AdapterRuntime:
-    """Pykka-backed public facade; business callers never receive a raw ref."""
+    """Actor-backed public facade; business callers never receive a raw ref."""
 
     def __init__(
         self,
@@ -148,7 +152,7 @@ class AdapterRuntime:
         retry_interval: float | None = None,
         clock: Callable[[], float] = time.monotonic,
         mailbox_capacity: int = 128,
-        actor_runtime: ActorRuntime | None = None,
+        actor_host: ActorHost | None = None,
         effect_capacity: int = 64,
         event_sink: LarkEventSink | None = None,
         configuration_source: Callable[[], ChannelConfiguration] | None = None,
@@ -158,20 +162,19 @@ class AdapterRuntime:
         # Legacy knobs remain accepted while composition migrates.  Restart
         # budget/window/backoff come from the one central named profile.
         del restore_confirm_timeout
-        self._runtime = actor_runtime or ActorRuntime()
-        self._owns_runtime = actor_runtime is None
+        self._hosts = ActorHostCustody(actor_host, owner="lark")
         self._projections = _ProjectionStore()
         self._events = _PortEventDispatcher(event_sink or _NullEventSink())
         self._configuration_source = configuration_source
         self._reload_slot = threading.Lock()
-        self._handle: ActorHandle | None = None
+        self._cell = None
         gateways = {item.name: item for item in channels.gateways}
         self._authority = _Authority(gateways)
         self._policy = DEFAULT_POLICIES[PROCESS_LIFECYCLE]
 
         def completion(result: _IoResult) -> None:
-            handle = self._handle
-            if handle is None:
+            cell = self._cell
+            if cell is None:
                 self._authority.fail_correlation(
                     result.correlation_id,
                     RuntimeError(
@@ -182,10 +185,11 @@ class AdapterRuntime:
             result = replace(result, generation=self._authority.generation)
             deadline = time.monotonic() + 5.0
             while True:
-                admission = self._runtime.tell(handle, result)
+                admission = cell.tell(result)
                 if admission is AdmissionResult.ACCEPTED:
                     return
                 if time.monotonic() >= deadline:
+                    self._authority.retain_completion(result)
                     self._authority.fail_correlation(
                         result.correlation_id,
                         RuntimeError(
@@ -216,7 +220,7 @@ class AdapterRuntime:
                 clock=clock,
             )
 
-        self._handle = self._runtime.start(
+        self._cell = self._hosts.host.spawn(
             ActorSpec(
                 name="lark-adapter-runtime",
                 handler_factory=handler_factory,
@@ -254,10 +258,10 @@ class AdapterRuntime:
         return self._effects.processes()
 
     def _submit(self, command: object, future: Future[Any], timeout: float) -> Any:
-        handle = self._handle
-        if handle is None:
+        cell = self._cell
+        if cell is None:
             raise RuntimeError("adapter runtime is stopped")
-        admission = self._runtime.tell(handle, command)
+        admission = cell.tell(command)
         if admission is AdmissionResult.OVERLOADED:
             raise RuntimeError("adapter runtime overloaded")
         if admission is AdmissionResult.CLOSED:
@@ -307,12 +311,12 @@ class AdapterRuntime:
         correlation_id: str,
         completed: Callable[[Any], LarkEvent],
     ) -> PortAdmission:
-        handle = self._handle
-        if handle is None:
+        cell = self._cell
+        if cell is None:
             return PortAdmission.CLOSING
         if not self._events.reserve():
             return PortAdmission.OVERLOADED
-        admission = self._runtime.tell(handle, internal)
+        admission = cell.tell(internal)
         port_admission = self._port_admission(admission)
         if port_admission is not PortAdmission.ACCEPTED:
             self._events.release()
@@ -336,24 +340,8 @@ class AdapterRuntime:
         return PortAdmission.ACCEPTED
 
     def submit(self, command: LarkCommand) -> PortAdmission:
-        """Nonblocking frozen-port command admission.
+        """Nonblocking frozen-port command admission."""
 
-        Pin commands intentionally terminate here with a typed rejection: pin
-        authority is the Agent domain and integration's composite sink routes
-        those commands there.  This adapter actor never mutates pin state.
-        """
-
-        if isinstance(command, (PinAdapterCommand, UnpinAdapterCommand)):
-            if not self._events.reserve():
-                return PortAdmission.OVERLOADED
-            self._events.publish_reserved(
-                self._port_rejection(
-                    command.correlation_id,
-                    "PIN_OWNED_BY_AGENT_DOMAIN",
-                    "adapter pin mutations must be routed to the Agent actor",
-                )
-            )
-            return PortAdmission.ACCEPTED
         if isinstance(command, StartAdapterCommand):
             result: Future[bool] = Future()
             return self._admit_port_future(
@@ -380,6 +368,37 @@ class AdapterRuntime:
                     version=(projection.version if (projection := self.read_adapter(command.name)) else 0),
                     changed=bool(changed),
                     adapter=projection,
+                ),
+            )
+        if isinstance(command, BeginAdapterRemovalCommand):
+            result = Future()
+            return self._admit_port_future(
+                _BeginRemoval(
+                    command.correlation_id, command.name, command.token, result,
+                    command.expected_generation, command.expected_version,
+                ),
+                result,
+                command.correlation_id,
+                lambda changed: AdapterMutationCompleted(
+                    correlation_id=command.correlation_id,
+                    generation=self._authority.generation,
+                    version=(projection.version if (projection := self.read_adapter(command.name)) else 0),
+                    changed=bool(changed),
+                    adapter=projection,
+                ),
+            )
+        if isinstance(command, FinishAdapterRemovalCommand):
+            result = Future()
+            return self._admit_port_future(
+                _FinishRemoval(command.name, command.token, command.committed, result),
+                result,
+                command.correlation_id,
+                lambda _: AdapterMutationCompleted(
+                    correlation_id=command.correlation_id,
+                    generation=self._authority.generation,
+                    version=self._authority.versions.get(command.name, 0),
+                    changed=True,
+                    adapter=self.read_adapter(command.name),
                 ),
             )
         if isinstance(command, ReloadAdaptersCommand):
@@ -625,6 +644,21 @@ class AdapterRuntime:
         correlation = uuid.uuid4().hex
         return bool(self._submit(_Remove(correlation, name, result), result, 10.0))
 
+    def begin_removal(self, name: str, token: str) -> None:
+        """Reserve lifecycle admission until a stopped adapter's deletion settles."""
+
+        if not isinstance(token, str) or not token or len(token) > 128:
+            raise ValueError("adapter removal token must be non-empty and bounded")
+        result: Future[bool] = Future()
+        correlation = f"lark:removal:{uuid.uuid4().hex}"
+        self._submit(_BeginRemoval(correlation, name, token, result), result, 10.0)
+
+    def finish_removal(self, name: str, token: str, *, committed: bool) -> None:
+        """Settle only after the external configuration transaction has completed."""
+
+        result: Future[None] = Future()
+        self._submit(_FinishRemoval(name, token, committed, result), result, 5.0)
+
     def reconcile(self) -> int:
         result: Future[int] = Future()
         return int(self._submit(_Reconcile(result), result, 10.0))
@@ -634,7 +668,7 @@ class AdapterRuntime:
         self._submit(_Refresh(result), result, 5.0)
 
     def status(self, name: str | None = None) -> tuple[dict[str, object], ...]:
-        if self._handle is not None:
+        if self._cell is not None:
             self._refresh()
         return self._projections.status(name)
 
@@ -724,8 +758,8 @@ class AdapterRuntime:
         )
 
     def stop(self, timeout: float = 5.0) -> bool:
-        handle = self._handle
-        if handle is None:
+        cell = self._cell
+        if cell is None:
             deadline = time.monotonic() + max(0.0, timeout)
             # Drain first. An earlier stop may still be running in its own
             # thread, and retrying then would call process.stop() on the same
@@ -774,15 +808,15 @@ class AdapterRuntime:
                 )
             finally:
                 try:
-                    runtime_complete = self._runtime.stop(
-                        handle,
-                        timeout=max(0.0, deadline - time.monotonic()),
-                    )
+                    runtime_complete = cell.drain(
+                        max(0.0, deadline - time.monotonic())
+                    ).complete
+                    self._hosts.shutdown(max(0.0, deadline - time.monotonic()))
                 finally:
                     self._authority.fail_all_custody(
                         RuntimeError("Lark adapter runtime stopped before completion")
                     )
-                    self._handle = None
+                    self._cell = None
                     events_complete = self._events.close(
                         max(0.0, deadline - time.monotonic())
                     )

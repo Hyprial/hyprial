@@ -6,6 +6,7 @@
     "moduleResolution": "Bundler",
     "paths": { "@/*": ["./src/*"] },
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
@@ -16,5 +17,5 @@
     "skipLibCheck": true,
     "types": ["node", "vite/client", "vitest/globals", "@testing-library/jest-dom/vitest"]
   },
-  "include": ["src", "tests", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "tests", "contract-mock", "vite.config.ts", "vitest.config.ts"]
 }

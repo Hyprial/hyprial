@@ -17,6 +17,7 @@ from typing import Any
 from hyprial.daemon.impl.configuration.home_guard import (
     ActiveDaemonHeartbeat,
 )
+from tests.support.runtime.environment import UNIT_USER_ID
 
 BLOCKED_CHILD = Path(__file__).resolve().parents[4] / 'tests/fixtures/home/home_guard_blocked_child.py'
 
@@ -118,6 +119,7 @@ def _daemon_environment(home: Path, state: Path, node: str) -> dict[str, str]:
             # Now an uninitialized home cannot run a daemon, which is the
             # intended behaviour -- so the identity is supplied explicitly.
             "HYPRIAL_OWNER": "home-guard-owner",
+            "HYPRIAL_USER_ID": UNIT_USER_ID,
             "HYPRIAL_NETWORK_ISOLATED": "1",
             "HYPRIAL_PEER_DISCOVERY": "0",
             "HYPRIAL_ZENOH_LISTEN": "",

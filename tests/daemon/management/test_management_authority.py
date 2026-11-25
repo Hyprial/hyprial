@@ -54,7 +54,6 @@ def test_cli_setup_and_adapter_remove_have_no_raw_registry_constructors() -> Non
 
     forbidden = {"AgentRegistry", "DesiredStateStore", "AgentSessionDomains"}
     for relative in (
-        "src/hyprial/daemon/impl/squire/setup.py",
         "src/hyprial/daemon/impl/bootstrap/adapter_registration.py",
     ):
         path = ROOT / relative
@@ -126,5 +125,7 @@ def test_concurrent_first_ipc_constructs_one_management_handler(
     assert len(constructed) == 1
     assert len(returned) == 2
     assert returned[0] is returned[1] is constructed[0]
-    app._agent_session_domains.close()
+    # Hosts are the application's shared resource; the cleanup fixture's
+    # _close() stops them after every borrowing authority has drained.
+    app._agent_session_domains.close(shutdown_hosts=False)
     app._agent_domains_finalizer.detach()

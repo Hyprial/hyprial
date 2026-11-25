@@ -1,3 +1,13 @@
+# Decision record (W1E-2, 2026-11-21):
+# - Preserves 100% of PathPolicy authorization rules (workspace/cwd containment
+#   for sessions; hyprial home, other agent homes, secrets/, and daemon state_dir
+#   always refused).
+# - Removes _open_parent (O_PATH|O_DIRECTORY|O_NOFOLLOW dir_fd traversal),
+#   _descriptor_path readback (which unconditionally refused all writes on
+#   Windows, I1), and O_NOFOLLOW/O_BINARY flags in favor of realpath + _decide +
+#   parent/target lstat & manysys.path_is_reparse verification + unbuffered
+#   binary open + os.fstat regular-file, hardlink, and (st_dev, st_ino) checks
+#   before truncation and write.
 """Who may make the daemon write which local file, and how it is written.
 
 The write-side twin of :func:`read_authorized_file` (#1169, hq 2026-10-06):
@@ -6,18 +16,11 @@ read -- its own workspace and registered cwd for a session, anywhere outside
 the hyprial home and the state dir for the operator.
 
 Mechanics: the parent directory is resolved with ``realpath`` and the target
-is judged as ``<real parent>/<name>``.  Every resolved parent component is
-then opened descriptor-relatively with ``O_DIRECTORY | O_NOFOLLOW``; the
-parent descriptor's own path is re-judged before the final name is opened
-relative to it.  The file uses ``O_NOFOLLOW | O_CREAT`` (and ``O_EXCL`` unless
-overwriting), and its descriptor path is re-judged before any byte is written.
-Where the platform cannot report either descriptor path the write is refused.
-
-Known corner (review 1012, not an escalation): a directory already pinned by
-the walk can still be renamed into a denied location by someone who can write
-there; the O_CREAT then lands an empty file at its new place before the file
-descriptor's path is re-judged and the write refused.  No caller bytes reach
-it, and the renamer needed write access to that location anyway.
+is judged as ``<real parent>/<name>``.  Every resolved parent component and
+any existing destination are checked via ``lstat`` and ``path_is_reparse``;
+the regular file is opened in unbuffered binary mode and its descriptor is
+verified via ``fstat`` (regular file, non-reparse, ``st_nlink == 1``, and
+matching ``(st_dev, st_ino)``) before truncating or writing any byte.
 """
 
 from __future__ import annotations
@@ -36,33 +39,16 @@ from hyprial.daemon.impl.path_authz.policy import (
     PathPolicy,
     PathRefused,
     _decide,
-    _descriptor_path,
+    _is_link_or_reparse,
     _real,
 )
+from hyprial.kernel import path_is_reparse
 
 REASON_EXISTS = "exists"
 
-# Directories are walked search-only (O_PATH on Linux, O_SEARCH on macOS):
-# a component the caller may traverse but not list (mode --x) is legitimate,
-# and reading a directory's entries is never needed to open a name in it.
-_DIRECTORY_FLAGS = (
-    (getattr(os, "O_PATH", 0) or getattr(os, "O_SEARCH", 0) or os.O_RDONLY)
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
 
-_WRITE_FLAGS = (
-    os.O_WRONLY
-    | os.O_CREAT
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-    # A FIFO with no reader would block the daemon thread in open(); with
-    # O_NONBLOCK it fails (ENXIO) and anything non-regular is refused below.
-    | getattr(os, "O_NONBLOCK", 0)
-    | getattr(os, "O_NOCTTY", 0)
-    | getattr(os, "O_BINARY", 0)
-)
+def _create_0600(path: str, flags: int) -> int:
+    return os.open(path, flags, 0o600)
 
 
 def _target(
@@ -86,60 +72,65 @@ def _target(
     return raw, parent, name, target
 
 
-def _open_parent(parent: Path, target: Path, policy: PathPolicy) -> int:
-    """Open every resolved component without following a replacement link."""
-
-    current: int | None = None
-    try:
-        current = os.open(parent.anchor, _DIRECTORY_FLAGS)
-        for component in parent.parts[1:]:
-            following = os.open(
-                component,
-                _DIRECTORY_FLAGS,
-                dir_fd=current,
-            )
-            os.close(current)
-            current = following
-        actual = _descriptor_path(current)
-        if actual is None:
+def _verify_parent(parent: Path, target: Path, policy: PathPolicy) -> os.stat_result:
+    observed_parent: os.stat_result | None = None
+    for directory in reversed((parent, *parent.parents)):
+        try:
+            observed = os.lstat(directory)
+        except OSError as error:
             raise PathRefused(
-                REASON_UNVERIFIED,
-                "the destination directory's real location could not be verified",
-                path=None,
+                REASON_UNREADABLE,
+                f"the destination directory for {target} cannot be opened",
+                path=str(target),
+            ) from error
+        if stat.S_ISLNK(observed.st_mode) or path_is_reparse(observed):
+            _decide(_real(parent) / target.name, policy)
+            raise PathRefused(
+                REASON_SYMLINK,
+                f"{target} has a symlink or reparse parent",
+                path=str(target),
             )
-        _decide(actual, policy)
-        return current
-    except PathRefused:
-        if current is not None:
-            os.close(current)
-        raise
-    except OSError as error:
-        if current is not None:
-            os.close(current)
+        if not stat.S_ISDIR(observed.st_mode):
+            raise PathRefused(
+                REASON_UNREADABLE,
+                f"the destination directory for {target} cannot be opened",
+                path=str(target),
+            )
+        observed_parent = observed
+    _decide(_real(parent) / target.name, policy)
+    assert observed_parent is not None
+    return observed_parent
+
+
+def _validate_existing_target(observed: os.stat_result, target: Path, *, overwrite: bool) -> None:
+    if stat.S_ISLNK(observed.st_mode) or path_is_reparse(observed):
         raise PathRefused(
-            REASON_UNREADABLE,
-            f"the destination directory for {target} cannot be opened",
-            path=str(target),
-        ) from error
+            REASON_SYMLINK, f"{target} is a symlink", path=str(target)
+        )
+    if not overwrite:
+        raise PathRefused(
+            REASON_EXISTS, f"{target} already exists", path=str(target)
+        )
+    if not stat.S_ISREG(observed.st_mode):
+        raise PathRefused(
+            REASON_NOT_REGULAR, f"{target} is not a regular file", path=str(target)
+        )
+    if observed.st_nlink > 1:
+        raise PathRefused(
+            REASON_HARDLINK,
+            "a multiply-linked destination cannot be overwritten",
+            path=None,
+        )
 
 
 def authorize_write_path(
     raw_path: str | os.PathLike[str], policy: PathPolicy
 ) -> Path:
-    """Judge a destination and its opened parent without creating the file."""
+    """Judge a destination and its parent without creating the file."""
 
     _raw, parent, _name, target = _target(raw_path, policy)
-    directory_fd = _open_parent(parent, target, policy)
-    os.close(directory_fd)
+    _verify_parent(parent, target, policy)
     return target
-
-
-def _is_symlink_at(directory_fd: int, name: str) -> bool:
-    try:
-        opened = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-    except OSError:
-        return False
-    return stat.S_ISLNK(opened.st_mode)
 
 
 def write_authorized_file(
@@ -152,63 +143,134 @@ def write_authorized_file(
     """Authorize ``raw_path`` for ``policy`` and write ``data`` through one fd.
 
     Raises :class:`PathRefused`.  A refusal writes no data: an existing file
-    is truncated only after the descriptor's location is verified.  A file
-    this call created and then refused is left empty rather than unlinked by
-    path, since the path may no longer name the file the descriptor holds.
+    is truncated only after the descriptor's identity is verified.
     """
 
-    _raw, parent, name, target = _target(raw_path, policy)
-    flags = _WRITE_FLAGS if overwrite else _WRITE_FLAGS | os.O_EXCL
-    directory_fd = _open_parent(parent, target, policy)
+    _raw, parent, _name, target = _target(raw_path, policy)
+    parent_before = _verify_parent(parent, target, policy)
     try:
-        fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
-    except FileExistsError as error:
-        raise PathRefused(
-            REASON_EXISTS, f"{target} already exists", path=str(target)
-        ) from error
+        before_open: os.stat_result | None = os.lstat(target)
+    except FileNotFoundError:
+        before_open = None
     except OSError as error:
-        if _is_symlink_at(directory_fd, name):
-            raise PathRefused(
-                REASON_SYMLINK, f"{target} is a symlink", path=str(target)
-            ) from error
         raise PathRefused(
             REASON_UNREADABLE, f"{target} cannot be opened: {error}", path=str(target)
         ) from error
-    finally:
-        os.close(directory_fd)
-    try:
+
+    if before_open is not None:
+        _validate_existing_target(before_open, target, overwrite=overwrite)
+        try:
+            handle = open(target, "r+b", buffering=0)
+        except OSError as error:
+            if _is_link_or_reparse(target):
+                raise PathRefused(
+                    REASON_SYMLINK, f"{target} is a symlink", path=str(target)
+                ) from error
+            raise PathRefused(
+                REASON_UNREADABLE, f"{target} cannot be opened: {error}", path=str(target)
+            ) from error
+    else:
+        try:
+            handle = open(target, "xb", buffering=0, opener=_create_0600)
+        except FileExistsError as error:
+            if _is_link_or_reparse(target):
+                raise PathRefused(
+                    REASON_SYMLINK, f"{target} is a symlink", path=str(target)
+                ) from error
+            if not overwrite:
+                raise PathRefused(
+                    REASON_EXISTS, f"{target} already exists", path=str(target)
+                ) from error
+            try:
+                before_open = os.lstat(target)
+            except OSError as stat_error:
+                raise PathRefused(
+                    REASON_UNREADABLE,
+                    f"{target} cannot be opened: {stat_error}",
+                    path=str(target),
+                ) from stat_error
+            _validate_existing_target(before_open, target, overwrite=True)
+            try:
+                handle = open(target, "r+b", buffering=0)
+            except OSError as open_error:
+                raise PathRefused(
+                    REASON_UNREADABLE,
+                    f"{target} cannot be opened: {open_error}",
+                    path=str(target),
+                ) from open_error
+        except OSError as error:
+            if _is_link_or_reparse(target):
+                raise PathRefused(
+                    REASON_SYMLINK, f"{target} is a symlink", path=str(target)
+                ) from error
+            raise PathRefused(
+                REASON_UNREADABLE, f"{target} cannot be opened: {error}", path=str(target)
+            ) from error
+
+    with handle:
+        fd = handle.fileno()
         opened = os.fstat(fd)
+        if path_is_reparse(opened):
+            raise PathRefused(
+                REASON_SYMLINK, f"{target} is a symlink", path=str(target)
+            )
         if not stat.S_ISREG(opened.st_mode):
             raise PathRefused(
                 REASON_NOT_REGULAR, f"{target} is not a regular file", path=str(target)
             )
-        actual = _descriptor_path(fd)
-        if actual is None:
-            # Unlike a read, a write cannot fall back to an inode comparison
-            # with a file it is creating: no reported path, no write.
+        parent_after = _verify_parent(parent, target, policy)
+        if (parent_after.st_dev, parent_after.st_ino) != (
+            parent_before.st_dev,
+            parent_before.st_ino,
+        ):
+            raise PathRefused(
+                REASON_UNVERIFIED,
+                "the destination directory's real location could not be verified",
+                path=None,
+            )
+        try:
+            current_target = os.lstat(target)
+        except OSError as error:
+            raise PathRefused(
+                REASON_UNVERIFIED,
+                "the opened file's real location could not be verified",
+                path=None,
+            ) from error
+        if stat.S_ISLNK(current_target.st_mode) or path_is_reparse(current_target):
+            raise PathRefused(
+                REASON_SYMLINK, f"{target} is a symlink", path=str(target)
+            )
+        if (opened.st_dev, opened.st_ino) != (
+            current_target.st_dev,
+            current_target.st_ino,
+        ):
             raise PathRefused(
                 REASON_UNVERIFIED,
                 "the opened file's real location could not be verified",
                 path=None,
             )
-        _decide(actual, policy)
+        if before_open is not None and (opened.st_dev, opened.st_ino) != (
+            before_open.st_dev,
+            before_open.st_ino,
+        ):
+            raise PathRefused(
+                REASON_UNVERIFIED,
+                "the opened file's real location could not be verified",
+                path=None,
+            )
         if opened.st_nlink > 1:
-            # A second name can live in a denied root while this descriptor's
-            # reported path is allowed.  Never truncate a multiply-linked file
-            # and never echo the apparently harmless alias: it names a secret.
             raise PathRefused(
                 REASON_HARDLINK,
                 "a multiply-linked destination cannot be overwritten",
                 path=None,
             )
         os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
         view = memoryview(data)
         while view:
             written = os.write(fd, view)
             view = view[written:]
         os.fsync(fd)
-    finally:
-        os.close(fd)
     return target
 
 

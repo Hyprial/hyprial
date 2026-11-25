@@ -178,7 +178,9 @@ def test_reply_to_bare_registered_sender_reaches_the_canonical_mailbox(
     assert [item["messageId"] for item in pending["messages"]] == [
         replied["replyMessageId"]
     ]
-    assert pending["messages"][0]["from"] == "agent:op:node-1:dispatcher"
+    dispatcher = app.agents.require("dispatcher")
+    assert pending["messages"][0]["from"] == dispatcher.uri
+    assert dispatcher.uri == f"agent:op:node-1:{dispatcher.agent_id}"
 
 
 def test_reply_to_canonical_sender_reaches_the_same_mailbox(
@@ -215,42 +217,42 @@ def test_reply_to_canonical_sender_reaches_the_same_mailbox(
 def test_reply_to_unclaimed_local_identity_lands_in_the_local_inbox(
     tmp_path: Path,
 ) -> None:
-    """A canonical URI naming THIS node is locally deliverable, claimed or not.
+    """A reply to a self-node name nothing claims is refused, not parked.
 
-    The local-first transport treats a self-node URI as a local delivery
-    object (registration governs wake, never deliverability), and the read
-    side canonicalizes a bare --from to the same key — so the reply neither
-    rots in the outbox nor is refused: it waits in the durable inbox for
-    its reader.
+    Before the id-form flip the local-first transport committed such a reply
+    into the durable inbox for a reader that might register later.  Since
+    the flip message.reply checks the stored sender like message.send
+    (contract/identity/agent-addressing.md): a name nothing on this node
+    claims is TARGET_UNRESOLVED and the original message stays pending.
+    The replier is a registered identity (resolve-or-reject, Allen b) and
+    the original row is queued at its id address, the only one it reads.
     """
 
     app = application(tmp_path, loopback=True)
+    app.handle("agent.create", {"name": "responder"})
     ghost = InboxMessage(
         message_id="ghost-dispatch",
         conversation_id="ghost-conversation",
         sender="agent:op:node-1:ghost",
-        recipient="agent:op:node-1:responder",
+        recipient=app.agents.require("responder").uri,
         payload=b'{"message":"dispatch"}',
         intent="request",
         lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
         created_at_ms=1,
     )
     assert app._inbox.receive(ghost).acknowledged is True
-    # The replier is a registered identity (resolve-or-reject, Allen b).
-    app.handle("agent.create", {"name": "responder"})
 
-    replied = app.handle(
-        "message.reply",
-        {"from": "responder", "messageId": "ghost-dispatch", "message": "done", "summary": "done"},
-    )
+    with pytest.raises(DaemonRequestError) as refused:
+        app.handle(
+            "message.reply",
+            {"from": "responder", "messageId": "ghost-dispatch", "message": "done", "summary": "done"},
+        )
 
-    assert replied["replied"] is True
-    assert replied["acknowledged"] is True
-    # The reply waits under the unclaimed-but-local identity, and a bare
-    # --from read canonicalizes to exactly that key.
-    pending = app.handle("message.pending.list", {"from": "ghost"})
+    assert refused.value.code == "TARGET_UNRESOLVED"
+    assert refused.value.data == {"target": "agent:op:node-1:ghost"}
+    pending = app.handle("message.pending.list", {"from": "responder"})
     assert [item["messageId"] for item in pending["messages"]] == [
-        replied["replyMessageId"]
+        "ghost-dispatch"
     ]
 
 
@@ -285,25 +287,26 @@ def test_unknown_bare_name_reply_is_rejected_and_stays_pending(
     Legacy pending rows with bare senders still exist (seeded here via the
     arrival path), but queueing the answer under the bare key was an outbox
     island nobody drains — the silent hole.  message.reply now refuses with
-    facts and leaves the original pending.
+    facts and leaves the original pending.  The replier is a registered
+    identity (resolve-or-reject, Allen b) and the legacy row is queued at
+    its id address; the rejection under test is about the reply's
+    RECIPIENT being a node.
     """
 
     app = application(tmp_path, loopback=True)
     assert app._inbox is not None
+    app.handle("agent.create", {"name": "replier"})
     legacy = InboxMessage(
         message_id="legacy-question",
         conversation_id="conversation-1",
         sender="sender-node",
-        recipient="agent:op:node-1:replier",
+        recipient=app.agents.require("replier").uri,
         payload=b'{"message":"question"}',
         intent="request",
         lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
         created_at_ms=1,
     )
     seed_legacy_row(app._inbox, legacy)
-    # The replier is a registered identity (resolve-or-reject, Allen b);
-    # the rejection under test is about the reply's RECIPIENT being a node.
-    app.handle("agent.create", {"name": "replier"})
 
     with pytest.raises(DaemonRequestError) as failure:
         app.handle(

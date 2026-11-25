@@ -201,7 +201,7 @@ def ensure_device_key(home: Path, *, owner: str, device_id: str, environ=None) -
 - `bootstrap/discovery.py`：删除 `TailscaleEndpoints`、`local_tailnet_endpoint`、`tailnet_status_projection`。`ForwardingEndpoints` 新增参数 `directory: Callable[[], Mapping[str, str]]`（deviceId → address，已排除本机），对缺失项调用 `map_peer(peer, address)`，对过期项调用 `unmap`。
 - `application/netendpoints/endpoints.py`：去掉宿主 tailscale 发现和 tailnet listen 推导；directory 回调由 W-D 的目录读取函数提供（经 `self._tailcat_directory_peers()`，W-C 先实现为返回 `{}` 的方法，W-D 接线）。
 - `network/peer_reachability.py`：删除 tailnet status 投影；保留 `tcp_probe`。
-- `configuration/network_profile.py`：`NetworkProfile` 去掉 `control_plane_kind`、`control_plane_url`、`join`，只保留 `org`、`issuer`、`client_id`；`profile.json` 升到 version 2，读取 v1 时忽略这三个字段。删除 `CONTROL_PLANE_KINDS`、`TSNET_STATE_DIRNAME`。`DEFAULT_PROFILE` 中的 `auth.hyprial.com` 字面量保留唯一出处。
+- `configuration/network_profile.py`：`NetworkProfile` 去掉 `control_plane_kind`、`control_plane_url`、`join`，只保留 `org`、`issuer`、`client_id`；`profile.json` 升到 version 2，读取 v1 时忽略这三个字段。删除 `CONTROL_PLANE_KINDS`、`TSNET_STATE_DIRNAME`。默认 OIDC issuer 配置中的 `auth.hyprial.com` 字面量只由 `DEFAULT_PROFILE` 声明。固定 SAN 协议标识另由 identity 的 `binding/profile.py` 单次声明 `BINDING_URI_NAMESPACE`，不从配置 issuer 或 `policyIssuer` 派生；T9 只接受该完整协议常量赋值，其余复制仍拒绝。
 - `configuration/home_migration.py`：删除 tsnet 二进制改名迁移。
 - `configuration/identity.py`：删除 `"tailscale-selfhost"` mode 和错误文案里的 self-host 选项。
 - `ipc/router.py`：`network.whois` 改为 `network.peerKey`。

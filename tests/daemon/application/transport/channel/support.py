@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import json
 import socket
 import threading
@@ -24,16 +26,39 @@ from hyprial.daemon.impl.inbox import (
 
 
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _app_injections
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 
-from hyprial.daemon.impl.links.ports import LinkGate
-from tests.support.links.gate import PermissiveLinkGate
+from tests.support.runtime.environment import UNIT_USER_ID
 
 CANONICAL = "agent:op:node-1:alice"
+
+
+def official_address(app: DaemonApplication, name: str = "alice") -> str:
+    """The address registered local agent ``name`` is reached at: its record's URI.
+
+    Once id-form minting is on this is the agent's ``a.`` id URI, not the
+    name URI ``CANONICAL`` spells.  No agent reads rows at ``CANONICAL``, so
+    ``register`` moves the ``FakeInbox`` rows queued there to this address.
+    """
+
+    agent = app.agents.get(name)
+    assert agent is not None, f"no agent record for {name!r}"
+    return agent.uri
 
 
 class FakeInbox:
     def shutdown(self) -> None:
         return None
+
+    def address_rows_to(self, old: str, new: str) -> None:
+        """Queue the rows held at ``old`` at ``new`` (the agent's official address)."""
+
+        if self.pending.recipient == old:
+            self.pending = replace(self.pending, recipient=new)
+        self.notices = tuple(
+            replace(item, recipient=new) if item.recipient == old else item
+            for item in self.notices
+        )
 
     def __init__(
         self, pending: InboxMessage, notices: tuple[InboxMessage, ...] = ()
@@ -168,7 +193,7 @@ def pending_message() -> InboxMessage:
     return InboxMessage(
         message_id="message-1",
         conversation_id="conversation-1",
-        sender="agent:bob",
+        sender="agent:op:node-1:bob",
         recipient=CANONICAL,
         payload=json.dumps({"message": "durable body"}).encode(),
         intent="request",
@@ -229,19 +254,16 @@ def durable_application(
         state_dir=state_dir,
         socket_path=state_dir / "daemon.sock",
         node_id="node-1",
-        owner="op",
+        owner="op", user_id=UNIT_USER_ID,
         **_app_injections(),
     )
     transport = LoopbackTransport()
-    # One admission slot for the whole daemon, exactly like composition: the
-    # inbox and the application share the object tests bind a gate into.
-    inbox = InboxService(
-        tmp_path / "inbox.sqlite3", transport, link_admission=app.link_admission
-    )
+    inbox = InboxService(tmp_path / "inbox.sqlite3", transport)
     transport.service = inbox
     app._inbox = inbox  # type: ignore[assignment]
     app._harnesses = Providers()  # type: ignore[assignment]
     app._presence = _StubPresence()  # type: ignore[assignment]
+    app._cell_delivery = AdmittingCellDelivery()
     _TEST_APPLICATIONS.append(app)
     _TEST_INBOXES.append(inbox)
     for name in actors:
@@ -268,59 +290,6 @@ def register_actor(
             "channelConfirmed": True,
         },
     )
-
-
-class FakeLinkGate:
-    """A LinkGate double with observable admission and settle answers."""
-
-    def __init__(self, *, admit: bool = True, hint: str = "keep") -> None:
-        self.admit = admit
-        self.hint = hint
-        self.admitted: list[str] = []
-        self.hints: list[str] = []
-        #: Every admission call's full argument set (intent/reply_to matter:
-        #: the read path must forward them, never guess reply-ness itself).
-        self.calls: list[dict[str, object]] = []
-        #: One entry per distinct message id: the gate's W reservation is
-        #: idempotent by (recipient, message_id), so a repeated read must not
-        #: consume a second slot.
-        self.reserved: list[str] = []
-
-    def admit_send(self, **kwargs: object):  # type: ignore[no-untyped-def]
-        from hyprial.daemon.impl.links.ports import Allow
-
-        return Allow()
-
-    def sender_known(self, *, recipient: str, sender: str) -> bool:
-        return True
-
-    def admit_dispatch(
-        self,
-        *,
-        recipient: str,
-        sender: str,
-        message_id: str,
-        now_ms: int,
-        intent: str = "request",
-        reply_to: str | None = None,
-    ) -> bool:
-        self.admitted.append(message_id)
-        self.calls.append(
-            {
-                "recipient": recipient,
-                "sender": sender,
-                "message_id": message_id,
-                "intent": intent,
-                "reply_to": reply_to,
-            }
-        )
-        if message_id not in self.reserved:
-            self.reserved.append(message_id)
-        return self.admit
-
-    def settle_hint(self, *, actor: str, message_id: str):  # type: ignore[no-untyped-def]
-        self.hints.append(message_id)
-        return self.hint
 
 
 class Providers:
@@ -355,24 +324,19 @@ class _StubPresence:
 
 
 def application(
-    tmp_path: Path, inbox: FakeInbox, *, gate: LinkGate | None = None
+    tmp_path: Path, inbox: FakeInbox
 ) -> DaemonApplication:
     app = DaemonApplication(
         state_dir=tmp_path,
         socket_path=tmp_path / "daemon.sock",
         node_id="node-1",
-        owner="op",
+        owner="op", user_id=UNIT_USER_ID,
         **_app_injections(),
     )
     app._inbox = inbox
     app._harnesses = Providers()  # type: ignore[assignment]
     app._presence = _StubPresence()  # type: ignore[assignment]
-    # Explicit premise (wp2.md §4.9 option a): these channel scenarios are not
-    # about links, so a permissive gate keeps agent replies delivering instead
-    # of holding on the unbound slot (ruling 54).
-    # A test that needs its own gate passes it here: the slot takes one bind
-    # only (ruling 67), so the fixture must not pre-bind a second one.
-    app.link_admission.bind(gate if gate is not None else PermissiveLinkGate())
+    app._cell_delivery = AdmittingCellDelivery()
     _TEST_APPLICATIONS.append(app)
     return app
 
@@ -408,6 +372,8 @@ def register(app: DaemonApplication, session_ref: str = "session-1") -> None:
             "channelConfirmed": True,
         },
     )
+    if isinstance(app._inbox, FakeInbox):
+        app._inbox.address_rows_to(CANONICAL, official_address(app))
 
 
 
@@ -669,7 +635,6 @@ __all__ = [
     'CANONICAL',
     'DurableReplyInbox',
     'FakeInbox',
-    'FakeLinkGate',
     'IPC_WAIT_SECONDS',
     'LoopbackTransport',
     'Providers',
@@ -684,6 +649,7 @@ __all__ = [
     '_register_channel_session',
     '_wire_real_presence',
     'application',
+    'official_address',
     'durable_application',
     'pending_message',
     'register',

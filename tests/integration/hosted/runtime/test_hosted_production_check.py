@@ -1,6 +1,6 @@
 """The hosted e2e runners' result follows one explicit precedence and is always reported.
 
-run-host-invite.py main() (shared by run-capability-ledger, run-hosted-start and
+run-hosted-registry.py main() (shared by run-hosted-upgrade and
 run-hosted-upgrade) pings the production daemon before and after a scenario; an
 unchanged pid/epoch is the only evidence the run left production untouched.
 The after-ping always runs (#1004), and the result string is decided by one
@@ -38,7 +38,7 @@ from typing import Any
 import pytest
 
 
-RUNNER = Path(__file__).resolve().parents[4] / 'contract/e2e/run-host-invite.py'
+RUNNER = Path(__file__).resolve().parents[4] / 'contract/e2e/run-hosted-registry.py'
 SUITE = Path(__file__).resolve().parents[4] / 'contract/e2e/run-hosted-suite.py'
 BEFORE = {"pid": 101, "epoch": "e1"}
 
@@ -53,6 +53,13 @@ def _load_module(path: Path, name: str) -> Any:
 
 def _load(name: str) -> Any:
     return _load_module(RUNNER, name)
+
+
+def test_hosted_scenario_pairs_owner_with_cell_authority_uid(tmp_path: Path) -> None:
+    runner = _load(f"scenario_env_{tmp_path.name}")
+    scenario = runner.Scenario(tmp_path, tmp_path / "production.sock")
+
+    assert scenario.env["HYPRIAL_USER_ID"] == runner.paired_user_id("host-owner")
 
 
 def _scenario(stop_error: Exception | None, run_error: Exception | None = None) -> type:
@@ -102,7 +109,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, stop_error: Excepti
             raise write_error
         monkeypatch.setattr(runner, "write_json", broken_write)
     monkeypatch.setattr(runner.tempfile, "mkdtemp", lambda **_: str(root))
-    monkeypatch.setattr(sys, "argv", ["run-host-invite.py", "--production-socket", str(tmp_path / "prod.sock")])
+    monkeypatch.setattr(sys, "argv", ["run-hosted-registry.py", "--production-socket", str(tmp_path / "prod.sock")])
     code = runner.main(_scenario(stop_error, run_error))
     result_path = root / "result.json"
     report = json.loads(result_path.read_text()) if result_path.exists() else {}
@@ -158,7 +165,7 @@ def test_scenario_system_exit_is_inconclusive_not_pass_and_still_propagates(
     root.mkdir()
     monkeypatch.setattr(runner, "production_identity", lambda _path: dict(BEFORE))
     monkeypatch.setattr(runner.tempfile, "mkdtemp", lambda **_: str(root))
-    monkeypatch.setattr(sys, "argv", ["run-host-invite.py", "--production-socket", str(tmp_path / "prod.sock")])
+    monkeypatch.setattr(sys, "argv", ["run-hosted-registry.py", "--production-socket", str(tmp_path / "prod.sock")])
     with pytest.raises(SystemExit):
         runner.main(_scenario(None, SystemExit(3)))
     report = json.loads((root / "result.json").read_text())
@@ -180,7 +187,7 @@ def test_zero_system_exit_propagates_as_failure_not_success(
     root.mkdir()
     monkeypatch.setattr(runner, "production_identity", lambda _path: dict(BEFORE))
     monkeypatch.setattr(runner.tempfile, "mkdtemp", lambda **_: str(root))
-    monkeypatch.setattr(sys, "argv", ["run-host-invite.py", "--production-socket", str(tmp_path / "prod.sock")])
+    monkeypatch.setattr(sys, "argv", ["run-hosted-registry.py", "--production-socket", str(tmp_path / "prod.sock")])
     with pytest.raises(SystemExit) as raised:
         runner.main(_scenario(None, SystemExit(code)))
     assert raised.value.code == 1, "exit 0 would claim success for a non-PASS result"
@@ -223,7 +230,7 @@ def test_failed_result_write_still_prints_the_report(
 def test_suite_manifest_summary_carries_the_error_fields(
         tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     suite = _load_module(SUITE, f"hosted_suite_manifest_{tmp_path.name}")
-    scenario_dir = tmp_path / "host-invite"
+    scenario_dir = tmp_path / "hosted-registry"
     scenario_dir.mkdir()
     errors = {"traceback": "scenario boom", "productionBeforeError": "before boom",
               "productionCheckError": "after boom", "cleanupError": "stop boom",
@@ -231,7 +238,7 @@ def test_suite_manifest_summary_carries_the_error_fields(
     (scenario_dir / "result.json").write_text(json.dumps({
         "head": "0" * 40, "productionBefore": BEFORE, "productionAfter": BEFORE,
         "runnerSha256": "f" * 64, **errors}))
-    suite.publish_evidence(tmp_path, [{"scenario": "host-invite", "result": "FAIL", "exitCode": 1}])
+    suite.publish_evidence(tmp_path, [{"scenario": "hosted-registry", "result": "FAIL", "exitCode": 1}])
     summary = json.loads(capsys.readouterr().out.splitlines()[0])
     assert summary["result"] == "FAIL"
     for key, value in errors.items():

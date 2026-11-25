@@ -11,11 +11,9 @@ import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.shell.impl.cli.commands.daemon.commands import BOOTSTRAP_REFUSAL_CODES
 from hyprial.shell.impl.cli.commands.doctor.credential_backups import (
     codex_credential_backup_doctor_check,
-)
-from hyprial.shell.impl.cli.commands.doctor.dsh_tui import (
-    _dsh_tui_doctor_check,
 )
 from hyprial.shell.impl.cli.commands.doctor.route_session import (
     _route_session_doctor_check,
@@ -26,6 +24,7 @@ from hyprial.shell.impl.cli.commands.doctor.checks.org_metadata import (
 )
 from hyprial.shell.impl.cli.commands.doctor.checks.start_failures import start_failures_doctor_checks
 from hyprial.shell.impl.cli.commands.doctor.checks.redemption import redemption_doctor_check
+from hyprial.shell.impl.cli.commands.doctor.checks.user_agent import user_agent_doctor_check
 from hyprial.shell.impl.cli.commands.doctor.zenoh import _zenoh_doctor_check
 from hyprial.shell.impl.cli.commands.doctor.upgrade_steps import _upgrade_steps_doctor_check
 
@@ -186,15 +185,14 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
             duplicate_check = _duplicate_instance_doctor_check(result)
             if duplicate_check is not None:
                 checks.append(duplicate_check)
+            user_agent_check = user_agent_doctor_check(result)
+            if user_agent_check is not None:
+                checks.append(user_agent_check)
             maintenance_check = _maintenance_doctor_check(result)
             if maintenance_check is not None:
                 checks.append(maintenance_check)
-            dsh_check = _dsh_doctor_check(result)
-            if dsh_check is not None:
-                checks.append(dsh_check)
-            dsh_tui_check = _dsh_tui_doctor_check(result)
-            if dsh_tui_check is not None:
-                checks.append(dsh_tui_check)
+            from .checks.agy import agy_doctor_checks
+            checks.extend(agy_doctor_checks(result))
             lark_check = _lark_inbound_doctor_check(result)
             if lark_check is not None:
                 checks.append(lark_check)
@@ -232,8 +230,22 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
                 }
             )
     except (services.CliError, ipc_errors.TransientDaemonError) as error:
+        bootstrap_check = None
+        if getattr(error, "code", None) in BOOTSTRAP_REFUSAL_CODES:
+            from hyprial.shell.impl.cli.commands.daemon.bootstrap import (
+                bootstrap_daemon_doctor_check,
+                probed_daemon,
+            )
+
+            try:
+                bootstrap_check = bootstrap_daemon_doctor_check(
+                    probed_daemon(services)[0]
+                )
+            except (services.CliError, ipc_errors.TransientDaemonError):
+                bootstrap_check = None
         checks.append(
-            {
+            bootstrap_check
+            or {
                 "name": "daemon",
                 "status": "fail",
                 "detail": str(error),
@@ -427,159 +439,6 @@ def _duplicate_instance_doctor_check(result: JsonObject) -> JsonObject | None:
                 "PID. Automatic remediation is deliberately not performed."
             ),
         },
-    }
-
-
-def _dsh_host_describe(endpoint: str, *, timeout_seconds: float = 2.0) -> object:
-    """Actively probe one DSH endpoint through its public HTTP API."""
-
-    import asyncio
-    import threading
-
-    from hyprial.daemon import DshHttpApi
-
-    api = DshHttpApi(endpoint, timeout_seconds=timeout_seconds)
-    # wait_for alone cannot stop to_thread socket/DNS I/O. The transport's
-    # close fence aborts both, including a server that trickles response bytes.
-    deadline = threading.Timer(timeout_seconds, api.close)
-    deadline.daemon = True
-    deadline.start()
-    try:
-        return asyncio.run(api.call("host.describe", {}))
-    finally:
-        deadline.cancel()
-        api.close()
-
-
-def _dsh_endpoint_label(endpoint: str) -> str:
-    """Diagnostics never print credentials, query strings or deployment paths."""
-
-    from urllib.parse import urlparse
-
-    try:
-        parsed = urlparse(endpoint)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            return "[invalid endpoint]"
-        host = parsed.hostname
-        if ":" in host:
-            host = f"[{host}]"
-        port = f":{parsed.port}" if parsed.port is not None else ""
-        path = "/[redacted-path]" if parsed.path.strip("/") else ""
-        return f"{parsed.scheme}://{host}{port}{path}"
-    except ValueError:
-        return "[invalid endpoint]"
-
-
-def _dsh_doctor_check(result: JsonObject) -> JsonObject | None:
-    """Probe every self-launched DSH endpoint reported by status.
-
-    The endpoint is an output of the worker's current generation, so a worker
-    without one has not readied a child yet; liveness alone is not evidence
-    that its ``/api`` works.
-    """
-    services = get_services()
-
-    raw_connectors = result.get("connectors")
-    if not isinstance(raw_connectors, list):
-        return None
-    connectors = [
-        item
-        for item in raw_connectors
-        if isinstance(item, dict) and item.get("runtime") == "dsh"
-    ]
-    if not connectors:
-        return None
-
-    missing = sorted(
-        str(item.get("name"))
-        for item in connectors
-        if not isinstance(item.get("endpoint"), str) or not item.get("endpoint")
-    )
-    endpoints = sorted({
-        item["endpoint"].rstrip("/") for item in connectors
-        if isinstance(item.get("endpoint"), str) and item["endpoint"]
-    })
-    labels = {endpoint: _dsh_endpoint_label(endpoint) for endpoint in endpoints}
-    unreachable: dict[str, str] = {}
-    not_ready: list[str] = []
-    unprobed: list[str] = []
-    # A large roster must not multiply the command's network wait by N.
-    deadline = services.time.monotonic() + 4.0
-    for endpoint in endpoints:
-        remaining = deadline - services.time.monotonic()
-        if remaining <= 0:
-            unprobed.append(endpoint)
-            continue
-        try:
-            description = services._dsh_host_describe(endpoint, timeout_seconds=min(2.0, remaining))
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            # HTTP error bodies and exception strings can contain credentials.
-            unreachable[endpoint] = type(error).__name__
-            continue
-        if (
-            not isinstance(description, dict)
-            or not isinstance(description.get("provider"), str)
-            or not description["provider"].strip()
-            or not isinstance(description.get("model"), str)
-            or not description["model"].strip()
-        ):
-            not_ready.append(endpoint)
-
-    metrics: JsonObject = {
-        "endpoints": [labels[e] for e in endpoints],
-        "reachable": [labels[e] for e in endpoints if e not in unreachable and e not in unprobed],
-        "unreachable": [labels[e] for e in sorted(unreachable)],
-        "missingModelConfiguration": [labels[e] for e in not_ready],
-        "unprobed": [labels[e] for e in unprobed],
-        "missingEndpoint": missing,
-    }
-    action = {
-        "command": "hyprial doctor --json",
-        "description": (
-            "Inspect the worker's self-launched DSH child (its status endpoint "
-            "and dshHome, plus the child io log) and model configuration, then "
-            "rerun the probe."
-        ),
-    }
-    if unreachable:
-        details = "; ".join(
-            f"{labels[endpoint]}: {unreachable[endpoint]}" for endpoint in sorted(unreachable)
-        )
-        return {
-            "name": "dsh-endpoint",
-            "status": "fail",
-            "detail": f"DSH endpoint unreachable: {details}",
-            "action": action,
-            "metrics": metrics,
-        }
-    if not_ready:
-        return {
-            "name": "dsh-endpoint",
-            "status": "fail",
-            "detail": (
-                "DSH endpoint is reachable but host.describe did not expose a "
-                f"configured model route: {', '.join(labels[e] for e in not_ready)}"
-            ),
-            "action": action,
-            "metrics": metrics,
-        }
-    if missing or unprobed:
-        return {
-            "name": "dsh-endpoint",
-            "status": "warn",
-            "detail": (
-                "DSH probe incomplete: a worker has no live self-launched "
-                "generation reporting an endpoint, or the total probe budget "
-                "was exhausted"
-            ),
-            "action": action,
-            "metrics": metrics,
-        }
-    return {
-        "name": "dsh-endpoint",
-        "status": "ok",
-        "detail": "DSH host.describe reachable with model configuration; inference, credentials and quota were not tested",
-        "metrics": metrics,
     }
 
 
@@ -938,7 +797,7 @@ def doctor(
 
     payload = _doctor_result(fix=fix)
     try:
-        services.runtime.execute(lambda: payload, json_output=json_output)
+        services.runtime.execute(lambda: payload, json_output=json_output, ensure_daemon=False)
     except typer.Exit:
         # The shared emitter maps ``ok is False`` to exit 1.  Doctor needs a
         # third answer: nothing is broken, but at least one check could not be

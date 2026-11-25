@@ -8,7 +8,8 @@ import time
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
+from hyprial.kernel import ActorSpec, AdmissionResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,15 +28,15 @@ class _Reply:
 
 
 class ControlIoOwner:
-    def __init__(self, exchange, *, capacity=32, timeout=16.0):
+    def __init__(self, exchange, *, capacity=32, timeout=16.0, actor_host=None):
         self._exchange = exchange
         self._capacity = capacity
         self._timeout = timeout
         self._guard = threading.Lock()
         self._pending = {}
         self._closed = False
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._hosts = ActorHostCustody(actor_host, owner="lark-worker-control")
+        self._cell = self._hosts.host.spawn(
             ActorSpec(
                 name="lark-control-io",
                 handler_factory=lambda: self._receive,
@@ -56,7 +57,7 @@ class ControlIoOwner:
             if self._closed or len(self._pending) >= self._capacity:
                 return False
             self._pending[command.operation_id] = reply
-            result = self._runtime.tell(self._handle, command)
+            result = self._cell.tell(command)
             if result is not AdmissionResult.ACCEPTED:
                 self._pending.pop(command.operation_id)
                 return False
@@ -89,4 +90,6 @@ class ControlIoOwner:
 
     def close(self, timeout=2.0):
         self.close_admission()
-        return self._runtime.stop(self._handle, timeout)
+        stopped = self._cell.drain(timeout).complete
+        self._hosts.shutdown(timeout)
+        return stopped

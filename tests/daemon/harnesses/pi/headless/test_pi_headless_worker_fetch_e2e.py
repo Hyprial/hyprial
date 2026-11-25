@@ -110,7 +110,8 @@ async def test_pi_headless_worker_fetch_path_is_not_rejected(
     assert identity is not None
     worker_uri = identity["HYPRIAL_WORKER_ACTOR"]
     worker_ref = identity["HYPRIAL_WORKER_SESSION_REF"]
-    assert worker_uri == f"agent:{OWNER}:{NODE}:{WORKER}"
+    assert worker_uri == started["actor"]
+    assert worker_uri.startswith(f"agent:{OWNER}:{NODE}:a.")
 
     # 1. The worker-channel fetch, signed exactly as the daemon provisioned
     #    it (build_worker_channel composes this very command for the worker;

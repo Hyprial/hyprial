@@ -173,3 +173,28 @@ def test_failed_process_start_reclaims_its_threads_after_stop(
         time.sleep(0.01)
     assert not process._thread.is_alive()
     assert leaked == []
+
+
+@pytest.mark.parametrize("marker", [False, True])
+def test_definite_model_start_failure_stops_reconnects(tmp_path, marker):
+    attempts = []
+    launch = spec()
+    child = "import sys; sys.stderr.write(" + repr("HYPRIAL_PI_START_FAILURE:MODEL_UNAVAILABLE\n" if marker else "temporary connection failure\n") + "); sys.exit(1)"
+
+    def client():
+        attempts.append(1)
+        return PiRpcClient(launch, "invalid-model", command=(sys.executable, "-c", child),
+                           startup_timeout_seconds=1, settle_grace_seconds=0.01)
+
+    process = PiRpcProcess(launch, client_factory=client, reconnect_delay_seconds=0.01)
+    try:
+        assert not process.wait_ready(timeout=0.5)
+        if marker:
+            assert len(attempts) == 1
+            assert getattr(process.last_failure, "permanent_start_failure", False)
+            assert "configured Pi model is unavailable" in process.last_error
+        else:
+            assert len(attempts) > 1
+            assert not getattr(process.last_failure, "permanent_start_failure", False)
+    finally:
+        process.stop()

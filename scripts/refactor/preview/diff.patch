@@ -1,0 +1,1120 @@
+--- a/contract/e2e/_codex_deepseek_exec.py
++++ b/contract/e2e/_codex_deepseek_exec.py
+@@ -14,7 +14,7 @@
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+ 
+ from _deepseek import MODEL, PROVIDER, deepseek_environment
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.model_provider import codex_provider_configuration
+ 
+ 
+--- a/contract/e2e/probe-codex-preapproval.py
++++ b/contract/e2e/probe-codex-preapproval.py
+@@ -97,7 +97,7 @@
+ 
+ sys.path.insert(0, str(ROOT / "src"))
+ from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses import codex as codex_module
+ from hyprial.harnesses.codex import CodexAppServerProcess
+ from hyprial.harnesses.worker_channel import build_worker_channel
+--- a/contract/e2e/run-codex-app-server.py
++++ b/contract/e2e/run-codex-app-server.py
+@@ -29,7 +29,7 @@
+ 
+ sys.path.insert(0, str(ROOT / "src"))
+ from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.codex import CodexAppServerProcess
+ 
+ 
+--- a/contract/e2e/run-dsh-worker.py
++++ b/contract/e2e/run-dsh-worker.py
+@@ -47,7 +47,7 @@
+ )
+ 
+ from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.dsh import DshHarnessProcess, DshHttpApi
+ 
+ SCENARIO = "E2E-014"
+--- a/contract/e2e/run-hosted-transfer.py
++++ b/contract/e2e/run-hosted-transfer.py
+@@ -26,7 +26,7 @@
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+ 
+ from _daemon_runner import IsolatedDaemon, ROOT, free_tcp_endpoint, resolve_hyprial
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ 
+ 
+ SCOPE = "controlled-container-receive-bind-only"
+--- a/desktop/scripts/probe-real-codex.py
++++ b/desktop/scripts/probe-real-codex.py
+@@ -50,7 +50,7 @@
+ 
+ 
+ async def run():
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+     from hyprial.harnesses.codex import CodexAppServerClient
+ 
+     spec = HarnessLaunchSpec(
+--- a/desktop/scripts/probe-real-sdk.py
++++ b/desktop/scripts/probe-real-sdk.py
+@@ -70,7 +70,7 @@
+ 
+ 
+ async def run():
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+     from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient
+ 
+     spec = HarnessLaunchSpec(
+--- a/desktop/scripts/probe-sdk-ownership.py
++++ b/desktop/scripts/probe-sdk-ownership.py
+@@ -16,7 +16,7 @@
+ 
+ 
+ async def check(stubborn):
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+     from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient
+     from hyprial.platform.windows_process import process_identity
+ 
+--- a/src/hyprial/agents/worker_state.py
++++ b/src/hyprial/agents/worker_state.py
+@@ -15,7 +15,7 @@
+ 
+ from hyprial.actor_runtime import AdmissionResult
+ from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.persistent_config import atomic_json_write
+ 
+ 
+--- a/src/hyprial/cli.py
++++ b/src/hyprial/cli.py
+@@ -9451,7 +9451,7 @@
+     actor_name = _interactive_actor_name(name)
+     # A5: the agent exists before the TUI does. This is also where a duplicate
+     # name is refused -- before a Claude process has been spawned.
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+     from hyprial.harnesses.model_provider import claude_provider_environment
+ 
+     provider_spec = HarnessLaunchSpec(
+@@ -10080,7 +10080,7 @@
+     daemon can record it on the registration.
+     """
+ 
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+     from hyprial.harnesses.model_provider import pi_model_args
+     from hyprial.uri import agent_uri_actor
+     from hyprial.harnesses.pi import PI_HARNESS_ATTACH_EXTENSION
+@@ -10325,7 +10325,7 @@
+     clean detach.  The socket carrier's turn/inbox/FIFO behavior lands in PR2.
+     """
+ 
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+     from hyprial.agents.runtime import SharedCredentialBinding
+     from hyprial.harnesses.codex import (
+         CodexAppServerRpcError,
+@@ -11101,7 +11101,7 @@
+ 
+     for name in (
+         "hyprial.autoupdate",
+-        "hyprial.daemon.desired_state",
++        "hyprial.kernel",
+         # 3c116ad2: the post-restart confirmation reads ping's phase and
+         # derives its poll budget here (pure arithmetic over the desired
+         # state's rows) -- lazily in cli.py, so it must cross the install
+--- a/src/hyprial/daemon/__init__.py
++++ b/src/hyprial/daemon/__init__.py
+@@ -21,9 +21,9 @@
+     DesiredStateError,
+     DesiredStateStore,
+     InteractiveSession,
+-    HarnessLaunchSpec,
+     ZenohEndpoints,
+ )
++from ..kernel import HarnessLaunchSpec
+ from .service import (
+     LAUNCHD_LABEL,
+     ServiceConfig,
+--- a/src/hyprial/daemon/api.py
++++ b/src/hyprial/daemon/api.py
+@@ -9,7 +9,7 @@
+ 
+ from hyprial.contracts import ipc_errors
+ 
+-from .desired_state import HarnessLaunchSpec
++from ..kernel import HarnessLaunchSpec
+ 
+ 
+ def _freeze_delivery_json(value: object) -> object:
+--- a/src/hyprial/daemon/application.py
++++ b/src/hyprial/daemon/application.py
+@@ -242,9 +242,9 @@
+ from .desired_state import (
+     DesiredState,
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+     InteractiveSession,
+ )
++from ..kernel import HarnessLaunchSpec
+ from .exit_independence import do_not_exit, finish_shutdown
+ from .shutdown_stall import (
+     STALL_DUMP_SIGNAL,
+--- a/src/hyprial/daemon/composition.py
++++ b/src/hyprial/daemon/composition.py
+@@ -126,7 +126,9 @@
+     StopAdapterCommand,
+ )
+ 
+-from .desired_state import DesiredStateError, DesiredStateStore, HarnessLaunchSpec
++from .desired_state import DesiredStateError, DesiredStateStore, 
++
++from ..kernel import HarnessLaunchSpec
+ from .session_actor import SessionActor
+ 
+ 
+--- a/src/hyprial/daemon/harness_actor.py
++++ b/src/hyprial/daemon/harness_actor.py
+@@ -32,7 +32,8 @@
+     ManagedHarnessProcess,
+     StreamingHarnessProcess,
+ )
+-from .desired_state import DesiredStateError, DesiredStateStore, HarnessLaunchSpec
++from .desired_state import DesiredStateError, DesiredStateStore, 
++from ..kernel import HarnessLaunchSpec
+ from .desired_state_io import (
+     DesiredStateIoCompleted,
+     DesiredStateIoPort,
+--- a/src/hyprial/daemon/pac_actor.py
++++ b/src/hyprial/daemon/pac_actor.py
+@@ -10,7 +10,7 @@
+ from pathlib import Path
+ from typing import Any, Callable, Protocol
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.lifecycle_manager import LifecycleOperation
+ from hyprial.pac.lifecycle import (
+     ActorCoordinator,
+--- a/src/hyprial/daemon/state_persistence.py
++++ b/src/hyprial/daemon/state_persistence.py
+@@ -22,9 +22,11 @@
+ from hyprial.cost_counters import CallCostCounters
+ 
+ from .desired_state import (
+-    DesiredState, DesiredStateStore, HarnessLaunchSpec, InteractiveSession,
++    DesiredState, DesiredStateStore, InteractiveSession,
+     PendingSessionAgentEffect,
+ )
++
++from ..kernel import HarnessLaunchSpec
+ from .lifecycle_manager import (
+     LifecycleOperation,
+     LifecycleState,
+--- a/src/hyprial/daemon/supervisor.py
++++ b/src/hyprial/daemon/supervisor.py
+@@ -14,7 +14,8 @@
+ from pathlib import Path
+ 
+ from .api import HarnessDelivery, HarnessLauncher, HarnessResult
+-from .desired_state import DesiredStateStore, HarnessLaunchSpec
++from .desired_state import DesiredStateStore, 
++from ..kernel import HarnessLaunchSpec
+ from .harness_ports import HarnessAdapterRegistrationProjection
+ from .harness_actor import (
+     HarnessRestoreSummary,
+--- a/src/hyprial/harnesses/agent_sdk.py
++++ b/src/hyprial/harnesses/agent_sdk.py
+@@ -19,7 +19,7 @@
+     whitelist_replacement_environment,
+ )
+ from hyprial.agents.runtime import AgentRuntimeContext
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.log import Logger
+ from hyprial.transfer.container import (
+     CONTAINER_SDK_PYTHON,
+--- a/src/hyprial/harnesses/claude.py
++++ b/src/hyprial/harnesses/claude.py
+@@ -7,7 +7,7 @@
+ from typing import TYPE_CHECKING
+ from uuid import uuid4
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ 
+ from .common import (
+     ConnectorOptions,
+--- a/src/hyprial/harnesses/codex.py
++++ b/src/hyprial/harnesses/codex.py
+@@ -42,7 +42,7 @@
+     validate_shared_credential_binding,
+     validate_shared_credential_environment,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.transfer.container import wrap_worker_launch
+ from hyprial.log import Logger
+ 
+--- a/src/hyprial/harnesses/dsh.py
++++ b/src/hyprial/harnesses/dsh.py
+@@ -31,7 +31,7 @@
+ import yaml
+ 
+ from hyprial._dsh_resolver import resolve_hostname
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.log import Logger
+ 
+ from .owned_process import OwnedProcessGroup
+--- a/src/hyprial/harnesses/launcher.py
++++ b/src/hyprial/harnesses/launcher.py
+@@ -7,7 +7,7 @@
+ from pathlib import Path
+ 
+ from hyprial.daemon.api import ManagedHarnessProcess
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ 
+ from .agent_sdk import ClaudeAgentSdkProcess
+ from .capabilities import Capability, CapabilitySupport, SupportLevel, support
+--- a/src/hyprial/harnesses/model_provider.py
++++ b/src/hyprial/harnesses/model_provider.py
+@@ -18,7 +18,7 @@
+ from collections.abc import Mapping
+ from pathlib import Path
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ 
+ DEEPSEEK_PROVIDER = "deepseek"
+ DEEPSEEK_MODEL = "deepseek-flash"
+--- a/src/hyprial/harnesses/pi.py
++++ b/src/hyprial/harnesses/pi.py
+@@ -7,7 +7,7 @@
+ from typing import TYPE_CHECKING
+ from uuid import uuid4
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ 
+ from .common import (
+     ConnectorOptions,
+--- a/src/hyprial/harnesses/pi_rpc.py
++++ b/src/hyprial/harnesses/pi_rpc.py
+@@ -30,7 +30,7 @@
+ from uuid import uuid4
+ 
+ from hyprial.contracts import ipc_errors
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.transfer.container import CONTAINER_PI_EXTENSION, wrap_worker_launch
+ from hyprial.log import Logger
+ 
+--- a/src/hyprial/harnesses/python_worker.py
++++ b/src/hyprial/harnesses/python_worker.py
+@@ -29,7 +29,7 @@
+     ProcessLivenessState,
+     classify_harness_failure,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.log import Logger
+ 
+ from .capabilities import concurrency
+--- a/src/hyprial/management.py
++++ b/src/hyprial/management.py
+@@ -11,7 +11,9 @@
+ from typing import Any, Protocol
+ from uuid import uuid4
+ 
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_ports import HarnessAdapterRegistrationProjection
+ from hyprial.daemon.ownership import DaemonStateOwnershipFence
+ 
+--- a/src/hyprial/squire/setup.py
++++ b/src/hyprial/squire/setup.py
+@@ -16,7 +16,7 @@
+ from pathlib import Path
+ from typing import Protocol, runtime_checkable
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.management import (
+     EnsureSquireRegistryCommand,
+     RegistryManagementHandler,
+--- a/tests/actor_runtime/test_session_agent_actors.py
++++ b/tests/actor_runtime/test_session_agent_actors.py
+@@ -36,8 +36,8 @@
+ from hyprial.contracts.ports import PortAdmission, PortCommandRejected
+ from hyprial.daemon.desired_state import (
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+-)
++    )
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.lifecycle_receipts import (
+     LifecycleMutationCompleted,
+     LifecycleMutationRequest,
+--- a/tests/test_actor_preserved_restore_threshold_states.py
++++ b/tests/test_actor_preserved_restore_threshold_states.py
+@@ -18,7 +18,7 @@
+ )
+ from hyprial.contracts.ports import PortAdmission
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.lifecycle_manager import LifecycleState
+ from hyprial.daemon.bounded_cadence import BoundedCadence
+ from hyprial.pac.restore_facts import PacRestoreFacts
+--- a/tests/test_agent_entity.py
++++ b/tests/test_agent_entity.py
+@@ -36,9 +36,9 @@
+ )
+ from hyprial.daemon.desired_state import (
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+     InteractiveSession,
+ )
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.lifecycle_manager import (
+     LifecycleKind,
+     LifecycleOperation,
+--- a/tests/test_agent_env_close.py
++++ b/tests/test_agent_env_close.py
+@@ -38,7 +38,7 @@
+ 
+ 
+ def _spec(harness: str = "codex", **kwargs):
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     return HarnessLaunchSpec(harness, "worker", True, **kwargs)
+ 
+--- a/tests/test_agent_env_injection.py
++++ b/tests/test_agent_env_injection.py
+@@ -45,7 +45,7 @@
+ 
+ 
+ def _spec(**kwargs):
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     return HarnessLaunchSpec(harness="pi", name="worker", headless=True, **kwargs)
+ 
+--- a/tests/test_agent_home_p23_cc_native.py
++++ b/tests/test_agent_home_p23_cc_native.py
+@@ -34,7 +34,7 @@
+     AgentRuntimeContext,
+     resolve_agent_runtime_context,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses import tmux as tmux_mod
+ from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient
+ from hyprial.harnesses.claude_runtime import (
+--- a/tests/test_agent_sdk_dependency.py
++++ b/tests/test_agent_sdk_dependency.py
+@@ -21,7 +21,7 @@
+ import pytest
+ 
+ import hyprial.harnesses.agent_sdk as agent_sdk_module
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.agent_sdk import (
+     AGENT_SDK_VERSION,
+     IsolatedAgentSdkClient,
+--- a/tests/test_agent_sdk_driver.py
++++ b/tests/test_agent_sdk_driver.py
+@@ -26,7 +26,7 @@
+     resolve_agent_runtime_context,
+ )
+ from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.agent_sdk import (
+     AGENT_SDK_VERSION,
+     ClaudeAgentSdkProcess,
+--- a/tests/test_agent_sdk_force_stop.py
++++ b/tests/test_agent_sdk_force_stop.py
+@@ -16,7 +16,7 @@
+ 
+ import pytest
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.agent_sdk import ClaudeAgentSdkProcess, IsolatedAgentSdkClient
+ from hyprial.harnesses.codex import PROCESS_FORCE_JOIN_SECONDS, _OwnedProcessGroup
+ 
+--- a/tests/test_atomic_lifecycle_ports.py
++++ b/tests/test_atomic_lifecycle_ports.py
+@@ -23,9 +23,9 @@
+ from hyprial.contracts.ports import PortAdmission, PortCommandRejected
+ from hyprial.daemon.desired_state import (
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+     InteractiveSession,
+ )
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.application import DaemonApplication
+ from hyprial.daemon.atomic_lifecycle_ports import AtomicLifecycleDomainPort
+ from hyprial.daemon.composition import (
+--- a/tests/test_cli_adapter_remove.py
++++ b/tests/test_cli_adapter_remove.py
+@@ -77,7 +77,8 @@
+ 
+ 
+ def _seed_desired_state(home: Path, *, provider: bool = True, pin: bool = True) -> None:
+-    from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++    from hyprial.daemon.desired_state import DesiredStateStore, 
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     store = DesiredStateStore(home / "desired-state.json")
+     if provider:
+--- a/tests/test_cli_pi_interactive.py
++++ b/tests/test_cli_pi_interactive.py
+@@ -321,7 +321,7 @@
+     """Item 4: the interactive pty connector passes session refs through the
+     same [A-Za-z0-9._-] translation as the RPC boundary (#192 follow-up)."""
+ 
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+     from hyprial.harnesses.pi import PiConnector
+ 
+     spec = HarnessLaunchSpec(
+--- a/tests/test_cli_upgrade_restart.py
++++ b/tests/test_cli_upgrade_restart.py
+@@ -824,8 +824,9 @@
+     from hyprial.daemon.desired_state import (
+         DesiredState,
+         DesiredStateStore,
+-        HarnessLaunchSpec,
+-    )
++        )
++
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     state = tmp_path / "state"
+     state.mkdir(parents=True, exist_ok=True)
+--- a/tests/test_codex_agent_home.py
++++ b/tests/test_codex_agent_home.py
+@@ -32,7 +32,7 @@
+     SharedCredentialBinding,
+     resolve_agent_runtime_context,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.codex import (
+     CodexAgentHomeError,
+     CodexAppServerClient,
+--- a/tests/test_codex_app_server.py
++++ b/tests/test_codex_app_server.py
+@@ -20,7 +20,7 @@
+     HarnessResultStatus,
+     StreamingHarnessProcess,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses import HarnessLauncher, PtyHarnessProcess, is_streaming_spec
+ from hyprial.harnesses.codex import (
+     APP_SERVER_STARTUP_MARGIN_SECONDS,
+--- a/tests/test_daemon_readiness_reports.py
++++ b/tests/test_daemon_readiness_reports.py
+@@ -33,7 +33,7 @@
+ )
+ from hyprial.contracts.ports import PortAdmission
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor
+ from hyprial.daemon.harness_ports import (
+     DrainHarnessReadinessCommand,
+--- a/tests/test_daemon_reconcile_watchdog.py
++++ b/tests/test_daemon_reconcile_watchdog.py
+@@ -30,7 +30,7 @@
+ from typing import Any
+ 
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.runtime import ReconcileSummary
+ from hyprial.daemon.supervisor import ManagedHarnessRuntime
+ from hyprial.inbox import InboxService, MemoryDeliveryTransport
+--- a/tests/test_daemon_restore_settlement.py
++++ b/tests/test_daemon_restore_settlement.py
+@@ -34,7 +34,7 @@
+ import pytest
+ 
+ from hyprial.contracts.ports import PortAdmission
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor
+ from hyprial.daemon.harness_ports import (
+     HarnessLaunchProjection,
+--- a/tests/test_desired_state_sqlite_roundtrip.py
++++ b/tests/test_desired_state_sqlite_roundtrip.py
+@@ -50,10 +50,11 @@
+ from hyprial.daemon.desired_state import (
+     DesiredState,
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+     InteractiveSession,
+     PendingSessionAgentEffect,
+ )
++
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.desired_state_sqlite import DesiredStateSqliteShadow
+ from hyprial.daemon.harness_ports import EnsureHarnessCommand, HarnessLaunchProjection
+ from hyprial.daemon.lifecycle_receipts import LifecycleMutationRequest
+--- a/tests/test_desired_state_sqlite_shadow.py
++++ b/tests/test_desired_state_sqlite_shadow.py
+@@ -25,10 +25,11 @@
+ from hyprial.daemon.desired_state import (
+     DesiredState,
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+     InteractiveSession,
+     PendingSessionAgentEffect,
+ )
++
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.desired_state_sqlite import DesiredStateSqliteShadow
+ from hyprial.daemon.harness_ports import EnsureHarnessCommand, HarnessLaunchProjection
+ from hyprial.daemon.lifecycle_receipts import LifecycleMutationRequest
+--- a/tests/test_desired_state_start_timing.py
++++ b/tests/test_desired_state_start_timing.py
+@@ -30,7 +30,8 @@
+ 
+ from hyprial.contracts.ports import PortAdmission
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.desired_state_sqlite import DesiredStateSqliteShadow, _SCHEMA
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor, HarnessRuntimeFacade
+ from hyprial.daemon.harness_ports import (
+--- a/tests/test_dsh_harness.py
++++ b/tests/test_dsh_harness.py
+@@ -10,7 +10,7 @@
+     ChildEnvironmentLaunch,
+     CompleteChildEnvironment,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.dsh import DshApiClient, DshApiError, DshHarnessProcess
+ from hyprial.harnesses.launcher import HarnessLauncher, is_streaming_spec
+ from hyprial.harnesses.worker_channel import WorkerChannel, build_worker_channel
+--- a/tests/test_dsh_interrupt_fence.py
++++ b/tests/test_dsh_interrupt_fence.py
+@@ -11,7 +11,7 @@
+ import pytest
+ 
+ from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ import hyprial.harnesses.dsh as dsh_module
+ from hyprial.harnesses.dsh import DshApiClient, DshApiError, DshHarnessProcess, DshHttpApi
+ 
+--- a/tests/test_dsh_self_launch.py
++++ b/tests/test_dsh_self_launch.py
+@@ -28,7 +28,7 @@
+     CompleteChildEnvironment,
+ )
+ from hyprial.daemon import ManagedHarnessRuntime
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import HarnessProjection, _Record
+ from hyprial.harnesses.dsh import (
+     DshApiError,
+--- a/tests/test_e2e012_codex_thread_lifecycle.py
++++ b/tests/test_e2e012_codex_thread_lifecycle.py
+@@ -101,7 +101,8 @@
+     runner = _runner()
+     state = tmp_path / "state"
+     state.mkdir()
+-    from hyprial.daemon.desired_state import DesiredState, DesiredStateStore, HarnessLaunchSpec
++    from hyprial.daemon.desired_state import DesiredState, DesiredStateStore, 
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     # The runner reads the desired-state AUTHORITY through its store (#386:
+     # JSON on dev, SQLite on intg), so the fixture is written through the same
+--- a/tests/test_final_composition_lifecycle.py
++++ b/tests/test_final_composition_lifecycle.py
+@@ -20,7 +20,7 @@
+     CorrelatedDomainEvents,
+     HarnessPortClient,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor
+ from hyprial.daemon.harness_ports import (
+     EnsureHarnessCommand,
+--- a/tests/test_harness_actor.py
++++ b/tests/test_harness_actor.py
+@@ -18,7 +18,7 @@
+ from hyprial.actor_runtime import ActorState, AdmissionResult
+ from hyprial.contracts.ports import PortAdmission
+ from hyprial.contracts.ports import PortCommandRejected
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.api import HarnessDelivery, HarnessResult, HarnessResultStatus
+ from hyprial.daemon.harness_actor import (
+     HarnessProjection,
+--- a/tests/test_harness_command_pinning.py
++++ b/tests/test_harness_command_pinning.py
+@@ -24,7 +24,8 @@
+     LIFECYCLE_OPERATION_DEADLINE_SECONDS,
+     LIFECYCLE_WAIT_MARGIN_SECONDS,
+ )
+-from hyprial.daemon.desired_state import DesiredStateError, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateError, 
++from hyprial.kernel import HarnessLaunchSpec
+ 
+ 
+ def _spec_json(**overrides: object) -> dict[str, object]:
+--- a/tests/test_harness_model_provider.py
++++ b/tests/test_harness_model_provider.py
+@@ -10,7 +10,7 @@
+ from typer.testing import CliRunner
+ 
+ from hyprial import cli
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_ports import HarnessLaunchProjection
+ from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient
+ from hyprial.harnesses.codex import CodexAppServerClient
+--- a/tests/test_harness_restore_admission.py
++++ b/tests/test_harness_restore_admission.py
+@@ -34,7 +34,7 @@
+ import pytest
+ 
+ from hyprial.daemon import supervisor as supervisor_module
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.supervisor import ManagedHarnessRuntime
+ 
+ 
+--- a/tests/test_harness_result_claims.py
++++ b/tests/test_harness_result_claims.py
+@@ -6,7 +6,7 @@
+ from hyprial.contracts.ports import PortAdmission
+ from hyprial.daemon.api import HarnessResult, HarnessResultStatus
+ from hyprial.daemon.composition import CorrelatedDomainEvents, HarnessPortClient
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor
+ from hyprial.daemon.harness_ports import ClaimHarnessResultsCommand
+ 
+--- a/tests/test_harnesses.py
++++ b/tests/test_harnesses.py
+@@ -7,7 +7,7 @@
+ import pytest
+ 
+ from hyprial.daemon.api import HarnessLauncher as HarnessLauncherProtocol
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses import (
+     OperationStatus,
+     HarnessLauncher,
+--- a/tests/test_hosts_org_batch_liveness.py
++++ b/tests/test_hosts_org_batch_liveness.py
+@@ -81,7 +81,7 @@
+ import pytest
+ 
+ from hyprial.daemon.application import DaemonApplication, _LocalPresence
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.identity import classify_target_identity
+ from hyprial.org.mesh import OrgFetchResult
+ from hyprial.uri import TARGET_KIND_HOST
+--- a/tests/test_inbox_dispatch_ttl_refresh.py
++++ b/tests/test_inbox_dispatch_ttl_refresh.py
+@@ -26,7 +26,8 @@
+ import pytest
+ 
+ from hyprial.daemon.api import HarnessDelivery, HarnessResult, HarnessResultStatus
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.runtime import DaemonEventBridge
+ from hyprial.daemon.supervisor import ManagedHarnessRuntime
+ from hyprial.inbox import (
+--- a/tests/test_lifecycle_failed_remove.py
++++ b/tests/test_lifecycle_failed_remove.py
+@@ -20,7 +20,7 @@
+ 
+ from hyprial.daemon.application import DaemonRequestError, _LocalPresence
+ from hyprial.daemon.composition import CorrelatedDomainEvents, HarnessPortClient
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor
+ from hyprial.daemon.lifecycle_manager import LifecycleOperation
+ from hyprial.daemon.lifecycle_receipts import (
+--- a/tests/test_local_provider_wiring.py
++++ b/tests/test_local_provider_wiring.py
+@@ -19,7 +19,7 @@
+ import urllib.request
+ from pathlib import Path
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.model_provider import (
+     DEEPSEEK_MODEL,
+     claude_provider_environment,
+--- a/tests/test_model_endpoint_override.py
++++ b/tests/test_model_endpoint_override.py
+@@ -16,7 +16,7 @@
+ 
+ import pytest
+ 
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.model_provider import (
+     ANTHROPIC_BASE_URL_ENV,
+     DEEPSEEK_ANTHROPIC_BASE_URL,
+--- a/tests/test_p1_config_roots.py
++++ b/tests/test_p1_config_roots.py
+@@ -27,7 +27,7 @@
+     compose_worker_child_launch,
+     whitelist_replacement_environment,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient
+ from hyprial.harnesses.codex import CodexAppServerClient
+ from hyprial.harnesses.pi_rpc import PiRpcClient
+--- a/tests/test_pi_controlled_loader.py
++++ b/tests/test_pi_controlled_loader.py
+@@ -24,7 +24,7 @@
+     DEFAULT_AGENT_TOOL_PROFILE,
+     resolve_agent_runtime_context,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.pi_loader import (
+     PI_CONTROLLED_LOADER,
+     PI_LOADER_RECEIPT_SCHEMA,
+--- a/tests/test_pi_rpc_process.py
++++ b/tests/test_pi_rpc_process.py
+@@ -12,7 +12,7 @@
+ import pytest
+ 
+ from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus, StreamingHarnessProcess
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses import HarnessLauncher, PtyHarnessProcess
+ from hyprial.harnesses import pi_rpc
+ from hyprial.harnesses.pi_rpc import (
+--- a/tests/test_pi_worker_channel.py
++++ b/tests/test_pi_worker_channel.py
+@@ -22,7 +22,7 @@
+ import pytest
+ 
+ import hyprial.harnesses.launcher as launcher_module
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.launcher import HarnessLauncher
+ from hyprial.harnesses.pi_rpc import (
+     PI_HARNESS_BRIDGE_EXTENSION,
+--- a/tests/test_progress_end_to_end.py
++++ b/tests/test_progress_end_to_end.py
+@@ -17,7 +17,8 @@
+ 
+ from hyprial.daemon import application as daemon_application
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.runtime import DaemonEventBridge
+ from hyprial.daemon.supervisor import ManagedHarnessRuntime
+ from hyprial.harnesses.streaming import ProgressObservation, StreamingTurnProcess
+--- a/tests/test_provider_auth_hook.py
++++ b/tests/test_provider_auth_hook.py
+@@ -26,7 +26,7 @@
+ 
+ from hyprial.actor_runtime import AdmissionResult
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses import agent_sdk as agent_sdk_module
+ from hyprial.harnesses.agent_sdk import ClaudeAgentSdkProcess
+ from hyprial.harnesses.codex import CodexAppServerProcess
+--- a/tests/test_ps_desired_state_reload.py
++++ b/tests/test_ps_desired_state_reload.py
+@@ -29,7 +29,8 @@
+ import pytest
+ 
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.inbox import InboxService, MemoryDeliveryTransport
+ from hyprial.status import build_actor_status_snapshot
+ 
+--- a/tests/test_ps_status_snapshot.py
++++ b/tests/test_ps_status_snapshot.py
+@@ -24,7 +24,8 @@
+ from hyprial.agents import AGENT_HEARTBEAT_TTL_SECONDS
+ from hyprial.contracts.ports import PortAdmission
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.lifecycle_manager import (
+     LifecycleKind,
+     LifecycleOperation,
+--- a/tests/test_python_harness_process.py
++++ b/tests/test_python_harness_process.py
+@@ -11,7 +11,7 @@
+ import pytest
+ 
+ from hyprial.daemon.api import HarnessDelivery
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.top import read_worker_turn_stats
+ from hyprial.harnesses.python_worker import PythonHarnessProcess
+ 
+--- a/tests/test_python_worker.py
++++ b/tests/test_python_worker.py
+@@ -171,7 +171,7 @@
+ 
+ 
+ def _proxy_spec():
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     return HarnessLaunchSpec(
+         harness="user-proxy", name="p", headless=True, args=("--route", "route:a:b")
+--- a/tests/test_restore_failed_persistence_settlement.py
++++ b/tests/test_restore_failed_persistence_settlement.py
+@@ -10,7 +10,8 @@
+ 
+ from hyprial.actor_runtime import ActorState, AdmissionResult
+ from hyprial.contracts.ports import PortCommandRejected
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.desired_state_io import DesiredStateIoPort, DesiredStateOperation
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor, HarnessRuntimeFacade
+ from hyprial.daemon.harness_ports import HarnessRestoreCompleted
+--- a/tests/test_restore_isolation.py
++++ b/tests/test_restore_isolation.py
+@@ -25,9 +25,10 @@
+ from hyprial.daemon.desired_state import (
+     DesiredState,
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+     InteractiveSession,
+ )
++
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.state_db import StateDatabase
+ from test_mcp_channel_owner_migration_e2e import IsolatedHarness
+ 
+--- a/tests/test_restore_threshold_states.py
++++ b/tests/test_restore_threshold_states.py
+@@ -12,7 +12,7 @@
+     desired_generation,
+ )
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.supervisor import ManagedHarnessRuntime
+ from hyprial.cli import _restore_doctor_check
+ 
+--- a/tests/test_session_ref_authority.py
++++ b/tests/test_session_ref_authority.py
+@@ -16,7 +16,8 @@
+     DomainCommandError,
+     HarnessPortClient,
+ )
+-from hyprial.daemon.desired_state import DesiredStateStore, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateStore, 
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import HarnessRuntimeActor, HarnessRuntimeFacade
+ from hyprial.daemon.process_owner import ProcessOwner
+ from hyprial.daemon.harness_ports import (
+--- a/tests/test_smolvm_runtime_state.py
++++ b/tests/test_smolvm_runtime_state.py
+@@ -14,8 +14,8 @@
+     DesiredState,
+     DesiredStateError,
+     DesiredStateStore,
+-    HarnessLaunchSpec,
+-)
++    )
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_actor import _launch_spec
+ from hyprial.daemon.lifecycle_manager import (
+     LifecycleOperation,
+--- a/tests/test_smolvm_runtime_vm.py
++++ b/tests/test_smolvm_runtime_vm.py
+@@ -20,7 +20,7 @@
+     resolve_agent_runtime_context,
+ )
+ from hyprial.contracts.execution_runtime import SmolvmRuntimeSpec
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.codex import CodexAppServerClient, CodexAgentHomeError
+ from hyprial.harnesses.smolvm_runtime import SmolvmWorkerRuntime, mount_roots
+ from hyprial.harnesses.worker_channel import build_worker_channel
+--- a/tests/test_squire_setup_scaffold.py
++++ b/tests/test_squire_setup_scaffold.py
+@@ -10,7 +10,7 @@
+ from typer.testing import CliRunner
+ 
+ from hyprial import cli
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.management import RegistryManagementHandler
+ from hyprial.squire import SetupIdentity, SquireSetup
+ 
+--- a/tests/test_state_persistence_authority.py
++++ b/tests/test_state_persistence_authority.py
+@@ -10,8 +10,9 @@
+ 
+ from hyprial.actor_runtime import ActorState, AdmissionResult
+ from hyprial.daemon.desired_state import (
+-    DesiredState, DesiredStateStore, HarnessLaunchSpec, InteractiveSession,
++    DesiredState, DesiredStateStore, InteractiveSession,
+ )
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.harness_ports import EnsureHarnessCommand, HarnessLaunchProjection
+ from hyprial.daemon.state_db import StateDatabase
+ from hyprial.daemon.lifecycle_receipts import LifecycleMutationRequest
+--- a/tests/test_transfer_container.py
++++ b/tests/test_transfer_container.py
+@@ -17,7 +17,9 @@
+ 
+ import pytest
+ 
+-from hyprial.daemon.desired_state import DesiredStateError, HarnessLaunchSpec
++from hyprial.daemon.desired_state import DesiredStateError, 
++
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.transfer import orchestrator as xfer_orchestrator
+ from hyprial.transfer.container import (
+     CONTAINER_HOME,
+--- a/tests/test_transfer_daemon.py
++++ b/tests/test_transfer_daemon.py
+@@ -23,7 +23,7 @@
+ 
+ from hyprial.contracts.ports import PortAdmission
+ from hyprial.daemon.application import DaemonApplication, DaemonRequestError
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.daemon.lifecycle_manager import (
+     LifecycleKind,
+     LifecycleOperation,
+--- a/tests/test_turn_stall_watch.py
++++ b/tests/test_turn_stall_watch.py
+@@ -23,7 +23,7 @@
+ import pytest
+ 
+ from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.codex import (
+     MANAGED_TURN_IDLE_TIMEOUT_SECONDS,
+     CodexAppServerClient,
+--- a/tests/test_user_addressing.py
++++ b/tests/test_user_addressing.py
+@@ -408,7 +408,8 @@
+ def test_daemon_submits_user_delivery_to_live_proxy_inbox(
+     tmp_path: Path,
+ ) -> None:
+-    from hyprial.daemon.desired_state import DesiredState, HarnessLaunchSpec
++    from hyprial.daemon.desired_state import DesiredState, 
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     app = DaemonApplication(
+         state_dir=tmp_path / "state",
+@@ -470,7 +471,7 @@
+ def test_workflow_user_alert_preserves_resolvable_sender_through_live_proxy(
+     tmp_path: Path, request: pytest.FixtureRequest
+ ) -> None:
+-    from hyprial.daemon.desired_state import HarnessLaunchSpec
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     app = DaemonApplication(
+         state_dir=tmp_path / "state",
+@@ -529,7 +530,8 @@
+ def test_daemon_does_not_select_stopped_proxy(
+     tmp_path: Path,
+ ) -> None:
+-    from hyprial.daemon.desired_state import DesiredState, HarnessLaunchSpec
++    from hyprial.daemon.desired_state import DesiredState, 
++    from hyprial.kernel import HarnessLaunchSpec
+ 
+     app = DaemonApplication(
+         state_dir=tmp_path / "state",
+--- a/tests/test_user_proxy_worker.py
++++ b/tests/test_user_proxy_worker.py
+@@ -16,7 +16,7 @@
+ import pytest
+ 
+ from hyprial.daemon.api import HarnessDelivery, HarnessResult, HarnessResultStatus
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses._user_proxy_worker import (
+     MISSING_RECIPIENT_HINT,
+     decide,
+--- a/tests/test_worker_identity.py
++++ b/tests/test_worker_identity.py
+@@ -25,7 +25,7 @@
+ 
+ from hyprial import cli
+ from hyprial.daemon.application import DaemonApplication, DaemonRequestError
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses import agent_sdk as agent_sdk_module
+ from hyprial.harnesses.agent_sdk import IsolatedAgentSdkClient, create_claude_sdk_client
+ from hyprial.harnesses.launcher import HarnessLauncher
+--- a/tests/test_worker_proxy.py
++++ b/tests/test_worker_proxy.py
+@@ -41,7 +41,7 @@
+     DaemonApplication,
+     compose_daemon_worker_launch,
+ )
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.dispatch.matrix import TIERS
+ from hyprial.harnesses.worker_channel import build_worker_channel
+ 
+--- a/tests/test_worker_proxy_codex_seam.py
++++ b/tests/test_worker_proxy_codex_seam.py
+@@ -33,7 +33,7 @@
+     PROXY_ENVIRONMENT_NAMES,
+ )
+ from hyprial.daemon.application import compose_daemon_worker_launch
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.codex import CodexAppServerClient
+ from hyprial.harnesses.worker_channel import build_worker_channel
+ 
+--- a/tests/test_worker_relay.py
++++ b/tests/test_worker_relay.py
+@@ -24,7 +24,7 @@
+ from hyprial import cli
+ from hyprial.contracts.worker_channel import WorkerBinding
+ from hyprial.daemon.application import DaemonApplication
+-from hyprial.daemon.desired_state import HarnessLaunchSpec
++from hyprial.kernel import HarnessLaunchSpec
+ from hyprial.harnesses.worker_relay import BoundWorkerRelay
+ from hyprial.inbox.api import DeliveryLifecycle, InboxMessage
+ from hyprial.inbox.memory import MemoryDeliveryTransport

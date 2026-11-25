@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "branch_prefixes": ["build/packaging-host-", "feat/packaging-host-"],
+  "base": "origin/dev",
+  "allowed_prefixes": [
+    "clients/native/",
+    "packaging/clients/",
+    "scripts/ci/",
+    "tests/tooling/packaging_host/",
+    ".forgejo/workflows/",
+    "docs/design/packaging-host-split-20261113/",
+    "docs/design/packaging-host-split-20261113.md",
+    "docs/notes/packaging-"
+  ],
+  "forbidden_prefixes": [
+    "gui/",
+    "src/hyprial/",
+    "contract/",
+    "tests/daemon/",
+    "tests/shell/onboarding/",
+    "tests/integration/"
+  ],
+  "tracked_gui_dist": "clients/native/src-tauri/ui/gui/",
+  "main_capability": "clients/native/src-tauri/capabilities/power-pack/main.json",
+  "main_window_source": "clients/native/src-tauri/src/windows.rs",
+  "main_init_marker": "core::init_script(false, false)",
+  "main_init_forbidden": [
+    "core::init_script(false, true)",
+    "core::init_script(true, true)"
+  ],
+  "setup_ui_root": "clients/native/setup-ui/",
+  "setup_ui_forbidden_patterns": [
+    "from 'gui/",
+    "from \"gui/",
+    "import 'gui/",
+    "import \"gui/",
+    "from 'react",
+    "from \"react",
+    "import 'react",
+    "import \"react",
+    "from 'vite",
+    "from \"vite",
+    "@hyprial/gui-app",
+    "src/hyprial"
+  ],
+  "legacy_account_permission": "allow-account-invoke",
+  "ownership": "docs/design/packaging-host-split-20261113/OWNERSHIP.tsv",
+  "ownership_forbidden_owners": ["B", "C"]
+}

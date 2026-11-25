@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tempfile
 import threading
 from types import SimpleNamespace
 
 import pytest
 
+from hyprial.identity import agent_id_for_entity_token
 from hyprial.identity.impl.agents.runtime.grants import CapabilityGrant
 from hyprial.identity.impl.agents.runtime.visibility import visible_targets
 from hyprial.kernel import ipc_errors
@@ -15,10 +17,48 @@ from hyprial.daemon.impl.alias_resolver import daemon_alias_resolver
 from hyprial.daemon.impl.application import DaemonApplication, DaemonRequestError
 from hyprial.daemon.impl.inbox import SubmissionResult
 from hyprial.daemon.impl.inbox.authority.errors import InboxSubmissionOutcomeUnknown
+from hyprial.daemon.impl.orgfs import NodeInfo
 
-VISITOR = "agent:guest:node-1:visitor"
-NATIVE = "agent:op:node-1:native"
-OTHER = "agent:op:node-1:other"
+
+
+def _record(actor: str, owner: str, token: str, hosted_by: str | None) -> SimpleNamespace:
+    """A registry row as the id-form flip stores it: reached at its ``a.`` id."""
+
+    agent_id = agent_id_for_entity_token(token)
+    return SimpleNamespace(
+        actor=actor, owner=owner, machine="node-1", agent_id=agent_id,
+        uri=f"agent:{owner}:node-1:{agent_id}", display_name=None,
+        hosted_by=hosted_by, capabilities={},
+    )
+
+
+RECORDS = (
+    _record("visitor", "guest", "1" * 32, "op"),
+    _record("native", "op", "2" * 32, None),
+    _record("other", "op", "3" * 32, None),
+)
+VISITOR, NATIVE, OTHER = (record.uri for record in RECORDS)
+
+
+def _doc_node() -> NodeInfo:
+    """The declared ``orgfs.read`` result shape, not a loose namespace."""
+
+    return NodeInfo(
+        space_id="space",
+        node_id="node-1",
+        kind="doc",
+        name="readme.md",
+        path="readme.md",
+        size=16,
+        blob_hash=None,
+        doc_id=None,
+        version="v1",
+        modified_by="op",
+        modified_via=None,
+        name_conflict=False,
+        deleted=False,
+        uri="orgfs:op:space:node-1",
+    )
 
 
 class FakeApp(DaemonApplication):
@@ -28,18 +68,10 @@ class FakeApp(DaemonApplication):
         self.owner = "op"
         self.node_id = "node-1"
         self.submitted = []
-        self.rows = {
-            VISITOR: SimpleNamespace(hosted_by="op", capabilities={}),
-            NATIVE: SimpleNamespace(hosted_by=None, capabilities={}),
-            OTHER: SimpleNamespace(hosted_by=None, capabilities={}),
-        }
-        resolver_rows = tuple(
-            SimpleNamespace(actor=name, agent_id=f"a.{name}")
-            for name in ("visitor", "native", "other")
-        )
+        self.rows = {record.uri: record for record in RECORDS}
         self.agents = SimpleNamespace(
             get=lambda actor: self.rows.get(actor),
-            list=lambda: resolver_rows,
+            list=lambda: RECORDS,
         )
         self.aliases = {"native": NATIVE, "visitor": VISITOR}
         self.resolutions = []
@@ -61,6 +93,7 @@ class FakeApp(DaemonApplication):
         self._dispatch_gate_conversations = {}
         self._sender_auth_enforced = True
         self.fences = []
+        self.state_dir = Path(tempfile.mkdtemp(prefix="fake-app-state-"))
         self.sessions = {VISITOR: "visitor-session", NATIVE: "native-session"}
         # #1753 requires live interactive bindings, not registration alone.
         self._agent_liveness = SimpleNamespace(
@@ -237,7 +270,7 @@ def test_bound_native_org_content_read_cannot_skip_session_fence(session_ref):
     app = FakeApp()
     reads = []
     app._require_orgfs_runtime = lambda: SimpleNamespace(facade=SimpleNamespace(
-        stat=lambda *args: SimpleNamespace(kind="doc"),
+        stat=lambda *args: _doc_node(),
         read_text=lambda *args: reads.append(args) or ("fake-org-content", "v1"),
     ))
     with pytest.raises(DaemonRequestError) as error:
@@ -250,7 +283,7 @@ def test_bound_native_org_content_read_cannot_skip_session_fence(session_ref):
 def test_verified_native_and_local_org_content_reads_keep_their_exemption():
     app = FakeApp()
     app._require_orgfs_runtime = lambda: SimpleNamespace(facade=SimpleNamespace(
-        stat=lambda *args: SimpleNamespace(kind="doc"),
+        stat=lambda *args: _doc_node(),
         read_text=lambda *args: ("fake-org-content", "v1"),
     ))
     read = {"spaceId": "space", "path": "readme.md"}

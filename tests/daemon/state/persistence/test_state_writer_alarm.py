@@ -243,7 +243,7 @@ def test_a_failed_tick_still_checks_the_writer(tmp_path: Path, monkeypatch: pyte
         app._close_home_lease()
 
 
-def test_the_real_writer_saturated_by_slow_writes_alarms(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_real_writer_saturated_by_slow_writes_alarms(tmp_path: Path, actor_host, monkeypatch: pytest.MonkeyPatch) -> None:
     # The reviewer's reproduction, shortened: a real authority whose writes
     # take 0.5 s, kept busy by two callers, observed once a second.  The old
     # per-tick rule stayed silent here for 20 s.
@@ -255,7 +255,9 @@ def test_the_real_writer_saturated_by_slow_writes_alarms(tmp_path: Path, monkeyp
     from hyprial.daemon.impl.state_persistence import StatePersistenceAuthority
 
     state_db = StateDatabase(tmp_path / "lifecycle-operations.sqlite3")
-    authority = StatePersistenceAuthority(DesiredStateStore(tmp_path / "desired.json", state_db))
+    authority = StatePersistenceAuthority(
+        DesiredStateStore(tmp_path / "desired.json", state_db), actor_host=actor_host
+    )
     original = authority._journal_store.next_generation
 
     def slow_write():  # type: ignore[no-untyped-def]

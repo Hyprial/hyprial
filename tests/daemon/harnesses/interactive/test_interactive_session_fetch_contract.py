@@ -27,10 +27,10 @@ from hyprial.daemon.impl.inbox import (
 )
 from hyprial.daemon.impl.mcp import StatelessDaemonProxy, create_mcp_server
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 
 
 class CommitWithoutReceiptTransport(MemoryDeliveryTransport):
@@ -65,16 +65,22 @@ def carrier_app(
     source: str,
     *,
     alarms: list[tuple[str, str]] | None = None,
-    sender: str = "channel:lark:test-app",
+    sender: str = "adapter:lark:test-app",
 ) -> tuple[DaemonApplication, InboxService, str, InboxMessage]:
+    """A daemon with one interactive worker and one request queued for it.
+
+    The request is addressed to the worker's official address, the id URI
+    its registration records, since that is the only address it reads.
+    """
+
     actor_name = f"{source}-worker"
-    actor = f"agent:op:node-1:{actor_name}"
+    addresses: set[str] = set()
     transport = CommitWithoutReceiptTransport()
     inbox = InboxService(
         tmp_path / "inbox.sqlite3",
         transport,
         retry_policy=RetryPolicy(),
-        interactive_recipient=lambda recipient: recipient == actor,
+        interactive_recipient=lambda recipient: recipient in addresses,
         alarm_human_delivery=(
             None
             if alarms is None
@@ -93,10 +99,10 @@ def carrier_app(
     app._inbox = inbox
     app._harnesses = object()  # type: ignore[assignment]
     app._presence = EmptyPresence()  # type: ignore[assignment]
+    app._cell_delivery = AdmittingCellDelivery()
     # Explicit premise (wp2.md §4.9 option a): this test is about outbox
     # retirement, not links, so a permissive gate keeps harness_reply
     # delivering instead of holding on an unbound slot (ruling 54).
-    app.link_admission.bind(PermissiveLinkGate())
     app.handle(
         "session.register",
         {
@@ -108,6 +114,8 @@ def carrier_app(
             "runtime": f"{source.split('-', 1)[0]}_interactive",
         },
     )
+    actor = app.agents.require(actor_name).uri
+    addresses.add(actor)
     # Read paths hide rows past their TTL by wall clock, so seed at "now".
     now_ms = time.time_ns() // 1_000_000
     message = InboxMessage(
@@ -299,7 +307,7 @@ def test_headless_daemon_completion_remains_a_noop_safe_retirement(
     message = InboxMessage(
         message_id="message-headless",
         conversation_id="conversation-headless",
-        sender="channel:lark:test-app",
+        sender="adapter:lark:test-app",
         recipient="agent:op:node-1:wk-retry",
         payload=b"work",
         intent="request",
@@ -315,12 +323,9 @@ def test_headless_daemon_completion_remains_a_noop_safe_retirement(
         inbox.close()
 
 
-def test_closed_interactive_carrier_sources_include_dsh_tui() -> None:
-    # dsh-tui is a CLI-hosted interactive carrier: its MCP bridge joins the
-    # same closed register/refresh/heartbeat protocol as the other TUIs.
+def test_closed_interactive_carrier_sources() -> None:
     assert SESSION_CARRIER_SOURCES == {
         "claude-channel",
-        "dsh-channel",
         "pi-extension",
         "codex-app-server",
     }

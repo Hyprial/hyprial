@@ -38,8 +38,10 @@ class LocalFirstDeliveryTransport:
         origin_node: str | None = None,
         local_node_id: str | None = None,
         local_owner: str | None = None,
+        recipient_claimed: Callable[[str], bool] | None = None,
     ) -> None:
         self._inner = inner
+        self._recipient_claimed = recipient_claimed
         self._origin_node = origin_node
         self._local_node_id = local_node_id
         self._local_owner = local_owner
@@ -147,6 +149,20 @@ class LocalFirstDeliveryTransport:
         return self._inner.online_mailboxes()
 
     def transfer_custody(self, mailbox: str, message: InboxMessage) -> bool:
+        """Hand a message to a mailbox, never one this node cannot drain.
+
+        A self-node recipient the injected ``recipient_claimed`` predicate
+        rejects already failed terminally in the local receive (UUID
+        addressing §2.3); a mailbox copy would only park until its TTL.
+        """
+
+        claimed = self._recipient_claimed
+        if (
+            claimed is not None
+            and self._is_self_node_uri(message.recipient)
+            and not claimed(message.recipient)
+        ):
+            return False
         return self._inner.transfer_custody(mailbox, message)
 
     def deliver_notice(self, node: str, message: InboxMessage) -> bool:

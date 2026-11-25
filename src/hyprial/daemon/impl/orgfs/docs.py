@@ -16,14 +16,16 @@ import threading
 
 
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 
-from hyprial.kernel import (
-    ActorHandle,
-    ActorRuntime)
+from hyprial.kernel import ActorCell
 
-from hyprial.kernel import EffectLane
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
+
+
+from hyprial.daemon.impl.orgfs.composition.vocabulary import OrgFsActorHostCustody
 
 
 
@@ -132,6 +134,7 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         author: str = "user:local",
         actor: str | None = None,
         node_id: str = "local",
+        actor_host: ActorHost | None = None,
     ) -> None:
         self.stores = stores
         self.blobs = blobs
@@ -139,6 +142,7 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         self.author = author
         self.actor = actor
         self.node_id = node_id
+        self._actor_hosts = OrgFsActorHostCustody(actor_host)
         self._lock = threading.RLock()
         self._space_locks: dict[str, threading.RLock] = {}
         self._space_state_context = threading.local()
@@ -150,8 +154,7 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         self._effect_failures: list[str] = []
         self._effect_waiters: dict[str, threading.Event] = {}
         self._effect_generation = 1
-        self._effect_runtime: ActorRuntime | None = None
-        self._effect_actor: ActorHandle | None = None
+        self._effect_cell: ActorCell | None = None
         self._effect_lane: EffectLane[_FacadeEffectBatch, _FacadeEffectResult] | None = None
         self._network_effect_lane: EffectLane[str, _FacadeEffectResult] | None = None
         self._network_effect_stop = threading.Event()

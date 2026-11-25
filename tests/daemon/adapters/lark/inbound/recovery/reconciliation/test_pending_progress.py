@@ -74,7 +74,7 @@ def test_pending_pages_make_bounded_chronological_progress(tmp_path, actor, coun
 def test_chat_scoped_live_gate_ignores_other_chats_backlog(tmp_path, actor):
     adapter, _lark, harness, _routes, _frozen = frozen_backlog(tmp_path, actor, 17)
     adapter._state.observe_chat("oc_other", NOW_MS - 59 * 60_000)
-    _routes.pins["lark:oc_other:oc_other"] = actor
+    _routes.bindings["lark:oc_other:oc_other"] = actor
     try:
         outcome = adapter.handle_inbound(inbound_message(
             "other-live", chat_id="oc_other", chat_type="p2p", create_time=str(NOW_MS)

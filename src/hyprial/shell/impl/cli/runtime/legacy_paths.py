@@ -32,9 +32,6 @@ MOVED_ARROW = "  \u2192  "
 MOVED_PREFIXES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("service",), ("org", "service")),
     (("fs",), ("org", "fs")),
-    (("user-proxy",), ("user", "proxy")),
-    (("link",), ("agent", "link")),
-    (("onboarding",), ("init", "onboarding")),
 )
 
 

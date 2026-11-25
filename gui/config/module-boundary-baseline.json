@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "rules": {
+    "feature-structure": [],
+    "cross-feature-deep-import": [],
+    "prod-imports-dev": [],
+    "src-imports-tests": [],
+    "feature-index-exports-mock": [],
+    "primitives-layering": [],
+    "base-layer-references-feature": []
+  }
+}

@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyprial.com/hyprial/daemon-bootstrap-auth.schema.json",
+  "title": "hyprial daemon bootstrap/control channel version 1",
+  "description": "One newline-delimited UTF-8 JSON frame on the daemon-owned control socket. Frames are 1..65536 bytes excluding the newline. Duplicate keys, non-finite numbers, non-UTF-8 bytes, non-object values and any request field outside the exact set are rejected before state changes. Request frames are strict; clients ignore unknown response fields but must validate all documented required fields. See daemon-bootstrap-auth.md for peer identity, proof, receipt, stale-socket and catalog-gate rules.",
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[\\x00-\\x7F]+$",
+      "$comment": "ASCII, non-empty, at most 256 characters, unchanged by Unicode strip()."
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "hmacReceipt": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "hex32": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "hex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "$comment": "Exact JSON integer token; booleans and floats are rejected by the decoder."
+    },
+    "errorCode": {
+      "enum": [
+        "CONTROL_BAD_FRAME",
+        "CONTROL_HANDSHAKE_REQUIRED",
+        "CONTROL_SESSION_EXISTS",
+        "CONTROL_PROOF_REQUIRED",
+        "CONTROL_PROOF_MISMATCH",
+        "CONTROL_CHILD_PROOF_REQUIRED",
+        "CONTROL_CHILD_PROOF_MISMATCH",
+        "CONTROL_PROCESS_MISMATCH",
+        "CONTROL_REGISTRATION_EXISTS",
+        "CONTROL_REGISTRATION_LIMIT",
+        "CONTROL_UNAVAILABLE",
+        "CONTROL_SOCKET_UNSAFE",
+        "CALLER_NOT_AUTHORIZED"
+      ]
+    },
+    "helloRequest": {
+      "type": "object",
+      "required": ["version", "type", "sessionId", "controller", "clientChallenge"],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "hello"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "controller": {"$ref": "#/$defs/text"},
+        "clientChallenge": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": false
+    },
+    "proveChildRequest": {
+      "type": "object",
+      "required": ["version", "type", "sessionId", "childTicket", "childChallenge"],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "prove-child"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "childTicket": {"$ref": "#/$defs/text"},
+        "childChallenge": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": false
+    },
+    "registerHttpRequest": {
+      "type": "object",
+      "required": [
+        "version",
+        "type",
+        "sessionId",
+        "controlProof",
+        "pid",
+        "birth",
+        "childProofId",
+        "childChallenge",
+        "view"
+      ],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "register-http"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "controlProof": {"$ref": "#/$defs/sha256Digest"},
+        "pid": {"$ref": "#/$defs/pid"},
+        "birth": {"$ref": "#/$defs/text"},
+        "childProofId": {"$ref": "#/$defs/text"},
+        "childChallenge": {"$ref": "#/$defs/text"},
+        "view": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": false
+    },
+    "revokeHttpRequest": {
+      "type": "object",
+      "required": ["version", "type", "sessionId", "controlProof", "registrationId"],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "revoke-http"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "controlProof": {"$ref": "#/$defs/sha256Digest"},
+        "registrationId": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": false
+    },
+    "closeRequest": {
+      "type": "object",
+      "required": ["version", "type", "sessionId", "controlProof"],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "close"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "controlProof": {"$ref": "#/$defs/sha256Digest"}
+      },
+      "additionalProperties": false
+    },
+    "errorResponse": {
+      "type": "object",
+      "required": ["version", "type", "code", "message"],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "error"},
+        "code": {"$ref": "#/$defs/errorCode"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 256}
+      },
+      "additionalProperties": true
+    },
+    "helloResponse": {
+      "type": "object",
+      "required": [
+        "version",
+        "type",
+        "sessionId",
+        "protocol",
+        "protocolVersion",
+        "ipcFrameVersion",
+        "phase",
+        "authKinds",
+        "daemonPid",
+        "daemonBirth",
+        "epoch",
+        "homeBinding",
+        "socketBinding",
+        "controllerChallenge",
+        "clientChallenge",
+        "childTicket",
+        "controlProof",
+        "declarationDigest",
+        "controlSocket"
+      ],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "hello"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "protocol": {"const": "hyprial-gui-ipc"},
+        "protocolVersion": {"const": 2},
+        "ipcFrameVersion": {"const": 2},
+        "phase": {"enum": ["serving", "bootstrap"]},
+        "authKinds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"enum": ["local-gui", "local-bootstrap"]}
+        },
+        "daemonPid": {"$ref": "#/$defs/pid"},
+        "daemonBirth": {"$ref": "#/$defs/text"},
+        "epoch": {"$ref": "#/$defs/text"},
+        "homeBinding": {"$ref": "#/$defs/text"},
+        "socketBinding": {"$ref": "#/$defs/text"},
+        "controllerChallenge": {"$ref": "#/$defs/hex64"},
+        "clientChallenge": {"$ref": "#/$defs/text"},
+        "childTicket": {"$ref": "#/$defs/hex64"},
+        "controlProof": {"$ref": "#/$defs/sha256Digest"},
+        "declarationDigest": {"$ref": "#/$defs/sha256Digest"},
+        "controlSocket": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": true
+    },
+    "childProvenResponse": {
+      "type": "object",
+      "required": [
+        "version",
+        "type",
+        "sessionId",
+        "proofId",
+        "pid",
+        "birth",
+        "childChallenge",
+        "expiresInSeconds"
+      ],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "child-proven"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "proofId": {"$ref": "#/$defs/hex32"},
+        "pid": {"$ref": "#/$defs/pid"},
+        "birth": {"$ref": "#/$defs/text"},
+        "childChallenge": {"$ref": "#/$defs/text"},
+        "expiresInSeconds": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "registeredResponse": {
+      "type": "object",
+      "required": [
+        "version",
+        "type",
+        "sessionId",
+        "registrationId",
+        "capabilityId",
+        "secret",
+        "kind",
+        "phase",
+        "view",
+        "pid",
+        "birth",
+        "childChallenge",
+        "childProofId",
+        "childChallengeReceipt",
+        "epoch",
+        "homeBinding",
+        "socketBinding",
+        "declarationDigest",
+        "capabilityLifetimeSeconds"
+      ],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "registered"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "registrationId": {"$ref": "#/$defs/hex32"},
+        "capabilityId": {"$ref": "#/$defs/hex64"},
+        "secret": {"type": "string", "minLength": 1, "maxLength": 512},
+        "kind": {"enum": ["local-gui", "local-bootstrap"]},
+        "phase": {"enum": ["serving", "bootstrap"]},
+        "view": {"$ref": "#/$defs/text"},
+        "pid": {"$ref": "#/$defs/pid"},
+        "birth": {"$ref": "#/$defs/text"},
+        "childChallenge": {"$ref": "#/$defs/text"},
+        "childProofId": {"$ref": "#/$defs/hex32"},
+        "childChallengeReceipt": {"$ref": "#/$defs/hmacReceipt"},
+        "epoch": {"$ref": "#/$defs/text"},
+        "homeBinding": {"$ref": "#/$defs/text"},
+        "socketBinding": {"$ref": "#/$defs/text"},
+        "declarationDigest": {"$ref": "#/$defs/sha256Digest"},
+        "capabilityLifetimeSeconds": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "revokedResponse": {
+      "type": "object",
+      "required": ["version", "type", "sessionId", "registrationId"],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "revoked"},
+        "sessionId": {"$ref": "#/$defs/text"},
+        "registrationId": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": true
+    },
+    "closedResponse": {
+      "type": "object",
+      "required": ["version", "type", "sessionId"],
+      "properties": {
+        "version": {"const": 1},
+        "type": {"const": "closed"},
+        "sessionId": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/helloRequest"},
+    {"$ref": "#/$defs/proveChildRequest"},
+    {"$ref": "#/$defs/registerHttpRequest"},
+    {"$ref": "#/$defs/revokeHttpRequest"},
+    {"$ref": "#/$defs/closeRequest"},
+    {"$ref": "#/$defs/errorResponse"},
+    {"$ref": "#/$defs/helloResponse"},
+    {"$ref": "#/$defs/childProvenResponse"},
+    {"$ref": "#/$defs/registeredResponse"},
+    {"$ref": "#/$defs/revokedResponse"},
+    {"$ref": "#/$defs/closedResponse"}
+  ]
+}

@@ -230,3 +230,25 @@ gitleaks 47 条按目录：`scripts/refactor` 13、`tests/daemon` 9、`contract/
 
 结果（本地）：快照 4456 个文件；内网标记门只剩 4 处 pending（`context.py` 2 处、`update_source.py` 2 处），140 处由 124 条按行豁免覆盖，0 条失效。§9 中写的 4467 个文件是过时的数字。
 
+
+## 11. 0.5.5.4 合入 0.5.5.3.4 后的闸门修复（2026-11-07）
+
+release/v0.5.5.4 带入的桌面客户端（`clients/`、`packaging/clients/`，0.5.5.3.4 上不存在，共 340 个文件）第一次落入 denylist 快照。闸门不放宽（per Allen 2026-11-07）：
+
+1. **合成示例逐行豁免**：example/test 前缀的合成 tailnet 主机、拒绝公开通道使用内部端点的 tailnet 后缀判断、凭据 URL 拒绝测试里的 `user:pw@` userinfo、合成的 other-host mDNS 名，以及换号后的 CGNAT 测试地址。
+2. **真实值换为合成占位**：发布文档里的真实下载主机、tailnet、Mac 的 tailnet 地址与运维账号路径；测试夹具里的成员 handle、员工邮箱与设备名（沿用 §10 的 `mate` / `bobadmin`，设备改为 `devmini.local`，邮箱改为 `dev@example.com`；`signer.rs` 的 golden mac/digest 按同一 Python 规则重算并与 Rust 实现对拍）；与 `docs/notes` 重叠的两个 CGNAT 测试地址改用不与其重叠的新地址（第三段 51）。
+3. **承载内部部署实值的运行文件进 denylist**（改成占位会破坏内部部署）：内部更新通道 `channel.json`、内部下载/反馈服务的 LaunchAgent、反馈服务入口与下载页、内部发布脚本，连同直接读取它们的两个测试。
+4. 未决：`clients/`、`packaging/clients/` 整体是否公开，§8 的「全部公开」裁定当时未覆盖，待 Allen 裁定。
+
+## 12. actor 集成后的内部交接材料（2026-11-08）
+
+成熟 actor 分支合入 dev 时，实仓快照扫描识别出两份原始交接文档中的内部地址。
+保留内部记录的原文，仅将下列精确路径加入 denylist；其余 actor 设计、ABI 规格、
+Rust 构建源码与一致性套件继续按默认公开规则处理。不增加内网标记豁免。
+
+| 路径 | 排除理由 |
+| --- | --- |
+| `docs/design/actor-rustify-external-developer-guide-2026-11-01.md` | 内部贡献者交接，含原始私有仓库地址与账号开通安排 |
+| `docs/design/actor-rustify-native-engine-handoff-2026-11-01.md` | 内部研发交接，含真实 agent 联系人与 tailnet 路由地址 |
+
+新增快照夹具与敏感路径守卫覆盖这两项；实仓快照扫描仍要求零未豁免命中、零失效豁免。

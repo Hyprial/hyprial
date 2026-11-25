@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChatController, HttpLiveClient, LarkController, type LivePort } from '../../adapters/live';
+import { LarkController, type LivePort } from '../../adapters/live';
+import { ChatController } from '../../features/agent-chat';
 export interface LiveRuntime {
   readonly status: 'loading' | 'ready' | 'error';
   readonly error?: string;
@@ -8,11 +9,11 @@ export interface LiveRuntime {
 }
 export function useLiveRuntime(enabled: boolean, injected?: LivePort): LiveRuntime | null {
   const services = useMemo(() => {
-    if (!enabled) return null;
-    const client = injected ?? new HttpLiveClient();
+    if (!enabled || !injected) return null;
+    const client = injected;
     return { client, chat: new ChatController(client), lark: new LarkController(client) };
   }, [enabled, injected]);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'disabled'>('loading');
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string>();
   useEffect(() => {
     if (!services) return;
@@ -21,10 +22,6 @@ export function useLiveRuntime(enabled: boolean, injected?: LivePort): LiveRunti
     setStatus('loading'); setError(undefined);
     void (async () => {
       try {
-        if (services.client instanceof HttpLiveClient && !(await services.client.bootstrap())) {
-          if (alive) setStatus('disabled');
-          return;
-        }
         if (!alive) return;
         setStatus('ready');
         await Promise.all([services.chat.start(), services.lark.refresh()]);
@@ -39,5 +36,5 @@ export function useLiveRuntime(enabled: boolean, injected?: LivePort): LiveRunti
     })();
     return () => { alive = false; if (timer) clearInterval(timer); };
   }, [services]);
-  return services && status !== 'disabled' ? { status, error, chat: services.chat, lark: services.lark } : null;
+  return services ? { status, error, chat: services.chat, lark: services.lark } : null;
 }

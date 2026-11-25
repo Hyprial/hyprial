@@ -1,10 +1,18 @@
-"""Proactive ``route:<adapter>:<route>`` outbound addressing.
+"""Adapter route resolution, attachment reading and Lark send-error mapping.
 
-A route target posts to a Lark chat (its configured ``nativeId``) through a
-locally configured adapter.  Resolution is pure sender-local configuration:
-no zenoh hop, no receiver profile.  Whether the post lands is decided by the
+A configured adapter route posts to a Lark chat (its configured
+``nativeId``).  Resolution is pure sender-local configuration: no zenoh
+hop, no receiver profile.  Whether the post lands is decided by the
 platform — the app must be a member of the target chat — so every failure
 here names the adapter, the route, and the chat involved.
+
+Decision notes (I4b, owner items Q0-a and Q0-d, 2026-11-23): the
+``route:<adapter>:<route>`` address and its parser are deleted.  The push
+primitive (``network.route_push``) is the only caller of this module's
+resolution; an unconfigured adapter is ``ADAPTER_NOT_FOUND`` and an
+unmapped platform refusal ``USER_DELIVERY_FAILED`` here, because the two
+retired ``ROUTE_*`` codes are gone.  The primitive turns both into its own
+reason tokens.
 """
 
 from __future__ import annotations
@@ -57,32 +65,6 @@ class RouteDeliveryError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.data = data
-
-
-@dataclass(frozen=True, slots=True)
-class RouteTarget:
-    adapter: str
-    route: str
-
-    @property
-    def uri(self) -> str:
-        return f"route:{self.adapter}:{self.route}"
-
-    @classmethod
-    def parse(cls, value: str) -> RouteTarget:
-        parts = value.split(":")
-        if len(parts) != 3 or parts[0] != "route":
-            raise ValueError(
-                "route target must be route:<adapter>:<route> "
-                "(for example route:mac-studio-feishu:hyprial-all-member)"
-            )
-        _component(parts[1], "adapter")
-        _component(parts[2], "route")
-        return cls(adapter=parts[1], route=parts[2])
-
-
-def is_route_target(value: str) -> bool:
-    return value.startswith("route:")
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,8 +251,8 @@ def find_gateway(
     if gateway is None:
         configured = sorted(item.name for item in configuration.gateways)
         raise RouteDeliveryError(
-            ipc_errors.ROUTE_ADAPTER_UNCONFIGURED,
-            f"route target names adapter {adapter!r}, which is not configured "
+            ipc_errors.ADAPTER_NOT_FOUND,
+            f"adapter {adapter!r} is not configured "
             f"in channels.json (configured: {', '.join(configured) or 'none'})",
             {"adapter": adapter, "configuredAdapters": configured},
         )
@@ -371,17 +353,10 @@ def map_lark_send_error(
             {"adapter": adapter, "route": route, "chatId": chat_id},
         )
     return RouteDeliveryError(
-        ipc_errors.ROUTE_SEND_FAILED,
+        ipc_errors.USER_DELIVERY_FAILED,
         f"route {route!r} (chat_id={chat_id}) send via adapter {adapter!r} "
         f"failed: {error}",
         {"adapter": adapter, "route": route, "chatId": chat_id,
          "larkCode": error.code},
     )
 
-
-def _component(value: str, label: str) -> None:
-    if not value or value.strip() != value:
-        raise ValueError(
-            f"route target {label} must be a non-empty component of "
-            "route:<adapter>:<route>"
-        )

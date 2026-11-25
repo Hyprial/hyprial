@@ -1,0 +1,227 @@
+{
+  "version": 1,
+  "policy": "Mock-source exceptions of the GUI. allowlist rows are exceptions that stay for now and carry their own reason; pending rows are findings that later stages of PR 1e remove; fixtures rows cap the lines of each hand-written fixture file under gui/src/dev. No list may grow against the base branch: rows may only leave or shrink.",
+  "allowlist": [],
+  "pending": [
+    {
+      "kind": "method-keyed-responder",
+      "path": "gui/src/dev/mock/startup-agents.ts",
+      "subject": "case-label",
+      "count": 15
+    }
+  ],
+  "fixtures": [
+    {
+      "path": "gui/src/dev/DevModuleIndex.tsx",
+      "maxLines": 38
+    },
+    {
+      "path": "gui/src/dev/DevPreviewApp.tsx",
+      "maxLines": 18
+    },
+    {
+      "path": "gui/src/dev/DevScenarioSelector.tsx",
+      "maxLines": 247
+    },
+    {
+      "path": "gui/src/dev/FixtureApp.tsx",
+      "maxLines": 254
+    },
+    {
+      "path": "gui/src/dev/SessionToolbar.tsx",
+      "maxLines": 73
+    },
+    {
+      "path": "gui/src/dev/archive/ArchivedScenarios.tsx",
+      "maxLines": 59
+    },
+    {
+      "path": "gui/src/dev/chat-scenarios.ts",
+      "maxLines": 121
+    },
+    {
+      "path": "gui/src/dev/demo-actions.ts",
+      "maxLines": 38
+    },
+    {
+      "path": "gui/src/dev/dev-module-index.css",
+      "maxLines": 340
+    },
+    {
+      "path": "gui/src/dev/env.d.ts",
+      "maxLines": 14
+    },
+    {
+      "path": "gui/src/dev/first-run-capabilities.ts",
+      "maxLines": 114
+    },
+    {
+      "path": "gui/src/dev/fixture-tools/impl/DevDataSourceNotice.tsx",
+      "maxLines": 17
+    },
+    {
+      "path": "gui/src/dev/fixture-tools/impl/FixtureScenarioTools.tsx",
+      "maxLines": 116
+    },
+    {
+      "path": "gui/src/dev/fixture-tools/impl/context.ts",
+      "maxLines": 22
+    },
+    {
+      "path": "gui/src/dev/fixture-tools/impl/preview-store.ts",
+      "maxLines": 194
+    },
+    {
+      "path": "gui/src/dev/fixture-tools/index.ts",
+      "maxLines": 16
+    },
+    {
+      "path": "gui/src/dev/fixtures/agents/j2-seeds.ts",
+      "maxLines": 135
+    },
+    {
+      "path": "gui/src/dev/fixtures/chat-channels/directory.ts",
+      "maxLines": 9
+    },
+    {
+      "path": "gui/src/dev/fixtures/chat-channels/scenarios.ts",
+      "maxLines": 11
+    },
+    {
+      "path": "gui/src/dev/fixtures/demo.ts",
+      "maxLines": 91
+    },
+    {
+      "path": "gui/src/dev/fixtures/fixture-state.ts",
+      "maxLines": 84
+    },
+    {
+      "path": "gui/src/dev/index.ts",
+      "maxLines": 16
+    },
+    {
+      "path": "gui/src/dev/j2-scenarios.ts",
+      "maxLines": 56
+    },
+    {
+      "path": "gui/src/dev/journey/credentials.ts",
+      "maxLines": 70
+    },
+    {
+      "path": "gui/src/dev/journey/index.ts",
+      "maxLines": 32
+    },
+    {
+      "path": "gui/src/dev/journey/platforms.ts",
+      "maxLines": 58
+    },
+    {
+      "path": "gui/src/dev/journey/routes.ts",
+      "maxLines": 54
+    },
+    {
+      "path": "gui/src/dev/legacy-org-source.ts",
+      "maxLines": 90
+    },
+    {
+      "path": "gui/src/dev/machine-scenarios.ts",
+      "maxLines": 64
+    },
+    {
+      "path": "gui/src/dev/mock/agent-chat.ts",
+      "maxLines": 70
+    },
+    {
+      "path": "gui/src/dev/mock/agent-provider.ts",
+      "maxLines": 9
+    },
+    {
+      "path": "gui/src/dev/mock/agent-settings.ts",
+      "maxLines": 96
+    },
+    {
+      "path": "gui/src/dev/mock/platform-integrations.ts",
+      "maxLines": 333
+    },
+    {
+      "path": "gui/src/dev/mock/settings.ts",
+      "maxLines": 71
+    },
+    {
+      "path": "gui/src/dev/mock/startup-agents.ts",
+      "maxLines": 390
+    },
+    {
+      "path": "gui/src/dev/mock/use-contract-runtime.ts",
+      "maxLines": 54
+    },
+    {
+      "path": "gui/src/dev/module-registry.ts",
+      "maxLines": 66
+    },
+    {
+      "path": "gui/src/dev/onboarding-preview/preview.html",
+      "maxLines": 13
+    },
+    {
+      "path": "gui/src/dev/onboarding-preview/preview.tsx",
+      "maxLines": 107
+    },
+    {
+      "path": "gui/src/dev/org-scenarios.ts",
+      "maxLines": 43
+    },
+    {
+      "path": "gui/src/dev/org/OrgDevApp.tsx",
+      "maxLines": 106
+    },
+    {
+      "path": "gui/src/dev/org/fixture-data.ts",
+      "maxLines": 606
+    },
+    {
+      "path": "gui/src/dev/org/fixture-gateway.ts",
+      "maxLines": 893
+    },
+    {
+      "path": "gui/src/dev/org/scenarios.ts",
+      "maxLines": 359
+    },
+    {
+      "path": "gui/src/dev/parity-composition.tsx",
+      "maxLines": 606
+    },
+    {
+      "path": "gui/src/dev/remaining-scenarios.ts",
+      "maxLines": 50
+    },
+    {
+      "path": "gui/src/dev/session.css",
+      "maxLines": 47
+    },
+    {
+      "path": "gui/src/dev/session/initial-session.ts",
+      "maxLines": 55
+    },
+    {
+      "path": "gui/src/dev/session/linked-gateways.ts",
+      "maxLines": 46
+    },
+    {
+      "path": "gui/src/dev/session/session-reducer.ts",
+      "maxLines": 647
+    },
+    {
+      "path": "gui/src/dev/session/session-selectors.ts",
+      "maxLines": 312
+    },
+    {
+      "path": "gui/src/dev/session/session-types.ts",
+      "maxLines": 137
+    },
+    {
+      "path": "gui/src/dev/topology-scenarios.ts",
+      "maxLines": 113
+    }
+  ]
+}

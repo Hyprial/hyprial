@@ -88,12 +88,12 @@ def test_adapter_start_refuses_agent_before_start(tmp_path):
     assert error.value.code == "INVALID_ARGUMENT"
 
 
-@pytest.mark.parametrize("method", ["agent.create", "agent.start.preflight", "agent.host-invite", "lifecycle.start"])
+@pytest.mark.parametrize("method", ["agent.create", "agent.start.preflight", "lifecycle.start"])
 def test_agent_create_start_refuse_configured_stopped_adapter(tmp_path, method):
     gateway(tmp_path)
     app = SimpleNamespace(
         hyprial_home=tmp_path,
-        agents=SimpleNamespace(native_actor=lambda n: n),
+        agents=SimpleNamespace(get=lambda _: None, native_actor=lambda n: n),
         desired_state=SimpleNamespace(load=DesiredState),
     )
     params = {"name": "sprite", "provider": "pi", "owner": "visitor", "headless": True}

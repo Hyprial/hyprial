@@ -19,7 +19,6 @@ from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage
 
 from ..support import (
     FakeInbox,
-    FakeLinkGate,
     _close_application_domains as _close_application_domains,
     application,
     durable_application,
@@ -100,6 +99,11 @@ def test_a_pre_summary_row_reads_as_null_summary(tmp_path: Path) -> None:
     _seed_legacy_row(tmp_path)
     app = durable_application(tmp_path, actors=("reader",))
     register_actor(app, "reader")
+    with app._inbox._db:  # type: ignore[attr-defined]
+        app._inbox._db.execute(  # type: ignore[attr-defined]
+            "UPDATE inbox SET recipient = ? WHERE message_id = 'legacy'",
+            (app.agents.require("reader").uri,),
+        )
 
     row = _row(app)
 
@@ -123,7 +127,7 @@ def _seed_live_row(app, *, message_id: str, summary: str, body: str, sender: str
             message_id=message_id,
             conversation_id=f"c-{message_id}",
             sender=sender,
-            recipient=CANONICAL,
+            recipient=app.agents.require("reader").uri,
             payload=json.dumps({"message": body}).encode(),
             intent="request",
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
@@ -138,7 +142,6 @@ def test_the_row_carries_the_summary_and_body_size_without_the_body(
 ) -> None:
     app = durable_application(tmp_path, actors=("reader", "driver"))
     register_actor(app, "reader")
-    app.link_admission.bind(FakeLinkGate())
     _seed_live_row(
         app,
         message_id="m-1",

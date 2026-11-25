@@ -20,6 +20,7 @@ from hyprial.identity.impl.agents.migration.actor import (
 from hyprial.identity.impl.agents.actor.ports import UpdateAgentCommand
 from hyprial.identity.impl.agents.registry._core import AgentRegistry
 from hyprial.kernel.impl.contracts.ports import PortAdmission, PortCommandRejected
+from tests.support.actor_hosts import InterceptingHost, new_actor_host, wrap_cell
 
 
 def _until(predicate: Callable[[], bool], *, timeout: float = 3.0) -> bool:
@@ -42,7 +43,8 @@ def migration_actor(tmp_path: Path):
     registry.create("foo")
     registry.create("bar")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
+    wrap_cell(actor)
     try:
         yield actor, registry, events
     finally:
@@ -72,11 +74,11 @@ def test_accepted_owner_update_survives_overloaded_retry(
     accepted = threading.Event()
     retried = threading.Event()
     saved: list[MigrationOwnerCall] = []
-    original_tell = actor._runtime.tell
-    original_snapshot = actor._runtime.snapshot
+    original_tell = actor._cell.tell
+    original_snapshot = actor._cell.snapshot
     effect_errors: list[BaseException] = []
 
-    def intercepted_tell(handle: object, command: object) -> AdmissionResult:
+    def intercepted_tell(command: object) -> AdmissionResult:
         if isinstance(command, MigrationOwnerCall):
             if not saved:
                 saved.append(command)
@@ -84,10 +86,10 @@ def test_accepted_owner_update_survives_overloaded_retry(
                 return AdmissionResult.ACCEPTED
             retried.set()
             return AdmissionResult.OVERLOADED
-        return original_tell(handle, command)
+        return original_tell(command)
 
-    def snapshot_after_restart(handle: object) -> object:
-        snapshot = original_snapshot(handle)
+    def snapshot_after_restart() -> object:
+        snapshot = original_snapshot()
         return (
             dataclasses.replace(snapshot, generation=snapshot.generation + 1)
             if accepted.is_set()
@@ -114,8 +116,8 @@ def test_accepted_owner_update_survives_overloaded_retry(
             return MigrationOutcome.failed(error)
 
     monkeypatch.setattr(actor_module, "run_migration_effect", effect)
-    monkeypatch.setattr(actor._runtime, "tell", intercepted_tell)
-    monkeypatch.setattr(actor._runtime, "snapshot", snapshot_after_restart)
+    monkeypatch.setattr(actor._cell, "tell", intercepted_tell)
+    monkeypatch.setattr(actor._cell, "snapshot", snapshot_after_restart)
     waiter, settled = _start_call(
         lambda: actor.run_migration("agent.migrate.execute", "foo")
     )
@@ -124,17 +126,17 @@ def test_accepted_owner_update_survives_overloaded_retry(
         assert retried.wait(3), "generation-changed retry was not attempted"
         assert not effect_errors, "retry overload caused premature compensation"
         assert waiter.is_alive(), "migration returned before accepted owner update"
-        monkeypatch.setattr(actor._runtime, "tell", original_tell)
-        monkeypatch.setattr(actor._runtime, "snapshot", original_snapshot)
-        assert original_tell(actor._handle, saved[0]) is AdmissionResult.ACCEPTED
+        monkeypatch.setattr(actor._cell, "tell", original_tell)
+        monkeypatch.setattr(actor._cell, "snapshot", original_snapshot)
+        assert original_tell(saved[0]) is AdmissionResult.ACCEPTED
         waiter.join(3)
         assert not waiter.is_alive()
         assert settled == [{"ok": True}]
     finally:
-        monkeypatch.setattr(actor._runtime, "tell", original_tell)
-        monkeypatch.setattr(actor._runtime, "snapshot", original_snapshot)
+        monkeypatch.setattr(actor._cell, "tell", original_tell)
+        monkeypatch.setattr(actor._cell, "snapshot", original_snapshot)
         if saved and waiter.is_alive():
-            original_tell(actor._handle, saved[0])
+            original_tell(saved[0])
         waiter.join(3)
 
 
@@ -223,15 +225,15 @@ def test_failed_actor_start_closes_migration_effect_thread(tmp_path: Path) -> No
         hyprial_home=tmp_path / "home",
     )
 
-    class RefusingRuntime:
-        def start(self, _spec: object) -> None:
+    class RefusingHost(InterceptingHost):
+        def spawn(self, _spec: object) -> None:
             raise RuntimeError("synthetic actor start refusal")
 
     actor = AgentActor.__new__(AgentActor)
     try:
         with pytest.raises(RuntimeError, match="synthetic actor start refusal"):
             actor.__init__(
-                registry, event_sink=lambda _event: None, runtime=RefusingRuntime()
+                registry, event_sink=lambda _event: None, actor_host=RefusingHost()
             )
         assert _until(
             lambda: not any(

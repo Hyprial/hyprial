@@ -1,5 +1,12 @@
 # hyprial CLI 重构实施计划（cli refactor plan）
 
+> **R17 work plan superseded (#2214, 2026-11-08).** Keep only `org work
+> ls/show` as ordinary OrgFS read shortcuts; do not implement or restore the
+> specialized writes, filters, repair or collect/finish plan below. Current
+> editing and recovery guidance is in
+> [the work document contract](../../../contract/work-items/README.md).
+> Other historical CLI planning is unchanged.
+
 - 日期：2026-10-06。本文是**实施计划**；目标态（改完长什么样）见 [expected-commands.md](expected-commands.md)（下文简称《目标》），
   现状盘点见 [cli-top-level-command-consolidation.md](../../reference/cli-top-level-command-consolidation.md)（《盘点》）。
 - 范围：Allen 2026-10-06 指示——§0.2 重叠排查的 A1–A8、B、C **全部要修**，在 #1126 内规划；本文给出每项的 PR、顺序与依赖。

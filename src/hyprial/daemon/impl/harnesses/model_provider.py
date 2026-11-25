@@ -7,7 +7,6 @@ last responsible moment:
 * Claude Code receives DeepSeek's Anthropic-compatible environment.
 * Codex receives command-line config overrides that name an environment key.
 * Pi receives its native ``--provider`` / ``--model`` flags.
-* DSH selects the model through its session-scoped HTTP API.
 
 The helpers in this module never return a secret in argv or desired state.
 """
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 import json
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from hyprial.kernel import HarnessLaunchSpec
@@ -34,7 +33,6 @@ RETIRED_MODEL_NAMES: Mapping[str, str] = {
     "deepseek-v4-pro": DEEPSEEK_MODEL,
 }
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
-DSH_DEEPSEEK_PROVIDER = "deepseek-official"
 DEEPSEEK_OPENAI_BASE_URL = "https://api.deepseek.com/"
 DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
 
@@ -68,6 +66,8 @@ HYPRIAL_API_KEY_ENV = "HYPRIAL_API_KEY"
 # origin; the OpenAI-compatible surface is addressed under /v1.
 HYPRIAL_OPENAI_BASE_URL_DEFAULT = "https://model.hyprial.ai/v1"
 HYPRIAL_ANTHROPIC_BASE_URL_DEFAULT = "https://model.hyprial.ai"
+GOOGLE_PROVIDER = "google"
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 
 
 def openai_base_url(
@@ -109,15 +109,36 @@ class ModelProviderError(ValueError):
 # a promise that every provider/model supports every level.
 CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+AGY_EFFORTS = ("low", "medium", "high")
 
 
 def _validate_effort(harness: str, effort: object) -> str:
-    levels = CODEX_EFFORTS if harness == "codex" else CLAUDE_EFFORTS
-    if harness not in {"codex", "claude"}:
-        raise ModelProviderError("--effort is supported only for codex and claude")
+    if harness == "codex":
+        levels: tuple[str, ...] = CODEX_EFFORTS
+    elif harness == "claude":
+        levels = CLAUDE_EFFORTS
+    elif harness == "agy":
+        levels = AGY_EFFORTS
+    else:
+        raise ModelProviderError("--effort is supported only for codex, claude, and agy")
     if not isinstance(effort, str) or effort not in levels:
         raise ModelProviderError(f"{harness} effort must be one of: {', '.join(levels)}")
     return effort
+
+
+def _extract_option_value(args: tuple[str, ...], option_name: str) -> str | None:
+    index = 0
+    found: str | None = None
+    while index < len(args):
+        token = args[index]
+        if token == option_name and index + 1 < len(args):
+            found = args[index + 1]
+            index += 2
+            continue
+        if token.startswith(f"{option_name}="):
+            found = token[len(option_name) + 1:]
+        index += 1
+    return found
 
 
 def split_effort_args(harness: str, args: tuple[str, ...]) -> tuple[tuple[str, ...], str | None]:
@@ -226,8 +247,27 @@ def validate_model_selection(
         encoded_args = merge_harness_launch_args((), encoded_args, harness=harness)
     except ValueError as error:
         raise ModelProviderError(str(error)) from error
+    if harness == "agy":
+        effective_model = (
+            model
+            if model is not None
+            else _extract_option_value(encoded_args, "--model")
+        )
+        _, effective_effort = split_effort_args("agy", encoded_args)
+        if (
+            effective_model is not None
+            and effective_model.startswith("gemini-pro-orchestrator")
+            and effective_effort is not None
+        ):
+            raise ModelProviderError(
+                f"agy model {effective_model!r} does not support --effort"
+            )
     if provider is None:
         return encoded_args
+    if harness == "agy" and provider != GOOGLE_PROVIDER:
+        raise ModelProviderError(
+            "agy supports model provider 'google' or native OAuth"
+        )
     if harness == "claude" and provider not in {
         "anthropic",
         DEEPSEEK_PROVIDER,
@@ -378,6 +418,7 @@ def pi_provider_environment(
     native_root: Path | None = None,
     settings_root: Path | None = None,
     allow_legacy_home_fallback: bool = True,
+    on_native_selected: Callable[[Path | None], None] | None = None,
 ) -> dict[str, str]:
     """The per-process credential delta for one Pi launch.
 
@@ -412,6 +453,8 @@ def pi_provider_environment(
     from disagreeing about which vendor is about to be billed.
     """
 
+    if on_native_selected is not None:
+        on_native_selected(None)
     validate_model_selection(spec.harness, spec.model_provider, spec.model)
     effective_provider, _effective_model = pi_effective_model_selection(
         spec, settings_root=settings_root
@@ -427,6 +470,8 @@ def pi_provider_environment(
         return {}
     key = environment.get(DEEPSEEK_API_KEY_ENV, "").strip()
     if not key and native_root is not None and _pi_auth_key(Path(native_root)):
+        if on_native_selected is not None:
+            on_native_selected(Path(native_root))
         return {}
     if not key and allow_legacy_home_fallback:
         try:
@@ -732,7 +777,30 @@ def pi_model_args(spec: HarnessLaunchSpec) -> tuple[str, ...]:
     return tuple(result)
 
 
-def dsh_provider_id(provider: str) -> str:
-    """Translate HYPRIAL's vendor id to DSH's routable provider id."""
+def agy_provider_environment(
+    spec: HarnessLaunchSpec,
+    environment: Mapping[str, str],
+    *,
+    allow_legacy_home_fallback: bool = True,
+) -> dict[str, str]:
+    """Return the per-process agy environment delta for ``spec``."""
 
-    return DSH_DEEPSEEK_PROVIDER if provider == DEEPSEEK_PROVIDER else provider
+    del allow_legacy_home_fallback
+    validate_model_selection(
+        spec.harness,
+        spec.model_provider,
+        spec.model,
+        effort=spec.effort,
+        args=spec.args,
+    )
+    if spec.model_provider is None:
+        return {}
+    key = environment.get(GEMINI_API_KEY_ENV, "").strip()
+    if not key:
+        raise AgentProviderCredentialMissing(
+            "provider 'google' requires an agent-owned GEMINI_API_KEY; "
+            "grant one with 'hyprial agent secret grant <agent> ... "
+            "--environment-name GEMINI_API_KEY' before starting agy, then "
+            "restart and unblock the agent"
+        )
+    return {GEMINI_API_KEY_ENV: key}

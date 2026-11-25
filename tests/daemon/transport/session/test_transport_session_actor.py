@@ -413,16 +413,18 @@ def test_presence_admission_loss_recovers_through_transport_history(monkeypatch)
     owner = TransportSessionAuthority(native)
     directory = LivelinessDirectory(owner)
     old_generation = owner.projection().generation
-    original_tell = directory._authority._runtime.tell
+    # ``ActorCell`` is slotted, so the rejection is installed on its class.
+    cell_type = type(directory._authority._cell)
+    original_tell = cell_type.tell
     rejected = threading.Event()
 
-    def reject_once(handle, command):
+    def reject_once(cell, command):
         if isinstance(command, PresenceChanged) and not rejected.is_set():
             rejected.set()
             return AdmissionResult.OVERLOADED
-        return original_tell(handle, command)
+        return original_tell(cell, command)
 
-    monkeypatch.setattr(directory._authority._runtime, "tell", reject_once)
+    monkeypatch.setattr(cell_type, "tell", reject_once)
     try:
         history.add("present")
         callbacks[actor_key](TransportSample(actor_key[:-1] + "present", b""))
@@ -525,3 +527,21 @@ def test_callback_recovery_does_not_spin_while_the_session_is_closed(monkeypatch
         assert len(scheduled) == 1
     finally:
         owner.close()
+
+
+def test_query_with_a_longer_timeout_of_its_own_outlives_the_authority_budget():
+    import time
+
+    native = Native()
+
+    def slow(key, payload, *, timeout, errors, all_replies):
+        time.sleep(0.2)
+        return [TransportSample(key, b"late")]
+
+    native.query = slow
+    owner = TransportSessionAuthority(native, timeout=0.05)
+    try:
+        replies = owner.query("key", b"question", timeout=1.0)
+        assert [sample.payload for sample in replies] == [b"late"]
+    finally:
+        owner.close(2)

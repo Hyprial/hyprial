@@ -1,4 +1,12 @@
-"""``hyprial agent start`` - launch an agent session (headless or interactive)."""
+"""``hyprial agent start`` - launch an agent session (headless or interactive).
+
+implB2 (2026-11-02): the plain fresh-headless start (no resume,
+replace-interactive, per-invocation runtime args, explicit cwd,
+nickname or effort) is the daemon's ``agent.start`` —
+one orchestration for the CLI and the GUI.  Everything the declared
+``agent.start`` params cannot carry stays on ``lifecycle.start`` below;
+interactive/terminal attaches are untouched.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +15,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from typing import Any
 from hyprial.kernel import LIFECYCLE_IPC_MARGIN_SECONDS, LIFECYCLE_OPERATION_DEADLINE_SECONDS, LIFECYCLE_WAIT_MARGIN_SECONDS
 from pathlib import Path
-from hyprial.kernel import ipc_errors
-import json
+from hyprial.error import codes
 import os
 import shutil
 import sys
@@ -16,7 +23,52 @@ import typer
 
 from hyprial.shell.impl.cli.output import warn
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
-from hyprial.shell.impl.cli.commands.common.support import JsonObject, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
+from hyprial.shell.impl.cli.commands.common.support import JsonObject, _resolved_agent_cwd, _resolved_interactive_resume_cwd
+
+
+def _old_daemon_ignore_refusal(error: BaseException) -> bool:
+    code = getattr(error, "code", None)
+    if code == codes.METHOD_NOT_FOUND:
+        return True
+    if code != codes.INVALID_ARGUMENT:
+        return False
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "declared schema",
+            "additional propert",
+            "ignorestoredharnessargs",
+            "unknown field",
+            "unexpected field",
+        )
+    )
+
+
+def _request_start(
+    services: Any,
+    method: str,
+    params: JsonObject,
+    *,
+    ignore_stored_args: bool,
+    timeout: float | None = None,
+) -> Any:
+    try:
+        return services.runtime.request(
+            method,
+            params,
+            **({"timeout": timeout} if timeout is not None else {}),
+        )
+    except Exception as error:
+        if ignore_stored_args and _old_daemon_ignore_refusal(error):
+            data = getattr(error, "data", None)
+            raise services.CliError(
+                str(getattr(error, "code", codes.INVALID_ARGUMENT)),
+                "the daemon does not support --ignore-stored-args; "
+                "upgrade the daemon and retry",
+                data if isinstance(data, dict) else None,
+            ) from error
+        raise
 
 
 @agent_app.command(
@@ -25,7 +77,7 @@ from hyprial.shell.impl.cli.commands.common.support import JsonObject, _resolved
 )
 def start(
     ctx: typer.Context,
-    harness_kind: str | None = typer.Argument(None, help="claude, pi, codex, dsh, jev, or user-proxy; optional with --tier."),
+    harness_kind: str | None = typer.Argument(None, help="claude, pi, codex, jev, or agy; optional with --tier."),
     name: str = typer.Option(..., "--name"),
     tier: str | None = typer.Option(None, "--tier", help="Select fast, strong, or super; it chooses harness/provider/model, so it cannot be combined with any of them."),
     nickname: str | None = typer.Option(None, "--nickname"),
@@ -40,35 +92,14 @@ def start(
             "No process is killed by the caller."
         ),
     ),
-    smolvm_spec: Path | None = typer.Option(None, "--smolvm-spec", help="Explicit local smolvm v1 spec for a P2 headless Codex worker; experimental support boundary."),
-    tmux: bool = typer.Option(
-        False,
-        "--tmux",
-        help=(
-            "Run the interactive TUI inside a detached tmux session and "
-            "return attach commands (interactive claude, pi, and codex). "
-            "Detached Codex has no inbox carrier; for message delivery, run "
-            "the foreground Codex start inside your own tmux window."
-        ),
-    ),
-    agent_preset: str | None = typer.Option(
-        None,
-        "--agent-preset",
-        help=(
-            "Interactive dsh only: the dsh-tui agent preset id this launch "
-            "boots (passed as the DSH_TUI_PRESET launch instruction); "
-            "defaults to standard."
-        ),
-    ),
     resume: str | None = typer.Option(
         None,
         "--resume",
         help=(
             "Resume an existing session by id: interactive claude, pi, and "
             "codex, or headless claude, pi, and codex. Interactive Codex "
-            "requires an existing Agent. DSH is refused because "
-            "a fresh worker MCP identity cannot attach an existing DSH session; "
-            "jev has no persistent session; user-proxy is a stateless relay. "
+            "requires an existing Agent. "
+            "jev has no persistent session. "
             "A missing session is refused, never replaced with a fresh one."
         ),
     ),
@@ -78,7 +109,15 @@ def start(
         help="Model vendor (for example deepseek); separate from the harness kind.",
     ),
     model: str | None = typer.Option(None, "--model", help="Model id."),
-    effort: str | None = typer.Option(None, "--effort", help="Reasoning effort: Codex none/minimal/low/medium/high/xhigh/max/ultra; Claude low/medium/high/xhigh/max. Omitted keeps the model vendor default; model support varies."),
+    effort: str | None = typer.Option(None, "--effort", help="Reasoning effort: Codex none/minimal/low/medium/high/xhigh/max/ultra; Claude low/medium/high/xhigh/max; Agy low/medium/high. Omitted keeps the model vendor default; model support varies."),
+    ignore_stored_args: bool = typer.Option(
+        False,
+        "--ignore-stored-args",
+        help=(
+            "One-shot: do not merge stored harnessArgs for this start; "
+            "stored values remain unchanged."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Start a harness connector through the daemon."""
@@ -92,19 +131,9 @@ def start(
 
         from hyprial.kernel import TIERS
 
-        execution_runtime = None
-        if smolvm_spec is not None:
-            from hyprial.kernel import SmolvmRuntimeSpec
-            from hyprial.daemon import smolvm_regular_read as _regular_read
-            if harness_kind != "codex" or not headless or tmux or tier is not None:
-                raise services.CliError(ipc_errors.INVALID_ARGUMENT, "--smolvm-spec requires explicit headless Codex")
-            execution_runtime = SmolvmRuntimeSpec.from_json(json.loads(_regular_read(smolvm_spec.absolute())))
-            capabilities = services.runtime.request("ps", {})
-            if "smolvm-v1" not in capabilities.get("executionRuntimes", []):
-                raise services.CliError(ipc_errors.INVALID_ARGUMENT, "Daemon does not support smolvm; no agent created")
         runtime_args = tuple(ctx.args)
         if tier is not None and tier not in TIERS:
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, "tier must be fast, strong, or super")
+            raise services.CliError(codes.INVALID_ARGUMENT, "tier must be fast, strong, or super")
         explicit_selection = (
             harness_kind is not None or model_provider is not None or model is not None
             or any(arg in {"--provider", "--model"} or arg.startswith(("--provider=", "--model="))
@@ -134,7 +163,7 @@ def start(
                 if present
             ]
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 f"--tier {tier} chooses harness/provider/model itself; it "
                 f"cannot be combined with {', '.join(given)}. Use either "
                 f"`hyprial agent start --tier {tier} --name ...` or an explicit harness "
@@ -153,66 +182,26 @@ def start(
             )
             choice = resolved["selected"]
             harness_kind, model_provider, model = choice["harness"], choice["provider"], choice["model"]
-        if harness_kind not in {"claude", "pi", "codex", "dsh", "jev", "user-proxy"}:
+        if harness_kind not in {"claude", "pi", "codex", "jev", "agy"}:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
-                "harness kind must be claude, pi, codex, dsh, jev, or user-proxy (or use --tier without explicit model selection)",
+                codes.INVALID_ARGUMENT,
+                "harness kind must be claude, pi, codex, jev, or agy (or use --tier without explicit model selection)",
             )
-        proxy_route: str | None = None
-        if harness_kind == "user-proxy":
-            # One person's relay (docs/design-user-proxy-harness.md): the only
-            # runtime argument is the person's DM route, which is where
-            # everyone else's messages are forwarded to.
-            if len(runtime_args) != 2 or runtime_args[0] != "--route":
-                raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
-                    "user-proxy needs exactly: -- --route route:<adapter>:<route> "
-                    "(the person's DM route)",
-                )
-            from hyprial.kernel import parse_route_uri
-
-            proxy_route = runtime_args[1]
-            if parse_route_uri(proxy_route) is None:
-                raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
-                    f"--route must be route:<adapter>:<route>, got {proxy_route!r}",
-                )
-            if tier is not None or model_provider is not None or model is not None:
-                raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
-                    "user-proxy relays and has no model; --tier, --provider, and --model are not accepted",
-                )
-            if resume is not None:
-                raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
-                    "user-proxy is a stateless relay and has no persistent "
-                    "session to resume",
-                )
-            if tmux:
-                raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT, "user-proxy does not support --tmux"
-                )
-            runtime_args = ()
-            headless = True
         if harness_kind == "jev":
             if runtime_args:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "jev does not accept positional runtime arguments after '--'",
                 )
             if tier is not None or model_provider is not None or model is not None:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "jev model selection belongs to each request; --tier, --provider, and --model are not accepted",
                 )
             if resume is not None:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "jev has no persistent session; model selection is per request",
-                )
-            if tmux:
-                raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT, "jev does not support --tmux"
                 )
             headless = True
         if harness_kind == "claude":
@@ -224,7 +213,7 @@ def start(
             findings = inert_path_rules(runtime_args, rule_cwd)
             if findings.refuse:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "these claude permission rules would be accepted but would "
                     "not do what they say. A path rule for Write, MultiEdit, "
                     "NotebookEdit or Glob never matches (Edit covers the first "
@@ -250,7 +239,7 @@ def start(
                 args=runtime_args,
             )
         except ModelProviderError as error:
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
         if not headless:
             runtime_args = encoded_args
         for option, explicit in (("--provider", model_provider), ("--model", model)):
@@ -259,57 +248,35 @@ def start(
                 for value in runtime_args
             ):
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     f"{option} was supplied both as a hyprial option and after '--'",
                 )
         resolved_cwd = _resolved_agent_cwd(name, cwd)
         resume_agent_before: JsonObject | None = None
         if resume is not None:
-            if not (
-                (harness_kind in {"claude", "pi", "codex", "dsh"} and not headless)
-                or (headless and harness_kind in {"claude", "pi", "codex"})
-            ):
-                reason = (
-                    "headless DSH cannot resume because a fresh worker MCP identity "
-                    "cannot attach an existing DSH session"
-                    if harness_kind == "dsh" and headless
-                    else f"interactive {harness_kind} has no resumable native runtime"
-                )
+            if harness_kind not in {"claude", "pi", "codex"}:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
-                    reason,
+                    codes.INVALID_ARGUMENT,
+                    f"interactive {harness_kind} has no resumable native runtime"
+                    if not headless
+                    else f"headless {harness_kind} has no resumable native runtime",
                 )
             if not resume.strip():
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT, "--resume requires a session id"
+                    codes.INVALID_ARGUMENT, "--resume requires a session id"
                 )
             if harness_kind in {"pi", "codex"} and not headless:
                 resolved_cwd = _resolved_interactive_resume_cwd(name, cwd)
         if replace_interactive and not headless:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--replace-interactive is only valid with --headless",
             )
         if replace_interactive and resume is None:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--replace-interactive requires --resume <session-id>; a switch "
                 "must preserve the conversation",
-            )
-        if tmux and headless:
-            raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT, "--tmux cannot be combined with --headless"
-            )
-        if tmux and harness_kind not in {"claude", "pi", "codex"}:
-            raise services.CliError(
-                "UNSUPPORTED_CAPABILITY",
-                "--tmux is currently only supported for interactive claude, "
-                "pi, and codex sessions",
-            )
-        if agent_preset is not None and (headless or harness_kind != "dsh"):
-            raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
-                "--agent-preset is only supported for interactive dsh",
             )
         if not headless:
             from hyprial.daemon import (
@@ -324,23 +291,6 @@ def start(
             if (
                 attach is not None
                 and attach.level is SupportLevel.NATIVE
-                and attach.mechanism == "dsh_tui"
-            ):
-                return services._start_interactive_dsh(
-                    name=name,
-                    nickname=nickname,
-                    cwd=resolved_cwd,
-                    resume=resume,
-                    runtime_args=runtime_args,
-                    model_provider=model_provider,
-                    model=model,
-                    json_output=json_output,
-                    tmux=tmux,
-                    agent_preset=agent_preset,
-                )
-            if (
-                attach is not None
-                and attach.level is SupportLevel.NATIVE
                 and attach.mechanism == "channel"
             ):
                 return services._start_interactive_claude(
@@ -352,7 +302,7 @@ def start(
                     model_provider=model_provider,
                     model=model,
                     json_output=json_output,
-                    tmux=tmux,
+                    ignore_stored_args=ignore_stored_args,
                 )
             if (
                 attach is not None
@@ -369,7 +319,6 @@ def start(
                     model_provider=model_provider,
                     model=model,
                     json_output=json_output,
-                    tmux=tmux,
                 )
             if (
                 attach is not None
@@ -386,45 +335,67 @@ def start(
                     model_provider=model_provider,
                     model=model,
                     json_output=json_output,
-                    tmux=tmux,
                 )
             raise services.CliError(
-                "UNSUPPORTED_CAPABILITY",
+                codes.UNSUPPORTED_CAPABILITY,
                 f"{harness_kind} does not support interactive_attach; "
                 "use --headless or start an interactive claude session instead",
             )
-        if execution_runtime is None and harness_kind not in {"dsh", "jev", "user-proxy"}:
-            # Pin the harness binary by absolute path at registration: the
-            # daemon that later spawns it may run under a launchd/cron PATH
-            # that lacks user bin dirs.  Older daemons ignore the unknown
-            # key (tolerant desired-state reader), so this stays skew-safe.
-            # abspath keeps vendor symlinks (e.g. ~/.local/bin/codex) intact
-            # -- they are the upgrade-stable entry points.  Resolved BEFORE
-            # agent creation so a refused start leaves no trace at all.
+        if harness_kind != "jev":
             pinned_binary = shutil.which(harness_kind)
             if pinned_binary is None:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     f"{harness_kind} binary not found on PATH; install it "
                     f"(or fix PATH) before starting a {harness_kind} connector",
                 )
+        if (
+            headless
+            and resume is None
+            and not replace_interactive
+            and not runtime_args
+            and cwd is None
+            and nickname is None
+            and effort is None
+        ):
+            started = _request_start(
+                services,
+                "agent.start",
+                {
+                    "name": name,
+                    "harness": harness_kind,
+                    **(
+                        {"provider": model_provider}
+                        if model_provider is not None
+                        else {}
+                    ),
+                    **({"model": model} if model is not None else {}),
+                    **(
+                        {"ignoreStoredHarnessArgs": True}
+                        if ignore_stored_args
+                        else {}
+                    ),
+                },
+                ignore_stored_args=ignore_stored_args,
+                timeout=(
+                    LIFECYCLE_OPERATION_DEADLINE_SECONDS
+                    + LIFECYCLE_WAIT_MARGIN_SECONDS
+                    + LIFECYCLE_IPC_MARGIN_SECONDS
+                ),
+            )
+            if isinstance(started, dict):
+                for warning in started.get("warnings", ()):
+                    if isinstance(warning, str):
+                        warn(warning, json_output=json_output)
+            return started
         params: JsonObject = {
-            # The IPC key stays "provider" so this CLI can talk to a daemon
-            # running an older build (and vice versa).
             "provider": harness_kind,
             "name": name,
-            "headless": True if harness_kind in {"jev", "user-proxy"} else headless,
+            "headless": True if harness_kind == "jev" else headless,
             "args": list(runtime_args),
             "cwd": str(resolved_cwd),
         }
-        if execution_runtime is not None:
-            params["executionRuntime"] = execution_runtime.to_json()
-        elif harness_kind == "user-proxy":
-            assert proxy_route is not None
-            params["command"] = _user_proxy_launch_params(
-                name, proxy_route, cwd=resolved_cwd
-            )["command"]
-        elif harness_kind == "jev":
+        if harness_kind == "jev":
             params["command"] = [
                 os.path.abspath(sys.executable),
                 "-m",
@@ -432,18 +403,20 @@ def start(
                 "--kind",
                 "jev",
             ]
-        elif harness_kind != "dsh":
+        else:
             params["command"] = [os.path.abspath(pinned_binary)]
         if nickname is not None:
             params["nickname"] = nickname
-        if model_provider is not None and harness_kind not in {"jev", "user-proxy"}:
+        if model_provider is not None and harness_kind != "jev":
             params["modelProvider"] = model_provider
-        if model is not None and harness_kind not in {"jev", "user-proxy"}:
+        if model is not None and harness_kind != "jev":
             params["model"] = model
         if effort is not None:
             params["effort"] = effort
         if replace_interactive:
             params["replaceInteractive"] = True
+        if ignore_stored_args:
+            params["ignoreStoredHarnessArgs"] = True
         if resume is not None:
             # Headless resume: the daemon refuses a session it cannot find
             # (RESUME_SESSION_NOT_FOUND, before anything starts) and one that
@@ -453,7 +426,12 @@ def start(
             # Native transcript validation is read-only and must precede the
             # reusable Agent write.  A daemon without this dedicated method
             # fails closed with METHOD_NOT_FOUND before agent.create.
-            preflight = services.runtime.request("lifecycle.resume.preflight", params)
+            preflight = _request_start(
+                services,
+                "lifecycle.resume.preflight",
+                params,
+                ignore_stored_args=ignore_stored_args,
+            )
             preflight_snapshot = preflight.get("agentSnapshot")
             if not isinstance(preflight_snapshot, dict):
                 raise services.CliError(
@@ -468,15 +446,15 @@ def start(
             harness=harness_kind,
             runtime="headless",
             cwd=resolved_cwd,
-            provider=None if harness_kind in {"jev", "user-proxy"} else model_provider,
-            model=None if harness_kind in {"jev", "user-proxy"} else model,
+            provider=None if harness_kind == "jev" else model_provider,
+            model=None if harness_kind == "jev" else model,
             include_resume_snapshot=resume is not None,
         )
         if resume is not None:
             raw_before = create_result.get("resumePreviousSnapshot")
             if not isinstance(raw_before, dict):
                 raise services.CliError(
-                    ipc_errors.RESUME_AGENT_RESTORE_FAILED,
+                    codes.RESUME_AGENT_RESTORE_FAILED,
                     "agent.create did not replace an existing Agent after resume "
                     "preflight; no exact rollback record exists, so inspect the "
                     "new Agent before retrying",
@@ -496,13 +474,11 @@ def start(
         # (2026-09-14 production).  Same derivation as `down`; the three
         # waits are composed from one deadline, never chosen independently.
         try:
-            started = services.runtime.request(
-                (
-                    "lifecycle.start-smolvm"
-                    if execution_runtime is not None
-                    else "lifecycle.start"
-                ),
+            started = _request_start(
+                services,
+                "lifecycle.start",
                 params,
+                ignore_stored_args=ignore_stored_args,
                 timeout=(
                     LIFECYCLE_OPERATION_DEADLINE_SECONDS
                     + LIFECYCLE_WAIT_MARGIN_SECONDS
@@ -524,8 +500,8 @@ def start(
                 and isinstance(resume_agent_after, dict)
                 and start_error.code
                 in {
-                    ipc_errors.RESUME_SESSION_NOT_FOUND,
-                    ipc_errors.STRICT_RESUME_FAILED,
+                    codes.RESUME_SESSION_NOT_FOUND,
+                    codes.STRICT_RESUME_FAILED,
                 }
             ):
                 # The rollback is a compensating write, not a second start
@@ -563,7 +539,7 @@ def start(
             )
             if started_session != expected:
                 raise services.CliError(
-                    ipc_errors.STRICT_RESUME_FAILED,
+                    codes.STRICT_RESUME_FAILED,
                     f"resume of {harness_kind} session {expected!r} did not hold: "
                     f"the worker established {started_session!r}",
                     {"harness": harness_kind, "name": name, "sessionRef": expected},

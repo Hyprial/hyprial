@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from hyprial.daemon.impl.api import HarnessResultStatus, StreamingHarnessProcess
 from hyprial.kernel import HarnessLaunchSpec
-from hyprial.daemon.impl.harnesses import HarnessLauncher, PtyHarnessProcess
 from hyprial.daemon.impl.inbox import (
     DeliveryLifecycle,
     InboxMessage,
@@ -437,14 +436,3 @@ def test_idle_child_exit_converges_process_health_and_writes_worker_log(
     finally:
         process.stop()
         inbox.close()
-
-
-def test_overridden_pi_command_keeps_the_pty_seam() -> None:
-    launcher = HarnessLauncher(
-        commands={"pi": (sys.executable, "-c", "import time; time.sleep(30)")}
-    )
-    process = launcher.start(spec())
-    try:
-        assert isinstance(process, PtyHarnessProcess)
-    finally:
-        process.stop()

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.daemon.impl.inbox import (
     DeliveryCustodyCoordinator,
     DeliveryCustodyFacade,
@@ -19,7 +18,7 @@ from hyprial.daemon.impl.inbox import (
     InboxService,
     MemoryDeliveryTransport,
 )
-from tests.support.links.gate import PermissiveLinkGate
+from tests.support.actor_hosts import new_actor_host
 
 READER = "agent:op:node-1:reader"
 
@@ -66,14 +65,12 @@ def test_fetch_pending_by_message_id_stamps_one_row(tmp_path: Path) -> None:
 
 def test_facade_fetch_pending_carries_the_message_id(tmp_path: Path) -> None:
     database = tmp_path / "inbox.sqlite3"
-    slot = LinkAdmission()
-    slot.bind(PermissiveLinkGate())
     coordinator = DeliveryCustodyCoordinator(
         database,
         MemoryDeliveryTransport(),
         _Events(),
         node_id="node-1",
-        service_options={"link_admission": slot},
+        actor_host=new_actor_host(),
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     try:

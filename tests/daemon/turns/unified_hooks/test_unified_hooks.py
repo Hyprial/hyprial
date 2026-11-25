@@ -173,9 +173,9 @@ def _service(
     ],
 )
 def test_invalid_v2_entry_is_logged_disabled_and_daemon_lane_survives(
-    tmp_path: Path, entry: dict[str, object]
+    actor_host, tmp_path: Path, entry: dict[str, object]
 ) -> None:
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     consumer = _Consumer()
     logs: list[tuple[str, dict[str, object]]] = []
     service = _service(tmp_path, bus, consumer, logs=logs)
@@ -198,9 +198,9 @@ def test_invalid_v2_entry_is_logged_disabled_and_daemon_lane_survives(
 
 
 def test_mtime_reload_switches_consumer_to_agent_handler_with_documented_payload(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     consumer = _Consumer()
     inbox = _CaptureInbox()
     service = _service(tmp_path, bus, consumer, inbox=inbox)
@@ -398,7 +398,7 @@ def _run_turn(observer):  # type: ignore[no-untyped-def]
 
 
 def test_no_hooks_config_preserves_turn_result_record_resolver_and_threads_exactly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    actor_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from hyprial.daemon.impl.harnesses.streaming import process as process_module
 
@@ -427,7 +427,7 @@ def test_no_hooks_config_preserves_turn_result_record_resolver_and_threads_exact
         resolver_calls.append(actor)
         return tmp_path / "agent" / "config" / "hooks.json"
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     service = _service(
         tmp_path,
         bus,
@@ -473,7 +473,7 @@ def _observe_completed(service: DaemonHookService, delivery: HarnessDelivery) ->
     )
 
 
-def test_handler_equal_to_emitting_agent_does_not_recur(tmp_path: Path) -> None:
+def test_handler_equal_to_emitting_agent_does_not_recur(actor_host, tmp_path: Path) -> None:
     path = tmp_path / "agent/config/hooks.json"
     resolver_calls = 0
 
@@ -484,7 +484,7 @@ def test_handler_equal_to_emitting_agent_does_not_recur(tmp_path: Path) -> None:
             raise RuntimeError("back-pointer lookup unavailable")
         return path
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     inbox = _CaptureInbox()
     service = _service(
         tmp_path,
@@ -506,7 +506,7 @@ def test_handler_equal_to_emitting_agent_does_not_recur(tmp_path: Path) -> None:
         assert bus.close(5.0)
 
 
-def test_handler_back_pointer_does_not_ping_pong(tmp_path: Path) -> None:
+def test_handler_back_pointer_does_not_ping_pong(actor_host, tmp_path: Path) -> None:
     peer = "agent:owner:node:peer"
     paths = {
         RECIPIENT: tmp_path / "worker/config/hooks.json",
@@ -520,7 +520,7 @@ def test_handler_back_pointer_does_not_ping_pong(tmp_path: Path) -> None:
         paths[peer],
         {"events": ["turn.completed"], "handler": RECIPIENT},
     )
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     inbox = _CaptureInbox()
     service = _service(
         tmp_path,
@@ -538,8 +538,8 @@ def test_handler_back_pointer_does_not_ping_pong(tmp_path: Path) -> None:
         assert bus.close(5.0)
 
 
-def test_hook_caused_turn_emits_no_handler_request(tmp_path: Path) -> None:
-    bus = HookBus()
+def test_hook_caused_turn_emits_no_handler_request(actor_host, tmp_path: Path) -> None:
+    bus = HookBus(actor_host=actor_host)
     inbox = _CaptureInbox()
     service = _service(tmp_path, bus, None, inbox=inbox)
     _write_config(
@@ -556,9 +556,9 @@ def test_hook_caused_turn_emits_no_handler_request(tmp_path: Path) -> None:
 
 
 def test_bad_entry_disables_only_it_and_good_entry_still_fires(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     consumer = _Consumer()
     logs: list[tuple[str, dict[str, object]]] = []
     service = _service(tmp_path, bus, consumer, logs=logs)
@@ -579,9 +579,9 @@ def test_bad_entry_disables_only_it_and_good_entry_still_fires(
 
 
 def test_config_resolution_error_is_cached_and_log_is_rate_limited(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     logs: list[tuple[str, dict[str, object]]] = []
     resolver_calls = 0
 
@@ -608,9 +608,9 @@ def test_config_resolution_error_is_cached_and_log_is_rate_limited(
 
 
 def test_config_invalid_log_is_rate_limited_across_refreshes(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     logs: list[tuple[str, dict[str, object]]] = []
     now = 0.0
 
@@ -635,9 +635,9 @@ def test_config_invalid_log_is_rate_limited_across_refreshes(
 
 
 def test_config_invalid_rate_limit_groups_distinct_timeout_ids(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     logs: list[tuple[str, dict[str, object]]] = []
     service = _service(tmp_path, bus, None, logs=logs)
     try:
@@ -651,7 +651,7 @@ def test_config_invalid_rate_limit_groups_distinct_timeout_ids(
 
 
 def test_config_invalid_tracking_is_capacity_bounded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    actor_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         hook_service_module,
@@ -659,7 +659,7 @@ def test_config_invalid_tracking_is_capacity_bounded(
         2,
         raising=False,
     )
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     service = _service(tmp_path, bus, None)
     try:
         for index in range(3):
@@ -672,7 +672,7 @@ def test_config_invalid_tracking_is_capacity_bounded(
 
 
 def test_slow_config_resolver_never_blocks_turn_and_next_turn_observes(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     path = tmp_path / "agent/config/hooks.json"
     _write_config(
@@ -688,7 +688,7 @@ def test_slow_config_resolver_never_blocks_turn_and_next_turn_observes(
         resolver_finished.set()
         return path
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     consumer = _Consumer()
     service = _service(
         tmp_path,
@@ -711,7 +711,7 @@ def test_slow_config_resolver_never_blocks_turn_and_next_turn_observes(
 
 
 def test_handler_back_pointer_cache_tracks_handler_config_signature(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     peer = "agent:owner:node:peer"
     paths = {
@@ -726,7 +726,7 @@ def test_handler_back_pointer_cache_tracks_handler_config_signature(
         paths[peer],
         {"events": ["turn.completed"], "handler": RECIPIENT},
     )
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     inbox = _CaptureInbox()
     service = _service(
         tmp_path,
@@ -750,9 +750,9 @@ def test_handler_back_pointer_cache_tracks_handler_config_signature(
         assert bus.close(5.0)
 
 
-def test_blocking_observer_never_delays_turn_completion(tmp_path: Path) -> None:
+def test_blocking_observer_never_delays_turn_completion(actor_host, tmp_path: Path) -> None:
     release = threading.Event()
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     consumer = _Consumer(release)
     service = _service(tmp_path, bus, consumer)
     _write_config(
@@ -774,8 +774,8 @@ def test_blocking_observer_never_delays_turn_completion(tmp_path: Path) -> None:
         assert bus.close(5.0)
 
 
-def test_turn_runtime_start_emits_the_versioned_started_payload(tmp_path: Path) -> None:
-    bus = HookBus()
+def test_turn_runtime_start_emits_the_versioned_started_payload(actor_host, tmp_path: Path) -> None:
+    bus = HookBus(actor_host=actor_host)
     consumer = _Consumer()
     service = _service(tmp_path, bus, consumer)
     _write_config(
@@ -812,13 +812,13 @@ class _DaemonConsumer:
 
 
 def test_daemon_consumer_hears_turn_failed_without_any_hooks_json(
-    tmp_path: Path,
+    actor_host, tmp_path: Path,
 ) -> None:
     """Unified hooks H4: the quota lane must hear every usage-limit turn even
     when no agent opted in -- deleting the settlement callback must not leave
     the watchdog silently deaf."""
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     consumer = _DaemonConsumer()
     service = _service(tmp_path, bus, None)
     service.register_consumer(
@@ -864,8 +864,8 @@ def test_daemon_consumer_hears_turn_failed_without_any_hooks_json(
         assert bus.close(5.0)
 
 
-def test_usage_refreshed_publishes_to_daemon_lanes_only(tmp_path: Path) -> None:
-    bus = HookBus()
+def test_usage_refreshed_publishes_to_daemon_lanes_only(actor_host, tmp_path: Path) -> None:
+    bus = HookBus(actor_host=actor_host)
     consumer = _DaemonConsumer()
     per_agent = _Consumer()
     service = _service(tmp_path, bus, per_agent)
@@ -895,7 +895,7 @@ def test_usage_refreshed_publishes_to_daemon_lanes_only(tmp_path: Path) -> None:
         assert bus.close(5.0)
 
 
-def test_a_raising_daemon_consumer_never_breaks_the_turn(tmp_path: Path) -> None:
+def test_a_raising_daemon_consumer_never_breaks_the_turn(actor_host, tmp_path: Path) -> None:
     """Allen 09-17 for the bus era: an exploding quota lane is counted as a
     failed delivery on its own lane; the turn result is unchanged."""
 
@@ -903,7 +903,7 @@ def test_a_raising_daemon_consumer_never_breaks_the_turn(tmp_path: Path) -> None
         def observe(self, _event: HookEvent) -> None:
             raise RuntimeError("quota lane bug")
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     service = _service(tmp_path, bus, None)
     service.register_consumer(
         "quota", _Exploding(), ("turn.failed", "usage.refreshed")

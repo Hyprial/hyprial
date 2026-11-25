@@ -1,3 +1,7 @@
+# Decision notes (phase B, S10): a receiver now refuses an owner without an
+# owner thread with TARGET_UNRESOLVED.
+# S3b (2026-11-23, ruling 12.1.4): the legacy pre-S10 squire refusal code is
+# retired from the registry and no longer read here; no compatibility reading.
 """Shared dispatch escalation delivery, independent of workflow execution."""
 
 from __future__ import annotations
@@ -14,8 +18,9 @@ from hyprial.kernel import Logger, ipc_errors
 # retryable alarm loses exactly the message this path exists to deliver.
 _TERMINAL_USER_DELIVERY_CODES = frozenset({
     ipc_errors.INVALID_ARGUMENT,
-    ipc_errors.TARGET_SQUIRE_UNCONFIGURED,
+    ipc_errors.TARGET_UNRESOLVED,
     ipc_errors.SENDER_UNRESOLVED,
+    ipc_errors.AGENT_ADDRESS_RETIRED,
 })
 
 
@@ -27,7 +32,7 @@ class DispatchAlarm:
     def __init__(
         self,
         emitter: AlarmEmitter,
-        deliver_user: Callable[[str, str, str], bool] | None = None,
+        deliver_user: Callable[[str, str, str, str | None], bool] | None = None,
         logger: Logger | None = None,
     ) -> None:
         self._emitter = emitter
@@ -42,6 +47,7 @@ class DispatchAlarm:
         reason: str | None = None,
         conversation_id: str = "workflow",
         idempotency_key: str | None = None,
+        sender: str | None = None,
     ) -> AlarmResult:
         # The escalation text (routine name, breaker reason) is the payload --
         # it must survive to the reader verbatim.  The pre-2026-09-14 code
@@ -58,6 +64,7 @@ class DispatchAlarm:
                     to,
                     text,
                     idempotency_key or f"workflow-{uuid4().hex[:12]}",
+                    sender,
                 )
             except InboxIoError as error:
                 # The DM callback raises transient (timeout) / permanent

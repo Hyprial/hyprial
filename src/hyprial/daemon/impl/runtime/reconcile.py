@@ -1,9 +1,17 @@
 """DaemonEventBridge reconcile cluster: retry pump, harness actor reconciliation, dispatch deliveries, holds and progress.
 
-Production wiring uses actor_mode=False, so per-worker dispatch must stay inside
-one reconcile tick. It still gets a bounded per-agent offer deadline: an agent
-that does not settle is skipped for that round, logged once, and left pending
-for the next round instead of holding the tick or its peers.
+Production wiring composes the bridge with actor_mode=True and the headless
+cell delivery port (cell model I5-2 C).  Scan, capture, claim, offer and
+settlement all stay here: the one addition before an offer is a cell
+snapshot read — the port returns the admitted envelope or None, and None
+means "no offer this round" (the row stays pending, nothing is fetched,
+refused or acknowledged).  The snapshot read that produced an envelope is
+the linearization point of that work decision; the envelope's stamp rides
+with the in-flight attempt so a later steer reuses the original member
+instead of re-reading the cell.  Per-worker dispatch still gets a bounded
+offer deadline: an agent that does not settle is skipped for that round,
+logged once, and left pending for the next round instead of holding the
+tick or its peers.
 """
 
 from __future__ import annotations
@@ -22,11 +30,12 @@ from hyprial.daemon.impl.runtime.settlement import (
 import time
 from typing import TYPE_CHECKING
 from hyprial.daemon.impl.inbox.contracts.api import InboxMessage
+from hyprial.daemon.impl.inbox.contracts.origin import OriginClaimant
 from hyprial.daemon.impl.inbox.tracking.progress import ProgressEvent
 from hyprial.daemon.impl.api  import (
     HarnessDelivery,
 )
-from hyprial.kernel import DesiredStateError, parse_agent_uri
+from hyprial.kernel import DesiredStateError
 from hyprial.daemon.impl.inbox.batch.render import (
     render_scalar_notice,
     render_scalar_summary,
@@ -40,7 +49,7 @@ from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
 )
 from hyprial.kernel import AdmissionResult
 if TYPE_CHECKING:
-    pass
+    from hyprial.daemon.impl.cells.actor.contracts import CellDispatchEnvelope
 
 class _BridgeReconcileMixin:
     """DaemonEventBridge cluster; the composing class owns the state."""
@@ -197,6 +206,7 @@ class _BridgeReconcileMixin:
         active = set(self.harnesses.streaming_actors())
         generation_reader = getattr(self.harnesses, "streaming_generations", None)
         generations = generation_reader() if callable(generation_reader) else {}
+        self._retry_origin_claim_releases()
         self._reconcile_batch_claims(active, generations)
         active_workers = {self.harness_actor_uri(name) for name in active}
         for attempt in tuple(self._inflight.values()):
@@ -251,8 +261,7 @@ class _BridgeReconcileMixin:
         an ordinary request cannot smuggle the body in.
         """
 
-        parsed = parse_agent_uri(message.recipient)
-        harness = self._delivery_harness_kind(parsed[2]) if parsed is not None else None
+        harness = self._recipient_harness_kind(message.recipient)
         if harness is not None and (
             is_mechanism_hook_request(message) or mechanism_of(harness) == "python_worker"
         ):
@@ -314,6 +323,17 @@ class _BridgeReconcileMixin:
                 actor=actor, phase=phase, errorType=type(error).__name__,
             )
 
+    def _recipient_harness_kind(self, recipient: str) -> str | None:
+        """The worker kind behind an inbox row's recipient key.
+
+        A name URI's last segment is the worker name.  An ``a.`` id URI names
+        the worker whose network identity it is, so that worker answers
+        instead of the id itself (``_recipient_worker_name``).
+        """
+
+        name = self._recipient_worker_name(recipient)
+        return self._delivery_harness_kind(name) if name is not None else None
+
     def _delivery_harness_kind(self, actor: str) -> str | None:
         from hyprial.daemon.impl.harnesses.capabilities import DECLARED_HARNESSES
 
@@ -330,6 +350,41 @@ class _BridgeReconcileMixin:
             return None
         return kind
 
+    def _admit_delivery(
+        self, actor: str, delivery: HarnessDelivery
+    ) -> "CellDispatchEnvelope | None":
+        """One cell snapshot read: the admitted envelope, or None to defer."""
+
+        return self._cell_delivery.headless_envelope(actor, delivery)
+
+    def _submit_envelope(
+        self,
+        actor: str,
+        envelope: "CellDispatchEnvelope",
+        *,
+        original: InboxMessage,
+        retry: bool,
+        notice: bool,
+    ) -> bool:
+        """Offer one admitted envelope to this worker's execution lane."""
+
+        offers = self._dispatch_offers
+        if offers is None:
+            dispatch = getattr(self.harnesses, "dispatch", None)
+            return callable(dispatch) and bool(dispatch(envelope))
+        if getattr(self, "_actor_mode", False):
+            return offers.offer(
+                actor, envelope, original=original, retry=retry, notice=notice
+            )
+        return offers.offer_sync(
+            actor,
+            envelope,
+            original=original,
+            retry=retry,
+            notice=notice,
+            timeout_ms=getattr(self, "_dispatch_agent_timeout_ms", 1500),
+        )
+
     def _offer_delivery(
         self,
         actor: str,
@@ -338,22 +393,41 @@ class _BridgeReconcileMixin:
         original: InboxMessage,
         retry: bool,
         notice: bool,
-    ) -> bool:
-        offers = self._dispatch_offers
-        if offers is None:
-            return bool(self.harnesses.dispatch(actor, delivery))
-        if getattr(self, "_actor_mode", False):
-            return offers.offer(
-                actor, delivery, original=original, retry=retry, notice=notice
-            )
-        return offers.offer_sync(
-            actor,
-            delivery,
-            original=original,
-            retry=retry,
-            notice=notice,
-            timeout_ms=getattr(self, "_dispatch_agent_timeout_ms", 1500),
-        )
+    ) -> "CellDispatchEnvelope | None":
+        """Admit one delivery through the cell port and offer its envelope.
+
+        Returns the admitted envelope when the offer was submitted for
+        execution, and None when the cell deferred this round, no execution
+        seam exists, or the submission itself was refused or timed out —
+        every shape leaves the row pending with nothing fetched (M′ M2).
+        Rounds 3-4: a FIRST attempt starts its in-flight clock at cell
+        admission, before the submission, so a busy lane, a refused or
+        timed-out submission and a later execution-side refusal all keep
+        the clock exactly as the pre-cell runtime did; a row the cell
+        defers never starts one.  A retry keeps the pre-cell distinction:
+        its prior terminal result already finished the old clock, so its
+        new generation is registered only after the submission is actually
+        accepted — a worker that still holds the delivery (enqueue dedup)
+        must not start a second clock.  A seen-again row keeps its clock
+        and adopts the newest stamp, so a later steer targets the member
+        of the most recent submitted envelope.
+        """
+
+        if not notice and not self._claim_scalar_origin(actor, original):
+            return None
+        envelope = self._admit_delivery(actor, delivery)
+        if envelope is None:
+            self._release_scalar_origin(original.message_id, notice=notice)
+            return None
+        if not retry:
+            self._note_delivery_seen(actor, original, stamp=envelope.stamp)
+        if not self._submit_claimed_envelope(
+            actor, envelope, original=original, retry=retry, notice=notice
+        ):
+            return None
+        if retry:
+            self._note_delivery_seen(actor, original, stamp=envelope.stamp)
+        return envelope
 
     def _dispatch_actor_deliveries(self, actor: str, pending_result_ids: frozenset[str]) -> int:
         """Dispatch one actor inside the caller's fault boundary."""
@@ -365,6 +439,7 @@ class _BridgeReconcileMixin:
         # The inbox is keyed by the canonical network identity — the
         # exact key the registrar advertised for this connector.
         recipient = self.harness_actor_uri(actor)
+        keys = self._actor_read_keys(actor)
         if self._blocked_actor is not None and self._blocked_actor(recipient):
             return accepted
         pending_batches = getattr(self, "_pending_batch_claims", None)
@@ -388,7 +463,7 @@ class _BridgeReconcileMixin:
                         actor, elapsed_ms, active.operation_id
                     )
                 return accepted
-        pending_messages = self.inbox.pending_messages(recipient)
+        pending_messages = self._read_across(keys, self.inbox.pending_messages)
         # The link gate runs on the inbox actor thread (review B3); the
         # runtime only names rows it has already answered or is settling so
         # those never newly occupy W.
@@ -399,8 +474,9 @@ class _BridgeReconcileMixin:
             or message.message_id in self._pending_settle_results
         )
         messages = (
-            admission_reader(
-                recipient, now_ms=self._clock_ms(), exclude=exclude
+            self._read_across(
+                keys,
+                lambda key: self._admitted_dispatchable_for(key, recipient, exclude),
             )
             if callable(admission_reader)
             else pending_messages
@@ -411,10 +487,9 @@ class _BridgeReconcileMixin:
             else ()
         )
         if self._delivery_hooks is not None:
-            self._delivery_hooks.forget_missing_deliveries(
-                recipient,
-                {message.message_id for message in (*pending_messages, *notices)},
-            )
+            present = {message.message_id for message in (*pending_messages, *notices)}
+            for key in keys:
+                self._delivery_hooks.forget_missing_deliveries(key, present)
         # One daemon-rendered batch per idle actor, plus the retained
         # scalar path for mechanism hook requests (never model text).
         batch_members, batch_dispatched = self._dispatch_batch(
@@ -454,15 +529,13 @@ class _BridgeReconcileMixin:
             # old clock, so its new generation starts only after enqueue
             # actually accepts it.
             is_retry = message.message_id in self._attempt_generation
-            if not is_retry:
-                self._note_delivery_seen(actor, message)
             delivery = HarnessDelivery(
                 delivery_id=message.message_id,
                 conversation_id=message.conversation_id,
                 sender=message.sender,
                 recipient=message.recipient,
                 message=self._injection_message_text(message),
-                origin=self._message_origin(message),
+                origin=self._stored_message_origin(message),
                 hook_request=hook_request,
                 workflow=self._is_workflow_message(message),
             )
@@ -477,16 +550,15 @@ class _BridgeReconcileMixin:
                         actor_held = True
                         continue
                     delivery = prepared
-            if self._offer_delivery(
+            envelope = self._offer_delivery(
                 actor, delivery, original=message,
                 retry=is_retry, notice=False,
-            ):
+            )
+            if envelope is not None:
                 if getattr(self, "_actor_mode", False):
                     break
                 if self._delivery_hooks is not None:
                     self._delivery_hooks.mark_dispatched(message.message_id)
-                if is_retry:
-                    self._note_delivery_seen(actor, message)
                 accepted += 1
                 # #276: a worker just genuinely accepted this delivery
                 # into its queue (StreamingHarnessProcess.enqueue dedups
@@ -515,7 +587,7 @@ class _BridgeReconcileMixin:
                         text=notice.summary or "",
                         created_at_ms=notice.created_at_ms,
                     ),
-                    origin=self._message_origin(notice),
+                    origin=self._stored_message_origin(notice),
                     hook_request=is_mechanism_hook_request(notice),
                     notice=True,
                 )
@@ -555,8 +627,7 @@ class _BridgeReconcileMixin:
 
         if is_mechanism_hook_request(message):
             return False
-        parsed = parse_agent_uri(message.recipient)
-        harness = self._delivery_harness_kind(parsed[2]) if parsed is not None else None
+        harness = self._recipient_harness_kind(message.recipient)
         # Unknown kinds use scalar summaries, not full-body model batches.
         return harness is not None and mechanism_of(harness) != "python_worker"
 
@@ -603,13 +674,14 @@ class _BridgeReconcileMixin:
             view = capture_batch(
                 self.inbox,
                 recipient,
-                keys=(recipient,),
+                keys=self._actor_read_keys(actor),
                 limit_bytes=self._inbox_batch_inline_bytes(),
                 actor_home=actor_home,
                 epoch="",
                 include_notices=False,
                 only=tuple(message.message_id for message in candidates),
                 mark_fetched=False,
+                origin_claim=OriginClaimant.headless(recipient),
             )
         except SpillUnavailable as error:
             if self._logger is not None:
@@ -626,7 +698,15 @@ class _BridgeReconcileMixin:
         members = view.message_ids
         if not members:
             return claimed, False
-        first = candidates[0]
+        claimed_candidates = self._prepare_batch_origin_claim(
+            recipient,
+            members,
+            getattr(view, "origin_claim_seq", None),
+            candidates,
+        )
+        if not claimed_candidates:
+            return claimed, False
+        first = claimed_candidates[0]
         delivery = HarnessDelivery(
             # A batch is only a one-shot transport wrapper, never an identity.
             # The queue's required key is therefore the first real member ID;
@@ -636,10 +716,12 @@ class _BridgeReconcileMixin:
             sender=first.sender,
             recipient=first.recipient,
             message=view.text,
-            origin=self._message_origin(first),
+            origin=self._stored_message_origin(first),
             batch_cursor=view.cursor,
             message_ids=members,
-            workflow=any(self._is_workflow_message(message) for message in candidates),
+            workflow=any(
+                self._is_workflow_message(message) for message in claimed_candidates
+            ),
         )
         # Preserve the existing first-member hook interception.  The batch
         # already carries that member's ID, so no wrapper identity is minted.
@@ -649,19 +731,27 @@ class _BridgeReconcileMixin:
             )
             prepared = self._delivery_hooks.prepare_delivery(hook_delivery)
             if prepared is None:
+                self._release_origin_claims(members)
                 return claimed, False
             delivery = replace(delivery, hook_text=prepared.hook_text)
+        envelope = self._admit_delivery(actor, delivery)
+        if envelope is None:
+            self._release_origin_claims(members)
+            return claimed, False
         pending_batches = getattr(self, "_pending_batch_claims", None)
         if pending_batches is None:
             pending_batches = self._pending_batch_claims = {}
-        pending_batches[actor] = (members, candidates)
+        pending_batches[actor] = (members, claimed_candidates, envelope.stamp)
         self._begin_batch_claim(actor, members)
         self._publish_batch_claims()
         try:
-            offered = self._offer_delivery(
-                actor, delivery, original=first, retry=False, notice=False
+            offered = self._submit_envelope(
+                actor, envelope, original=first, retry=False, notice=False
             )
         except DispatchAgentTimeout:
+            if getattr(self, "_dispatch_offers", None) is None:
+                pending_batches.pop(actor, None)
+                self._release_batch_claim(members[0], members, reason="offer-timeout")
             raise
         if not offered:
             self._release_batch_claim(members[0], members, reason="offer-refused")
@@ -670,54 +760,11 @@ class _BridgeReconcileMixin:
         self._claim_batch(
             actor,
             members,
-            candidates,
-            stamp=not getattr(self, "_actor_mode", False),
+            claimed_candidates,
+            mark_fetched=not getattr(self, "_actor_mode", False),
+            cell_stamp=envelope.stamp,
         )
         return self._batch_claims.get(actor, claimed), True
-
-    def _confirm_batch_fetched(
-        self, recipient: str, members: tuple[str, ...]
-    ) -> None:
-        try:
-            mark = getattr(self.inbox, "mark_batch_fetched", None)
-            if callable(mark):
-                mark(recipient, frozenset(members))
-            else:
-                fetch = getattr(self.inbox, "fetch_pending", None)
-                if callable(fetch):
-                    fetch(recipient, only=frozenset(members))
-        except Exception as error:  # noqa: BLE001 - retry from the pending map
-            pending = getattr(self, "_pending_batch_fetches", None)
-            if pending is None:
-                pending = self._pending_batch_fetches = {}
-            previous = pending.get(recipient, (recipient, ()))[1]
-            pending[recipient] = (recipient, tuple(dict.fromkeys((*previous, *members))))
-            if self._logger is not None:
-                self._logger(
-                    "warn",
-                    "daemon",
-                    "harness.batch.fetch_deferred",
-                    worker=recipient,
-                    count=len(members),
-                    errorType=type(error).__name__,
-                )
-
-    def _retry_batch_fetches(self) -> None:
-        pending = getattr(self, "_pending_batch_fetches", None)
-        if not pending:
-            return
-        for key, (recipient, members) in tuple(pending.items()):
-            try:
-                mark = getattr(self.inbox, "mark_batch_fetched", None)
-                if callable(mark):
-                    mark(recipient, frozenset(members))
-                else:
-                    fetch = getattr(self.inbox, "fetch_pending", None)
-                    if callable(fetch):
-                        fetch(recipient, only=frozenset(members))
-            except Exception:
-                continue
-            pending.pop(key, None)
 
     def _inbox_batch_inline_bytes(self) -> int:
         value = getattr(self, "_inbox_batch_inline_limit_bytes", None)
@@ -747,10 +794,19 @@ class _BridgeReconcileMixin:
                     self._release_batch_claim(
                         outcome.delivery_id, outcome.message_ids, reason="offer-refused"
                     )
+                elif not outcome.notice:
+                    self._release_origin_claims((outcome.delivery_id,))
                 continue
             if late_batch is not None:
                 pending_batches.pop(outcome.worker, None)
-                self._claim_batch(outcome.worker, *late_batch, stamp=True)
+                late_members, late_messages, late_stamp = late_batch
+                self._claim_batch(
+                    outcome.worker,
+                    late_members,
+                    late_messages,
+                    mark_fetched=True,
+                    cell_stamp=late_stamp,
+                )
             elif self._batch_claims.get(outcome.worker) and outcome.message_ids:
                 self._confirm_batch_fetched(
                     outcome.recipient, outcome.message_ids

@@ -6,13 +6,45 @@ from pathlib import Path
 from hyprial.daemon.impl import DesiredState, InteractiveSession
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.desired_state import DesiredStateStore
+from hyprial.daemon.impl.inbox import AckResult, InboxMessage, SubmissionResult
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 
-from .support import (
-    _FakeInbox,
-    _StubPresence,
-    _legacy_runtime_context as _legacy_runtime_context,
-)
+
+class _FakeInbox:
+    def pending_messages(self, actor: str) -> tuple[()]:
+        return ()
+
+    def pending_all(self) -> tuple[()]:
+        return ()
+
+    def fetch_pending(self, actor: str) -> tuple[()]:
+        return ()
+
+    def drain_system_notices(self, actor: str) -> tuple[()]:
+        return ()
+
+    def submit(self, message: InboxMessage) -> SubmissionResult:
+        return SubmissionResult(message.message_id, accepted=True)
+
+    def ack(self, actor: str, message_id: str) -> AckResult:
+        return AckResult(message_id, acknowledged=True)
+
+    def outbox_count(self) -> int:
+        return 0
+
+    def custody_count(self) -> int:
+        return 0
+
+
+class _StubPresence:
+    def actor_online(self, actor: str) -> bool:
+        return True
+
+    def online_actors(self) -> tuple[str, ...]:
+        return ()
+
+    def online_mailboxes(self) -> tuple[str, ...]:
+        return ()
 
 
 def test_interactive_session_tmux_session_round_trips(tmp_path: Path) -> None:

@@ -1,0 +1,15 @@
+name = "hyprial-dl"
+main = "src/index.ts"
+# ⚠️ 取**当前 workerd 上限**（2026-10-23 实测：2026-07-07 可启动，2026-07-08 被 workerd 拒绝）。
+# ⛔ 不许写成"今天"或任何未来日期：runtime 只支持到某个日期为止，未来日期会拒绝启动。
+# 上限随 wrangler/workerd 版本变化 —— 换 CLI = 换上限，要动先报当前 runtime 与理由。
+compatibility_date = "2026-07-07"
+
+# 唯一入口：dl.hyprial.com（custom domain ⇒ CF 自动建 DNS 记录与证书）
+# ⛔ 不挂 r2.dev（D-infra-ops-0002 §3：绕过域名控制、按设计限流、不可吊销）
+routes = [{ pattern = "dl.hyprial.com", custom_domain = true }]
+
+# account id 由环境变量 CLOUDFLARE_ACCOUNT_ID 注入，⛔ 不硬编码进仓
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "hyprial-releases"

@@ -1,38 +1,10 @@
-"""Daemon IPC error type and code registry (docs/reference/proto.md §3.7; closes §9 item 4).
+"""Daemon IPC exception types and the transient-code registry.
 
-One named constant per proto-facing error code -- every code that crosses a
-process boundary through the daemon IPC error channel (``error.code`` in a
-daemon response, a ``CliError`` surfaced to users/JSON, or an inner-service
-code that passes through to the wire unchanged).  Sender and receiver import
-the SAME constant, following the ``SESSION_SUPERSEDED_CODE`` precedent the
-protocol document promotes from special case to rule: a code a caller
-branches on must never be typed twice as a string literal.
-
-Rules:
-
-- Values are frozen once shipped.  Old nodes keep sending these exact
-  strings, so a receiver that compares against a constant here is tolerant
-  of every historical peer by construction.  Renaming a value is a protocol
-  break; add a new code instead and keep recognising the old one.
-- **Membership line**: a code enters this registry when its string leaves
-  the minting process into another process's MACHINE-READABLE decision
-  surface -- a daemon IPC ``error.code`` (minted or passed through), a
-  zenoh cross-node payload, or a persisted JSON field that another process
-  parses and branches on (e.g. the startup-log ``HYPRIAL_HOME_IN_USE`` the CLI
-  matches against).  Client-side-only codes stay OUT: a ``CliError`` code
-  that is only ever rendered to a human or emitted in ``--json`` output
-  without any other process branching on it is display, not protocol
-  (``INVALID_RESPONSE`` and friends).  External platform code spaces
-  (Lark) and process-internal exception codes stay out for the same
-  reason.  Border case, ruled here: ``UPGRADE_RESTART_FAILED`` /
-  ``UPGRADE_NOTIFICATION_FAILED`` land in the autoupdate last-run JSON and
-  are projected by the daemon's ``autoupdate.status``, but no process
-  branches on the strings -- display-through, so they stay out; the first
-  cross-process ``== "UPGRADE_..."`` branch anyone adds moves them in.
-- ``tests/test_ipc_error_code_registry.py`` enforces both directions: the
-  registry matches a frozen membership fixture, and no file under
-  ``src/hyprial`` spells one of these codes as a string literal outside this
-  module.
+The wire error-code constants and ``ALL_CODES`` live in
+``hyprial.error.codes`` (owner decision of 2026-11-19, recorded in that
+module's header).  They are re-exported here so every existing
+``ipc_errors.X`` reference keeps working; ``hyprial.kernel.ipc_errors`` is
+unchanged.
 """
 
 from __future__ import annotations
@@ -40,6 +12,240 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
+
+from hyprial.error.codes import (
+    ALL_CODES as ALL_CODES,
+    MODEL_CONFIGURATION_INVALID as MODEL_CONFIGURATION_INVALID,
+    MODEL_CONFIGURATION_CONFLICT as MODEL_CONFIGURATION_CONFLICT,
+    MODEL_CONFIGURATION_INCOMPLETE as MODEL_CONFIGURATION_INCOMPLETE,
+    MODEL_OPERATION_CAPACITY_EXCEEDED as MODEL_OPERATION_CAPACITY_EXCEEDED,
+    MODEL_SESSION_BUSY as MODEL_SESSION_BUSY,
+    MODEL_COMBINATION_UNSUPPORTED as MODEL_COMBINATION_UNSUPPORTED,
+    MODEL_AUTH_UNAVAILABLE as MODEL_AUTH_UNAVAILABLE,
+    MODEL_RESUME_MISMATCH as MODEL_RESUME_MISMATCH,
+    MODEL_UPSTREAM_ERROR as MODEL_UPSTREAM_ERROR,
+    USER_KEY_ABSENT as USER_KEY_ABSENT,
+    USER_KEY_UNBOUND as USER_KEY_UNBOUND,
+    USER_KEY_BINDING_EXPIRED as USER_KEY_BINDING_EXPIRED,
+    USER_KEY_QUARANTINED as USER_KEY_QUARANTINED,
+    PURPOSE_UNKNOWN as PURPOSE_UNKNOWN,
+    PAYLOAD_INVALID as PAYLOAD_INVALID,
+    RATE_LIMITED as RATE_LIMITED,
+    DAEMON_ERROR as DAEMON_ERROR,
+    INVALID_REQUEST as INVALID_REQUEST,
+    INVALID_ARGUMENT as INVALID_ARGUMENT,
+    INVALID_PARAMS as INVALID_PARAMS,
+    METHOD_NOT_FOUND as METHOD_NOT_FOUND,
+    VERSION_MISMATCH as VERSION_MISMATCH,
+    IPC_REQUEST_TOO_LARGE as IPC_REQUEST_TOO_LARGE,
+    DAEMON_NOT_READY as DAEMON_NOT_READY,
+    DAEMON_RESTORING as DAEMON_RESTORING,
+    DAEMON_UNAVAILABLE as DAEMON_UNAVAILABLE,
+    IPC_TIMEOUT as IPC_TIMEOUT,
+    DAEMON_DISCONNECTED as DAEMON_DISCONNECTED,
+    DAEMON_START_FAILED as DAEMON_START_FAILED,
+    HARNESS_START_FAILED as HARNESS_START_FAILED,
+    HARNESS_BINARY_MISSING as HARNESS_BINARY_MISSING,
+    DAEMON_START_TIMEOUT as DAEMON_START_TIMEOUT,
+    HYPRIAL_HOME_IN_USE as HYPRIAL_HOME_IN_USE,
+    HYPRIAL_HOME_MIGRATION_FAILED as HYPRIAL_HOME_MIGRATION_FAILED,
+    AMBIGUOUS_TARGET as AMBIGUOUS_TARGET,
+    INVALID_AGENT_NAME as INVALID_AGENT_NAME,
+    UNSUPPORTED_TARGET as UNSUPPORTED_TARGET,
+    TARGET_IS_NODE as TARGET_IS_NODE,
+    TARGET_UNRESOLVED as TARGET_UNRESOLVED,
+    SENDER_UNRESOLVED as SENDER_UNRESOLVED,
+    TARGET_NOT_AUTHORIZED as TARGET_NOT_AUTHORIZED,
+    SENDER_NOT_AUTHENTICATED as SENDER_NOT_AUTHENTICATED,
+    ORG_CONTEXT_NOT_AUTHORIZED as ORG_CONTEXT_NOT_AUTHORIZED,
+    ORG_REQUIRED as ORG_REQUIRED,
+    MESSAGE_REPLY_UNAVAILABLE as MESSAGE_REPLY_UNAVAILABLE,
+    MESSAGE_REPLY_RESOURCES_UNSUPPORTED as MESSAGE_REPLY_RESOURCES_UNSUPPORTED,
+    SUMMARY_REQUIRED as SUMMARY_REQUIRED,
+    MESSAGE_BODY_UNAVAILABLE as MESSAGE_BODY_UNAVAILABLE,
+    MESSAGE_ACK_UNAVAILABLE as MESSAGE_ACK_UNAVAILABLE,
+    INBOX_BATCH_SPILL_UNAVAILABLE as INBOX_BATCH_SPILL_UNAVAILABLE,
+    USER_DELIVERY_UNAVAILABLE as USER_DELIVERY_UNAVAILABLE,
+    USER_DELIVERY_FAILED as USER_DELIVERY_FAILED,
+    ATTACHMENT_PATH_REFUSED as ATTACHMENT_PATH_REFUSED,
+    USER_DELIVERY_TIMEOUT as USER_DELIVERY_TIMEOUT,
+    SUBMIT_OUTCOME_UNKNOWN as SUBMIT_OUTCOME_UNKNOWN,
+    PREVIEW_UNKNOWN as PREVIEW_UNKNOWN,
+    PREVIEW_EXPIRED as PREVIEW_EXPIRED,
+    PREVIEW_STALE as PREVIEW_STALE,
+    OPERATION_IN_PROGRESS as OPERATION_IN_PROGRESS,
+    SESSION_SUPERSEDED as SESSION_SUPERSEDED,
+    STALE_SESSION as STALE_SESSION,
+    INVALID_SESSION_SOURCE as INVALID_SESSION_SOURCE,
+    INVALID_CHANNEL_LEASE as INVALID_CHANNEL_LEASE,
+    CHANNEL_LIVENESS_UNAVAILABLE as CHANNEL_LIVENESS_UNAVAILABLE,
+    STALE_DAEMON_GENERATION as STALE_DAEMON_GENERATION,
+    MCP_CHANNEL_STALE as MCP_CHANNEL_STALE,
+    AGENT_EXISTS as AGENT_EXISTS,
+    AGENT_NOT_FOUND as AGENT_NOT_FOUND,
+    USER_AGENT_IMMUTABLE as USER_AGENT_IMMUTABLE,
+    CONVERSATION_NOT_FOUND as CONVERSATION_NOT_FOUND,
+    CONVERSATION_NOT_MEMBER as CONVERSATION_NOT_MEMBER,
+    AGENT_ADDRESS_RETIRED as AGENT_ADDRESS_RETIRED,
+    AGENT_CREATE_COMMIT_FAILED as AGENT_CREATE_COMMIT_FAILED,
+    AGENT_CREATE_ROLLBACK_PENDING as AGENT_CREATE_ROLLBACK_PENDING,
+    CODEX_RESUME_AGENT_RESTORE_FAILED as CODEX_RESUME_AGENT_RESTORE_FAILED,
+    CODEX_CREDENTIAL_MISSING as CODEX_CREDENTIAL_MISSING,
+    RESUME_AGENT_RESTORE_FAILED as RESUME_AGENT_RESTORE_FAILED,
+    RESUME_OUTCOME_UNKNOWN as RESUME_OUTCOME_UNKNOWN,
+    AGENT_MIGRATION_BUSY as AGENT_MIGRATION_BUSY,
+    AGENT_DEFAULT_ROUTINE_PENDING as AGENT_DEFAULT_ROUTINE_PENDING,
+    AGENT_DEFAULT_ROUTINE_FAILED as AGENT_DEFAULT_ROUTINE_FAILED,
+    AGENT_SECRET_RESOLUTION_FAILED as AGENT_SECRET_RESOLUTION_FAILED,
+    HARNESS_ARGS_CONFLICT as HARNESS_ARGS_CONFLICT,
+    HARNESS_ARGS_INVALID as HARNESS_ARGS_INVALID,
+    HARNESS_ARGS_DANGEROUS_CONFIRMATION_REQUIRED as HARNESS_ARGS_DANGEROUS_CONFIRMATION_REQUIRED,
+    UNSUPPORTED_CAPABILITY as UNSUPPORTED_CAPABILITY,
+    ADAPTER_NOT_FOUND as ADAPTER_NOT_FOUND,
+    ADAPTER_RELOAD_FAILED as ADAPTER_RELOAD_FAILED,
+    USE_ADAPTER_COMMAND as USE_ADAPTER_COMMAND,
+    DISPATCH_NO_CAPABLE_HARNESS as DISPATCH_NO_CAPABLE_HARNESS,
+    DISPATCH_ROLE_MISMATCH as DISPATCH_ROLE_MISMATCH,
+    CONTEXT_EXHAUSTED as CONTEXT_EXHAUSTED,
+    LIFECYCLE_MANAGER_UNAVAILABLE as LIFECYCLE_MANAGER_UNAVAILABLE,
+    LIFECYCLE_OPERATION_UNSETTLED as LIFECYCLE_OPERATION_UNSETTLED,
+    LIFECYCLE_OPERATION_TIMEOUT as LIFECYCLE_OPERATION_TIMEOUT,
+    PORT_CLOSING as PORT_CLOSING,
+    PORT_OVERLOADED as PORT_OVERLOADED,
+    LIFECYCLE_DOMAIN_FAILED as LIFECYCLE_DOMAIN_FAILED,
+    LIFECYCLE_COMPENSATION_TIMEOUT as LIFECYCLE_COMPENSATION_TIMEOUT,
+    DOMAIN_COMMAND_TIMEOUT as DOMAIN_COMMAND_TIMEOUT,
+    ROUTE_LEASE_STALE as ROUTE_LEASE_STALE,
+    ROUTE_IO_FAILED as ROUTE_IO_FAILED,
+    ROUTE_CLOSED_BEFORE_COMPLETION as ROUTE_CLOSED_BEFORE_COMPLETION,
+    HARNESS_RUNTIME_CLOSING as HARNESS_RUNTIME_CLOSING,
+    HARNESS_LIFECYCLE_IN_PROGRESS as HARNESS_LIFECYCLE_IN_PROGRESS,
+    LIFECYCLE_ATTEMPT_SETTLED as LIFECYCLE_ATTEMPT_SETTLED,
+    HARNESS_LIFECYCLE_RECEIPT_MISMATCH as HARNESS_LIFECYCLE_RECEIPT_MISMATCH,
+    HARNESS_LIFECYCLE_STORE_MISSING as HARNESS_LIFECYCLE_STORE_MISSING,
+    HARNESS_IO_FAILED as HARNESS_IO_FAILED,
+    STALE_HARNESS_IO_COMPLETION as STALE_HARNESS_IO_COMPLETION,
+    HARNESS_START_TIMEOUT as HARNESS_START_TIMEOUT,
+    HARNESS_COMPLETION_HANDOFF_FAILED as HARNESS_COMPLETION_HANDOFF_FAILED,
+    AGENT_HOME_ACCESS_FAILED as AGENT_HOME_ACCESS_FAILED,
+    AGENT_RUNTIME_CONTEXT_STALE as AGENT_RUNTIME_CONTEXT_STALE,
+    AGENT_RUNTIME_LAUNCH_MISMATCH as AGENT_RUNTIME_LAUNCH_MISMATCH,
+    AGENT_LAUNCH_IN_PROGRESS as AGENT_LAUNCH_IN_PROGRESS,
+    AGENT_DESTROY_SETTLEMENT_UNKNOWN as AGENT_DESTROY_SETTLEMENT_UNKNOWN,
+    AGENT_VERSION_CONFLICT as AGENT_VERSION_CONFLICT,
+    PIN_CONFLICT as PIN_CONFLICT,
+    PIN_STATE_CONFLICT as PIN_STATE_CONFLICT,
+    ACTOR_STOPPED_UNDELIVERED as ACTOR_STOPPED_UNDELIVERED,
+    ACTOR_RESTARTED_UNDELIVERED as ACTOR_RESTARTED_UNDELIVERED,
+    ACTOR_QUARANTINED_UNDELIVERED as ACTOR_QUARANTINED_UNDELIVERED,
+    SERVICE_INVALID_TARGET as SERVICE_INVALID_TARGET,
+    SERVICE_PORT_IN_USE as SERVICE_PORT_IN_USE,
+    SERVICE_NAME_CONFLICT as SERVICE_NAME_CONFLICT,
+    SERVICE_UNAVAILABLE as SERVICE_UNAVAILABLE,
+    SERVICE_NOT_REGISTERED as SERVICE_NOT_REGISTERED,
+    SERVICE_SIDECAR_UNSUPPORTED as SERVICE_SIDECAR_UNSUPPORTED,
+    SERVICE_REGISTRY_INVALID as SERVICE_REGISTRY_INVALID,
+    SERVICE_DEVICE_UNAVAILABLE as SERVICE_DEVICE_UNAVAILABLE,
+    SERVICE_NOT_AUTHORIZED as SERVICE_NOT_AUTHORIZED,
+    MEMBERSHIP_SIDECAR_TIMEOUT as MEMBERSHIP_SIDECAR_TIMEOUT,
+    FORWARDING_RECONCILE_TIMEOUT as FORWARDING_RECONCILE_TIMEOUT,
+    FORWARDING_RECONCILE_FAILED as FORWARDING_RECONCILE_FAILED,
+    ROUTINE_SCHEMA_ERROR as ROUTINE_SCHEMA_ERROR,
+    ENFORCEMENT_ERROR as ENFORCEMENT_ERROR,
+    ENFORCEMENT_SCOPE_INVALID as ENFORCEMENT_SCOPE_INVALID,
+    VISIBILITY_ERROR as VISIBILITY_ERROR,
+    VISIBILITY_SCOPE_INVALID as VISIBILITY_SCOPE_INVALID,
+    ROUTINE_UNAVAILABLE as ROUTINE_UNAVAILABLE,
+    ROUTINE_NAME_IMMUTABLE as ROUTINE_NAME_IMMUTABLE,
+    ROUTINE_BINDING_IMMUTABLE as ROUTINE_BINDING_IMMUTABLE,
+    ROUTINE_LAST_BINDING as ROUTINE_LAST_BINDING,
+    WORKFLOW_UNAVAILABLE as WORKFLOW_UNAVAILABLE,
+    WORKFLOW_DELIVERY_REFUSED as WORKFLOW_DELIVERY_REFUSED,
+    EXTERNAL_REF_CONFLICT as EXTERNAL_REF_CONFLICT,
+    WORKFLOW_EXTERNAL_REF_CORRUPT as WORKFLOW_EXTERNAL_REF_CORRUPT,
+    AUTOUPDATE_NOTIFICATION_UNAVAILABLE as AUTOUPDATE_NOTIFICATION_UNAVAILABLE,
+    ORG_SOURCE_UNREACHABLE as ORG_SOURCE_UNREACHABLE,
+    ORG_SPACE_NOT_JOINED as ORG_SPACE_NOT_JOINED,
+    ORG_PATH_SHAPE_INVALID as ORG_PATH_SHAPE_INVALID,
+    ORGFS_CONTENT_PENDING as ORGFS_CONTENT_PENDING,
+    ORGFS_INVALID_SPACE_DIRECTORY as ORGFS_INVALID_SPACE_DIRECTORY,
+    ORGFS_INVALID_URI as ORGFS_INVALID_URI,
+    ORGFS_CROSS_SPACE_URI as ORGFS_CROSS_SPACE_URI,
+    ORGFS_ACL_SPACE_EXTERNAL_MUTATION as ORGFS_ACL_SPACE_EXTERNAL_MUTATION,
+    ORG_ACL_WRITE_DENIED as ORG_ACL_WRITE_DENIED,
+    ORG_ACL_GRANT_FORBIDDEN as ORG_ACL_GRANT_FORBIDDEN,
+    ORG_ACL_GRANT_NOT_OWNED as ORG_ACL_GRANT_NOT_OWNED,
+    UNSUPPORTED as UNSUPPORTED,
+    PAYLOAD_TOO_LARGE as PAYLOAD_TOO_LARGE,
+    IDENTITY_OVERRIDE_FORBIDDEN as IDENTITY_OVERRIDE_FORBIDDEN,
+    IDENTITY_UNBOUND as IDENTITY_UNBOUND,
+    IDENTITY_CONFLICT as IDENTITY_CONFLICT,
+    IDENTITY_SOURCE_UNAVAILABLE as IDENTITY_SOURCE_UNAVAILABLE,
+    CALLER_NOT_AUTHORIZED as CALLER_NOT_AUTHORIZED,
+    SERVICE_BINDING_NOT_FOUND as SERVICE_BINDING_NOT_FOUND,
+    RUN_NOT_FOUND as RUN_NOT_FOUND,
+    TARGET_NOT_FOUND as TARGET_NOT_FOUND,
+    RESULT_NOT_READY as RESULT_NOT_READY,
+    RESULT_REF_CONFLICT as RESULT_REF_CONFLICT,
+    RUN_NOT_CANCELLABLE as RUN_NOT_CANCELLABLE,
+    TRANSPORT_ERROR as TRANSPORT_ERROR,
+    PROTOCOL_ERROR as PROTOCOL_ERROR,
+    AGENT_INCARNATION_MISMATCH as AGENT_INCARNATION_MISMATCH,
+    AGENT_CONFIG_CAS_MISMATCH as AGENT_CONFIG_CAS_MISMATCH,
+    AGENT_CONFIG_REBIND_INVALID_SOURCE as AGENT_CONFIG_REBIND_INVALID_SOURCE,
+    AGENT_CONFIG_REBIND_INVALID_MAPPING as AGENT_CONFIG_REBIND_INVALID_MAPPING,
+    AGENT_CONFIG_REBIND_SYMLINK as AGENT_CONFIG_REBIND_SYMLINK,
+    AGENT_CONFIG_REBIND_OWNERSHIP as AGENT_CONFIG_REBIND_OWNERSHIP,
+    AGENT_CONFIG_REBIND_MODE as AGENT_CONFIG_REBIND_MODE,
+    AGENT_CONFIG_REBIND_SECRET_CONTENT as AGENT_CONFIG_REBIND_SECRET_CONTENT,
+    AGENT_CONFIG_REBIND_IN_PROGRESS as AGENT_CONFIG_REBIND_IN_PROGRESS,
+    AGENT_CONFIG_REBIND_NO_BINDING as AGENT_CONFIG_REBIND_NO_BINDING,
+    AGENT_CONFIG_REBIND_SOURCE_DRIFT as AGENT_CONFIG_REBIND_SOURCE_DRIFT,
+    AGENT_CONFIG_REBIND_RECEIPT_INVALID as AGENT_CONFIG_REBIND_RECEIPT_INVALID,
+    AGENT_CONFIG_REBIND_TARGET_DRIFT as AGENT_CONFIG_REBIND_TARGET_DRIFT,
+    AGENT_CONFIG_REBIND_NOT_QUIESCENT as AGENT_CONFIG_REBIND_NOT_QUIESCENT,
+    AGENT_CONFIG_REBIND_CLEANUP_FAILED as AGENT_CONFIG_REBIND_CLEANUP_FAILED,
+    LIFECYCLE_INCARNATION_UNSUPPORTED as LIFECYCLE_INCARNATION_UNSUPPORTED,
+    HARNESS_RUNTIME_OBSERVATION_UNAUTHORIZED as HARNESS_RUNTIME_OBSERVATION_UNAUTHORIZED,
+    TRANSFER_WORKER_NOT_FOUND as TRANSFER_WORKER_NOT_FOUND,
+    TRANSFER_AMBIGUOUS as TRANSFER_AMBIGUOUS,
+    TRANSFER_UNSUPPORTED_HARNESS as TRANSFER_UNSUPPORTED_HARNESS,
+    TRANSFER_CONFLICT as TRANSFER_CONFLICT,
+    TRANSFER_STARTS_HELD as TRANSFER_STARTS_HELD,
+    TRANSFER_CUSTODY_UNAVAILABLE as TRANSFER_CUSTODY_UNAVAILABLE,
+    TRANSFER_PIN_CONFLICT as TRANSFER_PIN_CONFLICT,
+    TRANSFER_START_FAILED as TRANSFER_START_FAILED,
+    STRICT_RESUME_FAILED as STRICT_RESUME_FAILED,
+    INTERACTIVE_CARRIER_STOP_FAILED as INTERACTIVE_CARRIER_STOP_FAILED,
+    RESUME_SESSION_NOT_FOUND as RESUME_SESSION_NOT_FOUND,
+    TRANSFER_PREREQUISITE as TRANSFER_PREREQUISITE,
+    TRANSFER_CREDENTIALS as TRANSFER_CREDENTIALS,
+    TRANSFER_CONTAINER as TRANSFER_CONTAINER,
+    TRANSFER_LANDING_FAILED as TRANSFER_LANDING_FAILED,
+    CREDENTIAL_ENVELOPE_MISSING as CREDENTIAL_ENVELOPE_MISSING,
+    CREDENTIAL_ENVELOPE_INVALID as CREDENTIAL_ENVELOPE_INVALID,
+    CREDENTIAL_HOST_KEY_REFUSED as CREDENTIAL_HOST_KEY_REFUSED,
+    SANDBOX_SMOKE_FAILED as SANDBOX_SMOKE_FAILED,
+    PROVIDER_UNSUPPORTED as PROVIDER_UNSUPPORTED,
+    PROVIDER_SOURCE_MISSING as PROVIDER_SOURCE_MISSING,
+    PROVIDER_SOURCE_AMBIGUOUS as PROVIDER_SOURCE_AMBIGUOUS,
+    PROVIDER_UNSAFE_PATH as PROVIDER_UNSAFE_PATH,
+    PROVIDER_CREDENTIAL_EXISTS as PROVIDER_CREDENTIAL_EXISTS,
+    PROVIDER_GRANT_MISSING as PROVIDER_GRANT_MISSING,
+    PROVIDER_GRANT_REVOKED as PROVIDER_GRANT_REVOKED,
+    PROVIDER_KEY_NOT_FOUND as PROVIDER_KEY_NOT_FOUND,
+    PROVIDER_KEY_RECIPIENT_PENDING as PROVIDER_KEY_RECIPIENT_PENDING,
+    PROVIDER_KEY_UNSEAL_FAILED as PROVIDER_KEY_UNSEAL_FAILED,
+    PROVIDER_KEY_SIGNATURE_INVALID as PROVIDER_KEY_SIGNATURE_INVALID,
+    PROVIDER_STORE_UNAVAILABLE as PROVIDER_STORE_UNAVAILABLE,
+    PROVIDER_STORE_CONFLICT as PROVIDER_STORE_CONFLICT,
+    AUTH_OPERATION_CONFLICT as AUTH_OPERATION_CONFLICT,
+    AUTH_OPERATION_NOT_FOUND as AUTH_OPERATION_NOT_FOUND,
+    DEVICE_ENSURE_FAILED as DEVICE_ENSURE_FAILED,
+    REGISTRATION_UNAVAILABLE as REGISTRATION_UNAVAILABLE,
+    ORG_CELL_UNBOUND as ORG_CELL_UNBOUND,
+    ORG_ALREADY_DELETED as ORG_ALREADY_DELETED,
+)
 
 
 class DaemonRequestError(RuntimeError):
@@ -49,126 +255,6 @@ class DaemonRequestError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.data = data
-
-
-# -- generic request/framing --------------------------------------------
-DAEMON_ERROR = "DAEMON_ERROR"
-INVALID_REQUEST = "INVALID_REQUEST"
-INVALID_ARGUMENT = "INVALID_ARGUMENT"
-INVALID_PARAMS = "INVALID_PARAMS"
-METHOD_NOT_FOUND = "METHOD_NOT_FOUND"
-VERSION_MISMATCH = "VERSION_MISMATCH"
-IPC_REQUEST_TOO_LARGE = "IPC_REQUEST_TOO_LARGE"
-DAEMON_NOT_READY = "DAEMON_NOT_READY"
-# Minted by the daemon's restore gate (application.py handle()): while the
-# post-accept restore is still running, every method outside the light set
-# (ping, shutdown) is refused immediately instead of queueing.  The CLI
-# branches on it to print "restoring" rather than a timeout.
-DAEMON_RESTORING = "DAEMON_RESTORING"
-
-# -- client-side IPC transport (minted by the CLI/MCP clients, same
-# ``.code`` channel and user surface as daemon-sent codes) ---------------
-DAEMON_UNAVAILABLE = "DAEMON_UNAVAILABLE"
-IPC_TIMEOUT = "IPC_TIMEOUT"
-# Minted by the kernel IPC client when the daemon peer closes the
-# connection before answering (``_peer_gone``).  Joined the registry with
-# PR #332 F4②: it rides the CLI's ``--json`` failure object into the e2e
-# runner's machine-readable transient judgment, which is exactly the
-# membership line above -- a code another process branches on is protocol.
-DAEMON_DISCONNECTED = "DAEMON_DISCONNECTED"
-DAEMON_START_FAILED = "DAEMON_START_FAILED"
-# A harness start was accepted by the lifecycle manager but the harness
-# refused or died during its own start precondition.  Distinct from a daemon
-# start failure: the CLI command failed, the daemon itself is healthy.
-HARNESS_START_FAILED = "HARNESS_START_FAILED"
-DAEMON_START_TIMEOUT = "DAEMON_START_TIMEOUT"
-# Minted by the daemon into its startup log; the CLI parses the JSON and
-# branches on it to explain a refused start (docs/reference/proto.md §3.7 exemplar).
-HYPRIAL_HOME_IN_USE = "HYPRIAL_HOME_IN_USE"
-# Minted by the daemon's startup owner-migration custody gate (owner_migration)
-# into the same startup-log JSON channel; the CLI launcher passes the code
-# through and the login S3 start phase branches on it to report the named
-# switch outcome instead of a generic startup failure (#513 x #493
-# cross-acceptance).  Same membership line as HYPRIAL_HOME_IN_USE above.
-OWNER_MIGRATION_CUSTODY_CONFLICT = "OWNER_MIGRATION_CUSTODY_CONFLICT"
-OWNER_MIGRATION_CUSTODY_UNREADABLE = "OWNER_MIGRATION_CUSTODY_UNREADABLE"
-OWNER_MIGRATION_HOSTED_CONFLICT = "OWNER_MIGRATION_HOSTED_CONFLICT"
-# Minted by the local install/upgrade migration boundary.  It reaches the
-# machine-readable CLI error surface and therefore belongs in this registry
-# even though no daemon sends it.
-HYPRIAL_HOME_MIGRATION_FAILED = "HYPRIAL_HOME_MIGRATION_FAILED"
-
-# -- addressing / delivery ----------------------------------------------
-AMBIGUOUS_TARGET = "AMBIGUOUS_TARGET"
-UNSUPPORTED_TARGET = "UNSUPPORTED_TARGET"
-TARGET_IS_NODE = "TARGET_IS_NODE"
-TARGET_UNRESOLVED = "TARGET_UNRESOLVED"
-SENDER_UNRESOLVED = "SENDER_UNRESOLVED"
-# Minted by the daemon send boundary when a *verified* caller's send-to
-# ledger does not name the target (AT09 / card 358).  Distinct from
-# UNSUPPORTED_TARGET (a malformed address) and TARGET_IS_NODE (a node is not
-# a delivery target): here the address is fine and the caller may not use it.
-TARGET_NOT_AUTHORIZED = "TARGET_NOT_AUTHORIZED"
-SENDER_NOT_AUTHENTICATED = "SENDER_NOT_AUTHENTICATED"
-# Minted at a real capability entry point when a verified caller's
-# capability ledger does not name the resource (AT10 / card 359).
-# CHANNEL_NOT_AUTHORIZED covers outbound adapter routes (message.send to
-# route:<adapter>:<route>); ORG_CONTEXT_NOT_AUTHORIZED covers reads of the
-# org shared folder that the accepted-document grant does not cover.
-CHANNEL_NOT_AUTHORIZED = "CHANNEL_NOT_AUTHORIZED"
-ORG_CONTEXT_NOT_AUTHORIZED = "ORG_CONTEXT_NOT_AUTHORIZED"
-MESSAGE_REPLY_UNAVAILABLE = "MESSAGE_REPLY_UNAVAILABLE"
-MESSAGE_REPLY_RESOURCES_UNSUPPORTED = "MESSAGE_REPLY_RESOURCES_UNSUPPORTED"
-# -- send links (docs/design/design-send-links-2026-10-14.md §4, §7, §9) --
-# A send without ``summary``: refused at the send boundary, nothing queued.
-SUMMARY_REQUIRED = "SUMMARY_REQUIRED"
-# Hold reasons.  A held send is ``ok: true, queued: true``: the daemon keeps
-# the message in the sender's outbox and releases it itself.  None of these
-# three is a failure and none may surface as ``ok: false``.
-LINK_PEER_FULL = "LINK_PEER_FULL"
-LINK_SELF_FULL = "LINK_SELF_FULL"
-LINK_WINDOW_FULL = "LINK_WINDOW_FULL"
-# The sender's one-sided reference is written; the peer has not referenced
-# back yet (§4.2).  Also a hold, released when the link becomes effective.
-LINK_MINTING = "LINK_MINTING"
-# Refusals.  LINK_UNKNOWN: the receiving daemon's local orgfs copy holds no
-# link file for the sender at all (the sender never joined the org space;
-# this never self-heals, so it is refused at ingress and recorded as
-# ``refused``).  LINK_RECLAIMED: a reply to a request whose link has since
-# been reclaimed; the residue is drained, not delivered (R11).
-LINK_UNKNOWN = "LINK_UNKNOWN"
-LINK_RECLAIMED = "LINK_RECLAIMED"
-# message.read_body: the caller may not read this body (not its inbox row,
-# already pruned, or fenced out).  Distinct from MESSAGE_ACK_UNAVAILABLE.
-MESSAGE_BODY_UNAVAILABLE = "MESSAGE_BODY_UNAVAILABLE"
-# Minted by the inbox ack path (row missing / already consumed / TTL-pruned
-# all fold into this one result code) and returned through message.ack's
-# IPC result field.  Entered the registry when the codex interactive
-# carrier began branching on it to classify a settlement target as already
-# settled elsewhere.
-MESSAGE_ACK_UNAVAILABLE = "MESSAGE_ACK_UNAVAILABLE"
-# Minted by ``message.pending.batch`` when its rendering exceeds the inline
-# budget and no private actor state root is available for the one spill file.
-# Deliberately distinct from a size limit: the batch is refused rather than
-# written to a shared directory or sent unbounded inline.
-INBOX_BATCH_SPILL_UNAVAILABLE = "INBOX_BATCH_SPILL_UNAVAILABLE"
-USER_DELIVERY_UNAVAILABLE = "USER_DELIVERY_UNAVAILABLE"
-USER_DELIVERY_FAILED = "USER_DELIVERY_FAILED"
-ROUTE_ADAPTER_UNCONFIGURED = "ROUTE_ADAPTER_UNCONFIGURED"
-ROUTE_SEND_FAILED = "ROUTE_SEND_FAILED"
-ROUTE_RESOURCES_UNSUPPORTED = "ROUTE_RESOURCES_UNSUPPORTED"
-ROUTE_RESOURCE_REPLY_UNSUPPORTED = "ROUTE_RESOURCE_REPLY_UNSUPPORTED"
-# The daemon refused to read a caller-named local file (path_authz): outside
-# the caller's workspace/cwd, inside the hyprial home, or swapped mid-read.
-ATTACHMENT_PATH_REFUSED = "ATTACHMENT_PATH_REFUSED"
-# Minted in squire addressing (code= kwargs), travel cross-node over zenoh
-# and pass through the daemon IPC error channel (docs/reference/proto.md §2.2 ⑤).
-TARGET_SQUIRE_UNCONFIGURED = "TARGET_SQUIRE_UNCONFIGURED"
-TARGET_SQUIRE_ADAPTER_UNAVAILABLE = "TARGET_SQUIRE_ADAPTER_UNAVAILABLE"
-# Receiver never answered within the receipt window: transient (retryable),
-# deliberately distinct from UNCONFIGURED/ADAPTER_UNAVAILABLE (permanent).
-USER_DELIVERY_TIMEOUT = "USER_DELIVERY_TIMEOUT"
-SUBMIT_OUTCOME_UNKNOWN = "SUBMIT_OUTCOME_UNKNOWN"
 
 
 class SubmitOutcomeUnknownError(DaemonRequestError):
@@ -181,192 +267,6 @@ class SubmitOutcomeUnknownError(DaemonRequestError):
     def __init__(self, message: str, data: Any | None = None) -> None:
         super().__init__(SUBMIT_OUTCOME_UNKNOWN, message, data)
 
-# -- preview → execute confirmation (design.md §7; DR-04 vocabulary) ---
-# The preview instance ID is NOT a business ``moveId`` and NOT an execution
-# operation.  These codes describe the generic confirmation record only.
-PREVIEW_UNKNOWN = "PREVIEW_UNKNOWN"
-PREVIEW_EXPIRED = "PREVIEW_EXPIRED"
-PREVIEW_STALE = "PREVIEW_STALE"
-OPERATION_IN_PROGRESS = "OPERATION_IN_PROGRESS"
-
-# -- sessions / channel leases ------------------------------------------
-SESSION_SUPERSEDED = "SESSION_SUPERSEDED"
-STALE_SESSION = "STALE_SESSION"
-INVALID_SESSION_SOURCE = "INVALID_SESSION_SOURCE"
-INVALID_CHANNEL_LEASE = "INVALID_CHANNEL_LEASE"
-CHANNEL_LIVENESS_UNAVAILABLE = "CHANNEL_LIVENESS_UNAVAILABLE"
-STALE_DAEMON_GENERATION = "STALE_DAEMON_GENERATION"
-# The stdio MCP channel process was started from a different hyprial build/schema
-# than the daemon it talks to.  Reported instead of a generic tool failure so the
-# operator gets a restart instruction rather than guessing at SUMMARY_REQUIRED.
-MCP_CHANNEL_STALE = "MCP_CHANNEL_STALE"
-
-# -- agents / adapters ---------------------------------------------------
-AGENT_EXISTS = "AGENT_EXISTS"
-AGENT_NOT_FOUND = "AGENT_NOT_FOUND"
-AGENT_CREATE_COMMIT_FAILED = "AGENT_CREATE_COMMIT_FAILED"
-AGENT_CREATE_ROLLBACK_PENDING = "AGENT_CREATE_ROLLBACK_PENDING"
-CODEX_RESUME_AGENT_RESTORE_FAILED = "CODEX_RESUME_AGENT_RESTORE_FAILED"
-CODEX_CREDENTIAL_MISSING = "CODEX_CREDENTIAL_MISSING"
-RESUME_AGENT_RESTORE_FAILED = "RESUME_AGENT_RESTORE_FAILED"
-RESUME_OUTCOME_UNKNOWN = "RESUME_OUTCOME_UNKNOWN"
-AGENT_MIGRATION_BUSY = "AGENT_MIGRATION_BUSY"
-AGENT_DEFAULT_ROUTINE_PENDING = "AGENT_DEFAULT_ROUTINE_PENDING"
-AGENT_DEFAULT_ROUTINE_FAILED = "AGENT_DEFAULT_ROUTINE_FAILED"
-AGENT_SECRET_RESOLUTION_FAILED = "AGENT_SECRET_RESOLUTION_FAILED"
-ADAPTER_NOT_FOUND = "ADAPTER_NOT_FOUND"
-ADAPTER_RELOAD_FAILED = "ADAPTER_RELOAD_FAILED"
-USE_ADAPTER_COMMAND = "USE_ADAPTER_COMMAND"
-
-# -- dispatch ------------------------------------------------------------
-DISPATCH_NO_CAPABLE_HARNESS = "DISPATCH_NO_CAPABLE_HARNESS"
-DISPATCH_ROLE_MISMATCH = "DISPATCH_ROLE_MISMATCH"
-
-# -- harness turn settlement --------------------------------------------
-# A model stopped for length without producing assistant text.  The harness
-# tries pi's own compaction recovery once before minting this code;
-# delivery settlement treats it as permanent so redelivery cannot repeat the
-# same deterministic full-context turn three times.
-CONTEXT_EXHAUSTED = "CONTEXT_EXHAUSTED"
-
-# -- lifecycle -------------------------------------------------------------
-# Minted by the daemon's lifecycle boundary (application.py
-# ``_run_lifecycle_operation``): the manager's consumer thread is dead or
-# absent, so admitting an operation would queue work nobody drives.
-LIFECYCLE_MANAGER_UNAVAILABLE = "LIFECYCLE_MANAGER_UNAVAILABLE"
-# The daemon-side wait for an operation to settle elapsed.  Named for what
-# happened instead of overloading DAEMON_START_FAILED (2026-09-14: a dead
-# lifecycle thread surfaced as "start failed" on every `hyprial agent stop`).
-LIFECYCLE_OPERATION_UNSETTLED = "LIFECYCLE_OPERATION_UNSETTLED"
-
-# -- services ------------------------------------------------------------
-SERVICE_INVALID_TARGET = "SERVICE_INVALID_TARGET"
-SERVICE_PORT_IN_USE = "SERVICE_PORT_IN_USE"
-SERVICE_NAME_CONFLICT = "SERVICE_NAME_CONFLICT"
-SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
-SERVICE_NOT_REGISTERED = "SERVICE_NOT_REGISTERED"
-SERVICE_SIDECAR_UNSUPPORTED = "SERVICE_SIDECAR_UNSUPPORTED"
-SERVICE_REGISTRY_INVALID = "SERVICE_REGISTRY_INVALID"
-SERVICE_DEVICE_UNAVAILABLE = "SERVICE_DEVICE_UNAVAILABLE"
-SERVICE_NOT_AUTHORIZED = "SERVICE_NOT_AUTHORIZED"
-# Minted by the forwarding sidecar I/O owner when a membership command issued
-# from an IPC request path (org invite/join/network) outlives its bound; the
-# CLI surfaces it as the reply code instead of an uncoded DAEMON_ERROR after
-# the roundtrip budget (0.5.5.1 hotfix, 2026-10-28).
-MEMBERSHIP_SIDECAR_TIMEOUT = "MEMBERSHIP_SIDECAR_TIMEOUT"
-# A join/execute bootstrap step waits (bounded by the request path) for the
-# forwarding reconcile it requested; the cadence did not finish one in time,
-# or the run it waited on failed without a code of its own.
-FORWARDING_RECONCILE_TIMEOUT = "FORWARDING_RECONCILE_TIMEOUT"
-FORWARDING_RECONCILE_FAILED = "FORWARDING_RECONCILE_FAILED"
-ROUTINE_UNAVAILABLE = "ROUTINE_UNAVAILABLE"
-ROUTINE_NAME_IMMUTABLE = "ROUTINE_NAME_IMMUTABLE"
-ROUTINE_BINDING_IMMUTABLE = "ROUTINE_BINDING_IMMUTABLE"
-ROUTINE_LAST_BINDING = "ROUTINE_LAST_BINDING"
-WORKFLOW_UNAVAILABLE = "WORKFLOW_UNAVAILABLE"
-WORKFLOW_DELIVERY_REFUSED = "WORKFLOW_DELIVERY_REFUSED"
-EXTERNAL_REF_CONFLICT = "EXTERNAL_REF_CONFLICT"
-WORKFLOW_EXTERNAL_REF_CORRUPT = "WORKFLOW_EXTERNAL_REF_CORRUPT"
-AUTOUPDATE_NOTIFICATION_UNAVAILABLE = "AUTOUPDATE_NOTIFICATION_UNAVAILABLE"
-ORG_SOURCE_UNREACHABLE = "ORG_SOURCE_UNREACHABLE"
-ORG_SPACE_NOT_JOINED = "ORG_SPACE_NOT_JOINED"
-ORGFS_CONTENT_PENDING = "content-pending"
-ORGFS_INVALID_SPACE_DIRECTORY = "ORGFS_INVALID_SPACE_DIRECTORY"
-ORGFS_INVALID_URI = "invalid-uri"
-ORGFS_CROSS_SPACE_URI = "cross-space-uri"
-# Every external ACL-space mutation is refused at the shared orgfs.* bridge;
-# only daemon-internal org lifecycle code may write the space.
-ORGFS_ACL_SPACE_EXTERNAL_MUTATION = "ORGFS_ACL_SPACE_EXTERNAL_MUTATION"
-# The owner-node ACL entry gate: a content write whose caller is neither the
-# owner's terminal, the owner's user-proxy, nor an explicitly granted agent.
-ORG_ACL_WRITE_DENIED = "ORG_ACL_WRITE_DENIED"
-# org.acl.grant/revoke/ls called by anything but the owner's terminal or the
-# owner's user-proxy (harness kind as this daemon registered it at launch).
-ORG_ACL_GRANT_FORBIDDEN = "ORG_ACL_GRANT_FORBIDDEN"
-# An ACL grant may only name an agent this daemon runs for its own owner.
-ORG_ACL_GRANT_NOT_OWNED = "ORG_ACL_GRANT_NOT_OWNED"
-
-# -- retired agent.task v1 facade (kept: the registry is grow-only) ----
-UNSUPPORTED = "UNSUPPORTED"
-PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
-IDENTITY_OVERRIDE_FORBIDDEN = "IDENTITY_OVERRIDE_FORBIDDEN"
-IDENTITY_UNBOUND = "IDENTITY_UNBOUND"
-IDENTITY_CONFLICT = "IDENTITY_CONFLICT"
-IDENTITY_SOURCE_UNAVAILABLE = "IDENTITY_SOURCE_UNAVAILABLE"
-CALLER_NOT_AUTHORIZED = "CALLER_NOT_AUTHORIZED"
-SERVICE_BINDING_NOT_FOUND = "SERVICE_BINDING_NOT_FOUND"
-RUN_NOT_FOUND = "RUN_NOT_FOUND"
-TARGET_NOT_FOUND = "TARGET_NOT_FOUND"
-RESULT_NOT_READY = "RESULT_NOT_READY"
-RESULT_REF_CONFLICT = "RESULT_REF_CONFLICT"
-RUN_NOT_CANCELLABLE = "RUN_NOT_CANCELLABLE"
-TRANSPORT_ERROR = "TRANSPORT_ERROR"
-PROTOCOL_ERROR = "PROTOCOL_ERROR"
-
-# -- atomic identity config binding and operator rebind recovery --
-AGENT_INCARNATION_MISMATCH = "AGENT_INCARNATION_MISMATCH"
-AGENT_CONFIG_CAS_MISMATCH = "AGENT_CONFIG_CAS_MISMATCH"
-AGENT_CONFIG_REBIND_INVALID_SOURCE = "AGENT_CONFIG_REBIND_INVALID_SOURCE"
-AGENT_CONFIG_REBIND_INVALID_MAPPING = "AGENT_CONFIG_REBIND_INVALID_MAPPING"
-AGENT_CONFIG_REBIND_SYMLINK = "AGENT_CONFIG_REBIND_SYMLINK"
-AGENT_CONFIG_REBIND_OWNERSHIP = "AGENT_CONFIG_REBIND_OWNERSHIP"
-AGENT_CONFIG_REBIND_MODE = "AGENT_CONFIG_REBIND_MODE"
-AGENT_CONFIG_REBIND_SECRET_CONTENT = "AGENT_CONFIG_REBIND_SECRET_CONTENT"
-AGENT_CONFIG_REBIND_IN_PROGRESS = "AGENT_CONFIG_REBIND_IN_PROGRESS"
-AGENT_CONFIG_REBIND_NO_BINDING = "AGENT_CONFIG_REBIND_NO_BINDING"
-AGENT_CONFIG_REBIND_SOURCE_DRIFT = "AGENT_CONFIG_REBIND_SOURCE_DRIFT"
-AGENT_CONFIG_REBIND_RECEIPT_INVALID = "AGENT_CONFIG_REBIND_RECEIPT_INVALID"
-AGENT_CONFIG_REBIND_TARGET_DRIFT = "AGENT_CONFIG_REBIND_TARGET_DRIFT"
-AGENT_CONFIG_REBIND_NOT_QUIESCENT = "AGENT_CONFIG_REBIND_NOT_QUIESCENT"
-AGENT_CONFIG_REBIND_CLEANUP_FAILED = "AGENT_CONFIG_REBIND_CLEANUP_FAILED"
-LIFECYCLE_INCARNATION_UNSUPPORTED = "LIFECYCLE_INCARNATION_UNSUPPORTED"
-HARNESS_RUNTIME_OBSERVATION_UNAUTHORIZED = "HARNESS_RUNTIME_OBSERVATION_UNAUTHORIZED"
-
-# -- transfer ------------------------------------------------------------
-TRANSFER_WORKER_NOT_FOUND = "TRANSFER_WORKER_NOT_FOUND"
-TRANSFER_AMBIGUOUS = "TRANSFER_AMBIGUOUS"
-TRANSFER_UNSUPPORTED_HARNESS = "TRANSFER_UNSUPPORTED_HARNESS"
-TRANSFER_CONFLICT = "TRANSFER_CONFLICT"
-TRANSFER_STARTS_HELD = "TRANSFER_STARTS_HELD"
-TRANSFER_CUSTODY_UNAVAILABLE = "TRANSFER_CUSTODY_UNAVAILABLE"
-TRANSFER_PIN_CONFLICT = "TRANSFER_PIN_CONFLICT"
-TRANSFER_START_FAILED = "TRANSFER_START_FAILED"
-STRICT_RESUME_FAILED = "STRICT_RESUME_FAILED"
-INTERACTIVE_CARRIER_STOP_FAILED = "INTERACTIVE_CARRIER_STOP_FAILED"
-# Minted by lifecycle.start when a start asks to resume a session
-# (``sessionRef``) whose transcript the harness cannot find.  Refused BEFORE
-# anything starts: pi given an unknown --session-id silently begins a fresh
-# session under that very id, so an after-the-fact id comparison cannot tell.
-RESUME_SESSION_NOT_FOUND = "RESUME_SESSION_NOT_FOUND"
-# Minted by the daemon's transfer.receive container path (missing docker,
-# missing image) and passed through its IPC error channel; the CLI-side
-# orchestrator raises the same code for its own preflight so the operator
-# sees one stable surface.
-TRANSFER_PREREQUISITE = "TRANSFER_PREREQUISITE"
-# Minted by transfer.receive when the credential staging/bundle is absent
-# or incomplete (daemon IPC error channel).
-TRANSFER_CREDENTIALS = "TRANSFER_CREDENTIALS"
-# Minted by the container pipeline (docker run/volume/load failures),
-# passed through transfer.receive's IPC error channel.
-TRANSFER_CONTAINER = "TRANSFER_CONTAINER"
-# Minted by transfer.land (AT07): the bundle was refused, the landing was
-# undone, or the target cannot speak for the bundle's owner.  A name that is
-# already taken keeps TRANSFER_CONFLICT instead -- that answer is about the
-# name, not about the landing.
-TRANSFER_LANDING_FAILED = "TRANSFER_LANDING_FAILED"
-# Minted by transfer.land (AT07 item 2): the bundle declares a credential
-# envelope the target cannot honour -- the envelope is absent or unreadable, or
-# its policy would fall back to the host key without the host owner's grant.
-# The target refuses before anything is written; it never opens the envelope
-# and never touches the host's own credentials behind the operator's back.
-CREDENTIAL_ENVELOPE_MISSING = "CREDENTIAL_ENVELOPE_MISSING"
-CREDENTIAL_ENVELOPE_INVALID = "CREDENTIAL_ENVELOPE_INVALID"
-CREDENTIAL_HOST_KEY_REFUSED = "CREDENTIAL_HOST_KEY_REFUSED"
-# Minted by transfer.receive when the mapping-time sandbox smoke exercises
-# the target's own harness sandbox entry point and it fails to enforce
-# (design §4): the landing is refused before the session is resumed, so the
-# source keeps the worker and no half-mapped target is left behind.
-SANDBOX_SMOKE_FAILED = "SANDBOX_SMOKE_FAILED"
 
 #: Wire code -> registered transient class (PR #332 F4②).  Populated
 #: exclusively by ``TransientDaemonError.__init_subclass__`` -- the ONE
@@ -466,23 +366,3 @@ def transient_error_from_code(
     if registered is None:
         return None
     return registered(message, data)
-
-
-# Provider credential seeding (`agent provider login`).  These cross the IPC
-# boundary as ``error.code`` and are what the operator branches on when a
-# harness credential cannot be installed.  The first line is matched by a
-# term-lint rule, so rewording it makes that lint fire.
-PROVIDER_UNSUPPORTED = "PROVIDER_UNSUPPORTED"
-PROVIDER_SOURCE_MISSING = "PROVIDER_SOURCE_MISSING"
-PROVIDER_SOURCE_AMBIGUOUS = "PROVIDER_SOURCE_AMBIGUOUS"
-PROVIDER_UNSAFE_PATH = "PROVIDER_UNSAFE_PATH"
-PROVIDER_CREDENTIAL_EXISTS = "PROVIDER_CREDENTIAL_EXISTS"
-
-
-#: Every registered proto-facing code.  Membership is frozen by test; a
-#: change here must be deliberate and reviewed as a protocol change.
-ALL_CODES: frozenset[str] = frozenset(
-    value
-    for name, value in globals().items()
-    if name.isupper() and isinstance(value, str)
-)

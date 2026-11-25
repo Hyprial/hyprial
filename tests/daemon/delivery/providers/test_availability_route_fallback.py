@@ -9,6 +9,8 @@ raises a human-audience alarm instead of silence.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import sqlite3
 import uuid
 from contextlib import closing
@@ -28,6 +30,7 @@ from tests.daemon.delivery.providers.test_provider_failure_settlement import (
     _desired,
     _Transport,
 )
+from tests.support.actor_hosts import new_actor_host
 
 SENDER_NOTICE = "provider-unavailable"
 
@@ -37,7 +40,7 @@ def _inbox(tmp_path: Path) -> DeliveryCustodyFacade:
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         CorrelatedInboxEventRouter(),
-        node_id="provider-failure-node",
+        node_id="provider-failure-node", actor_host=new_actor_host(),
     )
     return DeliveryCustodyFacade(coordinator, tmp_path / "inbox.sqlite3")
 
@@ -48,6 +51,8 @@ def _bridge(
     harnesses: _Harnesses,
     clock: dict[str, int],
     logs: list[tuple[str, str, str, dict[str, object]]],
+    *,
+    actor_host,
 ) -> DaemonEventBridge:
     return DaemonEventBridge(
         state_dir=state,
@@ -60,7 +65,8 @@ def _bridge(
         clock_ms=lambda: clock["now"],
         logger=lambda level, component, event, **fields: logs.append(
             (level, component, event, fields)
-        ),
+        ), actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
 
 
@@ -105,13 +111,13 @@ def test_harness_failure_route_reads_the_terminal_ledger(tmp_path: Path) -> None
 
 
 def test_failed_result_with_only_a_ledger_route_still_notifies_the_sender(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path)
     harnesses = _Harnesses()
     clock = {"now": 1_000}
     logs: list[tuple[str, str, str, dict[str, object]]] = []
-    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs, actor_host=actor_host)
     delivery_id = str(uuid.uuid4())
     # No inbox row and no settlement: only the terminal ledger names the
     # waiting sender.
@@ -148,13 +154,13 @@ def test_failed_result_with_only_a_ledger_route_still_notifies_the_sender(
 
 
 def test_failed_result_with_no_route_at_all_raises_a_human_alarm(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = _inbox(tmp_path)
     harnesses = _Harnesses()
     clock = {"now": 1_000}
     logs: list[tuple[str, str, str, dict[str, object]]] = []
-    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs)
+    runtime = _bridge(tmp_path, inbox, harnesses, clock, logs, actor_host=actor_host)
     alarms: list[Any] = []
     inbox.alarm_emitter = type(  # noqa: SLF001 - the spy is the point
         "SpyEmitter", (), {"emit": staticmethod(lambda alarm: alarms.append(alarm))}

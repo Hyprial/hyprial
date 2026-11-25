@@ -116,11 +116,6 @@ class _Lark:
         del idempotency_key
         return "om_reply"
 
-    def send_owner_dm(
-        self, open_id: str, text: str, *, idempotency_key: str
-    ) -> str:
-        return "om_owner"
-
     def get_message(self, message_id: str):  # type: ignore[no-untyped-def]
         return None
 
@@ -129,13 +124,19 @@ class _Lark:
 
 
 class _Routes:
-    # The actor id must be a canonical four-segment URI: bare actor names
-    # are node-shaped and the send-time admission gate rejects them.
-    target = ActorTarget(
-        "agent:test-owner:lark-idempotency-node:target-agent",
-        "target-agent",
-        "target-agent",
-    )
+    """The adapter's pinned route to ``target-agent``.
+
+    The actor id must be a canonical four-segment URI: bare actor names are
+    node-shaped and the send-time admission gate rejects them.  The daemon's
+    routing answers a registered agent at its official address, the ``a.``
+    id URI its record stores, so the rig passes that URI in.
+    """
+
+    target: ActorTarget
+
+    def __init__(self, actor_id: str | None = None) -> None:
+        if actor_id is not None:
+            self.target = ActorTarget(actor_id, "target-agent", "target-agent")
 
     def actor_by_key(self, actor_key: str) -> ActorTarget | None:
         return self.target
@@ -143,7 +144,7 @@ class _Routes:
     def resolve_mention(self, name: str) -> ActorTarget | None:
         return None
 
-    def pinned_actor(self, conversation_id: str) -> ActorTarget | None:
+    def routed_actor(self, conversation_id: str) -> ActorTarget | None:
         return self.target
 
     def list_runtime_targets(self):  # type: ignore[no-untyped-def]
@@ -174,7 +175,7 @@ def test_lark_reconcile_after_lost_daemon_response_creates_one_durable_message(
     app._presence = _Presence()
     app._harnesses = object()
     app._adapters = None
-    app.handle("agent.create", {"name": "target-agent"})
+    target = app.handle("agent.create", {"name": "target-agent"})["agent"]["uri"]
     server = _DroppingDaemonSocket(app.socket_path, app)
     server.start()
     message = LarkInboundMessage(
@@ -194,8 +195,8 @@ def test_lark_reconcile_after_lost_daemon_response_creates_one_durable_message(
             state=LarkStateStore(state_path),
             lark=_Lark(message),
             harness=_Harness(app.socket_path),
-            routes=_Routes(),
-            channel_actor_id="channel:lark:test",
+            routes=_Routes(target),
+            channel_actor_id="adapter:lark:test",
         )
         outcome = first.handle_inbound(message)
         assert outcome.status == "error"
@@ -204,22 +205,20 @@ def test_lark_reconcile_after_lost_daemon_response_creates_one_durable_message(
             state=LarkStateStore(state_path),
             lark=_Lark(message),
             harness=_Harness(app.socket_path),
-            routes=_Routes(),
-            channel_actor_id="channel:lark:test",
+            routes=_Routes(target),
+            channel_actor_id="adapter:lark:test",
         )
         report = recovered.reconcile_recent(
             lookback_seconds=900, now_ms=1_720_000_005_000
         )
 
-        durable = inbox.pending_messages(
-            "agent:test-owner:lark-idempotency-node:target-agent"
-        )
+        durable = inbox.pending_messages(target)
         assert report.forwarded == 1
         assert len(durable) == 1
         assert len(server.requests) == 2
         assert {
             request["params"]["idempotencyKey"] for request in server.requests
-        } == {"lark-inbound:channel:lark:test:om_native_stable"}
+        } == {"lark-inbound:adapter:lark:test:om_native_stable"}
         assert recovered.dead_letters() == ()
     finally:
         server.stop()

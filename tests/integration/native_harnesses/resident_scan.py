@@ -2,6 +2,8 @@
 from __future__ import annotations
 import ast
 from importlib.util import resolve_name
+from pathlib import Path
+import re
 
 _LOGIN_MODULES = {"hyprial.login", "hyprial.shell.login", "hyprial.shell.impl.login", "hyprial.shell.impl.login.flow", "hyprial.shell.impl.login.oidc"}
 _GETTER = ast.parse('''
@@ -137,3 +139,65 @@ def _protected_lines(source, relative, pattern):
                 if set(modules) & _LOGIN_MODULES:
                     lines.add(node.lineno)
     return sorted(lines)
+
+
+_LOGIN_PATTERN = re.compile(
+    r"(?:from\s+hyprial\.login\s+import|import\s+hyprial\.login|from\s+hyprial\s+import\s+login|"
+    r"login\.json|SECRETS_DIRNAME|read_login_credential|refresh_access_token|run_login)"
+)
+_JOIN_PATTERN = re.compile(r"(?:tsnet_join|tsnet_sidecar|node\.json|TSNET_STATE_DIRNAME|run_join|install_sidecar)")
+
+
+def scan_sources(sources, pattern, origins):
+    """Classify every source against ``origins`` (the caller's literal inventory)."""
+    offenders = {}
+    for relative, source in sorted(sources.items()):
+        declared = origins.get(relative)
+        if declared is None:
+            offenders[relative] = [1]  # Unclassified additions are a review-required failure.
+            continue
+        role, _ = declared
+        try:
+            if role == "binding":
+                lines = [] if _binding_only(ast.parse(source)) else [1]
+            elif role == "resident":
+                lines = _protected_lines(source, relative, pattern)
+            else:
+                lines = []  # Exact old-root origin, never a directory/prefix waiver.
+        except (SyntaxError, ValueError, TypeError):
+            lines = [1]
+        if lines:
+            offenders[relative] = lines
+    return offenders
+
+
+def scan_resident_offenders(src_root: Path, pattern, origins, historical):
+    """Scan all daemon inputs for classification, then the preserved resident scope."""
+    root = src_root / "hyprial"
+    sources = {path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+               for path in sorted((root / "daemon").rglob("*.py"))}
+    extra_clusters = {str(Path(path).parent) for path, (role, _) in origins.items()
+                      if role == "resident" and not path.startswith("daemon/")}
+    for cluster in sorted(extra_clusters):
+        for path in sorted((root / cluster).rglob("*.py")):
+            sources[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+    result = scan_sources(sources, pattern, origins)
+    for relative, (role, _) in origins.items():
+        if role == "resident" and relative not in sources and relative not in historical:
+            result[relative] = [1]  # A moved/deleted live descendant cannot silently shrink the scan.
+    return {root / path: lines for path, lines in result.items()}
+
+
+def native_scan_sources(sources, pattern):
+    """Use the closed literal inventory without changing scan semantics."""
+    from .test_native_resident_tripwires import NATIVE_ORIGINS
+
+    return scan_sources(sources, pattern, NATIVE_ORIGINS)
+
+
+def native_resident_offenders(src_root: Path, pattern):
+    """Scan all daemon inputs with the same live and historical inventory."""
+    from .resident_metadata import HISTORICAL_ROWS
+    from .test_native_resident_tripwires import NATIVE_ORIGINS
+
+    return scan_resident_offenders(src_root, pattern, NATIVE_ORIGINS, HISTORICAL_ROWS)

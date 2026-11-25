@@ -70,8 +70,9 @@ def ensure_installed_dev_worktree(
         "git",
         which,
         "GUI_GIT_MISSING",
-        "git is required for `hyprial gui dev`; install Git or pass an "
-        "existing --gui-home worktree",
+        "--live-source needs Git to fetch the GUI source of this wheel; install "
+        "Git, pass --gui-home <a gui/ checkout>, or run `hyprial gui` for the "
+        "built GUI",
     )
     root = managed_root(environment)
     cache = root / "source.git"

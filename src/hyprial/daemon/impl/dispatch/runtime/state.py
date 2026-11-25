@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Generic, TypeVar, cast
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 
 _Value = TypeVar("_Value")
 
@@ -20,7 +20,6 @@ class DispatchTable(StrEnum):
     PENDING_WORKFLOW_RESULTS = "pending_workflow_results"
     PENDING_WORKFLOW_ATTEMPTS = "pending_workflow_attempts"
     PENDING_REPLY_RESULTS = "pending_reply_results"
-    PENDING_FORWARD_OUTCOMES = "pending_forward_outcomes"
     PENDING_NOTICES = "pending_notices"
     NOTICE_FAILURES_LOGGED = "notice_failures_logged"
     PRUNED_ITEMS = "pruned_items"
@@ -68,8 +67,9 @@ class _Reply:
 class DispatchStateAuthority:
     """Only pure, bounded in-memory transitions run in this actor mailbox."""
 
-    def __init__(self, *, capacity: int = 256, runtime: ActorRuntime | None = None):
-        self._runtime = runtime or ActorRuntime()
+    def __init__(self, *, capacity: int = 256, actor_host=None):
+        if actor_host is None:
+            raise ValueError("actor_host is required")
         self._guard = threading.Lock()
         self._pending: dict[str, _Reply] = {}
         self._tables: dict[DispatchTable, dict[str, object]] = {
@@ -78,7 +78,7 @@ class DispatchStateAuthority:
         self._version = 0
         self._closed = False
         self._capacity = capacity
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="dispatch-state",
                 handler_factory=lambda: self._receive,
@@ -107,7 +107,7 @@ class DispatchStateAuthority:
             if self._closed or len(self._pending) >= self._capacity:
                 raise TimeoutError("dispatch state authority closed or overloaded")
             self._pending[command.operation_id] = reply
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._pending.pop(command.operation_id)
                 raise TimeoutError(f"dispatch state admission {admission.value}")
@@ -194,7 +194,7 @@ class DispatchStateAuthority:
     def close(self, timeout: float = 5.0) -> bool:
         with self._guard:
             self._closed = True
-        return self._runtime.stop(self._handle, timeout)
+        return self._cell.drain(timeout).complete
 
     def append_pruned(self, items: tuple[object, ...]) -> None:
         self.call(

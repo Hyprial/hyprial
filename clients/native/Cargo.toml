@@ -1,0 +1,3 @@
+[workspace]
+members = ["launcher"]
+resolver = "2"

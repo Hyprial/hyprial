@@ -5,10 +5,16 @@ home, resolves an identity or opens a socket.  A method's params/result/error
 schemas, streaming, idempotency and preview pairing are validated here, and the
 same objects feed the offline OpenAPI 3.1 export.  The export is a contract
 projection only; it does not start an HTTP gateway.
+
+Legacy IPC compatibility is explicit: ``ipc_param_validation="handler"`` keeps
+the declared schema as the strict HTTP/client contract while delegating raw IPC
+parameter admission and its established error order to the bound handler.
 """
 
 from __future__ import annotations
 
+import functools
+import json
 import math
 import re
 from collections.abc import Iterable, Mapping
@@ -16,14 +22,18 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
+
+from .http_params import project_http_params_schema
+from .examples.echo import freeze_mock_echo, validate_mock_echo
 
 from .examples import (
     MethodExampleSet,
     example_to_json,
     validate_method_example_sets,
 )
+from .legacy_error_codes import is_declared_error_code
 
 __all__ = [
     "Confirmation",
@@ -34,6 +44,7 @@ __all__ = [
     "MethodError",
     "MethodSpec",
     "MethodSpecError",
+    "PhaseCallerSpec",
     "PreviewSpec",
     "RetryMode",
     "StreamSpec",
@@ -46,11 +57,14 @@ __all__ = [
 MethodMode = Literal["unary", "cursor-poll"]
 Confirmation = Literal["none", "preview", "execute"]
 RetryMode = Literal["safe", "idempotency-key", "never"]
-HttpIdentityMode = Literal["none", "local-operator-selector"]
+HttpIdentityMode = Literal[
+    "none",
+    "local-owner-selector",
+    "local-owner-user-selector",
+]
 
 _NAME = re.compile(r"^[a-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$")
 _OWNER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
-_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 AUDIENCES = frozenset(
     {
         "local-operator",
@@ -60,6 +74,11 @@ AUDIENCES = frozenset(
         "peer-node",
     }
 )
+METHOD_PHASES = frozenset({"bootstrap", "serving"})
+#: ``local-operator`` is the daemon's own local operator surface: the CLI (and
+#: anything else on the daemon request socket) reaches a serving method through
+#: it.  It is still an exact (phase, caller) pair, never a wildcard.
+METHOD_CALLERS = frozenset({"local-bootstrap", "local-gui", "local-operator"})
 _PREVIEW_BINDS = frozenset({"caller", "method", "paramsDigest", "expiry"})
 _PREVIEW_TTL_MAX_SECONDS = 3600
 _SCHEMA_COMBINATORS = ("$ref", "oneOf", "anyOf", "allOf", "const", "enum")
@@ -124,6 +143,41 @@ class MethodError:
                 "data_schema",
                 _freeze_json(self.data_schema, f"error {self.code} data"),
             )
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseCallerSpec:
+    """The exact (phase, caller kind) pairs allowed to invoke a method."""
+
+    pairs: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        normalized: list[tuple[str, str]] = []
+        for pair in self.pairs:
+            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                raise MethodSpecError(
+                    "phaseCaller.pairs must contain (phase, caller) pairs"
+                )
+            phase, caller = pair
+            if not isinstance(phase, str) or not phase:
+                raise MethodSpecError("phaseCaller phase must be a non-empty string")
+            if not isinstance(caller, str) or not caller:
+                raise MethodSpecError("phaseCaller caller must be a non-empty string")
+            if phase not in METHOD_PHASES:
+                raise MethodSpecError(f"phaseCaller has unknown phase {phase!r}")
+            if caller not in METHOD_CALLERS:
+                raise MethodSpecError(f"phaseCaller has unknown caller {caller!r}")
+            normalized.append((phase, caller))
+        if not normalized:
+            raise MethodSpecError("phaseCaller.pairs must not be empty")
+        if len(set(normalized)) != len(normalized):
+            raise MethodSpecError("phaseCaller.pairs must be unique")
+        object.__setattr__(self, "pairs", tuple(normalized))
+
+    def allows(self, phase: str, caller: str) -> bool:
+        """Return whether this exact phase/caller pair is permitted."""
+
+        return (phase, caller) in self.pairs
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,12 +246,18 @@ class HttpBinding:
 
     identity: IdentityBinding
     readiness: str | None = None
-    read_only_params_schema: Mapping[str, Any] | None = None
+    #: Optional second identity parameter the trusted HTTP host injects.  Link
+    #: administration needs the operator's canonical agent as the subject while
+    #: the primary selector remains the local owner; direct HTTP callers may
+    #: never supply this field.
+    on_behalf_of: str | None = None
+    #: HTTP-only narrowing, owned by this MethodSpec. Never replaces IPC params.
+    params_constraints: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        if self.read_only_params_schema is not None:
-            object.__setattr__(self, "read_only_params_schema", _freeze_json(
-                self.read_only_params_schema, "http.readOnlyParamsSchema"
+        if self.params_constraints is not None:
+            object.__setattr__(self, "params_constraints", _freeze_json(
+                self.params_constraints, "http_binding.params_constraints",
             ))
 
 
@@ -224,6 +284,9 @@ class MethodSpec:
     idempotency: IdempotencySpec | None = None
     preview: PreviewSpec | None = None
     preview_of: str | None = None
+    ipc_param_validation: Literal["schema", "handler"] = "schema"
+    phase_caller: PhaseCallerSpec | None = None
+    mock_echo: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "errors", tuple(self.errors))
@@ -234,6 +297,7 @@ class MethodSpec:
         object.__setattr__(
             self, "result_schema", _freeze_json(self.result_schema, f"{self.name}.result")
         )
+        object.__setattr__(self, "mock_echo", freeze_mock_echo(self.mock_echo, self.name))
 
     @property
     def effective_http_binding(self) -> HttpBinding | None:
@@ -382,7 +446,9 @@ def _reference_problems(value: Any, where: str) -> list[str]:
     return problems
 
 
-def _validate_schema(schema: Mapping[str, Any], label: str, *, object_root: bool) -> None:
+def _validate_schema(
+    schema: Mapping[str, Any], label: str, *, object_root: bool, metaschema: bool = True
+) -> None:
     declared = _json_safe(schema, label)
     problems = _reference_problems(declared, label)
     problems.extend(_schema_problems(declared, label))
@@ -395,13 +461,23 @@ def _validate_schema(schema: Mapping[str, Any], label: str, *, object_root: bool
             problems.append(
                 f"{label}: object root must declare additionalProperties explicitly"
             )
-    if isinstance(declared, Mapping):
-        try:
-            Draft202012Validator.check_schema(declared)
-        except SchemaError as error:
-            problems.append(f"{label}: {error.message}")
+    if metaschema and isinstance(declared, Mapping):
+        message = _metaschema_error(json.dumps(declared, sort_keys=True))
+        if message is not None:
+            problems.append(f"{label}: {message}")
     if problems:
         raise MethodSpecError("; ".join(problems))
+
+
+@functools.lru_cache(maxsize=4096)
+def _metaschema_error(canonical: str) -> str | None:
+    """Draft 2020-12 metaschema verdict for one JSON-safe schema, by content."""
+
+    try:
+        Draft202012Validator.check_schema(json.loads(canonical))
+    except SchemaError as error:
+        return error.message
+    return None
 
 
 def _required_properties(schema: Mapping[str, Any], where: str) -> tuple[Mapping[str, Any], set[str]]:
@@ -471,7 +547,7 @@ def _accepts_string(schema: Any) -> bool:
     return isinstance(declared, (list, tuple)) and "string" in declared
 
 
-def _validate_http_binding(spec: MethodSpec) -> None:
+def _validate_http_binding(spec: MethodSpec, *, metaschema: bool = True) -> None:
     binding = spec.http_binding
     # ``http_exposed`` is declaration eligibility, not a live transport claim.
     # A declaration may be exported before a shared identity binding exists;
@@ -485,13 +561,12 @@ def _validate_http_binding(spec: MethodSpec) -> None:
         binding.identity, IdentityBinding
     ):
         raise MethodSpecError(f"{spec.name}: http_binding is not a declared binding")
-    if binding.read_only_params_schema is not None:
-        _validate_schema(binding.read_only_params_schema,
-                         f"{spec.name}.http.readOnlyParamsSchema", object_root=True)
-        if spec.mode != "unary" or spec.confirmation != "none":
-            raise MethodSpecError(f"{spec.name}: read-only HTTP projection needs unary/no confirmation")
     identity = binding.identity
-    if identity.mode not in ("none", "local-operator-selector"):
+    if identity.mode not in (
+        "none",
+        "local-owner-selector",
+        "local-owner-user-selector",
+    ):
         raise MethodSpecError(
             f"{spec.name}: unsupported HTTP identity mode {identity.mode!r}"
         )
@@ -503,18 +578,17 @@ def _validate_http_binding(spec: MethodSpec) -> None:
     else:
         if not isinstance(identity.param, str) or not identity.param:
             raise MethodSpecError(
-                f"{spec.name}: local-operator-selector needs a selector parameter"
+                f"{spec.name}: {identity.mode} needs a selector parameter"
             )
         properties = spec.params_schema.get("properties")
         if not isinstance(properties, Mapping) or identity.param not in properties:
             raise MethodSpecError(
                 f"{spec.name}: selector {identity.param!r} is not a declared parameter"
             )
-        required = spec.params_schema.get("required", ())
-        if not isinstance(required, (list, tuple)) or identity.param not in required:
-            raise MethodSpecError(
-                f"{spec.name}: selector {identity.param!r} must be required"
-            )
+        # The HTTP entry injects an omitted selector before schema validation
+        # and compares every supplied value with the configured operator.
+        # A shared IPC schema may keep legacy aliases optional without making
+        # the browser's caller identity optional at dispatch.
         if not _accepts_string(properties[identity.param]):
             raise MethodSpecError(
                 f"{spec.name}: selector {identity.param!r} must accept a string"
@@ -523,21 +597,67 @@ def _validate_http_binding(spec: MethodSpec) -> None:
         not isinstance(binding.readiness, str) or not binding.readiness.strip()
     ):
         raise MethodSpecError(f"{spec.name}: readiness probe key must be a non-empty string")
+    if binding.on_behalf_of is not None:
+        properties = spec.params_schema.get("properties")
+        if (
+            not isinstance(binding.on_behalf_of, str)
+            or not binding.on_behalf_of
+            or not isinstance(properties, Mapping)
+            or binding.on_behalf_of not in properties
+        ):
+            raise MethodSpecError(
+                f"{spec.name}: on_behalf_of must name a declared parameter"
+            )
+    if binding.params_constraints is not None:
+        _validate_schema(
+            binding.params_constraints,
+            f"{spec.name}.http_constraints",
+            object_root=False,
+            metaschema=metaschema,
+        )
+        try:
+            project_http_params_schema(spec.params_schema, binding.params_constraints)
+        except ValueError as error:
+            raise MethodSpecError(f"{spec.name}: {error}") from error
 
 
 def _http_binding_json(binding: HttpBinding | None) -> dict[str, Any] | None:
     if binding is None:
         return None
-    return {
+    document = {
         "identity": {"mode": binding.identity.mode, "param": binding.identity.param},
         "readiness": binding.readiness,
-        **({"readOnlyParamsSchema": _thaw(binding.read_only_params_schema)}
-           if binding.read_only_params_schema is not None else {}),
     }
+    if binding.on_behalf_of is not None:
+        document["onBehalfOf"] = binding.on_behalf_of
+    if binding.params_constraints is not None:
+        document["paramsConstraints"] = _thaw(binding.params_constraints)
+    return document
 
 
-def validate_method_spec(spec: MethodSpec) -> None:
-    """Raise :class:`MethodSpecError` when one declaration is incomplete."""
+def _http_example_params(value: Any, schema: Mapping[str, Any]) -> Any:
+    """Project example params through the same HTTP identity boundary."""
+
+    if not isinstance(value, Mapping):
+        return value
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return dict(value)
+    forbidden = {
+        str(name)
+        for name, declaration in properties.items()
+        if isinstance(declaration, Mapping)
+        and declaration.get("x-hyprial-http-forbidden") is True
+    }
+    return {name: item for name, item in value.items() if name not in forbidden}
+
+
+def validate_method_spec(spec: MethodSpec, *, metaschema: bool = True) -> None:
+    """Raise :class:`MethodSpecError` when one declaration is incomplete.
+
+    ``metaschema=False`` skips only the Draft 2020-12 meta-schema verdict on
+    the declared schemas (the dominant cost); every structural check stays.
+    """
 
     if not isinstance(spec.name, str) or not _NAME.fullmatch(spec.name):
         raise MethodSpecError(f"{spec.name!r}: invalid method name")
@@ -545,24 +665,35 @@ def validate_method_spec(spec: MethodSpec) -> None:
         raise MethodSpecError(f"{spec.name}: mutates must be a bool")
     if type(spec.http_exposed) is not bool:
         raise MethodSpecError(f"{spec.name}: http_exposed must be a bool")
+    if spec.ipc_param_validation not in ("schema", "handler"):
+        raise MethodSpecError(
+            f"{spec.name}: invalid ipc_param_validation {spec.ipc_param_validation!r}"
+        )
     if spec.confirmation not in ("none", "preview", "execute"):
         raise MethodSpecError(f"{spec.name}: invalid confirmation {spec.confirmation!r}")
     if not isinstance(spec.owner, str) or not _OWNER.fullmatch(spec.owner):
         raise MethodSpecError(f"{spec.name}: invalid owner {spec.owner!r}")
-    _validate_schema(spec.params_schema, f"{spec.name}.params_schema", object_root=True)
-    _validate_schema(spec.result_schema, f"{spec.name}.result_schema", object_root=True)
+    _validate_schema(
+        spec.params_schema, f"{spec.name}.params_schema", object_root=True, metaschema=metaschema
+    )
+    _validate_schema(
+        spec.result_schema, f"{spec.name}.result_schema", object_root=True, metaschema=metaschema
+    )
     if not spec.errors:
         raise MethodSpecError(f"{spec.name}: at least one domain error must be declared")
     codes: set[str] = set()
     for error in spec.errors:
-        if not isinstance(error, MethodError) or not _ERROR_CODE.fullmatch(error.code):
+        if not isinstance(error, MethodError) or not is_declared_error_code(error.code):
             raise MethodSpecError(f"{spec.name}: invalid error declaration {error!r}")
         if error.code in codes:
             raise MethodSpecError(f"{spec.name}: duplicate error code {error.code}")
         codes.add(error.code)
         if error.data_schema is not None:
             _validate_schema(
-                error.data_schema, f"{spec.name}.errors[{error.code}].data", object_root=True
+                error.data_schema,
+                f"{spec.name}.errors[{error.code}].data",
+                object_root=True,
+                metaschema=metaschema,
             )
     if not spec.audience or len(set(spec.audience)) != len(spec.audience):
         raise MethodSpecError(f"{spec.name}: audience must be a non-empty unique tuple")
@@ -595,11 +726,18 @@ def validate_method_spec(spec: MethodSpec) -> None:
             )
     else:
         raise MethodSpecError(f"{spec.name}: invalid mode {spec.mode!r}")
+    if spec.phase_caller is not None and not isinstance(
+        spec.phase_caller, PhaseCallerSpec
+    ):
+        raise MethodSpecError(f"{spec.name}: phase_caller must be a PhaseCallerSpec")
     _validate_preview(spec)
-    _validate_http_binding(spec)
+    _validate_http_binding(spec, metaschema=metaschema)
+    validate_mock_echo(spec, MethodSpecError)
 
 
-def validate_method_specs(specs: Iterable[MethodSpec]) -> tuple[MethodSpec, ...]:
+def validate_method_specs(
+    specs: Iterable[MethodSpec], *, metaschema: bool = True
+) -> tuple[MethodSpec, ...]:
     """Validate a catalog, including duplicate names and preview pairing."""
 
     catalog = tuple(specs)
@@ -607,7 +745,7 @@ def validate_method_specs(specs: Iterable[MethodSpec]) -> tuple[MethodSpec, ...]
     for spec in catalog:
         if not isinstance(spec, MethodSpec):
             raise MethodSpecError(f"catalog entry is not a MethodSpec: {spec!r}")
-        validate_method_spec(spec)
+        validate_method_spec(spec, metaschema=metaschema)
         if spec.name in by_name:
             raise MethodSpecError(f"duplicate method name {spec.name}")
         by_name[spec.name] = spec
@@ -676,6 +814,15 @@ def _catalog_entry(spec: MethodSpec) -> dict[str, Any]:
         }
     if spec.preview_of is not None:
         entry["previewOf"] = spec.preview_of
+    if spec.ipc_param_validation != "schema":
+        entry["ipcParamValidation"] = spec.ipc_param_validation
+    if spec.phase_caller is not None:
+        entry["phaseCaller"] = {
+            "pairs": [
+                {"phase": phase, "caller": caller}
+                for phase, caller in spec.phase_caller.pairs
+            ],
+        }
     return entry
 
 
@@ -701,10 +848,10 @@ def _error_response_schema(spec: MethodSpec) -> dict[str, Any]:
     return {"oneOf": variants}
 
 
-def export_catalog(specs: Iterable[MethodSpec]) -> dict[str, Any]:
+def export_catalog(specs: Iterable[MethodSpec], *, metaschema: bool = True) -> dict[str, Any]:
     """Return the complete, JSON-safe method catalog in stable name order."""
 
-    catalog = validate_method_specs(specs)
+    catalog = validate_method_specs(specs, metaschema=metaschema)
     return {
         "schemaVersion": 1,
         "methods": [_catalog_entry(spec) for spec in sorted(catalog, key=lambda item: item.name)],
@@ -735,6 +882,9 @@ def export_openapi(
     declarations: list[dict[str, Any]] = []
     for spec in ordered:
         params_schema = _thaw(spec.params_schema)
+        binding = spec.effective_http_binding
+        constraints = binding.params_constraints if binding is not None else None
+        http_params_schema = project_http_params_schema(params_schema, constraints)
         result_schema = _thaw(spec.result_schema)
         operation: dict[str, Any] = {
             "operationId": spec.name,
@@ -747,14 +897,44 @@ def export_openapi(
             "x-hyprial-confirmation": spec.confirmation,
             "x-hyprial-http-binding": _http_binding_json(spec.effective_http_binding),
         }
+        if spec.ipc_param_validation != "schema":
+            operation["x-hyprial-ipc-param-validation"] = spec.ipc_param_validation
+        if spec.phase_caller is not None:
+            operation["x-hyprial-phase-caller"] = {
+                "pairs": [
+                    {"phase": phase, "caller": caller}
+                    for phase, caller in spec.phase_caller.pairs
+                ],
+            }
+        if spec.mock_echo is not None:
+            operation["x-hyprial-mock-echo"] = dict(spec.mock_echo)
         example_set = examples_by_name.get(spec.name)
+        params_examples: dict[str, Any] = {}
         if example_set is not None:
             projected = [example_to_json(case) for case in example_set.cases]
+            for item in projected:
+                item["params"] = _http_example_params(item["params"], params_schema)
+                if constraints is not None and item["kind"] != "invalid-params":
+                    if not Draft202012Validator(
+                        http_params_schema, format_checker=FormatChecker(),
+                    ).is_valid(item["params"]):
+                        raise MethodSpecError(
+                            f"{spec.name}: {item['name']} example violates HTTP constraints"
+                        )
             valid_params = [
                 item["params"]
                 for item in projected
                 if item["kind"] != "invalid-params"
             ]
+            params_examples = {
+                case.name: {
+                    "summary": case.name,
+                    "description": case.description,
+                    "value": item["params"],
+                }
+                for case, item in zip(example_set.cases, projected)
+                if item["kind"] != "invalid-params"
+            }
             results = [
                 item["result"]
                 for item in projected
@@ -762,6 +942,7 @@ def export_openapi(
             ]
             if valid_params:
                 params_schema["examples"] = valid_params
+                http_params_schema["examples"] = valid_params
             if results:
                 result_schema["examples"] = results
             operation["x-hyprial-examples"] = projected
@@ -770,28 +951,24 @@ def export_openapi(
                 gaps["empty"] = example_set.empty_not_applicable
             if example_set.domain_errors_not_applicable:
                 gaps["domainErrors"] = example_set.domain_errors_not_applicable
+            if example_set.success_not_applicable:
+                gaps["success"] = example_set.success_not_applicable
             if gaps:
                 operation["x-hyprial-example-gaps"] = gaps
         declaration = _catalog_entry(spec)
-        for key in ("x-hyprial-examples", "x-hyprial-example-gaps"):
+        for key in ("x-hyprial-examples", "x-hyprial-example-gaps", "x-hyprial-mock-echo"):
             if key in operation:
                 declaration[key] = operation[key]
         declarations.append(declaration)
         if not spec.http_exposed:
             continue
-        binding = spec.effective_http_binding
-        if binding is not None and binding.read_only_params_schema is not None:
-            params_schema = _thaw(binding.read_only_params_schema)
-            operation["x-hyprial-mutates"] = False
-            operation["x-hyprial-retry"] = "safe"
-            operation.pop("x-hyprial-examples", None)
-            operation.pop("x-hyprial-example-gaps", None)
+        body_content: dict[str, Any] = {"schema": http_params_schema}
+        if params_examples:
+            body_content["examples"] = params_examples
         operation["requestBody"] = {
             "required": True,
             "content": {
-                "application/json": {
-                    "schema": params_schema,
-                }
+                "application/json": body_content,
             },
         }
         operation["responses"] = {

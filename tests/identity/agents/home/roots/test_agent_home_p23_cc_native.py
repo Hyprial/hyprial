@@ -34,7 +34,6 @@ from hyprial.identity.impl.agents.runtime.context import (
     resolve_agent_runtime_context,
 )
 from hyprial.kernel import HarnessLaunchSpec
-from hyprial.daemon.impl.harnesses.runtime import tmux as tmux_mod
 from hyprial.daemon.impl.harnesses.agent_sdk import IsolatedAgentSdkClient
 from hyprial.daemon.impl.harnesses.claude.runtime import (
     claude_runtime_session_file,
@@ -414,16 +413,31 @@ def test_real_tmux_claude_tui_uses_redirected_oauth_token(
     ]
     pane = ""
     try:
-        tmux_mod.new_detached_session(
-            str(wrapper),
-            session,
-            ["/bin/sh", "-c", shlex.join(argv) + "; echo CLAUDE_EXIT:$?; sleep 60"],
-            cwd=tmp_path / "project",
+        subprocess.run(
+            [
+                str(wrapper),
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-c",
+                str(tmp_path / "project"),
+                "/bin/sh",
+                "-c",
+                shlex.join(argv) + "; echo CLAUDE_EXIT:$?; sleep 60",
+            ],
             env=environment,
+            check=True,
         )
         deadline = time.monotonic() + 50
         while time.monotonic() < deadline and not server.observed.is_set():
-            pane = tmux_mod.pane_text(str(wrapper), session)
+            captured = subprocess.run(
+                [str(wrapper), "capture-pane", "-p", "-t", session],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            pane = captured.stdout if captured.returncode == 0 else ""
             if "CLAUDE_EXIT:" in pane:
                 break
             if "trust this folder" in pane.lower():
@@ -466,7 +480,11 @@ def test_real_tmux_claude_tui_uses_redirected_oauth_token(
             pytest.xfail("Claude TUI startup service check returned 403 before a turn")
         assert server.observed.is_set(), f"TUI did not issue a request; pane={pane!r}"
     finally:
-        tmux_mod.kill_session(str(wrapper), session)
+        subprocess.run(
+            [str(wrapper), "kill-session", "-t", session],
+            capture_output=True,
+            check=False,
+        )
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

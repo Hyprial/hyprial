@@ -205,7 +205,7 @@ class ServiceManager:
         persistence_late_result,
         controller_factory,
         access_path: str | Path,
-        scheduler,
+        scheduler, actor_host=None,
         service_discovery: Callable[[], tuple[CatalogEntry, ...]] | None = None,
     ) -> None:
         self._orgfs = orgfs
@@ -215,7 +215,7 @@ class ServiceManager:
         self._resolver = ProtectedResolver(self.access_path)
         self._scheduler = scheduler
         self._service_discovery = service_discovery
-        self._io = ServiceIo()
+        self._io = ServiceIo(actor_host=actor_host)
         self._lock = threading.RLock()
         self._catalog_lock = threading.Lock()
         # Lock hierarchy: _lock and _catalog_lock are peers and are never nested.
@@ -235,7 +235,7 @@ class ServiceManager:
             complete=self._persistence_complete,
             late_result=persistence_late_result,
             capacity=16,
-            retry_seconds=0.01,
+            retry_seconds=0.01, actor_host=actor_host,
         )
         snapshot = state.load()
         if not isinstance(snapshot, DesiredState):

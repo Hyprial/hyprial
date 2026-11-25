@@ -22,9 +22,10 @@ from pathlib import Path
 import time
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
-from hyprial.daemon.impl.application import DaemonApplication
+from hyprial.daemon.impl.application import DaemonApplication, DaemonRequestError
 from hyprial.daemon.impl.desired_state import InteractiveSession
 from hyprial.daemon.impl.inbox import (
     DeliveryLifecycle,
@@ -174,6 +175,14 @@ def wire_inbox(app: DaemonApplication, tmp_path: Path, name: str) -> _WireTransp
     return transport
 
 
+def official(app: DaemonApplication, name: str = ACTOR) -> str:
+    """The id-form address the registered agent ``name`` is reached at."""
+
+    agent = app.agents.require(name)
+    assert agent.uri == f"agent:{OWNER}:{NODE}:{agent.agent_id}"
+    return agent.uri
+
+
 def send(app: DaemonApplication, target: str) -> dict[str, Any]:
     result = app.handle(
         "message.send",
@@ -204,8 +213,8 @@ def test_daemon_normalizes_bare_session_registration_to_canonical(
 
     app = application(tmp_path)
     registered_as = register_interactive(app, ACTOR)
-    assert registered_as == CANONICAL
-    assert [agent.uri for agent in app.agents.list()] == [CANONICAL]
+    assert registered_as == official(app)
+    assert [agent.uri for agent in app.agents.list()] == [registered_as]
 
 
 def test_old_mcp_child_can_keep_using_bare_actor_after_canonical_registration(
@@ -228,7 +237,7 @@ def test_old_mcp_child_can_keep_using_bare_actor_after_canonical_registration(
     assert delivery["accepted"] is True
     assert delivery["queued"] is False
     (frame,) = transport.frames
-    assert frame.recipient == CANONICAL
+    assert frame.recipient == registered_as == official(app)
 
 
 def test_unfenced_cli_ack_keeps_the_node_mailbox_spelling(tmp_path: Path) -> None:
@@ -276,9 +285,10 @@ def test_bare_target_delivers_to_canonical_registered_session(
     """The reverse spelling: session registered canonical, sender typed the
     bare actor name."""
 
-    app = application(tmp_path, actors=(CANONICAL,))
+    app = application(tmp_path)
     registered_as = register_interactive(app, CANONICAL)
-    assert registered_as == CANONICAL
+    assert registered_as == official(app)
+    app._presence = _Presence((registered_as,))
     transport = wire_inbox(app, tmp_path, "inbox-canonical.sqlite3")
     transport.set_online(registered_as, True)
 
@@ -287,7 +297,7 @@ def test_bare_target_delivers_to_canonical_registered_session(
     assert delivery["accepted"] is True
     assert delivery["queued"] is False
     (frame,) = transport.frames
-    assert frame.recipient == CANONICAL
+    assert frame.recipient == registered_as
 
 
 def test_bare_target_queues_under_the_registered_key_of_offline_session(
@@ -303,7 +313,7 @@ def test_bare_target_queues_under_the_registered_key_of_offline_session(
 
     delivery = send(app, ACTOR)
 
-    assert delivery["target"] == CANONICAL
+    assert delivery["target"] == official(app)
     assert delivery["queued"] is True
     assert "code" not in delivery
     assert not [
@@ -314,29 +324,22 @@ def test_bare_target_queues_under_the_registered_key_of_offline_session(
 def test_unknown_local_canonical_uri_fails_loud(tmp_path: Path) -> None:
     """A canonical URI in THIS node's owner/machine namespace that no
     registration, provider, worker, or online actor claims can never drain:
-    the node is the authority for its own identities.  The delivery must
-    carry an observable code and the daemon must log a warn — never the
-    silent queue-forever of the incident."""
+    the node is the authority for its own identities.  Since the id-form
+    flip the send boundary refuses it outright (contract/identity/
+    agent-addressing.md, HQ Q2) — never the silent queue-forever of the
+    incident, and nothing is queued."""
 
     app = application(tmp_path)
+    ghost = f"agent:{OWNER}:{NODE}:ghost"
 
-    delivery = send(app, f"agent:{OWNER}:{NODE}:ghost")
+    with pytest.raises(DaemonRequestError) as refused:
+        send(app, ghost)
 
-    assert delivery["queued"] is True
-    assert delivery["code"] == "TARGET_UNRESOLVED"
-    (warn,) = [
-        entry
-        for entry in log_entries(app)
-        if entry["level"] == "warn" and entry["event"] == "send.target_unresolved"
-    ]
-    assert warn["target"] == f"agent:{OWNER}:{NODE}:ghost"
-    assert warn["messageId"] == delivery["messageId"]
-    assert warn["correlationId"] == delivery["messageId"]
-    assert warn["node"] == "daemon-send"
-    assert warn["component"] == "daemon"
-    assert warn["conversationId"]
-    assert warn["sender"] == "channel:lark:main"
-    assert isinstance(warn["ts"], str)
+    assert refused.value.code == "TARGET_UNRESOLVED"
+    assert refused.value.data == {"target": ghost}
+    assert app._inbox is not None
+    assert app._inbox.pending_count(ghost) == 0
+    assert app._inbox.outbox_count() == 0
 
 
 def test_unknown_local_rejection_never_refreshes_or_waits_for_harness(
@@ -350,9 +353,10 @@ def test_unknown_local_rejection_never_refreshes_or_waits_for_harness(
 
     app._harnesses = BlockingHarness()  # type: ignore[assignment]
     began = time.monotonic()
-    delivery = send(app, f"agent:{OWNER}:{NODE}:ghost")
+    with pytest.raises(DaemonRequestError) as refused:
+        send(app, f"agent:{OWNER}:{NODE}:ghost")
     assert time.monotonic() - began < 0.2
-    assert delivery["code"] == "TARGET_UNRESOLVED"
+    assert refused.value.code == "TARGET_UNRESOLVED"
 
 
 def test_remote_canonical_uri_keeps_quiet_durable_queue(tmp_path: Path) -> None:
@@ -407,7 +411,7 @@ def test_bare_and_canonical_registration_supersede_on_one_canonical_key(
 
     sessions = app.desired_state.load().interactive_sessions
     assert [(item.actor, item.session_ref) for item in sessions] == [
-        (CANONICAL, "session-canonical")
+        (official(app), "session-canonical")
     ]
 
 

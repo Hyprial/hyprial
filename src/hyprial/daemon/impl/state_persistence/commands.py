@@ -32,11 +32,11 @@ class DesiredQuery(StrEnum):
     INCOMPLETE_HARNESS_LIFECYCLE_RECEIPTS = "incomplete_harness_lifecycle_receipts"
     HARNESS_LIFECYCLE_RECEIPT = "harness_lifecycle_receipt"
     LIFECYCLE_EFFECT_CLAIMS = "lifecycle_effect_claims"
-    ADAPTER_REGISTRATION = "adapter_registration"
 
 
 class JournalQuery(StrEnum):
     PENDING = "pending"
+    START_FAILURES = "read_start_failures"
     LOAD = "load"
     STATE = "state"
     EFFECT_DONE = "effect_done"
@@ -74,12 +74,6 @@ class ReadJournalQuery:
     operation_id: str | None = None
     effect_name: str | None = None
     direction: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RemoveMigratedChannelPins:
-    correlation_id: str
-    matches: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,19 +170,6 @@ class CompleteSessionAgentEffect:
 
 
 @dataclass(frozen=True, slots=True)
-class SetChannelPin:
-    correlation_id: str
-    channel: str
-    agent: str
-
-
-@dataclass(frozen=True, slots=True)
-class RemoveChannelPin:
-    correlation_id: str
-    channel: str
-
-
-@dataclass(frozen=True, slots=True)
 class ConfirmHarnessLifecycle:
     correlation_id: str
     attempt_token: str
@@ -233,6 +214,7 @@ class MarkHarnessFailed:
     correlation_id: str
     harness: str
     name: str
+    member: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +228,7 @@ class RemoveHarness:
     correlation_id: str
     harness: str
     name: str
+    member: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,7 +248,6 @@ class RemoveAdapterRegistration:
     correlation_id: str
     name: str
     expected_spec: AdapterSpec | None
-    expected_legacy_pin: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,13 +255,12 @@ class RestoreAdapterRegistration:
     correlation_id: str
     name: str
     spec: AdapterSpec | None
-    legacy_pin: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class SyncHarnessSessionRefs:
     correlation_id: str
-    refs: tuple[tuple[tuple[str, str], str], ...]
+    refs: tuple[tuple[tuple[str, str, str], str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,7 +379,6 @@ class BackfillDomainAttestedEffects:
 StateCommand = (
     ReadDesiredQuery
     | ReadJournalQuery
-    | RemoveMigratedChannelPins
     | NormalizeInteractiveSessions
     | CompareAndSaveDesired
     | ApplySessionLifecycle
@@ -411,8 +391,6 @@ StateCommand = (
     | UnregisterInteractiveSession
     | RecordSessionAgentEffects
     | CompleteSessionAgentEffect
-    | SetChannelPin
-    | RemoveChannelPin
     | ConfirmHarnessLifecycle
     | CompleteHarnessLifecycle
     | RecordHarnessLifecycleFailure

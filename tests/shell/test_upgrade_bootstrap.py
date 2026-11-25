@@ -16,4 +16,10 @@ def test_shell_bootstrap_loads_the_named_daemon_and_identity_modules() -> None:
     primed = prime_post_install_imports()
     assert "hyprial.daemon.impl.harnesses.model_provider" in primed
     assert "hyprial.identity.impl.agents.runtime" in primed
-    assert "hyprial.shell.impl.gui.runtime" in primed
+
+
+def test_shell_public_face_has_no_desktop_network_adapter() -> None:
+    import hyprial.shell as shell
+
+    assert "desktop_network" not in dir(shell)
+    assert not hasattr(shell, "desktop_network")

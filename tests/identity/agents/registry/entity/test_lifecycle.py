@@ -1,6 +1,8 @@
 """agent_entity: lifecycle scenarios."""
 
 from __future__ import annotations
+
+from tests.support.agent_destroy import destroy_agent
 import threading
 import json
 import sqlite3
@@ -18,6 +20,7 @@ from .support import (
     URI,
     _close_test_applications as _close_test_applications,
     _scheduled_routine,
+    address,
     application,
     enable_routine_coordinator,
     enable_routines,
@@ -37,23 +40,6 @@ from .support import (
 
 
 
-def test_host_invite_reports_missing_default_when_routines_are_unavailable(
-    tmp_path: Path,
-) -> None:
-    app = application(tmp_path)
-    created = app.handle(
-        "agent.host-invite", {"name": "visitor", "owner": "remote-owner"}
-    )
-    assert created["routineWarning"] == {
-        "code": "AGENT_DEFAULT_ROUTINE_UNAVAILABLE",
-        "message": (
-            "agent was created without a routine because the routine service "
-            "is unavailable; repair the service, then bind one "
-            "with `hyprial routine add`"
-        ),
-    }
-
-
 def test_default_routine_renderer_preserves_name_substitution():
     from hyprial.biz import load_routine_text
     from hyprial.shell.impl.daemon_wiring.routines import routine_template_renderer
@@ -66,6 +52,41 @@ def test_default_routine_renderer_preserves_name_substitution():
 
     assert spec.name == "resident-home-setup"
     assert spec.actor == URI
+
+
+@pytest.mark.parametrize("method", ["lifecycle.start", "agent.start.preflight"])
+def test_foreign_owner_legacy_hosted_agent_cannot_start(
+    tmp_path: Path, method: str
+) -> None:
+    app = application(tmp_path)
+    app.agents.create_transfer_hosted("legacy", pinned_owner="visitor")
+    with app._agent_registry._lock, app._agent_registry._db:  # noqa: SLF001
+        app._agent_registry._db.execute(  # noqa: SLF001
+            "UPDATE agents SET hosted_by = 'host-invite' WHERE actor = 'legacy'"
+        )
+    params = {"name": "legacy", "harness": "pi"}
+    if method == "lifecycle.start":
+        params.update(provider="pi", headless=True, cwd="/work")
+
+    with pytest.raises(DaemonRequestError) as failure:
+        app.handle(method, params)
+
+    assert failure.value.code == "INVALID_ARGUMENT"
+    assert app.desired_state.load().harnesses == ()
+    assert app._harnesses.running == {}
+
+
+def test_local_owner_transfer_received_agent_still_starts(tmp_path: Path) -> None:
+    app = application(tmp_path)
+    app.agents.create_transfer_hosted("local", pinned_owner=app.owner)
+
+    result = app.handle(
+        "lifecycle.start",
+        {"name": "local", "provider": "pi", "headless": True, "cwd": "/work"},
+    )
+
+    assert result["ok"] is True
+    assert app._harnesses.running == {("pi", "local"): True}
 
 
 def test_default_routine_preserves_stored_legacy_agent_owner_spelling(
@@ -136,6 +157,18 @@ def test_default_routine_timeout_keeps_committed_agent(tmp_path: Path) -> None:
     assert app.agents.get("foo") is not None
 
 
+def _compensate_without_freezing(app, original) -> None:  # type: ignore[no-untyped-def]
+    """Roll back ``original`` the way a saga compensation does.
+    """
+
+    settled = app.agents.settle_destroy(
+        f"agent-default-compensation:{original.entity_token}:test",
+        original.actor,
+        expected_entity_token=original.entity_token,
+    )
+    assert settled.disposition == "destroyed"
+
+
 @pytest.mark.parametrize("recreate", [False, True])
 def test_default_routine_timeout_late_failure_cas_compensates_original(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recreate: bool,
@@ -180,9 +213,7 @@ def test_default_routine_timeout_late_failure_cas_compensates_original(
         assert entered.wait(1.0)
         original = app.agents.require("foo")
         if recreate:
-            assert app.agents.destroy(
-                "foo", expected_entity_token=original.entity_token
-            )
+            _compensate_without_freezing(app, original)
             successor = app.agents.create("foo")
             assert successor.entity_token != original.entity_token
         release.set()
@@ -332,9 +363,7 @@ def test_exact_agent_destroy_settlement_preserves_same_name_successor(
 ) -> None:
     app = application(tmp_path)
     original = app.agents.create("foo")
-    assert app.agents.destroy(
-        "foo", expected_entity_token=original.entity_token
-    )
+    _compensate_without_freezing(app, original)
     successor = app.agents.create("foo")
     assert successor.entity_token != original.entity_token
 
@@ -390,9 +419,7 @@ def test_late_default_failure_cannot_delete_recreated_agent(tmp_path: Path) -> N
         def wait(self, operation_id: str, timeout: float):
             del timeout
             original = app.agents.require("foo")
-            assert app.agents.destroy(
-                "foo", expected_entity_token=original.entity_token
-            )
+            _compensate_without_freezing(app, original)
             successor = app.agents.create("foo")
             assert successor.entity_token != original.entity_token
             raise RoutineCoordinatorError(
@@ -417,7 +444,10 @@ def test_concurrent_last_binding_removals_leave_one(tmp_path: Path) -> None:
     app.handle("agent.create", {"name": "foo"})
     app.handle(
         "routine.add",
-        {"yaml": _scheduled_routine("replacement", URI), "actor": "user:op"},
+        {
+            "yaml": _scheduled_routine("replacement", address(app, "foo")),
+            "actor": "user:op",
+        },
     )
     assert app._routine_service is not None
     names = [
@@ -450,7 +480,7 @@ def test_agent_destroy_settles_bound_routine_before_entity_delete(
     enable_routines(app, tmp_path)
     enable_routine_coordinator(app, tmp_path)
     app.handle("agent.create", {"name": "foo"})
-    result = app.handle("agent.destroy", {"name": "foo"})
+    result = destroy_agent(app, "foo")
     assert result["destroyed"] is True
     assert len(result["removedRoutines"]) == 1
     assert app.agents.get("foo") is None
@@ -463,7 +493,7 @@ def test_agent_destroy_without_bound_routine_reports_empty_removals(
 ) -> None:
     app = application(tmp_path)
     app.handle("agent.create", {"name": "foo"})
-    result = app.handle("agent.destroy", {"name": "foo"})
+    result = destroy_agent(app, "foo")
     assert result["destroyed"] is True
     assert result["removedRoutines"] == []
 
@@ -544,7 +574,7 @@ def test_routine_wake_up_merges_the_agents_stored_harness_args(
     )
 
     assert launched is not None
-    assert launched["actor"] == URI
+    assert launched["actor"] == address(app, "foo")
     assert _desired_args(app, "foo") == ("--approve",)
 
 
@@ -638,9 +668,10 @@ def test_invalid_stored_permission_mode_refuses_start(tmp_path: Path, args: tupl
     with closing(sqlite3.connect(tmp_path / "agents.sqlite3")) as database, database:
         database.execute("UPDATE agents SET harness_args = ? WHERE actor = 'foo'", (json.dumps({"claude": args}),))
     app.handle("agent.create", {"name": "foo", "existing": "reuse", "harness": "claude", "runtime": "headless", "cwd": "/work"})
-    with pytest.raises(DaemonRequestError, match="invalid Claude --permission-mode") as failure:
+    with pytest.raises(DaemonRequestError, match="harness args are invalid") as failure:
         start_headless(app, "claude", "foo")
-    assert failure.value.code == "INVALID_ARGUMENT"
+    assert failure.value.code == "HARNESS_ARGS_INVALID"
+    assert failure.value.data["issues"]
     assert not app.desired_state.load().harnesses
 
 
@@ -683,3 +714,45 @@ def test_resume_preflight_returns_current_stored_args(tmp_path: Path, monkeypatc
         "provider": "claude", "name": "foo", "headless": True, "sessionRef": "isolated-session",
     })
     assert result["agentSnapshot"]["harnessArgs"] == {"claude": ["--permission-mode", "auto"]}
+
+
+def test_the_stop_remedy_named_for_an_id_address_stops_the_running_agent(
+    tmp_path: Path,
+) -> None:
+    """A refusal raised without a record name names the ``a.`` id; that command must work."""
+
+    from hyprial.identity.impl.agents.state.liveness import AgentAlreadyRunning
+
+    app = application(tmp_path)
+    start_headless(app, "pi", "foo")
+    agent = app.agents.require("foo")
+    binding = app._agent_liveness.binding(address(app, "foo"))  # type: ignore[union-attr]
+    assert binding is not None
+
+    refusal = AgentAlreadyRunning(address(app, "foo"), binding, "claude")
+
+    assert f"run 'hyprial agent stop {agent.agent_id}'" in str(refusal)
+    result = app.handle(
+        "down", {"all": False, "agentsOnly": True, "target": agent.agent_id}
+    )
+    assert result["removed"] == ["pi:foo"]
+    assert app.desired_state.load().harnesses == ()
+    assert app._agent_liveness.binding(address(app, "foo")) is None  # type: ignore[union-attr]
+    assert start_headless(app, "claude", "foo")["ok"] is True
+
+
+def test_an_adapter_down_never_stops_an_agent_named_by_its_id(tmp_path: Path) -> None:
+    """``down`` resolves an ``a.`` id only for harness targets; a Lark adapter down
+    naming that id matches no adapter and leaves the agent's worker running."""
+
+    app = application(tmp_path)
+    start_headless(app, "pi", "foo")
+    agent = app.agents.require("foo")
+
+    for target in (agent.agent_id, "foo"):
+        result = app.handle(
+            "down", {"all": False, "provider": "lark", "target": target}
+        )
+        assert result == {"ok": True, "removed": []}
+    assert [spec.name for spec in app.desired_state.load().harnesses] == ["foo"]
+    assert app._agent_liveness.binding(address(app, "foo")) is not None  # type: ignore[union-attr]

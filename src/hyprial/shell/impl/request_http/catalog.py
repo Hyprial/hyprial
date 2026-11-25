@@ -3,7 +3,9 @@
 The daemon owns the runtime catalog.  This module never mutates it and never
 infers an identity binding from a parameter name: only ``httpBinding`` from
 the daemon response enters a route.  The local ``daemon_catalog()`` projection
-is used for one declaration-digest comparison, never to build routes.
+is used for one declaration-digest comparison, never to build routes.  A route
+that is ``not-ready`` only because of the daemon's phase carries one of
+``PHASE_REASONS``; the route set and both digests do not depend on the phase.
 """
 
 from __future__ import annotations
@@ -13,6 +15,9 @@ from dataclasses import dataclass
 import hashlib
 import json
 from typing import Any
+
+from hyprial.kernel import project_http_params_schema
+from ..http_contract import confirmation_fields, missing_preview_pairs
 
 DECLARATION_FIELDS = (
     "name",
@@ -27,8 +32,12 @@ DECLARATION_FIELDS = (
     "paramsSchema",
     "resultSchema",
     "errors",
+    "ipcParamValidation",
 )
-SUPPORTED_IDENTITY_MODES = frozenset({"none", "local-operator-selector"})
+SUPPORTED_IDENTITY_MODES = frozenset(
+    {"none", "local-owner-selector", "local-owner-user-selector"}
+)
+PHASE_REASONS = frozenset({"ACCOUNT_REQUIRED", "BOOTSTRAP_ONLY"})
 HTTP_CONTRACT_VERSION = 1
 
 
@@ -48,7 +57,7 @@ class Backend:
     socket: str
     version: str
     node_id: str
-    owner: str
+    owner: str | None
     epoch: str
 
     def as_json(self) -> dict[str, Any]:
@@ -78,6 +87,11 @@ class Route:
     params_schema: Mapping[str, Any]
     result_schema: Mapping[str, Any]
     errors: tuple[Mapping[str, Any], ...]
+    #: Fields the daemon schema accepts only from a trusted host/MCP caller;
+    #: the HTTP body must not contain them and the HTTP paramsSchema omits them.
+    http_forbidden: frozenset[str] = frozenset()
+    preview: Mapping[str, Any] | None = None
+    preview_of: str | None = None
 
     def public_json(self) -> dict[str, Any]:
         return {
@@ -91,6 +105,10 @@ class Route:
             "mutates": self.mutates,
             "retry": self.retry,
             "confirmation": self.confirmation,
+            **confirmation_fields(
+                self.confirmation, self.mutates, self.params_schema,
+                self.result_schema, self.preview, self.preview_of,
+            ),
             "audience": list(self.audience),
             "paramsSchema": dict(self.params_schema),
             "resultSchema": dict(self.result_schema),
@@ -125,7 +143,10 @@ def declaration_document(entries: Iterable[Mapping[str, Any]]) -> dict[str, Any]
     return {
         "schemaVersion": 1,
         "methods": [
-            {field: entry.get(field) for field in DECLARATION_FIELDS} for entry in ordered
+            {
+                **{field: entry.get(field) for field in DECLARATION_FIELDS},
+                **{field: entry[field] for field in ("preview", "previewOf") if field in entry},
+            } for entry in ordered
         ],
     }
 
@@ -148,6 +169,10 @@ def http_contract_document(routes: Iterable[Route]) -> dict[str, Any]:
                 "mutates": route.mutates,
                 "retry": route.retry,
                 "confirmation": route.confirmation,
+                **confirmation_fields(
+                    route.confirmation, route.mutates, route.params_schema,
+                    route.result_schema, route.preview, route.preview_of,
+                ),
                 "requiredAudience": ["local-operator"],
                 "paramsSchema": dict(route.params_schema),
                 "resultSchema": dict(route.result_schema),
@@ -169,12 +194,17 @@ def _require(condition: bool, reason: str, message: str) -> None:
 
 def _ping_backend(ping: Mapping[str, Any], socket_path: str) -> Backend:
     _require(isinstance(ping, Mapping), "PING_SHAPE", "ping response is not an object")
-    for field in ("version", "nodeId", "owner", "epoch", "phase"):
+    for field in ("version", "nodeId", "epoch", "phase"):
         _require(
             isinstance(ping.get(field), str) and bool(ping.get(field)),
             "PING_SHAPE",
             f"ping response has no {field}",
         )
+    _require(
+        (ping.get("phase") == "bootstrap" and ping.get("owner") is None)
+        or (isinstance(ping.get("owner"), str) and bool(ping["owner"])),
+        "PING_SHAPE", "ping response has no owner outside bootstrap",
+    )
     return Backend(
         kind="local-daemon",
         socket=socket_path,
@@ -201,6 +231,20 @@ def _validate_entry(entry: Any) -> Mapping[str, Any]:
     return entry
 
 
+def _http_forbidden_fields(schema: Mapping[str, Any]) -> frozenset[str]:
+    """Fields a trusted host/MCP caller supplies, never the HTTP body."""
+
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return frozenset()
+    return frozenset(
+        str(name)
+        for name, declaration in properties.items()
+        if isinstance(declaration, Mapping)
+        and declaration.get("x-hyprial-http-forbidden") is True
+    )
+
+
 def _unsupported_reason(entry: Mapping[str, Any]) -> str | None:
     binding = entry.get("httpBinding")
     if not isinstance(binding, Mapping):
@@ -211,19 +255,36 @@ def _unsupported_reason(entry: Mapping[str, Any]) -> str | None:
     mode = identity.get("mode")
     if mode not in SUPPORTED_IDENTITY_MODES:
         return "HTTP_CALL_PROFILE_UNSUPPORTED"
-    if mode == "local-operator-selector" and not (
+    if mode in {"local-owner-selector", "local-owner-user-selector"} and not (
         isinstance(identity.get("param"), str) and identity.get("param")
     ):
         return "HTTP_BINDING_MISSING"
     if "local-operator" not in entry["audience"]:
         return "HTTP_CALL_PROFILE_UNSUPPORTED"
-    read_only = isinstance(binding.get("readOnlyParamsSchema"), Mapping)
-    if (
-        entry["mode"] != "unary"
-        or (entry["mutates"] is not False and not read_only)
-        or (entry["retry"] != "safe" and not read_only)
-        or entry["confirmation"] != "none"
+    try:
+        confirmation_fields(
+            entry["confirmation"], entry["mutates"], entry["paramsSchema"],
+            entry["resultSchema"], entry.get("preview"), entry.get("previewOf"),
+        )
+    except ValueError:
+        return "HTTP_CALL_PROFILE_UNSUPPORTED"
+    if entry["confirmation"] == "execute" and (
+        mode != "none" or binding.get("onBehalfOf") is not None
+        or binding.get("paramsConstraints") is not None
     ):
+        return "HTTP_CALL_PROFILE_UNSUPPORTED"
+    if entry["mode"] != "unary":
+        return "HTTP_CALL_PROFILE_UNSUPPORTED"
+    if entry["mutates"] is True:
+        # A write is admitted only under the never-retry profile; the entry
+        # never retries it on timeout, disconnect, cancellation or refresh.
+        if entry["retry"] != "never":
+            return "HTTP_CALL_PROFILE_UNSUPPORTED"
+    elif entry["mutates"] is False:
+        # Reads keep the existing safe-retry profile.
+        if entry["retry"] != "safe":
+            return "HTTP_CALL_PROFILE_UNSUPPORTED"
+    else:
         return "HTTP_CALL_PROFILE_UNSUPPORTED"
     if entry["state"] not in {"available", "not-ready"}:
         return str(entry.get("reason") or "HTTP_CALL_PROFILE_UNSUPPORTED")
@@ -269,6 +330,12 @@ def build_view(
             skipped[entry["name"]] = reason
             continue
         binding = entry["httpBinding"]
+        try:
+            params_schema = project_http_params_schema(
+                entry["paramsSchema"], binding.get("paramsConstraints"),
+            )
+        except ValueError as error:
+            raise CatalogProblem("CATALOG_SHAPE", "HTTP_PARAMS_INVALID", str(error)) from error
         routes[entry["name"]] = Route(
             name=entry["name"],
             path=f"/daemon/request/{entry['name']}",
@@ -277,14 +344,21 @@ def build_view(
             reason=entry.get("reason"),
             http_binding=binding,
             mode=entry["mode"],
-            mutates=False if "readOnlyParamsSchema" in binding else entry["mutates"],
-            retry="safe" if "readOnlyParamsSchema" in binding else entry["retry"],
+            mutates=entry["mutates"],
+            retry=entry["retry"],
             confirmation=entry["confirmation"],
+            preview=entry.get("preview"),
+            preview_of=entry.get("previewOf"),
             audience=tuple(entry["audience"]),
-            params_schema=binding.get("readOnlyParamsSchema", entry["paramsSchema"]),
+            params_schema=params_schema,
             result_schema=entry["resultSchema"],
             errors=tuple(entry["errors"]),
+            http_forbidden=_http_forbidden_fields(entry["paramsSchema"]),
         )
+
+    for name in missing_preview_pairs(routes):
+        routes.pop(name)
+        skipped[name] = "HTTP_CALL_PROFILE_UNSUPPORTED"
 
     return CatalogView(
         backend=_ping_backend(ping, socket_path),
@@ -302,6 +376,7 @@ __all__ = [
     "CatalogProblem",
     "CatalogView",
     "HTTP_CONTRACT_VERSION",
+    "PHASE_REASONS",
     "Route",
     "build_view",
     "canonical_digest",

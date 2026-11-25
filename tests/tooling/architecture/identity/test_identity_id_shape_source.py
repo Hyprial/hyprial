@@ -1,4 +1,8 @@
-"""Immutable-id segment grammar has one source of truth."""
+"""Immutable-id segment grammar has one source of truth.
+
+Decision: scan source ASTs one file at a time instead of retaining a full AST
+dictionary, removing the shard-2 4 GiB cgroup peak-memory spike.
+"""
 
 from __future__ import annotations
 
@@ -21,11 +25,9 @@ GATE_FILES = {
     SOURCE / "identity" / "impl" / "device" / "models.py",
     SOURCE / "daemon" / "impl" / "network" / "tailcat" / "keys.py",
     SOURCE / "identity" / "impl" / "agents" / "registry" / "_core.py",
-    SOURCE / "identity" / "impl" / "users" / "profile.py",
     SOURCE / "identity" / "impl" / "users" / "store" / "_store.py",
     SOURCE / "daemon" / "impl" / "pac" / "graphs" / "edits.py",
     SOURCE / "daemon" / "impl" / "bootstrap" / "adapter_registration.py",
-    SOURCE / "daemon" / "impl" / "application" / "actors" / "transfer.py",
 }
 PRIVATE_PREFIXES = {"u.", "d.", "a."}
 PRIVATE_REGEX_FRAGMENTS = ("ou_", "[a-z2-7]{26}", "[0-9a-f]{32}")
@@ -110,19 +112,14 @@ def _private_id_shape_checks(path: Path, tree: ast.AST) -> list[str]:
 
 
 def test_gate_modules_do_not_reimplement_private_id_shape_checks() -> None:
-    trees = {
-        path: ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for path in sorted(SOURCE.rglob("*.py"))
-    }
-    predicate_importers = {
-        path for path, tree in trees.items() if _imports_uri_predicates(tree)
-    }
-    targets = GATE_FILES | predicate_importers
-    assert not (missing := sorted(path for path in GATE_FILES if path not in trees)), missing
-    offenders = [
-        offender
-        for path in sorted(targets)
-        if path != URI_MODULE
-        for offender in _private_id_shape_checks(path, trees[path])
-    ]
+    seen = set()
+    offenders = []
+    for path in sorted(SOURCE.rglob("*.py")):
+        seen.add(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if path == URI_MODULE:
+            continue
+        if path in GATE_FILES or _imports_uri_predicates(tree):
+            offenders.extend(_private_id_shape_checks(path, tree))
+    assert not (missing := sorted(GATE_FILES - seen)), missing
     assert offenders == []

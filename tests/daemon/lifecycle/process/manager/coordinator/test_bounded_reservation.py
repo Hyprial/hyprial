@@ -17,7 +17,7 @@ from ..support import _CompletionPorts, _spec
 
 
 def test_reservation_timeout_reports_stable_receipt_and_recovers_after_restart(
-    tmp_path: Path,
+    tmp_path: Path, actor_host
 ) -> None:
     database = tmp_path / "bounded-reservation.sqlite3"
     router = CorrelationEventRouter()
@@ -26,6 +26,7 @@ def test_reservation_timeout_reports_stable_receipt_and_recovers_after_restart(
         database,
         LifecyclePorts(ports, ports, ports, ports),
         router,
+        actor_host=actor_host,
     )
     coordinator._reservation_timeout = 0.05
     operation = LifecycleOperation.create("stable-reservation", _spec())
@@ -83,6 +84,7 @@ def test_reservation_timeout_reports_stable_receipt_and_recovers_after_restart(
             database,
             LifecyclePorts(ports, ports, ports, ports),
             router,
+            actor_host=actor_host,
         )
         try:
             receipt = recovered.result(operation.operation_id)

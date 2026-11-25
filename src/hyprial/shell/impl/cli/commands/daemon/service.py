@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 from pathlib import Path
+import io
+import os
 import shutil
 import subprocess
 import sys
@@ -13,10 +15,12 @@ from typing import Any
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
+from hyprial.error import codes
 from hyprial.kernel import DaemonLaunchResult, ipc_errors
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.daemon.commands import daemon_app
+from hyprial.shell.impl.cli.commands.daemon.unit_observation import _startup_waiter
 from hyprial.shell.impl.cli.output import CliResult, confirm, render_generic
 
 
@@ -44,6 +48,81 @@ def _service_is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
+def _console_script_interpreter(script: Path) -> Path | None:
+    """The absolute, unresolved interpreter a console script's shebang names."""
+
+    try:
+        with io.FileIO(script, "rb") as handle:
+            first_line = handle.read(4096).split(b"\n", 1)[0]
+    except OSError:
+        return None
+    if not first_line.startswith(b"#!"):
+        return None
+    parts = first_line[2:].decode("utf-8", "replace").strip().split()
+    if not parts:
+        return None
+    interpreter = parts[0]
+    if Path(interpreter).name == "env" and len(parts) > 1:
+        resolved = shutil.which(parts[1])
+        if resolved is None:
+            return None
+        interpreter = resolved
+    return Path(os.path.abspath(interpreter))
+
+
+def _directory_resolved(path: Path) -> Path:
+    try:
+        return Path(os.path.realpath(path.parent)) / path.name
+    except OSError:
+        return path
+
+
+def _script_belongs_to(script: Path, interpreter: Path) -> bool:
+    """Whether a console script is this installation's: same interpreter file
+    (directories resolved, the final symlink never followed) or same ``bin``
+    directory. Another venv's script fails both even on a shared CPython.
+    """
+
+    named = _console_script_interpreter(script)
+    if named is not None and (
+        named == interpreter
+        or _directory_resolved(named) == _directory_resolved(interpreter)
+    ):
+        return True
+    return _directory_resolved(script).parent == _directory_resolved(interpreter).parent
+
+
+def _daemon_program() -> tuple[Path, tuple[str, ...]]:
+    """The program a unit should run for this installation.
+
+    Z-8b decision (2026-11-15, PR #2830): ``shutil.which("hyprial") or
+    sys.argv[0]`` could render another installation's script, or an arbitrary
+    argv[0], into a boot-persistent unit. The console script is used only when
+    it exists and its shebang interpreter is this process's interpreter;
+    every other shape runs ``[sys.executable, -m, hyprial.cli, daemon, run]``
+    so the unit loads this installation's own package and Rust engine.
+
+    Z-8 launchd acceptance fixes D1/D3 (2026-11-16): neither side is resolved.
+    A venv's ``bin/python`` is a symlink to the base CPython, and every venv
+    built on one CPython resolves to the same binary: resolving rendered an
+    interpreter without site-packages (D1) and accepted another installation's
+    script (D3). The shebang interpreter must equal the unresolved absolute
+    ``sys.executable``, which is what makes this venv's site-packages visible.
+    Directories (not the final symlink) are resolved for the comparison, so a
+    macOS ``/var`` vs ``/private/var`` or a symlinked checkout directory does
+    not reject this installation's own script; a script in the same ``bin``
+    directory is also its own.
+    """
+
+    interpreter = Path(os.path.abspath(sys.executable))
+    script = shutil.which("hyprial")
+    if script is not None:
+        script_path = Path(script).expanduser().resolve()
+        if _script_belongs_to(script_path, interpreter):
+            return script_path, ("daemon", "run")
+    return interpreter, ("-m", "hyprial.cli", "daemon", "run")
+
+
 def _serving_daemon_pid(timeout_seconds: float = 1.0) -> int | None:
     services = get_services()
     try:
@@ -60,7 +139,7 @@ def _service_manager():
     services = get_services()
     from hyprial.daemon import ServiceConfig, ServiceManager
 
-    executable = shutil.which("hyprial") or sys.argv[0]
+    executable, daemon_args = _daemon_program()
 
     def handoff() -> None:
         if _serving_daemon_pid() is not None:
@@ -68,13 +147,15 @@ def _service_manager():
 
     return ServiceManager(
         ServiceConfig(
-            executable=Path(executable).expanduser().resolve(),
+            executable=executable,
             home=Path.home(),
             hyprial_home=services._hyprial_home(),
             state_dir=services._state_dir(),
+            daemon_args=daemon_args,
         ),
         platform=_service_platform(),
         handoff_standalone=handoff,
+        await_startup=_startup_waiter(services._state_dir()),
     )
 
 
@@ -131,7 +212,15 @@ def _run_service(operation):  # type: ignore[no-untyped-def]
         ) from error
 
 
+_REVERT_DETAIL = {
+    "removed": "the unit was unloaded and its file removed",
+    "restored": "the previous unit was restored",
+    "unchanged": "the existing unit was left as it was",
+}
+
+
 def _install_status(manager: Any) -> JsonObject:
+    state = manager.capture_unit_state()
     installed = manager.install()
     observed = manager.wait_for_custody(_serving_daemon_pid)
     if hasattr(observed, "__dataclass_fields__"):
@@ -139,10 +228,22 @@ def _install_status(manager: Any) -> JsonObject:
     payload = _status_payload(observed)
     if observed.supervision != "supervised":
         services = get_services()
+        try:
+            reverted = manager.revert_install(state)
+        except RuntimeError as error:
+            raise services.CliError(
+                "SERVICE_SUPERVISION_LOST",
+                "service was installed but did not take custody of the serving "
+                f"daemon, and the install could not be reverted ({error}); run "
+                "`hyprial daemon service uninstall`",
+                {**payload, "install": {"supervision": "lost", "reverted": "failed"}},
+            ) from error
         raise services.CliError(
             "SERVICE_SUPERVISION_LOST",
-            "service was installed but did not take custody of the serving daemon",
-            payload,
+            "service was installed but did not take custody of the serving daemon; "
+            f"{_REVERT_DETAIL[reverted]}. Start the daemon with "
+            "`hyprial daemon start`.",
+            {**payload, "install": {"supervision": "lost", "reverted": reverted}},
         )
     return payload
 
@@ -177,6 +278,7 @@ def daemon_service_status(
             render=render_generic,
         ),
         json_output=json_output,
+        ensure_daemon=False,
     )
 
 
@@ -196,7 +298,7 @@ def daemon_service_install(
     def operation() -> CliResult:
         return CliResult(_run_service(install), render=render_generic)
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 @daemon_service_app.command("uninstall")
@@ -215,7 +317,7 @@ def daemon_service_uninstall(
     def operation() -> CliResult:
         return CliResult(_run_service(uninstall), render=render_generic)
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 def _manager_failure_reason(error: BaseException) -> str:
@@ -325,7 +427,7 @@ def restart_supervised_daemon(
         reason = _manager_failure_reason(error)
         if timeout_seconds is not None and reason == "supervisor-start-hard-cap":
             raise services.CliError(
-                ipc_errors.DAEMON_START_TIMEOUT,
+                codes.DAEMON_START_TIMEOUT,
                 "supervised daemon did not become ready within the hard cap of "
                 f"{timeout_seconds:g}s",
                 _lost_restart_data(before, reason),
@@ -342,7 +444,7 @@ def restart_supervised_daemon(
         status = after.last_exit_code
         suffix = f" with status {status}" if isinstance(status, int) else ""
         raise services.CliError(
-            ipc_errors.DAEMON_START_FAILED,
+            codes.DAEMON_START_FAILED,
             f"supervised daemon exited during startup{suffix}",
             _lost_restart_data(after, "supervisor-child-exited"),
         )
@@ -351,7 +453,7 @@ def restart_supervised_daemon(
         probe_timeout = min(2.0, max(0.0, restart_deadline - services.time.monotonic()))
         if probe_timeout <= 0:
             raise services.CliError(
-                ipc_errors.DAEMON_START_TIMEOUT,
+                codes.DAEMON_START_TIMEOUT,
                 "supervised daemon did not become ready within the hard cap of "
                 f"{timeout_seconds:g}s",
                 _lost_restart_data(after, "supervisor-start-hard-cap"),
@@ -366,7 +468,7 @@ def restart_supervised_daemon(
                 _lost_restart_data(after, "daemon-probe-failed"),
             ) from error
         raise services.CliError(
-            ipc_errors.DAEMON_START_TIMEOUT,
+            codes.DAEMON_START_TIMEOUT,
             "supervised daemon did not become ready within the hard cap of "
             f"{timeout_seconds:g}s",
             _lost_restart_data(after, "supervisor-start-hard-cap"),
@@ -435,6 +537,43 @@ def installed_supervisor() -> tuple[Any, Any] | None:
     return manager, status
 
 
+def _unattributed_unit_status() -> Any | None:
+    """The inspected status of a unit for this home that is not attributable
+    to this installation (installed or loaded), else None."""
+
+    try:
+        manager = _service_manager()
+        if not manager.unit_path.is_file():
+            return None
+        status = manager.inspect()
+    except (ServicePlatformUnsupported, RuntimeError, OSError, subprocess.TimeoutExpired):
+        return None
+    return None if status.attributed is True else status
+
+
+def unattributed_unit_notice(status: Any | None = None) -> str | None:
+    """Why a stop may be undone by a supervisor this CLI does not own, else None.
+
+    N1 (2026-11-16): a unit for this home that is installed or loaded but not
+    attributable (foreign, unsafe, or another installation's) is never stopped
+    by this CLI, yet its KeepAlive/Restart relaunches the daemon after an IPC
+    shutdown. The warning goes to stderr; KP-092 option B (owner, 2026-11-17)
+    adds the structured answer, ``unattributed_unit_fields``.
+    """
+
+    status = _unattributed_unit_status() if status is None else status
+    if status is None:
+        return None
+    state = "loaded" if status.loaded else "installed"
+    return (
+        f"warning: a supervisor unit for this home is {state} but not attributable "
+        f"to this installation ({status.unit_path}); the daemon was stopped over "
+        "IPC only and the supervisor may restart it. Inspect with "
+        "`hyprial daemon service status`."
+    )
+
+
+
 def _supervisor_command(manager: Any, command: tuple[str, ...], *, timeout: float) -> None:
     services = get_services()
     try:
@@ -465,7 +604,7 @@ def request_supervised_start(supervisor: tuple[Any, Any]) -> None:
             else ("launchctl", "bootstrap", f"gui/{manager.uid}", str(status.unit_path))
         )
     else:
-        command = ("systemctl", "--user", "start", "hyprial.service")
+        command = ("systemctl", "--user", "start", status.unit)
     _supervisor_command(manager, command, timeout=15.0)
 
 
@@ -516,6 +655,33 @@ def start_supervised_daemon(
     return DaemonLaunchResult.launched(ready)
 
 
+def _stop_detached_over_ipc(
+    expected_epoch: str | None, process_identity: str | None
+) -> JsonObject:
+    from hyprial.shell.impl.cli.commands.common.daemon_stop import _request_shutdown
+
+    answer = _request_shutdown(expected_epoch, None)
+    if isinstance(answer, dict) and process_identity is not None:
+        return {**answer, "processIdentity": process_identity}
+    return answer
+
+
+def _stop_unit(manager: Any, status: Any) -> None:
+    if manager.platform == "launchd":
+        if status.loaded:
+            _supervisor_command(
+                manager,
+                ("launchctl", "bootout", f"gui/{manager.uid}/{status.unit}"),
+                timeout=SUPERVISOR_STOP_TIMEOUT_SECONDS,
+            )
+    else:
+        _supervisor_command(
+            manager,
+            ("systemctl", "--user", "stop", status.unit),
+            timeout=SUPERVISOR_STOP_TIMEOUT_SECONDS,
+        )
+
+
 def stop_supervised_daemon(
     supervisor: tuple[Any, Any],
     *,
@@ -529,6 +695,17 @@ def stop_supervised_daemon(
     ``epoch``, ``stateDir``, ``lockPath``) so the caller's teardown/exit
     proof is unchanged.  The unit stays installed: the next ``daemon start``
     (or login) starts it again through the supervisor.
+
+    Z-8 launchd acceptance fix D2 (2026-11-16): the route follows who
+    supervises the serving daemon, not whether a unit is installed. A daemon
+    that answers with a pid other than the manager's main pid for this unit
+    (a detached daemon beside an installed-but-not-loaded unit) is stopped
+    over IPC ``shutdown`` exactly as without a unit; the manager is not asked
+    when the unit is not loaded, because bootout/stop would not reach it. A daemon that is the manager's
+    main pid, or no answering daemon at all, goes through the manager. When the
+    unit is loaded but is not the serving process (a relaunch would race the
+    detached daemon's exit), the unit is stopped first, then the detached
+    daemon over IPC.
 
     Every refusal happens before the supervisor is asked: an epoch mismatch,
     or (``require_known_pid``, the identity switch) a probe that named no
@@ -564,19 +741,12 @@ def stop_supervised_daemon(
     process_identity: str | None = None
     if pid is not None and pid > 0 and read_identity is not None:
         process_identity = read_identity(pid)
-    if manager.platform == "launchd":
-        if status.loaded:
-            _supervisor_command(
-                manager,
-                ("launchctl", "bootout", f"gui/{manager.uid}/{status.unit}"),
-                timeout=SUPERVISOR_STOP_TIMEOUT_SECONDS,
-            )
-    else:
-        _supervisor_command(
-            manager,
-            ("systemctl", "--user", "stop", "hyprial.service"),
-            timeout=SUPERVISOR_STOP_TIMEOUT_SECONDS,
-        )
+    detached = pid is not None and pid > 0 and getattr(status, "pid", None) != pid
+    if detached and not status.loaded:
+        return _stop_detached_over_ipc(expected_epoch, process_identity)
+    _stop_unit(manager, status)
+    if detached:
+        return _stop_detached_over_ipc(expected_epoch, process_identity)
     state_dir = Path(services._state_dir())
     return {
         "ok": True,
@@ -689,7 +859,14 @@ def daemon_service_doctor_check(
         failures.append(
             "the installed supervisor file differs from the rendered template"
         )
-    if status.installed and status.supervision == "lost":
+    stopped_on_request = (
+        status.installed
+        and status.attributed is True
+        and status.loaded is False
+        and status.running is False
+        and status.serving_pid is None
+    )
+    if status.installed and status.supervision == "lost" and not stopped_on_request:
         failures.append("the serving daemon is outside supervisor custody")
     if status.ownership_busy and (status.relaunch_count or 0) > 1:
         failures.append("the supervisor is relaunching after DAEMON_OWNERSHIP_BUSY")
@@ -712,6 +889,20 @@ def daemon_service_doctor_check(
                 "description": description,
             },
             "metrics": metrics,
+        }
+    if stopped_on_request:
+        return {
+            "name": "daemon-service",
+            "status": "warn",
+            "detail": (
+                "the service is installed and unloaded and no daemon is serving: "
+                "it was stopped on request (`hyprial daemon stop`)"
+            ),
+            "action": {
+                "command": "hyprial daemon start",
+                "description": "Start the daemon again through the installed service.",
+            },
+            "metrics": {**metrics, "reason": "stopped-on-request"},
         }
     if not status.installed:
         # Never installed => the daemon runs unsupervised.  That is not a fault

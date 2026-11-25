@@ -1,5 +1,9 @@
 # P4 Squire migration
 
+> Historical record. S3c (2026-11-24) deleted `state/users.json`, `UserProfileStore` and the
+> `channel:` squire endpoint described below; runtime capabilities now live in
+> `state/runtime-capabilities.json`. See `docs/guides/migration-remove-squire.md`.
+
 P4 migrates Squire v3 into the Python runtime as independently reviewable
 vertical slices. The first slice owns the local Squire identity and setup
 state; delivery, the five-function pack, and scheduling build on these public
@@ -136,15 +140,22 @@ send an app-scoped open_id through another app.
 `harness_send` and `hyprial message send --to user:<owner>` resolve a user target through
 the receiving daemon. The receiving daemon selects the profile's preferred
 machine, obtains the app-scoped owner open_id locally, and asks that user's own
-Squire adapter to send the DM. The sender's adapter never sees or reuses the
+Squire adapter to send the DM (one path the receiving side may take; this page
+documents the Squire adapter itself and promises no delivery route). The sender's adapter never sees or reuses the
 receiver's open_id.
 
 The delivered text begins with `来自我的侍从，转述自 <sender>` so the platform
-message is visibly a relay. If the receiving profile has no Squire adapter or
-owner binding, the operation fails with `TARGET_SQUIRE_UNCONFIGURED` and
-guidance that names `hyprial squire setup` as the remedy
-(`UNCONFIGURED_SQUIRE_MESSAGE`); a configured but unregistered adapter fails
-with `TARGET_SQUIRE_ADAPTER_UNAVAILABLE` after one registry refresh. No
+message is visibly a relay. If the receiving profile has no owner thread
+binding (phase B S10: `user:<owner>` is an alias of the owner's adapter
+thread), the operation fails with `TARGET_UNRESOLVED` and guidance that names
+`hyprial squire setup` as the remedy (`UNCONFIGURED_SQUIRE_MESSAGE`); a
+configured but unregistered adapter fails with `USER_DELIVERY_UNAVAILABLE`
+(definitely not sent) after one registry refresh, and an adapter send that
+raised fails with `USER_DELIVERY_FAILED` (maybe sent). Receivers older than
+S10 answered `TARGET_SQUIRE_UNCONFIGURED` / `TARGET_SQUIRE_ADAPTER_UNAVAILABLE`;
+S3b (2026-11-23, ruling §12.1.4) removed both from the registry, so a new node
+no longer recognises them and treats such a refusal as an ordinary unknown
+failure. No
 introduction gate, impersonation check, ACL, or owner-only policy is applied.
 
 Zenoh carries a receiver-owned delivery frame and a result receipt. Each
@@ -161,6 +172,6 @@ suppresses retry duplicates inside Lark's documented idempotency window. The
 persistent ledger handles completed operations across restart; the system does
 not claim unlimited exactly-once delivery after an ambiguous provider call.
 
-The profile's persisted v1 key remains `squireChannel` for TypeScript migration
-compatibility. Python routing exposes it as `squire_adapter`; `channel` in new
-code and documentation is reserved for IRC channels.
+S3a (2026-11-24) removed the profile's `squireChannel` key and the Python
+`squire_adapter` view: neither is read any more; see
+[the migration guide](../guides/migration-remove-squire.md).

@@ -74,7 +74,7 @@ caller. See [keygen ABI v1](../../../docs/notes/tailnet-keygen-abi-v1-20261022.m
 
 ```sh
 go vet ./...
-go test ./...
+go test ./... -timeout 20m
 go test -race ./internal/membership ./internal/membershiptest ./internal/engine ./internal/serve
 ```
 
@@ -91,3 +91,5 @@ fresh invites, live revocation, and concurrent control/mesh/service traffic to
 three servers. Membership unit tests cover restart, receipts, lease deadlines,
 backup failures, malformed stores, and operator safeguards. Stale Tailcat status
 entries are not proof of admission: revocation tests check actual stream closure.
+The full suite includes a real lease-expiry test; the 20-minute package timeout
+matches CI and allows the membership integration package to complete.

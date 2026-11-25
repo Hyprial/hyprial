@@ -34,12 +34,12 @@ NOT be trajectory fields.
 | `worker-turn` | `worker.turn.started` | `actorId`, `deliveryId`, `conversationId`, `sender`, `recipient` | A managed streaming worker began this message's native harness turn. |
 | `worker-turn` | `worker.turn.completed`, `worker.turn.failed`, `worker.turn.interrupted` | the worker-start fields; non-completed outcomes also carry `failure` | The managed turn closed with the named outcome. |
 | `worker-turn` | `worker.turn.skipped` | the worker-start fields; `reason` | The managed worker did not prompt a turn because the durable inbox row was no longer pending. `reason` is `already-consumed` (acked), `expired` (past its TTL) or `terminally-failed` (a terminal failure settlement). System notices are never checked. If the inbox projection cannot be read, the turn runs and the worker log records the diagnostic `worker.delivery_projection_unreadable` (once per failure kind); that diagnostic is not a trajectory node. |
-| `script-worker` | `script.ready` | `actorId`, `kind`, `pid`, `hyprialCommit`, `effectiveConfig`, `typesafeSdkVersion`, `scriptSha256`, `startupHash`, `credentialSource` | The packaged worker generation passed its validated ready frame. `credentialSource` is `environment` (injected `TYPESAFE_API_KEY`), `file` (read from `~/.config/typesafe/env`) or null. No credential value or path is persisted. |
+| `script-worker` | `script.ready` | `actorId`, `kind`, `pid`, `effectiveConfig`, `typesafeSdkVersion`, `scriptSha256`, `startupHash`, `credentialSource` | The packaged worker generation passed its validated ready frame. `credentialSource` is `environment` (injected `TYPESAFE_API_KEY`), `file` (read from `~/.config/typesafe/env`) or null. No credential value or path is persisted. |
 | `script-worker` | `script.metric` | ordinary delivery fields when an id is known; `kind`, `segment`, `durationMs`, `ok`, `inFlight`, `maxInFlight`, `queueDepth` | One of the `decode`, `call`, or `send` observations for a Jev call. State, answers, and provider bodies are excluded. |
 | `script-worker` | `script.error` | ordinary delivery fields when an id is known; `kind`, `stage`, `code`, `retryable`, `errorType` | Sanitized startup, protocol, decode, or call failure. Unknown delivery fields are omitted rather than fabricated. |
 | `delivery-terminal` | `outbox.pruned` | `recipient`, `reason`, `attempts` | The held message left the outbox through the existing prune path. |
 | `delivery-terminal` | `inbox.pruned` | `recipient`, `reason`, `createdAtMs`, `receivedAtMs` | An unconsumed inbox row was evicted by the TTL sweep (same node value as `outbox.pruned`). |
-| `delivery-terminal` | query-only `message.status.fetched`, `.expired`, `.pending`, `.unknown` | `source=message-status`; known records retain their status fields under `details.record` | Projection of `msg/status`; holder response health remains under status diagnostics and never rewrites a terminal record. It is not appended to a second store. |
+| `delivery-terminal` | query-only `message.status.fetched`, `.expired`, `.pending`, `.unknown` | `source=message-status`; known records retain their status fields under `details.record` | Projection of `msg/status`; holder response health remains under status diagnostics and never rewrites a terminal record. It is not appended to a second store. The IPC method is catalog-bound with the same projection. |
 
 Existing phase-0 `terminal.failure` and `alarm.*` records remain feedback
 events produced by `AlarmEmitter`, not phase-1 persisted path-node events.
@@ -51,7 +51,7 @@ session lifecycle events are agent-timeline annotations, not message-path
 nodes. `hyprial message trajectory` joins matching actor/name annotations within the
 message time window into `agentTimeline`; it never assigns them a message id.
 
-## Interactive carrier turn events (send-links, WP5-A)
+## Interactive carrier turn events
 
 Interactive carriers (pi attach, codex, claude) report turn boundaries over IPC
 and publish the same `turn.started`, `turn.completed` and `turn.failed` names as
@@ -69,7 +69,8 @@ the managed headless path, with these differences:
   interactive and a managed turn never interleave sequence numbers.
 
 The carrier never replies on its own; at turn end it asks `message.settle_hint`
-(`send-links.md` §8) and then acks only what the daemon answers `ack`.
+and then acks only what the daemon answers `ack`.  The carrier contract is
+defined in [`design-send-links-2026-10-14.md`](../../docs/design/design-send-links-2026-10-14.md) §8.1.
 
 ## Query and state projection
 

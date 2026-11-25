@@ -33,7 +33,7 @@ def _reply(
     *,
     message_id: str = "msg-bridge-reply",
     payload: bytes | None = None,
-    recipient: str = "channel:lark:squire",
+    recipient: str = "adapter:lark:squire",
 ) -> InboxMessage:
     return InboxMessage(
         message_id=message_id,
@@ -91,7 +91,7 @@ def test_bridge_success_dual_reads_the_current_adapter_lark_spelling(
     tmp_path: Path,
 ) -> None:
     """PAC NAMB efeeaf0a01ba dual-read: adapter:lark:squire reaches the same
-    real LarkReplyBridgeTransport delivery path as channel:lark:squire does
+    real LarkReplyBridgeTransport delivery path as adapter:lark:squire does
     in test_bridge_success_uses_adapter_native_reply_and_records_terminal_receipt
     above -- through the real InboxService, not a fake."""
 

@@ -1,0 +1,573 @@
+{
+  "contract": "hyprial.gui-session",
+  "sessionContractVersion": 1,
+  "description": "Machine corpus of the browser session contract between the GUI client and its same-origin host. README.md is the normative prose; this file is the single source for the vitest conformance suite, the pytest unit tests and the client test. Method names, catalog contents and upstream envelopes are not part of it.",
+  "versioning": {
+    "requestHeader": "x-hyprial-session-contract",
+    "requestHeaderAppliesTo": "POST /daemon/session",
+    "absentMeans": 1,
+    "responseField": "sessionContract",
+    "responseValue": { "version": 1, "min": 1, "max": 1 },
+    "responseFieldAbsentMeans": { "version": 1, "min": 1, "max": 1 },
+    "responseVersionMeans": "the version the host applied to this session: the client's declared version, 1 when none",
+    "headerValue": {
+      "wellFormed": "^[1-9][0-9]*$",
+      "malformed": ["abc", "1.0", "-1", "0", "", "a repeated header"],
+      "malformedIs": "refusal"
+    },
+    "checkOrder": "first step after the method and body checks on POST /daemon/session, both forms; before the grant check, the probe and consumption",
+    "refusal": {
+      "status": 409,
+      "code": "SESSION_CONTRACT_UNSUPPORTED",
+      "dispatch": "not-dispatched",
+      "data": ["min", "max"]
+    },
+    "compatibleChanges": ["add a response field", "add an error code inside an existing status class", "add a route (listed in routes, integer version unchanged)"],
+    "breakingChanges": ["remove or rename a field, header or cookie", "change a status or dispatch value", "change who supplies a value"]
+  },
+  "origin": {
+    "loopbackHostnames": ["localhost", "127.0.0.1", "::1"],
+    "hostPortMustEqualListenerPort": true,
+    "hostMayCarryUserinfoOrPath": false,
+    "originMustEqual": "http://<Host>",
+    "originMayBeAbsentOnlyOn": ["GET"],
+    "fetchSiteAccepted": ["same-origin", "none"],
+    "hostnameNormalisation": "WHATWG URL: hostname case-folded, port leading zeros dropped, no port or default port 80 is refused",
+    "originComparison": "exact string against the normalised origin of Host; an empty Origin is present and refused",
+    "emitsCorsHeaders": false,
+    "mustBindLoopbackOnly": true,
+    "scope": "every path the origin serves; the Node reference host applies it to /daemon/* only because Vite serves the other paths"
+  },
+  "lifetime": {
+    "controlExpiresAt": "fixed at mint: mintTime + sessionTtl; a refresh never extends it",
+    "sessionExpiresAt": "min(now + sessionTtl, control.expiresAt) at mint and at every refresh",
+    "expiredWhen": "expiresAt <= now",
+    "cookieMaxAge": "max(1, floor(remaining milliseconds of the value the cookie carries / 1000))"
+  },
+  "cookies": {
+    "control": { "name": "hyprial_gui_control" },
+    "session": { "name": "hyprial_gui_session" },
+    "attributes": ["Path=/daemon", "HttpOnly", "SameSite=Strict"],
+    "forbiddenAttributes": ["Secure", "Domain"],
+    "maxAgeMinimumSeconds": 1,
+    "valueEncoding": "percent-encoded; the first value of a duplicated name wins; an undecodable value is 400 INVALID_REQUEST",
+    "expiry": "Max-Age=0 with an empty value, both cookies, on logout"
+  },
+  "headers": {
+    "namesAreCaseInsensitive": true,
+    "emptyRequestHeaderValueMeansAbsent": true,
+    "toUpstream": ["accept", "content-type (with a body)", "x-hyprial-catalog-digest (the pin)", "x-hyprial-request-id (browser's when non-empty, else the host's)", "authorization"],
+    "hostFailureHasNoDispatchHeader": true,
+    "request": [
+      { "name": "x-hyprial-view", "meaning": "per-view proof, kept by the browser across reloads" },
+      { "name": "x-hyprial-generation", "meaning": "generation rotated by every handshake" },
+      { "name": "x-hyprial-csrf", "meaning": "CSRF value rotated with the generation; required for mutating methods and logout" },
+      { "name": "x-hyprial-catalog-digest", "meaning": "the digest the session pinned; a different value is 409 CATALOG_MISMATCH" },
+      { "name": "x-hyprial-request-id", "meaning": "browser request id, forwarded upstream when present" },
+      { "name": "x-hyprial-session-contract", "meaning": "contract version the client speaks; absent means 1" }
+    ],
+    "response": [
+      { "name": "x-hyprial-request-id", "meaning": "host-built: the envelope requestId; relayed: upstream body requestId, else upstream header, else absent" },
+      { "name": "x-hyprial-catalog-digest", "meaning": "host-built readiness and catalog: the pin; relayed: upstream header, else upstream body catalogDigest, else the pin" },
+      { "name": "x-hyprial-dispatch", "meaning": "relayed: upstream header, else body dispatch, else absent; never on a host-built response" }
+    ],
+    "hostResponseFixed": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    }
+  },
+  "limits": {
+    "sessionBodyBytes": 8192,
+    "methodBodyBytes": 131072,
+    "upstreamResponseBytes": 4194304,
+    "upstreamTimeoutMilliseconds": 15000,
+    "methodNamePattern": "^[a-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$"
+  },
+  "hostDefaults": {
+    "launchGrantTtlMilliseconds": 60000,
+    "sessionTtlMilliseconds": 43200000,
+    "ttlMillisecondsRange": [1000, 86400000],
+    "maxSessions": 32,
+    "maxSessionsRange": [1, 1024],
+    "launchGrantMinimumLength": 32
+  },
+  "launch": {
+    "grantCarrier": "url fragment #grant=<one-time grant>",
+    "grantUses": 1,
+    "checkOrder": ["invalid 403 LAUNCH_GRANT_INVALID", "used 409 LAUNCH_GRANT_USED", "expired 401 LAUNCH_GRANT_EXPIRED"],
+    "beforePublicationMarker": "expired: 401 LAUNCH_GRANT_EXPIRED",
+    "consumedBy": "a successful mint only; any refusal, including a failed upstream probe, leaves the grant usable",
+    "ttlStartsAt": "publication marker (launch.ready) when the launcher names one, otherwise host construction",
+    "removedAt": ["grant consumption", "grant expiry", "host close"],
+    "removedFiles": ["launch.url", "launch.ready"],
+    "jsonOutputMustNotContain": ["the grant", "the upstream bearer", "a URL carrying a credential"]
+  },
+  "principal": {
+    "anonymous-bootstrap": { "kind": "anonymous-bootstrap", "owner": null, "node": null, "actor": null },
+    "serving": { "kind": "serving", "owner": "<string>", "node": "<string>", "actor": "user:<owner>" },
+    "source": "the launcher's configuration, projected from the session phase; no request header, cookie, body or query field is consulted"
+  },
+  "routes": [
+    {
+      "id": "session.open",
+      "path": "/daemon/session",
+      "methods": ["POST"],
+      "forms": [
+        { "id": "grant", "body": { "grant": "<one-time grant>" }, "requires": [] },
+        { "id": "refresh", "body": {}, "requires": ["control cookie", "x-hyprial-view"] }
+      ],
+      "origin": "required",
+      "csrf": "never",
+      "bodyLimit": "sessionBodyBytes",
+      "response": "sessionResponse",
+      "setsCookies": ["control", "session"],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "HTTP_REQUEST_TOO_LARGE", "HTTP_UNSUPPORTED_MEDIA_TYPE", "INVALID_REQUEST",
+        "LAUNCH_GRANT_INVALID", "LAUNCH_GRANT_USED", "LAUNCH_GRANT_EXPIRED", "SESSION_REQUIRED", "SESSION_CAPACITY",
+        "SESSION_CONTRACT_UNSUPPORTED", "HTTP_NOT_READY", "UPSTREAM_AUTH_REJECTED", "PRINCIPAL_MISMATCH",
+        "UPSTREAM_CONTRACT_MISMATCH", "CATALOG_MISMATCH", "UPSTREAM_UNAVAILABLE", "UPSTREAM_INVALID_RESPONSE",
+        "UPSTREAM_RESPONSE_TOO_LARGE", "UPSTREAM_NOT_READY", "GUI_SESSION_CHANGED"
+      ]
+    },
+    {
+      "id": "session.status",
+      "path": "/daemon/session/status",
+      "methods": ["POST"],
+      "forms": [{ "id": "status", "body": {}, "requires": ["control cookie", "x-hyprial-view"] }],
+      "origin": "required",
+      "csrf": "never",
+      "bodyLimit": "sessionBodyBytes",
+      "response": "sessionStatusResponse",
+      "setsCookies": [],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "HTTP_REQUEST_TOO_LARGE", "HTTP_UNSUPPORTED_MEDIA_TYPE", "INVALID_REQUEST", "SESSION_REQUIRED"
+      ]
+    },
+    {
+      "id": "session.logout",
+      "path": "/daemon/session/logout",
+      "methods": ["POST"],
+      "forms": [
+        { "id": "logout", "body": {}, "requires": ["session cookie", "x-hyprial-view", "x-hyprial-generation", "x-hyprial-csrf"] }
+      ],
+      "origin": "required",
+      "csrf": "always",
+      "bodyLimit": "sessionBodyBytes",
+      "response": "logoutResponse",
+      "setsCookies": ["control", "session"],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "HTTP_REQUEST_TOO_LARGE", "HTTP_UNSUPPORTED_MEDIA_TYPE", "INVALID_REQUEST",
+        "SESSION_REQUIRED", "GENERATION_REJECTED", "CSRF_REJECTED"
+      ]
+    },
+    {
+      "id": "daemon.readyz",
+      "path": "/daemon/readyz",
+      "methods": ["GET"],
+      "forms": [{ "id": "read", "requires": ["session cookie", "x-hyprial-view", "x-hyprial-generation"] }],
+      "origin": "optional",
+      "csrf": "never",
+      "response": "relayed",
+      "setsCookies": [],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "SESSION_REQUIRED", "GENERATION_REJECTED", "CATALOG_MISMATCH", "UPSTREAM_UNAVAILABLE",
+        "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_RESPONSE_TOO_LARGE", "GUI_SESSION_CHANGED"
+      ]
+    },
+    {
+      "id": "daemon.catalog",
+      "path": "/daemon/request",
+      "methods": ["GET"],
+      "forms": [{ "id": "read", "requires": ["session cookie", "x-hyprial-view", "x-hyprial-generation"] }],
+      "origin": "optional",
+      "csrf": "never",
+      "response": "relayed",
+      "setsCookies": [],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "SESSION_REQUIRED", "GENERATION_REJECTED", "CATALOG_MISMATCH", "UPSTREAM_UNAVAILABLE",
+        "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_RESPONSE_TOO_LARGE", "GUI_SESSION_CHANGED"
+      ]
+    },
+    {
+      "id": "daemon.method",
+      "path": "/daemon/request/{method}",
+      "methods": ["POST"],
+      "forms": [{ "id": "call", "requires": ["session cookie", "x-hyprial-view", "x-hyprial-generation", "x-hyprial-csrf when the pinned catalog says mutates"] }],
+      "origin": "required",
+      "csrf": "mutating",
+      "bodyLimit": "methodBodyBytes",
+      "response": "relayed",
+      "setsCookies": [],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "HTTP_REQUEST_TOO_LARGE", "HTTP_UNSUPPORTED_MEDIA_TYPE", "INVALID_REQUEST",
+        "SESSION_REQUIRED", "GENERATION_REJECTED", "METHOD_NOT_FOUND", "METHOD_NOT_CALLABLE", "CATALOG_MISMATCH",
+        "CSRF_REJECTED", "UPSTREAM_UNAVAILABLE", "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_RESPONSE_TOO_LARGE",
+        "GUI_SESSION_CHANGED"
+      ]
+    },
+    {
+      "id": "session.attach",
+      "flag": "devTools",
+      "path": "/daemon/session/attach",
+      "methods": ["POST"],
+      "forms": [{"id": "attach", "body": {}, "requires": ["control cookie", "session cookie", "x-hyprial-view"]}],
+      "origin": "required",
+      "csrf": "never",
+      "bodyLimit": "sessionBodyBytes",
+      "response": "attachResponse",
+      "setsCookies": [],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "HTTP_REQUEST_TOO_LARGE", "HTTP_UNSUPPORTED_MEDIA_TYPE", "INVALID_REQUEST",
+        "SESSION_REQUIRED", "METHOD_NOT_FOUND"
+      ]
+    },
+    {
+      "id": "daemon.openapi",
+      "flag": "devTools",
+      "driver": "daemon",
+      "path": "/daemon/openapi.json",
+      "methods": ["GET"],
+      "forms": [{"id": "read", "requires": ["session cookie", "x-hyprial-view", "x-hyprial-generation"]}],
+      "origin": "optional",
+      "csrf": "never",
+      "response": "projected upstream schema",
+      "setsCookies": [],
+      "emits": [
+        "HTTP_METHOD_NOT_ALLOWED", "SESSION_REQUIRED", "GENERATION_REJECTED", "METHOD_NOT_FOUND", "HTTP_NOT_READY",
+        "UPSTREAM_AUTH_REJECTED", "UPSTREAM_UNAVAILABLE", "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_RESPONSE_TOO_LARGE",
+        "UPSTREAM_NOT_READY", "GUI_SESSION_CHANGED"
+      ]
+    },
+    {
+      "id": "daemon.other",
+      "path": "/daemon/{anything else}",
+      "methods": ["*"],
+      "forms": [],
+      "origin": "required-unless-GET",
+      "csrf": "never",
+      "response": "hostError",
+      "setsCookies": [],
+      "emits": ["METHOD_NOT_FOUND", "INVALID_REQUEST"]
+    }
+  ],
+  "queryStrings": {
+    "session.open": "ignored", "session.status": "ignored", "session.logout": "ignored",
+    "daemon.readyz": "dropped before relay (the upstream sees /readyz)",
+    "daemon.catalog": "forwarded verbatim", "daemon.method": "forwarded verbatim",
+    "session.attach": "ignored", "daemon.openapi": "dropped before the upstream read (the upstream sees /openapi.json)"
+  },
+  "requestTarget": "WHATWG URL parse of origin-form or absolute-form; dot segments (incl. %2e) normalised not rejected; %2F not a separator; trailing slash is another path; no other percent-decoding",
+  "routeCheckOrder": {
+    "session.open": ["method", "content-type", "size", "json", "object", "shape", "contract version", "grant: invalid, used, expired | refresh: control cookie and view present, control valid", "probe", "authority re-check", "consume", "mint"],
+    "session.status": ["method", "content-type", "size", "json", "object", "empty object", "control valid"],
+    "session.logout": ["method", "content-type", "size", "json", "object", "authenticate", "csrf"],
+    "daemon.readyz": ["method", "authenticate", "digest pin", "relay or synthesise", "authority re-check"],
+    "daemon.catalog": ["method", "authenticate", "digest pin", "relay or synthesise", "authority re-check"],
+    "daemon.method": ["method", "authenticate", "not in catalog", "not callable", "digest pin", "csrf when mutates", "content-type", "size", "json", "object", "authority re-check", "authenticate", "relay", "authority re-check"],
+    "session.attach": ["flag", "method", "content-type", "size", "json", "object", "empty object", "control valid", "session of that control"],
+    "daemon.openapi": ["flag and driver", "method", "authenticate", "upstream read", "projection", "authority re-check"]
+  },
+  "everyDaemonRoute": {
+    "checksInOrder": ["route classification", "Host", "Origin", "Fetch Metadata", "host authority", "route"],
+    "emits": ["HTTP_HOST_DENIED", "ORIGIN_REQUIRED", "ORIGIN_REJECTED", "GUI_AUTHORITY_UNAVAILABLE", "HOST_INTERNAL_ERROR"]
+  },
+  "mockDriver": {
+    "phase": "ready",
+    "requiresServingPrincipal": true,
+    "methods": { "callable": true, "state": "available", "mutates": "wire boolean, else true; never the host's own declarations, never false by guess" },
+    "backendEpoch": "contract-mock:<contractDigest>",
+    "declarationDigestEqualsCatalogDigest": true,
+    "synthesised": ["GET /daemon/readyz", "GET /daemon/request"]
+  },
+  "static": {
+    "resources": ["/", "assets/*", "single-page fallback to index.html", "/__gui/healthz"],
+    "everythingElseOutsideDaemon": "not served",
+    "developerTools": {
+      "flag": "devTools",
+      "enabledBy": "the host argument --dev-tools only; no environment variable, cookie, header, query or storage key",
+      "sessionField": {"name": "devTools", "value": {"apiDocs": "<bool>"}, "absentMeans": "no developer tools"},
+      "apiDocs": "true only for the daemon driver with the API docs files present",
+      "gatedPrefix": "dev-tools/* (first path segment compared case-folded after one percent-decoding)",
+      "withoutFlag": {
+        "dev-tools/*": "404 NOT_FOUND, never the single-page fallback",
+        "/docs-assets/*": "404 NOT_FOUND",
+        "/docs": "the single-page fallback, like any other path without an extension; in front of a live source 404 NOT_FOUND, never relayed"
+      },
+      "withFlag": {
+        "dev-tools/*": "served, Cache-Control: no-store; a missing file is 404 NOT_FOUND, never the fallback",
+        "/docs": "with apiDocs: the host's API docs document; otherwise as without the flag",
+        "/docs-assets/*": "with apiDocs: hyprial-docs.js, swagger-ui-bundle.js, swagger-ui.css; anything else, or without apiDocs, 404 NOT_FOUND"
+      },
+      "docsDocumentHeaders": ["content-security-policy", "x-frame-options: DENY", "x-content-type-options: nosniff", "cache-control: no-store"],
+      "docsDocumentInput": "sessionStorage key hyprial.gui.session-view, inherited from the opener; without it the document navigates to / and makes no request",
+      "healthzField": "devTools",
+      "readyLineFields": ["devTools", "apiDocs"]
+    },
+    "healthz": {
+      "path": "/__gui/healthz",
+      "method": "GET",
+      "requiredFields": ["ok", "service", "mode", "dataMode", "driver", "backendConfigured", "session"],
+      "carriesBusinessData": false
+    }
+  },
+  "envelope": {
+    "schemaVersion": 1,
+    "hostFailureKeys": ["schemaVersion", "ok", "requestId", "code", "message", "dispatch"],
+    "hostFailureOptionalKeys": ["method", "data"],
+    "requestIdPrefix": "gui-",
+    "dispatchValues": ["not-dispatched", "dispatched", "unknown"],
+    "relayedEnvelopes": "opaque bytes, governed by contract/http-request and contract/daemon-request",
+    "relayedMethodEnvelopeChecks": "schemaVersion 1, ok boolean, requestId non-empty, dispatch in dispatchValues, method equals the requested name; else 502 UPSTREAM_INVALID_RESPONSE",
+    "methodFieldOnFailure": "every failure on /daemon/request/<x> (non-empty x) carries method x; no other route does",
+    "relayedResponseHeaders": ["content-type", "cache-control", "x-content-type-options", "x-hyprial-request-id", "x-hyprial-catalog-digest", "x-hyprial-dispatch"]
+  },
+  "errors": [
+    { "code": "INVALID_REQUEST", "status": [400], "dispatch": ["not-dispatched"], "when": "malformed body, cookie encoding or request target" },
+    { "code": "SESSION_REQUIRED", "status": [401], "dispatch": ["not-dispatched"], "when": "missing, expired, revoked or view-mismatched session" },
+    { "code": "LAUNCH_GRANT_EXPIRED", "status": [401], "dispatch": ["not-dispatched"], "when": "the one-time grant outlived its TTL" },
+    { "code": "HTTP_HOST_DENIED", "status": [403], "dispatch": ["not-dispatched"], "when": "Host is absent or does not name this loopback listener" },
+    { "code": "ORIGIN_REQUIRED", "status": [403], "dispatch": ["not-dispatched"], "when": "a non-GET request without Origin" },
+    { "code": "ORIGIN_REJECTED", "status": [403], "dispatch": ["not-dispatched"], "when": "Origin differs from the listener or Sec-Fetch-Site is cross-site" },
+    { "code": "LAUNCH_GRANT_INVALID", "status": [403], "dispatch": ["not-dispatched"], "when": "the grant is not the launcher's" },
+    { "code": "GENERATION_REJECTED", "status": [403], "dispatch": ["not-dispatched"], "when": "a retired generation" },
+    { "code": "CSRF_REJECTED", "status": [403], "dispatch": ["not-dispatched"], "when": "missing or retired CSRF value on a mutating call or logout" },
+    { "code": "METHOD_NOT_FOUND", "status": [404], "dispatch": ["not-dispatched"], "when": "the method is not in the pinned catalog, or an unknown /daemon path" },
+    { "code": "HTTP_METHOD_NOT_ALLOWED", "status": [405], "dispatch": ["not-dispatched"], "when": "wrong HTTP method for the route" },
+    { "code": "LAUNCH_GRANT_USED", "status": [409], "dispatch": ["not-dispatched"], "when": "the one-time grant was already consumed" },
+    { "code": "METHOD_NOT_CALLABLE", "status": [409], "dispatch": ["not-dispatched"], "when": "present in the pinned catalog but not callable" },
+    { "code": "GUI_SESSION_CHANGED", "status": [409], "dispatch": ["not-dispatched", "unknown"], "when": "the host authority changed while the request was in flight; unknown after a write was sent" },
+    { "code": "SESSION_CONTRACT_UNSUPPORTED", "status": [409], "dispatch": ["not-dispatched"], "when": "the client's contract version header is malformed (abc, 1.0, empty, repeated, sign or leading zero) or outside [min, max]; data carries min and max" },
+    { "code": "HTTP_UNSUPPORTED_MEDIA_TYPE", "status": [415], "dispatch": ["not-dispatched"], "when": "Content-Type is not application/json" },
+    { "code": "HTTP_REQUEST_TOO_LARGE", "status": [413], "dispatch": ["not-dispatched"], "when": "the body exceeds the route's limit" },
+    { "code": "SESSION_CAPACITY", "status": [429], "dispatch": ["not-dispatched"], "when": "defensive: the host session capacity is exhausted" },
+    { "code": "HOST_INTERNAL_ERROR", "status": [500], "dispatch": ["not-dispatched"], "when": "an unexpected host fault" },
+    { "code": "UPSTREAM_AUTH_REJECTED", "status": [502], "dispatch": ["not-dispatched"], "when": "the upstream refused the host's credential" },
+    { "code": "PRINCIPAL_MISMATCH", "status": [502], "dispatch": ["not-dispatched"], "when": "the upstream identity differs from the launcher's principal" },
+    { "code": "UPSTREAM_CONTRACT_MISMATCH", "status": [502], "dispatch": ["not-dispatched"], "when": "the upstream readiness or catalog payload is not the served contract" },
+    { "code": "CATALOG_MISMATCH", "status": [409, 502], "dispatch": ["not-dispatched"], "when": "409: the browser digest differs from the pin; 502: upstream digests disagree" },
+    { "code": "UPSTREAM_UNAVAILABLE", "status": [502, 503], "dispatch": ["not-dispatched", "unknown"], "when": "the upstream could not be reached or read; unknown for a write that may have been sent" },
+    { "code": "UPSTREAM_INVALID_RESPONSE", "status": [502], "dispatch": ["not-dispatched", "unknown"], "when": "the upstream returned a body that is not a valid envelope" },
+    { "code": "UPSTREAM_RESPONSE_TOO_LARGE", "status": [502], "dispatch": ["not-dispatched", "unknown"], "when": "the upstream response exceeded the host limit" },
+    { "code": "UPSTREAM_NOT_READY", "status": [502], "dispatch": ["not-dispatched"], "when": "the upstream refused the probe with a status other than 401, 403, 503 and no code of its own; an upstream code, when present, replaces this one (any non-empty string, so the 502 class is open) and data.upstreamCode repeats it" },
+    { "code": "GUI_AUTHORITY_UNAVAILABLE", "status": [503], "dispatch": ["not-dispatched"], "when": "the host authority source failed or no longer serves" },
+    { "code": "HTTP_NOT_READY", "status": [503], "dispatch": ["not-dispatched"], "when": "the upstream is not ready; data.upstreamCode (the upstream's code) is present only when the upstream answered 503, never on the direct not-ready refusals" }
+  ],
+  "schemas": {
+    "sessionResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": ["schemaVersion", "ok", "requestId", "driver", "phase", "view", "generation", "csrf", "expiresAt", "principal", "catalog"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "ok": { "const": true },
+        "requestId": { "$ref": "#/$defs/text" },
+        "driver": { "enum": ["daemon", "contract-mock"] },
+        "phase": { "enum": ["bootstrap", "ready"] },
+        "view": { "$ref": "#/$defs/text" },
+        "generation": { "$ref": "#/$defs/text" },
+        "csrf": { "$ref": "#/$defs/text" },
+        "expiresAt": { "type": "integer", "minimum": 1 },
+        "principal": { "oneOf": [{ "$ref": "#/$defs/anonymousPrincipal" }, { "$ref": "#/$defs/servingPrincipal" }] },
+        "catalog": { "$ref": "#/$defs/catalog" },
+        "sessionContract": { "$ref": "#/$defs/sessionContract" },
+        "devTools": {
+          "type": "object",
+          "required": ["apiDocs"],
+          "properties": { "apiDocs": { "type": "boolean" } }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "phase": { "const": "bootstrap" } } },
+          "then": { "properties": { "principal": { "$ref": "#/$defs/anonymousPrincipal" } } }
+        },
+        {
+          "if": { "properties": { "phase": { "const": "ready" } } },
+          "then": { "properties": { "principal": { "$ref": "#/$defs/servingPrincipal" } } }
+        }
+      ],
+      "$defs": {
+        "text": { "type": "string", "minLength": 1 },
+        "anonymousPrincipal": {
+          "type": "object",
+          "required": ["kind", "owner", "node", "actor"],
+          "properties": {
+            "kind": { "const": "anonymous-bootstrap" },
+            "owner": { "type": "null" },
+            "node": { "type": "null" },
+            "actor": { "type": "null" }
+          }
+        },
+        "servingPrincipal": {
+          "type": "object",
+          "required": ["kind", "owner", "node", "actor"],
+          "properties": {
+            "kind": { "const": "serving" },
+            "owner": { "$ref": "#/$defs/text" },
+            "node": { "$ref": "#/$defs/text" },
+            "actor": { "type": "string", "pattern": "^user:.+$" }
+          }
+        },
+        "method": {
+          "type": "object",
+          "required": ["name", "callable", "state", "mutates"],
+          "properties": {
+            "name": { "$ref": "#/$defs/text" },
+            "callable": { "type": "boolean" },
+            "state": { "$ref": "#/$defs/text" },
+            "mutates": { "type": "boolean" }
+          }
+        },
+        "catalog": {
+          "type": "object",
+          "required": ["digest", "declarationDigest", "backendEpoch", "httpContractVersion", "catalogVersion", "methodCount", "methods"],
+          "properties": {
+            "digest": { "$ref": "#/$defs/text" },
+            "declarationDigest": { "$ref": "#/$defs/text" },
+            "backendEpoch": { "$ref": "#/$defs/text" },
+            "httpContractVersion": { "type": "integer", "minimum": 1 },
+            "catalogVersion": { "$ref": "#/$defs/text" },
+            "methodCount": { "type": "integer", "minimum": 0 },
+            "methods": { "type": "array", "items": { "$ref": "#/$defs/method" } }
+          }
+        },
+        "sessionContract": {
+          "type": "object",
+          "required": ["version", "min", "max"],
+          "properties": {
+            "version": { "type": "integer", "minimum": 1 },
+            "min": { "type": "integer", "minimum": 1 },
+            "max": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "attachResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": ["schemaVersion", "ok", "requestId", "generation", "csrf", "expiresAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "ok": { "const": true },
+        "requestId": { "type": "string", "minLength": 1 },
+        "generation": { "type": "string", "minLength": 1 },
+        "csrf": { "type": "string", "minLength": 1 },
+        "expiresAt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "sessionStatusResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": ["schemaVersion", "ok", "requestId", "current"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "ok": { "const": true },
+        "requestId": { "type": "string", "minLength": 1 },
+        "current": { "type": "boolean" }
+      }
+    },
+    "logoutResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": ["schemaVersion", "ok", "requestId", "revoked"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "ok": { "const": true },
+        "requestId": { "type": "string", "minLength": 1 },
+        "revoked": { "const": true }
+      }
+    },
+    "hostError": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": ["schemaVersion", "ok", "requestId", "code", "message", "dispatch"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "ok": { "const": false },
+        "requestId": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+        "message": { "type": "string", "minLength": 1 },
+        "dispatch": { "enum": ["not-dispatched", "dispatched", "unknown"] },
+        "method": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "examples": {
+    "sessionResponseReady": {
+      "schemaVersion": 1,
+      "ok": true,
+      "requestId": "gui-00000000-0000-4000-8000-000000000001",
+      "driver": "daemon",
+      "phase": "ready",
+      "view": "view-proof",
+      "generation": "generation-1",
+      "csrf": "csrf-1",
+      "expiresAt": 1763200000000,
+      "principal": { "kind": "serving", "owner": "owner", "node": "node", "actor": "user:owner" },
+      "catalog": {
+        "digest": "sha256:catalog",
+        "declarationDigest": "sha256:declarations",
+        "backendEpoch": "daemon-epoch",
+        "httpContractVersion": 1,
+        "catalogVersion": "1",
+        "methodCount": 2,
+        "methods": [
+          { "name": "agent.list", "callable": true, "state": "available", "mutates": false },
+          { "name": "agent.create", "callable": true, "state": "available", "mutates": true }
+        ]
+      },
+      "sessionContract": { "version": 1, "min": 1, "max": 1 }
+    },
+    "sessionResponseBootstrap": {
+      "schemaVersion": 1,
+      "ok": true,
+      "requestId": "gui-00000000-0000-4000-8000-000000000002",
+      "driver": "daemon",
+      "phase": "bootstrap",
+      "view": "view-proof",
+      "generation": "generation-1",
+      "csrf": "csrf-1",
+      "expiresAt": 1763200000000,
+      "principal": { "kind": "anonymous-bootstrap", "owner": null, "node": null, "actor": null },
+      "catalog": {
+        "digest": "sha256:catalog",
+        "declarationDigest": "sha256:declarations",
+        "backendEpoch": "daemon-epoch",
+        "httpContractVersion": 1,
+        "catalogVersion": "1",
+        "methodCount": 0,
+        "methods": []
+      }
+    },
+    "sessionStatusResponse": {
+      "schemaVersion": 1,
+      "ok": true,
+      "requestId": "gui-00000000-0000-4000-8000-000000000003",
+      "current": true
+    },
+    "logoutResponse": {
+      "schemaVersion": 1,
+      "ok": true,
+      "requestId": "gui-00000000-0000-4000-8000-000000000004",
+      "revoked": true
+    },
+    "attachResponse": {
+      "schemaVersion": 1,
+      "ok": true,
+      "requestId": "gui-00000000-0000-4000-8000-000000000006",
+      "generation": "generation-1",
+      "csrf": "csrf-1",
+      "expiresAt": 1763200000000
+    },
+    "hostError": {
+      "schemaVersion": 1,
+      "ok": false,
+      "requestId": "gui-00000000-0000-4000-8000-000000000005",
+      "code": "CSRF_REJECTED",
+      "message": "the mutation CSRF value is missing or no longer current",
+      "dispatch": "not-dispatched",
+      "method": "agent.create"
+    }
+  }
+}

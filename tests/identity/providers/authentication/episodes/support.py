@@ -5,7 +5,8 @@ from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAut
 from hyprial.identity.impl.provider_auth.coordinator._base import (
     REASON_PROVIDER_AUTH_INVALID,
 )
-from hyprial.identity.impl.users.profile import RuntimeCapability, UserProfileStore
+from hyprial.identity import RuntimeCapability, RuntimeCapabilityStore
+from tests.support.actor_hosts import new_actor_host
 
 FAILURE = "OAuth refresh failed for kimi-coding: Kimi Code token refresh unauthorized (status 400): The provided authorization grant is invalid"
 ACCOUNT_FAILURE = (
@@ -58,23 +59,16 @@ def _authority(
     notifier=lambda *args, **kwargs: None,
     **options,
 ):
-    store = UserProfileStore(tmp_path / "users.json")
-    store.ensure(
-        owner="alice",
-        owner_key="alice-key",
-        login_name="alice",
-        machine="node",
-        machine_key="node-key",
-    )
+    store = RuntimeCapabilityStore(tmp_path / "state" / "runtime-capabilities.json")
     return ProviderAuthAuthority(
-        profile_store=store,
+        capability_store=store,
         owner_key="alice-key",
         notifier=notifier,
         helper_runner=runner,
         auth_path=tmp_path / "auth.json",
         host="node",
         stop=threading.Event(),
-        **options,
+        **options, actor_host=new_actor_host(),
     )
 
 
@@ -92,7 +86,7 @@ def _mark_provider(actor, provider, model):
     combos = actor._core._combos_for_provider(provider)
     assert combos, (provider, model)
     for harness, marked_provider, marked_model in combos:
-        actor._core._store.set_runtime_capability(
+        actor._core._store.set(
             "alice-key",
             RuntimeCapability(
                 harness=harness,

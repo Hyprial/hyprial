@@ -11,7 +11,7 @@ import os
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
-from hyprial.shell.impl.cli.commands.common.support import JsonObject, _local_operator_identity
+from hyprial.shell.impl.cli.commands.common.support import JsonObject
 user_auth_app = group(
     help=(
         "Watch the lark-cli USER credential: detect expiry, walk the device "
@@ -61,15 +61,8 @@ def _lark_auth_send(sender: str, route: str, text: str) -> None:
     services = get_services()
 
     services.runtime.request(
-        "message.send",
-        {
-            "from": _local_operator_identity(),
-            "onBehalfOf": sender,
-            "to": [route],
-            "message": text,
-            # The handoff text is the body; the summary is this fixed line.
-            "summary": "Lark 用户授权已过期，请按正文完成交接",
-        },
+        "adapter.routes.send",
+        {"route": route, "message": text, "sender": sender},
     )
 
 
@@ -101,11 +94,15 @@ def _lark_auth_timer_check() -> JsonObject | None:
             record["notified"] = result.notified
             if result.notify_route is not None:
                 record["notifyRoute"] = result.notify_route
-            if result.error is not None:
-                record["notifyError"] = result.error
+        if result.error is not None:
+            record["notifyError"] = result.error
         return record
     except Exception as error:  # noqa: BLE001 - the timer must not fail on this
-        return {"status": "error", "error": type(error).__name__}
+        record = {"status": "error", "error": type(error).__name__}
+        code = getattr(error, "code", None)
+        if isinstance(code, str):
+            record.update(code=code, message=str(error))
+        return record
 
 
 @user_auth_app.command("check")
@@ -113,7 +110,8 @@ def lark_auth_check(
     notify_route: str | None = typer.Option(
         None,
         "--notify-route",
-        help="route:<adapter>:<route> that receives the authorization link. "
+        help="Adapter route name (as in `hyprial adapter route list`) that "
+        "receives the authorization link. "
         "Precedence: this flag > $HYPRIAL_LARK_REAUTH_NOTIFY_ROUTE > the route "
         "remembered from an earlier run. Without one, the link only lands in "
         "the local state file and this command's output.",
@@ -177,6 +175,14 @@ def lark_auth_check(
                 f"lark-cli 用户凭据需要重新授权,链接已生成({where}):\n"
                 f"{result.verification_url}\n"
                 "人点完后运行 `hyprial adapter user-auth complete` 收尾。",
+                json_output=json_output,
+            )
+        if result.error == reauth.RETIRED_NOTIFY_ROUTE:
+            warn(
+                "the remembered notify route is a retired route:<adapter>:<route> "
+                "address, so no notice is sent; pass the route name alone with "
+                "--notify-route (for example dm) to replace it. See "
+                "docs/guides/migration-route-uri-retired.md.",
                 json_output=json_output,
             )
         return result.to_json()

@@ -55,7 +55,7 @@ DECLARED_EVENTS = {
 }
 
 
-def _manager(tmp_path, *, controller=None, state=None) -> ServiceManager:
+def _manager(tmp_path, *, actor_host, controller=None, state=None) -> ServiceManager:
     access = tmp_path / "state" / "tailcat" / "service-access.json"
     write_access(access)
     return ServiceManager(
@@ -66,18 +66,19 @@ def _manager(tmp_path, *, controller=None, state=None) -> ServiceManager:
         access_path=access,
         scheduler=ManualScheduler(),
         service_discovery=lambda: (CATALOG_ENTRY_PAYLOAD,),
+        actor_host=actor_host,
     )
 
 
 def test_every_declared_event_is_emitted_at_its_operational_site(
-    tmp_path, caplog, monkeypatch
+    actor_host, tmp_path, caplog, monkeypatch
 ) -> None:
     caplog.set_level(
         logging.INFO, logger="hyprial.daemon.impl.service_connect.manager"
     )
 
     controller = FakeController()
-    manager = _manager(tmp_path / "active", controller=controller)
+    manager = _manager(tmp_path / "active", controller=controller, actor_host=actor_host)
     try:
         manager.reconcile()
 
@@ -125,7 +126,7 @@ def test_every_declared_event_is_emitted_at_its_operational_site(
     state.set_service_connection("api", 18080)
     controller = FakeController()
     controller.fail_map = RuntimeError("private controller diagnostic")
-    restoring = _manager(tmp_path / "restore", controller=controller, state=state)
+    restoring = _manager(tmp_path / "restore", controller=controller, state=state, actor_host=actor_host)
     try:
         restoring.reconcile()
     finally:
@@ -168,7 +169,7 @@ class _CliServices:
 
 
 @pytest.fixture
-def leak_surfaces(tmp_path, caplog, monkeypatch) -> dict[str, str]:
+def leak_surfaces(actor_host, tmp_path, caplog, monkeypatch) -> dict[str, str]:
     caplog.set_level(
         logging.INFO, logger="hyprial.daemon.impl.service_connect.manager"
     )
@@ -185,7 +186,7 @@ def leak_surfaces(tmp_path, caplog, monkeypatch) -> dict[str, str]:
             }
         ),
     }
-    manager = _manager(tmp_path / "manager", controller=controller)
+    manager = _manager(tmp_path / "manager", controller=controller, actor_host=actor_host)
     ipc_values: list[object] = []
     try:
         connected = manager.handle("service.connect", {"name": "api"})

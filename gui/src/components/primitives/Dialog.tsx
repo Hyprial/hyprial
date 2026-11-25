@@ -7,6 +7,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, type ButtonVariant } from './Button';
+import { Icon } from './Icon';
 import { cx } from './types';
 
 export interface DialogAction {
@@ -83,6 +84,7 @@ export function Dialog({
     initialTarget?.focus({ preventScroll: true });
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === 'Escape' && closeOnEscape) {
         event.preventDefault();
         onCloseRef.current();
@@ -153,7 +155,7 @@ export function Dialog({
             aria-label={closeLabel}
             onClick={onClose}
           >
-            <span aria-hidden="true">×</span>
+            <Icon name="x" size="sm" />
           </button>
         </div>
         {description && (

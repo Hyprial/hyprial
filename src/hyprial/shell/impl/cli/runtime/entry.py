@@ -1,3 +1,8 @@
+# Decision record (W1E-2, 2026-11-21):
+# - main() applies the private process umask (0o077 on POSIX, no-op on Windows)
+#   once at process entry via apply_process_umask, covering both interactive CLI
+#   commands and every real ``hyprial daemon run`` child process (detached
+#   start, launchd/systemd service, and manual foreground run).
 """Native Shell process entry for Harness Bridge.
 
 The entry owns argv, previous-release machine rewrites, the process exit and
@@ -36,10 +41,12 @@ try:  # Abort moved out of Typer's vendored exceptions in 0.27.2.
 except ImportError:  # pragma: no cover - compatibility across Typer layouts
     from click import Abort as TyperAbort
 
-from hyprial.kernel import RequestPortError, ipc_errors
+from hyprial.error import codes
+from hyprial.kernel import RequestPortError
 from hyprial.shell.impl.cli.commands.common import support
 from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell import worker_session_binding
+from hyprial.shell.impl.worker_context import apply_process_umask
 from hyprial.shell.impl.cli.output import report_error
 from hyprial.shell.impl.cli.runtime.composition import CliRuntime
 from hyprial.shell.impl.cli.runtime.machine_argv import (
@@ -66,6 +73,7 @@ install_services(runtime)
 def main() -> None:
     """Installed ``hyprial`` entry point."""
 
+    apply_process_umask()
     raw_argv = tuple(sys.argv[1:])
     compatibility = resolve_machine_compatibility(raw_argv)
     if compatibility is not None and compatibility.target == "mcp":
@@ -80,10 +88,11 @@ def main() -> None:
         exit_code = app(
             args=list(effective_argv) if compatibility is not None else None,
             standalone_mode=False,
+            obj={"interpreterOwned": True},
         )
     except TyperClickException as error:
         report_error(
-            RequestPortError(ipc_errors.INVALID_ARGUMENT, error.format_message()),
+            RequestPortError(codes.INVALID_ARGUMENT, error.format_message()),
             json_output=json_output,
         )
         raise SystemExit(error.exit_code) from error

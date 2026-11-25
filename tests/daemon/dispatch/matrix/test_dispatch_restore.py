@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.daemon.impl.dispatch import matrix
-from hyprial.daemon.impl.squire import probe
+from hyprial.daemon.impl.harnesses import probe
 
 
 @pytest.mark.parametrize(
@@ -14,7 +14,7 @@ from hyprial.daemon.impl.squire import probe
      probe.ProbeRun(None, "missing"), probe.ProbeRun(0, "ok", timed_out=True)],
 )
 def test_diagnose_uses_f2_verdict_without_writing_or_selecting(run, monkeypatch):
-    monkeypatch.setattr(matrix, "active_profile", lambda: None)
+    monkeypatch.setattr(matrix, "recorded_capabilities", lambda: ())
     readings = matrix.diagnose("fast", runner=lambda *_: run)
     assert [reading.status for reading in readings] == [
         probe.classify_run(run)[0]
@@ -31,25 +31,25 @@ def test_diagnose_delegates_to_referee(monkeypatch):
         calls.append(observed)
         return "unavailable", "probe-error", None
 
-    monkeypatch.setattr(matrix, "active_profile", lambda: None)
+    monkeypatch.setattr(matrix, "recorded_capabilities", lambda: ())
     monkeypatch.setattr(probe, "classify_run", referee)
     readings = matrix.diagnose("super", runner=lambda *_: run)
     assert calls == [run] * len(matrix.TIERS["super"])
     assert all(reading.status == "unavailable" for reading in readings)
 
 
-def test_tiers_shell_does_not_own_profile_or_prober():
+def test_tiers_shell_does_not_own_the_store_or_prober():
     from hyprial.shell.impl.cli.commands.agent.runtime import tiers
 
     source = Path(tiers.__file__).read_text()
-    assert "UserProfileStore" not in source
+    assert "RuntimeCapabilityStore" not in source
     assert "RuntimeProber" not in source
 
 
 def test_shared_tier_report_can_diagnose_without_changing_static_selection(monkeypatch):
     from hyprial.shell.impl.cli.commands.workflow.internal import dispatch
 
-    monkeypatch.setattr(matrix, "active_profile", lambda: None)
+    monkeypatch.setattr(matrix, "recorded_capabilities", lambda: ())
     monkeypatch.setattr(matrix, "workflow_reminders", lambda: [])
     report = dispatch.tier_report(
         "super", probe=True, runner=lambda *_: probe.ProbeRun(1, "quota")

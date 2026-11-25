@@ -298,8 +298,12 @@ def test_tagaccept_joblog_missing_is_loud(rig):
 
 # ── ④ docker / forgejo container: missing => rc 3 naming it (devcheck) ──
 
-def test_devcheck_docker_missing_is_loud(rig):
-    r = run_script("devcheck.sh", "1", env={"DOCKER": "/nonexistent/docker"},
+def test_devcheck_docker_missing_is_loud(rig, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "tea", "exit 1")
+    env = {"DOCKER": "/nonexistent/docker", "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    r = run_script("devcheck.sh", "1", env=env,
                    cwd=rig.work)
     assert r.returncode == 3
     assert "DOCKER" in r.stderr
@@ -308,8 +312,9 @@ def test_devcheck_docker_missing_is_loud(rig):
 def test_devcheck_container_missing_is_loud(rig, tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    write_stub(bin_dir, "tea", "exit 1")
     write_stub(bin_dir, "docker", "exit 1")  # binary runs, but inspect fails
-    env = {"DOCKER": str(bin_dir / "docker")}
+    env = {"DOCKER": str(bin_dir / "docker"), "PATH": f"{bin_dir}:{os.environ['PATH']}"}
     r = run_script("devcheck.sh", "1", env=env, cwd=rig.work)
     assert r.returncode == 3
     assert "FORGEJO_CONTAINER" in r.stderr or "hyprial-forgejo-forgejo-1" in r.stderr

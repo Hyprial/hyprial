@@ -1,0 +1,15 @@
+{
+  "name": "hyprial-derpmap",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run",
+    "snapshot": "node scripts/snapshot.ts",
+    "schema": "node scripts/schema.ts"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

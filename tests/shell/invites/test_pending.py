@@ -1,9 +1,15 @@
-"""run_pending: the §5.3 pickup flow against a fake Casdoor (real HTTP).
+"""run_pending as a request adapter: real account read, fake daemon (§3 O2c).
 
-The Casdoor client and its urllib transport are real; the seams that would
-leave the machine are stubbed — ``token_source`` stands in for the U3
-refresh (covered by the login tests), ``ipc_join``/``ipc_list`` for the
-daemon.  Every test also pins the read-only contract: no update-user call.
+The Casdoor client and its urllib transport stay real (a fake server on
+loopback); the daemon is a fake that answers the documented
+``org.invites.list`` / ``org.invites.accept`` contract.  The rules
+themselves (settled, left, duplicates, id binding) are the daemon's and are
+tested in ``tests/daemon/org_membership/invites``; what is pinned here is
+
+* the credential and the account read stay shell-side (T11),
+* the pickup calls the two declared methods and no other join surface,
+* the result/JSON never carries the payload or a token,
+* a decline stays local: the account property is never written.
 """
 
 from __future__ import annotations
@@ -22,6 +28,8 @@ from hyprial.identity import (
     decode_invite,
     default_bootstrap,
     encode_invite,
+    invite_views,
+    select_invites,
 )
 from hyprial.shell.impl.invites.pending import InvitePickupError, run_pending
 from tests.shell.invites.fakes import FakeCasdoor
@@ -52,6 +60,64 @@ def _payload(org: str = "group-acme", inviter: str = "bob") -> str:
                                'address': 'tcp://10.0.0.1:7447#psk', 'controlPort': 7448}},
     )
     return encode_invite(link).removeprefix("hyprial-invite:v2:")
+
+
+class _Daemon:
+    """A daemon that answers the declared contract over the shared rules."""
+
+    def __init__(
+        self,
+        *,
+        held: tuple[str, ...] = (),
+        left: tuple[str, ...] = (),
+        accept_error: BaseException | None = None,
+    ) -> None:
+        self.held = held
+        self.left = left
+        self.accept_error = accept_error
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, method: str, params: dict) -> dict:
+        self.calls.append((method, params))
+        if method == "org.invites.list":
+            selection = select_invites(
+                invite_views(params["invites"]),
+                held_spaces=self.held,
+                left_orgs=self.left,
+            )
+            return {
+                "ok": True,
+                "pending": selection.pending_rows(),
+                "settled": len(selection.settled),
+                "duplicates": len(selection.duplicates),
+                "warnings": [],
+            }
+        if method == "org.invites.accept":
+            if self.accept_error is not None:
+                raise self.accept_error
+            invited = decode_invite(params["link"])
+            return {
+                "ok": True,
+                "inviteId": params["inviteId"],
+                "org": invited.org,
+                "spaceId": invited.space_id,
+                "joined": True,
+                "alreadyMember": False,
+                "steps": [],
+            }
+        raise AssertionError(f"unexpected daemon method {method}")
+
+    @property
+    def accepted_links(self) -> list[str]:
+        return [
+            params["link"]
+            for method, params in self.calls
+            if method == "org.invites.accept"
+        ]
+
+    @property
+    def methods(self) -> list[str]:
+        return [method for method, _params in self.calls]
 
 
 @pytest.fixture
@@ -91,90 +157,92 @@ def _run(home: Path, server: FakeCasdoor, **kwargs):
     defaults = {
         "accept_all": True,
         "confirm": None,
-        "ipc_join": lambda link: {"org": "joined"},
-        "ipc_list": lambda: {"orgs": [], "leftOrgs": []},
+        "request": _Daemon(),
         "token_source": lambda issuer: "access-token-1",
     }
     defaults.update(kwargs)
     return run_pending(home, **defaults)
 
 
-def test_accept_all_joins_and_never_writes_to_casdoor(home: Path) -> None:
+def test_partial_accept_reports_missing_step_without_claiming_join(home: Path) -> None:
+    from hyprial.kernel import DaemonRequestError
+
+    error = DaemonRequestError("no-holder-online", "secret transport text", {
+        "status": "partial", "missingStep": "acl-applied", "payload": "secret",
+    })
+    with FakeCasdoor() as server:
+        server.set_invites_property([{"payload": _payload(), "acceptedAt": "t1"}])
+        result = _run(home, server, request=_Daemon(accept_error=error))
+    assert result["joined"] == []
+    assert result["failed"][0]["status"] == "partial"
+    assert result["failed"][0]["missingStep"] == "acl-applied"
+    assert "secret" not in json.dumps(result)
+
+
+def test_accept_all_joins_each_pending_invite_through_the_daemon(
+    home: Path,
+) -> None:
     payload = _payload()
-    joins: list[str] = []
+    daemon = _Daemon()
     with FakeCasdoor() as server:
         server.set_invites_property(
             [{"payload": payload, "acceptedAt": "2026-10-03T01:00:00Z"}]
         )
-        result = _run(
-            home,
-            server,
-            ipc_join=lambda link: joins.append(link) or {"org": "group-acme"},
-        )
+        result = _run(home, server, request=daemon)
 
-        assert result == {
-            "ok": True,
-            "joined": [{"org": "group-acme", "inviter": "bob"}],
-            "failed": [],
-            "skipped": 0,
-            "pending": [],
-            "warnings": [],
-        }
-        assert joins == [f"v2.{payload}"]
-        # The join's link is a real, decodable invite form.
-        assert decode_invite(joins[0]).org == "group-acme"
+        assert [row["org"] for row in result["joined"]] == ["group-acme"]
+        assert result["declined"] == [] and result["failed"] == []
+        assert result["skipped"] == 0
+        assert daemon.methods == ["org.invites.list", "org.invites.accept"]
+        assert daemon.accepted_links == [f"v2.{payload}"]
+        assert decode_invite(daemon.accepted_links[0]).org == "group-acme"
+        # The account property is read-only here: declining is local and
+        # accepting is the daemon's join, never an account write.
         assert server.update_calls == []
-    # The payload (bearer secret) never lands in the result object.
-    assert payload not in json.dumps(result)
+    # Neither the payload (bearer secret) nor a token lands in the result.
+    rendered = json.dumps(result)
+    assert payload not in rendered
+    assert "access-token-1" not in rendered
+    assert "refresh-token-1" not in rendered
 
 
-def test_an_org_this_node_already_holds_is_skipped(home: Path) -> None:
-    # The 2026-10-04 live run: after joining, the next pickup listed the
-    # same invite again because the Casdoor write-back was refused.
-    joins: list[str] = []
+def test_an_org_this_node_already_holds_is_settled_not_rejoined(
+    home: Path,
+) -> None:
+    daemon = _Daemon(held=("space-group-acme",))
     with FakeCasdoor() as server:
         server.set_invites_property(
             [
-                {"payload": _payload(org="group-acme"), "acceptedAt": "t1"},
-                {"payload": _payload(org="group-other"), "acceptedAt": "t2"},
+                {"payload": _payload("group-acme"), "acceptedAt": "t1"},
+                {"payload": _payload("group-other"), "acceptedAt": "t2"},
             ]
         )
-        result = _run(
-            home,
-            server,
-            ipc_join=lambda link: joins.append(link),
-            ipc_list=lambda: {
-                "orgs": [{"org": "group-acme", "spaceId": "space-group-acme"}],
-                "leftOrgs": [],
-            },
-        )
+        result = _run(home, server, request=daemon)
 
         assert result["skipped"] == 1
-        assert result["joined"] == [{"org": "group-other", "inviter": "bob"}]
-        assert [decode_invite(link).org for link in joins] == ["group-other"]
+        assert [row["org"] for row in result["joined"]] == ["group-other"]
+        assert [decode_invite(link).org for link in daemon.accepted_links] == [
+            "group-other"
+        ]
         assert server.update_calls == []
 
 
-def test_a_left_org_is_never_rejoined_by_an_old_accepted_invite(home: Path) -> None:
-    joins: list[str] = []
+def test_a_left_org_is_never_rejoined_by_an_old_accepted_invite(
+    home: Path,
+) -> None:
+    daemon = _Daemon(left=("group-acme",))
     with FakeCasdoor() as server:
         server.set_invites_property([{"payload": _payload(), "acceptedAt": "t1"}])
         for accept_all in (True, False):
-            result = _run(
-                home,
-                server,
-                accept_all=accept_all,
-                ipc_join=lambda link: joins.append(link),
-                ipc_list=lambda: {"orgs": [], "leftOrgs": ["group-acme"]},
-            )
+            result = _run(home, server, request=daemon, accept_all=accept_all)
             assert result["skipped"] == 1
             assert result["joined"] == []
             assert result["pending"] == []
-    assert joins == []
+    assert daemon.accepted_links == []
 
 
 def test_the_same_space_accepted_twice_is_joined_once(home: Path) -> None:
-    joins: list[str] = []
+    daemon = _Daemon()
     with FakeCasdoor() as server:
         server.set_invites_property(
             [
@@ -182,15 +250,13 @@ def test_the_same_space_accepted_twice_is_joined_once(home: Path) -> None:
                 {"payload": _payload(inviter="carol"), "acceptedAt": "t2"},
             ]
         )
-        result = _run(home, server, ipc_join=lambda link: joins.append(link))
+        result = _run(home, server, request=daemon)
 
-    assert len(joins) == 1
+    assert len(daemon.accepted_links) == 1
     assert result["skipped"] == 1
 
 
-def test_an_unreachable_daemon_still_attempts_and_reports_per_invite(
-    home: Path,
-) -> None:
+def test_an_unreachable_daemon_reports_failure_per_invite(home: Path) -> None:
     class Down(RuntimeError):
         code = "DAEMON_UNAVAILABLE"
 
@@ -199,43 +265,33 @@ def test_an_unreachable_daemon_still_attempts_and_reports_per_invite(
 
     with FakeCasdoor() as server:
         server.set_invites_property([{"payload": _payload(), "acceptedAt": "t1"}])
-        result = _run(home, server, ipc_join=down, ipc_list=down)
-
-    assert result["failed"] == [{"org": "group-acme", "code": "DAEMON_UNAVAILABLE"}]
-    assert result["warnings"] == ["org state unavailable (DAEMON_UNAVAILABLE)"]
+        with pytest.raises(Down):
+            _run(home, server, request=down)
 
 
-def test_no_acceptance_lists_pending_and_writes_nothing(home: Path) -> None:
-    payload = _payload()
+def test_no_acceptance_lists_pending_and_joins_nothing(home: Path) -> None:
+    daemon = _Daemon()
     with FakeCasdoor() as server:
         server.set_invites_property(
-            [{"payload": payload, "acceptedAt": "2026-10-03T01:00:00+00:00"}]
+            [{"payload": _payload(), "acceptedAt": "2026-10-03T01:00:00+00:00"}]
         )
-        joins: list[str] = []
-        result = _run(
-            home,
-            server,
-            accept_all=False,
-            confirm=None,
-            ipc_join=lambda link: joins.append(link),
-        )
+        result = _run(home, server, accept_all=False, confirm=None, request=daemon)
 
-        assert result["joined"] == []
-        assert result["pending"] == [
-            {
-                "org": "group-acme",
-                "inviter": "bob",
-                "acceptedAt": "2026-10-03T01:00:00+00:00",
-            }
-        ]
-        assert joins == []
+        assert result["joined"] == [] and result["declined"] == []
+        assert [row["org"] for row in result["pending"]] == ["group-acme"]
+        assert result["pending"][0]["acceptedAt"] == "2026-10-03T01:00:00+00:00"
+        assert daemon.methods == ["org.invites.list"]
         assert server.update_calls == []
+    assert "payload" not in json.dumps(result)
 
 
-def test_confirm_decides_per_invite(home: Path) -> None:
+def test_confirm_decides_per_invite_and_a_decline_stays_local(
+    home: Path,
+) -> None:
     yes = _payload(org="group-acme")
     no = _payload(org="group-other", inviter="carol")
     asked: list[tuple[str, str]] = []
+    daemon = _Daemon()
     with FakeCasdoor() as server:
         server.set_invites_property(
             [{"payload": yes, "acceptedAt": "t1"}, {"payload": no, "acceptedAt": "t2"}]
@@ -245,33 +301,46 @@ def test_confirm_decides_per_invite(home: Path) -> None:
             asked.append((org, inviter))
             return org == "group-acme"
 
-        result = _run(home, server, accept_all=False, confirm=confirm)
+        result = _run(home, server, accept_all=False, confirm=confirm, request=daemon)
 
         assert asked == [("group-acme", "bob"), ("group-other", "carol")]
-        assert result["joined"] == [{"org": "group-acme", "inviter": "bob"}]
-        assert result["pending"] == [
-            {"org": "group-other", "inviter": "carol", "acceptedAt": "t2"}
-        ]
+        assert [row["org"] for row in result["joined"]] == ["group-acme"]
+        assert [row["org"] for row in result["declined"]] == ["group-other"]
+        assert result["pending"] == []
+        assert "declined" in result["declinedNote"]
+        assert daemon.accepted_links == [f"v2.{yes}"]
         assert server.update_calls == []
 
 
-def test_a_failed_join_is_reported(home: Path) -> None:
+def test_a_failed_accept_is_reported_with_its_code(home: Path) -> None:
     class JoinRefused(RuntimeError):
         code = "INVITE_EXPIRED"
 
+    daemon = _Daemon(accept_error=JoinRefused("expired"))
     with FakeCasdoor() as server:
-        server.set_invites_property(
-            [{"payload": _payload(), "acceptedAt": "t1"}]
-        )
-        result = _run(
-            home,
-            server,
-            ipc_join=lambda link: (_ for _ in ()).throw(JoinRefused("expired")),
-        )
+        server.set_invites_property([{"payload": _payload(), "acceptedAt": "t1"}])
+        result = _run(home, server, request=daemon)
 
-        assert result["failed"] == [{"org": "group-acme", "code": "INVITE_EXPIRED"}]
+        assert [row["code"] for row in result["failed"]] == ["INVITE_EXPIRED"]
         assert result["joined"] == []
         assert server.update_calls == []
+
+
+def test_an_account_row_without_a_payload_is_reported_not_sent(
+    home: Path,
+) -> None:
+    daemon = _Daemon()
+    payload = _payload()
+    with FakeCasdoor() as server:
+        server.set_invites_property(
+            [{"acceptedAt": "t1"}, {"payload": payload, "acceptedAt": "t2"}]
+        )
+        result = _run(home, server, request=daemon)
+
+        assert len(result["unusable"]) == 1
+        assert [row["org"] for row in result["joined"]] == ["group-acme"]
+        listed = next(params for method, params in daemon.calls if method.endswith("list"))
+        assert listed["invites"] == [{"payload": payload, "acceptedAt": "t2"}]
 
 
 def test_missing_device_record_is_device_not_ready(tmp_path: Path) -> None:
@@ -282,8 +351,7 @@ def test_missing_device_record_is_device_not_ready(tmp_path: Path) -> None:
             home,
             accept_all=True,
             confirm=None,
-            ipc_join=lambda link: None,
-            ipc_list=lambda: {"orgs": [], "leftOrgs": []},
+            request=_Daemon(),
             token_source=lambda issuer: "t",
         )
     assert raised.value.code == "DEVICE_NOT_READY"
@@ -295,8 +363,7 @@ def test_missing_credential_is_not_logged_in(home: Path) -> None:
             home,
             accept_all=True,
             confirm=None,
-            ipc_join=lambda link: None,
-            ipc_list=lambda: {"orgs": [], "leftOrgs": []},
+            request=_Daemon(),
             token_source=lambda issuer: "t",
         )
     assert raised.value.code == "NOT_LOGGED_IN"

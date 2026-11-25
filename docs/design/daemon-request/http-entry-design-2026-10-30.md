@@ -67,7 +67,7 @@ H-01 交付一个**独立的本地 HTTP 传输进程**：
   confirmation=none` 的方法；当前 A 的 `link.*` 只有 `link.list`、`link.stats`
   满足。`link.add`/`link.drop` 即使未来声明 HTTP 也不因 `httpExposed=true`
   自动进入本片，写 profile 留给 H-03。
-- 可信身份来自**显式配置**（operator owner + 固定本节点 canonical selector actor）
+- 可信身份来自**显式配置**（已验证 owner 的 canonical `user:<owner>`）
   与**每进程 capability token**；body 中的 selector 不是身份凭证，未知 binding 不猜。
 - 目录状态区分 `available` / `not-ready` / `unsupported` / `disabled`；描述文件存在
   只说明传输入口已启动，`/readyz` 才表示业务可调用；恢复期明确 not-ready。
@@ -132,7 +132,7 @@ R2 复审四项收尾（不改 R1 主体，不扩范围）：
 
 1. 在运行 daemon 的 `daemon.catalog` 中 `declared=true`、`httpExposed=true`；
 2. 有显式 `httpBinding` 且 `identity.mode` 是 `none` 或
-   `local-operator-selector`，或没有显式 binding 而使用默认 no-selector binding
+   `local-owner-user-selector`，或没有显式 binding 而使用默认 no-selector binding
    （`identity.mode=none`）；默认 binding 不推断 caller，也不改写业务 target；
 3. `audience` 包含 `local-operator`；这是**暴露必要条件**，不是授权充分条件，
    也不能写成“audience 与 HTTP 无关”；
@@ -168,7 +168,7 @@ R2 复审四项收尾（不改 R1 主体，不扩范围）：
 | `kernel.daemon_request` | kernel | 不使用（它的 `DAEMON_RESTORING` 内建等待不适合 HTTP 预算） |
 | `kernel.daemon_socket_path(state_dir, env=...)` | kernel | 启动器计算 endpoint；HTTP 进程只接受显式 socket |
 | `kernel.RequestPortError` / `kernel.ipc_errors` | kernel | 传输/域错误码 |
-| `kernel.parse_agent_uri` / `canonical_user_uri` | kernel | principal 校验 |
+| `kernel.canonical_user_uri` | kernel | principal 校验 |
 | `kernel.MethodSpec` / `export_catalog` / `export_openapi` | kernel | 声明与投影类型 |
 | `daemon.daemon_catalog()` | daemon | **本地声明对照**（不是运行事实） |
 | `daemon.resolve_node_owner(...)` | daemon | 启动器/测试可选校验 owner；进程以 `ping.owner` 为准 |
@@ -206,7 +206,7 @@ R2 复审四项收尾（不改 R1 主体，不扩范围）：
 在 A 的 `kernel/impl/contracts/daemon/method_spec.py` 增加纯数据声明：
 
 ```python
-HttpIdentityMode = Literal["none", "local-operator-selector"]
+HttpIdentityMode = Literal["none", "local-owner-user-selector"]
 
 @dataclass(frozen=True, slots=True)
 class IdentityBinding:
@@ -228,7 +228,7 @@ http_binding: HttpBinding | None = None
 语义：
 
 - `mode="none"`：该方法没有 selector/身份参数；HTTP 层不注入任何字段。
-- `mode="local-operator-selector"`：`param` 指向 params schema 中一个 **required
+- `mode="local-owner-user-selector"`：`param` 指向 params schema 中一个 **required
   string** 属性；HTTP 层把它当“受限 selector”：
   - body 缺省 → 注入配置的 `principal.actor`；
   - body 提供字符串且等于 `principal.actor` → 通过；
@@ -263,7 +263,7 @@ A 的校验还要保证：
   本地/daemon 逐字段对照）：
   ```json
   "httpBinding": {
-    "identity": {"mode": "local-operator-selector", "param": "from"},
+    "identity": {"mode": "local-owner-user-selector", "param": "actor"},
     "readiness": "link-service"
   }
   ```
@@ -273,7 +273,7 @@ A 的校验还要保证：
 - `contract/daemon-request/openapi.json` 重新生成；`contract/daemon-request/README.md`
   说明 `httpBinding` 是 HTTP 传输绑定，不是授权声明。
 - `link.list`/`link.stats` 增加
-  `http_binding=HttpBinding(IdentityBinding("local-operator-selector", "from"),
+  `http_binding=HttpBinding(IdentityBinding("local-owner-user-selector", "actor"),
   readiness="link-service")`；`link.add/drop` 不增加 binding（继续不暴露）。
 
 ### 6.2 daemon 权威只读目录：`daemon.catalog`
@@ -319,7 +319,7 @@ handler 读取：
       "declared": true,
       "httpExposed": true,
       "httpBinding": {
-        "identity": {"mode": "local-operator-selector", "param": "from"},
+        "identity": {"mode": "local-owner-user-selector", "param": "actor"},
         "readiness": "link-service"
       },
       "state": "available",
@@ -462,7 +462,7 @@ dir 只允许一个 server：`server.lock` 用 `flock(LOCK_EX|LOCK_NB)` 独占�
   "principal": {
     "kind": "local-operator",
     "owner": "owner",
-    "actor": "agent:owner:node-1:actor"
+    "actor": "user:owner"
   },
   "startedAt": "2026-10-30T04:00:00Z"
 }
@@ -713,7 +713,7 @@ POST 的 state 快照最多缓存 1 秒（`stateRefreshMs=1000`）：过期就�
   "principal": {
     "kind": "local-operator",
     "owner": "owner",
-    "actor": "agent:owner:node-1:actor"
+    "actor": "user:owner"
   },
   "methods": [
     {
@@ -723,7 +723,7 @@ POST 的 state 快照最多缓存 1 秒（`stateRefreshMs=1000`）：过期就�
       "callable": true,
       "reason": null,
       "httpBinding": {
-        "identity": {"mode": "local-operator-selector", "param": "from"},
+        "identity": {"mode": "local-owner-user-selector", "param": "actor"},
         "readiness": "link-service"
       },
       "mode": "unary",
@@ -756,9 +756,8 @@ POST 的 state 快照最多缓存 1 秒（`stateRefreshMs=1000`）：过期就�
 
 1. **operator**：`principal.owner`，必须等于 daemon `ping.owner`；它是配置里的本地
    operator 身份。
-2. **selector**：`principal.actor`，必须是本节点 canonical
-   `agent:<owner>:<nodeId>:<actor>`；它是 HTTP 绑定 `local-operator-selector` 的固定
-   值，是“被选中的本地 actor”，**不是**认证 agent 证明。
+2. **selector**：`principal.actor`，必须是 daemon owner 的 canonical `user:<owner>`；
+   它是 HTTP 绑定 `local-owner-user-selector` 的固定值，不是浏览器自报身份。
 3. **agent/session**：`bound-agent-session` 需要 session fence 证明；H-01/H-02 都
    不支持，遇到该 binding 模式 fail closed。
 
@@ -767,7 +766,7 @@ POST 的 state 快照最多缓存 1 秒（`stateRefreshMs=1000`）：过期就�
 
 ### 9.2 显式绑定，不猜参数名
 
-- 只有 `httpBinding.identity.mode="local-operator-selector"` 的方法才注入/校验
+- 只有 `httpBinding.identity.mode="local-owner-user-selector"` 的方法才注入/校验
   selector；参数名来自 `identity.param`，绝不按 `from`/`actor` 名字推断。
 - `mode="none"` 的方法不注入任何字段；这是合法只读方法的长期形态。
 - 未知 mode、缺 binding、binding 与 params schema 不一致 → 启动/目录失败，不路由。
@@ -779,7 +778,7 @@ POST 的 state 快照最多缓存 1 秒（`stateRefreshMs=1000`）：过期就�
 
 1. `Host`、`Origin`、`Authorization`、`Content-Type`、大小/framing 检查；
 2. body 必须是 JSON object；否则 400；
-3. 若 method 有 `local-operator-selector`：
+3. 若 method 有 `local-owner-user-selector`：
    - body 缺 `param` → 注入 `principal.actor`；
    - body 有 `param` → 保留原值，供 schema 校验；
 4. 用方法的 `paramsSchema` 校验（daemon catalog 的同一 schema）：
@@ -811,7 +810,7 @@ POST 的 state 快照最多缓存 1 秒（`stateRefreshMs=1000`）：过期就�
   "principal": {
     "kind": "local-operator",
     "owner": "owner",
-    "actor": "agent:owner:node-1:actor"
+    "actor": "user:owner"
   },
   "listen": { "host": "127.0.0.1", "port": 0 },
   "security": {
@@ -834,8 +833,8 @@ POST 的 state 快照最多缓存 1 秒（`stateRefreshMs=1000`）：过期就�
 必填：`backend.socket`、`principal.owner`、`principal.actor`、`runtime.dir`。
 
 - `backend.kind` 只接受 `"local-daemon"`；socket 绝对路径，不读环境变量猜。
-- `principal.actor` 必须 `parse_agent_uri` 可解析的 canonical 四段 URI；bare name、
-  `user:`、adapter/peer URI 拒绝。
+- `principal.actor` 必须等于 `principal.owner` 的 canonical `user:<owner>`；agent、
+  bare name、adapter/peer URI 拒绝。
 - `listen.host` 只能是 `127.0.0.1`；port 0..65535，0 为 ephemeral。
 - `allowedOrigins` 默认 `[]`；每项必须是 `http(s)://host[:port]` origin，无路径/
   查询/片段/凭据，不能 `*`/`null`。
@@ -948,7 +947,7 @@ framing 规则（R5）：
 | `DAEMON_RESTORING` | 503 | 是（safe read；等恢复） |
 | `DAEMON_NOT_READY` | 503 | 是（safe read；明确的未就绪响应） |
 | `VERSION_MISMATCH` | 409 | 否 |
-| `CALLER_NOT_AUTHORIZED`、`SENDER_NOT_AUTHENTICATED`、`SENDER_UNRESOLVED`、`TARGET_NOT_AUTHORIZED`、`CHANNEL_NOT_AUTHORIZED`、`ORG_CONTEXT_NOT_AUTHORIZED`、`STALE_SESSION`、`SESSION_SUPERSEDED`、`INVALID_SESSION_SOURCE` | 403 | 否 |
+| `CALLER_NOT_AUTHORIZED`、`SENDER_NOT_AUTHENTICATED`、`SENDER_UNRESOLVED`、`TARGET_NOT_AUTHORIZED`、`ORG_CONTEXT_NOT_AUTHORIZED`、`STALE_SESSION`、`SESSION_SUPERSEDED`、`INVALID_SESSION_SOURCE` | 403 | 否 |
 | `DAEMON_ERROR`、未登记 daemon code | 500 | 否 |
 | `IPC_TIMEOUT` | 504 | 是（safe read；不证明未执行） |
 | `DAEMON_DISCONNECTED` | 503 | 是（safe read；不证明未执行） |
@@ -1253,8 +1252,8 @@ fixture：tmp `home`（settings owner）、`state`（daemon.sock）、`request-h
 2. 显式 config 启动 `uv run python -m hyprial.shell.impl.request_http serve --config`；
    等 `server.json`；校验 endpoint 127.0.0.1、0600、digest、backend.epoch。
 3. `GET /healthz` 200；`GET /readyz` 200（phase serving）且 methods available。
-4. `GET /daemon/request`：只含 `link.list`/`link.stats`；state、digest、identity
-   binding 与 daemon.catalog 一致；`link.add/drop` 不出现。
+4. `GET /daemon/request`：包含 `link.list/stats/add/drop`；state、digest、identity
+   binding 与 daemon.catalog 一致。
 4a. `GET /openapi.json`：无 Bearer 401；有 Bearer 200；paths 与实际 route 一致；
    每个 POST 的 request schema 等于目录 `paramsSchema`，成功 envelope 的 result
    schema 等于 `resultSchema`；无默认 422、无 `/docs`、无 trailing-slash redirect。
@@ -1262,10 +1261,10 @@ fixture：tmp `home`（settings owner）、`state`（daemon.sock）、`request-h
    子进程注入 `synthetic.echo`（`http_exposed=true, http_binding=None`）及受限
    audience、未暴露、写 profile 变体；`synthetic.echo` 必须经真实 IPC/HTTP 调用成功，
    目录/OpenAPI/route 均为默认 no-selector binding；其余变体和伪造 caller 字段不得
-   产生 route，显式 selector 越权仍 403。产品 registry 不被注入。
-5. POST `link.list` body `{}` → 200；`result.actor == principal.actor`；
-   `orgAvailable=false`（隔离预期）；`link.stats` 同理。
-6. 拒绝矩阵：无/错 token 401；伪造 selector 403；`from:7` 400；未知/unexposed 404；
+   产生 route，host-only caller 字段被 400 拒绝。产品 registry 不被注入。
+5. POST `link.list` body `{"from": "<所选 agent id URI>"}` → 200；`result.actor` 等于
+   所选 agent；`orgAvailable=false`（隔离预期）；`link.stats` 同理。
+6. 拒绝矩阵：无/错 token 401；伪造 host-only owner 400；`from:7` 400；未知/unexposed 404；
    `Content-Type` 415；超 body 413；digest 头不匹配 409；TE/冲突 framing 400；
    `Idempotency-Key` 400。
 7. **权威目录**：用受控 scratch tree（真实 daemon 进程，测试副本只改一个声明）

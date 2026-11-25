@@ -1,0 +1,2184 @@
+{
+  "version": 1,
+  "policy": "Exact client request-architecture findings with occurrence counts. Entries may only leave or shrink; new platform exceptions require a reviewed checker change, never ledger growth.",
+  "findings": [
+    {
+      "kind": "authority-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "lark_oapi",
+      "count": 1
+    },
+    {
+      "kind": "authority-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "lark_oapi",
+      "count": 1
+    },
+    {
+      "kind": "authority-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "subject": "sqlite3",
+      "count": 1
+    },
+    {
+      "kind": "authority-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "sqlite3",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:AdapterConfigConflictError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:AdapterExistsError",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:AdapterNotFoundError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:DaemonOwnershipBusy",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:RouteInput",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:UserActionRequiredError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:add_lark_gateway",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:configured_scope_client",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:diagnose_scopes",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:downgrade_adapter_state_result",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:ensure_lark_gateway_addable",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:remove_lark_gateway",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "hyprial.daemon:resolve_lark_app_credential",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:LARK_ONBOARDING_REQUIRED_EVENTS",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:LarkOnboardingError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:SENSITIVE_CAPABILITY_NOTES",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:capability_scopes",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:configured_app_id",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:configured_scope_client",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:developer_console_permission_url",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:reauthorize_lark_app",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:request_scope_authorization",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:scope_apply_url",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "hyprial.daemon:valid_scope_name",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "hyprial.daemon:IDENTITY_KINDS",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "hyprial.daemon:MediaFetchError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "hyprial.daemon:configured_identity_gateway",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "hyprial.daemon:fetch_media",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "hyprial.daemon:open_identity_store",
+      "count": 3
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "hyprial.daemon:parse_media_ref",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "hyprial.daemon:sync_identities",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/lark_auth.py",
+      "subject": "hyprial.daemon:credentials_reauth",
+      "count": 6
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:CLAUDE_RUNTIME_ENVIRONMENT",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:ClaudeRuntimeError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:SessionFileError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:claude_provider_environment",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:claude_session_file",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:claude_session_file_in_session_root",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:cleanup_launch_resources",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:read_process_identity",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:validate_claude_auth_environment",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.daemon:validate_legacy_claude_auth",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "hyprial.identity:apply_runtime_environment_profile",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "hyprial.daemon:resolve_node_owner",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "hyprial.identity:AgentRuntimeError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "hyprial.identity:SharedCredentialBinding",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "hyprial.identity:preflight_codex_credential",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:CodexAppServerRpcError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:CodexInteractiveAppServer",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:CodexInteractiveCarrier",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:CodexInteractiveResumeError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:CodexInteractiveResumePending",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:PI_HARNESS_ATTACH_EXTENSION",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:SessionFileError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:build_codex_launch_inputs",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:find_pi_package_root",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:pi_model_args",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:pi_provider_environment",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:pi_sdk_launch_from_public_projection",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:pi_session_id",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:read_process_identity",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:resolve_approved_pi_project",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.daemon:resolve_legacy_pi_resume_session",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.identity:SharedCredentialBinding",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "hyprial.identity:apply_runtime_environment_profile",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "subject": "hyprial.daemon:ModelProviderError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "subject": "hyprial.daemon:declare",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "subject": "hyprial.daemon:validate_model_selection",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "hyprial.identity:AgentRegistry",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "hyprial.identity:AgentSecretStore",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "hyprial.identity:FingerprintUnavailable",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "hyprial.identity:agent_secret_store_exists",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "hyprial.identity:secret_environment_name_is_allowed",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "hyprial.daemon:AUTOUPDATE_CHILD_ENV",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "hyprial.daemon:AUTOUPDATE_TRIGGER_ENV",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "hyprial.daemon:ForwardingConfigurationError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "hyprial.daemon:daemon_forwarding_environment",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "hyprial.daemon:read_process_identity",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "hyprial.daemon:RestartProcessObservation",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "hyprial.daemon:RestartProcessState",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "hyprial.daemon:owner_process_status",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "hyprial.daemon:read_process_identity",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "hyprial.daemon:latest_start_failure",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "hyprial.daemon:restart_failure_detail",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "hyprial.daemon:start_failure_line",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "hyprial.daemon:updates",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "hyprial.daemon:resolve_node_owner",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "hyprial.identity:AgentRegistry",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "hyprial.identity:PAC_PRINCIPAL_UNVERIFIED",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "hyprial.identity:PacError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.daemon:FORWARDING_SETTINGS_KEY",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.daemon:ForwardingConfigurationError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.daemon:updates",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.daemon:write_forwarding_mode",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.daemon:write_org_fetch_source",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.daemon:write_workflow_reminder",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.identity:WORKER_PROXY_FIELDS",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.identity:WORKER_PROXY_SETTINGS_KEY",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.identity:WorkerProxyError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "hyprial.identity:write_worker_proxy_field",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "hyprial.daemon:DaemonApplication",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "hyprial.daemon:DaemonOwnershipBusy",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "hyprial.daemon:DaemonStateOwnershipFence",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "hyprial.daemon:application_lock_wait_timeout",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "hyprial.daemon:wait_for_state_ownership",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "hyprial.identity:IdentityTransactionBusy",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "hyprial.identity:IdentityTransactionLock",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/restart.py",
+      "subject": "hyprial.daemon:read_last_run",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/restart.py",
+      "subject": "hyprial.daemon:write_last_run",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "hyprial.daemon:ServiceConfig",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "hyprial.daemon:ServiceManager",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "hyprial.daemon:ServiceOwnershipError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "hyprial.daemon:USER_BUS_ADDRESS_UNREACHABLE_REASON",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "hyprial.daemon:USER_BUS_UNAVAILABLE_REASON",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "subject": "hyprial.identity:AgentRegistry",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/redemption.py",
+      "subject": "hyprial.daemon:read_degraded_redemption",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/start_failures.py",
+      "subject": "hyprial.daemon:read_start_failures",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "subject": "hyprial.daemon:TailcatSidecarError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "subject": "hyprial.daemon:contracts_lifecycle",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "subject": "hyprial.daemon:verify_tailcat_sidecar",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "subject": "hyprial.identity:device_key_path",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "subject": "hyprial.identity:read_device_record",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "hyprial.daemon:WebServiceConfig",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "hyprial.daemon:check_config",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "hyprial.daemon:serve",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "hyprial.daemon:summary_from_text",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "hyprial.daemon:with_human_web_urls",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/init/init.py",
+      "subject": "hyprial.daemon:OrgContextStore",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/init/init.py",
+      "subject": "hyprial.daemon:node_owner_or_none",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/login/commands.py",
+      "subject": "hyprial.daemon:node_owner_or_none",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/message/read.py",
+      "subject": "hyprial.daemon:IPC_MESSAGE_READ_BODY",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/message/send.py",
+      "subject": "hyprial.daemon:SUMMARY_MAX_BYTES",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/meta/commands.py",
+      "subject": "hyprial.daemon:updates",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/acl.py",
+      "subject": "hyprial.identity:org_space_name",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/authority.py",
+      "subject": "hyprial.daemon:OfflineMembership",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.daemon:OrgContextStore",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.daemon:OrgStoreError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.daemon:document_summary",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.daemon:parse_document",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.daemon:serialize_document",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.daemon:validate_document",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.identity:ORG_SPACE_PREFIX",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/commands.py",
+      "subject": "hyprial.identity:org_space_name",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/org/maintenance.py",
+      "subject": "hyprial.daemon:TailnetMaintenance",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "hyprial.daemon:DEFAULT_PROFILE",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "hyprial.daemon:NetworkProfile",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "hyprial.daemon:PROFILE_FILENAME",
+      "count": 3
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "hyprial.daemon:read_profile",
+      "count": 3
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "hyprial.daemon:validate_profile",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "hyprial.daemon:write_profile",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "hyprial.biz:BUILTIN_TEMPLATES",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "hyprial.biz:RoutineSchemaError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "hyprial.biz:render_template",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "hyprial.biz:template_text",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "hyprial.identity:PacError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py",
+      "subject": "hyprial.daemon:AUTOUPDATE_CHILD_ENV",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py",
+      "subject": "hyprial.daemon:SCHEDULE",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py",
+      "subject": "hyprial.daemon:read_last_run",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py",
+      "subject": "hyprial.daemon:updates",
+      "count": 3
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py",
+      "subject": "hyprial.daemon:write_last_run",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:DesiredStateStore",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:START_ADMISSION_WIDTH_DEFAULT",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:START_TIMEOUT_SECONDS_DEFAULT",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:UPGRADE_ALREADY_CURRENT",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:UPGRADE_AWAITING_RESTART",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:UPGRADE_DECLINED_DOWNGRADE",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:UPGRADE_FAILED",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:UPGRADE_INSTALLED",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:UPGRADE_UNCONFIRMED",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:restore_followup_budget_seconds",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:run_self_check",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "hyprial.daemon:updates",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "hyprial.biz:actor_owner",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "hyprial.biz:check_actor_claim",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "hyprial.biz:state_dir",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "hyprial.daemon:PacGraphStore",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "hyprial.daemon:PacReactor",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "hyprial.daemon:planned_to_json",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "hyprial.biz:state_dir",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "hyprial.daemon:Projection",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "hyprial.daemon:events_since",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "hyprial.daemon:follow_lifetime",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "hyprial.identity:PacError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/internal/dispatch.py",
+      "subject": "hyprial.daemon:candidate_json",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/internal/dispatch.py",
+      "subject": "hyprial.daemon:diagnose",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/internal/dispatch.py",
+      "subject": "hyprial.daemon:recorded_candidate_json",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/internal/dispatch.py",
+      "subject": "hyprial.daemon:resolve",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/internal/dispatch.py",
+      "subject": "hyprial.daemon:workflow_reminders",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/overview.py",
+      "subject": "hyprial.daemon:views_missions",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/overview.py",
+      "subject": "hyprial.daemon:views_overview",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/overview.py",
+      "subject": "hyprial.identity:PacError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "hyprial.biz:actor_owner",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "hyprial.biz:check_actor_claim",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "hyprial.daemon:WorkflowSchemaError",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "hyprial.daemon:WorkflowSpec",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "hyprial.daemon:dispatch_reminders",
+      "count": 2
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "hyprial.daemon:load_workflow_text",
+      "count": 1
+    },
+    {
+      "kind": "backend-import",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "hyprial.identity:PacError",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/authorize.py",
+      "subject": "authorize.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/data.py",
+      "subject": "data.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "subject": "settings.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "service.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/gui/commands.py",
+      "subject": "commands.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/log/log.py",
+      "subject": "log.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/meta/commands.py",
+      "subject": "commands.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "commands.py",
+      "count": 1
+    },
+    {
+      "kind": "command-without-request",
+      "path": "src/hyprial/shell/impl/cli/commands/socialware/commands.py",
+      "subject": "commands.py",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/harness_args/__init__.py",
+      "subject": "_request",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/provider/commands.py",
+      "subject": "run_owner_key_request.operation",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex.<lambda>",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "subject": "_request_start",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "agent_secret_entry_write.operation",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "_daemon_request",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "request_upgrade_steps",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "_fs_run.operation",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/message/read.py",
+      "subject": "read_body.operation",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/org/removal.py",
+      "subject": "confirmed_removal",
+      "count": 2
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/user/key.py",
+      "subject": "_run.operation",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "_call.<lambda>",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/gui/adapter/operations/client.py",
+      "subject": "_request",
+      "count": 2
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/gui/adapter/operations/client.py",
+      "subject": "daemon_request",
+      "count": 1
+    },
+    {
+      "kind": "dynamic-method",
+      "path": "src/hyprial/shell/impl/gui/adapter/operations/client.py",
+      "subject": "daemon_request_once",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "mkdir",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "unlink",
+      "count": 2
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "mkdir",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "mkstemp",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "open",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "replace",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "unlink",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "mkdtemp",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "rmtree",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "unlink",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "open",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "remove",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/secret.py",
+      "subject": "replace",
+      "count": 3
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "link",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "open",
+      "count": 3
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "replace",
+      "count": 2
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "unlink",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "open",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "TemporaryDirectory",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "mkdir",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "replace",
+      "count": 2
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "unlink",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "write_text",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "replace",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/route_session.py",
+      "subject": "open",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/route_session.py",
+      "subject": "replace",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/log/history.py",
+      "subject": "replace",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/message/observe/trajectory.py",
+      "subject": "replace",
+      "count": 2
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/message/send.py",
+      "subject": "mkdir",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/message/send.py",
+      "subject": "replace",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/message/send.py",
+      "subject": "write_text",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/org/context/commands.py",
+      "subject": "replace",
+      "count": 4
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/profile/commands.py",
+      "subject": "mkdir",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/overview.py",
+      "subject": "mkdir",
+      "count": 1
+    },
+    {
+      "kind": "file-mutation",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/overview.py",
+      "subject": "write_text",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "subprocess.Popen",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "subprocess.Popen",
+      "count": 2
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "subprocess.run",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+      "subject": "subprocess.run",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/service.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/internal/worktrees.py",
+      "subject": "subprocess",
+      "count": 1
+    },
+    {
+      "kind": "process-invocation",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/internal/worktrees.py",
+      "subject": "subprocess.run",
+      "count": 1
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/adapter/admin.py",
+      "subject": "_confirm_adapter_stopped",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/admin.py",
+      "subject": "agent_destroy.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/grant.py",
+      "subject": "agent_grant.<lambda>",
+      "count": 3
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "subject": "agent_ensure_home.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/provider/commands.py",
+      "subject": "agent_provider_login.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/restore.py",
+      "subject": "agent_restore.<lambda>",
+      "count": 3
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "_start_interactive_claude",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "_runtime_launch_custody",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex",
+      "count": 4
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_pi",
+      "count": 3
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "subject": "start.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "_request_shutdown",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "_daemon_probe",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/checks/names.py",
+      "subject": "_online_names",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "fs_invite.operation",
+      "count": 3
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/fs/commands.py",
+      "subject": "fs_resolve",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/message/observe/outbox.py",
+      "subject": "message_outbox.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/message/outbox.py",
+      "subject": "outbox_list.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/org/removal.py",
+      "subject": "confirmed_removal",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "inspect.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/overview.py",
+      "subject": "_overview_model",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "plan.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "run.operation",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "src/hyprial/shell/impl/gui/adapter/operations/client.py",
+      "subject": "_request",
+      "count": 2
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "subject": "agent_ensure_home.operation",
+      "count": 1
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/provider/grant_key.py",
+      "subject": "agent_provider_grant_key.operation",
+      "count": 1
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "_start_interactive_claude",
+      "count": 1
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex",
+      "count": 1
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex.<lambda>",
+      "count": 1
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_pi",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/admin.py",
+      "subject": "agent_unblock.<lambda>:agent.unblock",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/config_rebind/__init__.py",
+      "subject": "agent_config_rebind.operation:agent.config.rebind",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/grant.py",
+      "subject": "agent_grant.<lambda>:agent.grant",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/grant.py",
+      "subject": "agent_grant.<lambda>:agent.grants",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/grant.py",
+      "subject": "agent_grant.<lambda>:agent.revoke",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/grant.py",
+      "subject": "agent_grants.<lambda>:agent.grants",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "subject": "agent_ensure_home.operation:agent.ensure-home",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "subject": "agent_migrate_execute.operation:agent.migrate.execute",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "subject": "agent_migrate_preflight.operation:agent.migrate.preflight",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "subject": "agent_migrate_rollback.operation:agent.migrate.rollback",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
+      "subject": "agent_readiness.operation:agent.readiness",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/restore.py",
+      "subject": "agent_restore.<lambda>:agent.restore-policy",
+      "count": 2
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/restore.py",
+      "subject": "agent_restore.<lambda>:agent.restore-threshold",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "_legacy_pty_admission:agent.ensure-home",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
+      "subject": "_start_interactive_claude:ps",
+      "count": 2
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/down.py",
+      "subject": "agent_stop.operation:down",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "_runtime_context_projection:agent.runtime-context",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "_runtime_launch_custody:agent.runtime-launch.acquire",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
+      "subject": "_runtime_launch_custody:agent.runtime-launch.release",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex:agent.start.preflight",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex:ps",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_codex:session.unregister",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_pi:agent.start.preflight",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/sessions.py",
+      "subject": "_start_interactive_pi:ps",
+      "count": 2
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "subject": "start.operation:agent.resume.restore",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/start.py",
+      "subject": "start.operation:dispatch.matrix.resolve",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_stop.py",
+      "subject": "_request_shutdown:shutdown",
+      "count": 2
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "_daemon_probe:ping",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "_daemon_probe:ps",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "subject": "_resolved_interactive_resume_cwd:agent.get",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/commands.py",
+      "subject": "daemon_status.operation:ps",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/daemon/restart.py",
+      "subject": "_restart_status:ps",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/doctor/commands.py",
+      "subject": "_doctor_result:ps",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/message/ack.py",
+      "subject": "ack.<lambda>:message.ack",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/message/observe/outbox.py",
+      "subject": "message_outbox_prune.<lambda>:outbox.prune",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/message/outbox.py",
+      "subject": "outbox_prune.<lambda>:outbox.prune",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/message/reply.py",
+      "subject": "reply.operation:message.reply",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "routine_add.operation:routine.add",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "routine_remove.operation:routine.remove",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/routine/commands.py",
+      "subject": "routine_set.operation:routine.set",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py",
+      "subject": "autoupdate_run.operation:autoupdate.trigger",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "_pending_connector_count:ps",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "subject": "_read_restore_phase:ping",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "complete.operation:workflow.complete",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "fail:workflow.fail",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "reset.operation:pac.flag.reset",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "worker_restart:workflow.worker.restart",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/control.py",
+      "subject": "worker_stop:workflow.worker.stop",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "cancel:workflow.cancel",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "history_status:workflow.history.status",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "inspect.operation:workflow.node.inspect",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/inspect.py",
+      "subject": "inspect.operation:workflow.status",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/overview.py",
+      "subject": "_overview_model:ps",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "plan.operation:workflow.expansion.plan",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "plan.operation:workflow.plan",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "run.operation:workflow.plan",
+      "count": 1
+    },
+    {
+      "kind": "undeclared-method",
+      "path": "src/hyprial/shell/impl/cli/commands/workflow/run.py",
+      "subject": "run.operation:workflow.start",
+      "count": 1
+    }
+  ]
+}

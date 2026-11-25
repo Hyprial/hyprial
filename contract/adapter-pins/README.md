@@ -1,28 +1,24 @@
-# Conditional adapter bindings
+# Conditional adapter bindings (retired, I6-4)
 
-`adapter.pin` and `adapter.unpin` optionally accept `expectedActor`.
-`adapter.pins` advertises `supportsExpectedActor: true` only on daemons that
-enforce this condition. GUI callers must require this explicit capability
-before writing: older daemons ignore unknown parameters, so merely sending
-`expectedActor` does not protect a write to an older daemon.
-Omitting the field preserves the existing unconditional CLI operation.
-An explicit `null` requires an unbound adapter; a canonical agent URI requires
-that exact current binding. Other values produce `INVALID_ARGUMENT`.
+**Retired 2026-11-23 (I6-4).** `adapter.pin`, `adapter.pins` and
+`adapter.unpin` no longer exist: the pins table, the identity pin commands
+and the removal pin custody are deleted, and adapter bindings are now owned
+by agent cell documents. This directory is kept only as a pointer.
 
-The comparison and write share one SQLite `BEGIN IMMEDIATE` transaction,
-including across processes. A mismatch produces `PIN_STATE_CONFLICT` with
-`adapter`, `expectedActor`, and `currentActor`; neither the pin nor staged
-legacy state is changed. The condition is checked even for a repeated target.
-The existing one-to-one `PIN_CONFLICT` remains distinct.
+Replacements:
 
-A GUI adapter must require this field and obtain it from a fresh authoritative
-`adapter.pins` read. Present the old and proposed Agent before replacing a
-binding, and submit the observed old URI on confirmation. A conflict requires
-a fresh read and confirmation. This is a compare-current-value condition,
-not a monotonic revision: an intervening change back to the same value is
-indistinguishable. Adapter lifecycle versions are unrelated.
+- Read a binding: `adapter.list` (its `agent` field is resolved from the
+  cell adapter-routing index) or `agent.cell.get`.
+- Write a binding: `agent.cell.update` (CAS on `expectedRevision`) adding or
+  removing the agent cell's `role: "adapter"` member, whose
+  `cell.members.<ref>.adapter` names the local adapter configuration; CLI:
+  `hyprial agent cell show|apply`.
+- Conditional-write semantics: the cell revision CAS (`expectedRevision`)
+  replaces `expectedActor`; a stale expectation returns `INVALID_ARGUMENT`
+  carrying `expected`/`current`.
+- Cross-agent conflict: the same adapter declared by two agent cells is a
+  routing conflict and fails closed (`agent: null`), replacing the old
+  one-to-one `PIN_CONFLICT` write refusal.
 
-After a lost response, read the authoritative binding before deciding the
-outcome; do not automatically replay a stale confirmed move.
-
-Verification: `uv run pytest tests/identity/agents/registry/pins tests/daemon/application/adapters/test_daemon_adapter_pin.py`.
+Migration runbook: [docs/guides/cell-authority-migration.md](../../docs/guides/cell-authority-migration.md).
+Verification: `uv run pytest tests/daemon/application/adapters/test_daemon_adapter_routing.py`.

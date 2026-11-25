@@ -27,7 +27,7 @@ from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module
 from hyprial.daemon.impl.harnesses.streaming.protocol import ProgressObservation
 from hyprial.daemon.impl.harnesses.streaming.process import StreamingTurnProcess
 from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage, InboxService, MemoryDeliveryTransport
-from tests.support.links.gate import permissive_admission_slot
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 from hyprial.daemon.impl.inbox.tracking.progress import decode_progress_event
 
 OWNER = "op"
@@ -99,7 +99,9 @@ def _wait_for(predicate, timeout: float = 5.0) -> None:  # type: ignore[no-untyp
     raise AssertionError("timed out waiting for the scripted worker")
 
 
-def test_worker_progress_reaches_sender_without_becoming_a_prompt(tmp_path: Path) -> None:
+def test_worker_progress_reaches_sender_without_becoming_a_prompt(
+    tmp_path: Path, *, actor_host
+) -> None:
     state_dir = tmp_path / "state"
     # Explicit permissive premise: SENDER→WORKER is agent-to-agent through a
     # slot with no real gate yet (item 3).
@@ -107,7 +109,6 @@ def test_worker_progress_reaches_sender_without_becoming_a_prompt(tmp_path: Path
         state_dir / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         node_id=NODE,
-        link_admission=permissive_admission_slot(),
     )
     launcher = _Launcher()
     harnesses = ManagedHarnessRuntime(launcher)  # type: ignore[arg-type]
@@ -118,7 +119,8 @@ def test_worker_progress_reaches_sender_without_becoming_a_prompt(tmp_path: Path
         transport=_Transport(),  # type: ignore[arg-type]
         inbox=inbox,
         harnesses=harnesses,
-        harness_actor_uri=lambda name: f"agent:{OWNER}:{NODE}:{name}",
+        harness_actor_uri=lambda name: f"agent:{OWNER}:{NODE}:{name}", actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     original = InboxMessage(
         message_id="delivery-progress-e2e",
@@ -377,10 +379,17 @@ def test_application_composition_wires_progress_only_on_the_node_endpoint(
     _CompositionEndpoint.instances = []
     monkeypatch.setattr(transport_owner, "ZenohTransport", _CompositionTransport)
     monkeypatch.setattr(
-        transport_owner, "TransportSessionAuthority", lambda session: session
+        transport_owner,
+        "TransportSessionAuthority",
+        lambda session, *, actor_host=None: session,
     )
     monkeypatch.setattr(daemon_application, "LivelinessDirectory", _CompositionDirectory)
-    monkeypatch.setattr(daemon_application, "ZenohDeliveryTransport", _CompositionDelivery)
+    # The composition builds its network transport through the inbox factory
+    # (wire-B payload envelope); patch the link class where that factory reads it.
+    monkeypatch.setattr(
+        "hyprial.daemon.impl.inbox.network.ZenohDeliveryTransport",
+        _CompositionDelivery,
+    )
     monkeypatch.setattr(daemon_application, "LocalFirstDeliveryTransport", _CompositionDelivery)
     monkeypatch.setattr(daemon_application, "LarkReplyBridgeTransport", _CompositionBridge)
     monkeypatch.setattr(
@@ -398,7 +407,7 @@ def test_application_composition_wires_progress_only_on_the_node_endpoint(
     monkeypatch.setattr(
         daemon_application,
         "HarnessPortClient",
-        lambda actor, _events: actor,
+        lambda actor, _events, *, actor_host: actor,
     )
     monkeypatch.setattr(daemon_application, "ZenohInboxEndpoint", _CompositionEndpoint)
     monkeypatch.setattr(daemon_application, "DeliveryStatusEndpoint", _CloseOnly)

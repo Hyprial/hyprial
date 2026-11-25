@@ -16,8 +16,8 @@ from pathlib import Path
 from hyprial.kernel import Logger
 from hyprial.kernel import configured_hyprial_home
 from hyprial.kernel import PersistentConfigStore
-from hyprial.identity import LazyUserStore
 
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.daemon.impl.adapters.lark.inbound.adapter import LarkAdapter
 from hyprial.daemon.impl.adapters.lark.inbound.pipeline import (
     DEFAULT_TRANSIENT_RETRY_BACKOFF_MAX_SECONDS,
@@ -159,6 +159,11 @@ def main(arguments: list[str] | None = None) -> int:
     gateway = next((item for item in config.channels.gateways if item.name == name), None)
     if gateway is None:
         raise RuntimeError(f"Lark adapter is not configured: {name}")
+    # P7: this worker is its own process. It creates exactly one ActorHost
+    # registry here, and every actor-owning component below borrows that host;
+    # no component may start a second engine in this process.
+    hosts = ActorHostCustody(None, owner="lark-worker-entry")
+    host = hosts.host
     secret = config_store.lark_app_secret(gateway.credential_ref)
     scope_client = LarkScopeClient(gateway.app_id, secret)
     notification_gateway = LarkSdkGateway.from_credentials(
@@ -286,16 +291,13 @@ def main(arguments: list[str] | None = None) -> int:
             native_message_id, ACK_EMOJI
         ),
         overflow_report=emit,
+        actor_host=host,
     )
 
     def resolve_sender_display_name(platform_id: str) -> str | None:
         # Read-only identities lookup (this adapter's namespace) so expanded
         # merge-forward children say who spoke.  Never writes, and never
         # raises: an unanswerable lookup degrades to the raw platform id.
-        # The degradation is not silent though: a warning event lands on the
-        # worker telemetry stream (same practice as lark.pin.query_failed),
-        # because an always-failing lookup otherwise breaks display-name
-        # resolution forever with no signal anywhere.
         try:
             for identity in state.find_identities(platform_id=platform_id):
                 if identity.display_name:
@@ -330,25 +332,8 @@ def main(arguments: list[str] | None = None) -> int:
             socket_path=socket_path,
             report=emit,
         ),
-        # New mints use the current adapter: spelling (2026-08-24 naming
-        # migration, PAC NAMB efeeaf0a01ba); historical channel:lark:
-        # identities already on the wire/in storage keep parsing via
-        # lark_reply_adapter's dual-read, never rewritten.
         channel_actor_id=f"adapter:lark:{name}",
         org_context_path=home / "org-context.md",
-        users=LazyUserStore(
-            state_dir / "users.sqlite3",
-            on_open_failure=lambda error: emit(
-                {
-                    "status": "warning",
-                    "event": "lark.users.open_failed",
-                    "errorType": type(error).__name__,
-                    # Local sqlite diagnostic, not platform-controlled text.
-                    "error": str(error),
-                    "fallback": "identities-only",
-                }
-            ),
-        ),
         logger=logger,
         notify_operator=(
             notify_operator
@@ -383,6 +368,7 @@ def main(arguments: list[str] | None = None) -> int:
             minimum=0.01,
             maximum=300.0,
         ),
+        actor_host=host,
     )
     control_fd = os.environ.get(CONTROL_FD_ENV_VAR)
     if control_fd:
@@ -511,6 +497,8 @@ def main(arguments: list[str] | None = None) -> int:
             close_adapter()
         reaction_effects.close()
         state.close()
+        if not hosts.shutdown(5.0):
+            raise RuntimeError("lark worker actor host did not shut down")
     return 0
 
 

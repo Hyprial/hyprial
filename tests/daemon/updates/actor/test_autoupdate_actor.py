@@ -7,7 +7,7 @@ from datetime import datetime
 from hyprial.daemon.impl.autoupdate.actor import AutoUpdateAuthority
 
 
-def test_stale_run_completion_cannot_release_new_active_update(tmp_path):
+def test_stale_run_completion_cannot_release_new_active_update(tmp_path, actor_host, generation_scheduler):
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps({"autoUpgrade": True}))
@@ -23,6 +23,8 @@ def test_stale_run_completion_cannot_release_new_active_update(tmp_path):
         return subprocess.CompletedProcess(command, 0)
 
     actor = AutoUpdateAuthority(
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
         state_dir=tmp_path / "state", hyprial_home=home, runner=runner
     )
     original = actor._effects._complete
@@ -41,11 +43,11 @@ def test_stale_run_completion_cannot_release_new_active_update(tmp_path):
         )
         assert actor.trigger("second")
         assert entered.wait(1)
-        actor._runtime.tell(actor._handle, completions[0])
+        actor._cell.tell(completions[0])
         _wait(
             lambda: (
-                actor._runtime.snapshot(actor._handle).queued == 0
-                and actor._runtime.snapshot(actor._handle).in_flight == 0
+                actor._cell.snapshot().queued == 0
+                and actor._cell.snapshot().in_flight == 0
             )
         )
         assert actor.status()["active"]
@@ -55,12 +57,14 @@ def test_stale_run_completion_cannot_release_new_active_update(tmp_path):
         assert actor.stop(timeout=2)
 
 
-def test_trigger_before_start_is_queued_without_running_child(tmp_path):
+def test_trigger_before_start_is_queued_without_running_child(tmp_path, actor_host, generation_scheduler):
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps({"autoUpgrade": True}))
     calls = []
     actor = AutoUpdateAuthority(
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
         state_dir=tmp_path / "state",
         hyprial_home=home,
         runner=lambda command, **kwargs: (
@@ -71,8 +75,8 @@ def test_trigger_before_start_is_queued_without_running_child(tmp_path):
         assert actor.trigger("queued")
         _wait(
             lambda: (
-                actor._runtime.snapshot(actor._handle).queued == 0
-                and actor._runtime.snapshot(actor._handle).in_flight == 0
+                actor._cell.snapshot().queued == 0
+                and actor._cell.snapshot().in_flight == 0
             )
         )
         assert calls == []
@@ -89,11 +93,13 @@ def _wait(predicate):
     assert predicate()
 
 
-def test_default_off_actor_does_not_spawn_or_write_update_artifacts(tmp_path):
+def test_default_off_actor_does_not_spawn_or_write_update_artifacts(tmp_path, actor_host, generation_scheduler):
     home = tmp_path / "home"
     home.mkdir()
     calls = []
     actor = AutoUpdateAuthority(
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
         state_dir=tmp_path / "state",
         hyprial_home=home,
         runner=lambda *args, **kwargs: calls.append(args),
@@ -109,7 +115,7 @@ def test_default_off_actor_does_not_spawn_or_write_update_artifacts(tmp_path):
         assert actor.stop(timeout=2)
 
 
-def test_stalled_upgrade_does_not_block_status_or_admit_duplicate_run(tmp_path):
+def test_stalled_upgrade_does_not_block_status_or_admit_duplicate_run(tmp_path, actor_host, generation_scheduler):
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps({"autoUpgrade": True}))
@@ -121,6 +127,8 @@ def test_stalled_upgrade_does_not_block_status_or_admit_duplicate_run(tmp_path):
         return subprocess.CompletedProcess(args[0], 0)
 
     actor = AutoUpdateAuthority(
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
         state_dir=tmp_path / "state", hyprial_home=home, runner=runner
     )
     try:
@@ -135,13 +143,15 @@ def test_stalled_upgrade_does_not_block_status_or_admit_duplicate_run(tmp_path):
         assert actor.stop(timeout=2)
 
 
-def test_calendar_catches_clock_jump_without_repeated_runs(tmp_path):
+def test_calendar_catches_clock_jump_without_repeated_runs(tmp_path, actor_host, generation_scheduler):
     clock = [datetime(2026, 9, 27, 3, 16, 59)]
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps({"autoUpgrade": True}))
     calls = []
     actor = AutoUpdateAuthority(
+        actor_host=actor_host,
+        scheduler=generation_scheduler,
         state_dir=tmp_path / "state",
         hyprial_home=home,
         now=lambda: clock[0],

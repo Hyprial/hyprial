@@ -180,17 +180,6 @@ def main() -> None:
 
         baseline_candidates = survey.retry_candidates()
         baseline_dispositions = survey.retry_dispositions(baseline_candidates)
-        link_loop = next(
-            (
-                row
-                for row in baseline_dispositions
-                if row[0].endswith("links/service/core.py")
-                and row[2].endswith("LinkService._loop")
-            ),
-            None,
-        )
-        if link_loop is None or link_loop[4] != "limit-class:periodic-reentry":
-            raise SystemExit("limit-class self-test missed LinkService periodic re-entry")
         service_reconcile = next(
             (
                 row
@@ -230,18 +219,7 @@ def main() -> None:
             fragment in service_detail_text for fragment in required_service_evidence
         ):
             raise SystemExit("limit-class self-test lost ServiceManager semantics")
-        limit_lines = {row[1] for row in survey.limit_class_instances()}
-        required_limit_lines = {
-            "src/hyprial/daemon/impl/links/service/core.py:500",
-            "src/hyprial/daemon/impl/links/service/core.py:189",
-            "src/hyprial/daemon/impl/links/store.py:625",
-            "src/hyprial/daemon/impl/links/store.py:666",
-        }
-        if not required_limit_lines <= limit_lines:
-            raise SystemExit(
-                "limit-class self-test missed baseline instances: "
-                f"{sorted(required_limit_lines - limit_lines)}"
-            )
+        assert survey.limit_class_instances() == []
 
         tree = survey.parse(path)
         definitions = {

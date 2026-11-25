@@ -154,15 +154,15 @@ class PinRoutes:
 
     def __init__(self, actor: ActorTarget, *, resolve_refusals: int = 0) -> None:
         self.actor = actor
-        self.pins: dict[str, ActorTarget] = {"lark:oc_dm:oc_dm": actor}
+        self.bindings: dict[str, ActorTarget] = {"lark:oc_dm:oc_dm": actor}
         self.resolve_refusals = resolve_refusals
         self.resolve_attempts = 0
 
     def actor_by_key(self, actor_key: str) -> ActorTarget | None:
         return self.actor if actor_key == self.actor.actor_key else None
 
-    def pinned_actor(self, conversation_id: str) -> ActorTarget | None:
-        return self.pins.get(conversation_id)
+    def routed_actor(self, conversation_id: str) -> ActorTarget | None:
+        return self.bindings.get(conversation_id)
 
     def resolve_runtime_target(self, token: str) -> tuple[ActorTarget, ...]:
         self.resolve_attempts += 1
@@ -192,7 +192,7 @@ def _make_adapter(
         lark=lark,
         harness=harness,
         routes=routes,
-        channel_actor_id="channel:lark:test",
+        channel_actor_id="adapter:lark:test",
         transient_retry_budget=budget,
         transient_retry_backoff_initial=0.01,
         transient_retry_backoff_max=0.02,

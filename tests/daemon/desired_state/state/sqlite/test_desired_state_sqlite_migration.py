@@ -31,6 +31,7 @@ Two sentences are pinned because the rule would be wrong without them:
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 from pathlib import Path
@@ -61,7 +62,6 @@ _V1_DOCUMENT: dict[str, Any] = {
         }
     ],
     "interactiveSessions": [],
-    "channelPins": {},
     "deprecatedSharedChannels": [],
     "zenoh": {"listen": [], "connect": []},
 }
@@ -309,3 +309,44 @@ def test_desired_state_json_without_v1_is_ignored(tmp_path: Path) -> None:
     assert store.load() == DesiredState()
     assert not _archives(tmp_path, "desired-state.json")
     assert (tmp_path / "desired-state.json").exists()
+
+
+def test_leftover_channel_pins_table_is_inert(tmp_path: Path) -> None:
+    """F1b: an upgraded database keeps its ``channel_pins`` rows untouched and unread."""
+
+    database = tmp_path / "lifecycle-operations.sqlite3"
+    store = DesiredStateStore(tmp_path / "desired-state.json")
+    store.set_adapter("lark-a", True)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS channel_pins "
+            "(channel TEXT PRIMARY KEY, agent TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO channel_pins(channel, agent) VALUES('lark-a', 'worker')"
+        )
+
+    reopened = DesiredStateStore(tmp_path / "desired-state.json")
+    document = reopened.load().to_json()
+    assert "channelPins" not in document
+    assert "channelPins" not in DesiredStateSqliteShadow(database).read_document()
+    reopened.set_adapter("lark-b", True)
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        assert connection.execute(
+            "SELECT channel, agent FROM channel_pins"
+        ).fetchall() == [("lark-a", "worker")]
+
+
+def test_fresh_database_has_no_channel_pins_table(tmp_path: Path) -> None:
+    database = tmp_path / "lifecycle-operations.sqlite3"
+    DesiredStateStore(tmp_path / "desired-state.json").set_adapter("lark-a", True)
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "channel_pins" not in tables

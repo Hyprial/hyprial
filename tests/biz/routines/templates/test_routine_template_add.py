@@ -31,6 +31,21 @@ def registration(monkeypatch, tmp_path):
 
     def request(method, params, **_kwargs):
         calls.append((method, params))
+        if method == "routine.plan":
+            from types import SimpleNamespace
+
+            from hyprial.daemon.impl.request_catalog.registry import METHOD_REGISTRY
+            from hyprial.kernel import DaemonRequestError, RequestPortError
+            from hyprial.shell.impl.daemon_wiring.routines import routine_text_loader
+
+            try:
+                return METHOD_REGISTRY.invoke(
+                    SimpleNamespace(_routine_text_loader=routine_text_loader),
+                    method,
+                    params,
+                )
+            except DaemonRequestError as error:
+                raise RequestPortError(error.code, str(error), error.data) from error
         assert method == "routine.add"
         try:
             return service.add(yaml_text=params["yaml"], owner=params["actor"])

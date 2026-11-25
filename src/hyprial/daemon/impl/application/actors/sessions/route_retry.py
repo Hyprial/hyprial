@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from hyprial.kernel import LifecycleMutationRequest
+from hyprial.kernel import ipc_errors
 from hyprial.daemon.impl.network.route_ports import (
     DropRouteCommand,
     EnsureRouteCommand,
@@ -201,7 +202,7 @@ class _SessionRouteRetryMixin:
                 completed = routes.call_settled(request)
                 break
             except RouteCommandError as error:
-                if error.code in {"PORT_CLOSING", "ROUTE_LEASE_STALE"}:
+                if error.code in {ipc_errors.PORT_CLOSING, ipc_errors.ROUTE_LEASE_STALE}:
                     raise
                 retry += 1
                 remaining = deadline - time.monotonic()

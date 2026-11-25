@@ -13,12 +13,10 @@ from ._base import (
     AgentNotFoundError,
     HandoverNotice,
     InvalidAgentNameError,
-    PinConflictError,
     RestoreDisposition,
     normalize_agent_config,
     normalize_capabilities,
     normalize_harness_args,
-    normalize_pinned_adapters,
 )
 from ._core import (
     AgentHomeError,
@@ -44,14 +42,12 @@ __all__ = [
     "AgentRegistry",
     "HandoverNotice",
     "InvalidAgentNameError",
-    "PinConflictError",
     "RestoreDisposition",
     "default_registry",
     "local_actors",
     "normalize_agent_config",
     "normalize_capabilities",
     "normalize_harness_args",
-    "normalize_pinned_adapters",
     "set_default_registry",
     "verify_fetch_claim",
 ]

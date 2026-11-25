@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 from .settlement import (
-    FORWARD_UNAVAILABLE, HARNESS_FAILURE_BACKOFF_MS, HARNESS_FAILURE_MAX_ATTEMPTS,
-    ForwardOutcome, _InflightAttempt,
+    HARNESS_FAILURE_BACKOFF_MS, HARNESS_FAILURE_MAX_ATTEMPTS, _InflightAttempt,
 )
-import queue
-from dataclasses import replace
+from .cell_results import (
+    normalize_root_result,
+    pop_cell_hop,
+    release_held_cell_origin,
+    settle_cell_result,
+)
 from typing import TYPE_CHECKING, Any
 from hyprial.daemon.impl.inbox import (
     InboxAuthorityTimeout,
@@ -18,7 +21,7 @@ from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
     is_mechanism_hook_request,
     mechanism_of,
 )
-from hyprial.kernel import DECLARED_HARNESSES, parse_agent_uri
+from hyprial.kernel import DECLARED_HARNESSES
 from hyprial.daemon.impl.api  import (
     HarnessResult,
     HarnessResultStatus,
@@ -63,6 +66,29 @@ def _worker_skip(result: HarnessResult) -> bool:
 class _BridgeResultsMixin:
     """DaemonEventBridge cluster; the composing class owns the state."""
 
+    def _release_origin_claims_if_present(self, message_ids: tuple[str, ...]) -> None:
+        release = getattr(self, "_release_origin_claims", None)
+        if callable(release):
+            release(message_ids)
+
+    def _forget_origin_claim_if_present(self, message_id: str) -> None:
+        forget = getattr(self, "_forget_origin_claim_record", None)
+        if callable(forget):
+            forget(message_id)
+
+    def _fetch_completed_turn_origin(self, original: InboxMessage) -> None:
+        fetch_origin = getattr(self, "_fetch_with_headless_origin", None)
+        if callable(fetch_origin):
+            fetch_origin(
+                original.recipient, (original.message_id,), completed_turn=True
+            )
+            return
+        self.inbox.fetch_pending(
+            original.recipient,
+            only=frozenset({original.message_id}),
+            completed_turn=True,
+        )
+
     def _claimed_results_available(
         self, completion: CadenceCompleted[HarnessResultsClaimed]
     ) -> None:
@@ -103,18 +129,7 @@ class _BridgeResultsMixin:
             if not terminal:
                 return False
             settle = getattr(self.harnesses, "settle_result")
-            settled = bool(settle(claim.claim_token, result.delivery_id))
-            if settled and result.forward_to is not None:
-                self._pending_forward_outcomes.pop(result.delivery_id, None)
-                if self._forward_settlement is not None:
-                    decision = self._forward_settlement.completed(
-                        result.delivery_id
-                    )
-                    if decision is not None:
-                        self._forward_settlement.retire(
-                            result.delivery_id, decision.decision_token
-                        )
-            return settled
+            return bool(settle(claim.claim_token, result.delivery_id))
         except (NameError, ImportError):
             raise
         except Exception as error:
@@ -132,13 +147,12 @@ class _BridgeResultsMixin:
         if callable(release_batch_claim):
             release_batch_claim(result.delivery_id, result.message_ids)
         if result.message_ids:
-            pending = self._pending_batch_members.setdefault(
-                result.delivery_id,
-                {
-                    member: replace(result, delivery_id=member, message_ids=())
-                    for member in result.message_ids
-                },
-            )
+            remaining = self._pending_batch_members.get(result.delivery_id)
+            pending = self._pending_batch_members[result.delivery_id] = {
+                member.delivery_id: member
+                for member in self._batch_member_results(result)
+                if remaining is None or member.delivery_id in remaining
+            }
             for member, member_result in tuple(pending.items()):
                 if self._settle_claimed_result_member(member_result):
                     pending.pop(member, None)
@@ -163,6 +177,7 @@ class _BridgeResultsMixin:
                         result.recipient, result.delivery_id
                     ).acknowledged
                     if acknowledged:
+                        self._forget_origin_claim_if_present(result.delivery_id)
                         self._settle_delivery_hooks(result)
                         self._pending_workflow_results.pop(result.delivery_id, None)
                         self._pending_workflow_attempts.pop(result.delivery_id, None)
@@ -190,27 +205,38 @@ class _BridgeResultsMixin:
                 result.recipient, result.delivery_id
             ).acknowledged
             if acknowledged:
+                self._forget_origin_claim_if_present(result.delivery_id)
                 self._settle_delivery_hooks(result)
             return acknowledged
+        hop_state = pop_cell_hop(self, result.delivery_id)
+        hop_index = hop_state.hop_index if hop_state is not None else 0
+        hop_stamp = (
+            hop_state.stamp
+            if hop_state is not None
+            else (terminal_attempt.stamp if terminal_attempt is not None else None)
+        )
         if result.status is HarnessResultStatus.INTERRUPTED:
+            target_id = (
+                hop_state.original.message_id
+                if hop_state is not None
+                else result.delivery_id
+            )
+            self._release_origin_claims_if_present((target_id,))
             return True
-        if (
-            result.forward_to is not None
-            and self._forward_settlement is not None
-            and result.delivery_id in self._pending_forward_outcomes
-        ):
-            # Native forwarding and its inbox decision already settled.  The
-            # retained Harness claim is retrying only its token-fenced retire.
-            return True
-        original = next(
-            (
-                message
-                for message in self.inbox.pending_messages(result.recipient)
-                if message.message_id == result.delivery_id
-            ),
-            None,
+        original = (
+            hop_state.original
+            if hop_state is not None
+            else next(
+                (
+                    message
+                    for message in self.inbox.pending_messages(result.recipient)
+                    if message.message_id == result.delivery_id
+                ),
+                None,
+            )
         )
         if original is None:
+            self._forget_origin_claim_if_present(result.delivery_id)
             self._settle_delivery_hooks(result)
             if result.status is HarnessResultStatus.FAILED:
                 fallback = self._failure_original(result.delivery_id)
@@ -233,79 +259,18 @@ class _BridgeResultsMixin:
                 # settlement attempt uses the same incarnation fence.
                 self._inflight[result.delivery_id] = terminal_attempt
             return settled
-        if result.forward_to is not None:
-            if self._forwarder is None:
-                self._settle_failed_result(
-                    replace(
-                        result,
-                        status=HarnessResultStatus.FAILED,
-                        error="this daemon cannot forward",
-                        failure_code=FORWARD_UNAVAILABLE,
-                    ),
-                    original,
-                    attempt=terminal_attempt,
-                )
-                return True
-            forward_owner = self._forward_settlement
-            completed_forward = (
-                forward_owner.completed(result.delivery_id)
-                if forward_owner is not None else None
-            )
-            if forward_owner is not None and completed_forward is None:
-                admission = forward_owner.submit(original, result, terminal_attempt)
-                if admission is AdmissionResult.OVERLOADED and self._logger is not None:
-                    self._logger(
-                        "warn", "daemon", "harness.forward_overloaded",
-                        deliveryId=result.delivery_id,
-                    )
-                return False
-            if completed_forward is not None:
-                outcome = completed_forward.outcome
-                terminal_attempt = completed_forward.attempt or terminal_attempt
-            else:
-                # Compatibility for directly constructed bridges without the
-                # production actor composition.
-                outcome = self._pending_forward_outcomes.get(result.delivery_id)
-                if outcome is None:
-                    try:
-                        outcome = self._forwarder(
-                            original, result.forward_to, result.output
-                        )
-                    except Exception as error:
-                        outcome = ForwardOutcome(
-                            False, "HARNESS_TRANSIENT_FAILURE",
-                            f"forward raised {type(error).__name__}",
-                        )
-                    if outcome.accepted:
-                        self._pending_forward_outcomes[result.delivery_id] = outcome
-            if outcome.accepted:
-                acknowledged = self.inbox.ack(
-                    original.recipient, original.message_id
-                ).acknowledged
-                if acknowledged:
-                    self._pending_forward_outcomes[result.delivery_id] = outcome
-                    self._settle_delivery_hooks(result)
-                return acknowledged
-            failed = replace(
-                result,
-                status=HarnessResultStatus.FAILED,
-                output="",
-                error=outcome.error or outcome.failure_code,
-                failure_code=outcome.failure_code or "HARNESS_TRANSIENT_FAILURE",
-            )
-            self._settle_failed_result(failed, original, attempt=terminal_attempt)
-            if forward_owner is not None:
-                self._pending_forward_outcomes[result.delivery_id] = outcome
+        if hop_state is not None:
+            result = normalize_root_result(original, result)
+        cell_outcome = settle_cell_result(
+            self, original, result, hop_index=hop_index, stamp=hop_stamp
+        )
+        if cell_outcome is not None:
             return True
         mechanism = self._settle_mechanism_answer(original, result)
         if mechanism is not None:
             return mechanism
         try:
-            self.inbox.fetch_pending(
-                original.recipient,
-                only=frozenset({original.message_id}),
-                completed_turn=True,
-            )
+            self._fetch_completed_turn_origin(original)
             pending = next(
                 (
                     message
@@ -316,15 +281,16 @@ class _BridgeResultsMixin:
             )
             hint = settle_hint_for(
                 pending=pending,
-                gate=self._current_link_gate(),
                 actor=original.recipient,
                 message_id=original.message_id,
-                log=self._logger,
             )
             if hint == "ack":
                 # A refused or unavailable ack means the row is already
                 # settled; it is never a reason to turn a keep into an ack.
                 self.inbox.ack(original.recipient, original.message_id)
+                self._forget_origin_claim_if_present(original.message_id)
+            else:
+                self._release_origin_claims_if_present((original.message_id,))
         except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
             self._defer_ordinary_settlement(original, result, error)
             return False
@@ -334,28 +300,6 @@ class _BridgeResultsMixin:
 
     def _complete_harness_results(self) -> int:
         settled = 0
-        # Forwards the pump finished since the last tick settle first, here,
-        # under the same settlement owner as every other harness result.
-        while True:
-            try:
-                original, result, outcome, attempt = self._forward_outcomes.get_nowait()
-            except queue.Empty:
-                break
-            if outcome.accepted:
-                self._finish_attempt(result.delivery_id)
-                if self.inbox.ack(original.recipient, original.message_id).acknowledged:
-                    self._settle_delivery_hooks(result)
-                    settled += 1
-                continue
-            failed = replace(
-                result,
-                status=HarnessResultStatus.FAILED,
-                output="",
-                error=outcome.error or outcome.failure_code,
-                failure_code=outcome.failure_code or "HARNESS_TRANSIENT_FAILURE",
-            )
-            if self._settle_failed_result(failed, original, attempt=attempt):
-                settled += 1
         raw_results = [
             *self._pending_workflow_results.values(),
             *self._pending_settle_results.values(),
@@ -365,16 +309,18 @@ class _BridgeResultsMixin:
         for result in raw_results:
             # The managed batch has no identity of its own.  Every outcome
             # becomes one ordinary result per member before any inbox lookup.
+            try:
+                members = (
+                    self._batch_member_results(result)
+                    if result.message_ids else (result,)
+                )
+            except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+                self._defer_batch_expansion(result, error)
+                continue
             release_batch_claim = getattr(self, "_release_batch_claim", None)
             if callable(release_batch_claim):
                 release_batch_claim(result.delivery_id, result.message_ids)
-            if result.message_ids:
-                results.extend(
-                    replace(result, delivery_id=member, message_ids=())
-                    for member in result.message_ids
-                )
-            else:
-                results.append(result)
+            results.extend(members)
         for result in results:
             # The worker released this delivery from its queue before exposing
             # the result.  Reply/ack settlement has its own retry ownership.
@@ -395,6 +341,7 @@ class _BridgeResultsMixin:
                     handled = self._workflow_outcome(result)
                     if handled:
                         self.inbox.ack(result.recipient, result.delivery_id)
+                        self._forget_origin_claim_if_present(result.delivery_id)
                         self._settle_delivery_hooks(result)
                         self._pending_workflow_results.pop(result.delivery_id, None)
                         self._pending_workflow_attempts.pop(result.delivery_id, None)
@@ -425,21 +372,41 @@ class _BridgeResultsMixin:
                 self.state_dir, result.delivery_id, now_ms=self._clock_ms()
             ):
                 self.inbox.ack(result.recipient, result.delivery_id)
+                self._forget_origin_claim_if_present(result.delivery_id)
                 self._finish_attempt(result.delivery_id)
                 self._settle_delivery_hooks(result)
                 settled += 1
                 continue
+            hop_state = pop_cell_hop(self, result.delivery_id)
+            hop_index = hop_state.hop_index if hop_state is not None else 0
+            hop_stamp = (
+                hop_state.stamp
+                if hop_state is not None
+                else (terminal_attempt.stamp if terminal_attempt is not None else None)
+            )
             if result.status is HarnessResultStatus.INTERRUPTED:
+                target_id = (
+                    hop_state.original.message_id
+                    if hop_state is not None
+                    else result.delivery_id
+                )
+                release_held_cell_origin(self, hop_state.original) if hop_state is not None else None
+                self._release_origin_claims_if_present((target_id,))
                 continue
-            original = next(
-                (
-                    message
-                    for message in self.inbox.pending_messages(result.recipient)
-                    if message.message_id == result.delivery_id
-                ),
-                None,
+            original = (
+                hop_state.original
+                if hop_state is not None
+                else next(
+                    (
+                        message
+                        for message in self.inbox.pending_messages(result.recipient)
+                        if message.message_id == result.delivery_id
+                    ),
+                    None,
+                )
             )
             if original is None:
+                self._forget_origin_claim_if_present(result.delivery_id)
                 self._settle_delivery_hooks(result)
                 # The row can be fetched/consumed (or already carry a terminal
                 # settlement) before this failure lands.  That used to be a
@@ -462,27 +429,14 @@ class _BridgeResultsMixin:
                 ):
                     settled += 1
                 continue
-            if result.forward_to is not None:
-                # Before the reply-intent short-circuit below: a person
-                # answering in-thread arrives as a reply, and acking it
-                # without sending would drop the forward silently.  Forward
-                # settlement continues independently after the turn's silence
-                # clock has finished.
-                if self._forwarder is None:
-                    if self._settle_failed_result(
-                        replace(
-                            result,
-                            status=HarnessResultStatus.FAILED,
-                            error="this daemon cannot forward",
-                            failure_code=FORWARD_UNAVAILABLE,
-                        ),
-                        original,
-                        attempt=terminal_attempt,
-                    ):
-                        settled += 1
-                    continue
-                self._start_forward_thread()
-                self._forward_jobs.put((original, result, terminal_attempt))
+            if hop_state is not None:
+                result = normalize_root_result(original, result)
+            cell_outcome = settle_cell_result(
+                self, original, result, hop_index=hop_index, stamp=hop_stamp
+            )
+            if cell_outcome is not None:
+                if cell_outcome == "settled":
+                    settled += 1
                 continue
             self._finish_attempt(result.delivery_id)
             mechanism = self._settle_mechanism_answer(original, result)
@@ -491,11 +445,7 @@ class _BridgeResultsMixin:
                     settled += 1
                 continue
             try:
-                self.inbox.fetch_pending(
-                    original.recipient,
-                    only=frozenset({original.message_id}),
-                    completed_turn=True,
-                )
+                self._fetch_completed_turn_origin(original)
                 pending = next(
                     (
                         message
@@ -506,13 +456,14 @@ class _BridgeResultsMixin:
                 )
                 hint = settle_hint_for(
                     pending=pending,
-                    gate=self._current_link_gate(),
                     actor=original.recipient,
                     message_id=original.message_id,
-                    log=self._logger,
                 )
                 if hint == "ack":
                     self.inbox.ack(original.recipient, original.message_id)
+                    self._forget_origin_claim_if_present(original.message_id)
+                else:
+                    self._release_origin_claims_if_present((original.message_id,))
             except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
                 # Settled per result: raising here used to abort the whole
                 # tick after drain_results() had already released every
@@ -531,7 +482,7 @@ class _BridgeResultsMixin:
 
         Only two exchanges reply without a model (rulings 58/59): a hook
         request authenticated by the reserved sender, and a python_worker
-        (including user-proxy) ``result`` frame.  Everything else, including a
+        ``result`` frame.  Everything else, including a
         forged hook marker, goes through the ordinary settle-hint path.
         """
 
@@ -550,25 +501,24 @@ class _BridgeResultsMixin:
             self._mechanism_answer_settled(original, result, error)
             return False
         if acknowledged:
+            self._forget_origin_claim_if_present(original.message_id)
             self._pending_settle_results.pop(result.delivery_id, None)
             self._settle_delivery_hooks(result)
         return acknowledged
 
     def _mechanism_is_python_worker(self, original: InboxMessage) -> bool:
-        parsed = parse_agent_uri(original.recipient)
-        if parsed is None:
-            return False
-        harness = self._harness_kind(parsed[2])
-        return harness is not None and mechanism_of(harness) == "python_worker"
+        """Is the row's recipient a python_worker agent?
 
-    def _current_link_gate(self) -> object | None:
-        admission = getattr(self, "_link_admission", None)
-        if admission is None:
-            return None
-        getter = getattr(admission, "current_gate", None)
-        if callable(getter):
-            return getter()
-        return getattr(admission, "gate", None)
+        The kind is read through the worker the recipient key names: an
+        id-minted agent's rows are keyed at its ``a.`` id URI, whose segment
+        is not the worker name.
+        """
+
+        name = self._recipient_worker_name(original.recipient)
+        if name is None:
+            return False
+        harness = self._harness_kind(name)
+        return harness is not None and mechanism_of(harness) == "python_worker"
 
     def _settle_stranded_rows(self, harnesses: tuple[Any, ...]) -> int:
         """Startup sweep (ruling 74): settle rows stamped before a crash.
@@ -585,10 +535,16 @@ class _BridgeResultsMixin:
         failure_of = getattr(self.inbox, "harness_failure_settlement", None)
         if not callable(has_fetched) or not callable(failure_of):
             return 0  # a narrow inbox port has no stamp evidence to sweep
-        actors = {self.harness_actor_uri(n) for n in self.harnesses.streaming_actors()}
+        reader = getattr(self, "_actor_read_keys", None)
+
+        def keys_of(name: str) -> tuple[str, ...]:
+            return reader(name) if callable(reader) else (self.harness_actor_uri(name),)
+
+        actors = {key for n in self.harnesses.streaming_actors() for key in keys_of(n)}
         actors |= {
-            self.harness_actor_uri(spec.name) for spec in harnesses
+            key for spec in harnesses
             if spec.headless and spec.harness in DECLARED_HARNESSES
+            for key in keys_of(spec.name)
         }
         budget = _STRANDED_SWEEP_LIMIT
         settled = 0
@@ -604,10 +560,8 @@ class _BridgeResultsMixin:
                     budget -= 1
                     hint = settle_hint_for(
                         pending=message,
-                        gate=self._current_link_gate(),
                         actor=recipient,
                         message_id=message.message_id,
-                        log=self._logger,
                     )
                     if hint == "ack" and self.inbox.ack(
                         recipient, message.message_id
@@ -636,6 +590,30 @@ class _BridgeResultsMixin:
                 "harness.settle.deferred",
                 messageId=original.message_id,
                 recipient=original.recipient,
+                errorType=type(error).__name__,
+                detail=str(error)[:300],
+            )
+
+    def _defer_batch_expansion(
+        self,
+        result: HarnessResult,
+        error: InboxAuthorityTimeout | InboxAuthorityUnavailable,
+    ) -> None:
+        """Keep a drained batch result whose member lookup did not confirm.
+
+        The whole batch result is retried next tick and its batch claim is
+        kept, so no member is lost or re-offered while the inbox is busy.
+        """
+
+        first = result.delivery_id not in self._pending_settle_results
+        self._pending_settle_results[result.delivery_id] = result
+        if first and self._logger is not None:
+            self._logger(
+                "warn",
+                "daemon",
+                "harness.settle.deferred",
+                messageId=result.delivery_id,
+                recipient=result.recipient,
                 errorType=type(error).__name__,
                 detail=str(error)[:300],
             )
@@ -700,6 +678,7 @@ class _BridgeResultsMixin:
             # A concurrent public ack can retire the row after the
             # read above.  That is a completed ownership decision,
             # not a reason to crash/restart the inbox authority.
+            self._forget_origin_claim_if_present(original.message_id)
             self._settle_delivery_hooks(result)
             return False
         if self._logger is not None:
@@ -753,7 +732,10 @@ class _BridgeResultsMixin:
         self._loud_harness_failure(result, original, failure=failure, attempt=attempt)
         self._finish_attempt(result.delivery_id)
         if failure.terminal:
+            self._forget_origin_claim_if_present(original.message_id)
             self._settle_delivery_hooks(result)
+        else:
+            self._release_origin_claims_if_present((original.message_id,))
         return True
 
     def _observe_blocking_failure(

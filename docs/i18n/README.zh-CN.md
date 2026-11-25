@@ -135,6 +135,9 @@ hyprial daemon upgrade --tag internal
 第二条命令按该提交的 `uv.lock` 重新安装，钉住依赖版本。这种方式从源码构建，还需要
 Node.js 24+ 与 npm（网页 GUI）以及 Go 1.27（Tailcat sidecar）；一行安装器都不需要。
 
+源码安装会在本机构建 wheel。提交携带 native actor 引擎（`crates/`）后，除 Go 与 Node.js 外还需要
+Rust 1.93.1（`rustup toolchain install 1.93.1`），见贡献一节的工具链表。
+
 </details>
 
 <details>
@@ -150,10 +153,12 @@ Node.js 24+ 与 npm（网页 GUI）以及 Go 1.27（Tailcat sidecar）；一行�
 
 ## ⚡ 快速上手
 
-1. **登录并准备这台机器。** 浏览器会打开登录页，登录后 daemon 启动。
+1. **准备这台机器，然后登录。** `init` 创建 home 并启动 daemon，不登录；`login` 显示验证网址与代码并打开浏览器，
+   登录由 daemon 自行完成。
 
    ```bash
    hyprial init
+   hyprial login
    ```
 
    加 `--service` 会把 daemon 注册为用户服务（macOS 用 launchd，Linux 用 systemd），登录系统后
@@ -166,16 +171,22 @@ Node.js 24+ 与 npm（网页 GUI）以及 Go 1.27（Tailcat sidecar）；一行�
    hyprial doctor
    ```
 
-3. **在已有的 harness 上创建个人助手 Squire**，例如 Codex（先运行 `codex login`）：
+3. **创建第一个 agent。** 首次运行不会替你创建任何 agent：名字、provider、模型与 harness
+   都由你自己选择。
 
    ```bash
-   hyprial squire setup --provider openai --model gpt-6.1-sol --preferred-harness codex
-   hyprial agent provider login codex --actor squire
-   hyprial agent start codex --name squire --provider openai --model gpt-6.1-sol --headless
+   hyprial agent create --name <name> --provider <provider> --model <model> --preferred-harness <harness>
+   hyprial agent start <harness> --name <name> --headless
    hyprial agent list
    ```
 
-   `squire` 一行显示 `online` 即完成。
+   `agent create --json` 会给出该 agent 的权威 URI `agent:<owner>:<machine>:<actor>`，
+   后面给 adapter 钉选时要用。
+
+接入飞书 App 是另一组显式步骤：添加 adapter、授权租户 scope、观察入站会话、添加出站 route、
+把 adapter 钉到这个 agent 的权威 URI，再用真实消息验证往返。
+[快速上手一节](../guides/onboarding-checklist.md)列出了具体命令与仍需人工完成的步骤；
+App 创建与权限说明见 [Lark App onboarding](../guides/lark-app-onboarding.md)。
 
 [完整快速上手](https://www.hyprial.com/quickstart/)还包括 Pi + DeepSeek 路线、连接飞书和发送第一条
 消息。加入已有网络请按[节点入网清单](../guides/onboarding-checklist.md)操作。
@@ -217,8 +228,8 @@ HyprialOS 仍在积极开发中。版本号见 [`VERSION`](../../VERSION)，每�
 正在进行的工作：
 
 - 🖥️ **网页 GUI**：`hyprial gui` 提供随包分发、逐文件校验的共享网页 GUI（源码在
-  [`gui/`](../../gui/)）。目前是预览版：多数页面仍返回 `BACKEND_NOT_WIRED`，设置、聊天与首次设置
-  页面正在接入 daemon 的 request API。
+  [`gui/`](../../gui/)）。目前是预览版：经同源会话 host 连接 daemon（`hyprial gui` 会在 daemon 没运行时启动它，关闭 GUI 不停止它），设置、聊天与首次设置
+  页面仍在接入 daemon 的 request API。
 - 🪟 **Windows**：安装可用；原生 daemon 启动与服务正在修复。
 - 💬 **更多渠道**：目前只有 Lark adapter，更多 IM adapter 在规划中。
 - 🧬 **Agent 模型**：cell、thread、conversation 的新模型正在设计，将取代现有的 link 模型。
@@ -250,6 +261,7 @@ uv run ruff check .
 | Python + [uv](https://docs.astral.sh/uv/) | 3.12+ | 全部 |
 | Node.js + npm | 24+ / 11+ | 网页 GUI 与 wheel 构建 |
 | Go | 1.27 | Tailcat sidecar |
+| Rust（rustup） | 1.93.1 | wheel 与源码安装中的 native actor 引擎（`crates/`） |
 
 ## 🔒 安全
 

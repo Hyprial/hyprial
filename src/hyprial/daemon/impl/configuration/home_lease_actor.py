@@ -8,9 +8,8 @@ import time
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectLane, EffectRequest, EffectCompleted
-from hyprial.kernel import GenerationScheduler
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectRequest, EffectCompleted
 from hyprial.daemon.impl.configuration.home_guard  import ActiveDaemonHeartbeat
 
 
@@ -71,6 +70,10 @@ class _Reply:
     error: BaseException | None = None
 
 
+class _LeaseActorStopped(RuntimeError):
+    """The actor host stopped the lease actor before this admission."""
+
+
 class HomeLeaseAuthority:
     """Physical ownership remains fenced; TTL-only self-exit is opt-in.
 
@@ -79,9 +82,21 @@ class HomeLeaseAuthority:
     the record. Record/PID mismatch and file failures always lose ownership.
     """
 
-    def __init__(self, home, *, self_fence_on_expiry: bool = False, **options):
+    def __init__(
+        self,
+        home,
+        *,
+        self_fence_on_expiry: bool = False,
+        actor_host=None,
+        scheduler=None,
+        **options,
+    ):
         if not isinstance(self_fence_on_expiry, bool):
             raise TypeError("self_fence_on_expiry must be a bool")
+        if actor_host is None:
+            raise ValueError("home lease authority requires an actor host")
+        if scheduler is None:
+            raise ValueError("home lease authority requires a scheduler")
         self._self_fence_on_expiry = self_fence_on_expiry
         self._lost_callback = options.pop("ownership_lost", None)
         self._logger = options.pop("logger", None)
@@ -89,6 +104,7 @@ class HomeLeaseAuthority:
         self._failed_callback = options.pop("duplicate_check_failed", None)
         self._guard = threading.RLock()
         self._closing = False
+        self._closed = False
         self._claimed = False
         self._renewing = False
         self._lease_version = 0
@@ -102,20 +118,17 @@ class HomeLeaseAuthority:
         self._release_reply = None
         self._core = ActiveDaemonHeartbeat(
             home,
-            ownership_lost=lambda: self._runtime.tell(
-                self._handle, LeaseLost(self.generation)
+            ownership_lost=lambda: self._cell.tell(LeaseLost(self.generation)),
+            duplicate_detected=lambda detail: self._cell.tell(
+                DuplicateObserved(json.dumps(detail).encode())
             ),
-            duplicate_detected=lambda detail: self._runtime.tell(
-                self._handle, DuplicateObserved(json.dumps(detail).encode())
-            ),
-            duplicate_check_failed=lambda detail: self._runtime.tell(
-                self._handle, DuplicateCheckFailed(detail)
+            duplicate_check_failed=lambda detail: self._cell.tell(
+                DuplicateCheckFailed(detail)
             ),
             **options,
         )
-        self._runtime = ActorRuntime()
-        self._scheduler = GenerationScheduler()
-        self._handle = self._runtime.start(
+        self._scheduler = scheduler
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="home-lease",
                 handler_factory=lambda: self._receive,
@@ -124,16 +137,16 @@ class HomeLeaseAuthority:
         )
         self.home = self._core.home
         self.path = self._core.path
-        self._effects = EffectLane(
+        self._effects = actor_host.effect_lane(
             name="home-lease-file",
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=3,
         )
-        self._duplicates = EffectLane(
+        self._duplicates = actor_host.effect_lane(
             name="home-lease-duplicate",
             execute=lambda raw: self._core._duplicate_check_entry(json.loads(raw)),
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=1,
         )
 
@@ -148,11 +161,11 @@ class HomeLeaseAuthority:
             self._pending[operation_id] = (payload, reply)
             if isinstance(payload, RenewHome):
                 self._renew_timing_operation = operation_id
-            admission = self._runtime.tell(
-                self._handle, LeaseCommand(operation_id, payload)
-            )
+            admission = self._cell.tell(LeaseCommand(operation_id, payload))
             if admission is not AdmissionResult.ACCEPTED:
                 self._pending.pop(operation_id)
+                if admission is AdmissionResult.CLOSED:
+                    raise _LeaseActorStopped("home lease actor is stopped")
                 raise RuntimeError(f"home lease admission {admission.value}")
         return reply
 
@@ -313,8 +326,7 @@ class HomeLeaseAuthority:
                 "renew",
                 1,
                 renewal_delay,
-                lambda generation: self._runtime.tell(
-                    self._handle,
+                lambda generation: self._cell.tell(
                     RenewHome(self.generation, time.monotonic(), scheduled_for),
                 ),
             )
@@ -326,8 +338,8 @@ class HomeLeaseAuthority:
                     "expiry",
                     version,
                     remaining,
-                    lambda current: self._runtime.tell(
-                        self._handle, LeaseExpired(self.generation, current)
+                    lambda current: self._cell.tell(
+                        LeaseExpired(self.generation, current)
                     ),
                 )
 
@@ -390,23 +402,43 @@ class HomeLeaseAuthority:
             }
 
     def close(self, timeout=5.0):
+        if self._closed:
+            return True
         deadline = time.monotonic() + max(0.0, timeout)
         with self._guard:
             self._closing = True
             reply = self._release_reply
         self._core._stop.set()
-        self._scheduler.shutdown(max(0.0, deadline - time.monotonic()))
+        # The scheduler is borrowed: cancel only this authority's own keys.
+        self._scheduler.cancel("renew")
+        self._scheduler.cancel("expiry")
+        stopped = False
         with self._guard:
             reply = self._release_reply
             if reply is None:
-                reply = self._request(ReleaseHome())
-                self._release_reply = reply
-        if not reply.ready.wait(max(0.0, deadline - time.monotonic())):
-            return False
-        if reply.error is not None:
-            raise reply.error
+                try:
+                    reply = self._request(ReleaseHome())
+                except _LeaseActorStopped:
+                    # The host stopped the actor before this final, idempotent
+                    # confirmation.  No actor is left to release through; the
+                    # lanes still close so a repeated close is a no-op rather
+                    # than a teardown failure.
+                    stopped = True
+                else:
+                    self._release_reply = reply
+        if not stopped:
+            if not reply.ready.wait(max(0.0, deadline - time.monotonic())):
+                return False
+            if reply.error is not None:
+                raise reply.error
         if not self._duplicates.close(
             max(0.0, deadline - time.monotonic())
         ) or not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        if stopped:
+            self._closed = True
+        else:
+            self._closed = self._cell.stop(
+                max(0.0, deadline - time.monotonic())
+            )
+        return self._closed

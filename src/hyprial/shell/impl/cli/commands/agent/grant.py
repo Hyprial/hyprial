@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import typer
 
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
@@ -41,7 +41,7 @@ def agent_grant(
     resource: str | None = typer.Option(
         None,
         "--resource",
-        help="With check: tool name, channel, path, isolation mode, or agent-home URI.",
+        help="With check: tool name, path, isolation mode, or agent-home URI.",
     ),
     caller: str | None = typer.Option(
         None,
@@ -143,7 +143,7 @@ def agent_grant(
         )
         return
     raise services.CliError(
-        ipc_errors.INVALID_ARGUMENT,
+        codes.INVALID_ARGUMENT,
         f"unknown verb {verb!r}; use add, list, revoke, check, or visibility",
     )
 
@@ -151,7 +151,7 @@ def agent_grant(
 def _required(value: str | None, label: str) -> str:
     if value is None:
         raise get_services().CliError(
-            ipc_errors.INVALID_ARGUMENT, f"{label} is required for this verb"
+            codes.INVALID_ARGUMENT, f"{label} is required for this verb"
         )
     return value
 
@@ -160,155 +160,61 @@ def _single_scope(scope: list[str] | None) -> str:
     services = get_services()
     if not scope:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, "--scope is required for add"
+            codes.INVALID_ARGUMENT, "--scope is required for add"
         )
     if len(scope) != 1:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, "add records one grant, so pass exactly one --scope"
+            codes.INVALID_ARGUMENT, "add records one grant, so pass exactly one --scope"
         )
     return scope[0]
 
 
+def _simulation_request(method: str, scenario: dict[str, object]) -> dict[str, object]:
+    services = get_services()
+    try:
+        return services.runtime.request(method, {"scenario": scenario})
+    except services.CliError as error:
+        if error.code in (codes.ENFORCEMENT_ERROR, codes.VISIBILITY_ERROR):
+            raise ValueError(str(error)) from None
+        scope_codes = {
+            codes.ENFORCEMENT_SCOPE_INVALID: "enforcement_scope_invalid",
+            codes.VISIBILITY_SCOPE_INVALID: "visibility_scope_invalid",
+        }
+        if error.code in scope_codes:
+            raise services.CliError(scope_codes[error.code], str(error)) from None
+        raise
+
+
 def _run_check(
-    *,
-    actor: str,
-    capability: str | None,
-    resource: str | None,
-    caller: str | None,
-    hosted: bool,
-    unverified: bool,
-    write: bool,
-    scope: list[str] | None,
-    revision: int,
-    json_output: bool,
+    *, actor: str, capability: str | None, resource: str | None, caller: str | None,
+    hosted: bool, unverified: bool, write: bool, scope: list[str] | None,
+    revision: int, json_output: bool,
 ) -> None:
-    del actor  # the what-if identity is --caller; ACTOR names the grant subject
+    del actor
     services = get_services()
 
-    from hyprial.identity import (
-        CAPABILITY_ENTRY_POINTS,
-        CapabilityRecord,
-        EnforcementError,
-        Principal,
-        check_shared_path,
-        explain,
-    )
-
     def operation() -> dict[str, object]:
-        services = get_services()
-        capability_name = _required(capability, "--capability")
-        resource_name = _required(resource, "--resource")
-        identity = (
-            None
-            if caller is None
-            else Principal(caller, hosted=hosted, verified=not unverified)
-        )
-        records: list[CapabilityRecord] = []
-        try:
-            if caller is not None:
-                for raw in scope or ():
-                    records.append(
-                        CapabilityRecord(
-                            actor=caller,
-                            capability=capability_name,
-                            scope=raw,
-                            revision=revision,
-                        )
-                    )
-            if capability_name == "shared-path":
-                verdict = check_shared_path(
-                    resource_name, write=write, caller=identity, records=records
-                )
-            else:
-                verdict = explain(
-                    capability_name, resource_name, caller=identity, records=records
-                )
-        except EnforcementError as error:
-            raise services.CliError(error.code, str(error)) from error
-        payload = verdict.as_dict()
-        payload["entryPoints"] = dict(CAPABILITY_ENTRY_POINTS)
-        return payload
+        return _simulation_request("agent.grant.check", {
+            "caller": caller, "hosted": hosted, "unverified": unverified,
+            "capability": _required(capability, "--capability"),
+            "resource": _required(resource, "--resource"),
+            "scope": scope or [], "revision": revision, "write": write,
+        })
 
     services.runtime.execute(operation, json_output=json_output)
 
 
 def _run_visibility(
-    *,
-    actor: str,
-    caller: str | None,
-    hosted: bool,
-    unverified: bool,
-    see_actors: str | None,
-    send_to: str | None,
-    target: list[str] | None,
+    *, actor: str, caller: str | None, hosted: bool, unverified: bool,
+    see_actors: str | None, send_to: str | None, target: list[str] | None,
     json_output: bool,
 ) -> None:
-    del actor  # the what-if identity is --caller; ACTOR names the grant subject
+    del actor
     services = get_services()
-
-    from hyprial.identity import (
-        SEE_ACTORS,
-        SEND_TO,
-        CallerIdentity,
-        GrantRecord,
-        VisibilityError,
-        explain_target,
-        may_send,
-        visible_targets,
-    )
-
-    def operation() -> dict[str, object]:
-        services = get_services()
-        identity = (
-            None
-            if caller is None
-            else CallerIdentity(caller, hosted=hosted, verified=not unverified)
-        )
-        grants: list[GrantRecord] = []
-        try:
-            if see_actors is not None and caller is not None:
-                grants.append(
-                    GrantRecord(
-                        actor=caller, capability=SEE_ACTORS, scope=see_actors
-                    )
-                )
-            if send_to is not None and caller is not None:
-                grants.append(
-                    GrantRecord(
-                        actor=caller, capability=SEND_TO, scope=send_to
-                    )
-                )
-            rows = [
-                {"targetUri": uri, "targetKind": "candidate"}
-                for uri in (target or ())
-            ]
-            decisions = [
-                {
-                    "target": uri,
-                    "seeActors": explain_target(
-                        uri, capability=SEE_ACTORS, caller=identity, grants=grants
-                    ).as_dict(),
-                    "sendTo": may_send(
-                        uri, caller=identity, grants=grants
-                    ).as_dict(),
-                }
-                for uri in (target or ())
-            ]
-            visible = [
-                row["targetUri"]
-                for row in visible_targets(rows, caller=identity, grants=grants)
-            ]
-        except VisibilityError as error:
-            raise services.CliError(error.code, str(error)) from error
-        return {
-            "caller": caller,
-            "hosted": hosted,
-            "verified": not unverified,
-            "decisions": decisions,
-            "visible": visible,
-        }
-
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(lambda: _simulation_request("agent.grant.visibility", {
+        "caller": caller, "hosted": hosted, "unverified": unverified,
+        "seeActors": see_actors, "sendTo": send_to, "targets": target or [],
+    }), json_output=json_output)
 
 
 @agent_app.command("grants")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from hyprial.kernel import ProcessLiveness, ProcessLivenessState
 from hyprial.daemon.impl.processes.orphan_processes import OrphanProcessAuthority
 
@@ -25,9 +27,14 @@ class _Process:
         pass
 
 
-def test_custody_mutations_and_collection_publish_immutable_snapshot(tmp_path) -> None:
+def test_authority_requires_an_actor_host(tmp_path) -> None:
+    with pytest.raises(ValueError, match="orphan process custody requires an actor host"):
+        OrphanProcessAuthority(tmp_path / "orphans.json", identity_reader=lambda _pid: None)
+
+
+def test_custody_mutations_and_collection_publish_immutable_snapshot(tmp_path, actor_host) -> None:
     authority = OrphanProcessAuthority(
-        tmp_path / "orphans.json", identity_reader=lambda _pid: "birth:1"
+        tmp_path / "orphans.json", identity_reader=lambda _pid: "birth:1", actor_host=actor_host
     )
     process = _Process()
     orphan_id = authority.observe_start("pi:worker", process, pid=123, marker="birth:1")
@@ -44,10 +51,10 @@ def test_custody_mutations_and_collection_publish_immutable_snapshot(tmp_path) -
     assert authority.close(2)
 
 
-def test_blocked_probe_prevents_custody_teardown(tmp_path) -> None:
+def test_blocked_probe_prevents_custody_teardown(tmp_path, actor_host) -> None:
     gate = threading.Event()
     authority = OrphanProcessAuthority(
-        tmp_path / "orphans.json", identity_reader=lambda _pid: "birth:1"
+        tmp_path / "orphans.json", identity_reader=lambda _pid: "birth:1", actor_host=actor_host
     )
     process = _Process(gate)
     authority.observe_stop("pi:worker", process, pid=123, marker="birth:1")

@@ -7,7 +7,7 @@ snapshot blob), never against the purge's own in-memory state.
 
 Isolation: the CLI fixture owns a temporary ``HOME``, ``HYPRIAL_HOME`` and
 ``HARNESS_STATE_DIR`` under one test root, unsets ``HYPRIAL_NODE_ID`` (the
-daemon mints its node id inside that root) and unsets the worker/tool-profile
+home inside that root carries its own minted node id) and unsets the worker/tool-profile
 bindings.  Nothing ambient survives into either subprocess.
 
 Kill mutations these tests must survive:
@@ -38,7 +38,11 @@ from pycrdt import Doc, Map
 import pytest
 
 from tests.support.runtime._tmp import hyprial_test_tmp_root
-from tests.support.runtime.environment import assert_root_local_environment, isolated_environment
+from tests.support.runtime.environment import (
+    assert_root_local_environment,
+    home_with_node_id,
+    isolated_environment,
+)
 
 OWNER = "g3-owner"
 MEMBER = "user:g3-member"
@@ -59,6 +63,7 @@ class _IsolatedCli:
         self.state = root / "state"
         for path in (self.home, self.hyprial_home, self.state):
             path.mkdir(parents=True, mode=0o700, exist_ok=True)
+        home_with_node_id(self.hyprial_home)
         self.write_owner(OWNER)
         self.socket_path = self.state / "daemon.sock"
         environment.update({

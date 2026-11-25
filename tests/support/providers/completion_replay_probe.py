@@ -7,11 +7,13 @@ import json
 import sys
 import traceback
 from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAuthority
+from hyprial.kernel import ActorCell
 from hyprial.kernel.impl.actor_runtime.effects import EffectCompleted
 
 root = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(root))
 from tests.identity.providers.authentication.episodes import test_native_recovery as m  # noqa: E402
+from tests.support.actor_hosts import InterceptingHost  # noqa: E402
 mode = sys.argv[1]
 output = pathlib.Path(sys.argv[2])
 records = []
@@ -62,36 +64,38 @@ original_run = ProviderAuthAuthority._run_helper
 original_apply = ProviderAuthAuthority._apply_decision
 
 
+def observed_tell(cell, event):
+    global selected
+    if isinstance(event, EffectCompleted):
+        if event.operation_id.startswith("helper:") and event.result:
+            request, _ = event.result
+            if request.provider == "kimi-coding" and request.round_no == 3:
+                selected = event.operation_id
+        if selected and event.operation_id in (selected, "finished:" + selected):
+            key = event.operation_id
+            with lock:
+                sends[key] = sends.get(key, 0) + 1
+                n = sends[key]
+            # Establish H2 before D2 while owner is held at D1 before ACK.
+            if mode != "baseline" and key == "finished:" + selected and n == 2:
+                assert helper_twice.wait(3)
+            result = ActorCell.tell(cell, event)
+            record("native-completion-enqueued", operation=key, copy=n)
+            if key == selected and n == 2:
+                helper_twice.set()
+            if key == "finished:" + selected and n == 2:
+                decision_twice.set()
+            return result
+    return ActorCell.tell(cell, event)
+
+
 def init(self, **kw):
+    host = kw.get("actor_host")
+    intercepting = InterceptingHost(host) if host is not None else InterceptingHost()
+    intercepting.intercept_tell(observed_tell)
+    kw["actor_host"] = intercepting
     original_init(self, **kw)
     owners.append(self)
-    tell = self._runtime.tell
-
-    def observed_tell(handle, event):
-        global selected
-        if isinstance(event, EffectCompleted):
-            if event.operation_id.startswith("helper:") and event.result:
-                request, _ = event.result
-                if request.provider == "kimi-coding" and request.round_no == 3:
-                    selected = event.operation_id
-            if selected and event.operation_id in (selected, "finished:" + selected):
-                key = event.operation_id
-                with lock:
-                    sends[key] = sends.get(key, 0) + 1
-                    n = sends[key]
-                # Establish H2 before D2 while owner is held at D1 before ACK.
-                if mode != "baseline" and key == "finished:" + selected and n == 2:
-                    assert helper_twice.wait(3)
-                result = tell(handle, event)
-                record("native-completion-enqueued", operation=key, copy=n)
-                if key == selected and n == 2:
-                    helper_twice.set()
-                if key == "finished:" + selected and n == 2:
-                    decision_twice.set()
-                return result
-        return tell(handle, event)
-
-    self._runtime.tell = observed_tell
     take = self._decisions._take_request
     taken = {}
 

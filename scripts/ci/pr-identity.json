@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "required_shape": "Submitted-by: agent:<URI>",
+  "required_line": "^Submitted-by: agent:[^\\s<>]+$",
+  "cutoff": "2026-10-11T00:00:00Z",
+  "exempt_pr_numbers": [],
+  "upgrade_pr_numbers": [],
+  "note": "Transition, fixed by hq on 2026-10-09. `cutoff` is a fixed constant, never a comparison against the wall clock, so the same event always produces the same verdict. A PR CREATED before `cutoff` is PERMANENTLY warn-only: a later push or new commit does not upgrade it (19 in-flight bodies were deliberately not batch-patched, and a rebase must not turn them red). #1344 (a `Submitted-by` line that is not the first non-empty line) is treated the same way: warn-only, not fail. A PR created at or after `cutoff` hard-reds on either failure mode, and the message says which one (`missing` vs `present-but-not-first-line`). The ONLY upgrade path for a pre-cutoff PR is `upgrade_pr_numbers`, named explicitly by hq just before landing. `exempt_pr_numbers` is the surgical warn-only escape hatch for a post-cutoff PR and wins over an upgrade. `required_line` is the anchored regex actually matched against the first non-empty line; `required_shape` is its human spelling."
+}

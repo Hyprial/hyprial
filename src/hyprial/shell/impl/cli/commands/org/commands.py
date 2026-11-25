@@ -1,41 +1,36 @@
-"""``hyprial org`` organization document commands."""
+"""``hyprial org`` organization document commands.
+
+The command bodies for the ``context`` and ``member`` subfamilies live in
+their own subpackages; this module owns the two groups, the org-name grammar,
+the helpers the subpackages reach back for, and registers every subcommand
+callable once -- in the historical order, so the generated command inventory
+changes only the attributed module.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-import time
-import webbrowser
-
-from hyprial.shell.impl.cli.output import (
-    confirm as ask,
-    notice,
-    progress,
-    render_generic,
-    warn,
-)
-
-from collections.abc import Mapping
-from hyprial.shell.impl.cli.output import CliResult
-
-from hyprial.shell.impl.cli.commands.common.services import get_services
-
-from typing import Any
-from pathlib import Path
-import difflib
-import hashlib
-from hyprial.kernel import ipc_errors
-from hyprial.identity import org_space_name
-import json
 import sys
-import typer
-from hyprial.shell.impl.cli.commands.common.groups import group
+from types import SimpleNamespace
+from typing import Any
 
-from hyprial.identity import ORG_SPACE_PREFIX
+import typer
+
+from hyprial.identity import ORG_SPACE_PREFIX, org_space_name
+from hyprial.error import codes
+from hyprial.kernel import ipc_errors
+from hyprial.shell.impl.cli.commands.common.groups import group
+from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.org.acl import acl_app
-from .authority import org_migration_status, org_pin_authority
-from .context_views import org_human_view, org_meta
-from .maintenance import org_repin
+from hyprial.shell.impl.cli.commands.org.authority import (
+    org_migration_status,
+    org_pin_authority,
+)
+from hyprial.shell.impl.cli.commands.org.context import commands as context_commands
+from hyprial.shell.impl.cli.commands.org.maintenance import org_repin
+from hyprial.shell.impl.cli.commands.org.member import commands as member_commands
+from hyprial.shell.impl.cli.output import CliResult, render_generic
+
 
 org_app = group(
     help=(
@@ -62,137 +57,8 @@ context_app = group(
 )
 org_app.add_typer(context_app, name="context")
 
+context_app.command("validate")(context_commands.org_context_validate)
 
-def _context_validate_render(data: Mapping[str, Any]) -> str:
-    if data.get("ok") and data.get("valid"):
-        meta = data.get("meta") or {}
-        return (
-            f"org-context OK: version {meta.get('version')} "
-            f"published by {meta.get('publisher')}\n{data.get('path')}"
-        )
-    if data.get("valid"):
-        return (
-            "org-context ADOPTION STATE INVALID\n"
-            f"  {data.get('path')}\n"
-            f"  {data.get('reason')}"
-        )
-    return (
-        "org-context INVALID\n"
-        f"  {data.get('path')}: line {data.get('line')}, column {data.get('column')}\n"
-        f"  {data.get('reason')}"
-    )
-
-
-@context_app.command("validate")
-def org_context_validate(
-    path: Path | None = typer.Option(
-        None,
-        "--path",
-        help=(
-            "Validate this file instead of the accepted org-context.md slot. "
-            "This is a format check only: the accepted slot's adoption record "
-            "and any orgfs publish marker are not checked for this file."
-        ),
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Validate org-context.md before or after a hand edit.
-
-    Parses only the fenced YAML block.  On failure it names the file line,
-    column and reason and exits 1; an invalid document is never reported as
-    valid.  This is the manual pre-flight for the accepted slot, which is
-    written by adoption from a file the owner may have edited by hand.
-    """
-    services = get_services()
-
-    def operation() -> CliResult:
-        services = get_services()
-        from hyprial.daemon import OrgContextStore, validate_document
-
-        target = (
-            path if path is not None else services._hyprial_home() / "org-context.md"
-        )
-        try:
-            payload = target.read_bytes()
-        except FileNotFoundError:
-            raise services.CliError(
-                "ORG_CONTEXT_ABSENT", f"org-context absent: {target}"
-            ) from None
-        except OSError as error:
-            raise services.CliError(
-                "ORG_CONTEXT_READ_FAILED",
-                f"cannot read org-context {target}: {error}",
-            ) from error
-        try:
-            text = payload.decode("utf-8")
-        except UnicodeDecodeError as error:
-            return CliResult(
-                {
-                    "ok": False,
-                    "valid": False,
-                    "path": str(target),
-                    "line": None,
-                    "column": None,
-                    "reason": f"org-context is not valid UTF-8: {error}",
-                },
-                render=_context_validate_render,
-            )
-        # Two separate facts: the audit digest is over the raw bytes above
-        # (accepted_slot_issue receives ``payload``), while the format check
-        # runs on the newline-normalized text ``read_text`` used to produce.
-        # A legal file whose newlines are all CRLF is Markdown, not a fence
-        # violation, so normalizing here keeps the pre-flight non-regressive.
-        source = text.replace("\r\n", "\n").replace("\r", "\n")
-        result = validate_document(source)
-        if not result.ok:
-            issue = result.issue
-            return CliResult(
-                {
-                    "ok": False,
-                    "valid": False,
-                    "path": str(target),
-                    "line": None if issue is None else issue.line,
-                    "column": None if issue is None else issue.column,
-                    "reason": (
-                        "org-context is invalid" if issue is None else issue.reason
-                    ),
-                },
-                render=_context_validate_render,
-            )
-        document = result.document
-        assert document is not None
-        if path is None:
-            # The default slot claims to be the adopted view: the format being
-            # valid is not enough, the audit record must describe these exact
-            # raw bytes.  --path stays a format pre-flight.
-            slot_issue = OrgContextStore(
-                services._hyprial_home()
-            ).accepted_slot_issue(document, payload)
-            if slot_issue is not None:
-                return CliResult(
-                    {
-                        "ok": False,
-                        "valid": True,
-                        "slot": "accepted",
-                        "path": str(target),
-                        "line": None,
-                        "column": None,
-                        "reason": slot_issue,
-                    },
-                    render=_context_validate_render,
-                )
-        return CliResult(
-            {
-                "ok": True,
-                "valid": True,
-                "slot": "accepted" if path is None else "file",
-                "path": str(target),
-                "meta": org_meta(document),
-            },
-            render=_context_validate_render,
-        )
-
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 # `org group invite` is the spelling callers have used; keep it as an alias of
 # `org invite` rather than a second implementation.  Registering the SAME
 # callable means the two entry points cannot drift apart.
@@ -236,7 +102,7 @@ def _validated_org(value: str) -> str:
         org_space_name(candidate)
     except ValueError as error:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"invalid organization name {value!r}: {_ORG_NAME_HELP}",
         ) from error
     return candidate
@@ -251,6 +117,11 @@ def org_create(
             "organization."
         ),
     ),
+    parent: str | None = typer.Option(
+        None,
+        "--parent",
+        help="Optional parent organization name for creating a sub-org.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Create local org spaces, then initialize Tailcat and publish when available."""
@@ -258,7 +129,10 @@ def org_create(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services.runtime.request("org.create", {"org": _validated_org(org)})
+        payload: JsonObject = {"org": _validated_org(org)}
+        if parent is not None:
+            payload["parent"] = _validated_org(parent)
+        result = services.runtime.request("org.create", payload)
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.create must return an object")
         published = result.get("published", result.get("devicePublished"))
@@ -296,61 +170,14 @@ def org_repair(
     services.runtime.execute(operation, json_output=json_output)
 
 
-@org_app.command("invite")
-def org_invite(
-    org: str = typer.Argument(..., help="Organization name."),
-    user: str = typer.Option(
-        ..., "--user", help="Username to invite (directory rw, ACL ro)."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Invite one user and print the invite link (§5.1).
+# -- member subcommands (bodies in ``org/member``) ---------------------------
 
-    The link is a secret; the human output prefers the /j short link and
-    keeps the long link below it.  ``--json`` passes the daemon fields
-    through and adds ``short`` (null when minting degrades).
-    """
-    services = get_services()
-    def render(result: Mapping[str, Any]) -> str:
-        command = result.get("command")
-        short = result.get("short")
-        link = result["link"]
-        lines = [short if isinstance(short, str) and short else link]
-        if isinstance(short, str) and short:
-            lines.append(f"长链：{link}")
-        if isinstance(command, str) and command:
-            lines.append(f"或在终端执行：{command}")
-        lines.append("（私发，勿贴群）")
-        return "\n".join(lines)
-
-    def operation() -> CliResult:
-        from hyprial.shell.impl.invites.shortlink import (
-            ShortLinkUnavailable,
-            shorten_invite_link,
-        )
-
-        services = get_services()
-        result = services.runtime.request(
-            "org.invite", {"org": _validated_org(org), "user": user}
-        )
-        if not isinstance(result, dict) or not isinstance(result.get("link"), str):
-            raise services.CliError(
-                "INVALID_RESPONSE", "org.invite must return the https invite link"
-            )
-        short: str | None = None
-        try:
-            short = shorten_invite_link(result["link"])
-        except ShortLinkUnavailable as error:
-            if error.notify:
-                progress(
-                    "org.invite.short_link_unavailable",
-                    f"短链不可用：{error}",
-                    json_output=json_output,
-                    reason=str(error),
-                )
-        return CliResult({"ok": True, **result, "short": short}, render=render)
-
-    services.runtime.execute(operation, json_output=json_output)
+org_app.command("invite")(member_commands.org_invite)
+org_app.command("join")(member_commands.org_join)
+org_app.command("leave")(member_commands.org_leave)
+org_app.command("remove")(member_commands.org_remove)
+group_app.command("invite")(member_commands.org_invite)
+org_app.add_typer(group_app, name="group")
 
 
 def _read_link_argument(link: str) -> str:
@@ -362,251 +189,9 @@ def _read_link_argument(link: str) -> str:
         text = sys.stdin.read().strip()
     if not text:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, "empty invite link"
+            codes.INVALID_ARGUMENT, "empty invite link"
         )
     return text
-
-
-# The login modules import hyprial.daemon; importing them at module level would
-# load the daemon package on every `hyprial` invocation (see
-# test_importing_the_cli_does_not_drag_in_the_daemon_package). These module-level
-# names stay patchable and import on first use.
-def obtain_binding_proof(*args: Any, **kwargs: Any) -> str:
-    from hyprial.shell.impl.login.binding import obtain_binding_proof as obtain
-
-    return obtain(*args, **kwargs)
-
-
-def validate_binding_confirmation(*args: Any, **kwargs: Any) -> None:
-    from hyprial.shell.impl.login.binding import (
-        validate_binding_confirmation as validate,
-    )
-
-    validate(*args, **kwargs)
-
-
-def _retry_binding_proof_before_join(*, json_output: bool) -> None:
-    """Best-effort proof retry; the org join itself is never conditional."""
-
-    from hyprial.shell.impl.login.flow import LoginError
-
-    services = get_services()
-    home = Path(services._hyprial_home())
-    try:
-        settings = json.loads((home / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(settings, dict) or settings.get("identityMode") != "casdoor":
-        return
-    owner = settings.get("owner")
-    claims = settings.get("identityClaims")
-    properties = claims.get("properties") if isinstance(claims, dict) else None
-    union_id = (
-        properties.get("oauth_Lark_unionId")
-        if isinstance(properties, dict)
-        else None
-    )
-    if not isinstance(owner, str) or not isinstance(union_id, str):
-        return
-    existing = settings.get("identityBinding")
-    if (
-        isinstance(existing, dict)
-        and existing.get("user") == owner
-        and existing.get("larkUnionId") == union_id
-    ):
-        return
-
-    def emit(kind: str, data: dict[str, Any]) -> None:
-        if kind != "binding-device":
-            return
-        restart = " (fresh code after expiry)" if data.get("restarted") else ""
-        message = (
-            f"binding proof confirmation required{restart} — open this URL "
-            f"and enter code {data['userCode']}: {data['verificationUri']}"
-        )
-        if json_output:
-            progress(kind, message, json_output=True, **data)
-        else:
-            notice(message)
-
-    def open_url(url: str) -> bool:
-        try:
-            return webbrowser.open(url)
-        except Exception:  # noqa: BLE001 - URI remains visible in the notice
-            return False
-
-    try:
-        profile, _source = services.resolve_profile()
-        proof = obtain_binding_proof(
-            profile,
-            emit=emit,
-            open_browser=True,
-            open_url=open_url,
-            sleep=time.sleep,
-            clock=time.monotonic,
-        )
-        validate_binding_confirmation(
-            proof, expected_user=owner, expected_union_id=union_id
-        )
-        from hyprial.daemon import write_settings_identity
-
-        write_settings_identity(
-            owner,
-            mode="casdoor",
-            issuer=settings.get("identityIssuer"),
-            user_id=(
-                settings.get("userId")
-                if isinstance(settings.get("userId"), str)
-                else None
-            ),
-            username=(
-                settings.get("username")
-                if isinstance(settings.get("username"), str)
-                else None
-            ),
-            lark_union_id=union_id,
-            identity_binding={
-                "user": owner,
-                "larkUnionId": union_id,
-                "proof": proof,
-                "publishedAt": datetime.now(UTC).isoformat(),
-            },
-            hyprial_home=home,
-        )
-    except LoginError as error:
-        message = f"{error}; will retry on the next login or org join"
-        progress(
-            "binding-proof-failed",
-            message,
-            json_output=json_output,
-            code=error.code,
-            detail=message,
-        )
-    except Exception as error:  # noqa: BLE001 - proof is non-fatal to joining
-        message = (
-            f"binding proof retry failed ({type(error).__name__}); will retry "
-            "on the next login or org join"
-        )
-        progress(
-            "binding-proof-failed",
-            message,
-            json_output=json_output,
-            code=type(error).__name__,
-            detail=message,
-        )
-
-
-def _org_join_via_ipc(method: str, link: str, *, json_output: bool) -> None:
-    """Body of ``org join``: every link form — https URL, ``hyprial://``
-    deep link, bare token, bare ``v1.`` — is passed through untouched;
-    decoding is the daemon's job (§5.1)."""
-    services = get_services()
-
-    def operation() -> JsonObject:
-        services = get_services()
-        _retry_binding_proof_before_join(json_output=json_output)
-        from hyprial.shell.impl.invites.join import request_join
-
-        result = request_join(
-            services.runtime, _read_link_argument(link), method=method, json_output=json_output
-        )
-        if not isinstance(result, dict):
-            raise services.CliError(
-                "INVALID_RESPONSE", f"{method} must return an object"
-            )
-        # ``org`` rides in the daemon result; Desktop's deep-link patch
-        # depends on it, so keep the passthrough verbatim.
-        return {"ok": True, **result}
-
-    services.runtime.execute(operation, json_output=json_output)
-
-
-group_app.command("invite")(org_invite)
-org_app.add_typer(group_app, name="group")
-
-
-@org_app.command("join")
-def org_join(
-    link: str = typer.Argument(
-        ...,
-        help=(
-            "The invite link — https URL, hyprial:// deep link, bare token "
-            "or 'v1.<payload>' — or '-' to read it from stdin (keeps the "
-            "secret out of the shell history)."
-        ),
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Join an org from any invite-link form (§5.1/§5.2 path 1)."""
-    _org_join_via_ipc("org.join", link, json_output=json_output)
-
-
-@org_app.command("leave")
-def org_leave(
-    org: str = typer.Argument(..., help="Organization name."),
-    yes: bool = typer.Option(False, '--yes', help='Confirm device cutoff.'),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Leave an org: remove this device and file a leave request."""
-    services = get_services()
-
-    def operation() -> JsonObject:
-        services = get_services()
-        from .removal import confirmed_removal
-        result = confirmed_removal(
-            services, 'org.leave', {'org': _validated_org(org)}, yes=yes
-        )
-        if not isinstance(result, dict):
-            raise services.CliError("INVALID_RESPONSE", "org.leave must return an object")
-        return {"ok": True, **result}
-
-    services.runtime.execute(operation, json_output=json_output)
-
-
-@org_app.command("remove")
-def org_remove(
-    org: str = typer.Argument(..., help="Organization name."),
-    user: str = typer.Argument(..., help="Username to remove from the org."),
-    device: list[str] | None = typer.Option(None, '--device', help='Only revoke these active device IDs (repeatable); retain user memberships. Requires --yes. Refuses the last active device. Without this option, remove the user and all their devices.'),
-    yes: bool = typer.Option(False, '--yes', help='Confirm device cutoff.'),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Remove OrgFS membership, then revoke fixed sidecar devices (owner/admin).
-
-    Removing someone from the org also removes them from the org's Casdoor
-    group, and with it from anything else that relies on that group.
-    Use --device to retain those memberships while removing selected devices.
-    """
-    services = get_services()
-
-    def operation() -> JsonObject:
-        services = get_services()
-        from .removal import confirmed_removal
-        params = {'org': _validated_org(org), 'user': user}
-        if device is not None:
-            if not yes:
-                raise services.CliError('CONFIRMATION_REQUIRED', 'Re-run with --yes to confirm device removal.')
-            params['deviceIds'] = device
-        result = confirmed_removal(
-            services,
-            'org.remove',
-            params,
-            yes=yes,
-        )
-        if not isinstance(result, dict):
-            raise services.CliError("INVALID_RESPONSE", "org.remove must return an object")
-        group = result.get("casdoorGroup")
-        if isinstance(group, str) and group.startswith("removed from "):
-            result = {
-                **result,
-                "note": (
-                    f"{user} was also {group}; other applications that rely "
-                    "on that Casdoor group lose them too"
-                ),
-            }
-        return {"ok": True, **result}
-
-    services.runtime.execute(operation, json_output=json_output)
 
 
 @org_app.command("delete")
@@ -617,31 +202,69 @@ def org_delete(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Mark an org deleted and drop every non-owner member (owner only).
+    """Delete an org: tombstone it, shut its tailnet down, clean up (owner only).
 
-    Destructive: without ``--yes`` a TTY is asked to confirm; a non-TTY
-    invocation without ``--yes`` is refused with USER_ACTION_REQUIRED.
+    Destructive and irreversible: the CLI first previews the deletion, then
+    confirms the preview's exact operation. Without ``--yes`` a TTY is asked
+    to confirm; a non-TTY invocation without ``--yes`` is refused with
+    USER_ACTION_REQUIRED.
     """
     services = get_services()
 
     def operation() -> JsonObject:
         services = get_services()
+        from .removal import ConfirmationPrompt, confirmed_removal
+
         validated_org = _validated_org(org)
-        if not yes:
-            if json_output or not services._stdin_isatty():
-                raise services.CliError(
-                    "USER_ACTION_REQUIRED",
-                    f"deleting org {org!r} removes every non-owner member; "
-                    "re-run with --yes to confirm",
+
+        def describe(preview: JsonObject) -> str:
+            if preview.get("tailnetPhase") == "inherited":
+                return (
+                    f"Delete sub-org {validated_org!r}: tombstone it and revoke its "
+                    "members; the inherited parent tailnet stays open."
                 )
-            if not ask(f"Delete org {org!r} and remove every non-owner member?"):
-                raise services.CliError(
-                    "DELETE_DECLINED", f"org {org!r} was not deleted"
-                )
-        result = services.runtime.request("org.delete", {"org": validated_org})
-        if not isinstance(result, dict):
-            raise services.CliError("INVALID_RESPONSE", "org.delete must return an object")
+            devices = preview.get("deviceIds")
+            count = len(devices) if isinstance(devices, list) else 0
+            return (
+                f"Delete org {validated_org!r}: tombstone it and shut down its "
+                f"tailnet ({count} non-authority device(s))."
+            )
+
+        prompt = ConfirmationPrompt(
+            question=f"Delete org {validated_org!r}?",
+            unconfirmed=(
+                "USER_ACTION_REQUIRED",
+                f"deleting org {validated_org!r} tombstones it and shuts "
+                "its tailnet down; re-run with --yes to confirm",
+            ),
+            declined=("DELETE_DECLINED", f"org {validated_org!r} was not deleted"),
+            describe=describe,
+            bind_devices=False,
+            interactive=not json_output,
+        )
+        result = confirmed_removal(
+            services, "org.delete", {"org": validated_org}, yes=yes, prompt=prompt
+        )
         return {"ok": True, **result}
+
+    services.runtime.execute(operation, json_output=json_output)
+
+
+@org_app.command("use")
+def org_use(
+    org: str | None = typer.Argument(None, help="Active organization to use by default."),
+    clear: bool = typer.Option(False, "--clear", help="Clear this home's current organization."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Set or clear the daemon-owned default organization for this home."""
+    services = get_services()
+
+    def operation() -> CliResult:
+        params = {**({"org": org} if org is not None else {}), **({"clear": True} if clear else {})}
+        result = services.runtime.request("org.use", params)
+        if not isinstance(result, dict):
+            raise services.CliError("INVALID_RESPONSE", "org.use must return an object")
+        return CliResult(result, render=render_generic)
 
     services.runtime.execute(operation, json_output=json_output)
 
@@ -650,85 +273,19 @@ def org_delete(
 def org_list(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """List the orgs this node belongs to (role, devices, state)."""
+    """List organizations with kind, role, current selection, and state."""
     services = get_services()
 
-    def operation() -> JsonObject:
+    def operation() -> CliResult:
         services = get_services()
         result = services.runtime.request("org.list")
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.list must return an object")
-        return {"ok": True, **result}
+        return CliResult({"ok": True, **result}, render=render_generic)
 
     services.runtime.execute(operation, json_output=json_output)
 
-
-@org_app.command("pending")
-def org_pending(
-    accept_all: bool = typer.Option(
-        False,
-        "--accept-all",
-        help="Join every pending invite without asking.",
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Pick up invites bound to this account and join them (§5.3).
-
-    A TTY without ``--accept-all`` asks per invite; a non-TTY (or
-    ``--json``) invocation without ``--accept-all`` only lists what is
-    pending and joins nothing.
-    """
-    services = get_services()
-
-    def operation() -> JsonObject | str:
-        services = get_services()
-        from hyprial.shell.impl.invites.join import request_join
-        from hyprial.shell.impl.invites.pending import (
-            InvitePickupError,
-            run_pending,
-        )
-
-        confirm = None
-        if not accept_all and not json_output and services._stdin_isatty():
-
-            def confirm(org_name: str, inviter: str) -> bool:  # noqa: F811
-                return ask(f"join org {org_name!r} (invited by {inviter})?")
-
-        try:
-            result = run_pending(
-                services._hyprial_home(),
-                accept_all=accept_all,
-                confirm=confirm,
-                ipc_join=lambda text: request_join(
-                    services.runtime, text, json_output=json_output
-                ),
-                ipc_list=lambda: services.runtime.request("org.list"),
-                now=None,
-            )
-        except InvitePickupError as error:
-            raise services.CliError(error.code, str(error)) from error
-        return CliResult(result, render=_render_pending)
-
-    services.runtime.execute(operation, json_output=json_output)
-
-
-def _render_pending(result: Mapping[str, Any]) -> str:
-    lines: list[str] = []
-    for item in result.get("joined", []):
-        lines.append(f"joined {item['org']} (invited by {item['inviter']})")
-    for item in result.get("failed", []):
-        lines.append(f"FAILED {item['org']}: {item['code']}")
-    for item in result.get("pending", []):
-        lines.append(
-            f"pending: {item['org']} (invited by {item['inviter']}, "
-            f"accepted {item.get('acceptedAt') or 'unknown'})"
-        )
-    for warning in result.get("warnings", []):
-        lines.append(f"warning: {warning}")
-    if not lines:
-        lines.append("no pending invites")
-    return "\n".join(lines)
-
+org_app.command("pending")(member_commands.org_pending)
 
 @org_app.command("network")
 def org_network(
@@ -759,232 +316,37 @@ def org_network(
 
 # -- org-context document commands (unchanged semantics) ---------------------
 
+context_app.command("show")(context_commands.org_show)
+context_app.command("status")(context_commands.org_status)
+context_app.command("fetch")(context_commands.org_fetch)
+context_app.command("import")(context_commands.org_import)
 
-@context_app.command("show")
-def org_show(
-    full: bool = typer.Option(
-        False,
-        "--full",
-        help=(
-            "Also print the whole adopted document (members, lines, routing, "
-            "norms, residents) and the sha256 of its bytes."
-        ),
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Show the organization view this node's owner has adopted.
 
-    Org context is public within the organization: ``--full`` lets any user or
-    agent read it without opening the accepted file under HYPRIAL_HOME.
+def _org_context_documents() -> Any:
+    """Resolve the local org-context document helpers on first use.
+
+    These are the public daemon helpers ``org context`` reads and writes with.
+    The CLI->backend import ledger is exact per file, and this module is where
+    it records them, so the extracted command bodies in
+    ``org/context/commands.py`` reach them through this port instead of moving
+    the imports to a file the ledger does not know.
     """
-    services = get_services()
 
-    def operation() -> CliResult:
-        services = get_services()
-        from hyprial.daemon import document_summary
-        from hyprial.daemon import OrgContextStore, OrgStoreError
+    from hyprial.daemon import (
+        OrgContextStore,
+        OrgStoreError,
+        document_summary,
+        parse_document,
+        serialize_document,
+        validate_document,
+    )
 
-        store = OrgContextStore(services._hyprial_home())
-        document = store.load_accepted()
-        if document is None:
-            return CliResult(
-                {
-                    "ok": True,
-                    "status": "absent",
-                    "message": "org-context absent",
-                },
-                render=org_human_view,
-            )
-        try:
-            record = store.acceptance_record()
-        except OrgStoreError as error:
-            record = None
-            warning: JsonObject | None = {
-                "code": "ORG_ACCEPTANCE_METADATA_UNAVAILABLE",
-                "message": str(error),
-            }
-        else:
-            warning = (
-                None
-                if record is not None
-                else {
-                    "code": "ORG_ACCEPTANCE_METADATA_UNAVAILABLE",
-                    "message": (
-                        "accepted org-context has no readable adoption record; "
-                        "showing the parsed body only"
-                    ),
-                }
-            )
-        if warning is not None:
-            # A person reads this on stderr; --json carries it in the result.
-            warn(f"hyprial: {warning['message']}", json_output=json_output)
-        result: JsonObject = {
-            "ok": True,
-            "status": "accepted",
-            "meta": org_meta(document),
-            "source": {
-                "publisher": document.meta.publisher,
-            },
-            "summary": document_summary(document),
-            **(_org_full_document(store, document) if full else {}),
-        }
-        if record is not None:
-            result["adoptedAt"] = record.adopted_at.isoformat().replace("+00:00", "Z")
-        if warning is not None:
-            result["warnings"] = [warning]
-        return CliResult(result, render=org_human_view)
-
-    services.runtime.execute(operation, json_output=json_output)
-
-
-def _org_full_document(store: Any, document: Any) -> JsonObject:
-    """The adopted document as JSON, with the digest of the bytes it came from."""
-
-    accepted = store.accepted_path.read_bytes()
-    body = {key: value for key, value in document.data.items() if key != "meta"}
-    return {
-        "documentSha256": hashlib.sha256(accepted).hexdigest(),
-        # YAML dates and other scalars become plain JSON values.
-        "document": json.loads(json.dumps(body, ensure_ascii=False, default=str)),
-    }
-
-
-@context_app.command("status")
-def org_status(
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Show accepted-slot and pending-candidate counts."""
-    services = get_services()
-
-    def operation() -> CliResult:
-        services = get_services()
-        from hyprial.daemon import OrgContextStore
-
-        status = OrgContextStore(services._hyprial_home()).status()
-        for warning in status.get("warnings", []):
-            warn(f"hyprial: {warning['message']}", json_output=json_output)
-        return CliResult({"ok": True, **status}, render=org_human_view)
-
-    services.runtime.execute(operation, json_output=json_output)
-
-
-@context_app.command("fetch")
-def org_fetch(
-    source_target: str | None = typer.Option(
-        None,
-        "--from",
-        help="Node target, or user:<name> while org.fetchSource=orgfs.",
-    ),
-    timeout: float = typer.Option(2.0, "--timeout", help="Refresh/fetch timeout."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Fetch org-context candidates from the configured source."""
-    services = get_services()
-
-    def operation() -> JsonObject:
-        services = get_services()
-        if timeout <= 0 or timeout > 30:
-            raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
-                "--timeout must be greater than 0 and at most 30",
-            )
-        params: JsonObject = {"timeoutSeconds": timeout}
-        if source_target is not None:
-            params["from"] = source_target
-        result = services.runtime.request("org.fetch", params, timeout=timeout + 1.0)
-        if not isinstance(result, dict) or not isinstance(
-            result.get("candidates"), list
-        ):
-            raise services.CliError(
-                "INVALID_RESPONSE", "daemon org.fetch result must contain candidates"
-            )
-        return {"ok": True, **result}
-
-    services.runtime.execute(operation, json_output=json_output)
-
-
-@context_app.command("import")
-def org_import(
-    source: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
-    force: bool = typer.Option(
-        False, "--force", help="Skip the owner confirmation (validation still applies)."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Preview and locally adopt one organization view."""
-    services = get_services()
-
-    def operation() -> JsonObject:
-        services = get_services()
-        from hyprial.daemon import parse_document, serialize_document
-        from hyprial.daemon import OrgContextStore, OrgStoreError
-
-        try:
-            document = parse_document(source.read_text(encoding="utf-8"))
-        except OSError as error:
-            raise services.CliError(
-                "ORG_CONTEXT_READ_FAILED", f"cannot read org-context {source}: {error}"
-            ) from error
-        store = OrgContextStore(services._hyprial_home())
-        accepted = store.load_accepted()
-        previous = "" if accepted is None else serialize_document(accepted)
-        incoming = serialize_document(document)
-        diff = "".join(
-            difflib.unified_diff(
-                previous.splitlines(keepends=True),
-                incoming.splitlines(keepends=True),
-                fromfile="accepted/org-context.md",
-                tofile=f"incoming/{source.name}",
-            )
-        )
-        preview: JsonObject = {
-            "meta": org_meta(document),
-            "source": {
-                "publisher": document.meta.publisher,
-            },
-            "diff": diff,
-        }
-        if not force:
-            if json_output:
-                raise services.CliError(
-                    "CONFIRMATION_REQUIRED",
-                    "org-context adoption requires owner confirmation; rerun with --force",
-                    preview,
-                )
-            if not ask("Adopt this org-context on this node?", preview=render_generic(preview)):
-                raise services.CliError("ADOPTION_DECLINED", "org-context was not adopted")
-        record = store.adopt(document)
-        try:
-            store.queue_orgfs_publish(record.document_sha256)
-        except (OrgStoreError, OSError, ValueError):
-            # Adoption is the owner-controlled commit point.  A publication
-            # marker failure must not turn that successful local decision into
-            # a false import failure.
-            pass
-        published = False
-        orgfs_published = False
-        try:
-            publish_result = services.runtime.request(
-                "org.publish", timeout=2.0, restore_wait=0.0
-            )
-        except (services.CliError, ipc_errors.TransientDaemonError):
-            pass
-        else:
-            published = (
-                isinstance(publish_result, dict)
-                and publish_result.get("published") is True
-            )
-            orgfs_published = (
-                isinstance(publish_result, dict)
-                and publish_result.get("orgfsPublished") is True
-            )
-        return {
-            "ok": True,
-            "adopted": True,
-            "published": published,
-            "orgfsPublished": orgfs_published,
-            **preview,
-            "adoptedAt": record.adopted_at.isoformat().replace("+00:00", "Z"),
-        }
-
-    services.runtime.execute(operation, json_output=json_output)
+    return SimpleNamespace(
+        store=OrgContextStore,
+        store_error=OrgStoreError,
+        document_summary=document_summary,
+        parse_document=parse_document,
+        serialize_document=serialize_document,
+        validate_document=validate_document,
+        ipc_errors=ipc_errors,
+    )

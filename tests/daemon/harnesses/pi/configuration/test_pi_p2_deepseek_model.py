@@ -80,8 +80,9 @@ def _p2_roots(tmp_path: Path) -> dict[str, Path]:
     return roots
 
 
+@pytest.mark.parametrize("configured_model", [DEEPSEEK_MODEL, "gui-invalid-model"])
 def test_p2_pi_launch_resolves_hyprials_canonical_deepseek_model(
-    tmp_path: Path,
+    tmp_path: Path, configured_model: str,
 ) -> None:
     roots = _p2_roots(tmp_path)
     environment = {
@@ -103,7 +104,7 @@ def test_p2_pi_launch_resolves_hyprials_canonical_deepseek_model(
         pi_package_root=PI_ROOT or Path("/missing"),
         node=NODE or "node",
         model_provider=DEEPSEEK_PROVIDER,
-        model=DEEPSEEK_MODEL,
+        model=configured_model,
     )
 
     completed = subprocess.run(
@@ -123,6 +124,11 @@ def test_p2_pi_launch_resolves_hyprials_canonical_deepseek_model(
         check=False,
     )
 
+    if configured_model != DEEPSEEK_MODEL:
+        assert completed.returncode == 1
+        assert "HYPRIAL_PI_START_FAILURE:MODEL_UNAVAILABLE" in completed.stderr.splitlines()
+        assert "sk-test-not-real" not in completed.stdout + completed.stderr
+        return
     assert completed.returncode == 0, completed.stderr[-2000:]
     rows = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
     (state,) = [row for row in rows if row.get("id") == "state"]

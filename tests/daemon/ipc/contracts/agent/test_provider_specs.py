@@ -113,7 +113,9 @@ def test_the_three_provider_methods_are_declared_and_bound_one_to_one() -> None:
         assert spec.mutates is True
         assert spec.retry == "never"
         assert spec.audience == ("local-operator", "bound-agent")
-        assert spec.http_exposed is (spec.name == "agent.provider.default")
+        assert spec.http_exposed is True
+        assert spec.http_binding is not None
+        assert spec.http_binding.identity.mode == "none"
         assert spec.confirmation == "none"
         assert spec.idempotency is not None
         assert spec.idempotency.mode == "never"
@@ -140,6 +142,7 @@ def test_the_declared_errors_cover_the_provider_surface() -> None:
             ipc_errors.PROVIDER_UNSAFE_PATH,
             ipc_errors.UNSUPPORTED,
             "STALE_AGENT_SECRET_GRANT",
+            ipc_errors.USER_AGENT_IMMUTABLE,
         }
     )
     assert {error.code for error in AGENT_PROVIDER_LOGOUT_SPEC.errors} == (
@@ -148,16 +151,20 @@ def test_the_declared_errors_cover_the_provider_surface() -> None:
             ipc_errors.PROVIDER_UNSUPPORTED,
             ipc_errors.PROVIDER_UNSAFE_PATH,
             ipc_errors.UNSUPPORTED,
+            ipc_errors.USER_AGENT_IMMUTABLE,
         }
     )
 
 
 def test_http_projection_takes_the_write_profile_not_a_read_only_disguise() -> None:
     document = export_openapi(AGENT_PROVIDER_SPECS)
-    assert set(document["paths"]) == {"/daemon/request/agent.provider.default"}
-    operation = document["paths"]["/daemon/request/agent.provider.default"]["post"]
-    assert operation["x-hyprial-mutates"] is False
-    assert operation["x-hyprial-retry"] == "safe"
+    assert set(document["paths"]) == {
+        f"/daemon/request/{name}" for name in NAMES
+    }
+    for name in NAMES:
+        operation = document["paths"][f"/daemon/request/{name}"]["post"]
+        assert operation["x-hyprial-mutates"] is True
+        assert operation["x-hyprial-retry"] == "never"
     assert all(entry["mutates"] for entry in document["x-hyprial-methods"])
 
     assert sorted(
@@ -750,9 +757,8 @@ def test_unknown_and_hosted_targets_keep_the_registry_boundary(
             provider_registry.invoke(provider_app, method, params)
         assert missing.value.code == ipc_errors.AGENT_NOT_FOUND
 
-    provider_app.handle(
-        "agent.host-invite",
-        {"name": "guest", "owner": "visitor", "cwd": str(tmp_path / "guest")},
+    provider_app.agents.create_transfer_hosted(
+        "guest", pinned_owner="visitor", cwd=str(tmp_path / "guest")
     )
     for method, params in (
         ("agent.provider.login", {"actor": "guest", "provider": "claude", "files": _files((".credentials.json", PAYLOAD))}),

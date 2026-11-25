@@ -16,7 +16,8 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
-from hyprial.kernel import ActorHandle, ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
+from hyprial.kernel import ActorSpec, AdmissionResult
 
 from hyprial.daemon.impl.adapters.lark.contracts.wire import (
     InboundOutcome,
@@ -337,15 +338,16 @@ class LarkInboundRuntime:
         *,
         mailbox_capacity: int = 128,
         effect_capacity: int = 128,
+        actor_host=None,
     ) -> None:
-        self._runtime = ActorRuntime()
+        self._hosts = ActorHostCustody(actor_host, owner="lark")
         self._authority = _InboundAuthority()
-        self._handle: ActorHandle | None = None
+        self._cell = None
         self._closing = False
 
         def completion(value: _InboundCompleted) -> None:
-            handle = self._handle
-            if handle is None:
+            cell = self._cell
+            if cell is None:
                 self._authority.fail(
                     value.correlation_id,
                     RuntimeError("Lark inbound runtime is stopped"),
@@ -353,7 +355,7 @@ class LarkInboundRuntime:
                 return
             deadline = time.monotonic() + 5.0
             while True:
-                admission = self._runtime.tell(handle, value)
+                admission = cell.tell(value)
                 if admission is AdmissionResult.ACCEPTED:
                     return
                 if time.monotonic() >= deadline:
@@ -378,7 +380,7 @@ class LarkInboundRuntime:
                 effects=self._effects,
             )
 
-        self._handle = self._runtime.start(
+        self._cell = self._hosts.host.spawn(
             ActorSpec(
                 name=f"lark-inbound:{name}",
                 handler_factory=handler_factory,
@@ -396,14 +398,13 @@ class LarkInboundRuntime:
         frozen_recovery: bool = False,
         recovery_deadline: float | None = None,
     ) -> InboundOutcome:
-        handle = self._handle
-        if handle is None or self._closing:
+        cell = self._cell
+        if cell is None or self._closing:
             return InboundOutcome(status="error", ack_error="inbound-closing")
         correlation = uuid.uuid4().hex
         result: Future[_InboundResponse] = Future()
         self._authority.register_waiter(correlation, result)
-        admission = self._runtime.tell(
-            handle,
+        admission = cell.tell(
             _SubmitInbound(correlation, message, suppress_guidance, frozen_recovery, recovery_deadline),
         )
         if admission is AdmissionResult.OVERLOADED:
@@ -438,8 +439,8 @@ class LarkInboundRuntime:
         return self._effects.ordered(operation, timeout=timeout)
 
     def close(self, timeout: float = 5.0) -> None:
-        handle = self._handle
-        if handle is None:
+        cell = self._cell
+        if cell is None:
             return
         self._closing = True
         deadline = time.monotonic() + max(0.0, timeout)
@@ -447,8 +448,9 @@ class LarkInboundRuntime:
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
         if self._authority.custody_count():
             self._authority.fail_all(RuntimeError("Lark inbound drain deadline expired"))
-        self._runtime.stop(handle, timeout=max(0.0, deadline - time.monotonic()))
-        self._handle = None
+        cell.drain(max(0.0, deadline - time.monotonic()))
+        self._hosts.shutdown(max(0.0, deadline - time.monotonic()))
+        self._cell = None
         self._effects.close()
 
 

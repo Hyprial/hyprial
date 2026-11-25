@@ -23,7 +23,6 @@ from hyprial.daemon.impl.inbox import (
     MemoryDeliveryTransport,
 )
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate, permissive_admission_slot
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
@@ -72,9 +71,7 @@ def _app(tmp_path: Path) -> DaemonApplication:
     app._inbox = InboxService(
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
-        link_admission=permissive_admission_slot(),
     )
-    app.link_admission.bind(PermissiveLinkGate())
     app._harnesses = _Harnesses()  # type: ignore[assignment]
     app._presence = _Presence()
     return app

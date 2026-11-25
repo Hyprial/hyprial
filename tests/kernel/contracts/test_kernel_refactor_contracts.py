@@ -88,6 +88,7 @@ def test_home_initialization_propagates_effect_failures(tmp_path, monkeypatch) -
         ("pi", "deepseek", "deepseek-flash", ("pi", "-p", "--provider", "deepseek", "--model", "deepseek-flash", "--thinking", "high", "hello")),
         ("claude", None, "sonnet", ("claude", "-p", "--model", "sonnet", "hello")),
         ("codex", None, "gpt-5.6-luna", ("codex", "exec", "--skip-git-repo-check", "--model", "gpt-5.6-luna", "hello")),
+        ("agy", None, "gemini-3.8-flash", ("agy", "-p", "--output-format", "stream-json", "--model", "gemini-3.8-flash", "hello")),
     ],
 )
 def test_candidate_probe_argv_is_pure(harness, provider, model, expected) -> None:
@@ -161,10 +162,8 @@ def test_lifecycle_vocabulary_keeps_frozen_slotted_dataclasses() -> None:
 def test_native_ports_do_not_load_windows_dependencies_on_other_platforms() -> None:
     from hyprial.kernel import (
         OwnedProcessGroup,
-        connect_named_pipe,
         create_owned_process_group,
         is_windows_owned_process_group,
-        listen_named_pipe,
         windows_process_identity,
     )
 
@@ -175,11 +174,7 @@ def test_native_ports_do_not_load_windows_dependencies_on_other_platforms() -> N
     assert type(process_group) is OwnedProcessGroup
     assert process_group._label == "kernel test"
     assert not is_windows_owned_process_group(process_group)
-    for call in (
-        lambda: connect_named_pipe(Path("unused"), 1.0),
-        lambda: listen_named_pipe(Path("unused")),
-        lambda: windows_process_identity(42),
-    ):
+    for call in (lambda: windows_process_identity(42),):
         with pytest.raises(OSError, match="Windows named pipes are unavailable"):
             call()
     assert "win32api" not in sys.modules

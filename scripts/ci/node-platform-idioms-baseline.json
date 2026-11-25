@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "policy": "(path, rule) -> count map; keys may only leave: lower a count or delete a key when the code is fixed; a new key or a raised count is red against the PR base (--base-ref)",
+  "entries": {}
+}

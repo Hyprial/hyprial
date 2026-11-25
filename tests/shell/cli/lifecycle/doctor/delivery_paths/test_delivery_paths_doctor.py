@@ -25,9 +25,8 @@ def test_delivery_paths_doctor_warns_without_a_probe(
     check = _checks(result)["delivery-paths"]
     assert check["status"] == "warn"
     assert "NOT-EVALUABLE" in check["detail"]
-    assert "route:" in check["detail"]
-    assert "hyprial adapter route add" in check["detail"]
-    assert "hyprial adapter route add" in check["action"]["command"]
+    assert "route" not in check["detail"]
+    assert check["action"]["command"] == "hyprial message probe-delivery-paths"
 
 
 def test_delivery_paths_doctor_reads_the_epoch_and_family_verdicts(
@@ -51,7 +50,7 @@ def test_delivery_paths_doctor_reads_the_epoch_and_family_verdicts(
         "epoch": time.time(),
         "per_family": {
             family: {"accepted": True, "target": f"{family}:x"}
-            for family in ("agent", "user", "route")
+            for family in ("agent", "user")
         },
     })
     assert delivery_paths_doctor_check(tmp_path)["status"] == "ok"
@@ -60,41 +59,34 @@ def test_delivery_paths_doctor_reads_the_epoch_and_family_verdicts(
         "epoch": time.time(),
         "per_family": {
             "agent": {"accepted": True},
-            "user": {"accepted": True},
-            "route": {"accepted": False},
+            "user": {"accepted": False},
         },
     })
     failed = delivery_paths_doctor_check(tmp_path)
     assert failed["status"] == "fail"
-    assert "route" in failed["detail"]
-    assert "hyprial adapter route add" in failed["action"]["command"]
+    assert "user" in failed["detail"]
+    assert "route" not in failed["detail"]
+    assert "route" not in failed["action"]["command"]
 
-    # no --route given: the probe records an explicit null target -> optional, warn
     write({
         "epoch": time.time(),
         "per_family": {
-            "agent": {"accepted": True, "target": "agent:x"},
-            "user": {"accepted": True, "target": "user:x"},
-            "route": {"accepted": False, "target": None, "error": "route target not supplied"},
+            "agent": {"accepted": True},
+            "user": {"accepted": True},
+            "route": {"accepted": False, "target": None, "error": "left by an older probe"},
         },
     })
-    unconfigured = delivery_paths_doctor_check(tmp_path)
-    assert unconfigured["status"] == "warn"
-    assert unconfigured["metrics"]["routeConfigured"] is False
-    assert "hyprial adapter route add" in unconfigured["detail"]
+    older = delivery_paths_doctor_check(tmp_path)
+    assert older["status"] == "ok"
+    assert "routeConfigured" not in older.get("metrics", {})
 
-    # route not configured AND user failed -> still fail, naming only user
     write({
         "epoch": time.time(),
-        "per_family": {
-            "agent": {"accepted": True, "target": "agent:x"},
-            "user": {"accepted": False, "target": "user:x"},
-            "route": {"accepted": False, "target": None},
-        },
+        "per_family": {"agent": {"accepted": True}},
     })
-    user_failed = delivery_paths_doctor_check(tmp_path)
-    assert user_failed["status"] == "fail"
-    assert "user" in user_failed["detail"] and "route" not in user_failed["detail"].split(";")[0]
+    missing_user = delivery_paths_doctor_check(tmp_path)
+    assert missing_user["status"] == "fail"
+    assert "user" in missing_user["detail"]
 
     write({"epoch": time.time() - 90_000, "per_family": {}})
     stale = delivery_paths_doctor_check(tmp_path)

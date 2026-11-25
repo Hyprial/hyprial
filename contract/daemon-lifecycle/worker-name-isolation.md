@@ -30,7 +30,7 @@ The next tick may retry the actor.
 ## Admission and diagnostics
 
 - Adapter create/add/onboard and explicit start refuse an existing local agent
-  name. Agent create, host-invite, start preflight, and explicit lifecycle start
+  name. Agent create, start preflight, and explicit lifecycle start
   refuse a configured local adapter name (including stopped adapters).
 - `--force` does not bypass this check. CLI/IPC refusals use existing
   `INVALID_ARGUMENT` and suggest `<name>-feishu` for the adapter.
@@ -39,6 +39,11 @@ The next tick may retry the actor.
 - `hyprial doctor` reports configured legacy collisions as a check named
   `agent-adapter-name-collision`, with `status: warn`. `--fix` never changes
   either identity, configuration, or credentials for this check.
+  The owner's user agent (reserved name `hyprial-user`, marked by the
+  `template: user` capability fact) is not a collision: it has no harness and
+  no desired-state row. Doctor leaves it out both online (`agent.list` hides
+  it) and offline (the registry read drops marked records), while an ordinary
+  agent holding that name is still reported in both modes.
 
 ## Structured daemon log events
 

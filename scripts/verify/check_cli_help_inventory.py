@@ -6,6 +6,26 @@ hand.  A changed command, visibility, executable group or parameter fails this
 gate until the author regenerates the file with ``--write`` and reviews the
 diff.  ``hyprial help`` is checked in the same run so the human top-level view
 cannot drift from the same tree.
+
+The source command families named by the A design: ``common`` is shared
+infrastructure, not a family.  Nested groups whose family moved in the
+2026 consolidation retain their original source owner until that group's
+migration lands; the family names still correspond to source directories.
+
+Decision (S2b, 2026-11-21): the dedicated Squire CLI is gone, so the
+top-level ``squire`` entry is dropped from TOP_LEVEL_FAMILIES.
+
+Decision (I7b-1, 2026-11-24): ``hyprial user proxy`` and
+``commands/squire/`` are deleted, so ``user proxy`` and ``squire`` are
+dropped from FAMILY_PREFIXES and SOURCE_FAMILIES.
+
+Decision (W1D, 2026-11-21): the hidden ``agent runtime`` smolvm group and
+``commands/transfer/`` are retired, so ``agent runtime`` and ``transfer``
+are dropped from FAMILY_PREFIXES and SOURCE_FAMILIES.
+
+Decision (T2a, 2026-11-22): ``hyprial agent link`` and ``commands/link/``
+are removed, so ``agent link`` and ``link`` are dropped from FAMILY_PREFIXES
+and SOURCE_FAMILIES.
 """
 
 from __future__ import annotations
@@ -22,10 +42,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INVENTORY = ROOT / "docs" / "reference" / "cli-command-inventory.json"
 
-#: The 25 source command families named by the A design.  ``common`` is shared
-#: infrastructure, not a family.  Nested groups whose family moved in the
-#: 2026 consolidation retain their original source owner until that group's
-#: migration lands; the family names still correspond to source directories.
 TOP_LEVEL_FAMILIES = {
     "adapter": "adapter",
     "agent": "agent",
@@ -44,22 +60,16 @@ TOP_LEVEL_FAMILIES = {
     "profile": "profile",
     "routine": "routine",
     "socialware": "socialware",
-    "squire": "squire",
     "user": "user",
     "version": "meta",
     "workflow": "workflow",
 }
 FAMILY_PREFIXES = {
-    "agent link": "link",
-    "agent move": "transfer",
     "agent top": "daemon",
-    "agent transfer": "transfer",
     "daemon upgrade": "upgrade",
-    "init onboarding": "init",
     "org fs": "fs",
     "org service": "service",
     "org work": "work",
-    "user proxy": "squire",
 }
 SOURCE_FAMILIES = (
     "adapter",
@@ -71,7 +81,6 @@ SOURCE_FAMILIES = (
     "gui",
     "host",
     "init",
-    "link",
     "log",
     "login",
     "message",
@@ -81,8 +90,6 @@ SOURCE_FAMILIES = (
     "routine",
     "service",
     "socialware",
-    "squire",
-    "transfer",
     "upgrade",
     "user",
     "work",

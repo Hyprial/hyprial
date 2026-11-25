@@ -39,9 +39,9 @@ def base_runtime(monkeypatch):
     load("src/hyprial/daemon/impl/desired_state/store_io.py", f"{prefix}.store_io")
     store = load("src/hyprial/daemon/impl/desired_state/store.py", f"{prefix}.store")
     store.DesiredStateSqliteShadow = sqlite.DesiredStateSqliteShadow
-    runtime = load("src/hyprial/daemon/impl/transfer/landing/runtime.py", f"{prefix}.runtime")
-    runtime.DesiredState = documents.DesiredState
-    runtime.HarnessLaunchSpec = launch.HarnessLaunchSpec
-    runtime.DesiredStateStore = store.DesiredStateStore
-    runtime.DesiredStateSqliteShadow = sqlite.DesiredStateSqliteShadow
-    return runtime
+    return types.SimpleNamespace(
+        DesiredState=documents.DesiredState,
+        HarnessLaunchSpec=launch.HarnessLaunchSpec,
+        DesiredStateStore=store.DesiredStateStore,
+        DesiredStateSqliteShadow=sqlite.DesiredStateSqliteShadow,
+    )

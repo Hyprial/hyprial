@@ -1,5 +1,8 @@
 #!/bin/sh
 # Public wheel installer. HYPRIAL_DL_BASE is reserved for isolated tests.
+# Native wheels pin CPython 3.12 (`--python 3.12`).  A `cpython>=3.12` request
+# can resolve to a free-threaded 3.14t build, which rejects abi3 wheels; 3.12
+# has no free-threaded variant, so the module always gets a GIL interpreter.
 set -eu
 fail() { printf 'hyprial install: %s\n' "$*" >&2; exit 1; }
 track=${HYPRIAL_TRACK-stable}
@@ -53,7 +56,7 @@ awk -v platform="$platform" '
     { sub(/\r$/, "") }
     NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {
         name = $2; sub(/^\*/, "", name)
-        if (name ~ ("^hyprial-[0-9][A-Za-z0-9.!+_]*-py3-none-" platform "\\.whl$"))
+        if (name ~ ("^hyprial-[0-9][A-Za-z0-9.!+_]*-(py3-none|cp312-abi3)-" platform "\\.whl$"))
             print tolower($1), name
     }
 ' "$tmp/SHA256SUMS" > "$tmp/matches"
@@ -73,9 +76,12 @@ fi
 actual=${digest%% *}
 [ "$actual" = "$expected" ] || fail "SHA-256 mismatch: $wheel (nothing installed)"
 printf 'Installing verified %s from track %s with uv tool install --force\n' "$wheel" "$track"
-uv tool install --force "$tmp/$wheel" || fail 'uv tool install failed'
+case "$wheel" in
+    *-cp312-abi3-*) uv tool install --force --python 3.12 "$tmp/$wheel" || fail 'uv tool install failed' ;;
+    *) uv tool install --force "$tmp/$wheel" || fail 'uv tool install failed' ;;
+esac
 version=${wheel#hyprial-}
-version=${version%%-py3-none-*}
+version=${version%%-*}
 installed_list=$(uv tool list) || fail 'Cannot read installed version with uv tool list'
 installed=$(printf '%s\n' "$installed_list" | awk '$1 == "hyprial" { sub(/^v/, "", $2); print $2 }')
 [ "$installed" = "$version" ] || fail "Installed version mismatch: selected $version, installed ${installed:-unknown}"
@@ -94,3 +100,4 @@ if ! cp "$tmp/install.json" "$receipt_tmp" || ! mv -f "$receipt_tmp" "$receipt_d
 fi
 printf 'Installed hyprial %s\nReceipt: %s/install.json\n' "$installed" "$receipt_dir"
 printf 'If hyprial is not on PATH, use uv tool update-shell, then open a new terminal.\n'
+printf 'Next: run "hyprial init", then "hyprial login".\n'

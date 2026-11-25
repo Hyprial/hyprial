@@ -1,4 +1,14 @@
-"""Harness-neutral process seams owned by the daemon layer."""
+"""Harness-neutral process seams owned by the daemon layer.
+
+Decision (Allen, 2026-11-19, 「同意，来源信息里有不认识的字段时，把那些字段丢掉」):
+a message's ``origin`` is published in one closed shape, and reads are robust
+against whatever is stored.  ``published_origin`` keeps only the fields that
+shape declares, each with a usable value, and drops everything else; a sender
+block without a platform account is dropped whole.  Storage is never
+rewritten: only the published view is normalised, so one stored row can never
+fail a read that publishes several.  Writes apply the same sender and chat-kind
+rules (``origin_sender``, ``ORIGIN_CHAT_KINDS``) to what an adapter reports.
+"""
 
 from __future__ import annotations
 
@@ -17,9 +27,59 @@ from hyprial.kernel import ipc_errors
 
 from hyprial.kernel import (
     ADAPTER_URI_PREFIX,
-    CHANNEL_URI_PREFIX,
     HarnessLaunchSpec,
 )
+
+
+ORIGIN_CHAT_KINDS = frozenset({"dm", "group"})
+ORIGIN_SENDER_FIELDS = ("kind", "platformId", "displayName")
+ORIGIN_FIELD_MAX_CHARS = 256
+_ORIGIN_TEXT_FIELDS = frozenset(
+    {"via", "provider", "platformMessageId", "platformCreatedAt", "onBehalfOf", "mechanism"}
+)
+
+
+def origin_sender(value: object) -> dict[str, Any] | None:
+    """The closed sender block, or ``None`` when it names no platform account."""
+
+    if not isinstance(value, Mapping):
+        return None
+    sender: dict[str, Any] = {}
+    for field in ORIGIN_SENDER_FIELDS:
+        text = value.get(field)
+        sender[field] = (
+            text[:ORIGIN_FIELD_MAX_CHARS] if isinstance(text, str) and text else None
+        )
+    return sender if sender["platformId"] is not None else None
+
+
+def published_origin(origin: object) -> dict[str, Any]:
+    """The declared fields of a stored origin, in stored order; nothing else."""
+
+    if not isinstance(origin, Mapping):
+        return {}
+    published: dict[str, Any] = {}
+    for key, value in origin.items():
+        if key == "sender":
+            sender = origin_sender(value)
+            if sender is not None:
+                published[key] = sender
+        elif key == "chatKind":
+            if isinstance(value, str) and value in ORIGIN_CHAT_KINDS:
+                published[key] = value
+        elif key in _ORIGIN_TEXT_FIELDS and isinstance(value, str) and value:
+            published[key] = value
+    return published
+
+
+def published_message_origin(body: object, sender: str) -> dict[str, Any]:
+    """The stored origin in the published shape, never failing on its content."""
+
+    stored = body.get("origin") if isinstance(body, dict) else None
+    published = published_origin(stored)
+    if published:
+        return published
+    return visible_message_origin({}, sender)
 
 
 def visible_message_origin(body: object, sender: str) -> dict[str, Any]:
@@ -28,7 +88,7 @@ def visible_message_origin(body: object, sender: str) -> dict[str, Any]:
     origin = body.get("origin") if isinstance(body, dict) else None
     if isinstance(origin, dict) and origin:
         return origin
-    if sender.startswith((CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX)):
+    if sender.startswith(ADAPTER_URI_PREFIX):
         via = "adapter"
     elif sender.startswith("user:"):
         via = "operator"
@@ -62,8 +122,6 @@ class HarnessDelivery:
     sender: str
     recipient: str
     message: str
-    #: The stored ``origin`` block (chat type, resolved human sender) when
-    #: the reporting adapter sent one; ``None`` means it said nothing.
     origin: Mapping[str, Any] | None = None
     #: Opaque text returned by a configured delivery hook.  The daemon never
     #: parses or rewrites it; ``None`` preserves the historical prompt bytes.
@@ -100,41 +158,24 @@ class HarnessDelivery:
         return self.message if self.batch_cursor is not None else delivery_prompt(self)
 
 
-def describe_sender(origin: Mapping[str, Any] | None) -> str | None:
-    """One line naming the human behind an adapter-relayed message.
+def describe_sender(origin: Mapping[str, Any] | None, via: str) -> str | None:
+    """One line naming the platform account behind an adapter-relayed message.
 
-    Worded so an unconfirmed name cannot pass for an owner: only ``verified``
-    with an owner prints "owner", a confirmed guest says it has none, and
-    every other standing says it is not confirmed.  A
-    platform display name is free text anyone can set, and one on record
-    today equals an owner's real name under a different union_id.
+    ``via`` is the adapter address the message came from (its ``from``),
+    printed verbatim.  The line is the same for every adapter kind and makes
+    no claim about who the person is: an IM sender is whoever owns the
+    account, and a display name is only what the adapter observed.
     """
 
     sender = origin.get("sender") if isinstance(origin, Mapping) else None
     if not isinstance(sender, Mapping):
         return None
-    name = sender.get("displayName") or sender.get("platformId") or "unknown"
-    standing = sender.get("standing")
-    if standing == "verified" and sender.get("owner"):
-        return f"{name} (owner {sender['owner']}, verified)"
-    if standing == "verified":
-        return f"{name} (verified person, no hyprial owner)"
-    candidate_users = [
-        item for item in sender.get("candidateUsers") or () if isinstance(item, str)
-    ]
-    if standing == "ambiguous" and candidate_users:
-        # From the user store: the candidates are people, and a guest among
-        # them has no owner, so naming owners alone could print nothing.
-        users = ", ".join(candidate_users)
-        return f"{name} (NOT verified: sender ambiguous between users {users})"
-    if standing == "ambiguous":
-        candidates = ", ".join(sender.get("candidateOwners") or ())
-        return f"{name} (NOT verified: owner ambiguous between {candidates})"
-    if standing == "observed":
-        return f"{name} (NOT verified: display name only, no owner)"
-    if sender.get("lookupFailed") is True:
-        return f"{name} (NOT verified: identity lookup failed)"
-    return f"{name} (NOT verified: sender unresolved)"
+    account = sender.get("platformId")
+    if not isinstance(account, str) or not account:
+        return None
+    name = sender.get("displayName")
+    shown = name if isinstance(name, str) and name else account
+    return f"{shown} (via {via}, account {account})"
 
 
 def delivery_prompt(delivery: HarnessDelivery) -> str:
@@ -148,13 +189,13 @@ def delivery_prompt(delivery: HarnessDelivery) -> str:
     header = (
         f"[Harness Network message from {delivery.sender} to {delivery.recipient}"
     )
-    chat_type = (
-        delivery.origin.get("chatType")
+    chat_kind = (
+        delivery.origin.get("chatKind")
         if isinstance(delivery.origin, Mapping)
         else None
     )
-    if isinstance(chat_type, str) and chat_type:
-        header += f" via {chat_type} chat"
+    if isinstance(chat_kind, str) and chat_kind:
+        header += f" via {chat_kind} chat"
     provenance = (
         delivery.origin.get("via")
         if isinstance(delivery.origin, Mapping)
@@ -169,7 +210,7 @@ def delivery_prompt(delivery: HarnessDelivery) -> str:
     )
     if isinstance(on_behalf_of, str) and on_behalf_of:
         header += f"; on behalf of: {on_behalf_of}"
-    human = describe_sender(delivery.origin)
+    human = describe_sender(delivery.origin, delivery.sender)
     if human is not None:
         header += f"; sender: {human}"
     prompt = f"{header}]\n{delivery.message}"
@@ -203,9 +244,6 @@ _PERMANENT_FAILURE_CODES = frozenset(
         "PROVIDER_PERMISSION_DENIED",
         "PROVIDER_INVALID_REQUEST",
         ipc_errors.CONTEXT_EXHAUSTED,
-        # A forward whose recipient cannot be resolved will never resolve on
-        # redelivery; the sender is told once (docs/design/design-user-proxy-harness.md §5).
-        "FORWARD_TARGET_UNKNOWN",
     }
 )
 
@@ -325,17 +363,28 @@ class HarnessResult:
     output: str = ""
     error: str | None = None
     failure_code: str | None = None
-    #: Set only by a harness that relays (user-proxy): the completed turn is
-    #: sent AS the worker to this address instead of replied to the sender.
-    #: The daemon performs the send; the harness never holds a send path.
-    forward_to: str | None = None
     #: Ordered inbox members represented by one managed batch turn.  The turn
     #: has no separate identity, so ``delivery_id`` is one of these member IDs.
     message_ids: tuple[str, ...] = ()
+    route_label: str | None = None
+    route_outcome: str = "done"
 
     def __post_init__(self) -> None:
         if self.message_ids and self.delivery_id not in self.message_ids:
             raise ValueError("a batch result id must be one of its member message ids")
+        if self.route_outcome not in {"done", "next", "refused"}:
+            raise ValueError("route_outcome must be done, next, or refused")
+        if self.route_outcome == "next":
+            if (
+                not isinstance(self.route_label, str)
+                or not self.route_label
+                or not self.route_label.strip()
+            ):
+                raise ValueError(
+                    "route_label must be a non-empty string when route_outcome is next"
+                )
+        elif self.route_label is not None:
+            raise ValueError("route_label is only allowed when route_outcome is next")
 
 
 @runtime_checkable

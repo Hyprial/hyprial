@@ -1,0 +1,243 @@
+path	status	proposed_owner	note
+clients/native/package.json	M	A	native/打包宿主
+clients/native/src-tauri/Cargo.lock	M	A	native/打包宿主
+clients/native/src-tauri/Cargo.toml	M	A	native/打包宿主
+clients/native/src-tauri/build.rs	M	A	native/打包宿主
+clients/native/src-tauri/capabilities/power-pack/main.json	M	A	native/打包宿主
+clients/native/src-tauri/src/account/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/account/tests.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/account/worker.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/core/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/core/pages.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/core/port.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/core/tests/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/menu.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/onboarding/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/power_pack/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/power_pack/product_consent.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/power_pack/product_driver.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/app_core/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/boot.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/cli.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/daemon.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/env.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/gui_host/http.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/gui_host/mod.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/gui_host/session.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/gui_host/tests.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/gui_host/upstream.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/gui_host/windows_acl.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/host_bridge.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/identity_fixture.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/manifest.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/no_window.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/product/cli-bootstrap.py	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/product/mod.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/product/python.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/product/session.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/product/session_tests.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/product/staging.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/product/tests.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/runtime/tests/boot.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/tests/cli.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/tests/env.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/runtime/tests/host_bridge.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/setup/checkpoint.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/setup/inspect.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/setup/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/setup/sender_tests.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/setup/tests.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/shell.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/startup/app_core_probe.rs	A	A	native/打包宿主
+clients/native/src-tauri/src/startup/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/startup/probe/ipc.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/startup/smoke.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/supervisor/owned/mod.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/supervisor/owned/unix_tests.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/supervisor/owned/windows_tests.rs	M	A	native/打包宿主
+clients/native/src-tauri/src/windows.rs	M	A	native/打包宿主
+clients/native/src-tauri/tauri.conf.json	M	A	native/打包宿主
+clients/native/src/runtime/network/worker.py	M	A	native/打包宿主
+clients/native/src/runtime/paths.cjs	M	A	native/打包宿主
+clients/native/tests/feature-layers.test.cjs	M	A	native/打包宿主
+clients/native/tests/runtime-paths.test.cjs	M	A	native/打包宿主
+clients/native/tests/tauri-shell.test.cjs	M	A	native/打包宿主
+contract/cli/surface.json	M	C	契约生成物（按合并后的 MethodSpec 重生）
+contract/daemon-request/openapi.json	M	C	契约生成物（按合并后的 MethodSpec 重生）
+docs/design/desktop-packaging-integration-ledger-20261111/COORDINATOR-STATUS-20261111T0550Z.md	A	A	拆分/打包文档
+docs/design/desktop-packaging-integration-ledger-20261111/COORDINATOR-STATUS-20261111T1400Z.md	A	A	拆分/打包文档
+docs/design/desktop-packaging-integration-ledger-20261111/INTEGRATION-LEDGER.md	A	A	拆分/打包文档
+docs/design/desktop-packaging-integration-ledger-20261111/REWORK-OWNER-CORRECTION-20261111T1410Z.md	A	A	拆分/打包文档
+docs/design/desktop-packaging-integration-ledger-20261111/SOURCE-REGISTRY-ADDENDUM-20261111T1400Z.md	A	A	拆分/打包文档
+docs/design/desktop-packaging-integration-ledger-20261111/SOURCE-REGISTRY-ADDENDUM-20261111T1415Z.md	A	A	拆分/打包文档
+docs/design/desktop-packaging-runner-first-plan-2026-11-09.md	A	A	拆分/打包文档
+docs/design/desktop-wheel-aligned-packaging-handoff-2026-11-08.md	A	A	拆分/打包文档
+docs/notes/windows-pi-conpty-20261111.md	A	A	拆分/打包文档
+docs/notes/windows-pi-safefile-20261111.md	A	A	拆分/打包文档
+docs/reference/cli-command-inventory.json	M	A	拆分/打包文档
+gui/docs/native-host-session-contract.md	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/index.html	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/scripts/first-run-packaged-artifact-check.mjs	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/scripts/first-run-packaged-cancel-checklist.md	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/App.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/app/AppShell.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/app/backend/browser-session.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/app/backend/index.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/app/backend/types.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/app/capabilities.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/app/first-run-auto-entry.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/app/native-capabilities.ts	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/client/generated/index.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/client/generated/types.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/dev/first-run-capabilities.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/dev/mock/agent-chat.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/dev/onboarding-preview/preview.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/agent-chat/impl/api/chat-controller.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/agents/impl/AgentForm.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/chat-channels/impl/MessageSessionsSection.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/chat-channels/impl/connected-chat.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/chat-channels/impl/daemon-api/index.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/chat-channels/impl/message-read-api.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/ConversationStep.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/FirstRunOnboarding.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/HarnessStep.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/SquireStep.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/auth-actions.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/handoff.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/setup-readiness.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/types.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/useFirstRunController.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/impl/useFirstRunConversation.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/onboarding/index.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/product-bootstrap/impl/ProductBootstrapGate.tsx	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/features/product-bootstrap/impl/StartupWizard.tsx	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/features/product-bootstrap/impl/product-bootstrap.css	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/features/product-bootstrap/impl/startup-connection.ts	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/features/product-bootstrap/impl/startup-wizard.css	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/features/product-bootstrap/index.ts	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/features/settings/impl/environment/EnvironmentSettingsSection.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/settings/impl/environment/harness-presentation.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/features/settings/index.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/main.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/pages/SettingsPage.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/platform/product-bootstrap/client.ts	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/platform/product-bootstrap/contract.ts	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/platform/product-bootstrap/index.ts	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/platform/product-bootstrap/useProductBootstrap.ts	A	B	GUI 业务（2727 权威；A 只作行为参考，不携带）
+gui/src/platform/setup/index.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/src/state/gui-view-model.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/bootstrap-unavailable-page.test.mjs	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/bootstrap-unavailable-production.mjs	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/chat-channels/connected-chat-controller.test.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/chat-channels/connected-chat-history.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/chat-channels/message-read-api.test.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/chat-channels/message-sessions-section.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/connected-first-run-native-browser.mjs	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/connected-native-first-run.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/daemon-request-host/browser-acceptance.mjs	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/daemon-request-host/browser-session.test.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/daemon-request-host/mount-contract.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/dev01-auth-actions.test.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/dev01-conversation-preview.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/dev01-onboarding.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/features/product-bootstrap/product-bootstrap-gate.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/features/product-bootstrap/startup-wizard.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/features/settings/environment-settings.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/first-message-composer-b-fix-009.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/first-run-browser-contract.mjs	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/first-run-handoff.test.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/first-run-harness-step.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/first-run-j1.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/first-run-live-composition-browser.mjs	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/live/first-run-live-composition.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/main-native-entry.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/modules/dev02/agent-manage.test.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/native-capabilities-selection.test.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/platform/product-bootstrap/client.test.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/platform/product-bootstrap/contract.test.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/reference/first-run-product-entry.tsx	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/setup-cancel-ack.test.tsx	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/setup-harness-client.test.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/setup-native.test.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+gui/tests/setup-readiness.test.ts	A	B	GUI 业务（2727 权威；打包线不携带）
+gui/vitest.config.ts	M	B	GUI 业务（2727 权威；打包线不携带）
+packaging/clients/release/README.md	M	A	native/打包宿主
+packaging/clients/scripts/build-release.cjs	M	A	native/打包宿主
+packaging/clients/scripts/probe-macos-dmg.py	M	A	native/打包宿主
+packaging/clients/scripts/stage-wheel-runtime.cjs	A	A	native/打包宿主
+packaging/clients/scripts/verify-bundle.cjs	M	A	native/打包宿主
+packaging/clients/tests/stage-wheel-runtime.test.cjs	A	A	native/打包宿主
+packaging/clients/tests/verify-bundle-product.test.cjs	A	A	native/打包宿主
+scripts/ci/check_daemon_request_architecture.py	M	A	宿主/打包 CI 门（按内容复核）
+scripts/ci/github_publish_policy/denylist.py	M	A	宿主/打包 CI 门（按内容复核）
+scripts/ci/windows-portability-baseline.json	M	A	宿主/打包 CI 门（按内容复核）
+src/hyprial/daemon/impl/agent_templates/home_layout.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/daemon/impl/agent_templates/setup.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/daemon/impl/application/messaging/inbox_surface/history/__init__.py	M	C	后端业务/fix
+src/hyprial/daemon/impl/harnesses/protocol/common.py	M	C	后端业务/fix
+src/hyprial/daemon/impl/harnesses/protocol/windows_pty.py	A	C	后端业务/fix
+src/hyprial/daemon/impl/request_catalog/conversations/__init__.py	M	C	后端业务/fix
+src/hyprial/daemon/impl/request_catalog/message/history.py	M	C	后端业务/fix
+src/hyprial/gui_build_hook.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/__init__.py	M	C	后端业务/fix
+src/hyprial/kernel/impl/platform/ports.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/impl/platform/privacy/private_access.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/impl/platform/privacy/windows_home_layout.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/impl/platform/process.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/impl/platform/pty/__init__.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/impl/platform/pty/posix.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/impl/platform/pty/windows.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/kernel/impl/primitives/managed_harness.py	A	C	后端业务/fix
+src/hyprial/kernel/impl/processes/owned_process.py	M	C	后端业务/fix
+src/hyprial/kernel/interface.py	M	C	后端业务/fix
+src/hyprial/shell/impl/cli/commands/init/onboarding.py	M	C	后端业务/fix
+src/hyprial/shell/impl/gui/adapter/chat.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/gui/adapter/host.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/gui/adapter/lifecycle.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/onboarding/__init__.py	M	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/onboarding/harness_activation.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/onboarding/harnesses.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/onboarding/node_preparation.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/packaging/platform_capabilities.py	A	C	平台/宿主支撑（后端契约或限期补丁）
+src/hyprial/shell/impl/request_http/__init__.py	M	C	native 宿主支撑契约（request_http/bootstrap/onboarding）
+src/hyprial/shell/impl/request_http/__main__.py	M	C	native 宿主支撑契约（request_http/bootstrap/onboarding）
+src/hyprial/shell/impl/request_http/config.py	M	C	native 宿主支撑契约（request_http/bootstrap/onboarding）
+src/hyprial/shell/impl/request_http/server.py	M	C	native 宿主支撑契约（request_http/bootstrap/onboarding）
+tests/conftest.py	M	C	后端/契约测试（随所属改动）
+tests/daemon/golden/snapshots/manifest.json	M	C	后端/契约测试（随所属改动）
+tests/daemon/golden/snapshots/message/agent-roundtrip-enforced.json	M	C	后端/契约测试（随所属改动）
+tests/daemon/golden/snapshots/message/agent-roundtrip-linked-enforced.json	M	C	后端/契约测试（随所属改动）
+tests/daemon/golden/snapshots/message/agent-roundtrip.json	M	C	后端/契约测试（随所属改动）
+tests/daemon/golden/snapshots/retention/interaction-after-drop.json	M	C	后端/契约测试（随所属改动）
+tests/daemon/harnesses/protocol/__init__.py	A	C	后端/契约测试（随所属改动）
+tests/daemon/harnesses/protocol/windows/__init__.py	A	C	后端/契约测试（随所属改动）
+tests/daemon/harnesses/protocol/windows/test_windows_pty.py	A	C	后端/契约测试（随所属改动）
+tests/daemon/onboarding/test_record.py	M	C	后端/契约测试（随所属改动）
+tests/integration/desktop/test_desktop_network_forwarding.py	M	C	后端/契约测试（随所属改动）
+tests/integration/native_harnesses/test_native_resident_tripwires.py	M	A	宿主/打包测试
+tests/kernel/platform/test_private_access.py	M	C	后端/契约测试（随所属改动）
+tests/kernel/platform/test_private_file_io.py	M	C	后端/契约测试（随所属改动）
+tests/kernel/platform/test_process_seam.py	M	C	后端/契约测试（随所属改动）
+tests/kernel/processes/test_owned_process.py	M	C	后端/契约测试（随所属改动）
+tests/shell/cli/installation/restart/post_install/post_install_surface.json	M	A	宿主/打包测试
+tests/shell/gui/adapter/control_stdin/test_app_host_control_stdin.py	A	C	后端/契约测试（随所属改动）
+tests/shell/gui/adapter/test_app_chat_adapter.py	M	C	后端/契约测试（随所属改动）
+tests/shell/onboarding/test_harness_activation_windows.py	A	C	后端/契约测试（随所属改动）
+tests/shell/onboarding/test_managed_node_preparation.py	A	C	后端/契约测试（随所属改动）
+tests/shell/onboarding/test_onboarding_harnesses.py	A	C	后端/契约测试（随所属改动）
+tests/shell/packaging/native_engine/test_guards.py	M	A	宿主/打包测试
+tests/shell/packaging/test_gui_build_hook_source_guard.py	M	A	宿主/打包测试
+tests/shell/packaging/test_tailcat_wheel.py	M	A	宿主/打包测试
+tests/shell/request_http/conftest.py	A	C	后端/契约测试（随所属改动）
+tests/shell/request_http/gui_host/test_server_gui_host.py	A	C	后端/契约测试（随所属改动）
+tests/shell/request_http/test_config.py	M	C	后端/契约测试（随所属改动）
+tests/shell/request_http/test_identity.py	R100	C	后端/契约测试（随所属改动）
+tests/shell/request_http/test_oversized_body.py	R100	C	后端/契约测试（随所属改动）
+tests/shell/request_http/test_owner_stop.py	A	C	后端/契约测试（随所属改动）
+tests/shell/request_http/test_server.py	M	C	后端/契约测试（随所属改动）
+tests/shell/squire/setup/test_squire_home_layout.py	M	C	后端/契约测试（随所属改动）
+tests/shell/squire/setup/test_squire_setup_scaffold.py	M	C	后端/契约测试（随所属改动）
+tests/support/runtime/environment.py	M	C	后端/契约测试（随所属改动）
+tests/support/test_fd_hygiene_windows.py	A	C	后端/契约测试（随所属改动）
+tests/tooling/architecture/ipc/test_daemon_request_architecture.py	M	C	后端/契约测试（随所属改动）

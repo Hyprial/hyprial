@@ -25,7 +25,12 @@ from hyprial.daemon.impl.configuration.home_guard import (
 from hyprial.daemon.impl.mcp.channel.ownership import _OwnerProcessStatus
 from hyprial.kernel import (
     HYPRIALHomeNotInitialized,
+    PrivateAccessUnsupported,
+    configured_hyprial_home,
     default_hyprial_home,
+    initialize_hyprial_home,
+    link_directory,
+    posix_metadata_enforced,
     require_initialized_hyprial_home,
 )
 
@@ -141,7 +146,7 @@ def test_default_home_consumers_share_the_new_home_without_runtime_fallback(
     env: dict[str, str] = {}
 
     assert login.credential_path(env).parents[1] == current
-    assert login._home_dir(env, None) == current
+    assert configured_hyprial_home(env)[0] == current
     assert daemon_identity._settings_path(env, None).parent == current
     assert network_profile.profile_path(env).parent == current
     assert _cli_owner_1._canonical_lark_auth_state_path().parents[1] == current
@@ -742,3 +747,175 @@ def test_pre_readiness_delay_cannot_consume_the_rejection_budget() -> None:
             assert payload["data"]["pid"] == first.pid
         finally:
             _stop_daemon(first)
+
+
+def test_initialize_and_home_guard_reject_linked_home_and_harden_real_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "real-target"
+    target.mkdir()
+    linked = tmp_path / "linked-home"
+    link_directory(target, linked)
+    monkeypatch.setenv("HYPRIAL_HOME", str(linked))
+
+    with pytest.raises(PrivateAccessUnsupported):
+        initialize_hyprial_home(ensure_dispatch_policy=lambda _path: None)
+    assert list(target.iterdir()) == []
+
+    guard = ActiveDaemonHeartbeat(
+        linked,
+        keepalive_duration=5.0,
+        claim_wait_timeout=0.0,
+        pid=111,
+        identity_reader=lambda _pid: "self",
+    )
+    with pytest.raises(PrivateAccessUnsupported):
+        guard.claim()
+    assert list(target.iterdir()) == []
+
+    real_home = tmp_path / "loose-home"
+    real_home.mkdir()
+    if posix_metadata_enforced():
+        real_home.chmod(0o755)
+    monkeypatch.setenv("HYPRIAL_HOME", str(real_home))
+    initialize_hyprial_home(ensure_dispatch_policy=lambda _path: None)
+    if posix_metadata_enforced():
+        assert real_home.stat().st_mode & 0o777 == 0o700
+
+    from hyprial.daemon.impl.configuration.ownership import DaemonStateOwnershipFence
+
+    with pytest.raises(PrivateAccessUnsupported):
+        DaemonStateOwnershipFence.acquire(linked)
+
+    fresh_state = tmp_path / "fresh-state"
+    with DaemonStateOwnershipFence.acquire(fresh_state):
+        if posix_metadata_enforced():
+            assert fresh_state.stat().st_mode & 0o777 == 0o700
+
+
+def test_env_configured_home_and_state_dir_preserve_links_and_reparse_for_hard_gates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from hyprial.daemon.impl.application.onboarding.bootstrap.wire import BootstrapWireHost
+    from hyprial.daemon.impl.configuration.ownership import DaemonStateOwnershipFence
+    from hyprial.kernel import (
+        configured_harness_state_dir,
+        configured_hyprial_home,
+        manysys,
+    )
+
+    real_home = tmp_path / "real-home"
+    real_home.mkdir(mode=0o700)
+    real_state = tmp_path / "real-state"
+    real_state.mkdir(mode=0o700)
+
+    linked_home = tmp_path / "linked-home-env"
+    link_directory(real_home, linked_home)
+    linked_state = tmp_path / "linked-state-env"
+    link_directory(real_state, linked_state)
+
+    env_linked = {
+        "HYPRIAL_HOME": str(linked_home),
+        "HARNESS_STATE_DIR": str(linked_state),
+    }
+    selected_home, _ = configured_hyprial_home(env_linked)
+    selected_state = configured_harness_state_dir(env_linked)
+    assert selected_home == Path(os.path.abspath(linked_home))
+    assert selected_state == Path(os.path.abspath(linked_state))
+
+    monkeypatch.setenv("HYPRIAL_HOME", str(linked_home))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(linked_state))
+    with pytest.raises(PrivateAccessUnsupported):
+        require_initialized_hyprial_home()
+    with pytest.raises(PrivateAccessUnsupported):
+        initialize_hyprial_home(ensure_dispatch_policy=lambda _path: None)
+    assert list(real_home.iterdir()) == []
+
+    guard = ActiveDaemonHeartbeat(
+        configured_hyprial_home()[0],
+        keepalive_duration=5.0,
+        claim_wait_timeout=0.0,
+        pid=111,
+        identity_reader=lambda _pid: "self",
+    )
+    with pytest.raises(PrivateAccessUnsupported):
+        guard.claim()
+    assert list(real_home.iterdir()) == []
+
+    with pytest.raises(PrivateAccessUnsupported):
+        DaemonStateOwnershipFence.acquire(configured_harness_state_dir())
+    assert list(real_state.iterdir()) == []
+
+    with pytest.raises(ValueError, match="not symlinks"):
+        BootstrapWireHost.open(
+            configured_hyprial_home()[0],
+            state_dir=configured_harness_state_dir(),
+        )
+
+    linked_parent = tmp_path / "linked-parent"
+    real_tree = tmp_path / "real-tree"
+    nested_home = real_tree / "inner" / "home"
+    nested_state = real_tree / "inner" / "state"
+    nested_home.mkdir(mode=0o700, parents=True)
+    nested_state.mkdir(mode=0o700, parents=True)
+    link_directory(real_tree, linked_parent)
+
+    monkeypatch.setenv("HYPRIAL_HOME", str(linked_parent / "inner" / "home"))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(linked_parent / "inner" / "state"))
+    with pytest.raises(PrivateAccessUnsupported):
+        require_initialized_hyprial_home()
+    with pytest.raises(PrivateAccessUnsupported):
+        initialize_hyprial_home(ensure_dispatch_policy=lambda _path: None)
+    with pytest.raises(PrivateAccessUnsupported):
+        ActiveDaemonHeartbeat(
+            configured_hyprial_home()[0],
+            keepalive_duration=5.0,
+            claim_wait_timeout=0.0,
+            pid=111,
+            identity_reader=lambda _pid: "self",
+        ).claim()
+    with pytest.raises(PrivateAccessUnsupported):
+        DaemonStateOwnershipFence.acquire(configured_harness_state_dir())
+
+    reparse_home = tmp_path / "reparse-home"
+    reparse_home.mkdir(mode=0o700)
+    reparse_state = tmp_path / "reparse-state"
+    reparse_state.mkdir(mode=0o700)
+    reparse_inos = {reparse_home.lstat().st_ino, reparse_state.lstat().st_ino}
+    monkeypatch.setattr(
+        manysys,
+        "path_is_reparse",
+        lambda info: info.st_ino in reparse_inos,
+    )
+    monkeypatch.setenv("HYPRIAL_HOME", str(reparse_home))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(reparse_state))
+
+    assert configured_hyprial_home()[0] == Path(os.path.abspath(reparse_home))
+    assert configured_harness_state_dir() == Path(os.path.abspath(reparse_state))
+    with pytest.raises(PrivateAccessUnsupported):
+        require_initialized_hyprial_home()
+    with pytest.raises(PrivateAccessUnsupported):
+        initialize_hyprial_home(ensure_dispatch_policy=lambda _path: None)
+    with pytest.raises(PrivateAccessUnsupported):
+        ActiveDaemonHeartbeat(
+            configured_hyprial_home()[0],
+            keepalive_duration=5.0,
+            claim_wait_timeout=0.0,
+            pid=111,
+            identity_reader=lambda _pid: "self",
+        ).claim()
+    with pytest.raises(PrivateAccessUnsupported):
+        DaemonStateOwnershipFence.acquire(configured_harness_state_dir())
+
+
+def test_cli_entry_applies_private_umask() -> None:
+    from hyprial.shell.impl.worker_context import apply_process_umask
+
+    previous = apply_process_umask()
+    try:
+        if posix_metadata_enforced():
+            current = os.umask(previous)
+            assert current == 0o077
+    finally:
+        if posix_metadata_enforced():
+            os.umask(previous)

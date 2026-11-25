@@ -95,13 +95,14 @@ class LarkSdkGateway:
         *,
         logger: Logger | None = None,
         gateway_name: str | None = None,
+        http_timeout_seconds: float = SDK_HTTP_TIMEOUT_SECONDS,
     ) -> LarkSdkGateway:
         client = (
             lark.Client.builder()
             .app_id(app_id)
             .app_secret(app_secret)
             .domain(lark_base_url())
-            .timeout(SDK_HTTP_TIMEOUT_SECONDS)
+            .timeout(http_timeout_seconds)
             .build()
         )
         return cls(client, logger=logger, gateway_name=gateway_name, app_id=app_id)
@@ -379,49 +380,6 @@ class LarkSdkGateway:
         )
         response = self._client.im.v1.message_reaction.create(request)
         self._require_success(response, "add reaction")
-
-    def send_owner_dm(
-        self, open_id: str, text: str, *, idempotency_key: str
-    ) -> str:
-        platform_uuid = str(
-            uuid5(NAMESPACE_URL, f"hyprial:lark-owner-dm:{idempotency_key}")
-        )
-        body = (
-            CreateMessageRequestBody.builder()
-            .receive_id(open_id)
-            .msg_type("text")
-            .content(encode_lark_text_content(text))
-            .uuid(platform_uuid)
-            .build()
-        )
-        request = (
-            CreateMessageRequest.builder()
-            .receive_id_type("open_id")
-            .request_body(body)
-            .build()
-        )
-        response: Any | None = None
-        try:
-            response = self._client.im.v1.message.create(request)
-            self._require_success(response, "send owner DM")
-            native_message_id = response.data.message_id if response.data else None
-            if not native_message_id:
-                raise LarkSdkError("send owner DM returned no message id")
-        except Exception as error:  # noqa: BLE001 - boundary; log then re-raise
-            self._record_send(
-                operation="send owner DM",
-                target=open_id,
-                response=response,
-                error=error,
-            )
-            raise
-        self._record_send(
-            operation="send owner DM",
-            target=open_id,
-            response=response,
-            native_message_id=native_message_id,
-        )
-        return native_message_id
 
     def send_chat(
         self, chat_id: str, text: str, *, idempotency_key: str

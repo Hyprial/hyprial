@@ -37,7 +37,7 @@ class _LifecycleBehavior:
         if self._desired_state is None:
             self._reject_correlation(
                 request.correlation_id,
-                "HARNESS_LIFECYCLE_STORE_MISSING",
+                ipc_errors.HARNESS_LIFECYCLE_STORE_MISSING,
                 "Harness lifecycle authority requires DesiredStateStore",
             )
             return
@@ -85,9 +85,9 @@ class _LifecycleBehavior:
         payload = request.payload
         assert isinstance(payload, (EnsureHarnessCommand, RemoveHarnessCommand))
         harness_id = (
-            f"{payload.spec.harness}:{payload.spec.name}"
+            self._key(payload.spec)
             if isinstance(payload, EnsureHarnessCommand)
-            else f"{payload.harness}:{payload.name}"
+            else f"{payload.harness}:{payload.member or payload.name}"
         )
         active = self._lifecycle_effect_requests.get(harness_id)
         pending_correlation = next(
@@ -216,9 +216,9 @@ class _LifecycleBehavior:
         generation = receipt.generation or self._handler_generation
         version = receipt.version if receipt.version is not None else self._version
         harness_id = (
-            f"{payload.spec.harness}:{payload.spec.name}"
+            self._key(payload.spec)
             if isinstance(payload, EnsureHarnessCommand)
-            else f"{payload.harness}:{payload.name}"
+            else f"{payload.harness}:{payload.member or payload.name}"
         )
         correlation_id = receipt.correlation_id or request.correlation_id
         base = HarnessMutationCompleted(
@@ -245,8 +245,9 @@ class _LifecycleBehavior:
     def _on_lifecycle_remove(self, command: RemoveHarnessCommand) -> None:
         """Stop without dropping actor custody until the I/O effect succeeds."""
 
+        self._restore_eligibility.pop(command.member or command.name, None)
         self._restore_eligibility.pop(command.name, None)
-        harness_id = f"{command.harness}:{command.name}"
+        harness_id = f"{command.harness}:{command.member or command.name}"
         record = self._records.get(harness_id)
         if record is None:
             self._emit_event(
@@ -329,8 +330,8 @@ class _LifecycleBehavior:
             return False
         handle = self._handle
         if handle is not None:
-            stopped = self._runtime.stop(
-                handle, timeout=max(0.0, deadline - time.monotonic())
+            stopped = self._cell.stop(
+                timeout=max(0.0, deadline - time.monotonic())
             )
             if not stopped:
                 # Actor/backend ownership is still live.  Retain the stable
@@ -338,6 +339,10 @@ class _LifecycleBehavior:
                 # the same stop future instead of losing cleanup custody.
                 return False
             self._handle = None
+        if not self._host_custody.shutdown(
+            max(0.0, deadline - time.monotonic())
+        ):
+            return False
         # Edge correlation custody is independently synchronized and can be
         # cleared after the actor is no longer addressable.  Domain records
         # are never mutated here outside their actor.
@@ -353,7 +358,7 @@ class _LifecycleBehavior:
         if self._handle is None:
             return True
         command = TerminalizeHarnessLifecycleCommand(
-            f"harness:closing:{uuid.uuid4().hex}", "HARNESS_RUNTIME_CLOSING",
+            f"harness:closing:{uuid.uuid4().hex}", ipc_errors.HARNESS_RUNTIME_CLOSING,
             "Harness runtime closed before its lifecycle process effect completed",
         )
         settled = threading.Event()
@@ -567,14 +572,10 @@ class _LifecycleBehavior:
     ) -> None:
         spec = _launch_spec(command.spec)
         key = self._key(spec)
-        transfer_error = self._transfer_start_error(spec.name)
-        if transfer_error is not None:
-            self._reject(command, transfer_error, "starts held for transfer")
-            return
         if key in self._lifecycle_effect_resources and not lifecycle:
             self._reject(
                 command,
-                "HARNESS_LIFECYCLE_IN_PROGRESS",
+                ipc_errors.HARNESS_LIFECYCLE_IN_PROGRESS,
                 f"{key} is owned by an incomplete lifecycle effect",
             )
             return
@@ -648,11 +649,11 @@ class _LifecycleBehavior:
 
 
     def _on_remove(self, command: RemoveHarnessCommand) -> None:
-        harness_id = f"{command.harness}:{command.name}"
+        harness_id = f"{command.harness}:{command.member or command.name}"
         if harness_id in self._lifecycle_effect_resources:
             self._reject(
                 command,
-                "HARNESS_LIFECYCLE_IN_PROGRESS",
+                ipc_errors.HARNESS_LIFECYCLE_IN_PROGRESS,
                 f"{harness_id} is owned by an incomplete lifecycle effect",
             )
             return

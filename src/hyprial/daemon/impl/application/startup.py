@@ -1,15 +1,27 @@
+# Decision record (W1E-2, 2026-11-21):
+# - Process umask (0o077 on POSIX) is applied once at real OS process entry
+#   (shell/impl/cli/runtime/entry.py:main for CLI and ``daemon run``, and
+#   shell/impl/gui/host/__main__.py:serve for the GUI session host), never inside
+#   DaemonApplication.run, so multi-phase bootstrap/serving promotions and
+#   in-process test applications do not re-apply umask on every run().
+# - _write_pid_file publishes daemon.json via tempfile.mkstemp + os.replace
+#   without redundant per-file os.chmod.
 """Daemon startup sequence: run(), startup phases, ownership lock, pid file, log migration and duplicate-instance detection."""
 
 from __future__ import annotations
 
-from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 
 from hyprial.daemon.impl.application.start_backoff import (
     record_start_failure,
     relaunch_wait_seconds,
+)
+from hyprial.daemon.impl.bootstrap.exit_independence import (
+    exit_guards_wanted,
+    release_exit_guards_for_logout,
 )
 import sys
 import threading
@@ -17,7 +29,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
-from hyprial.daemon.impl.adapters.lark.outbound.gateway import GatewayIoAuthority
 from hyprial.kernel import DaemonStartupPhase
 from hyprial.kernel import migrate_pre_trajectory_logs
 from hyprial.kernel import PersistentConfiguration
@@ -34,7 +45,6 @@ from hyprial.daemon.impl.processes.shutdown_stall  import (
 from hyprial.daemon.impl.configuration.ownership  import DaemonOwnershipBusy, DaemonStateOwnershipFence
 from hyprial.kernel import (
     TEARDOWN_BUDGETED_SECONDS,
-    parse_channel_uri,
 )
 if TYPE_CHECKING:
     pass
@@ -168,8 +178,6 @@ class _StartupMixin:
         identity_transaction_stream: Any | None = None,
         launch_id: str | None = None,
     ) -> None:
-        # The CLI launcher's per-launch nonce (already popped from the
-        # environment by ``daemon run``); recorded in daemon.json.
         self._launch_id = launch_id
         if ownership_stream is not None:
             if self._lock_stream is not None:
@@ -232,32 +240,11 @@ class _StartupMixin:
                 self._migrate_logs_at_startup()
             except Exception as error:  # noqa: BLE001 - startup must continue
                 self._warn_log_migration_failure(error)
-            # ⛔ Emitted HERE, not where the migration runs.  The owner rewrite
-            # happens in __init__, long before the logger exists, and the line
-            # above is the boundary this file states in the comment overhead:
-            # nothing may write a log line until `_migrate_logs_at_startup`
-            # has decided what this home inherited.
-            #
-            # ⚠️ The first version of this emit sat next to the logger's
-            # construction and fired only when `rewrites > 0`.  That passed CI
-            # for the wrong reason -- no test migrates anything, so the line
-            # was never written -- while on a real migrating node it would
-            # have written a pre-archival log every time.  A branch that only
-            # runs in production is only tested in production.
-            #
-            # Unconditional, including the zero: firing only on a non-zero
-            # count restores the "ran, found nothing" / "never ran" ambiguity
-            # this count exists to remove, and the zero is precisely the
-            # reading that says a node is already migrated.
-            self._log(
-                "info",
-                "daemon",
-                "identity.owner_migration.applied",
-                owner=self.owner,
-                rewrittenCells=self._owner_migration_rewrites,
-            )
             self._warn_if_worker_proxy_absent()
             step(self._start_runtime, DaemonStartupPhase.ACTOR_RUNTIME)
+            from hyprial.daemon.impl.operations.adapter_removal.service import recover_removals
+
+            step(lambda: recover_removals(self), DaemonStartupPhase.ACTOR_RUNTIME)
             step(self._start_database_health, DaemonStartupPhase.ACTOR_RUNTIME)
             # Bounded, best-effort cleanup of the actor-private inbox-batch
             # cache (§6 of the batch design).  It never casts a message
@@ -363,9 +350,12 @@ class _StartupMixin:
                 # Replace the broad close deadline with the final exit grace,
                 # before home-lease release and the remaining departure steps.
                 self._arm_exit_backstop()
-                shutdown_errors = self._finish_shutdown_and_leave(
-                    previous_handlers, failed=run_failed
-                )
+                try:
+                    shutdown_errors = self._finish_shutdown_and_leave(
+                        previous_handlers, failed=run_failed
+                    )
+                finally:
+                    release_exit_guards_for_logout(self)
                 # Reached only when this daemon does not own the process; in
                 # production `_finish_shutdown_and_leave` does not return.
                 # ⚠️ Raised rather than swallowed so a failed teardown step is
@@ -451,11 +441,16 @@ class _StartupMixin:
         a daemon. That is not hypothetical: arming this unconditionally took
         down a full pytest run at 28% with the backstop's own exit code.
 
-        So only the entry point that spawned an interpreter *to be* a daemon
-        turns it on: `hyprial daemon run`.
+        So only an entry point that spawned an interpreter *to be* a daemon
+        turns it on; `hyprial daemon run` uses `exit_unless_logout`.
         """
 
         self._owns_process_exit = True
+
+    def exit_unless_logout(self) -> None:
+        """Own the exit of this interpreter unless the run stops for ``logout``."""
+
+        self._exit_unless_logout = True
 
     def _arm_shutdown_stall_dump_if_owned(self) -> bool:
         """Arm the stall watchdog, but only when this process is ours to watch.
@@ -473,7 +468,7 @@ class _StartupMixin:
         became the disturbance, in a process it had no business watching.
         """
 
-        if not self._owns_process_exit:
+        if not exit_guards_wanted(self):
             return False
         return arm_shutdown_stall_dump()
 
@@ -495,7 +490,7 @@ class _StartupMixin:
         whoever eventually depended on the behaviour we took away.
         """
 
-        if not self._owns_process_exit:
+        if not exit_guards_wanted(self):
             return None
         handle = register_stall_signal(path=stall_dump_path(self.state_dir))
         self._stall_signal_handle = handle
@@ -613,54 +608,6 @@ class _StartupMixin:
 
         return self.persistent_config.load()
 
-    def configure_user_adapters(
-        self, configuration: PersistentConfiguration
-    ) -> tuple[str, ...]:
-        """Attach receiver-owned Lark adapters from validated local config."""
-
-        adapter_configs = {
-            adapter.name: adapter for adapter in configuration.channels.gateways
-        }
-        instances: dict[str, GatewayIoAuthority] = {}
-        configured: list[str] = []
-        for profile in self.user_profiles.list():
-            adapter_uri = profile.squire_adapter
-            if (
-                adapter_uri is None
-                or profile.preferred_receiver.machine != self.node_id
-            ):
-                continue
-            parsed_adapter = parse_channel_uri(adapter_uri)
-            adapter_name = parsed_adapter[2] if parsed_adapter is not None else adapter_uri
-            adapter_config = adapter_configs.get(adapter_name)
-            if adapter_config is None:
-                continue
-            adapter = instances.get(adapter_config.name)
-            if adapter is None:
-                secret_path = (
-                    self.hyprial_home
-                    / "secrets"
-                    / f"{adapter_config.credential_ref}.json"
-                )
-                raw_secret = json.loads(secret_path.read_text(encoding="utf-8"))
-                app_secret = (
-                    raw_secret.get("appSecret")
-                    if isinstance(raw_secret, dict)
-                    else None
-                )
-                if not isinstance(app_secret, str) or not app_secret:
-                    raise ValueError(
-                        f"credential {adapter_config.credential_ref} is missing appSecret"
-                    )
-                adapter = self._lark_gateway_with_scope_recovery(
-                    adapter_config, app_secret, self.state_dir, owned=True,
-                    logger=self._gateway_logger,
-                )
-                instances[adapter_config.name] = adapter
-            self.user_adapters.register(adapter_uri, adapter)
-            configured.append(adapter_uri)
-        return tuple(sorted(configured))
-
     def _expire_previous_generation_lifecycle_state(self) -> None:
         """U0c startup sweep: cancel the dead generation's lifecycle receipts.
 
@@ -719,11 +666,6 @@ class _StartupMixin:
                     "deleted; interrupted sagas are compensated, never resumed"
                 ),
             )
-
-    def _reload_user_adapters(self) -> None:
-        """Refresh receiver-owned adapters after setup changed local config."""
-
-        self.configure_user_adapters(self.load_persistent_configuration())
 
     def _gossip_for_startup(self) -> bool:
         gossip = not self.network_isolated and zenoh_environment_flag(
@@ -792,22 +734,26 @@ class _StartupMixin:
 
     def _write_pid_file(self) -> None:
         path = self.state_dir / "daemon.json"
-        temporary = self.state_dir / f".daemon.json.{os.getpid()}.tmp"
         marker: dict[str, Any] = {
             "schemaVersion": 1,
             "pid": os.getpid(),
             "nodeId": self.node_id,
             "socket": str(self.socket_path),
+            "epoch": self.epoch,
         }
         launch_id = getattr(self, "_launch_id", None)
         if launch_id:
             marker["launchId"] = launch_id
-        temporary.write_text(
-            json.dumps(marker, separators=(",", ":")) + "\n",
-            encoding="utf-8",
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".daemon.json.", suffix=".tmp", dir=self.state_dir
         )
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(marker, separators=(",", ":")) + "\n")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _build_provider_auth_coordinator(self) -> Any:
         """Wire provider-auth relogin/alert coordination (spec 2026-09-14).
@@ -823,15 +769,13 @@ class _StartupMixin:
             import shutil
             import socket
 
-            from hyprial.daemon.impl.autoupdate.alert import notify_owner
             from hyprial.identity import (
                 DeviceLoginRunner,
             )
             from hyprial.identity import ProviderAuthAuthority as ProviderAuthCoordinator
-            store = self.user_profiles
-            profile = (
-                store.get_by_owner(self.owner) if store.path.exists() else None
-            )
+            from hyprial.identity import RuntimeCapabilityStore
+
+            store = RuntimeCapabilityStore(self.state_dir / "runtime-capabilities.json")
             agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
             auth_path = (
                 Path(agent_dir).expanduser() / "auth.json"
@@ -868,14 +812,12 @@ class _StartupMixin:
                 )
 
             return ProviderAuthCoordinator(
-                profile_store=store,
-                owner_key=profile.owner_key if profile is not None else None,
-                notifier=lambda text, *, idempotency_key: notify_owner(
-                    hyprial_home=self.hyprial_home,
-                    state_dir=self.state_dir,
-                    text=text,
-                    idempotency_key=idempotency_key,
+                actor_host=self._agent_session_domains.actor_hosts.host_for(
+                    "provider-auth"
                 ),
+                capability_store=store,
+                owner_key=self.owner,
+                notifier=self._provider_auth_notifier,
                 helper_runner=DeviceLoginRunner(
                     pi_command=(pi_binary,) if pi_binary else ("pi",)
                 ),

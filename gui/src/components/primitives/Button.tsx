@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { forwardRef, type ButtonHTMLAttributes, type MouseEventHandler, type ReactNode } from 'react';
 import { Button as ShadcnButton } from '../ui/button';
 import { cx } from './types';
 
@@ -8,8 +8,9 @@ export type ButtonVariant =
   | 'ghost'
   | 'text'
   | 'danger';
-export type ButtonSize = 'sm' | 'md';
+export type ButtonSize = 'sm' | 'md' | 'compact';
 
+/** compact：文本动作专用（无边框/无内距/12px），与 onboarding 既有 text 按钮区分。 */
 const shadcnVariant = {
   primary: 'default',
   secondary: 'outline',
@@ -30,11 +31,15 @@ export interface ButtonProps
   readonly type?: 'button' | 'submit' | 'reset';
   readonly leadingIcon?: ReactNode;
   readonly fullWidth?: boolean;
-  readonly onClick?: () => void;
+  readonly onClick?: MouseEventHandler<HTMLButtonElement>;
   readonly children: ReactNode;
 }
 
-export function Button({
+/**
+ * 共享按钮。forwardRef 让需要焦点管理等 ref 的场景（对话框、删除确认）也能使用同一组件，
+ * 不必保留 raw <button> 与 legacy class。
+ */
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   variant = 'secondary',
   size = 'md',
   loading = false,
@@ -46,22 +51,24 @@ export function Button({
   className,
   disabled = false,
   ...rest
-}: ButtonProps) {
-  const handleClick = () => {
+}: ButtonProps, ref) {
+  const handleClick: MouseEventHandler<HTMLButtonElement> = (event) => {
     if (loading || disabled) return;
-    onClick?.();
+    onClick?.(event);
   };
 
   return (
     <ShadcnButton
       {...rest}
+      ref={ref}
       type={type}
       variant={shadcnVariant[variant]}
-      size={size === 'md' ? 'default' : 'sm'}
+      size={size === 'md' ? 'default' : size === 'compact' ? 'sm' : 'sm'}
       className={cx(
         'ui-button',
         `ui-button--${variant}`,
         `ui-button--${size}`,
+        size === 'compact' && 'ui-button--compact',
         fullWidth && 'ui-button--full',
         loading && 'ui-button--loading',
         fullWidth && 'tw:w-full',
@@ -85,4 +92,4 @@ export function Button({
       <span className="ui-button__label">{children}</span>
     </ShadcnButton>
   );
-}
+});

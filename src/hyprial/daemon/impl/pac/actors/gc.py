@@ -234,8 +234,18 @@ class PacGc:
                             if agent.entity_token != expected_token:
                                 self._skip(skipped, "agent-incarnation-mismatch")
                                 continue
-                            if agent.pinned_adapters:
-                                self._skip(skipped, "pinned")
+                            from hyprial.daemon.impl.composition.cells import (
+                                agent_adapter_bindings_or_unknown,
+                            )
+
+                            bindings = agent_adapter_bindings_or_unknown(
+                                self.application, agent
+                            )
+                            if bindings is None:
+                                self._skip(skipped, "adapter-bindings-unknown")
+                                continue
+                            if bindings:
+                                self._skip(skipped, "adapter-bound")
                                 continue
                             observation = self.runtime.observe(actor_name)
                             if worker_in_use(observation):

@@ -8,6 +8,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
 from pathlib import Path
+from hyprial.error import codes
 from hyprial.kernel import ipc_errors
 import json
 import os
@@ -48,7 +49,7 @@ def _parse_adapter_routes(raw_routes: list[str]) -> tuple[Any, ...]:
 
     if not raw_routes:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "at least one --route name=native_id is required",
         )
     parsed: list[RouteInput] = []
@@ -56,7 +57,7 @@ def _parse_adapter_routes(raw_routes: list[str]) -> tuple[Any, ...]:
         route_name, separator, native_id = item.partition("=")
         if not separator or not route_name or not native_id:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 f"--route {item!r} must be name=native_id",
             )
         parsed.append(RouteInput(name=route_name, native_id=native_id))
@@ -188,13 +189,13 @@ def _adapter_add_existing(
             code = (
                 "ADAPTER_EXISTS"
                 if isinstance(error, AdapterExistsError)
-                else ipc_errors.INVALID_ARGUMENT
+                else codes.INVALID_ARGUMENT
             )
             raise services.CliError(code, str(error)) from error
         result["daemonReload"] = _best_effort_adapter_reload()
         return result
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 def _best_effort_adapter_reload() -> Any:
@@ -292,13 +293,13 @@ def _adapter_onboard(
 
         if new and app_id is not None:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "adapter add accepts either --new or --app-id, not both",
             )
         routes = _parse_adapter_routes(route) if route else ()
         if default_route is not None and not routes:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--default-route requires at least one --route",
             )
         # Fail on a bad or taken name *before* asking a human to approve the
@@ -311,7 +312,7 @@ def _adapter_onboard(
             code = (
                 "ADAPTER_EXISTS"
                 if isinstance(error, AdapterExistsError)
-                else ipc_errors.INVALID_ARGUMENT
+                else codes.INVALID_ARGUMENT
             )
             raise services.CliError(code, str(error)) from error
         # A blocking device-authorization flow is only honest when a human is
@@ -357,7 +358,7 @@ def _adapter_onboard(
             code = (
                 "ADAPTER_EXISTS"
                 if isinstance(error, AdapterExistsError)
-                else ipc_errors.INVALID_ARGUMENT
+                else codes.INVALID_ARGUMENT
             )
             raise services.CliError(code, str(error)) from error
 
@@ -381,11 +382,12 @@ def _adapter_onboard(
             "nextStep": (
                 f"Run 'hyprial adapter scopes authorize {name}' to request "
                 "tenant-admin approval for the declared scopes; afterwards "
-                "'hyprial adapter pin' and 'hyprial adapter start'."
+                "bind it with 'hyprial agent cell apply' and run "
+                "'hyprial adapter start'."
             ),
         }
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 @adapter_app.command("add")
@@ -447,7 +449,7 @@ def adapter_add(
 
         def invalid_secret_file() -> JsonObject:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--secret-file requires --app-id; omit both to onboard an App",
             )
 
@@ -484,7 +486,7 @@ def _confirm_adapter_stopped(name: str, *, force: bool) -> None:
     except ipc_errors.DaemonUnavailableError:
         return
     except services.CliError as error:
-        if error.code != ipc_errors.ADAPTER_NOT_FOUND:
+        if error.code != codes.ADAPTER_NOT_FOUND:
             raise
         return
     adapter = status.get("adapter", {}) if isinstance(status, dict) else {}
@@ -514,6 +516,20 @@ def _confirm_adapter_stopped(name: str, *, force: bool) -> None:
         )
 
 
+def _adapter_removal_preview(name: str) -> str | None:
+    """Validate the confirmation token; only unavailable preview permits offline use."""
+
+    services = get_services()
+    try:
+        preview = services.runtime.request("management.adapter.remove.preview", {"name": name})
+    except ipc_errors.DaemonUnavailableError:
+        return None
+    operation_id = preview.get("operationId") if isinstance(preview, dict) else None
+    if not isinstance(operation_id, str) or not operation_id:
+        raise services.CliError("INVALID_RESPONSE", "deletion preview must return an operationId")
+    return operation_id
+
+
 @adapter_app.command("remove")
 def adapter_remove(
     name: str = typer.Argument(..., help="Gateway name to de-register."),
@@ -526,8 +542,9 @@ def adapter_remove(
 
     The adapter must be stopped first ('hyprial adapter stop <name>'), or pass
     --force to stop it as part of the removal. Removes the channels.json
-    gateway entry, the secrets/lark-<name>.json credential, the desired-state
-    harness entry, and any adapter pin referencing the gateway. A running
+    gateway entry, the secrets/lark-<name>.json credential and the
+    desired-state harness entry. Agent cell documents that bind the adapter
+    are left unchanged ('hyprial agent cell apply' edits them). A running
     daemon forgets the adapter from 'hyprial adapter list' after 'hyprial
     adapter reload' (it keeps a snapshot of the gateway list).
     """
@@ -544,13 +561,11 @@ def adapter_remove(
         from hyprial.kernel import DesiredStateError, PersistentConfigError
 
         _confirm_adapter_stopped(name, force=force)
-        try:
+        operation_id = _adapter_removal_preview(name)
+        if operation_id is not None:
             removed = services.runtime.request(
-                "management.adapter.remove", {"name": name}
+                "management.adapter.remove", {"operationId": operation_id}
             )
-        except ipc_errors.DaemonUnavailableError:
-            pass
-        else:
             removed["daemonReload"] = _best_effort_adapter_reload()
             return removed
         try:
@@ -562,9 +577,9 @@ def adapter_remove(
                 error.code
                 if isinstance(error, AdapterConfigConflictError)
                 else (
-                    ipc_errors.ADAPTER_NOT_FOUND
+                    codes.ADAPTER_NOT_FOUND
                     if isinstance(error, AdapterNotFoundError)
-                    else ipc_errors.INVALID_ARGUMENT
+                    else codes.INVALID_ARGUMENT
                 )
             )
             raise services.CliError(code, str(error)) from error
@@ -575,7 +590,7 @@ def adapter_remove(
         except DaemonOwnershipBusy as error:
             raise services.CliError(error.code, str(error)) from error
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 @adapter_app.command("start")
@@ -658,6 +673,6 @@ def adapter_doctor(
                 adapter=name, app_id=app_id, response=client.list_scopes()
             )
         except PersistentConfigError as error:
-            raise services.CliError(ipc_errors.ADAPTER_NOT_FOUND, str(error)) from error
+            raise services.CliError(codes.ADAPTER_NOT_FOUND, str(error)) from error
 
     services.runtime.execute(operation, json_output=json_output)

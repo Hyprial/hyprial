@@ -21,12 +21,14 @@ a defect that no longer exists anywhere is a test nobody can check.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from hyprial.kernel.impl.contracts.ports import PortAdmission
-from hyprial.daemon.impl.api import HarnessDelivery, HarnessResult, HarnessResultStatus
+from hyprial.daemon.impl.api import HarnessResult, HarnessResultStatus
 from hyprial.daemon.impl.desired_state import DesiredStateStore
 from hyprial.daemon.impl.runtime import DaemonEventBridge
 from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports import (
@@ -155,7 +157,8 @@ class _Harnesses:
     def streaming_actors(self) -> tuple[str, ...]:
         return ("worker",)
 
-    def dispatch(self, _name: str, delivery: HarnessDelivery) -> bool:
+    def dispatch(self, envelope: object) -> bool:
+        delivery = envelope.input
         return self.turn.submit(
             EnqueueTurnCommand(
                 delivery.delivery_id,
@@ -211,7 +214,9 @@ def _wait(predicate, timeout: float = 2.0) -> bool:
     return False
 
 
-def test_a_pruned_head_row_does_not_wedge_the_next_turn(tmp_path: Path) -> None:
+def test_a_pruned_head_row_does_not_wedge_the_next_turn(
+    tmp_path: Path, *, actor_host
+) -> None:
     """Two queued turns; the first one's row is deleted mid-flight.
 
     The assertion is on the *second* turn.  Asserting only that the first one
@@ -228,7 +233,8 @@ def test_a_pruned_head_row_does_not_wedge_the_next_turn(tmp_path: Path) -> None:
         transport=_Transport(),  # type: ignore[arg-type]
         inbox=inbox,  # type: ignore[arg-type]
         harnesses=harnesses,  # type: ignore[arg-type]
-        harness_actor_uri=lambda _name: WORKER,
+        harness_actor_uri=lambda _name: WORKER, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:

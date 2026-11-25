@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "policy": "Request-path exceptions of the GUI. allowlist rows are exceptions that stay for now and carry their own reason; pending rows are findings that later stages of PR 1e remove. Neither list may grow against the base branch: rows may only leave or shrink.",
+  "allowlist": [
+    {
+      "kind": "host-route-handler",
+      "path": "gui/vite.config.ts",
+      "subject": "configureServer",
+      "count": 1,
+      "reason": "GET /__gui/healthz launcher readiness probe; returns no business data"
+    },
+    {
+      "kind": "host-route-handler",
+      "path": "gui/vite.config.ts",
+      "subject": "configurePreviewServer",
+      "count": 1,
+      "reason": "GET /__gui/healthz launcher readiness probe; returns no business data"
+    },
+    {
+      "kind": "host-route-handler",
+      "path": "gui/vite.config.ts",
+      "subject": "middlewares.use",
+      "count": 2,
+      "reason": "GET /__gui/healthz launcher readiness probe; returns no business data"
+    },
+    {
+      "kind": "host-path-literal",
+      "path": "gui/tests/production-copy-gate.test.mjs",
+      "subject": "/api/reference/mock-success",
+      "count": 1,
+      "reason": "negative sample proving the production copy gate rejects the string"
+    },
+    {
+      "kind": "host-http-server",
+      "path": "gui/tests/daemon-request-host/real-daemon-loopback.test.ts",
+      "subject": "createServer@startDropProxy",
+      "count": 1,
+      "reason": "fault-injection drop proxy between the host under test and the isolated real daemon: forwards the real reply or drops it to prove unknown-outcome handling; serves no canned data; leaves with the Node host"
+    }
+  ],
+  "pending": []
+}

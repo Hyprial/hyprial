@@ -1,9 +1,14 @@
-"""Durable correlation state for the interactive Codex inbox carrier."""
+"""Durable correlation state for the interactive Codex inbox carrier.
+
+Decision record (W2B-3 manysys sweep, 2026-11-21):
+- Replaced raw os.chmod calls on the carrier directory and SQLite database with
+  hyprial.kernel.harden_private_path so POSIX 0700/0600 modes and Windows
+  protected account-private DACLs share one kernel primitive.
+"""
 
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -11,6 +16,7 @@ from pathlib import Path
 
 from hyprial.daemon.impl.api import HarnessDelivery
 from hyprial.daemon.impl.harnesses.carrier.contract import INJECTION_FORMAT
+from hyprial.kernel import harden_private_path
 
 
 
@@ -69,10 +75,14 @@ class CodexCarrierStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.path.parent, 0o700)
+        harden_private_path(self.path.parent, mode=0o700)
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, check_same_thread=False)
-        os.chmod(self.path, 0o600)
+        try:
+            harden_private_path(self.path, mode=0o600)
+        except BaseException:
+            self._db.close()
+            raise
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA busy_timeout = 5000")
         self._db.execute(

@@ -38,7 +38,7 @@ class _Controller:
 
 
 def test_desired_exposures_persist_and_are_reissued_after_restart(
-    tmp_path: Path,
+    tmp_path: Path, generation_scheduler
 ) -> None:
     path = tmp_path / "network-exposures.json"
     store = ExposureStore(path)
@@ -63,6 +63,7 @@ def test_desired_exposures_persist_and_are_reissued_after_restart(
         {},
         event_log=lambda *_args, **_kwargs: None,
         controller_factory=factory,
+        scheduler=generation_scheduler,
         desired_exposures=store.list,
     )
     supervisor.ensure_started()
@@ -92,7 +93,7 @@ def test_old_sidecar_refuses_expose_without_hanging() -> None:
 
 @pytest.mark.parametrize("own_io", [False, True])
 def test_controller_round_trips_expose_unexpose_and_peer_key(
-    tmp_path: Path, own_io: bool
+    tmp_path: Path, actor_host, own_io: bool
 ) -> None:
     receipt = tmp_path / "receipt.jsonl"
     controller = ForwardingSidecarController(
@@ -114,7 +115,7 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
     if own_io:
         from hyprial.daemon.impl.forwarding import ForwardingControllerAuthority
 
-        controller = ForwardingControllerAuthority(controller)
+        controller = ForwardingControllerAuthority(controller, actor_host=actor_host)
     try:
         exposure = {
             "port": 8443,
@@ -221,7 +222,8 @@ def test_service_cli_help_inventory() -> None:
     root = get_command(_cli_root_app)
     assert "host" in root.commands
     assert "network" not in root.commands
-    assert "runtime" in root.commands["agent"].commands["transfer"].commands
+    assert "transfer" not in root.commands["agent"].commands
+    assert "runtime" not in root.commands["agent"].commands
     host = root.commands["host"]
     assert hasattr(host, "commands")
     assert {"expose", "unexpose", "exposures", "peer-key"}.isdisjoint(host.commands)
@@ -284,7 +286,9 @@ class _RefusingController(_Controller):
         return super().expose(exposure)
 
 
-def test_one_refused_exposure_does_not_stop_forwarding_start() -> None:
+def test_one_refused_exposure_does_not_stop_forwarding_start(
+    generation_scheduler,
+) -> None:
     events: list[tuple[str, str, dict[str, Any]]] = []
     made: list[_RefusingController] = []
     first = {"port": 8444, "target": "tcp:127.0.0.1:9444", "proxyProtocol": "none"}
@@ -299,6 +303,7 @@ def test_one_refused_exposure_does_not_stop_forwarding_start() -> None:
         {},
         event_log=lambda level, event, **fields: events.append((level, event, fields)),
         controller_factory=factory,
+        scheduler=generation_scheduler,
         desired_exposures=lambda: [first, second],
     )
     supervisor.ensure_started()

@@ -13,19 +13,6 @@ from hyprial.kernel import (
     FORWARDING_COMMAND_ENV,
     FORWARDING_UP_ENV,
 )
-from hyprial.identity import (
-    address_path,
-    device_key_path,
-    read_device_record,
-)
-
-from .forwarding.policy import FORWARD_PROTOCOL_VERSION
-from hyprial.daemon.impl.network.tailcat import (
-    BINARY_ENV,
-    TailcatSidecarError,
-    locate_tailcat_sidecar,
-)
-from hyprial.daemon.impl.forwarding.slots.store import SlotAssignments
 
 FORWARDING_TARGET_ENV = "HYPRIAL_FORWARDING_INBOUND_TARGET"
 #: A local DERP relay for tests, as a JSON object
@@ -51,6 +38,23 @@ class ForwardingConfigurationError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
+
+
+def managed_inbound_target_from_listener(listener: str) -> str:
+    """Validate a managed zenoh listener and return its sidecar target."""
+
+    from .forwarding.policy import (
+        ForwardingSidecarError,
+        inbound_target_from_listener,
+        validate_managed_inbound_target,
+    )
+
+    try:
+        return validate_managed_inbound_target(inbound_target_from_listener(listener))
+    except ForwardingSidecarError as error:
+        raise ForwardingConfigurationError(
+            "FORWARDING_TARGET_INVALID", str(error)
+        ) from error
 
 
 def _stored_derp_map_url(hyprial_home: Path) -> str | None:
@@ -94,12 +98,16 @@ def daemon_forwarding_environment(
     raw_target = environ.get(FORWARDING_TARGET_ENV, "").strip()
     if not raw_target:
         return {}
-    from .forwarding.policy import validate_unix_exposure_target
+    from hyprial.identity import address_path, device_key_path, read_device_record
+    from hyprial.daemon.impl.network.tailcat import TailcatSidecarError, locate_tailcat_sidecar
+    from .forwarding.policy import FORWARD_PROTOCOL_VERSION, ForwardingSidecarError, validate_managed_inbound_target
+    from .forwarding.slots.store import SlotAssignments
     from .forwarding.membership.settings import tailnet_settings
 
-    if not raw_target.startswith('unix:'):
-        raise ForwardingConfigurationError('FORWARDING_TARGET_INVALID', 'Sidecar-managed networking requires a private Unix target.')
-    target = validate_unix_exposure_target(raw_target)
+    try:
+        target = validate_managed_inbound_target(raw_target)
+    except ForwardingSidecarError as error:
+        raise ForwardingConfigurationError('FORWARDING_TARGET_INVALID', str(error)) from error
     settings = tailnet_settings(hyprial_home)
 
     home = Path(hyprial_home)
@@ -278,6 +286,8 @@ class AutomaticForwarding:
     node_id: str
 
     def environment(self, target: str) -> dict[str, str]:
+        from hyprial.daemon.impl.network.tailcat import BINARY_ENV
+
         return daemon_forwarding_environment(
             self.hyprial_home,
             {
@@ -298,6 +308,9 @@ def automatic_forwarding(
     (``HYPRIAL_TAILCAT_BINARY`` or ``$HYPRIAL_HOME/bin``).  Nothing here
     joins, downloads or starts anything.
     """
+
+    from hyprial.identity import device_key_path, read_device_record
+    from hyprial.daemon.impl.network.tailcat import TailcatSidecarError, locate_tailcat_sidecar
 
     home = Path(hyprial_home)
     if not device_key_path(home).is_file():

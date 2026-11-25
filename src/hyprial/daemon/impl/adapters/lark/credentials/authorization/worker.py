@@ -9,12 +9,17 @@ import sys
 import shutil
 from typing import Any
 
-from hyprial.kernel import bind_current_process_to_parent
+from hyprial.kernel import bind_current_process_to_parent, write_private_file_atomic
 
 from .inventory import configuration, scope_inventory, unknown
 
 
 def run(job: dict[str, Any], publish) -> None:
+    if job["action"] == "onboard":
+        from ..onboard.worker import run as run_onboard
+
+        run_onboard(job, publish)
+        return
     home, state_dir = Path(job["home"]), Path(job["stateDir"])
     adapter = job["adapter"]
     if job["action"] == "inventory":
@@ -36,6 +41,7 @@ def run(job: dict[str, Any], publish) -> None:
         domain = os.environ.get("HYPRIAL_LARK_ACCOUNTS_DOMAIN")
         reauthorize_lark_app(app_id=app_id, register_app=lark_oapi.register_app,
             on_verification_url=prompt, source="hyprial",
+            capabilities=job.get("capabilities", ()),
             **({"domain": domain, "lark_domain": domain} if domain else {}))
         publish({"status": "checking"})
         result = scope_inventory(home, state_dir, adapter)
@@ -57,9 +63,7 @@ def main() -> None:
     path = Path(sys.argv[1])
 
     def publish(value: dict[str, Any]) -> None:
-        temporary = path.parent / "result.tmp"
-        temporary.write_text(json.dumps(value), encoding="utf-8")
-        temporary.replace(path.parent / "result.json")
+        write_private_file_atomic(path.parent / "result.json", json.dumps(value).encode("utf-8"))
 
     release_binding = None
     try:

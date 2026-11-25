@@ -17,8 +17,7 @@ from typing import Sequence
 
 import pytest
 
-from hyprial.daemon.impl.application import DaemonRequestError
-from hyprial.identity import SecretSource
+from hyprial.identity import AgentSecretStore, SecretSource
 from hyprial.daemon.impl.transfer.archive.bundle import export_bundle, load_manifest
 from hyprial.daemon.impl.transfer.archive.envelope import (
     CredentialInstall,
@@ -32,7 +31,7 @@ from hyprial.daemon.impl.transfer.archive.envelope import (
     seal_credential_envelope,
     seal_envelope,
 )
-from hyprial.daemon.impl.transfer.landing.credentials import plan_credential_landing
+from hyprial.daemon.impl.transfer.landing.credentials import CredentialEnvelopeInvalid, plan_credential_landing
 from tests.integration.transfer.landing.test_transfer_registry_landing import (
     ACTOR,
     CREATED_AT,
@@ -42,7 +41,7 @@ from tests.integration.transfer.landing.test_transfer_registry_landing import (
     _sealed,
     _source_home,
 )
-from tests.support.transfer.signed import sign_bundle_for_target
+from tests.support.transfer.daemon_land import land_in_daemon
 
 
 @pytest.mark.parametrize(
@@ -61,9 +60,8 @@ def test_daemon_refuses_invalid_credential_header_before_any_landing_write(tmp_p
     (home / "config" / "credential-envelope.json").write_text(json.dumps(envelope))
     bundle_dir = _bundle(tmp_path, home, credential_envelope="config/credential-envelope.json")
     app = _daemon(tmp_path)
-    with pytest.raises(DaemonRequestError) as caught:
-        app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
-    assert caught.value.code == "CREDENTIAL_ENVELOPE_INVALID"
+    with pytest.raises(CredentialEnvelopeInvalid):
+        land_in_daemon(app, bundle_dir)
     assert not app.agents.exists(ACTOR)
     assert not (tmp_path / "agents" / ACTOR).exists()
     assert not (app.state_dir / "transfer-landing").exists()
@@ -91,7 +89,7 @@ def _sealed_bundle(
     envelope,
     exclude_paths: Sequence[str] = (),
 ) -> Path:
-    """Export in the production seal shape and sign for the daemon home."""
+    """Export in the production seal shape for the daemon home."""
 
     bundle_dir = tmp_path / "bundle"
     export_bundle(
@@ -105,17 +103,10 @@ def _sealed_bundle(
         exclude_paths=exclude_paths,
         extra_files={ENVELOPE_RELPATH: (envelope_json_bytes(envelope), 0o600)},
     )
-    sign_bundle_for_target(
-        bundle_dir,
-        actor=ACTOR,
-        source_machine="laptop",
-        target_home=tmp_path,
-        credential_envelope=ENVELOPE_RELPATH,
-    )
     return bundle_dir
 
 
-def test_daemon_transfer_land_restores_sealed_credentials_with_the_machine_key(
+def test_daemon_landing_restores_sealed_credentials_with_the_machine_key(
     tmp_path: Path,
 ) -> None:
     """T2 e2e: the export seals, this machine opens, installs and binds."""
@@ -153,7 +144,7 @@ def test_daemon_transfer_land_restores_sealed_credentials_with_the_machine_key(
             tmp_path, home, envelope=envelope, exclude_paths=plan.excluded
         )
 
-        result = app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
+        result = land_in_daemon(app, bundle_dir)
 
         assert result["ok"] is True
         assert result["credentialPolicy"] == "original-user"
@@ -167,14 +158,14 @@ def test_daemon_transfer_land_restores_sealed_credentials_with_the_machine_key(
         assert restored.read_text("utf-8") == auth.read_text("utf-8")
         assert stat.S_IMODE(restored.stat().st_mode) == 0o600
         entry = landed / "secrets" / "deepseek"
-        assert json.loads(entry.read_text("utf-8")) == {"api_key": ENV_SECRET_TEXT}
-        assert stat.S_IMODE(entry.stat().st_mode) == 0o600
+        assert AgentSecretStore(landed, read_only=True).get("deepseek", "API_KEY").value == ENV_SECRET_TEXT
+        assert not entry.exists()
 
         grants = app._agent_session_domains.agent.read_secret_inventory(ACTOR)
         assert len(grants) == 1
         assert grants[0].source is SecretSource.AGENT_PRIVATE
         assert grants[0].entry_id == "deepseek"
-        assert grants[0].field_name == "api_key"
+        assert grants[0].field_name == "API_KEY"
         assert grants[0].environment_names == ("DEEPSEEK_API_KEY",)
         assert grants[0].entity_token == app.agents.require(ACTOR).entity_token
 
@@ -192,7 +183,7 @@ def test_daemon_transfer_land_restores_sealed_credentials_with_the_machine_key(
         app.agents.close()
 
 
-def test_daemon_transfer_land_with_another_machines_key_restores_nothing(
+def test_daemon_landing_with_another_machines_key_restores_nothing(
     tmp_path: Path,
 ) -> None:
     home = _source_home(tmp_path)
@@ -214,7 +205,7 @@ def test_daemon_transfer_land_with_another_machines_key_restores_nothing(
             tmp_path, home, envelope=envelope, exclude_paths=plan.excluded
         )
 
-        result = app.handle("transfer.land", {"bundleDir": str(bundle_dir)})
+        result = land_in_daemon(app, bundle_dir)
 
         assert result["ok"] is True
         by_name = {item["name"]: item for item in result["credentials"]}

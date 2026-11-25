@@ -19,6 +19,8 @@ notice a test helper wrote.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import ast
 import json
 import os
@@ -37,7 +39,7 @@ from hyprial.daemon.impl.inbox.contracts.api import (
     SubmissionResult,
 )
 from hyprial.daemon.impl.inbox.tracking.progress import ProgressEvent
-from hyprial.identity import UserProfileStore
+from hyprial.identity import RuntimeCapabilityStore
 from hyprial.kernel import canonical_agent_uri
 
 from tests.support.runtime._desired_state import write_v1
@@ -146,7 +148,7 @@ def _selection_call_sites() -> set[str]:
 
 
 def _dead_run():
-    from hyprial.daemon.impl.squire.probe import ProbeRun
+    from hyprial.daemon.impl.harnesses.probe import ProbeRun
 
     return ProbeRun(1, "quota exhausted")
 
@@ -156,23 +158,24 @@ def _dead_run():
 # --------------------------------------------------------------------------- #
 
 
-def _profile_store() -> UserProfileStore:
-    """A real store at the path the production ``active_profile()`` reads.
+OWNER_KEY_ENV = "HYPRIAL_OWNER"
 
-    Writing anywhere else would let a mutation that reintroduces a profile
-    read pass this file unnoticed: the mutation would find no profile and
+
+def _capability_store() -> RuntimeCapabilityStore:
+    """A real store at the path the production ``recorded_capabilities()`` reads.
+
+    Writing anywhere else would let a mutation that reintroduces a runtime
+    read pass this file unnoticed: the mutation would find no marks and
     select the head anyway.
     """
 
-    store = UserProfileStore(Path(os.environ["HARNESS_STATE_DIR"]) / "users.json")
-    store.ensure(
-        owner=os.environ["HYPRIAL_OWNER"],
-        owner_key="owner-key",
-        login_name="unit",
-        machine="test-node",
-        machine_key="machine-key",
+    return RuntimeCapabilityStore(
+        Path(os.environ["HARNESS_STATE_DIR"]) / "runtime-capabilities.json"
     )
-    return store
+
+
+def _owner_key() -> str:
+    return os.environ[OWNER_KEY_ENV]
 
 
 # --------------------------------------------------------------------------- #
@@ -350,11 +353,11 @@ class FakeHarnessFarm:
     def streaming_actors(self) -> tuple[str, ...]:
         return self.actors
 
-    def dispatch(self, name: str, delivery) -> bool:  # type: ignore[no-untyped-def]
-        if delivery.delivery_id in self.enqueued:
+    def dispatch(self, envelope) -> bool:  # type: ignore[no-untyped-def]
+        if envelope.delivery_id in self.enqueued:
             return False
-        self.enqueued.add(delivery.delivery_id)
-        self.deliveries.append((name, delivery.delivery_id))
+        self.enqueued.add(envelope.delivery_id)
+        self.deliveries.append((envelope.stamp.member, envelope.delivery_id))
         return True
 
     def drain_progress(self):
@@ -378,8 +381,8 @@ class FakeHarnessFarm:
         self.interrupts.append(delivery_id)
         return True
 
-    def steer(self, name: str, delivery_id: str, timeout: float = 5.0) -> bool:
-        self.steers.append((name, delivery_id))
+    def steer(self, envelope, timeout: float = 5.0) -> bool:
+        self.steers.append((envelope.stamp.member, envelope.delivery_id))
         return self.steer_returns
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -419,6 +422,7 @@ def _runtime(
     now: dict,
     *,
     workflow_outcome=None,
+    actor_host,
 ):
     desired_path = tmp_path / "desired-state.json"
     write_v1(desired_path)
@@ -431,7 +435,8 @@ def _runtime(
         harnesses=farm,
         harness_actor_uri=_uri,
         clock_ms=lambda: now["v"],
-        workflow_outcome=workflow_outcome,
+        workflow_outcome=workflow_outcome, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     return runtime
@@ -479,7 +484,6 @@ def _notices_to(inbox: LoudInbox, recipient: str) -> list[dict]:
 
 HUMAN_FACING = (
     "adapter:lark:hyprial-introducer-feishu",
-    "route:hyprial-introducer-feishu:customer-dm",
     "user:bob.smith@example.com",
 )
 
@@ -497,41 +501,8 @@ def _human_request(message_id: str, sender: str) -> InboxMessage:
     )
 
 
-def _logged_runtime(tmp_path: Path, inbox: LoudInbox, farm: FakeHarnessFarm, now: dict):
-    events: list[tuple[str, dict]] = []
-    desired_path = tmp_path / "desired-state.json"
-    write_v1(desired_path)
-    runtime = DaemonEventBridge(
-        state_dir=tmp_path,
-        node_id="node-reg",
-        desired_state=DesiredStateStore(desired_path),
-        transport=_NullTransport(),
-        inbox=inbox,
-        harnesses=farm,
-        harness_actor_uri=_uri,
-        clock_ms=lambda: now["v"],
-        logger=lambda level, component, event, **fields: events.append((event, fields)),
-    )
-    runtime.start()
-    return runtime, events
-
-
-# -- Diverted notices go to the worker's owner (Allen 2026-09-26) -------------
-#
-# #829 stopped fail-loud notices reaching a person's chat and only logged
-# them.  Allen: 「提醒改发负责人」 -- the diverted notice now also reaches the
-# owner through the existing owner-DM channel (autoupdate.alert.notify_owner),
-# off the runtime loop, never raising.  Agent requesters are unchanged.
-
-
-def _owner_runtime(
-    tmp_path: Path,
-    inbox: LoudInbox,
-    farm: FakeHarnessFarm,
-    now: dict,
-    notifier,
-    *,
-    owner_requester_addresses: tuple[str, ...] = (),
+def _logged_runtime(
+    tmp_path: Path, inbox: LoudInbox, farm: FakeHarnessFarm, now: dict, *, actor_host
 ):
     events: list[tuple[str, dict]] = []
     desired_path = tmp_path / "desired-state.json"
@@ -545,9 +516,8 @@ def _owner_runtime(
         harnesses=farm,
         harness_actor_uri=_uri,
         clock_ms=lambda: now["v"],
-        logger=lambda level, component, event, **fields: events.append((event, fields)),
-        owner_notifier=notifier,
-        owner_requester_addresses=owner_requester_addresses,
+        logger=lambda level, component, event, **fields: events.append((event, fields)), actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     return runtime, events
@@ -582,8 +552,7 @@ def _in_channel_runtime(
     now: dict,
     deliverer,
     *,
-    notifier=None,
-    owner_requester_addresses: tuple[str, ...] = (),
+    actor_host,
 ):
     events: list[tuple[str, dict]] = []
     desired_path = tmp_path / "desired-state.json"
@@ -598,9 +567,8 @@ def _in_channel_runtime(
         harness_actor_uri=_uri,
         clock_ms=lambda: now["v"],
         logger=lambda level, component, event, **fields: events.append((event, fields)),
-        owner_notifier=notifier,
-        owner_requester_addresses=owner_requester_addresses,
-        in_channel_notice_delivery=deliverer,
+        in_channel_notice_delivery=deliverer, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     return runtime, events
@@ -639,68 +607,14 @@ def _fail_once(runtime, farm, now, message_id: str) -> None:
 OWNER_USER = "user:owner@example.com"
 
 
-# -- A user-proxy is a person's chat; a notice never begets a notice ----------
-#
-# 2026-09-26 04:55-05:08Z: 252 fail-loud notices went to allen-proxy (a
-# user-proxy relaying everything into Allen's DM) in a self-feeding chain.
-# The person-chat guard matched the ADDRESS scheme only, and a user-proxy is an
-# ordinary agent: actor; each undeliverable notice then produced a notice
-# about itself.  Both halves are pinned here.
-
-PROXY = _uri("proxy")
-
-
-def _proxy_runtime(tmp_path: Path, inbox: LoudInbox, farm: FakeHarnessFarm, now: dict, notifier=None):
-    from hyprial.daemon.impl.desired_state import DesiredState
-
-    events: list[tuple[str, dict]] = []
-    desired_path = tmp_path / "desired-state.json"
-    DesiredStateStore(desired_path).save(
-        DesiredState(
-            harnesses=(
-                HarnessLaunchSpec(harness="pi", name="squire", headless=True, cwd="/workspace"),
-                HarnessLaunchSpec(
-                    harness="user-proxy", name="proxy", headless=True,
-                    args=("--route", "route:person-app:person-dm"),
-                ),
-            )
-        )
-    )
-    runtime = DaemonEventBridge(
-        state_dir=tmp_path,
-        node_id="node-reg",
-        desired_state=DesiredStateStore(desired_path),
-        transport=_NullTransport(),
-        inbox=inbox,
-        harnesses=farm,
-        harness_actor_uri=_uri,
-        clock_ms=lambda: now["v"],
-        logger=lambda level, component, event, **fields: events.append((event, fields)),
-        owner_notifier=notifier,
-    )
-    runtime.start()
-    return runtime, events
-
-
-def _proxy_request(message_id: str, *, payload: bytes = b'{"message":"relayed"}') -> InboxMessage:
-    return InboxMessage(
-        message_id=message_id,
-        conversation_id=f"conv-{message_id}",
-        sender=PROXY,
-        recipient=WORKER,
-        payload=payload,
-        intent="request",
-        lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
-        created_at_ms=1_000,
-    )
-
-
-def _proxy_in_channel_runtime(
-    tmp_path: Path, inbox: LoudInbox, farm: FakeHarnessFarm, now: dict, notifier=None
+def _notice_runtime(
+    tmp_path: Path,
+    inbox: LoudInbox,
+    farm: FakeHarnessFarm,
+    now: dict,
+    *,
+    actor_host,
 ):
-    """The proxy fixture of ``_proxy_runtime`` with the owner notifier wired
-    (the in-channel contract asserts the owner is NOT the fallback anymore)."""
-
     from hyprial.daemon.impl.desired_state import DesiredState
 
     events: list[tuple[str, dict]] = []
@@ -709,10 +623,6 @@ def _proxy_in_channel_runtime(
         DesiredState(
             harnesses=(
                 HarnessLaunchSpec(harness="pi", name="squire", headless=True, cwd="/workspace"),
-                HarnessLaunchSpec(
-                    harness="user-proxy", name="proxy", headless=True,
-                    args=("--route", "route:person-app:person-dm"),
-                ),
             )
         )
     )
@@ -726,7 +636,10 @@ def _proxy_in_channel_runtime(
         harness_actor_uri=_uri,
         clock_ms=lambda: now["v"],
         logger=lambda level, component, event, **fields: events.append((event, fields)),
-        owner_notifier=notifier,
+        actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     return runtime, events
+
+

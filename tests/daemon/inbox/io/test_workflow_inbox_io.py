@@ -20,6 +20,7 @@ from hyprial.daemon.impl.inbox.links.io import (
     InboxDeliveryIoAdapter as WorkflowInboxIoAdapter,
     InboxIoDeferred as WorkflowIoDeferred,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 SENDER = "agent:bobadmin:node-a:workflow"
@@ -37,7 +38,7 @@ def _coordinator(
         transport,
         events,  # type: ignore[arg-type]
         mailbox_capacity=8,
-        io_capacity=2,
+        io_capacity=2, actor_host=new_actor_host(),
     )
 
 
@@ -83,7 +84,7 @@ def test_same_effect_id_survives_actor_and_facade_rebuild_without_transport_repl
     assert _deliver(first) == message_id
 
     generation = coordinator.generation
-    assert coordinator._runtime.tell(coordinator.handle, object()) is AdmissionResult.ACCEPTED
+    assert coordinator._cell.tell(object()) is AdmissionResult.ACCEPTED
     deadline = time.monotonic() + 2.0
     while coordinator.generation == generation:
         assert time.monotonic() < deadline

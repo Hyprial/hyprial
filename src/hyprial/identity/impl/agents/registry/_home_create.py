@@ -16,13 +16,12 @@ import sqlite3
 import uuid
 from hyprial.identity.impl.agents.home.config import validate_agent_config_location
 
+from ..addressing import name_taken_remedy
 from ._base import (
     Agent,
-    AgentError,
     AgentExistsError,
     AgentHomeReservation,
     _LOG,
-    _uri,
     normalize_capabilities,
     normalize_harness_args,
 )
@@ -49,8 +48,7 @@ class _RegistryHomeCreateMixin:
         """
 
         name = self.native_actor(actor)
-        agent = Agent(
-            uri=self.uri_for(name),
+        agent = Agent.minted(
             actor=name,
             owner=self.owner,
             machine=self.machine,
@@ -72,42 +70,11 @@ class _RegistryHomeCreateMixin:
         """Receive-only insertion; never adopt or overwrite a same-name entity."""
 
         name = self.native_actor(actor)
-        return self._create_record(Agent(
-            uri=_uri().canonical_agent_uri(pinned_owner, self.machine, name),
+        return self._create_record(Agent.minted(
             actor=name,
             owner=pinned_owner,
             machine=self.machine,
             hosted_by="transfer-receive",
-            cwd=cwd,
-            harness_args=normalize_harness_args(harness_args),
-            preferred_harness=preferred_harness,
-            created_at_ms=int(self._clock()),
-        ))
-    def create_host_invited(
-        self, actor: str, *, pinned_owner: str, cwd: str | None = None,
-        harness_args: Mapping[str, Iterable[str]] | None = None,
-        preferred_harness: str | None = None,
-    ) -> Agent:
-        """Explicit host invitation; never adopt or overwrite an existing agent.
-
-        The host asserts the visitor's owner string. This is not proof of a
-        login, an OS isolation boundary, or permission to start a worker.
-        """
-
-        if (
-            not isinstance(pinned_owner, str) or not pinned_owner
-            or pinned_owner != pinned_owner.strip() or ":" in pinned_owner
-        ):
-            raise ValueError("owner must be non-empty, unpadded and contain no ':'")
-        if pinned_owner == self.owner:
-            raise ValueError("use agent create for the host's own agents")
-        name = self.native_actor(actor)
-        return self._create_record(Agent(
-            uri=_uri().canonical_agent_uri(pinned_owner, self.machine, name),
-            actor=name,
-            owner=pinned_owner,
-            machine=self.machine,
-            hosted_by="host-invite",
             cwd=cwd,
             harness_args=normalize_harness_args(harness_args),
             preferred_harness=preferred_harness,
@@ -147,14 +114,8 @@ class _RegistryHomeCreateMixin:
             if self._db.execute(
                 "SELECT 1 FROM agents WHERE actor = ?", (agent.actor,)
             ).fetchone() is not None:
-                if agent.hosted_by == "host-invite":
-                    # The public invitation path historically refuses an
-                    # already-owned home with AGENT_ERROR. Actor preflight
-                    # must preserve that code while rejecting before effects.
-                    raise AgentError(
-                        f"host invitation cannot adopt existing agent {agent.actor!r}"
-                    )
                 self._raise_agent_exists(agent)
+            self._refuse_taken_name_locked(agent)
             pending = self._db.execute(
                 "SELECT payload FROM lifecycle_resources WHERE resource_key = ?",
                 (claim_key,),
@@ -248,7 +209,6 @@ class _RegistryHomeCreateMixin:
     def prepare_create_command(self, command: object) -> AgentHomeReservation:
         from hyprial.identity.impl.agents.actor.ports  import (
             CreateAgentCommand,
-            CreateHostInvitedAgentCommand,
             CreateTransferHostedAgentCommand,
         )
 
@@ -259,8 +219,7 @@ class _RegistryHomeCreateMixin:
                 if not command.reuse_existing:
                     self._raise_agent_exists(existing)
                 return self.prepare_existing_home(existing)
-            agent = Agent(
-                uri=self.uri_for(name),
+            agent = Agent.minted(
                 actor=name,
                 owner=self.owner,
                 machine=self.machine,
@@ -277,38 +236,11 @@ class _RegistryHomeCreateMixin:
             )
         elif isinstance(command, CreateTransferHostedAgentCommand):
             name = self.native_actor(command.name)
-            agent = Agent(
-                uri=_uri().canonical_agent_uri(
-                    command.pinned_owner, self.machine, name
-                ),
+            agent = Agent.minted(
                 actor=name,
                 owner=command.pinned_owner,
                 machine=self.machine,
                 hosted_by="transfer-receive",
-                cwd=command.cwd,
-                harness_args=normalize_harness_args(dict(command.harness_args)),
-                preferred_harness=command.preferred_harness,
-                created_at_ms=int(self._clock()),
-            )
-        elif isinstance(command, CreateHostInvitedAgentCommand):
-            if (
-                not command.pinned_owner
-                or command.pinned_owner != command.pinned_owner.strip()
-                or ":" in command.pinned_owner
-                or command.pinned_owner == self.owner
-                or not command.entity_token
-            ):
-                raise ValueError("invalid host-invited owner")
-            name = self.native_actor(command.name)
-            agent = Agent(
-                uri=_uri().canonical_agent_uri(
-                    command.pinned_owner, self.machine, name
-                ),
-                actor=name,
-                owner=command.pinned_owner,
-                machine=self.machine,
-                entity_token=command.entity_token,
-                hosted_by="host-invite",
                 cwd=command.cwd,
                 harness_args=normalize_harness_args(dict(command.harness_args)),
                 preferred_harness=command.preferred_harness,
@@ -508,13 +440,6 @@ class _RegistryHomeCreateMixin:
             )
             self._record_home_resource_locked(receipt, True)
             self._grant_default_claude_locked(agent)
-            for adapter in agent.pinned_adapters:
-                self._db.execute(
-                    "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
-                    (adapter, agent.actor),
-                )
-            if agent.hosted_by == "host-invite":
-                self._record_host_invite_locked(agent)
             self._db.execute(
                 "DELETE FROM lifecycle_resources WHERE resource_key = ?",
                 (reservation.claim_key,),
@@ -612,6 +537,8 @@ class _RegistryHomeCreateMixin:
                 )
     def _create_record(self, agent: Agent) -> Agent:
         self._validate_config_location(agent)
+        with self._lock:
+            self._refuse_taken_name_locked(agent)
         resume_claim: HomeReceipt | None = None
         if self._home is not None:
             with self._lock:
@@ -665,18 +592,13 @@ class _RegistryHomeCreateMixin:
             with self._lock:
                 try:
                     with self._db:
+                        self._db.execute("BEGIN IMMEDIATE")
+                        self._refuse_taken_name_locked(agent)
                         self._db.execute(*self._insert_statement(agent))
                         self._grant_default_claude_locked(agent)
                         self._record_external_resource_locked(
                             f"agent-record:{agent.actor}", True, agent.to_json()
                         )
-                        for adapter in agent.pinned_adapters:
-                            self._db.execute(
-                                "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
-                                (adapter, agent.actor),
-                            )
-                        if agent.hosted_by == "host-invite":
-                            self._record_host_invite_locked(agent)
                 except sqlite3.IntegrityError as error:
                     self._raise_agent_exists(agent, error)
             return agent
@@ -693,6 +615,7 @@ class _RegistryHomeCreateMixin:
                             "SELECT 1 FROM agents WHERE actor = ?", (agent.actor,)
                         ).fetchone() is not None:
                             self._raise_agent_exists(agent)
+                        self._refuse_taken_name_locked(agent)
                         row = self._db.execute(
                             "SELECT active, payload FROM lifecycle_resources "
                             "WHERE resource_key = ?",
@@ -750,19 +673,13 @@ class _RegistryHomeCreateMixin:
                     raise AgentHomeError(
                         "create-fenced", agent.actor, "create-commit"
                     )
+                self._refuse_taken_name_locked(agent)
                 self._db.execute(*self._insert_statement(agent))
                 self._record_external_resource_locked(
                     f"agent-record:{agent.actor}", True, agent.to_json()
                 )
                 self._record_home_resource_locked(claim, True)
                 self._grant_default_claude_locked(agent)
-                for adapter in agent.pinned_adapters:
-                    self._db.execute(
-                        "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
-                        (adapter, agent.actor),
-                    )
-                if agent.hosted_by == "host-invite":
-                    self._record_host_invite_locked(agent)
         except BaseException as error:
             if home_attempt is not None:
                 self._compensate_home_fs(home_attempt, "create-commit")
@@ -788,13 +705,23 @@ class _RegistryHomeCreateMixin:
     def _raise_agent_exists(
         self, agent: Agent, error: BaseException | None = None
     ) -> None:
+        """Refuse a duplicate name, naming the stored agent that holds it.
+
+        ``agent`` may be the refused candidate, whose freshly minted id-form
+        URI is not the incumbent's address, so the URI comes from the row.
+        """
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT uri FROM agents WHERE actor = ?", (agent.actor,)
+            ).fetchone()
+        taken = agent.uri if row is None else str(row["uri"])
         message = (
             f"the name {agent.actor!r} is already taken on this node "
-            f"({self.owner}@{self.machine}) — {agent.uri} exists "
+            f"({self.owner}@{self.machine}) — {taken} exists "
             f"({self.database}). One name is one agent, whether or "
-            f"not anything is currently running under it. To reuse "
-            f"the name, destroy that agent first ('hyprial agent destroy "
-            f"{agent.actor}', which is irreversible); to run this "
+            f"not anything is currently running under it. "
+            f"{name_taken_remedy(agent.actor)}; to run this "
             f"agent on a different harness, just start it there — "
             f"that is a rebinding of the same agent, not a new one."
         )

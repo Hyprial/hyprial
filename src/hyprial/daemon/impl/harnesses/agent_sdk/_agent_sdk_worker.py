@@ -7,11 +7,14 @@ limited to the standard library and the pinned Agent SDK environment.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 try:
@@ -58,6 +61,54 @@ _MAX_BUFFER_ENV = "HYPRIAL_AGENT_SDK_MAX_BUFFER_BYTES"
 _DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 _MIN_MAX_BUFFER_BYTES = 1024 * 1024
 _MAX_MAX_BUFFER_BYTES = 64 * 1024 * 1024
+_AUTHORITY_MODEL: Any | None = None
+
+
+def _authority_model() -> Any:
+    """Load the shared launch-policy digest without importing the daemon package.
+
+    This worker runs inside ``uv run --isolated``: the daemon's dependencies
+    are absent, so the sibling ``authority_model.py`` is executed by path; it
+    depends on the standard library only.
+    """
+
+    global _AUTHORITY_MODEL
+    if _AUTHORITY_MODEL is None:
+        path = Path(__file__).resolve().with_name("authority_model.py")
+        spec = importlib.util.spec_from_file_location(
+            "_hyprial_agent_sdk_authority_model", path
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Agent SDK worker cannot load the authority model")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _AUTHORITY_MODEL = module
+    return _AUTHORITY_MODEL
+
+
+def _authority_version(value: dict[str, Any]) -> int | None:
+    if "authorityVersion" not in value:
+        return None
+    version = value["authorityVersion"]
+    if type(version) is not int or version < 1:
+        raise ValueError("Agent SDK authorityVersion must be a positive integer")
+    return version
+
+
+def _authority_ack(kwargs: dict[str, Any], version: int) -> dict[str, object]:
+    model = _authority_model()
+    return {
+        "enabled": True,
+        "protocol": model.AUTHORITY_PROTOCOL_VERSION,
+        "policyDigest": model.policy_digest(
+            harness="claude",
+            headless=True,
+            allow=kwargs.get("allowed_tools", []),
+            deny=kwargs.get("disallowed_tools", []),
+        ),
+        "version": version,
+    }
 
 
 def _require_supported_sdk() -> None:
@@ -82,6 +133,43 @@ def _require_supported_sdk() -> None:
     raise SystemExit(1)
 
 
+_MIN_BUNDLED_CLI = (2, 1, 312)
+
+
+def _require_supported_bundled_cli() -> None:
+    if os.environ.get("HYPRIAL_CLAUDE_EXECUTABLE"):
+        print(
+            "Agent SDK bundled Claude Code version check skipped: "
+            "HYPRIAL_CLAUDE_EXECUTABLE is set.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        from claude_agent_sdk._cli_version import __cli_version__
+
+        found = tuple(
+            int(part)
+            for part in re.match(r"(\d+)\.(\d+)\.(\d+)", __cli_version__).groups()
+        )
+    except (ImportError, AttributeError):
+        print(
+            "Agent SDK worker cannot read the bundled Claude Code version; "
+            "skipping the minimum-CLI check.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if found < _MIN_BUNDLED_CLI:
+        print(
+            f"Agent SDK bundles Claude Code {__cli_version__}; "
+            "this Hyprial release needs >= 2.1.312.",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(1)
+
+
 def _max_buffer_size() -> int:
     """One frame may be large; the reader buffer stays explicitly bounded."""
 
@@ -100,7 +188,7 @@ def _max_buffer_size() -> int:
     return value
 
 
-def _options_kwargs() -> dict[str, Any]:
+def _launch_options() -> tuple[dict[str, Any], int | None]:
     raw = os.environ.get("HYPRIAL_AGENT_SDK_OPTIONS", "{}")
     value = json.loads(raw)
     if not isinstance(value, dict):
@@ -176,7 +264,11 @@ def _options_kwargs() -> dict[str, Any]:
         ):
             raise TypeError("Agent SDK disallowedTools must be an array of strings")
         kwargs["disallowed_tools"] = disallowed_tools
-    return kwargs
+    return kwargs, _authority_version(value)
+
+
+def _options_kwargs() -> dict[str, Any]:
+    return _launch_options()[0]
 
 
 def _options() -> ClaudeAgentOptions:
@@ -509,7 +601,7 @@ async def _serve() -> None:
         name="agent-sdk-command-reader",
         daemon=True,
     ).start()
-    kwargs = _options_kwargs()
+    kwargs, authority_version = _launch_options()
     limit = kwargs["max_buffer_size"]
     runtime_context_mode = os.environ.get(_RUNTIME_CONTEXT_MODE_ENV)
     if runtime_context_mode not in {None, _P2_RUNTIME_CONTEXT_MODE}:
@@ -530,6 +622,8 @@ async def _serve() -> None:
         effective_session = kwargs.get("resume") or kwargs.get("session_id")
         if isinstance(effective_session, str):
             ready["sessionId"] = effective_session
+        if authority_version is not None:
+            ready["authority"] = _authority_ack(kwargs, authority_version)
         _emit(ready)
         while True:
             command = await commands.get()
@@ -592,6 +686,7 @@ async def _serve() -> None:
 def main() -> None:
     try:
         _require_supported_sdk()
+        _require_supported_bundled_cli()
         if "--probe" in sys.argv:
             client = ClaudeSDKClient(options=_options())
             _emit({"type": "probe", "client": type(client).__name__})

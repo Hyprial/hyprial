@@ -23,9 +23,16 @@ from tests.identity.agents.registry.entity.support import (
     NODE,
     OWNER,
     _close_test_applications as _close_test_applications,
-    application,
+    application as _registry_application,
     register_interactive,
 )
+from tests.support.identity.cell_runtime import registry_cell_runtime
+
+
+def application(tmp_path: Path):
+    app = _registry_application(tmp_path)
+    registry_cell_runtime(app)
+    return app
 
 
 def _attached(tmp_path: Path, name: str = "wf-attached", *, online: bool = True):
@@ -99,7 +106,8 @@ def test_gc_on_the_real_runtime_skips_an_interactively_used_worker(
             name = str(receipt["actor_name"])
             app.handle("agent.create", {"name": name})
             agent = app.agents.require(name)
-            assert agent.uri == receipt["actor_uri"]
+            assert receipt["actor_uri"] == f"agent:{OWNER}:{NODE}:{name}"
+            assert app.agents.get(receipt["actor_uri"]) == agent
             with store.write():
                 store._db.execute(
                     "UPDATE workflow_worker_receipts SET agent_entity_token=?,"
@@ -209,7 +217,7 @@ def test_gc_report_names_the_reason_the_destroy_recheck_refused(
     assert app.agents.get(name) is not None
 
 
-def test_gc_report_carries_a_pinned_refusal_too(tmp_path: Path) -> None:
+def test_gc_report_carries_an_adapter_bound_refusal_too(tmp_path: Path) -> None:
     """Kills review mutation Y2: the reason is passed through, not fixed."""
 
     from hyprial.daemon.impl.pac.actors.coordinator import RuntimeObservation
@@ -224,7 +232,9 @@ def test_gc_report_carries_a_pinned_refusal_too(tmp_path: Path) -> None:
     real_destroy = app._destroy_agent
 
     def destroy_after_pin(name, **kwargs):
-        app.agents.pin("gc-late-adapter", "wf-pinned")
+        from tests.support.identity.cell_runtime import bind_adapters
+
+        bind_adapters(app, app.agents.require("wf-pinned"), ("gc-late-adapter",))
         return real_destroy(name, **kwargs)
 
     class _Application:
@@ -249,5 +259,21 @@ def test_gc_report_carries_a_pinned_refusal_too(tmp_path: Path) -> None:
         report = gc.run_pass()
     finally:
         gc.close()
-    assert report["skipped"] == {"pinned": 1}, report["skipped"]
+    assert report["skipped"] == {"adapter-bound": 1}, report["skipped"]
     assert app.agents.get("wf-pinned") is not None
+
+
+def test_destroy_recheck_refuses_when_cell_bindings_are_unknown(tmp_path: Path) -> None:
+    app = application(tmp_path)
+    app.handle("agent.create", {"name": "wf-unknown"})
+    agent = app.agents.require("wf-unknown")
+    app._cell_runtime = None
+    result = app._destroy_agent(
+        agent.uri,
+        expected_entity_token=agent.entity_token,
+        require_unpinned=True,
+        require_offline=True,
+    )
+    assert result["destroyed"] is False
+    assert result["reason"] == "adapter-bindings-unknown"
+    assert app.agents.get("wf-unknown") is not None

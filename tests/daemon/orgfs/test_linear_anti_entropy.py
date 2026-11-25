@@ -8,6 +8,7 @@ import pytest
 
 from hyprial.daemon.impl.org.network.service import OrgNetworkService
 from hyprial.daemon.impl.org.network.state import clear_left_org, read_left_orgs
+from hyprial.daemon.impl.orgfs import LocalOrgFs
 from hyprial.daemon.impl.orgfs.composition import directory as directory_composition
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.transport import KeySpace, TransportSample
@@ -200,7 +201,7 @@ def _leave_org(home, monkeypatch) -> None:
     sidecar = authority.for_device("reader@example", "node-reader")
     sidecar.membership_request("roster-fetch", {"tailnetId": "space-left-directory"})
     service = OrgNetworkService(
-        fs=object(),
+        fs=LocalOrgFs(author="user:reader@example"),
         home=home,
         node_id="node-reader",
         owner="user:reader@example",
@@ -297,6 +298,7 @@ def test_the_daemon_wires_durable_left_orgs_into_the_runtime(tmp_path) -> None:
     app.owner = "reader@example"
     app.hyprial_home = home
     app._orgfs_runtime = None
+    app._actor_hosts = SimpleNamespace(host_for=lambda _owner: None)
     app._log = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
     runtime = app._require_orgfs_runtime()
     try:
@@ -327,6 +329,7 @@ def test_require_orgfs_runtime_tolerates_a_partially_built_application(
     app.owner = "writer@example"
     app.hyprial_home = home
     app._orgfs_runtime = None
+    app._actor_hosts = SimpleNamespace(host_for=lambda _owner: None)
     app._log = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
 
     runtime = app._require_orgfs_runtime()

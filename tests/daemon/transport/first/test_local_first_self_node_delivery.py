@@ -28,7 +28,6 @@ from hyprial.daemon.impl.inbox import (
 )
 from hyprial.daemon.impl.inbox.links.local_link import LocalFirstDeliveryTransport
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
-from tests.support.links.gate import PermissiveLinkGate, permissive_admission_slot
 
 NODE = "node-1"
 OWNER = "op"
@@ -138,7 +137,6 @@ def _application(tmp_path: Path) -> tuple[DaemonApplication, InboxService, Memor
     inbox = InboxService(
         tmp_path / "inbox.sqlite3",
         local_first,
-        link_admission=permissive_admission_slot(),
     )
     local_first.bind_receiver(inbox.receive)
     app = DaemonApplication(
@@ -147,7 +145,6 @@ def _application(tmp_path: Path) -> tuple[DaemonApplication, InboxService, Memor
         node_id=NODE,
         owner=OWNER,
     **_deep_module_daemon_dependencies())
-    app.link_admission.bind(PermissiveLinkGate())
     app._inbox = inbox
     app._harnesses = object()  # type: ignore[assignment]
     app._presence = object()  # type: ignore[assignment]
@@ -169,9 +166,10 @@ def test_bare_cli_sender_roundtrips_through_the_registered_identity(
     """
 
     app, inbox, inner = _application(tmp_path)
+    worker = app.agents.require("worker").uri
     try:
         sent = app.handle(
-            "message.send", {"from": "ops", "to": [WORKER], "summary": "do it", "message": "do it"}
+            "message.send", {"from": "ops", "to": [worker], "summary": "do it", "message": "do it"}
         )
         # The send itself also lands locally: WORKER names this node.
         assert sent["deliveries"][0]["queued"] is False
@@ -179,11 +177,11 @@ def test_bare_cli_sender_roundtrips_through_the_registered_identity(
         assert inner.delivered == []  # nothing touched the network leg
 
         # The worker (unfenced here — the fence is orthogonal) reads and replies.
-        pending = app.handle("message.pending.list", {"from": WORKER})
+        pending = app.handle("message.pending.list", {"from": worker})
         assert [m["messageId"] for m in pending["messages"]] == [sent["messageId"]]
         replied = app.handle(
             "message.reply",
-            {"from": WORKER, "messageId": sent["messageId"], "summary": "done", "message": "done"},
+            {"from": worker, "messageId": sent["messageId"], "summary": "done", "message": "done"},
         )
         assert replied["replied"] is True
 
@@ -194,7 +192,7 @@ def test_bare_cli_sender_roundtrips_through_the_registered_identity(
         assert [m["messageId"] for m in replies["messages"]] == [
             replied["replyMessageId"]
         ]
-        assert replies["messages"][0]["from"] == WORKER
+        assert replies["messages"][0]["from"] == worker
     finally:
         inbox.close()
 
@@ -204,13 +202,14 @@ def test_reply_row_sender_passes_the_ingress_gate(tmp_path: Path) -> None:
     URI — a four-segment identity the ingress gate admits, never rejects."""
 
     app, inbox, _inner = _application(tmp_path)
+    worker = app.agents.require("worker").uri
     try:
         sent = app.handle(
-            "message.send", {"from": "ops", "to": [WORKER], "summary": "do it", "message": "do it"}
+            "message.send", {"from": "ops", "to": [worker], "summary": "do it", "message": "do it"}
         )
         app.handle(
             "message.reply",
-            {"from": WORKER, "messageId": sent["messageId"], "summary": "done", "message": "done"},
+            {"from": worker, "messageId": sent["messageId"], "summary": "done", "message": "done"},
         )
         replies = app.handle("message.pending.list", {"from": "ops"})
         # If ingress had rejected the reply, no row would exist at all.

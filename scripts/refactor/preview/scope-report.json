@@ -1,0 +1,124 @@
+{
+ "total_sites": 98,
+ "groups": {
+  "contract:in-scope": {
+   "count": 5,
+   "paths": [
+    "contract/e2e/_codex_deepseek_exec.py",
+    "contract/e2e/probe-codex-preapproval.py",
+    "contract/e2e/run-codex-app-server.py",
+    "contract/e2e/run-dsh-worker.py",
+    "contract/e2e/run-hosted-transfer.py"
+   ]
+  },
+  "desktop:in-scope": {
+   "count": 3,
+   "paths": [
+    "desktop/scripts/probe-real-codex.py",
+    "desktop/scripts/probe-real-sdk.py",
+    "desktop/scripts/probe-sdk-ownership.py"
+   ]
+  },
+  "product:in-scope": {
+   "count": 23,
+   "paths": [
+    "src/hyprial/agents/worker_state.py",
+    "src/hyprial/cli.py",
+    "src/hyprial/daemon/__init__.py",
+    "src/hyprial/daemon/api.py",
+    "src/hyprial/daemon/application.py",
+    "src/hyprial/daemon/composition.py",
+    "src/hyprial/daemon/harness_actor.py",
+    "src/hyprial/daemon/pac_actor.py",
+    "src/hyprial/daemon/state_persistence.py",
+    "src/hyprial/daemon/supervisor.py",
+    "src/hyprial/harnesses/agent_sdk.py",
+    "src/hyprial/harnesses/claude.py",
+    "src/hyprial/harnesses/codex.py",
+    "src/hyprial/harnesses/dsh.py",
+    "src/hyprial/harnesses/launcher.py",
+    "src/hyprial/harnesses/model_provider.py",
+    "src/hyprial/harnesses/pi.py",
+    "src/hyprial/harnesses/pi_rpc.py",
+    "src/hyprial/harnesses/python_worker.py",
+    "src/hyprial/management.py",
+    "src/hyprial/squire/setup.py"
+   ]
+  },
+  "tests:in-scope": {
+   "count": 66,
+   "paths": [
+    "tests/actor_runtime/test_session_agent_actors.py",
+    "tests/test_actor_preserved_restore_threshold_states.py",
+    "tests/test_agent_entity.py",
+    "tests/test_agent_env_close.py",
+    "tests/test_agent_env_injection.py",
+    "tests/test_agent_home_p23_cc_native.py",
+    "tests/test_agent_sdk_dependency.py",
+    "tests/test_agent_sdk_driver.py",
+    "tests/test_agent_sdk_force_stop.py",
+    "tests/test_atomic_lifecycle_ports.py",
+    "tests/test_cli_adapter_remove.py",
+    "tests/test_cli_pi_interactive.py",
+    "tests/test_cli_upgrade_restart.py",
+    "tests/test_codex_agent_home.py",
+    "tests/test_codex_app_server.py",
+    "tests/test_daemon_readiness_reports.py",
+    "tests/test_daemon_reconcile_watchdog.py",
+    "tests/test_daemon_restore_settlement.py",
+    "tests/test_desired_state_sqlite_roundtrip.py",
+    "tests/test_desired_state_sqlite_shadow.py",
+    "tests/test_desired_state_start_timing.py",
+    "tests/test_dsh_harness.py",
+    "tests/test_dsh_interrupt_fence.py",
+    "tests/test_dsh_self_launch.py",
+    "tests/test_e2e012_codex_thread_lifecycle.py",
+    "tests/test_final_composition_lifecycle.py",
+    "tests/test_harness_actor.py",
+    "tests/test_harness_command_pinning.py",
+    "tests/test_harness_model_provider.py",
+    "tests/test_harness_restore_admission.py",
+    "tests/test_harness_result_claims.py",
+    "tests/test_harnesses.py",
+    "tests/test_hosts_org_batch_liveness.py",
+    "tests/test_inbox_dispatch_ttl_refresh.py",
+    "tests/test_lifecycle_failed_remove.py",
+    "tests/test_local_provider_wiring.py",
+    "tests/test_model_endpoint_override.py",
+    "tests/test_p1_config_roots.py",
+    "tests/test_pi_controlled_loader.py",
+    "tests/test_pi_rpc_process.py",
+    "tests/test_pi_worker_channel.py",
+    "tests/test_progress_end_to_end.py",
+    "tests/test_provider_auth_hook.py",
+    "tests/test_ps_desired_state_reload.py",
+    "tests/test_ps_status_snapshot.py",
+    "tests/test_python_harness_process.py",
+    "tests/test_python_worker.py",
+    "tests/test_restore_failed_persistence_settlement.py",
+    "tests/test_restore_isolation.py",
+    "tests/test_restore_threshold_states.py",
+    "tests/test_session_ref_authority.py",
+    "tests/test_smolvm_runtime_state.py",
+    "tests/test_smolvm_runtime_vm.py",
+    "tests/test_squire_setup_scaffold.py",
+    "tests/test_state_persistence_authority.py",
+    "tests/test_transfer_container.py",
+    "tests/test_transfer_daemon.py",
+    "tests/test_turn_stall_watch.py",
+    "tests/test_user_addressing.py",
+    "tests/test_user_proxy_worker.py",
+    "tests/test_worker_identity.py",
+    "tests/test_worker_proxy.py",
+    "tests/test_worker_proxy_codex_seam.py",
+    "tests/test_worker_relay.py"
+   ]
+  },
+  "worm:worm-read-only": {
+   "count": 1,
+   "paths": [
+    "docs/notes/ipc_cost_bench.py"
+   ]
+  }
+ }
+}

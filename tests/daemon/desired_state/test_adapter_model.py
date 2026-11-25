@@ -3,6 +3,11 @@ import json
 
 import pytest
 
+from hyprial.daemon.impl.adapters.spec import (
+    ADAPTER_PROVIDERS,
+    DEFAULT_ADAPTER_PROVIDER,
+    AdapterSpec,
+)
 from hyprial.daemon.impl.desired_state import DesiredState, DesiredStateStore
 from hyprial.kernel import DECLARED_HARNESSES, DesiredStateError
 
@@ -29,7 +34,7 @@ def test_migration_separates_same_named_adapter_and_worker(version):
     assert [(s.harness, s.name) for s in state.harnesses] == [("pi", "X"), ("codex", "Y")]
     assert [(s.provider, s.name) for s in state.adapters] == [("lark", "X"), ("lark", "other")]
     assert all(not hasattr(s, "harness") for s in state.adapters)
-    assert state.channel_pins == (("X", "agent:owner:node:X"),)
+    assert "channelPins" not in state.to_json()
     assert state.adapters[0].to_json()["legacyLaunch"]["pinnedOwner"] == "old-owner"
     assert DesiredState.from_json(state.to_json()) == state
     assert all(s.harness in DECLARED_HARNESSES for s in state.harnesses)
@@ -76,3 +81,18 @@ def test_malformed_adapters_are_not_dropped():
         with pytest.raises(DesiredStateError):
             DesiredState.from_json({"schemaVersion": 3, "providers": [],
                                     "interactiveSessions": [], "adapters": adapters})
+
+
+def test_default_adapter_registry_enables_only_lark():
+    assert ADAPTER_PROVIDERS == frozenset({"lark"})
+    assert DEFAULT_ADAPTER_PROVIDER == "lark"
+    staged = ("weixin", "dingtalk", "wecom", "qq", "slack", "telegram",
+              "discord", "whatsapp", "imessage", "matrix", "mail")
+    for platform in staged:
+        assert platform not in ADAPTER_PROVIDERS
+        with pytest.raises(DesiredStateError):
+            AdapterSpec(platform, "must-stay-inactive")
+        with pytest.raises(DesiredStateError):
+            DesiredState.from_json({"schemaVersion": 3, "providers": [],
+                                    "interactiveSessions": [],
+                                    "adapters": [{"provider": platform, "name": "X"}]})

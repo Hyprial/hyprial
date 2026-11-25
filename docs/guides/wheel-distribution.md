@@ -49,6 +49,9 @@ it does not restart a running daemon. `uv tool list` must confirm the selected
 version. A schema:1 receipt is written to
 `${XDG_CONFIG_HOME:-$HOME/.config}/hyprial/install.json` (same convention on Windows).
 If needed, run `uv tool update-shell` and open a new terminal to expose the CLI.
+The last output line is `Next: run "hyprial init", then "hyprial login".`; the
+scripts only print it and never execute either command (`init` starts the daemon and may register
+a service; `login` opens a browser).
 
 `HYPRIAL_DL_BASE` is an isolated-test override, not a production mirror selector.
 Changing it changes the trusted source of both the manifest and wheels. SHA-256
@@ -151,6 +154,99 @@ CI(`.forgejo/workflows/wheel-release.yml`):
   (发布半截取消会在 registry 留脏态)。
 - 步骤:checkout 事件 SHA → 装 uv 0.11.7 → preflight 校验 secret 存在 →
   stamp + `uv build --wheel` → 校验并直接发布 R2 → `uv publish`。
+
+### GUI source remote（2026-11-16）
+
+wheel 内 `hyprial/_gui/release.json` 记录 `sourceCommit` 与 `sourceRemote`，已安装的
+`hyprial gui dev` 用它取精确提交，`hyprial gui --json` 也会打印 `source_remote`。
+checkout 构建默认记录 `remote.origin.url`，内网构建者因此会把内网地址写进 wheel。
+
+- 发布构建设置 `HYPRIAL_BUILD_SOURCE_REMOTE=https://github.com/Hyprial/hyprial.git`
+  （`wheel-release.yml` 的构建步骤已设置）。钩子只接受这一个值
+  （`PUBLIC_SOURCE_REMOTE`，`src/hyprial/shell/impl/gui/install/resources.py`）；
+  空值、带凭据或其他值是构建错误；在无 `.git` 的快照树上设置同样是构建错误，因为
+  快照由 `gui/gui-source.json` 的 stamp 决定（其 remote 即 `github_publish.py` 的
+  `DEFAULT_TARGET_REMOTE`，测试钉成同值）。`sourceCommit` 不受影响。
+- 本地构建（含 `scripts/build/build-wheel.sh`）不设置：记录 checkout remote，保证内部
+  开发者的 `hyprial gui dev` 可用，钩子在 stderr 打印“仅限本地使用、不得分发”的 notice。
+- 发布守卫：`scripts/ci/wheel_source_remote.py` 在 `verify_tailcat_wheels.py`、
+  `publish_wheels.py` 与 `attach_wheel_assets.py` 中检查 wheel 的 `release.json`，
+  `sourceRemote` 不是公开地址即拒绝发布/附加。
+- 已决定的行为（2026-11-16）：发布 wheel 不支持 `hyprial gui dev`。公开镜像只接收快照
+  提交，`sourceCommit`（内部提交）不在镜像上，所以清单 `sourceRemote` 为公开地址且未给
+  `--gui-home`、`HYPRIAL_DEV_GUI_HOME`、也无可验证源 checkout 时，`gui dev` 在任何拉取或受管缓存
+  操作之前（本地源 checkout 探测仍先执行，checkout 保持优先）以 `INVALID_ARGUMENT` 拒绝，提示“发布版不含 GUI 源码，请在源 checkout 运行或传
+  `--gui-home <path>`；`hyprial gui` 可用”。清单为其他 remote 的内部/本地构建行为不变。
+  本条变更不改 `sourceCommit`。
+
+<a id="native-engine"></a>
+### 原生 actor 引擎阶段（actor-rustify 线）
+
+Hatch hook（`src/hyprial/gui_build_hook.py`）在 tailcat 与 GUI 之后运行 native 阶段，
+逻辑在 `src/hyprial/shell/impl/packaging/native_engine.py`
+（[构建/分发 ADR](../design/actor-rustify-build-distribution-adr-2026-10-24.md) 第 3 节，模块路径按 HQ R5）：
+
+- wheel：执行 `cargo build --release --locked --manifest-path crates/Cargo.toml -p hyprial-py --features extension-module`，
+  `PYO3_PYTHON` 为构建解释器 `sys.executable` 的绝对路径（`os.path.abspath`，不做 realpath；editable 路径另见下文），`RUSTUP_TOOLCHAIN` 默认 `1.93.1`
+  （调用方自设的值优先；`HYPRIAL_CARGO` 可指定 cargo）。产物在临时构建目录中审计（ELF 不得
+  `DT_NEEDED` libpython）、由构建解释器导入并要求 `ENGINE_ABI_VERSION == 1`，再 force_include 为
+  `hyprial/_core/actors.abi3.so`（Windows `hyprial/_core/actors.pyd`），wheel 标签为 `cp312-abi3-<plat>`，
+  `<plat>` 沿用 tailcat 目标表。
+- macOS：`macosx_13_0_<arch>` 标签把 `MACOSX_DEPLOYMENT_TARGET` 固定为 `13.0`（覆盖继承值）。
+- 可复现：经 `CARGO_ENCODED_RUSTFLAGS` 追加 `--remap-path-prefix=<源码根>=/src` 与
+  `--remap-path-prefix=<CARGO_HOME>=/cargo`（调用方的 `CARGO_ENCODED_RUSTFLAGS`/`RUSTFLAGS` 保留在前；
+  配置文件里的 `build.rustflags` 因此不再生效），hook 在 stderr 打印模块 SHA-256。同一 commit 在不同
+  源码根、`CARGO_HOME`、target 目录下构建出的模块逐字节一致。
+- glibc 底线：模块需要的 glibc 高于 `manylinux_2_17` 时（例如在 Ubuntu 24.04 主机上构建需要
+  `GLIBC_2.34`），构建按 ADR 失败（不贴虚假的 2_17 标签，也不偷偷提高底线）；发布 wheel 必须在
+  manylinux2014 镜像内构建（`scripts/build/manylinux_native_evidence.sh`）。仅本地开发可显式设
+  `HYPRIAL_BUILD_ALLOW_GLIBC_RAISE=1`（只认值 `1`）得到如实标为 `manylinux_2_34_x86_64` 的 wheel，
+  hook 在 stderr 声明它不得发布。
+- 只为构建主机构建：`HYPRIAL_TAILCAT_TARGET` 指向其他平台时 native 阶段失败（尚无交叉构建矩阵）。
+- worker 精简 wheel（`HYPRIAL_BUILD_WORKER_WHEEL=1`）保留 native 阶段，只省 GUI 与 sidecar。
+- sdist 按 Hatch 默认携带 `crates/`（排除 `crates/target*` 与开发暂存模块），hook 校验 manifest 与 lockfile 存在。
+- editable（`uv sync`）默认不编译：若 `src/hyprial/_core/actors.abi3.so` 已暂存，按
+  `actors.stamp.json`（`scripts/build/build_native_engine.sh` 写入的 crates/ 摘要与模块 SHA-256）和
+  ABI 版本校验，过期/不符即失败；错误信息提示用 `HYPRIAL_BUILD_NATIVE=1 uv sync` 或该脚本重建；未暂存只提示。
+  源码开发者可显式设置 `HYPRIAL_BUILD_NATIVE=1`，让 hook 调用同一脚本，自动构建缺失或过期的本机模块后再校验。
+  editable 路径的 `PYO3_PYTHON` 是稳定 realpath（优先 `sys._base_executable`，避免一次性 uv build 路径）；
+  wheel 路径不变，仍用 `sys.executable` 的绝对路径。
+  摘要只覆盖 cargo 输入（`Cargo.toml`、`Cargo.lock`、`*.rs`，不含顶层 `crates/target*`）；`pyproject.toml`
+  的 `[tool.uv] cache-keys` 覆盖同一组输入、暂存模块/stamp、开关与 `scripts/build/native-engine.epoch`，
+  所以改动 Rust 源、替换模块或切换开关后 `uv sync` 会重跑相应流程。
+- 删除暂存模块后的重建：uv 在 hook 运行前记录 cache key 状态，并把所有匹配文件归约为最新 mtime。
+  只监视暂存模块时，首次构建后删除它（`rm -rf src/hyprial/_core`、`git clean -fdX -e .venv`）会回到
+  “无模块”的已记录状态，`uv sync` 只打印 `Checked`，模块永久缺失。opt-in hook 因此在构建前触碰
+  已跟踪的 `scripts/build/native-engine.epoch`（只改 mtime，不改内容，`git status` 不变），暂存文件
+  比它新；删除后 epoch 成为最新被监视文件，这个值之前从未被记录，下一次 `uv sync` 会重跑 hook 并重建。
+  修复前已经卡在 `Checked` 的环境，一次性恢复：`HYPRIAL_BUILD_NATIVE=1 uv sync --reinstall-package hyprial`。
+  运行时 `hyprial._core.actors` 不可导入的错误信息也给出该命令。
+- `HYPRIAL_BUILD_NATIVE` 只接受值 `1`；`0`、`true`、`yes` 等值会在安装阶段拒绝，和
+  `HYPRIAL_BUILD_SKIP_NATIVE=1` 同时设置也拒绝。首次构建的详细输出使用 `uv sync -v` 查看；长期开发
+  可以执行 `export HYPRIAL_BUILD_NATIVE=1`。脚本不猜 target 目录：它让 cargo 输出
+  `--message-format=json`，从 `compiler-artifact` 取 cdylib 路径（与 wheel 路径共用
+  `native_engine.library_from_messages`），所以 `CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET_DIR` 与
+  `.cargo/config.toml` 的 `build.target-dir` 都生效，`crates/target` 中的旧库不会被暂存。
+- 没有 rustup 或固定版本 Rust：wheel 路径的错误信息指出 Rust 1.93.1、`HYPRIAL_CARGO` 与退出开关；
+  editable 脚本的错误信息包含 `rustup toolchain install 1.93.1`，并说明不设 `HYPRIAL_BUILD_NATIVE`
+  即可跳过 native 构建。脚本不读取 `HYPRIAL_CARGO`（只有 wheel 路径使用它）。显式退出开关
+  `HYPRIAL_BUILD_SKIP_NATIVE=1`（只认值 `1`）构建不含 native 引擎的 wheel 并在 stderr 警告；这种 wheel
+  不得发布。`HYPRIAL_TAILCAT_ALLOW_MISSING` 不是 native 退出开关。
+
+现状（未改 `.forgejo` workflow）：`wheel-release.yml` 在一台 Ubuntu 上循环五个 Go 目标且无 Rust，
+`github-publish.yml` 的 publish-github runner 也没有 Rust（`scripts/ci/github_publish.py` 的快照白名单已含
+`crates/` 构建源码）；本线进入任何构建 wheel 的分支前须先落 ADR 第 4 节的 native 目标矩阵（每目标原生
+runner，Rust 1.93.1），否则这两条链路按设计 fail closed。Cargo 依赖尚未 vendor：构建时按
+`crates/Cargo.lock` 从 crates.io 下载，依赖不可达的主机失败（ADR 第 3 节“固定vendor尚未落地”）。
+
+wheel 文件名随 native 阶段从 `py3-none-<plat>` 变为 `cp312-abi3-<plat>`（Linux 正式产物仍为
+`manylinux_2_17_*.manylinux2014_*`）。下列已发布产物的消费者仍硬编码 `py3-none-`，本线进入发布分支前须
+全部改为接受新标签（并考虑已在用户机器上的旧安装脚本）：`scripts/ci/verify_tailcat_wheels.py` 的
+`expected_tags`/`expected_name`、`scripts/ci/publish_wheels.py` 的 `WHEEL` 正则与 `PLATFORMS`、
+`scripts/ci/attach_wheel_assets.py`、`install.sh` 与 `install.ps1` 的文件名匹配及版本截取，以及下文
+“GitHub internal release 的完整集”一节的示例 URL 和“版本方案”一节的示例文件名。否则 verify 步骤失败；即使越过 verify，旧安装脚本也会在 `SHA256SUMS` 中找到
+0 个 wheel。worker 镜像（`scripts/build/docker/Dockerfile.hyprial-worker`）暂以
+显式退出开关构建，默认后端切换前须加入 Rust 构建阶段并移除该开关。
 
 ## 发布
 

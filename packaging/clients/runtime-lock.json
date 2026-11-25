@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "python": "3.12.16",
+  "pbsTag": "20261110",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-aarch64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "2f11b8aa3726bdbd87dd9eb76568412faddf4f47e26913fa45d6a2e424972acd",
+      "size": 25237581,
+      "wheelPlatform": "macosx_13_0_arm64",
+      "pythonPlatform": "aarch64-apple-darwin"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+      "sha256": "6a9e62dad033790aef722dbd370e0ce76ce17b73627ba3ae679f537049350b39",
+      "size": 34709145,
+      "wheelPlatform": "manylinux_2_17_x86_64",
+      "pythonPlatform": "x86_64-manylinux_2_17"
+    }
+  }
+}

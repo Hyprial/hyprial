@@ -17,16 +17,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable, Literal, Mapping, Protocol, TypeAlias
 
-from pycrdt import Doc, Map, Text
+from pycrdt import Doc, Map
 
 from hyprial.identity import (
-    binding_assertion_publish_after,
     directory_owner_principal,
     parse_protected_directory_node_id,
     parse_protected_directory_doc_id,
     protected_directory_author_allowed,
     protected_directory_node_id,
     protected_directory_doc_id,
+    protected_section_for_path,
 )
 
 
@@ -66,22 +66,6 @@ _EMPTY_UPDATE = b"\x00\x00"
 _DOC_IDS = {"meta"}
 _LOG = logging.getLogger(__name__)
 
-
-def _binding_proof_update_is_publishable(
-    baseline: Doc, update: bytes, *, now: float
-) -> bool:
-    """Apply one protected-row update and enforce the publication time gate."""
-
-    probe = Doc()
-    try:
-        probe.apply_update(baseline.get_update())
-        probe.apply_update(update)
-        text = probe.get("text", type=Text).to_py()
-        row = json.loads(text)
-        proof = row.get("proof") if isinstance(row, dict) else None
-        return isinstance(proof, str) and now > binding_assertion_publish_after(proof)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return False
 
 DocMutator: TypeAlias = Callable[[Doc], None]
 FaultHook: TypeAlias = Callable[[str], None]
@@ -322,6 +306,7 @@ def _tree_node_operation_allowed(
     principal: str,
     space_owner: str | None,
     space_id: str,
+    space_name: str | None = None,
 ) -> bool:
     """Judge one authored tree row from ids, not its CRDT winning state."""
 
@@ -343,15 +328,15 @@ def _tree_node_operation_allowed(
         identity = parse_protected_directory_node_id(node_id)
         parent_identity = parse_protected_directory_node_id(parent)
         if identity is not None:
-            section = (
-                "people"
-                if identity[2].startswith("directory/people/")
-                else "devices"
-            )
+            section = protected_section_for_path(
+                identity[2], space_owner=space_owner
+            ) or "devices"
             if identity[0] != space_id or not protected_directory_author_allowed(
                 section=section,
                 path_principal=identity[1],
                 author=principal,
+                space_owner=space_owner,
+                space_name=space_name,
             ):
                 return False
             path = identity[2]

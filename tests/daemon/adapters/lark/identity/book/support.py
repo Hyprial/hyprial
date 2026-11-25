@@ -138,7 +138,7 @@ def _minimal_adapter(tmp_path: Path) -> tuple[LarkAdapter, LarkStateStore]:
     )
     routes = SimpleNamespace(
         actor_by_key=lambda key: None,
-        pinned_actor=lambda conversation_id: None,
+        routed_actor=lambda conversation_id: None,
         list_runtime_targets=lambda: (),
         resolve_runtime_target=lambda token: (),
     )
@@ -151,7 +151,7 @@ def _minimal_adapter(tmp_path: Path) -> tuple[LarkAdapter, LarkStateStore]:
             reject_delivery=lambda *args, **kwargs: None,
         ),
         routes=routes,  # type: ignore[arg-type]
-        channel_actor_id="channel:lark:main",
+        channel_actor_id="adapter:lark:main",
     )
     return adapter, state
 

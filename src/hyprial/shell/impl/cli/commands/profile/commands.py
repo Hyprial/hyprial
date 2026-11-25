@@ -96,6 +96,7 @@ def profile_list(
         lambda: CliResult({"ok": True, "profiles": _profile_rows()}, render=render),
         json_output=json_output,
         allow_missing_home=True,
+        ensure_daemon=False,
     )
 
 
@@ -120,7 +121,7 @@ def profile_show(
         profile, source = services.resolve_profile()
         return CliResult({"ok": True, "source": source, "profile": profile.as_record()}, render=render)
 
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False)
 
 
 @profile_app.command("use")
@@ -163,6 +164,7 @@ def profile_use(
         lambda: CliResult(operation(), render=lambda data: f"export HYPRIAL_HOME={data['home']}"),
         json_output=json_output,
         allow_missing_home=True,
+        ensure_daemon=False,
     )
 
 
@@ -249,4 +251,4 @@ def profile_create(
             "profile": profile.as_record(),
         }
 
-    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False)

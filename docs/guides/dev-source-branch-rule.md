@@ -1,71 +1,48 @@
-# Dev PR source rule and rollout
+# Dev-first PR targeting
 
-Allen, 2026-10-31: “是的，所有功能分支先进 release 集成分支，dev 只接受 release 和 hotfix”.
+Allen, 2026-11-08: completed changes enter `dev` first; releases select a tested
+commit from dev history. This replaces the 2026-10-31 release-first source rule.
 
-Feature PRs target `release/v<next>`. After integration, promote the release
-branch to `dev`. `hotfix/<slug>` may also target `dev`; renaming a feature branch
-as a hotfix is not an integration substitute.
+The machine-readable policy is [`.forgejo/git-flow.json`](../../.forgejo/git-flow.json).
+It defines the integration branch, unrestricted PR source names, Draft WIP,
+release preparation, candidate identity and track roles. `ci-plan.mjs` reads and
+validates this file from the checked-out tree before producing a plan; missing
+or unsupported policy fails planning rather than falling back to release-first.
 
-Rule 5 in `scripts/ci/check_pr_hygiene.py` checks branch names without git or
-network access:
+Feature, fix, docs, ci, hotfix and integration branches may all target `dev`.
+WIP PRs remain Draft after retargeting. Review, merge-tree composition, registry
+preservation, declarations and required checks still decide whether a PR can
+merge; a branch name is not evidence of readiness.
 
-```sh
-uv run --no-project --python 3.12 python scripts/ci/check_pr_hygiene.py \
-  source-branch --base-ref dev --head-ref release/v0.5.5.3
-```
+`gate-python.yml` and `gate-gui.yml` use that common planner. Every PR's complete
+base-to-head diff selects its GUI and sidecar suites, including ordinary
+`feat/*` and `fix/*` sources and changes earlier than the latest commit. A mixed
+PR selects both component suites. Dev pushes retain full Python validation and
+also select changed component suites against the merged tree. Existing exact
+checkout, comparison-history, rename/deletion and unknown-input protections
+remain. Optional integration lanes may request extra suites; their names cannot
+suppress a suite selected by a changed component path.
 
-For `dev`, accepted names are `release/v` followed by three or four dot-separated
-numeric components, or `hotfix/` followed by an ASCII alphanumeric character
-and zero or more ASCII alphanumeric characters, hyphens or underscores.
-The match covers the full branch name. Rejected sources receive the ruling and
-`retarget to release/vX.Y.Z`. Other bases, including an empty base on push events,
-return success with an explicit `not applicable` message. This rule does not
-approve merges or replace tests and review.
+Release-preparation sources also receive the same path-based Rust audit; the
+retired release-sync exemption is removed. The legacy release-target changelog
+job remains compatible with old PRs. New dev PRs share its not-applicable result
+regardless of source name, while formal release-tag validation requires the
+selected candidate's matching VERSION and CHANGELOG section.
 
-## Two-stage rollout
+The old `source-branch` command remains as an explicit no-op compatibility shim
+because existing PR workflow revisions may still invoke the base branch's gate
+script. It reports that release-first admission is retired. Active workflows
+must not invoke it, and the tests reject reintroducing that step. The hygiene
+script still comes from the base ref; this trust boundary is unchanged.
 
-The `pr-hygiene` job overwrites its gate script with the PR base's copy before
-running it. Preserve this trust boundary: a PR cannot supply its own gate.
-Adding a new subcommand and its workflow invocation in one PR would fail against
-a base that lacks the subcommand, even when the new rule would be not applicable.
+During one-time convergence, merge existing release and main history into dev
+without dropping their features or fixes. Keep WIP integration lines outside the
+candidate. Formal release selection, temporary publication holds and track
+writers are defined only in [release rules](release-rules.md).
 
-The dispatcher approved this rollout on 2026-10-31:
-
-1. Land `ci/dev-source-branch-rule`: script, rule tests, skills and this note.
-   The dispatcher will request a bootstrap PR into `dev` before the workflow
-   invokes the new rule. No branch-protection bypass is authorized by this note.
-2. Land `ci/dev-source-branch-rule-step`, based on stage 1: the workflow invocation
-   and its wiring test. The intended PR base must already contain stage 1.
-   For a normal feature PR through `release/v<next>`, integrate stage 1 into that
-   release base first. Allen merges the workflow change.
-3. Verify the real PR job and required-check configuration on `dev`. Local tests
-   do not establish that branch protection requires the job.
-
-The workflow passes base/head refs through step-level environment variables and
-quoted shell arguments. Do not interpolate PR branch names into shell source,
-fall back to the candidate's script, or silently ignore an unknown subcommand.
-
-## Implementation checks (2026-10-31)
-
-- Red first: the new 17-case CLI matrix and workflow wiring test failed before
-  implementation (18 failures, missing subcommand/step).
-- Stage 1 alone: the focused rules/git suite **PASS**, 72 tests; all
-  `tests/tooling/ci` **FAIL**, 612 passed and the same 2 baseline failures below.
-- Combined candidate: `uv run pytest -q
-  tests/tooling/ci/hygiene/test_pr_hygiene_rules.py
-  tests/tooling/ci/hygiene/test_pr_hygiene_git.py`: **PASS**, 73 tests.
-- `uv run pytest -q tests/tooling/ci`: **FAIL**, 613 passed and 2 failed. Both
-  failures reproduce in a separate detached checkout of baseline `df9d50502`:
-  `test_real_tree_denominator_and_family_witnesses` and
-  `test_every_runs_on_label_is_registered` in
-  `tests/tooling/ci/acquisition/test_ci_dependency_caches.py`. The failures concern
-  existing release-ci runner/image registration, not the source-branch rule.
-- `uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py`:
-  **PASS** before and after changes.
-- `uv run --no-project --python 3.12 python scripts/ci/check_module_boundaries.py`:
-  **PASS** before and after changes.
-- `uv run ruff check .`: **PASS**.
-- Real Forgejo execution and required-check activation: **UNKNOWN**, not deployed.
-
-PR declarations: `Skill-Impact: updated`.
-`Contract-Impact: CI-only branch admission; no published product fields change.`
+`release/v<version>` may collect a preparation WIP targeting dev: release notes,
+upgrade instructions and validation fixes enter dev through review. It does not
+become a parallel feature lane. The version tag selects a verified full SHA
+from dev history, which need not be the latest dev head. Changing the flow
+config does not itself enable publication; the current three workflow holds
+remain frozen and require a separate reviewed change.

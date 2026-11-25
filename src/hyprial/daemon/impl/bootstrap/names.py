@@ -1,7 +1,9 @@
 """Admission for the shared local agent/adapter name namespace.
 
 Legacy collisions remain readable and restorable; these checks guard explicit
-creation/start, not desired-state restore or identity recovery.
+creation/start, not desired-state restore or identity recovery.  The user
+agent's reserved name is refused here too (UA1b): every public create, start
+and attach passes this gate, and the daemon's own ensure does not.
 """
 from pathlib import Path
 
@@ -20,6 +22,9 @@ def adapter_names(home: Path) -> frozenset[str]:
 
 
 def require_agent_name_available(application, name: str) -> None:
+    from hyprial.daemon.impl.user_agent.naming import refuse_user_agent_name
+
+    refuse_user_agent_name(name)
     names = adapter_names(application.hyprial_home)
     desired = application.desired_state.load()
     if name in names or any(s.name == name for s in desired.adapters):

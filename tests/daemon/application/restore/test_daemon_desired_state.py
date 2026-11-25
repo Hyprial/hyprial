@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -158,7 +160,6 @@ def test_mailbox_role_and_interactive_registry_round_trip(tmp_path: Path) -> Non
     assert reloaded.as_mailbox is True
     assert reloaded.interactive_sessions == (expected,)
     assert reloaded.harnesses == ()
-    assert reloaded.channel_pins == ()
 
 
 def test_interactive_channel_telemetry_round_trips_without_schema_bump(
@@ -257,56 +258,39 @@ def test_provider_registry_is_keyed_and_only_restores_managed_headless_specs(
         store.upsert_harness(invalid)
 
 
-def test_channel_pins_are_versioned_idempotent_and_survive_store_recreation(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "desired-state.json"
-    store = DesiredStateStore(path)
-
-    created, previous = store.set_channel_pin("#hyprial-contract", "agent:alice:mac:worker")
-    repeated, repeated_previous = store.set_channel_pin(
-        "#hyprial-contract", "agent:alice:mac:worker"
-    )
-
-    assert previous is None
-    assert repeated_previous == "agent:alice:mac:worker"
-    assert (
-        created.channel_pins
-        == repeated.channel_pins
-        == (("#hyprial-contract", "agent:alice:mac:worker"),)
-    )
-    document = DesiredStateStore(path).load().to_json()
-    assert document["channelPins"] == {"#hyprial-contract": "agent:alice:mac:worker"}
-    # The retired TS-era conversation-pin field is no longer written.
-    assert "legacyConversationPins" not in document
-    assert document["deprecatedSharedChannels"] == []
-    assert DesiredStateStore(path).load().channel_pins == created.channel_pins
-
-    removed, removed_previous = DesiredStateStore(path).remove_channel_pin(
-        "#hyprial-contract"
-    )
-    assert removed_previous == "agent:alice:mac:worker"
-    assert removed.channel_pins == ()
-
-
-def test_malformed_channel_pin_state_fails_loudly(tmp_path: Path) -> None:
-    path = tmp_path / "desired-state.json"
-    versioned = Path(f"{path}.v1")
-    versioned.write_text(
+def _write_legacy_document(path: Path, channel_pins: object) -> None:
+    Path(f"{path}.v1").write_text(
         json.dumps(
             {
                 "schemaVersion": 1,
                 "asMailbox": False,
                 "providers": [],
                 "interactiveSessions": [],
-                "channelPins": {"#contract": ""},
+                "channelPins": channel_pins,
             }
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(DesiredStateError, match="must be a non-empty string"):
-        DesiredStateStore(path).load()
+
+def test_legacy_channel_pins_key_is_not_read_or_written_back(tmp_path: Path) -> None:
+    """F1b: the retired ``channelPins`` key is inert, whatever it holds."""
+
+    path = tmp_path / "desired-state.json"
+    _write_legacy_document(path, {"#hyprial-contract": "agent:alice:mac:worker"})
+
+    state = DesiredStateStore(path).load()
+
+    assert not hasattr(state, "channel_pins")
+    assert "channelPins" not in state.to_json()
+    assert "channelPins" not in DesiredStateStore(path).load().to_json()
+
+
+def test_malformed_legacy_channel_pins_no_longer_block_loading(tmp_path: Path) -> None:
+    path = tmp_path / "desired-state.json"
+    _write_legacy_document(path, {"#contract": ""})
+
+    assert "channelPins" not in DesiredStateStore(path).load().to_json()
 
 
 def test_zenoh_endpoints_round_trip_and_partial_updates_survive_reload(
@@ -377,3 +361,65 @@ def test_zenoh_endpoints_reject_invalid_documents(tmp_path: Path) -> None:
 
     with pytest.raises(DesiredStateError, match="array of non-empty strings"):
         DesiredStateStore(path).load()
+
+
+def test_kp116_legacy_channel_pin_never_binds_a_new_same_name_agent(
+    tmp_path: Path,
+) -> None:
+    """KP-116 closed by F1b: a legacy pin is never read, so it cannot follow a name.
+
+    Adapter bindings live only in agent cell documents.  A desired-state
+    document that still carries a ``channelPins`` entry for a destroyed
+    agent's name neither binds the adapter to a new same-name agent nor
+    survives into the stored document.
+    """
+
+    from types import SimpleNamespace
+
+    from hyprial.daemon.impl.adapters.lark.runtime.runtime import AdapterRuntime
+    from tests.identity.agents.registry.entity.support import (
+        _TEST_APPLICATIONS,
+        application,
+    )
+    from tests.support.agent_destroy import destroy_agent
+
+    app = application(tmp_path)
+    try:
+        app._adapters = AdapterRuntime(  # type: ignore[arg-type]
+            SimpleNamespace(startup_timeout=20.0),
+            SimpleNamespace(gateways=[SimpleNamespace(name="lark-a")]),
+        )
+        app._lark_client = None  # type: ignore[assignment]
+        app.handle("agent.create", {"name": "worker"})
+        old = app.agents.require("worker")
+        destroy_agent(app, "worker")
+        database = app.state_dir / "lifecycle-operations.sqlite3"
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS channel_pins "
+                "(channel TEXT PRIMARY KEY, agent TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO channel_pins(channel, agent) VALUES('lark-a', 'worker')"
+            )
+
+        app.handle("agent.create", {"name": "worker"})
+
+        new = app.agents.require("worker")
+        assert new.agent_id != old.agent_id
+        assert "channelPins" not in app.desired_state.load().to_json()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            assert connection.execute(
+                "SELECT channel, agent FROM channel_pins"
+            ).fetchall() == [("lark-a", "worker")]
+        from hyprial.daemon.impl.composition.cells import (
+            agent_adapter_bindings_or_unknown,
+        )
+        from tests.support.identity.cell_runtime import registry_cell_runtime
+
+        registry_cell_runtime(app)
+        assert agent_adapter_bindings_or_unknown(app, new) == ()
+    finally:
+        _TEST_APPLICATIONS.remove(app)
+        app._close()
+        app._close_home_lease()

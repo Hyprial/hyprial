@@ -28,6 +28,12 @@ lambdas (whose event names live in other modules) are acknowledged one by one
 in ``_FORWARDING_SEAMS`` — safe because the consumer side is fail-closed: the
 allowlist never admits an event by level, so an unreconciled name can never
 reach the summary.
+
+Decision (2026-11-17): the end-to-end startup-failure test provokes the
+ipc-server failure with a directory occupying ``daemon.sock`` rather than an
+over-long path, because the CLI socket-path pre-flight now refuses the latter
+before launching any child. Importing ``runtime.entry`` installs the CLI
+services the launch-summary helpers read, so the file passes in isolation.
 """
 
 from __future__ import annotations
@@ -50,7 +56,9 @@ import pytest
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.harnesses.runtime.ports import HarnessRestoreProjection
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.runtime.environment import UNIT_USER_ID
 import hyprial.shell.impl.cli.commands.common.daemon_start as _cli_owner_1
+import hyprial.shell.impl.cli.runtime.entry  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[3]
 HYPRIAL = ROOT / ".venv" / "bin" / "hyprial"
@@ -159,30 +167,19 @@ _STARTUP_BOUNDARIES: dict[str, str] = {
 # past it) or a teardown symptom, and listing it would dilute the one event
 # that names the failing step.
 _STARTUP_EVENT_EXCLUSIONS: dict[str, str] = {
+    "teleport.target.unavailable": (
+        "the agent-teleport target is additive: its start is wrapped so a "
+        "failure never aborts daemon wiring; this node only refuses inbound "
+        "teleports and startup continues"
+    ),
+    "workflow.held_reminder_unavailable": (
+        "the held-graph reminder is additive: if it cannot be composed it is "
+        "disabled (pac.held_reminder) and daemon startup continues; it names no "
+        "startup failure"
+    ),
     "upgrade.steps.pending": (
         "pending explicit upgrade work is an operator notice; the daemon remains "
         "ready and startup continues without running the steps"
-    ),
-    "identity.org-binding.cache-start-failed": (
-        "the org identity-binding cache is additive: its start is wrapped so a "
-        "failure never aborts daemon wiring, resolution falls back to the "
-        "other sources, and startup continues"
-    ),
-    "identity.org-binding.publish-start-failed": (
-        "publishing this user's binding proof is additive and is retried by the "
-        "projector; a failed first attempt does not fail daemon startup"
-    ),
-    "identity.org-binding.retry-start-failed": (
-        "starting the additive binding projector for a deferred or failed "
-        "publication did not succeed; daemon startup and org join still continue"
-    ),
-    "identity.org-binding.publish-failed": (
-        "one failed binding-proof publication; the projector retries it and "
-        "startup continues"
-    ),
-    "identity.org-binding.publish-skipped": (
-        "no publishable binding proof yet (none stored, or still inside its "
-        "publication window); an expected state, not a startup failure"
     ),
     "alias.source-unavailable": (
         "message/PAC/routine input validation degrades one alias lookup to "
@@ -268,31 +265,10 @@ _STARTUP_EVENT_EXCLUSIONS: dict[str, str] = {
         "the org-context mesh announcement failed; startup continues and the "
         "next announce retries"
     ),
-    "availability_loud.owner_addresses_degraded": (
-        "the owner's own requester addresses could not be derived (e.g. an "
-        "ambiguous or unreadable users.json); startup continues, the divert "
-        "fallback only loses one suppression rule, and every notice still "
-        "reaches the daemon log with its reason"
-    ),
     "provider.auth.init.failed": (
         "provider-auth alerting could not be wired (e.g. unreadable users.json); "
         "startup continues without auth-failure alerts, and the first real "
         "auth failure still surfaces in worker logs"
-    ),
-    "pin.migration.conflict": (
-        "desired-state channelPin hygiene from a previous era; non-fatal, the "
-        "remedy is written in the event detail"
-    ),
-    "pin.migration.irc-dropped": (
-        "notification that a removed feature's pin was dropped; non-fatal"
-    ),
-    "pin.migration.unknown-adapter": (
-        "desired-state channelPin hygiene from a previous era; non-fatal, the "
-        "remedy is written in the event detail"
-    ),
-    "pin.migration.unresolved": (
-        "desired-state channelPin hygiene from a previous era; non-fatal, the "
-        "remedy is written in the event detail"
     ),
     "routine.coordinator.read_failed": (
         "routine 存储整体读取失败(坏行已由逐行投影隔离,不会到达此处);"
@@ -311,38 +287,6 @@ _STARTUP_EVENT_EXCLUSIONS: dict[str, str] = {
         "reached); the full-isolation case is already allow-listed as "
         "zenoh.endpoints.unset"
     ),
-    # P2 source custody on the boot/restore path. The daemon stays up and
-    # keeps serving every other entity; these name the guard's degraded or
-    # expected states, never a failed startup step.
-    "transfer.custody.unavailable": (
-        "one source-custody observation timed out while the daemon classified "
-        "restore candidates; that entity stays fail-closed deferred (or is "
-        "observed again later) and every other entity still restores"
-    ),
-    "transfer.restore.suppressed": (
-        "the expected outcome of durable transfer custody: a held source is "
-        "deliberately not restored, and startup continues for everything else"
-    ),
-    "transfer.restore.retry_capacity": (
-        "the bounded deferred-restore table is full; the entity keeps its "
-        "fail-closed suppression and the next restore tick retries, so this is "
-        "not a startup failure"
-    ),
-    "transfer.reconcile.unavailable": (
-        "the short P2 journal lane did not answer the first pending-quiesce "
-        "read; the durable row stays pending and is retried on the next "
-        "restore tick while startup continues"
-    ),
-    "transfer.reconcile.finish_unavailable": (
-        "certifying one already-accepted quiesce receipt against the durable "
-        "intent failed; the row stays pending and fail-closed, and startup "
-        "continues"
-    ),
-    "transfer.reconcile.completed": (
-        "bookkeeping line for a durable quiesce intent certified against the "
-        "lifecycle owner's receipt after a crash; it names a recovered state, "
-        "not a startup failure"
-    ),
 }
 
 # Forwarding lambdas inside the scanned functions pass ``self._log`` to other
@@ -357,21 +301,6 @@ _FORWARDING_SEAMS: dict[str, str] = {
         "profile migration notice, AGENT_GIT_PROFILE_MIGRATED): "
         "an operator-facing warn line emitted once per actor/code/path after "
         "the legacy directory is renamed aside; never a startup failure"
-    ),
-    'self._log( level, domain, event, **fields )': (
-        "forwards OrgFsDirectoryStore row-hygiene events (directory."
-        "device_owner_mismatch / protected_doc_id_mismatch / device_invalid / "
-        "binding_invalid / device_key_conflict): one directory row is ignored "
-        "and logged, the rest of the directory is served; never a startup "
-        "failure"
-    ),
-    'self._log(level, "identity", event, **fields)': (
-        "forwards OrgBindingSource/OrgBindingCacheProjector events "
-        "(identity.org-binding.ignored / cache-row-invalid / cache-invalid / "
-        "cache-rebuild-failed / verification-unavailable / deferred-publish-"
-        "failed): per-row verification drops and background projection "
-        "retries; identity resolution degrades to its other sources and startup "
-        "continues"
     ),
     'self._log( level, "zenoh", event, **fields )': (
         "forwards ForwardingSidecarSupervisor events (zenoh.forwarding."
@@ -400,14 +329,36 @@ _FORWARDING_SEAMS: dict[str, str] = {
         "is handled; wiring the callback during startup emits nothing"
     ),
     "self._log( level, component, event, **fields )": (
-        "forwards DaemonEventBridge reconcile-loop events "
-        "(harness.delivery.*, harness.session_ref.persist_failed); "
-        "DaemonEventBridge.start() itself never logs through this seam"
+        "forwards two steady-state consumers: OperatorAlarmDelivery "
+        "(daemon.operator_alarm.delivered / delivery_failed / "
+        "delivery_overloaded / delivery_rejected / user_delivery_unavailable), "
+        "emitted only when an operator alarm is delivered, and the recap hook "
+        "consumer (hooks.recap_*), emitted only when a turn hook event is "
+        "observed; wiring either callback during startup emits nothing"
+    ),
+    "self._log(level, component, event, **fields)": (
+        "forwards DaemonEventBridge and its runtime mixins' events "
+        "(dispatch.*, harness.*, inbox.*, availability.*, "
+        "workflow.outcome_deferred, link admission). Honest about the "
+        "startup window: DaemonEventBridge.start() reaches this seam only "
+        "through its per-actor reconcile, stranded-row sweep and owed-notice "
+        "recovery (harness.actor.failed / harness.kind.unknown / "
+        "harness.stranded_sweep_deferred / harness.settle.deferred), each a "
+        "per-actor or per-row degradation after which startup continues; the "
+        "rest are reconcile-tick cadence, settlement and retry-pump "
+        "observations. None names a daemon-start failure"
     ),
     'self._log( level, "daemon", event, **fields )': (
         "forwards _HarnessActorRegistration lifecycle events "
         "(harness.actor.registration.closed/invalidated); close-with-reason "
         "is info, and the warn variants are steady-state health observations"
+    ),
+    'self._log(level, "daemon", event, **fields)': (
+        "forwards DuplicateInstanceWatch's daemon.identity.duplicate_instance "
+        "alarm through the single-line logger seam this wiring passes to the "
+        "watch; the watch is constructed during startup but emits only from "
+        "its zenoh sample callback when a peer generation is observed — "
+        "detection and alarm only, never a startup failure"
     ),
 }
 
@@ -693,7 +644,7 @@ def _application(
         socket_path=socket_path or state_dir / "daemon.sock",
         node_id=NODE,
         hyprial_home=home,
-        owner=OWNER,
+        owner=OWNER, user_id=UNIT_USER_ID,
     **_deep_module_daemon_dependencies())
     _TEST_APPLICATIONS.append(app)
     return app
@@ -893,15 +844,19 @@ def test_launch_summary_takes_failure_event_names_but_never_envelope_fields(
 
 @pytest.mark.skipif(not HYPRIAL.exists(), reason="editable hyprial executable is unavailable")
 def test_failed_startup_surfaces_event_in_launch_summary() -> None:
-    # ``/private/tmp`` is macOS-specific; the portable short alias is /tmp.
+    """A directory occupying ``daemon.sock`` makes the ipc-server step fail.
+
+    The socket-path pre-flight refuses over-long paths before any child is
+    launched, so the child's death is provoked by a path that fits but cannot
+    be replaced: ``unlink`` of a directory raises ``IsADirectoryError`` on
+    Linux and ``PermissionError`` on macOS, both before ``bind``.
+    """
     with tempfile.TemporaryDirectory(prefix="hyprial-u5-", dir=hyprial_test_tmp_root()) as raw:
         root = Path(raw)
         home = root / "home"
         home.mkdir()
-        # The state root puts daemon.sock beyond the AF_UNIX sun_path limit
-        # on both macOS (104) and Linux (108), so the child daemon dies at
-        # the ipc-server step deterministically.
-        state = root / ("s" * 120) / "state"
+        state = root / "state"
+        (state / "daemon.sock" / "occupied").mkdir(parents=True)
         from tests.support.runtime.environment import isolated_environment
 
         env = isolated_environment(root)
@@ -952,8 +907,7 @@ def test_failed_startup_surfaces_event_in_launch_summary() -> None:
         failures = [r for r in records if r.get("event") == "daemon.start.failed"]
         assert len(failures) == 1
         assert failures[0]["phase"] == "ipc-server"
-        assert failures[0]["errorType"] == "OSError"
-        assert "AF_UNIX path too long" in failures[0]["error"]
+        assert failures[0]["errorType"] in {"IsADirectoryError", "PermissionError"}
         endpoints = [
             r for r in records if r.get("event") == "zenoh.endpoints.resolved"
         ]

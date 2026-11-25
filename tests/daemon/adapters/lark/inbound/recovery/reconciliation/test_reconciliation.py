@@ -96,7 +96,7 @@ def test_default_reconcile_covers_oldest_message_before_stale_rebuild(
 
 def test_reconcile_isolates_per_chat_errors(tmp_path: Path, actor: ActorTarget) -> None:
     adapter, lark, harness, routes = make_adapter(tmp_path, actor)
-    routes.pins["lark:oc_two:oc_two"] = actor
+    routes.bindings["lark:oc_two:oc_two"] = actor
     # Two chats with prior activity: one per live forward.
     sdk_event(adapter.handle_sdk_event, event_id="evt_1", message_id="om_one")
     sdk_event(
@@ -147,7 +147,7 @@ def test_reconcile_keeps_an_unclassifiable_failure_retryable(
     """
 
     adapter, lark, harness, routes = make_adapter(tmp_path, actor)
-    routes.pins["lark:oc_two:oc_two"] = actor
+    routes.bindings["lark:oc_two:oc_two"] = actor
     sdk_event(adapter.handle_sdk_event, event_id="evt_1", message_id="om_one")
     sdk_event(
         adapter.handle_sdk_event,

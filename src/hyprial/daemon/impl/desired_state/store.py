@@ -30,6 +30,7 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
 from hyprial.kernel import DomainEffectClaim
 from hyprial.kernel import LifecycleMutationRequest
 from hyprial.kernel import DesiredStateError, HarnessLaunchSpec  # canonical defs (MP-1)
+from hyprial.kernel import MemberLaunchKey
 
 from .documents import (
     DesiredState,
@@ -63,7 +64,7 @@ def _collect_retired_rows(
         "AND NOT EXISTS (SELECT 1 FROM lifecycle_receipts x "
         "WHERE x.domain=r.domain AND x.resource_key=r.resource_key) "
         "AND NOT EXISTS (SELECT 1 FROM harnesses h WHERE "
-        "r.resource_key='harness:'||h.harness||':'||h.name) "
+        "r.resource_key='harness:'||h.harness||':'||COALESCE(NULLIF(h.member,''),h.name)) "
         "ORDER BY r.rowid DESC LIMIT ? OFFSET ?",
         (batch, margin),
     ).fetchall()
@@ -286,14 +287,18 @@ class DesiredStateStore(
             raise TypeError(f"unsupported Harness lifecycle payload: {type(payload).__name__}")
         harness = payload.spec.harness if isinstance(payload, EnsureHarnessCommand) else payload.harness
         name = payload.spec.name if isinstance(payload, EnsureHarnessCommand) else payload.name
-        key = f"harness:{harness}:{name}"
+        member = (payload.spec.member or payload.spec.name) if isinstance(payload, EnsureHarnessCommand) else (payload.member or payload.name)
+        key = f"harness:{harness}:{member}"
         with self._lock:
             state = self.published_state()
             replay = _stored_receipt(state, "harness", request, key)
             if replay is not None:
                 return replay.provenance, True
-            harnesses = {(item.harness, item.name): item for item in state.harnesses}
-            current = harnesses.get((harness, name))
+            harnesses = {
+                MemberLaunchKey(item.member or item.name, item.harness): item
+                for item in state.harnesses
+            }
+            current = harnesses.get(MemberLaunchKey(member, harness))
             resources = _resource_map(state)
             resource = _reconcile_resource(
                 resources.get(("harness", key)),
@@ -321,8 +326,8 @@ class DesiredStateStore(
                     request.expected_resource_token,
                     {} if current is None else current.to_json(),
                 )
-                if changed:
-                    harnesses.pop((harness, name), None)
+                if changed and not payload.keep_intent:
+                    harnesses.pop(MemberLaunchKey(member, harness), None)
             resources[("harness", key)] = resource
             provenance = MutationProvenance(created, changed, resource.resource_token)
             receipt = _new_stored_receipt(
@@ -341,8 +346,10 @@ class DesiredStateStore(
                 lifecycle_receipts=(*state.lifecycle_receipts, receipt),
             )
             removed_harness = (
-                (harness, name)
-                if isinstance(payload, RemoveHarnessCommand) and changed
+                (harness, name, member)
+                if isinstance(payload, RemoveHarnessCommand)
+                and changed
+                and not payload.keep_intent
                 else None
             )
             if self._sqlite_shadow.upsert_lifecycle_rows(
@@ -378,8 +385,12 @@ class DesiredStateStore(
             found = _receipt_by_attempt(state, "harness", attempt_token)
             if found is None or found.provenance.resource_token != resource_token:
                 return False
-            harnesses = {(item.harness, item.name): item for item in state.harnesses}
-            harnesses[(spec.harness, spec.name)] = replace(
+            harnesses = {
+                MemberLaunchKey(item.member or item.name, item.harness): item
+                for item in state.harnesses
+            }
+            key = MemberLaunchKey(spec.member or spec.name, spec.harness)
+            harnesses[key] = replace(
                 spec, status="running"
             )
             if found.completed:
@@ -405,7 +416,7 @@ class DesiredStateStore(
             )
             return True
 
-    def mark_harness_failed(self, harness: str, name: str) -> bool:
+    def mark_harness_failed(self, harness: str, name: str, member: str | None = None) -> bool:
         """Persist "ran before, did not come back" for an existing row.
 
         U0b/Allen 2026-09-03: a harness whose last known result was running
@@ -417,13 +428,17 @@ class DesiredStateStore(
 
         with self._lock:
             state = self.load()
-            harnesses = {(item.harness, item.name): item for item in state.harnesses}
-            current = harnesses.get((harness, name))
+            harnesses = {
+                MemberLaunchKey(item.member or item.name, item.harness): item
+                for item in state.harnesses
+            }
+            key = MemberLaunchKey(member or name, harness)
+            current = harnesses.get(key)
             if current is None:
                 return False
             if current.status == "failed":
                 return True
-            harnesses[(harness, name)] = replace(current, status="failed")
+            harnesses[key] = replace(current, status="failed")
             self.save(
                 replace(
                     state,
@@ -544,18 +559,22 @@ class DesiredStateStore(
                     )
                 )
                 return False
-            harnesses = {(item.harness, item.name): item for item in state.harnesses}
+            harnesses = {
+                MemberLaunchKey(item.member or item.name, item.harness): item
+                for item in state.harnesses
+            }
             key = receipt.resource_key.removeprefix("harness:")
-            harness, name = key.split(":", 1)
+            harness, member = key.split(":", 1)
+            launch_key = MemberLaunchKey(member, harness)
             if receipt.provenance.changed:
                 if resource.active:
-                    harnesses.pop((harness, name), None)
+                    harnesses.pop(launch_key, None)
                     resource = replace(resource, active=False)
                 else:
                     restored = HarnessLaunchSpec.from_json(
                         resource.payload, "lifecycle.rollback.harness"
                     )
-                    harnesses[(harness, name)] = restored
+                    harnesses[launch_key] = restored
                     resource = replace(resource, active=True)
             resources[("harness", receipt.resource_key)] = resource
             self.save(
@@ -595,9 +614,10 @@ class DesiredStateStore(
             )
             harnesses = state.harnesses
             if owns_resource:
-                harness, name = receipt.resource_key.removeprefix("harness:").split(":", 1)
+                harness, member = receipt.resource_key.removeprefix("harness:").split(":", 1)
                 harnesses = tuple(item for item in harnesses
-                                 if (item.harness, item.name) != (harness, name))
+                                 if MemberLaunchKey(item.member or item.name, item.harness)
+                                 != MemberLaunchKey(member, harness))
                 resources[("harness", receipt.resource_key)] = replace(resource, active=False)
             self.save(replace(
                 state,
@@ -833,31 +853,40 @@ class DesiredStateStore(
     def upsert_harness(self, spec: HarnessLaunchSpec) -> DesiredState:
         with self._lock:
             state = self.load()
-            harnesses = {(item.harness, item.name): item for item in state.harnesses}
+            harnesses = {
+                MemberLaunchKey(item.member or item.name, item.harness): item
+                for item in state.harnesses
+            }
             # U0b: staging is an intent change, not a result change -- an
             # existing row keeps its last-known-result status (a failed
             # harness stays failed until an explicit start confirms it up);
             # a brand-new row starts at "running" so declared-then-restored
             # staging keeps its pre-U0b behavior.
-            previous = harnesses.get((spec.harness, spec.name))
-            harnesses[(spec.harness, spec.name)] = (
+            key = MemberLaunchKey(spec.member or spec.name, spec.harness)
+            previous = harnesses.get(key)
+            harnesses[key] = (
                 spec if previous is None else replace(spec, status=previous.status)
             )
             updated = replace(
                 state,
-                harnesses=tuple(harnesses[key] for key in sorted(harnesses)),
+                harnesses=tuple(
+                    sorted(
+                        harnesses.values(),
+                        key=lambda item: (item.harness, item.name, item.member or item.name),
+                    )
+                ),
             )
             updated = _with_external_resource(
                 updated,
                 "harness",
-                f"harness:{spec.harness}:{spec.name}",
+                f"harness:{spec.harness}:{spec.member or spec.name}",
                 True,
                 spec.to_json(),
             )
             self.save(updated)
             return updated
 
-    def remove_harness(self, harness: str, name: str) -> DesiredState:
+    def remove_harness(self, harness: str, name: str, member: str | None = None) -> DesiredState:
         with self._lock:
             state = self.load()
             updated = replace(
@@ -865,14 +894,20 @@ class DesiredStateStore(
                 harnesses=tuple(
                     item
                     for item in state.harnesses
-                    if (item.harness, item.name) != (harness, name)
+                    if not (
+                        item.harness == harness
+                        and item.name == name
+                        and (member is None or (item.member or item.name) == member)
+                    )
                 ),
             )
             previous = next(
                 (
                     item
                     for item in state.harnesses
-                    if (item.harness, item.name) == (harness, name)
+                    if item.harness == harness
+                    and item.name == name
+                    and (member is None or (item.member or item.name) == member)
                 ),
                 None,
             )
@@ -880,7 +915,7 @@ class DesiredStateStore(
                 updated = _with_external_resource(
                     updated,
                     "harness",
-                    f"harness:{harness}:{name}",
+                    f"harness:{harness}:{member or name}",
                     False,
                     previous.to_json(),
                 )

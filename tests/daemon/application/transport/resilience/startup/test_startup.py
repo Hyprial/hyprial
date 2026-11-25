@@ -91,7 +91,6 @@ def test_real_init_returns_before_delayed_adapter_is_ready_then_converges_online
                     }
                 ],
                 "interactiveSessions": [],
-                "channelPins": {},
                 "legacyConversationPins": {},
                 "deprecatedSharedChannels": [],
                 "zenoh": {"listen": [], "connect": []},

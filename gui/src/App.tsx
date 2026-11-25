@@ -1,215 +1,228 @@
-import { useChatContractRuntime } from './features/agent-chat/api/use-contract-runtime';
-import type { AgentChatScenario } from './features/agent-chat/api/mock';
-import { createFixtureFirstRunActions, type AccountLoginScenario } from './dev-mode/first-run-capabilities';
-import { GuiCapabilitiesProvider, type GuiCapabilities } from './app/capabilities';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
-import { AppShell } from './app/AppShell';
+/**
+ * Decision record (WP1 product composition, 2026-11-09; deep modules
+ * 2026-11-10; artifact-neutral composition inputs 2026-11-10):
+- `App` is the single product composition for every entry. It reads no build
+  mode, imports no dev-only module and keeps the deep-module rule that the
+  formal composition renders only connected, live and unavailable behaviours.
+- Composition inputs are named for what they mean, not where they come from:
+  `initialState` (a canonical reducer seed), `baseline` (+ `chatSeed`,
+  `firstRunMode`) for data-driven state construction, and
+  `capabilitiesFactory` to build a capability set around this app's action
+  dispatch. The product entry passes none of them; development and parity
+  compositions inject their data through these neutral names, so the release
+  bundle carries no mock-composition identifiers (the production copy gate
+  scans dist content and rejects them). Default/mock data itself stays under
+  `src/dev/` only.
+- Seeding is presence-driven: a composition that supplies any of the inputs
+  above without a backend and without a `liveClient` renders from that input.
+  A `liveClient` takes priority over injected seeds — the trusted live
+  runtime is never mixed with composition data — and connected capabilities
+  are merged over injected ones.
+- Capability objects decide behaviour: `firstRunWizardEnabled` comes from the
+  injected capabilities alone (connected capabilities carry `false`, seeded
+  compositions default to `true`, an absent field reads as enabled).
+- Chat contract runtimes (`chatContract`, `firstRunChat`) are composition
+  inputs; the composition root creates them with its own scenario data.
+- `stateSeed` overlays composition-owned presentation state (the development
+  preview's linked session) onto the reducer state; `onFirstRunAction` routes
+  first-run actions back to that owner. Both are ignored inside a live
+  composition: development session state is never evidence about the trusted
+  host. The reducer keeps authority over everything the composition did not
+  inject.
+- Deterministic org/agent/network/model/message data is injected per
+  composition; a live runtime suppresses every injected seed.
+- Merge integration (2026-11-10): compositions may pin the initial route via
+  `initialPage`. It seeds only `state.page`, never business data, so a
+  connected backend or a trusted live runtime keeps full data authority; the
+  settings-convergence reference slice and live first-run compositions use it
+  because the converged settings page no longer carries a wizard entry.
+- Journey integration (2026-11-12): apply injected presentation state before
+  reducing an action as well as before rendering. A newly created target must
+  exist when the reducer handles its first draft/send action. Live runtimes
+  still ignore all injected presentation state.
+ */
+import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from 'react';
+import { AppShell, useFirstRunRouteGate } from './app/AppShell';
+import { BackendProvider, type BackendState } from './app/backend';
+import { createConnectedGuiCapabilities, GuiCapabilitiesProvider, type GuiCapabilities } from './app/capabilities';
 import type { LivePort } from './adapters/live';
 import { useLiveRuntime } from './pages/live';
-import { HttpStubOperations, type StubOperations } from './adapters/stub';
-import { useChatSimulation } from './features/chat/useChatSimulation';
-import { appReducer, createFixtureState } from './state/appReducer';
-import type { GuiPage } from './state/gui-view-model';
-import type { ChatSeed, FirstRunMode } from './state/types';
+import type { ChatPageRuntime } from './pages/live/LiveChatPage';
+import { useChatSimulation } from './features/chat';
+import { firstRunWizardOffered } from './features/onboarding';
+import { appReducer, applyStateSeed, createEmptyState, createStateFromBaseline, type StateBaseline } from './state/appReducer';
+import type {
+  AppAction,
+  AppState,
+  ChatSeed,
+  FirstRunMode,
+  StateSeed,
+} from './state/types';
 import type { OrgCopyHandler, OrgViewModel } from './pages/org/org-view-model';
-import type { MachineSectionModel } from './features/network/machine-view-model';
-import type { TopologyModel } from './features/network/topology-view-model';
+import type { MachineSectionModel, TopologyModel } from './features/network';
 import type { AgentSeed } from './state/agent-selectors';
-import type { AgentMutationGateway } from './features/agents/AgentMutationGateway';
-import type { LinkedSession, SessionAction } from './dev-mode/session/session-types';
-import { createSessionAgentGateway } from './dev-mode/session/linked-gateways';
-import {
-  selectAgentSeed,
-  selectChatSeed,
-  selectConnections,
-  selectFirstRunState,
-  selectMachineModel,
-  selectChatChannel,
-  selectChatTargets,
-  selectMessageConnection,
-  selectModelServicesModel,
-  selectOrgModel,
-  selectTopologyModel,
-} from './dev-mode/session/session-selectors';
-import type { DevModuleId } from './dev-mode';
-import { createAgentProviderMock, syntheticProviderLoginFiles, type AgentProviderScenario } from './features/agent-provider/api/mock';
+import type { AgentMutationGateway } from './features/agents';
+import type { GuiPage } from './state/gui-view-model';
+import type { StartSummary } from './pages/start/start-summary';
 
 export interface AppProps {
+  readonly backend?: BackendState;
   readonly capabilities?: GuiCapabilities;
-  readonly agentProviderScenario?: AgentProviderScenario;
-  readonly accountLoginScenario?: AccountLoginScenario;
-  readonly agentChatScenario?: AgentChatScenario;
-  /** Test/composition entry; the browser entry selects this per build. */
-  readonly firstRunMode?: FirstRunMode;
-  /** Explicit fixture composition suppresses the live backend. */
-  readonly dataMode?: 'fixture';
   readonly liveClient?: LivePort;
   /** Test/composition injection for the unified placeholder adapter. */
-  readonly stubClient?: StubOperations;
-  /** Test/development chat data; the product entry passes nothing. */
+  /**
+   * Composition-only initial route: seeds `state.page` before any user
+   * navigation. It never seeds business data, so a connected backend or a
+   * trusted live runtime keeps full data authority.
+   */
+  readonly initialPage?: GuiPage;
+  readonly onPageChange?: (page: GuiPage) => void;
+  /**
+   * Canonical reducer seed built by the composition root. Tests may instead
+   * supply baseline data and a chat seed; the product entry supplies neither.
+   */
+  readonly initialState?: AppState;
+  readonly firstRunMode?: FirstRunMode;
+  /** Baseline presentation data for a data-driven composition. */
+  readonly baseline?: StateBaseline;
   readonly chatSeed?: ChatSeed;
-  /** Test/development organization data; the product entry passes nothing. */
+  /**
+   * Builds the capability set around this app's action dispatch. The
+   * composition root closes over its own capability adapter; the product entry
+   * passes nothing.
+   */
+  readonly capabilitiesFactory?: (dispatch: Dispatch<AppAction>) => GuiCapabilities;
+  /** Chat page runtime supplied by the composition root. */
+  readonly chatContract?: ChatPageRuntime | null;
+  /** First-run-only chat runtime; ignored when the chat page runtime exists. */
+  readonly firstRunChat?: ChatPageRuntime | null;
+  /** Deterministic organization model supplied by a composition entry. */
   readonly orgModel?: OrgViewModel;
-  /** Test/composition clipboard hook; the product entry uses the local copy. */
+  /** Clipboard hook override; the shell copies locally by default. */
   readonly orgCopy?: OrgCopyHandler;
-  /** Test/development Agent data; the product entry passes nothing. */
+  /** Deterministic Agent data and gateway supplied by a composition entry. */
   readonly agentSeed?: AgentSeed;
-  /** Test/development write gateway; the product entry keeps the stub one. */
   readonly agentGateway?: AgentMutationGateway;
-  /** Test/development machine data; the product entry passes nothing. */
+  /** Deterministic machine/topology data supplied by a composition entry. */
   readonly machineModel?: MachineSectionModel;
-  /** Test/development topology data; the product entry passes nothing. */
   readonly topologyModel?: TopologyModel;
-  /** Continuous development session; the product entry passes nothing. */
-  readonly session?: LinkedSession;
-  readonly onSessionAction?: (action: SessionAction) => void;
-  readonly devLabels?: Readonly<Record<GuiPage, DevModuleId>>;
+  /** Composition-owned Start-page counts; absent keeps the source explicit as unknown. */
+  readonly startSummary?: StartSummary;
+  /** Composition-owned presentation state overlaid onto the reducer state. */
+  readonly stateSeed?: StateSeed;
+  /** Receives first-run actions when a composition owns the first-run flow. */
+  readonly onFirstRunAction?: (action: AppAction) => void;
 }
 
 export function App({
-  stubClient,
+  backend,
   capabilities,
-  agentProviderScenario,
-  accountLoginScenario,
-  agentChatScenario,
-  dataMode,
   liveClient,
+  initialPage,
+  onPageChange,
+  initialState,
   firstRunMode,
+  baseline,
   chatSeed,
+  capabilitiesFactory,
+  chatContract: chatContractProp,
+  firstRunChat: firstRunChatProp,
   orgModel,
   orgCopy,
   agentSeed,
   agentGateway,
   machineModel,
   topologyModel,
-  session: developmentSession,
-  onSessionAction: developmentAction,
-  devLabels,
+  startSummary,
+  stateSeed,
+  onFirstRunAction,
 }: AppProps = {}) {
-  const live = useLiveRuntime(dataMode === undefined && (liveClient !== undefined || import.meta.env.PROD ||
-    (typeof __HYPRIAL_LIVE_ENABLED__ !== 'undefined' && __HYPRIAL_LIVE_ENABLED__)), liveClient);
-  const chatContract = useChatContractRuntime(import.meta.env.DEV && dataMode === 'fixture' ? agentChatScenario : undefined);
-  // Development session state and write gateways are never evidence about the
-  // trusted host. Keep them outside live composition, including bootstrap.
-  const session = live ? undefined : developmentSession;
-  const onSessionAction = live ? undefined : developmentAction;
+  const connected = backend?.status === 'connected';
+  const liveRequested = !connected && liveClient !== undefined;
+  const live = useLiveRuntime(liveRequested, liveClient);
+  const seeded = !connected && !liveRequested
+    && (initialState !== undefined || baseline !== undefined || capabilitiesFactory !== undefined);
+  const chatContract = chatContractProp ?? null;
+  const firstRunChat = firstRunChatProp ?? null;
   const [state, dispatch] = useReducer(
-    appReducer, undefined, () => createFixtureState(live ? 'unavailable' : firstRunMode, null, live ? undefined : chatSeed),
+    (current: AppState, action: AppAction) => appReducer(
+      applyStateSeed(current, seeded ? stateSeed : undefined), action,
+    ),
+    undefined,
+    () => {
+      const base = connected
+        ? createEmptyState('unavailable')
+        : seeded
+          ? (initialState ?? (baseline
+            ? createStateFromBaseline(baseline, chatSeed, firstRunMode)
+            : createEmptyState('unavailable')))
+          : live !== null
+            ? createEmptyState('live')
+            : createEmptyState('unavailable');
+      return initialPage === undefined ? base : { ...base, page: initialPage };
+    },
   );
-  const [stub] = useState<StubOperations>(() => stubClient ?? new HttpStubOperations());
+  useEffect(() => { onPageChange?.(state.page); }, [onPageChange, state.page]);
 
-  useChatSimulation(state, dispatch, live === null && !chatContract);
+  useChatSimulation(state, dispatch, seeded && live === null && chatContract === null);
 
-  const routedDispatch = useSessionDispatch(
-    session,
-    onSessionAction,
-    dispatch,
+  const onFirstRunActionRef = useRef(onFirstRunAction);
+  onFirstRunActionRef.current = onFirstRunAction;
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  const routedDispatch = useCallback<typeof dispatch>((action) => {
+    if (!liveRef.current && onFirstRunActionRef.current && action.type.startsWith('first-run-')) {
+      onFirstRunActionRef.current(action);
+      return;
+    }
+    dispatch(action);
+  }, [dispatch]);
+
+  const effectiveState = useMemo(
+    () => applyStateSeed(state, live ? undefined : stateSeed),
+    [state, stateSeed, live],
   );
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
-  const sessionGateway = useRef(
-    session && onSessionAction
-      ? createSessionAgentGateway(() => sessionRef.current as LinkedSession, onSessionAction)
-      : undefined,
-  ).current;
 
-  const linkedFirstRun = session ? selectFirstRunState(session) : null;
-  const linkedChat = session ? selectChatSeed(session) : chatSeed;
-  const effectiveState =
-    session && linkedFirstRun
-      ? {
-          ...state,
-          firstRun: linkedFirstRun,
-          threads: linkedChat?.threads ?? state.threads,
-          connections: session ? selectConnections(session) : state.connections,
-          targets: session ? selectChatTargets(session) : state.targets,
-        }
-      : state;
-
-  const fixtureCapabilities = useMemo(() => import.meta.env.DEV && dataMode === 'fixture'
-    ? {
-        firstRun: createFixtureFirstRunActions(effectiveState.firstRun.mode, routedDispatch, accountLoginScenario),
-        accountLoginDisabled: accountLoginScenario === 'disabled',
-        agentProvider: agentProviderScenario ? createAgentProviderMock(agentProviderScenario) : undefined,
-        agentProviderLoginFiles: agentProviderScenario ? async () => syntheticProviderLoginFiles() : undefined,
-      }
-    : undefined, [dataMode, effectiveState.firstRun.mode, routedDispatch, agentProviderScenario, accountLoginScenario]);
+  const injectedCapabilities = useMemo<GuiCapabilities | undefined>(() => (
+    seeded && capabilitiesFactory
+      ? capabilitiesFactory(routedDispatch)
+      : undefined
+  ), [seeded, capabilitiesFactory, routedDispatch]);
+  const connectedCapabilities = useMemo(
+    () => backend?.status === 'connected' ? createConnectedGuiCapabilities(backend.connection) : undefined,
+    [backend],
+  );
+  const effectiveCapabilities = useMemo<GuiCapabilities | undefined>(
+    () => connectedCapabilities === undefined
+      ? capabilities ?? injectedCapabilities
+      : Object.freeze({ ...connectedCapabilities, ...(capabilities ?? {}) }),
+    [capabilities, connectedCapabilities, injectedCapabilities],
+  );
+  const firstRunWizardEnabled = effectiveCapabilities?.firstRunWizardEnabled
+    ?? firstRunWizardOffered(effectiveCapabilities?.firstRun);
+  const gatedDispatch = useFirstRunRouteGate(firstRunWizardEnabled, routedDispatch);
+  const backendState: BackendState = backend ?? { status: 'unavailable' };
   return (
-    <GuiCapabilitiesProvider value={capabilities ?? fixtureCapabilities}>
+    <BackendProvider value={backendState}>
+    <GuiCapabilitiesProvider value={effectiveCapabilities}>
     <AppShell
-      firstRunScenario={import.meta.env.DEV && dataMode === 'fixture' ? 'demo' : 'live'}
+      connected={connected}
+      firstRunScenario={seeded ? 'isolated' : 'live'}
       live={live}
       chatContract={chatContract}
+      firstRunChat={firstRunChat}
       state={effectiveState}
-      dispatch={routedDispatch}
-      stub={stub}
-      orgModel={session ? selectOrgModel(session) : live ? undefined : orgModel}
-      session={session}
+      dispatch={gatedDispatch}
+      firstRunWizardEnabled={firstRunWizardEnabled}
+      orgModel={live ? undefined : orgModel}
       orgCopy={orgCopy}
-      agentSeed={live ? undefined : session ? selectAgentSeed(session) : agentSeed}
-      agentGateway={live ? undefined : sessionGateway ?? agentGateway}
-      onSessionAction={onSessionAction}
-      machineModel={live ? undefined : session ? selectMachineModel(session) : machineModel}
-      topologyModel={live ? undefined : session ? selectTopologyModel(session) : topologyModel}
-      modelSection={live ? undefined : session ? selectModelServicesModel(session) : undefined}
-      messageSection={
-        live
-          ? undefined
-          : session
-            ? {
-                state: selectMessageConnection(session).state,
-                boundAgentName:
-                  session.agents.find(
-                    (agent) => agent.id === session.messageConnectionAgentId,
-                  )?.name ?? null,
-                authorizeOutcome:
-                  selectMessageConnection(session).authorizeOutcome,
-              }
-            : undefined
-      }
-      chatChannel={live ? undefined : session ? selectChatChannel(session) : undefined}
-      messageAgents={
-        live
-          ? undefined
-          : session
-            ? session.agents.map((agent) => ({ id: agent.id, name: agent.name }))
-            : undefined
-      }
-      messageDefaultAgentId={live ? null : session ? 'agent-squire' : null}
-      devLabels={devLabels}
+      agentSeed={live ? undefined : agentSeed}
+      agentGateway={live ? undefined : agentGateway}
+      machineModel={live ? undefined : machineModel}
+      topologyModel={live ? undefined : topologyModel}
+      startSummary={live ? undefined : startSummary}
     />
     </GuiCapabilitiesProvider>
-  );
-}
-
-/**
- * With a linked session, business actions become session actions; presentation
- * actions keep using the existing reducer.
- */
-function useSessionDispatch(
-  session: LinkedSession | undefined,
-  onSessionAction: ((action: SessionAction) => void) | undefined,
-  dispatch: React.Dispatch<Parameters<typeof appReducer>[1]>,
-) {
-  // Refs keep the returned dispatch stable: the first-run page schedules timers
-  // from an effect that depends on dispatch identity.
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
-  const handlerRef = useRef(onSessionAction);
-  handlerRef.current = onSessionAction;
-
-  return useCallback(
-    (action: Parameters<typeof appReducer>[1]) => {
-      if (
-        sessionRef.current &&
-        handlerRef.current &&
-        action.type.startsWith('first-run-')
-      ) {
-        handlerRef.current(action as unknown as SessionAction);
-        return;
-      }
-      dispatch(action);
-    },
-    [dispatch],
+    </BackendProvider>
   );
 }

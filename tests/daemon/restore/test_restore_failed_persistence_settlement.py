@@ -89,7 +89,7 @@ def test_restore_failure_waits_for_exact_committed_status(
             while actor._handler_generation == first_generation:
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
-            while actor._runtime.snapshot(actor._handle).state is not ActorState.RUNNING:
+            while actor._cell.snapshot().state is not ActorState.RUNNING:
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
             assert not done.is_set()

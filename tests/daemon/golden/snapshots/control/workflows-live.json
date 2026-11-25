@@ -1,0 +1,1225 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "control",
+ "scenario": "workflows-live",
+ "steps": [
+  {
+   "step": 1,
+   "method": "workflow.list",
+   "label": "empty",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "runs": []
+   }
+  },
+  {
+   "step": 2,
+   "method": "workflow.start",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: golden-flow\nnodes:\n- id: work\n  owner: agent:op:node-1:beta\n  role: review\n  task: work\nversion: 2\n",
+    "actor": "user:op",
+    "operationKey": "golden-run"
+   },
+   "result": {
+    "graphId": "wf-<uuid4#1>",
+    "runId": "wf-<uuid4#1>",
+    "backend": "pac",
+    "state": "running",
+    "actingPrincipal": "user:op"
+   }
+  },
+  {
+   "step": 3,
+   "method": "workflow.start",
+   "label": "idempotent-replay",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: golden-flow\nnodes:\n- id: work\n  owner: agent:op:node-1:beta\n  role: review\n  task: work\nversion: 2\n",
+    "actor": "user:op",
+    "operationKey": "golden-run"
+   },
+   "result": {
+    "graphId": "wf-<uuid4#1>",
+    "runId": "wf-<uuid4#1>",
+    "backend": "pac",
+    "state": "running",
+    "actingPrincipal": "user:op"
+   }
+  },
+  {
+   "step": 4,
+   "method": "workflow.list",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "runs": [
+     {
+      "runId": "wf-<uuid4#1>",
+      "graphId": "wf-<uuid4#1>",
+      "backend": "pac",
+      "name": "golden-flow",
+      "state": "running",
+      "sender": "user:op",
+      "createdAtMs": 1800000000000,
+      "closedAtMs": null,
+      "onFailure": "terminate",
+      "routineName": null,
+      "lastProgressAtMs": 1800000000000,
+      "currentNode": {
+       "nodeId": "work",
+       "state": "requested"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step": 5,
+   "method": "workflow.list",
+   "label": "node-owner",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   },
+   "result": {
+    "runs": [
+     {
+      "runId": "wf-<uuid4#1>",
+      "graphId": "wf-<uuid4#1>",
+      "backend": "pac",
+      "name": "golden-flow",
+      "state": "running",
+      "sender": "user:op",
+      "createdAtMs": 1800000000000,
+      "closedAtMs": null,
+      "onFailure": "terminate",
+      "routineName": null,
+      "lastProgressAtMs": 1800000000000,
+      "currentNode": {
+       "nodeId": "work",
+       "state": "requested"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step": 6,
+   "method": "workflow.list",
+   "label": "non-participant",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:gamma",
+    "sessionRef": "session-gamma"
+   },
+   "result": {
+    "runs": []
+   }
+  },
+  {
+   "step": 7,
+   "method": "workflow.status",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#1>"
+   },
+   "result": {
+    "runId": "wf-<uuid4#1>",
+    "graphId": "wf-<uuid4#1>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "running",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": null,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#1>#work",
+      "kind": "task",
+      "flag": false,
+      "state": "requested",
+      "requestId": "workflow-request:<uuid4#2>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": null,
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+     }
+    ],
+    "edges": [],
+    "reasonRef": null,
+    "roster": {
+     "digest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5",
+     "graphId": "wf-<uuid4#1>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5"
+   }
+  },
+  {
+   "step": 8,
+   "method": "workflow.status",
+   "label": "non-participant",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:gamma",
+    "sessionRef": "session-gamma",
+    "runId": "wf-<uuid4#1>"
+   },
+   "error": {
+    "code": "CALLER_NOT_AUTHORIZED",
+    "message": "caller is not a participant of this graph"
+   }
+  },
+  {
+   "step": 9,
+   "method": "workflow.status",
+   "label": "missing",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "workflow-missing"
+   },
+   "error": {
+    "code": "WORKFLOW_NOT_FOUND",
+    "message": "workflow 'workflow-missing' not found"
+   }
+  },
+  {
+   "step": 10,
+   "method": "workflow.node.inspect",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#1>",
+    "target": "work"
+   },
+   "result": {
+    "schemaVersion": 2,
+    "backend": "pac",
+    "graphId": "wf-<uuid4#1>",
+    "runId": "wf-<uuid4#1>",
+    "target": "work",
+    "node": {
+     "nodeId": "work",
+     "owner": "agent:op:node-1:beta",
+     "briefRef": "workflow:wf-<uuid4#1>#work",
+     "kind": "task",
+     "flag": false,
+     "state": "requested",
+     "requestId": "workflow-request:<uuid4#2>",
+     "deadlineMs": 1800003600000,
+     "timeoutMs": 3600000,
+     "reasonRef": null,
+     "actorNode": null,
+     "localHumanCanComplete": false,
+     "deliveryState": "accepted",
+     "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+    },
+    "sender": "user:op",
+    "owner": "agent:op:node-1:beta",
+    "tracking": {
+     "nodeId": "work",
+     "owner": "agent:op:node-1:beta",
+     "briefRef": "workflow:wf-<uuid4#1>#work",
+     "kind": "task",
+     "flag": false,
+     "state": "requested",
+     "requestId": "workflow-request:<uuid4#2>",
+     "deadlineMs": 1800003600000,
+     "timeoutMs": 3600000,
+     "reasonRef": null,
+     "actorNode": null,
+     "localHumanCanComplete": false,
+     "deliveryState": "accepted",
+     "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+    },
+    "conversationId": "pac-wf-<uuid4#1>",
+    "observedAt": 1800000000000,
+    "daemonEpoch": "<uuid4#3>",
+    "requestId": "workflow-request:<uuid4#2>",
+    "flag": false,
+    "reasonRef": null,
+    "deliveries": [
+     {
+      "deliveryId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+      "requestId": "workflow-request:<uuid4#2>",
+      "actor": "agent:op:node-1:beta"
+     }
+    ],
+    "identityAvailable": true,
+    "progress": {
+     "events": [],
+     "gaps": false,
+     "truncated": false
+    },
+    "results": {
+     "replies": [],
+     "evidenceRef": null
+    },
+    "roster": {
+     "digest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5",
+     "graphId": "wf-<uuid4#1>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5"
+   }
+  },
+  {
+   "step": 11,
+   "method": "workflow.node.inspect",
+   "label": "missing-node",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#1>",
+    "target": "nope"
+   },
+   "error": {
+    "code": "WORKFLOW_NODE_NOT_FOUND",
+    "message": "nope"
+   }
+  },
+  {
+   "step": 12,
+   "method": "message.pending.list",
+   "label": "dispatch-arrived",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   },
+   "result": {
+    "ok": true,
+    "messages": [
+     {
+      "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+      "deliveryId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+      "conversationId": "pac-wf-<uuid4#1>",
+      "from": "user:op",
+      "to": "agent:op:node-1:beta",
+      "intent": "request",
+      "kind": "message",
+      "summary": "轮到你:work workflow:wf-<uuid4#1>#work (event workflow-request:<uuid4#2>)",
+      "bodyBytes": 1258,
+      "origin": {
+       "via": "operator"
+      }
+     }
+    ],
+    "daemonEpoch": "<uuid4#3>"
+   }
+  },
+  {
+   "step": 13,
+   "method": "message.read_body",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+   },
+   "result": {
+    "ok": true,
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+    "conversationId": "pac-wf-<uuid4#1>",
+    "from": "user:op",
+    "to": "agent:op:node-1:beta",
+    "intent": "request",
+    "summary": "轮到你:work workflow:wf-<uuid4#1>#work (event workflow-request:<uuid4#2>)",
+    "message": "work\n\nInput evidence references: []\nWorkflow roster: {\"digest\":\"7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5\",\"graphId\":\"wf-<uuid4#1>\",\"nodes\":[{\"location\":\"local\",\"nodeId\":\"work\",\"owner\":\"agent:op:node-1:beta\",\"ownership\":\"borrowed\",\"role\":\"review\"}]}\nInspect current work before acting: hyprial workflow inspect wf-<uuid4#1> --node work --json\nGraph: wf-<uuid4#1>; node: work; role: review\nFixed deadline: 1800003600000 (epoch ms).\nComplete explicitly: hyprial workflow complete wf-<uuid4#1> work --request-id workflow-request:<uuid4#2> --reason-ref <evidence-reference> [--output-text <result>]\nReport failure: hyprial workflow fail wf-<uuid4#1> work --request-id workflow-request:<uuid4#2> --reason-ref <failure-reference> [--output-text <result>]\nWithout a shell, use the workflow_complete / workflow_fail tool with the same graphId, nodeId, requestId and reasonRef; outputText optionally carries the result inline.\nIf returnState is pending, the outcome is durably queued; inspect until accepted or rejected.\nA reply is not completion. Do not repeat a withdrawn request.\n",
+    "bodyBytes": 1258,
+    "origin": {
+     "via": "operator"
+    },
+    "pending": true,
+    "fetched": true
+   }
+  },
+  {
+   "step": 14,
+   "method": "message.reply",
+   "label": "pac-worker",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+    "summary": "worker answer",
+    "message": "worker answer"
+   },
+   "result": {
+    "ok": true,
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+    "replyMessageId": "daea1a05-addc-5123-aa33-8965a6c1ee70",
+    "replied": true,
+    "acknowledged": true,
+    "queued": true
+   }
+  },
+  {
+   "step": 15,
+   "method": "message.reply",
+   "label": "pac-worker-repeat",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+    "summary": "worker answer",
+    "message": "worker answer"
+   },
+   "result": {
+    "ok": true,
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+    "replyMessageId": "daea1a05-addc-5123-aa33-8965a6c1ee70",
+    "replied": true,
+    "acknowledged": true,
+    "queued": true
+   }
+  },
+  {
+   "step": 16,
+   "method": "message.status",
+   "label": "dispatch",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+   },
+   "result": {
+    "ok": true,
+    "from": "agent:op:node-1:beta",
+    "records": [
+     {
+      "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+      "sender": "user:op",
+      "recipient": "agent:op:node-1:beta",
+      "state": "fetched",
+      "holder": "node-1",
+      "reason": "ACK_RECEIVED",
+      "recordedAtMs": 1800000000000,
+      "conversationId": "pac-wf-<uuid4#1>",
+      "idempotencyKey": "workflow:pac:pac-notify:workflow-request:<uuid4#2>:workflow:work:workflow-request:<uuid4#2>"
+     }
+    ],
+    "diagnostics": {
+     "localRecords": 1,
+     "meshReplies": 0,
+     "meshRecords": 0,
+     "meshHolders": [],
+     "meshResponders": [],
+     "undecodableReplies": 0,
+     "undecodableHolders": [],
+     "replyErrors": 0,
+     "meshError": null,
+     "holders": [
+      "node-1"
+     ],
+     "missingRecipientHolders": [],
+     "conflictingMessageIds": [],
+     "duplicateHolderRecords": [],
+     "noKnownLoss": true
+    },
+    "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60",
+    "state": "fetched"
+   }
+  },
+  {
+   "step": 17,
+   "method": "message.status",
+   "label": "pac-worker-reply",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "messageId": "daea1a05-addc-5123-aa33-8965a6c1ee70"
+   },
+   "result": {
+    "ok": true,
+    "from": "agent:op:node-1:beta",
+    "records": [],
+    "diagnostics": {
+     "localRecords": 0,
+     "meshReplies": 0,
+     "meshRecords": 0,
+     "meshHolders": [],
+     "meshResponders": [],
+     "undecodableReplies": 0,
+     "undecodableHolders": [],
+     "replyErrors": 0,
+     "meshError": null,
+     "holders": [],
+     "missingRecipientHolders": [],
+     "conflictingMessageIds": [],
+     "duplicateHolderRecords": [],
+     "noKnownLoss": true
+    },
+    "messageId": "daea1a05-addc-5123-aa33-8965a6c1ee70",
+    "state": "pending",
+    "holdExpiresAtMs": 1800043200000
+   }
+  },
+  {
+   "step": 18,
+   "method": "message.query",
+   "label": "pac-worker-reply",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "view": "outbox"
+   },
+   "result": {
+    "ok": true,
+    "actor": "agent:op:node-1:beta",
+    "view": "outbox",
+    "entries": [
+     {
+      "messageId": "daea1a05-addc-5123-aa33-8965a6c1ee70",
+      "conversationId": "pac-wf-<uuid4#1>",
+      "sender": "agent:op:node-1:beta",
+      "recipient": "user:op",
+      "intent": "reply",
+      "createdAtMs": 1800000000000,
+      "attempts": 0,
+      "failedAttempts": 0,
+      "nextAttemptMs": 1800000060000,
+      "expiresAtMs": 1800043200000,
+      "undeliverableScheme": false
+     }
+    ]
+   }
+  },
+  {
+   "step": 19,
+   "observe": "outbox-row-keys",
+   "value": [
+    {
+     "messageId": "daea1a05-addc-5123-aa33-8965a6c1ee70",
+     "sender": "agent:op:node-1:beta",
+     "recipient": "user:op",
+     "intent": "reply",
+     "idempotencyKey": "reply:workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+    }
+   ]
+  },
+  {
+   "step": 20,
+   "method": "message.pending.list",
+   "label": "after-reply",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   },
+   "result": {
+    "ok": true,
+    "messages": [],
+    "daemonEpoch": "<uuid4#3>"
+   }
+  },
+  {
+   "step": 21,
+   "method": "workflow.complete",
+   "label": "stale-request",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "graphId": "wf-<uuid4#1>",
+    "nodeId": "work",
+    "requestId": "request-stale",
+    "reasonRef": "result:golden"
+   },
+   "error": {
+    "code": "WORKFLOW_REQUEST_STALE",
+    "message": "complete only the currently requested activation; inspect workflow status"
+   }
+  },
+  {
+   "step": 22,
+   "method": "workflow.complete",
+   "label": "unverified-session",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-bogus",
+    "graphId": "wf-<uuid4#1>",
+    "nodeId": "work",
+    "requestId": "workflow-request:<uuid4#2>",
+    "reasonRef": "result:golden"
+   },
+   "error": {
+    "code": "PAC_PRINCIPAL_UNVERIFIED",
+    "message": "workflow actor claim has no matching live daemon session",
+    "data": {
+     "cause": "CALLER_NOT_AUTHORIZED"
+    }
+   }
+  },
+  {
+   "step": 23,
+   "method": "workflow.complete",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "graphId": "wf-<uuid4#1>",
+    "nodeId": "work",
+    "requestId": "workflow-request:<uuid4#2>",
+    "reasonRef": "result:golden"
+   },
+   "result": {
+    "ok": true,
+    "event": {
+     "eventId": "<uuid4#4>",
+     "graphId": "wf-<uuid4#1>",
+     "nodeId": "work",
+     "action": "set",
+     "actor": "agent:op:node-1:beta",
+     "at": 1800000000000,
+     "version": 1
+    },
+    "actingPrincipal": "agent:op:node-1:beta"
+   }
+  },
+  {
+   "step": 24,
+   "method": "workflow.complete",
+   "label": "repeat",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "graphId": "wf-<uuid4#1>",
+    "nodeId": "work",
+    "requestId": "workflow-request:<uuid4#2>",
+    "reasonRef": "result:golden"
+   },
+   "result": {
+    "ok": true,
+    "event": {
+     "eventId": "<uuid4#4>",
+     "graphId": "wf-<uuid4#1>",
+     "nodeId": "work",
+     "action": "set",
+     "actor": "agent:op:node-1:beta",
+     "at": 1800000000000,
+     "version": 1
+    },
+    "actingPrincipal": "agent:op:node-1:beta"
+   }
+  },
+  {
+   "step": 25,
+   "method": "workflow.status",
+   "label": "after-complete",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#1>"
+   },
+   "result": {
+    "runId": "wf-<uuid4#1>",
+    "graphId": "wf-<uuid4#1>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "completed",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": 1800000000000,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#1>#work",
+      "kind": "task",
+      "flag": true,
+      "flagSetBy": "agent:op:node-1:beta",
+      "flagSetAt": 1800000000000,
+      "flagReasonRef": "result:golden",
+      "state": "done",
+      "requestId": "workflow-request:<uuid4#2>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": "result:golden",
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+     }
+    ],
+    "edges": [],
+    "reasonRef": "pac:workflow-settled",
+    "roster": {
+     "digest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5",
+     "graphId": "wf-<uuid4#1>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5",
+    "workerCleanup": "complete"
+   }
+  },
+  {
+   "step": 26,
+   "method": "workflow.cancel",
+   "label": "after-complete",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#1>"
+   },
+   "result": {
+    "runId": "wf-<uuid4#1>",
+    "graphId": "wf-<uuid4#1>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "completed",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": 1800000000000,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#1>#work",
+      "kind": "task",
+      "flag": true,
+      "flagSetBy": "agent:op:node-1:beta",
+      "flagSetAt": 1800000000000,
+      "flagReasonRef": "result:golden",
+      "state": "done",
+      "requestId": "workflow-request:<uuid4#2>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": "result:golden",
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-2e918822-6213-5fed-ae02-9cf127afdb60"
+     }
+    ],
+    "edges": [],
+    "reasonRef": "pac:workflow-settled",
+    "roster": {
+     "digest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5",
+     "graphId": "wf-<uuid4#1>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "7aa67ed00109a9c0a5e4da274d0db72e8bdf24d8cb63dad6a216aa8f6e827fc5",
+    "workerCleanup": "complete"
+   }
+  },
+  {
+   "step": 27,
+   "method": "workflow.start",
+   "label": "second",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: golden-flow\nnodes:\n- id: work\n  owner: agent:op:node-1:beta\n  role: review\n  task: work\nversion: 2\n",
+    "actor": "user:op",
+    "operationKey": "golden-run-2"
+   },
+   "result": {
+    "graphId": "wf-<uuid4#5>",
+    "runId": "wf-<uuid4#5>",
+    "backend": "pac",
+    "state": "running",
+    "actingPrincipal": "user:op"
+   }
+  },
+  {
+   "step": 28,
+   "method": "workflow.status",
+   "label": "second",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#5>"
+   },
+   "result": {
+    "runId": "wf-<uuid4#5>",
+    "graphId": "wf-<uuid4#5>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "running",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": null,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#5>#work",
+      "kind": "task",
+      "flag": false,
+      "state": "requested",
+      "requestId": "workflow-request:<uuid4#6>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": null,
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-fa9f6f38-7be6-5139-9ae3-91126fe66b45"
+     }
+    ],
+    "edges": [],
+    "reasonRef": null,
+    "roster": {
+     "digest": "7ac899c98a03116bd6cdb5a40fc460a4891319b4e6a1081a07d465121a776cf4",
+     "graphId": "wf-<uuid4#5>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "7ac899c98a03116bd6cdb5a40fc460a4891319b4e6a1081a07d465121a776cf4"
+   }
+  },
+  {
+   "step": 29,
+   "method": "workflow.fail",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "graphId": "wf-<uuid4#5>",
+    "nodeId": "work",
+    "requestId": "workflow-request:<uuid4#6>",
+    "reasonRef": "result:failed"
+   },
+   "result": {
+    "runId": "wf-<uuid4#5>",
+    "graphId": "wf-<uuid4#5>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "failed",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": 1800000000000,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#5>#work",
+      "kind": "task",
+      "flag": false,
+      "state": "failed",
+      "requestId": "workflow-request:<uuid4#6>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": "result:failed",
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-fa9f6f38-7be6-5139-9ae3-91126fe66b45"
+     }
+    ],
+    "edges": [],
+    "reasonRef": "pac:node-failed:work",
+    "roster": {
+     "digest": "7ac899c98a03116bd6cdb5a40fc460a4891319b4e6a1081a07d465121a776cf4",
+     "graphId": "wf-<uuid4#5>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "7ac899c98a03116bd6cdb5a40fc460a4891319b4e6a1081a07d465121a776cf4",
+    "workerCleanup": "complete",
+    "actingPrincipal": "agent:op:node-1:beta"
+   }
+  },
+  {
+   "step": 30,
+   "method": "workflow.status",
+   "label": "after-fail",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#5>"
+   },
+   "result": {
+    "runId": "wf-<uuid4#5>",
+    "graphId": "wf-<uuid4#5>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "failed",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": 1800000000000,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#5>#work",
+      "kind": "task",
+      "flag": false,
+      "state": "failed",
+      "requestId": "workflow-request:<uuid4#6>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": "result:failed",
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-fa9f6f38-7be6-5139-9ae3-91126fe66b45"
+     }
+    ],
+    "edges": [],
+    "reasonRef": "pac:node-failed:work",
+    "roster": {
+     "digest": "7ac899c98a03116bd6cdb5a40fc460a4891319b4e6a1081a07d465121a776cf4",
+     "graphId": "wf-<uuid4#5>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "7ac899c98a03116bd6cdb5a40fc460a4891319b4e6a1081a07d465121a776cf4",
+    "workerCleanup": "complete"
+   }
+  },
+  {
+   "step": 31,
+   "method": "workflow.start",
+   "label": "third",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: golden-flow\nnodes:\n- id: work\n  owner: agent:op:node-1:beta\n  role: review\n  task: work\nversion: 2\n",
+    "actor": "user:op",
+    "operationKey": "golden-run-3"
+   },
+   "result": {
+    "graphId": "wf-<uuid4#7>",
+    "runId": "wf-<uuid4#7>",
+    "backend": "pac",
+    "state": "running",
+    "actingPrincipal": "user:op"
+   }
+  },
+  {
+   "step": 32,
+   "method": "workflow.cancel",
+   "label": "node-owner",
+   "origin": "ipc",
+   "params": {
+    "actor": "agent:op:node-1:beta",
+    "sessionRef": "session-beta",
+    "runId": "wf-<uuid4#7>"
+   },
+   "error": {
+    "code": "WORKFLOW_NOT_OWNER",
+    "message": "only the graph creator can cancel"
+   }
+  },
+  {
+   "step": 33,
+   "method": "workflow.cancel",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#7>"
+   },
+   "result": {
+    "runId": "wf-<uuid4#7>",
+    "graphId": "wf-<uuid4#7>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "cancelled",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": 1800000000000,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#7>#work",
+      "kind": "task",
+      "flag": false,
+      "state": "cancelled",
+      "requestId": "workflow-request:<uuid4#8>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": "workflow:cancelled",
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-070ca693-c204-5476-83ce-dffbe0c33248"
+     }
+    ],
+    "edges": [],
+    "reasonRef": "workflow:cancelled",
+    "roster": {
+     "digest": "58d5ae3fd8a172a8a1af004b49197b789bcc554619410034d446f4d1979d9427",
+     "graphId": "wf-<uuid4#7>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "58d5ae3fd8a172a8a1af004b49197b789bcc554619410034d446f4d1979d9427",
+    "workerCleanup": "complete"
+   }
+  },
+  {
+   "step": 34,
+   "method": "workflow.status",
+   "label": "after-cancel",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#7>"
+   },
+   "result": {
+    "runId": "wf-<uuid4#7>",
+    "graphId": "wf-<uuid4#7>",
+    "backend": "pac",
+    "name": "golden-flow",
+    "state": "cancelled",
+    "onFailure": "terminate",
+    "sender": "user:op",
+    "createdAtMs": 1800000000000,
+    "closedAtMs": 1800000000000,
+    "nodes": [
+     {
+      "nodeId": "work",
+      "owner": "agent:op:node-1:beta",
+      "briefRef": "workflow:wf-<uuid4#7>#work",
+      "kind": "task",
+      "flag": false,
+      "state": "cancelled",
+      "requestId": "workflow-request:<uuid4#8>",
+      "deadlineMs": 1800003600000,
+      "timeoutMs": 3600000,
+      "reasonRef": "workflow:cancelled",
+      "actorNode": null,
+      "localHumanCanComplete": false,
+      "deliveryState": "accepted",
+      "messageId": "workflow-070ca693-c204-5476-83ce-dffbe0c33248"
+     }
+    ],
+    "edges": [],
+    "reasonRef": "workflow:cancelled",
+    "roster": {
+     "digest": "58d5ae3fd8a172a8a1af004b49197b789bcc554619410034d446f4d1979d9427",
+     "graphId": "wf-<uuid4#7>",
+     "nodes": [
+      {
+       "location": "local",
+       "nodeId": "work",
+       "owner": "agent:op:node-1:beta",
+       "ownership": "borrowed",
+       "role": "review"
+      }
+     ]
+    },
+    "rosterDigest": "58d5ae3fd8a172a8a1af004b49197b789bcc554619410034d446f4d1979d9427",
+    "workerCleanup": "complete"
+   }
+  },
+  {
+   "step": 35,
+   "method": "workflow.list",
+   "label": "final",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "runs": [
+     {
+      "runId": "wf-<uuid4#5>",
+      "graphId": "wf-<uuid4#5>",
+      "backend": "pac",
+      "name": "golden-flow",
+      "state": "failed",
+      "sender": "user:op",
+      "createdAtMs": 1800000000000,
+      "closedAtMs": 1800000000000,
+      "onFailure": "terminate",
+      "routineName": null,
+      "lastProgressAtMs": 1800000000000,
+      "currentNode": null
+     },
+     {
+      "runId": "wf-<uuid4#7>",
+      "graphId": "wf-<uuid4#7>",
+      "backend": "pac",
+      "name": "golden-flow",
+      "state": "cancelled",
+      "sender": "user:op",
+      "createdAtMs": 1800000000000,
+      "closedAtMs": 1800000000000,
+      "onFailure": "terminate",
+      "routineName": null,
+      "lastProgressAtMs": 1800000000000,
+      "currentNode": null
+     },
+     {
+      "runId": "wf-<uuid4#1>",
+      "graphId": "wf-<uuid4#1>",
+      "backend": "pac",
+      "name": "golden-flow",
+      "state": "completed",
+      "sender": "user:op",
+      "createdAtMs": 1800000000000,
+      "closedAtMs": 1800000000000,
+      "onFailure": "terminate",
+      "routineName": null,
+      "lastProgressAtMs": 1800000000000,
+      "currentNode": null
+     }
+    ]
+   }
+  },
+  {
+   "step": 36,
+   "method": "workflow.history.list",
+   "label": "legacy-empty",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op"
+   },
+   "result": {
+    "runs": []
+   }
+  },
+  {
+   "step": 37,
+   "method": "workflow.history.status",
+   "label": "legacy-missing",
+   "origin": "ipc",
+   "params": {
+    "actor": "user:op",
+    "runId": "wf-<uuid4#1>"
+   },
+   "error": {
+    "code": "WORKFLOW_NOT_FOUND",
+    "message": "legacy workflow not found"
+   }
+  },
+  {
+   "step": 38,
+   "method": "message.pending.list",
+   "label": "final",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:beta",
+    "sessionRef": "session-beta"
+   },
+   "result": {
+    "ok": true,
+    "messages": [
+     {
+      "messageId": "workflow-fa9f6f38-7be6-5139-9ae3-91126fe66b45",
+      "deliveryId": "workflow-fa9f6f38-7be6-5139-9ae3-91126fe66b45",
+      "conversationId": "pac-wf-<uuid4#5>",
+      "from": "user:op",
+      "to": "agent:op:node-1:beta",
+      "intent": "request",
+      "kind": "message",
+      "summary": "轮到你:work workflow:wf-<uuid4#5>#work (event workflow-request:<uuid4#6>)",
+      "bodyBytes": 1258,
+      "origin": {
+       "via": "operator"
+      }
+     },
+     {
+      "messageId": "workflow-070ca693-c204-5476-83ce-dffbe0c33248",
+      "deliveryId": "workflow-070ca693-c204-5476-83ce-dffbe0c33248",
+      "conversationId": "pac-wf-<uuid4#7>",
+      "from": "user:op",
+      "to": "agent:op:node-1:beta",
+      "intent": "request",
+      "kind": "message",
+      "summary": "轮到你:work workflow:wf-<uuid4#7>#work (event workflow-request:<uuid4#8>)",
+      "bodyBytes": 1258,
+      "origin": {
+       "via": "operator"
+      }
+     }
+    ],
+    "daemonEpoch": "<uuid4#3>"
+   }
+  },
+  {
+   "step": 39,
+   "observe": "user-deliveries",
+   "value": []
+  }
+ ]
+}

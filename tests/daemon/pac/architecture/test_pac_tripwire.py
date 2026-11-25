@@ -15,6 +15,7 @@ Two gates, per the spec's "扫描判据(tripwire)":
 
 from __future__ import annotations
 
+from tests.support.runtime.environment import home_with_node_id
 import ast
 from pathlib import Path
 
@@ -144,7 +145,7 @@ def poison_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state.mkdir()
     monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("HARNESS_STATE_DIR", raising=False)
-    (tmp_path / "home").mkdir(exist_ok=True)
+    home_with_node_id(tmp_path / "home")
     return state
 
 

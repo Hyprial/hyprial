@@ -37,11 +37,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon import AlarmEmitter, node_owner_or_none
+from hyprial.daemon import AlarmEmitter
 from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import lark_reply_adapter
-from hyprial.kernel import Logger, ipc_errors
+from hyprial.kernel import Logger
 from hyprial.kernel import configured_hyprial_home
-from hyprial.identity import LazyUserStore, UserStore
 
 from hyprial.daemon.impl.adapters.lark.contracts.messages import (
     canonical_lark_message_type,
@@ -55,8 +54,6 @@ from hyprial.daemon.impl.adapters.lark.contracts.wire import (
     ReconcileReport,
     RouteDirectory,
 )
-from hyprial.daemon.impl.adapters.lark.credentials.identities import resolve_sender_identity
-from hyprial.daemon.impl.identity import IdentityResolver, IdentityResolverError
 from hyprial.daemon.impl.adapters.lark.inbound.inbound_runtime import LarkInboundRuntime
 from hyprial.daemon.impl.adapters.lark.outbound.reactions import (
     ReactionEffectsRuntime,
@@ -97,19 +94,19 @@ _PAUSED_INLINE_BACKFILL_REPORT = ReconcileReport(
     0, 0, 0, 0, 0, retryable_errors=("adapter: backfill-paused",),
 )
 def _channel_actor_adapter_name(channel_actor_id: str) -> str:
-    """The operator-facing adapter name from either channel URI shape.
+    """The operator-facing adapter name from either adapter URI shape.
 
-    Three-segment ``channel:lark:<adapter>`` via the reply-bridge parser,
-    four-segment ``channel:<owner>:<machine>:<adapter>`` via the one
-    channel-URI deconstructor; anything else stays verbatim.
+    Three-segment ``adapter:lark:<adapter>`` via the reply-bridge parser,
+    four-segment ``adapter:<owner>:<machine>:<adapter>`` via the one
+    adapter-URI deconstructor; anything else stays verbatim.
     """
 
     bridged = lark_reply_adapter(channel_actor_id)
     if bridged is not None:
         return bridged
-    from hyprial.kernel import parse_channel_uri
+    from hyprial.kernel import parse_adapter_uri
 
-    parsed = parse_channel_uri(channel_actor_id)
+    parsed = parse_adapter_uri(channel_actor_id)
     return parsed[2] if parsed is not None else channel_actor_id
 
 def _required(value: object, name: str) -> str:
@@ -213,9 +210,8 @@ class LarkAdapter(
         ),
         utcnow: Callable[[], datetime] | None = None,
         org_context_path: Path | None = None,
-        users: UserStore | LazyUserStore | None = None,
-        identity_resolver: IdentityResolver | None = None,
         inline_backfill_budget: float | None = None,
+        actor_host: Any | None = None,
     ) -> None:
         if dead_letter_alert_threshold < 1:
             raise ValueError("dead-letter alert threshold must be positive")
@@ -236,25 +232,6 @@ class LarkAdapter(
         self._closing = threading.Event()
         self._backfill_epoch = 0
         self._backfilled_chats: dict[str, int] = {}
-        # The per-machine user store, consulted first when naming a sender.
-        # ``None`` (no users.sqlite3 on this machine) keeps #818's
-        # identities-only resolution exactly.
-        self._users = users
-        resolver_home = (
-            org_context_path.parent
-            if org_context_path is not None
-            else state.path.parent
-        )
-        resolver_owner = node_owner_or_none(hyprial_home=resolver_home)
-        self._identity_resolver = identity_resolver or IdentityResolver(
-            state_dir=state.path.parent,
-            hyprial_home=resolver_home,
-            owner=resolver_owner or "unknown",
-            # The resolver opens users.sqlite3 itself, exactly as the daemon's
-            # does: the worker's LazyUserStore cannot enumerate users, which
-            # made every inbound lookup on the detached worker unavailable.
-            legacy_path=state.path,
-        )
         self._lark = lark
         self._reaction_lark = reaction_lark or lark
         self._reaction_lock = threading.Lock()
@@ -287,9 +264,13 @@ class LarkAdapter(
             if self._logger is not None
             else None
         )
+        # P7: the worker entry creates one host per process; the inbound
+        # runtime borrows it. Standalone/test construction without a host
+        # keeps the custody's private-host fallback.
         self._inbound = LarkInboundRuntime(
             self._adapter_name,
             processor=self._process_inbound,
+            actor_host=actor_host,
         )
 
     def _process_inbound(
@@ -489,8 +470,6 @@ class LarkAdapter(
         if self._reaction_effects is not None:
             self._reaction_effects.close(timeout)
         self._state.close()
-        if self._users is not None:
-            self._users.close()
 
     def __del__(self) -> None:
         # Tests and embedders historically treated LarkAdapter as a plain
@@ -513,15 +492,6 @@ class LarkAdapter(
             return InboundOutcome(status="normalize-error", ack_error=str(error))
         return self.handle_inbound(message)
 
-
-    def send_owner_dm(
-        self, open_id: str, text: str, *, idempotency_key: str
-    ) -> str:
-        """Send through this receiving user's own app-scoped adapter."""
-
-        return self._lark.send_owner_dm(
-            open_id, text, idempotency_key=idempotency_key
-        )
 
     def handle_inbound(
         self, message: LarkInboundMessage, *, suppress_guidance: bool = False
@@ -575,72 +545,37 @@ class LarkAdapter(
         except Exception:  # noqa: BLE001 - bookkeeping must never break inbound
             pass
 
-    def _resolved_sender(self, message: LarkInboundMessage) -> dict[str, Any]:
-        """Who sent this, from recorded identities -- for the agent to read.
+    _CHAT_KINDS = {"p2p": "dm", "group": "group"}
 
-        ``from`` on the harness message is this adapter (the routable actor a
-        reply goes back through), so without this block an agent cannot tell
-        one human from another, nor whether a message is its owner's.  The
-        lookup never fails the message: an unanswerable one is reported as
-        ``unresolved`` with ``lookupFailed``, never as a guessed name.
+    def _chat_kind(self, message: LarkInboundMessage) -> str | None:
+        """The generic chat kind; another Lark chat type is not guessed."""
+
+        return self._CHAT_KINDS.get(message.chat_type)
+
+    def _platform_sender(self, message: LarkInboundMessage) -> dict[str, Any] | None:
+        """The platform facts about who sent this, for the agent to read.
+
+        ``from`` on the harness message is this adapter, the address a reply
+        goes back through; this block names the platform account behind it.
+        The display name is whatever this adapter's own observation table
+        holds for that account, possibly nothing: an IM sender is simply the
+        person who owns the account, and no lookup judges who that is.
         """
 
         kind = self._SENDER_IDENTITY_KINDS.get(message.sender_type)
-        unresolved: dict[str, Any] = {
-            "kind": kind or message.sender_type or "unknown",
-            "platformId": message.sender_id or None,
-            "unionId": message.sender_union_id or None,
-            "displayName": None,
-            "owner": None,
-            "standing": "unresolved",
-            "source": None,
-        }
         if kind is None or not message.sender_id or message.sender_id == "unknown":
-            return unresolved
-        if kind == "user" and not message.sender_union_id:
-            return unresolved
+            return None
         try:
-            if self._users is None and not self._identity_resolver.is_owner_union(
-                message.sender_union_id
-            ):
-                return resolve_sender_identity(
-                    self._state,
-                    kind=kind,
-                    platform_id=message.sender_id,
-                    union_id=message.sender_union_id,
-                    users=None,
-                )
-            if kind == "user":
-                return self._identity_resolver.resolve_sender(
-                    message.sender_union_id,
-                    open_id=message.sender_id,
-                    adapter=self._adapter_name,
-                )
-            return resolve_sender_identity(
-                self._state,
-                kind=kind,
-                platform_id=message.sender_id,
-                union_id=message.sender_union_id,
-                users=self._users,
-            )
-        except IdentityResolverError as error:
-            if error.code in {
-                ipc_errors.IDENTITY_UNBOUND,
-                ipc_errors.IDENTITY_CONFLICT,
-            }:
-                return {
-                    **unresolved,
-                    **(
-                        {"standing": "ambiguous"}
-                        if error.code == ipc_errors.IDENTITY_CONFLICT
-                        else {}
-                    ),
-                }
-            return {**unresolved, "lookupFailed": True}
+            row = self._state.identity(kind, message.sender_id)
         except (NameError, ImportError):
             raise
-        except Exception:  # noqa: BLE001 - identity lookup must never break inbound
-            return {**unresolved, "lookupFailed": True}
+        except Exception:  # noqa: BLE001 - a display name must never break inbound
+            row = None
+        return {
+            "kind": kind,
+            "platformId": message.sender_id,
+            "displayName": row.display_name if row is not None else None,
+        }
 
     def handle_member_change_event(self, event: Any) -> None:
         """Record identities from a chat member added/deleted event.

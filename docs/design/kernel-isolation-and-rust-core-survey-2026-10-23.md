@@ -1,5 +1,7 @@
 # Kernel 隔离现状与 Rust/PyO3 可行性调查
 
+后续决策入口为[#1897](https://code.hyprial.com/HyprialOS/harness-bridge/pulls/1897)及[S0/S1交付清单](actor-rustify-s0-s1-deliverables-2026-10-24.md)。本文的独立`hyprial-kernel` wheel和保留Python backend的建议属于早期备选，不作为当前实施依据。当前目标是单一Ractor执行模型；源码位置与分发方式由S0的ADR统一收敛，首选评估同仓、同一hyprial wheel。
+
 - 状态：设计调查，不改产品行为
 - 基线：`d5a4dd257d15320ce59a9bb56d116e786ab4e195`
 - 日期：2026-10-23
@@ -382,7 +384,7 @@ Execution counts: actor-runtime=61, async-task=11, default-executor-work=7, effe
 | `src/hyprial/daemon/impl/configuration/home_lease_actor.py:116` | timer-scheduler | `HomeLeaseAuthority.__init__` | `-` |
 | `src/hyprial/daemon/impl/configuration/home_lease_actor.py:126` | effect-worker-pool | `HomeLeaseAuthority.__init__` | `'home-lease-file'` |
 | `src/hyprial/daemon/impl/configuration/home_lease_actor.py:132` | effect-worker-pool | `HomeLeaseAuthority.__init__` | `'home-lease-duplicate'` |
-| `src/hyprial/daemon/impl/context_snapshot/service.py:203` | thread-pool | `ContextSnapshotWorker.__init__` | `'hyprial-context-snapshot-io'` |
+| historical @d5a4dd257d line 203 (package removed in 2026-11-21 W1B) | thread-pool | `hyprial-snapshot-io` (removed) | `-` |
 | `src/hyprial/daemon/impl/correlation/bounded_cadence.py:61` | actor-runtime | `BoundedCadence.__init__` | `-` |
 | `src/hyprial/daemon/impl/correlation/bounded_cadence.py:81` | effect-worker-pool | `BoundedCadence.__init__` | `f'{name}-effect'` |
 | `src/hyprial/daemon/impl/desired_state_io.py:116` | effect-worker-pool | `DesiredStateIoPort.__init__` | `'desired-state-io'` |
@@ -885,8 +887,8 @@ Disposition counts: classified=158, limit-class=5, dismissed=462, undisposed=0. 
 | `src/hyprial/daemon/impl/configuration/home_guard.py:250` | `ActiveDaemonHeartbeat._claim_record` | signals=syntax,legacy-loop-delay; loops=1; shape=retry; operations=_write_record | classified | home claim contention wait |
 | `src/hyprial/daemon/impl/configuration/home_guard.py:322` | `ActiveDaemonHeartbeat._heartbeat_loop` | signals=syntax,legacy-loop-delay; loops=1; shape=observation; operations=wait | dismissed | observation wait: the loop only polls state and does not replay work |
 | `src/hyprial/daemon/impl/configuration/ownership.py:25` | `DaemonStateOwnershipFence.acquire` | signals=syntax,legacy-loop-delay; loops=1; shape=retry; operations=lock_exclusive | classified | daemon state ownership lock |
-| `src/hyprial/daemon/impl/context_snapshot/native.py:203` | `<module>.analyze_native_session` | signals=syntax; loops=1; shape=retry-failover; operations=loads | dismissed | failover-shape review: iterates independent items or performs an observation/search; it does not repeat one logical effect against alternatives |
-| `src/hyprial/daemon/impl/context_snapshot/recap.py:41` | `<module>.analyze_recaps` | signals=syntax; loops=2; shape=retry-failover; operations=loads | dismissed | failover-shape review: iterates independent items or performs an observation/search; it does not repeat one logical effect against alternatives |
+| historical @d5a4dd257d line 203 (package removed in 2026-11-21 W1B) | `<module>.analyze_native_session` | signals=syntax; loops=1; shape=retry-failover; operations=loads | dismissed | removed in 2026-11-21 W1B (was failover-shape review over independent items) |
+| historical @d5a4dd257d line 41 (package removed in 2026-11-21 W1B) | `<module>.analyze_recaps` | signals=syntax; loops=2; shape=retry-failover; operations=loads | dismissed | removed in 2026-11-21 W1B (was failover-shape review over independent items) |
 | `src/hyprial/daemon/impl/desired_state_io.py:100` | `DesiredStateIoPort.__init__` | signals=identifier,legacy-identifier; loops=0; shape=lexical; operations=- | dismissed | lexical retry/recovery token only; no repeated operation shape |
 | `src/hyprial/daemon/impl/desired_state_io.py:236` | `DesiredStateIoPort._join_late` | signals=syntax,legacy-loop-delay; loops=1; shape=observation; operations=_late_result,sleep | classified | desired-state late-result join |
 | `src/hyprial/daemon/impl/dispatch/matrix.py:309` | `<module>.diagnose` | signals=identifier,legacy-identifier; loops=1; shape=lexical; operations=- | dismissed | lexical retry/recovery token only; no repeated operation shape |

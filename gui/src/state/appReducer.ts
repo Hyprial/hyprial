@@ -1,9 +1,21 @@
+/**
+ * Decision record (GUI deep modules C2, 2026-11-08): fixture state construction
+ * moved to `dev/fixtures/fixture-state.ts`; this module keeps only formal
+ * state. `confirm-logout` resets to the formal empty state; development
+ * compositions install the dev fixture reducer wrapper to keep the historical
+ * fixture reset.
+ * Decision record (WP1 product composition, 2026-11-09): `applyStateSeed`
+ * overlays a composition-supplied presentation seed onto the reducer state;
+ * only seed keys that are present replace reducer values, so the reducer keeps
+ * authority over everything the composition did not inject.
+ * Historical baselines supply their own chat lists; empty product/journey
+ * states track explicitly opened targets separately from the Agent directory.
+ * Decision record (artifact-neutral composition inputs, 2026-11-10): the
+ * baseline type is named `StateBaseline`; the product composition interface
+ * carries no fixture/mock vocabulary, so the release bundle cannot leak
+ * mock-composition identifiers (production copy gate scans dist content).
+ */
 import type { ConversationMessage } from './gui-view-model';
-import {
-  FIXTURE_AGENTS,
-  FIXTURE_CONNECTIONS,
-  FIXTURE_THREADS,
-} from '../fixtures/demo';
 import { upsertMessage } from './messages';
 import type {
   AppAction,
@@ -11,11 +23,23 @@ import type {
   ChatSeed,
   FirstRunMode,
   FirstRunStep,
+  StateSeed,
   TargetChatState,
 } from './types';
 import { isChatTarget } from './types';
 
-export const DEFAULT_TARGET_ID = 'agent-squire';
+export function applyStateSeed(state: AppState, seed: StateSeed | undefined): AppState {
+  if (!seed) {
+    return state;
+  }
+  return {
+    ...state,
+    ...(seed.firstRun ? { firstRun: seed.firstRun } : {}),
+    ...(seed.targets ? { targets: seed.targets } : {}),
+    ...(seed.connections ? { connections: seed.connections } : {}),
+    ...(seed.threads ? { threads: seed.threads } : {}),
+  };
+}
 
 let noticeSeq = 0;
 
@@ -28,7 +52,6 @@ export const LOGOUT_NOTICE = '已清空当前会话。账号登出暂不可用�
 const FIRST_RUN_STEPS: readonly FirstRunStep[] = [
   'account',
   'model',
-  'squire',
   'conversation',
 ];
 
@@ -71,23 +94,10 @@ function isSelectableMessage(
   );
 }
 
-export function createFixtureState(
-  firstRunMode: FirstRunMode = 'complete',
+export function createEmptyState(
+  firstRunMode: FirstRunMode = 'unavailable',
   notice: string | null = null,
-  chatSeed: ChatSeed = {},
 ): AppState {
-  const seedThreads = chatSeed.threads ?? {};
-  const agents = chatSeed.targets ?? FIXTURE_AGENTS;
-  if (agents.length === 0) throw new RangeError('Chat seed targets must be nonempty.');
-  const targetIds = new Set(agents.map((agent) => agent.id));
-  const threads: Record<string, readonly ConversationMessage[]> = {};
-  for (const targetId of targetIds) {
-    const seeded = seedThreads[targetId];
-    threads[targetId] = seeded
-      ? seeded.map((message) => ({ ...message }))
-      : (FIXTURE_THREADS[targetId] ?? []).map((message) => ({ ...message }));
-  }
-
   return {
     firstRun: {
       mode: firstRunMode,
@@ -99,29 +109,19 @@ export function createFixtureState(
       error: null,
     },
     page: 'start',
-    targets: agents.map((agent) => ({
-      ...agent,
-      availability:
-        agent.id === chatSeed.availableTargetId
-          ? ('available' as const)
-          : agent.availability,
-      capabilities: [...agent.capabilities],
-    })),
-    connections: FIXTURE_CONNECTIONS.map((connection) => ({
-      ...connection,
-    })),
-    threads,
-    activeTargetId: targetIds.has(chatSeed.activeTargetId ?? DEFAULT_TARGET_ID)
-      ? (chatSeed.activeTargetId ?? DEFAULT_TARGET_ID)
-      : agents[0].id,
+    targets: [],
+    connections: [],
+    threads: {},
+    activeTargetId: '',
     drafts: {},
     targetChat: {},
+    openedChatTargetIds: [],
     infoCollapsed: false,
-    chatSendMode: chatSeed.sendMode ?? 'unavailable',
-    chatReplyText: chatSeed.replyText ?? '',
+    chatSendMode: 'unavailable',
+    chatReplyText: '',
     messageSeq: 1,
-    quickChatOpen: false,
     lastChatTargetId: null,
+    chatIntentTargetId: null,
     selectedAgentId: null,
     agentPanel: { kind: 'list' },
     agentQuery: '',
@@ -136,8 +136,44 @@ export function createFixtureState(
   };
 }
 
+export type StateBaseline = Pick<AppState, 'targets' | 'connections' | 'threads'>;
+
+export function createStateFromBaseline(
+  baseline: StateBaseline,
+  chatSeed: ChatSeed = {},
+  firstRunMode: FirstRunMode = 'complete',
+): AppState {
+  const seedThreads = chatSeed.threads ?? {};
+  const agents = chatSeed.targets ?? baseline.targets;
+  if (agents.length === 0) throw new RangeError('Chat seed targets must be nonempty.');
+  const targetIds = new Set(agents.map((agent) => agent.id));
+  const threads: Record<string, readonly ConversationMessage[]> = {};
+  for (const targetId of targetIds) {
+    const seeded = seedThreads[targetId];
+    threads[targetId] = seeded
+      ? seeded.map((message) => ({ ...message }))
+      : (baseline.threads[targetId] ?? []).map((message) => ({ ...message }));
+  }
+  return {
+    ...createEmptyState(firstRunMode),
+    openedChatTargetIds: undefined,
+    targets: agents.map((agent) => ({
+      ...agent,
+      availability: agent.id === chatSeed.availableTargetId ? 'available' : agent.availability,
+      capabilities: [...agent.capabilities],
+    })),
+    connections: baseline.connections.map((connection) => ({ ...connection })),
+    threads,
+    activeTargetId: targetIds.has(chatSeed.activeTargetId ?? 'agent-squire')
+      ? (chatSeed.activeTargetId ?? 'agent-squire')
+      : agents[0].id,
+    chatSendMode: chatSeed.sendMode ?? 'unavailable',
+    chatReplyText: chatSeed.replyText ?? '',
+  };
+}
+
 export function appReducer(state: AppState, action: AppAction): AppState {
-  if (action.type.startsWith('first-run-')) {
+  if (action.type.startsWith('first-run-') && action.type !== 'first-run-complete') {
     if (
       state.firstRun.mode === 'complete' ||
       state.firstRun.mode === 'unavailable' ||
@@ -191,6 +227,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         },
       };
 
+    case 'first-run-complete':
+      if (state.firstRun.status === 'complete' && state.page === 'start') return state;
+      return {
+        ...state,
+        page: 'start',
+        firstRun: {
+          ...state.firstRun,
+          status: 'complete',
+          error: null,
+        },
+      };
+
     case 'first-run-succeed': {
       if (
         action.step !== state.firstRun.step ||
@@ -211,8 +259,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const next: Record<Exclude<FirstRunStep, 'conversation'>, FirstRunStep> = {
         account: 'model',
-        model: 'squire',
-        squire: 'conversation',
+        model: 'conversation',
       };
       const step = next[action.step];
       return {
@@ -243,21 +290,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...state.firstRun,
           status: 'failed',
           error: action.message,
-        },
-      };
-
-    case 'first-run-progress':
-      if (
-        state.firstRun.step !== 'squire' ||
-        state.firstRun.status !== 'pending'
-      ) {
-        return state;
-      }
-      return {
-        ...state,
-        firstRun: {
-          ...state.firstRun,
-          progress: Math.min(100, Math.max(0, action.value)),
         },
       };
 
@@ -316,6 +348,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         page: 'chat',
+        chatIntentTargetId: null,
         activeTargetId: target.id,
         lastChatTargetId: target.id,
         accountMenuOpen: false,
@@ -333,12 +366,40 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         page: 'chat',
+        chatIntentTargetId: null,
         activeTargetId: target.id,
         lastChatTargetId: target.id,
         accountMenuOpen: false,
         notice: null,
       };
     }
+
+    case 'open-agent-chat':
+      return {
+        ...state,
+        page: 'chat',
+        chatIntentTargetId: action.targetId,
+        openedChatTargetIds: [...new Set([...(state.openedChatTargetIds ?? []), action.targetId])],
+        activeTargetId: action.targetId,
+        lastChatTargetId: action.targetId,
+        accountMenuOpen: false,
+        notice: null,
+      };
+
+    case 'agent-deleted':
+      return {
+        ...state,
+        targets: state.targets.filter(target => target.id !== action.targetId),
+        openedChatTargetIds: state.openedChatTargetIds?.filter(id => id !== action.targetId),
+        activeTargetId: state.activeTargetId === action.targetId ? '' : state.activeTargetId,
+        lastChatTargetId: state.lastChatTargetId === action.targetId ? null : state.lastChatTargetId,
+        chatIntentTargetId: state.chatIntentTargetId === action.targetId ? null : state.chatIntentTargetId,
+      };
+
+    case 'clear-chat-intent':
+      return state.chatIntentTargetId === null
+        ? state
+        : { ...state, chatIntentTargetId: null };
 
     case 'open-agent': {
       const target = state.targets.find(
@@ -354,7 +415,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         agentPanel: { kind: 'detail', agentId: target.id },
         agentQuery: '',
         agentFilter: 'all',
-        quickChatOpen: false,
         accountMenuOpen: false,
         notice: null,
       };
@@ -539,9 +599,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
 
-    case 'set-quick-chat':
-      return { ...state, quickChatOpen: action.open };
-
     case 'select-message': {
       if (
         !isSelectableMessage(state, action.targetId, action.messageId)
@@ -631,7 +688,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, logoutDialogOpen: false };
 
     case 'confirm-logout': {
-      const fresh = createFixtureState('complete', LOGOUT_NOTICE);
+      const fresh = createEmptyState('complete', LOGOUT_NOTICE);
       return {
         ...fresh,
         notices: [
@@ -677,7 +734,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         notices: [
           ...deduped,
-          { id, tone: action.tone, text: action.text, source: action.source },
+          { id, tone: action.tone, text: action.text, source: action.source, autoDismiss: action.autoDismiss },
         ].slice(-4),
         centerNotices:
           persistent && !alreadyInCenter
@@ -710,6 +767,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         centerNotices: [],
         centerUnread: 0,
       };
+
+    case 'session-identity': {
+      const previous = state.sessionIdentity;
+      const next = action.identity;
+      if (previous === next) return state;
+      const changed = previous !== undefined && previous !== null
+        && (next === null || (next !== '' && previous !== '' && next !== previous));
+      const sessionIdentity = next === '' && previous ? previous : next;
+      return changed
+        ? { ...state, sessionIdentity, notices: [], centerNotices: [], centerUnread: 0 }
+        : { ...state, sessionIdentity };
+    }
 
     case 'clear-notice':
       return { ...state, notice: null, notices: [] };

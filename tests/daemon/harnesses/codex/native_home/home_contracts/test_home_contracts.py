@@ -29,6 +29,7 @@ from ..support import (
     _runtime_context,
 )
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_t04_t05_native_loader_proves_root_layers_project_and_skills(
@@ -537,7 +538,7 @@ def test_agent_home_authority_materializes_complete_codex_context(
     actor = AgentActor(
         registry,
         event_sink=lambda _event: None,
-        home_runtime_preparers={"codex": prepare_codex_runtime_context},
+        home_runtime_preparers={"codex": prepare_codex_runtime_context}, actor_host=new_actor_host(),
     )
     try:
         context = actor.prepare_runtime_context(
@@ -835,7 +836,7 @@ def test_t04_t05_t07_t13_real_codex_load_and_resume_failure(
     asyncio.run(exercise())
 
     socket_root = Path(
-        tempfile.mkdtemp(prefix="p23-codex-tui-", dir="/private/tmp")
+        tempfile.mkdtemp(prefix="p23-codex-tui-", dir=tempfile.gettempdir())
     )
     socket_path = socket_root / "app.sock"
     server = CodexInteractiveAppServer(

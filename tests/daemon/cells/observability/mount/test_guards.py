@@ -10,7 +10,7 @@ import pytest
 from hyprial.daemon.impl.composition.cell_observation import CellObservationView
 from hyprial.daemon.impl.operations.session_ports import RegisterSessionCommand, SessionMutationCompleted
 from hyprial.kernel import CHANNEL_PROTOCOL_VERSION
-from tests.daemon.cells.observability.mount.test_mount import composed as composed, settle, Process
+from tests.daemon.cells.observability.mount.test_mount import composed as composed, registered, settle, Process
 from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation
 from hyprial.daemon.impl.harnesses.actor.contracts import HarnessProjection, _Record
 from hyprial.kernel import HarnessLaunchSpec
@@ -18,8 +18,7 @@ from hyprial.kernel import HarnessLaunchSpec
 
 def test_external_terminal_remains_external_and_session_fence_is_unchanged(composed):
     app, launcher, *_ = composed
-    app.agents.create("terminal")
-    actor = "agent:owner:node:terminal"
+    actor = app.agents.create("terminal").uri
     domains = app._agent_session_domains
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -55,6 +54,7 @@ def test_external_terminal_remains_external_and_session_fence_is_unchanged(compo
 
 def test_new_binding_cannot_adopt_old_running_source(composed):
     app, launcher, harness, *_rest, spec = composed
+    spec = registered(app, spec)
     settle(app, LifecycleOperation.create("create", spec))
     domains = app._agent_session_domains
     old = domains.cells.snapshot(spec.actor)

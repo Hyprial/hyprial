@@ -1,8 +1,8 @@
 /**
  * J5 organization journey view model.
  *
- * The organization slice renders from a deterministic model so the dev-mode
- * scenarios (and later previews) can pick a state through props. The default
+ * The organization slice renders from a deterministic model so the dev scenarios
+ * (and later previews) can pick a state through props. The default
  * model keeps the current "unavailable" behavior: no org API is wired, and no
  * action may claim success.
  */
@@ -62,7 +62,6 @@ export interface OrgActionPlan {
 
 export interface OrgViewModel {
   readonly scene: OrgScene;
-  readonly statusLabel: string;
   readonly createEnabled: boolean;
   readonly inviteEnabled: boolean;
   readonly joinEnabled: boolean;
@@ -76,7 +75,6 @@ export interface OrgViewModel {
   readonly showJoin: boolean;
   readonly invitation: OrgInvitationState;
   readonly join: OrgJoinState;
-  readonly unavailableNote: string | null;
   readonly actions: OrgActionPlan;
 }
 
@@ -106,7 +104,7 @@ const ENABLED_PLAN: OrgActionPlan = {
 
 const BASE: Omit<
   OrgViewModel,
-  'scene' | 'statusLabel' | 'showMembers' | 'showCreate' | 'showInvite' | 'showJoin' | 'actions'
+  'scene' | 'showMembers' | 'showCreate' | 'showInvite' | 'showJoin' | 'actions'
 > = {
   createEnabled: false,
   inviteEnabled: false,
@@ -115,7 +113,6 @@ const BASE: Omit<
   membersEmptyText: null,
   invitation: { state: 'none' },
   join: { state: 'idle', draft: '' },
-  unavailableNote: null,
 };
 
 function withPlan(
@@ -144,7 +141,6 @@ export function buildOrgViewModel(
         ...BASE,
         ...enabled(actions),
         scene,
-        statusLabel: '已创建',
         showMembers: true,
         showCreate: actions.create !== 'unavailable',
         showInvite: actions.invite !== 'unavailable',
@@ -159,7 +155,6 @@ export function buildOrgViewModel(
         ...BASE,
         ...enabled(actions),
         scene,
-        statusLabel: '邀请待领取',
         showMembers: true,
         showCreate: actions.create !== 'unavailable',
         showInvite: actions.invite !== 'unavailable',
@@ -181,7 +176,6 @@ export function buildOrgViewModel(
         ...BASE,
         ...enabled(actions),
         scene,
-        statusLabel: '加入未完成',
         showMembers: false,
         showCreate: false,
         showInvite: false,
@@ -200,7 +194,6 @@ export function buildOrgViewModel(
         ...BASE,
         ...enabled(actions),
         scene,
-        statusLabel: '成员已加入',
         showMembers: true,
         showCreate: actions.create !== 'unavailable',
         showInvite: actions.invite !== 'unavailable',
@@ -221,12 +214,10 @@ export function buildOrgViewModel(
         ...BASE,
         ...enabled(actions),
         scene: 'unavailable',
-        statusLabel: '暂不可用',
         showMembers: false,
         showCreate: false,
         showInvite: false,
         showJoin: false,
-        unavailableNote: '暂不可用',
         actions,
       };
     }

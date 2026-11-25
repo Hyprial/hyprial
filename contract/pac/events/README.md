@@ -122,6 +122,60 @@ outcome's version. Structure changes already require a fresh snapshot.
   unknown tag with `PAC_EVENT_TYPE_UNKNOWN`; malformed metadata/payload JSON
   returns `PAC_EVENT_ENVELOPE_INVALID`. Stream errors stay on stderr.
 
+## Held-reminder notifications (#1803)
+
+A graph that stays `held` is nobody's work, so PAC reminds its creator. This is
+an additive notification-fact shape on the existing kinds and journal types --
+no public field or event name changed, and the JSON schema is unchanged.
+
+- **Written by** the PAC-side held-reminder cadence. It reads the PAC database
+  only and never resets a node, cancels a graph or restarts a worker.
+- **Notice id** (`notification.eventId`) is `held-reminder:<graphId>:<bucket>`,
+  where `<bucket>` is `floor(now_ms / 86400000)`. `edge` is the fixed string
+  `held-reminder`, so the `(eventId, edge)` primary key makes a replay across a
+  restart a no-op. In addition, a graph is not reminded again within 24 hours
+  of its last reminder (sliding window over the recorded rows).
+- **Kind** is `actor_alert`: a reminder is a durable alert to a principal that
+  no flag event caused. It is delivered by the ordinary PAC drain, so the
+  `delivery_changed` facts and the recorded `messageId` behave exactly as for
+  any other notification.
+- **Journal** carries the matching `notification_planned` fact; it is appended
+  only when the row was actually inserted, never on an idempotent replay.
+- **`plan.heldReminder`** is additive metadata inside the existing free-form
+  `plan` object: `noticeId`, `heldSinceMs` (null when the hold predates
+  schema 20), `heldAgeMs`, `thresholdMs`, `repeatWindowMs`, `creator`,
+  `creatorMissing`, `blockingNodes[{nodeId,state,reasonRef}]`, `workersDesiredUp[]`,
+  `options[]`. `plan.graphId`/`version`/`nodeId` keep their usual meaning;
+  `nodeId` is the first blocking node, or the graph's first node when none is
+  recorded.
+- **Restart interaction**: the same PAC facts also suppress the pre-spawn of a
+  worker whose every graph is held with no request -- including a worker that
+  is also blocked, because a block is not current work. Its dormant status then
+  reports `restoreOverride=pac-held-idle` (an additive value of the existing
+  `ps` field; `contract/cli-blackbox/run.py` lists it).
+- **Recipient** is the graph creator (`graphs.created_by`). Only a **local
+  agent** identity can be proven absent here: when such a creator no longer
+  resolves, the notice goes to the node owner's operator route
+  (`user:<owner>`) and the text says the creator is missing. A
+  `user:<owner>` creator is a delivery target of its own (owner DM path) and
+  is never rerouted, and a creator on another node is not judged missing
+  here either.
+- **Text** opens with `PAC held-reminder:` and names the graph, the held
+  duration, the blocking nodes with their `reasonRef`, the workers whose actor
+  activation is a settled `desired='up', op='done'` (durable desired state,
+  **never** proof of a running process -- PAC keeps no liveness observation,
+  and restore suppression does not clear the activation, so the text says
+  "not observed liveness"), the three options (reset and retry / cancel to
+  reclaim / raise the threshold), and states that nothing was changed. It is a
+  reference-and-facts message, not a body of work.
+- **Age source** is `workflow_graphs.held_at_ms`, written where a hold is
+  entered (schema 20). Pre-20 held rows are backfilled from the recorded node
+  failure; a hold with no such fact keeps null and is reported as an unknown
+  age rather than being hidden.
+- **Operator switches**: `HYPRIAL_PAC_HELD_REMINDER=0` disables the feature
+  (no rows, no sends), and `HYPRIAL_PAC_HELD_REMINDER_THRESHOLD_SECONDS`
+  overrides the 6-hour default threshold. The scan cadence is hourly.
+
 ## Assignment view (no additional authority table)
 
 One requested `(graph, node, round)` has one opaque `activationId`. The round is

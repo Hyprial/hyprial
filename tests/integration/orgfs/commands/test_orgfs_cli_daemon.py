@@ -53,7 +53,7 @@ def test_daemon_orgfs_surface_and_local_ro_gate(tmp_path):
     finally:
         application._orgfs_runtime.close()
         application._orgfs_runtime = None
-        application._agent_session_domains.close()
+        application._agent_session_domains.close(shutdown_hosts=False)
 
 
 def test_fs_cli_exposes_frozen_commands_and_version_flags(monkeypatch, tmp_path):

@@ -81,11 +81,9 @@ from hyprial.identity.impl.agents.registry._base import (
     AgentNotFoundError,
     HandoverNotice,
     InvalidAgentNameError,
-    PinConflictError,
     RestoreDisposition,
     normalize_capabilities,
     normalize_harness_args,
-    normalize_pinned_adapters,
     )
 from hyprial.identity.impl.agents.registry._core import (
     AgentRegistry,
@@ -165,7 +163,6 @@ __all__ = [
     "MigrationEntry",
     "MigrationPhase",
     "MigrationRecord",
-    "PinConflictError",
     "RestoreDisposition",
     "GitAuthorUnresolvedError",
     "ResolvedSecret",
@@ -198,7 +195,6 @@ __all__ = [
     "require_agent_config",
     "normalize_capabilities",
     "normalize_harness_args",
-    "normalize_pinned_adapters",
     "resolve_agent_runtime_context",
     "resolve_agent_tool_profile",
     "set_default_registry",

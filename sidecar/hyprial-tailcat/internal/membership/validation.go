@@ -204,11 +204,14 @@ func validateStore(s Store) error {
 				return fail("MEMBERSHIP_STORE_INVALID")
 			}
 		}
-		if tn.Revision > 0 {
+		if tn.Revision > 0 && !tn.Closed {
 			a, ok := tn.Members[tn.Authority.DeviceID]
 			if !ok || a.State != "active" || !isAuthority(tn.Authority, Sender{a.Owner, a.DeviceID, a.MasterPublic, a.ServerPublic, a.Address}) {
 				return fail("MEMBERSHIP_STORE_INVALID")
 			}
+		}
+		if tn.Closed && (tn.ClosedAtMs <= 0 || tn.ClosedAtMs > MaxNumber) {
+			return fail("MEMBERSHIP_STORE_INVALID")
 		}
 	}
 	for id, receipt := range s.Operations {
@@ -272,6 +275,20 @@ func ValidateResult(op string, data []byte) error {
 			BackupPath      string `json:"backupPath"`
 			RestartRequired bool   `json:"restartRequired"`
 		}{}
+	case "tailnet-shutdown":
+		value = &struct {
+			TailnetID   string `json:"tailnetId"`
+			Revision    uint64 `json:"revision"`
+			Closed      bool   `json:"closed"`
+			ClosedAtMs  int64  `json:"closedAtMs"`
+			BackupPath  string `json:"backupPath"`
+			Propagation string `json:"propagation"`
+		}{}
+	case "tailnet-forget":
+		value = &struct {
+			TailnetID string `json:"tailnetId"`
+			Forgotten bool   `json:"forgotten"`
+		}{}
 	default:
 		return fail("BAD_REQUEST")
 	}
@@ -287,7 +304,7 @@ func ValidateResult(op string, data []byte) error {
 }
 func IsOp(op string) bool {
 	switch op {
-	case "membership-init", "roster-fetch", "member-announce", "member-revoke", "membership-status", "invite-create", "invite-redeem", "authority-repin":
+	case "membership-init", "roster-fetch", "member-announce", "member-revoke", "membership-status", "invite-create", "invite-redeem", "authority-repin", "tailnet-shutdown", "tailnet-forget":
 		return true
 	}
 	return false
@@ -354,6 +371,10 @@ func Parse(data []byte, remote bool) (Request, error) {
 		p = &RedeemParams{}
 	case "authority-repin":
 		p = &RepinParams{}
+	case "tailnet-shutdown":
+		p = &ShutdownParams{}
+	case "tailnet-forget":
+		p = &ForgetParams{}
 	}
 	if err := decodeParams(r.Params, p); err != nil {
 		return r, err

@@ -1,3 +1,16 @@
+# Decision record: daemon-first-z6pre-owned-logout-20261117
+# - An owned start asks the application to own the process exit unless the run
+#   stops for a pure logout; after such a stop the same process enters the
+#   lifecycle loop that an ownerless start already uses.
+# - The expected identity generation is a launch check and is not repeated on
+#   that re-entry: the login record is gone after a logout.
+# - The run may return without ending the process, so the interpreter is
+#   left through the loop's leave on every return or raise (failed on raise).
+# - A home whose owner survives the logout (HYPRIAL_OWNER, partial removal)
+#   cannot be admitted by the bootstrap phase, so that process ends as before.
+# - W2A-LOGIN-INPROC (2026-11-21): retired <=0.5.5.3.3 adopt_legacy descriptor
+#   handoff; daemon run always acquires IdentityTransactionLock in-process and
+#   yields it while waiting for daemon.lock so logins do not block on wait.
 """``hyprial daemon run/stop/status``."""
 
 from __future__ import annotations
@@ -8,12 +21,14 @@ import time
 from typing import Any
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
+from hyprial.error import codes
 from hyprial.kernel import ipc_errors
 import os
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.daemon_stop import _stop_daemon_for_operator
+from hyprial.shell.impl.cli.commands.common.ensure.scope import ACCOUNT_REQUIRED
 from hyprial.shell.impl.cli.commands.common.support import (
     DAEMON_START_IDLE_BUDGET_SECONDS,
     JsonObject,
@@ -21,6 +36,26 @@ from hyprial.shell.impl.cli.commands.common.support import (
 
 
 daemon_app = group(help="Run, stop, start, and inspect the Harness daemon.")
+
+BOOTSTRAP_REFUSAL_CODES = frozenset(
+    {codes.CALLER_NOT_AUTHORIZED, codes.METHOD_NOT_FOUND, ACCOUNT_REQUIRED}
+)
+
+
+def confirmed_bootstrap_refusal(
+    services: Any, error: Exception
+) -> tuple[dict[str, Any], Any]:
+    """The probe of a daemon that is in bootstrap; otherwise raise ``error``."""
+
+    from hyprial.shell.impl.cli.commands.daemon.bootstrap import probed_daemon
+
+    try:
+        daemon, restore_pending = probed_daemon(services)
+    except (services.CliError, ipc_errors.DaemonRequestError):
+        raise error from None
+    if daemon.get("phase") != "bootstrap":
+        raise error
+    return daemon, restore_pending
 
 
 @daemon_app.command("status")
@@ -33,23 +68,18 @@ def daemon_status(
     def operation() -> JsonObject:
         try:
             result = services.runtime.request("ps", restore_wait=0.0)
+        except services.CliError as error:
+            if error.code not in BOOTSTRAP_REFUSAL_CODES:
+                raise
+            daemon, restore_pending = confirmed_bootstrap_refusal(services, error)
+            restoring = None
         except ipc_errors.DaemonRestoringError:
-            probe = services._daemon_probe(timeout=2.0)
-            daemon = {
-                key: probe[key]
-                for key in (
-                    "running",
-                    "pid",
-                    "epoch",
-                    "nodeId",
-                    "owner",
-                    "socket",
-                    "phase",
-                )
-                if key in probe
-            }
+            from hyprial.shell.impl.cli.commands.daemon.bootstrap import (
+                probed_daemon,
+            )
+
+            daemon, restore_pending = probed_daemon(services, restore_default=True)
             restoring = True
-            restore_pending = probe.get("restorePending", True)
         except ipc_errors.DaemonUnavailableError:
             daemon = {"running": False}
             restoring = None
@@ -75,7 +105,7 @@ def daemon_status(
             "daemon": daemon,
         }
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 @daemon_app.command("start")
@@ -96,7 +126,7 @@ def daemon_start(
         )
         return launched.to_payload()
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output, ensure_daemon=False)
 
 
 class _IdentityHold:
@@ -243,7 +273,13 @@ def _report_lock_wait(event: dict[str, object], *, json_output: bool) -> None:
 
 @daemon_app.command("run")
 def daemon_run(
+    ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Emit JSON after shutdown."),
+    bootstrap: bool = typer.Option(
+        False,
+        "--bootstrap",
+        help="Explicitly cold-start an empty home and become its daemon (same process).",
+    ),
 ) -> None:
     """Run the daemon in the foreground until SIGINT or SIGTERM (debug/process manager)."""
     services = get_services()
@@ -271,16 +307,19 @@ def daemon_run(
     expected_generation = take_expected_generation(os.environ)
     launch_id = take_launch_id(os.environ)
 
-    def operation() -> JsonObject:
-        from hyprial.identity import IdentityTransactionBusy
-        services = get_services()
-        services.require_initialized_hyprial_home()
-        from hyprial.daemon import DaemonApplication
-        from hyprial.daemon import application_lock_wait_timeout as _lock_wait_timeout
-        from hyprial.identity import IdentityTransactionLock
+    loop_entered = False
 
-        state_dir = services._state_dir()
+    def operation() -> JsonObject:
+        nonlocal loop_entered
+        services = get_services()
         home = services._hyprial_home()
+        from hyprial.shell.impl.daemon_wiring.onboarding import (
+            OwnerlessLaunchError,
+            build_daemon_application,
+            home_owner_or_none,
+            launch_ownerless_daemon,
+            stopped_for_logout,
+        )
 
         def verify() -> None:
             if expected_generation is None:
@@ -303,18 +342,42 @@ def daemon_run(
                 )
                 raise typer.Exit(code=IDENTITY_GENERATION_STALE_EXIT_CODE)
 
+        def run_lifecycle_loop() -> None:
+            nonlocal loop_entered
+            loop_entered = True
+            try:
+                launch_ownerless_daemon(
+                    home=home,
+                    state_dir=services._state_dir(),
+                    socket_path=services._socket_path(),
+                    application_factory=build_daemon_application,
+                    launch_id=launch_id,
+                    exit_unless_logout=True,
+                    bind_epoch=stamp.bind_epoch,
+                )
+            except OwnerlessLaunchError as error:
+                raise services.CliError(error.code, str(error)) from error
+
+        if home_owner_or_none(os.environ, home) is None:
+            verify()
+            run_lifecycle_loop()
+            return {"ok": True, "stopped": True}
+        from hyprial.identity import IdentityTransactionBusy
+
+        from hyprial.daemon import DaemonApplication
+        from hyprial.daemon import application_lock_wait_timeout as _lock_wait_timeout
+        from hyprial.identity import IdentityTransactionLock
+
+        state_dir = services._state_dir()
+
         def acquire() -> Any:
             try:
                 return IdentityTransactionLock.acquire(home, timeout=_lock_wait_timeout())
             except IdentityTransactionBusy as error:
                 raise services.CliError(error.code, str(error)) from error
 
-        # Acquired here, by this process, before identity is read (no
-        # inherited descriptor): a login commits and releases first.  The one
-        # exception is a <=0.5.5.3.3 upgrade tail that still hands its held
-        # descriptor over; contending with it would deadlock on our own fd.
-        legacy = IdentityTransactionLock.adopt_legacy(home, os.environ)
-        hold = _IdentityHold(legacy if legacy is not None else acquire(), acquire, verify)
+        hold = _IdentityHold(acquire(), acquire, verify)
+        logged_out = False
         try:
             verify()
             fence = _acquire_daemon_fence(
@@ -323,11 +386,7 @@ def daemon_run(
                 timeout=_lock_wait_timeout(),
                 json_output=json_output,
                 wait_while_healthy=service_managed(os.environ),
-                # Never sit on the identity lock while waiting for daemon.lock:
-                # a login would see IDENTITY_TRANSACTION_BUSY for the whole
-                # wait.  The legacy descriptor is still shared with its
-                # launcher, so it cannot be dropped and re-taken.
-                yield_identity=None if legacy is not None else hold.yielded,
+                yield_identity=hold.yielded,
             )
             with fence:
                 from hyprial.shell.impl.daemon_wiring import daemon_dependencies, usage_factory
@@ -341,20 +400,41 @@ def daemon_run(
                 stamp.bind_epoch(runtime.epoch)
                 # This interpreter exists to be the daemon, so the daemon is
                 # allowed to end it if shutdown leaves a thread that will not join.
-                runtime.owns_process_exit()
+                runtime.exit_unless_logout()
+                loop_entered = True
                 runtime.run(
                     ownership_stream=fence.detach(),
                     identity_transaction_stream=hold.detach(),
                     launch_id=launch_id,
                 )
+                logged_out = stopped_for_logout(runtime)
         finally:
             hold.close()
+        if logged_out:
+            if home_owner_or_none(os.environ, home) is None:
+                run_lifecycle_loop()
         return {"ok": True, "stopped": True}
 
+    interpreter_owned = bool((ctx.obj or {}).get("interpreterOwned"))
     with stamped_stdio:
-        services.runtime.execute(
-            operation, json_output=json_output, allow_missing_home=True
-        )
+        try:
+            services.runtime.execute(
+                operation, json_output=json_output, allow_missing_home=True, ensure_daemon=False
+            )
+        except BaseException:
+            if interpreter_owned and loop_entered:
+                from hyprial.shell.impl.daemon_wiring.onboarding import (
+                    leave_ownerless_loop,
+                )
+
+                leave_ownerless_loop(failed=True)
+            raise
+        if interpreter_owned and loop_entered:
+            from hyprial.shell.impl.daemon_wiring.onboarding import (
+                leave_ownerless_loop,
+            )
+
+            leave_ownerless_loop()
 
 
 @daemon_app.command("stop")
@@ -371,4 +451,4 @@ def daemon_stop(
         _stop_daemon_for_operator if expected_epoch is None
         else lambda: _stop_daemon_for_operator(expected_epoch=expected_epoch)
     )
-    services.runtime.execute(action, json_output=json_output)
+    services.runtime.execute(action, json_output=json_output, ensure_daemon=False)

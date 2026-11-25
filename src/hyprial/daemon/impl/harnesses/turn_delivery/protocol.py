@@ -24,6 +24,7 @@ TURN_HOOK_CALLBACK_ACTOR = TURN_HOOKS_ACTOR_NAME
 
 HOOK_REQUEST_MARKER = "turnHookRequest"
 _HOOK_CONVERSATION_PREFIX = "turn-hook:"
+_HOOK_REQUEST_ID_PREFIX = "turn-hook-"
 
 
 class HookInvoker(Protocol):

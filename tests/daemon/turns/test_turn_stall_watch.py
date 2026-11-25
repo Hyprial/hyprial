@@ -12,7 +12,6 @@ turn at least one of these red.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 import sys
@@ -31,7 +30,6 @@ from hyprial.daemon.impl.harnesses.codex.client import (
     CodexAppServerClient,
     CodexAppServerProcess,
 )
-from hyprial.daemon.impl.harnesses.dsh.client import DshApiClient
 from hyprial.daemon.impl.harnesses.streaming.protocol import (
     TURN_IDLE_TIMEOUT_ENV,
     TURN_TIMEOUT_ENV,
@@ -142,55 +140,6 @@ def test_turn_far_past_any_former_cap_completes_and_delivers(
         "[Harness Network message from requester to agent:op:node-1:worker]\n"
         "do the work done"
     )
-
-
-def test_dsh_turn_outlives_the_retired_cap() -> None:
-    """DSH: the configured turn timeout is parsed but never enforced."""
-
-    class Api:
-        def __init__(self) -> None:
-            self.polls = 0
-
-        async def call(self, method: str, payload: dict[str, object]) -> object:
-            if method == "host.describe":
-                return {}
-            if method == "session.create":
-                return {"sessionId": "session-1"}
-            if method == "session.prompt":
-                return {"accepted": True}
-            if method == "session.history":
-                self.polls += 1
-                if self.polls < 12:
-                    return {"events": []}
-                return {
-                    "events": [
-                        {
-                            "event": {
-                                "type": "turn/end",
-                                "seq": 5,
-                                "data": {"reason": {"kind": "completed"}},
-                            }
-                        }
-                    ]
-                }
-            raise AssertionError(f"unexpected DSH method {method}")
-
-    async def scenario() -> None:
-        client = DshApiClient(
-            HarnessLaunchSpec(harness="dsh", name="dsh-worker", headless=True),
-            api=Api(),
-            poll_interval_seconds=0.02,
-            # Far below the elapsed polling time; pre-#277 this killed the
-            # turn with a cap outcome.
-            turn_timeout_seconds=0.05,
-        )
-        async with client:
-            await client.query("long quiet work")
-            outcomes = [outcome async for outcome in client.receive_response()]
-        [outcome] = outcomes
-        assert outcome.is_error is False
-
-    asyncio.run(scenario())
 
 
 # --- acceptance 2: stalled is reported, never killed -----------------------

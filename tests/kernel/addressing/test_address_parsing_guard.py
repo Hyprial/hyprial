@@ -1,12 +1,14 @@
 """CI 守卫:地址解析唯一(Allen:URI 产生点唯一 —— 一个写者,也一个读者).
 
 `agent:`/`channel:` 身份文法的解构只能发生在
-`hyprial.uri`(`parse_agent_uri` / `parse_channel_uri` /
+`hyprial.uri`(`parse_agent_uri` /
 `agent_uri_actor` / `short_actor_name`)。src/ 其它任何文件里的裸
 `split(":")`/`rsplit(":", 1)`/`partition(":")`/`startswith("agent:")`/
 `removeprefix("agent:")`/`startswith("channel:")` 都是暗道解析。
-白名单只含**与身份无关的文法**(每条注明其所有者);新增身份解析必须
-进 uri 模块。变异证明:在任意 src 文件造一处裸解析,本测试必须红。
+白名单包含与 URI 身份无关的文法以及进程出生标记文法(每条注明其所有者);
+新增 URI 身份解析必须进 uri 模块。进程出生标记的 scheme:value 文法由
+`manysys.process.owned_process.parse_process_birth_marker` 唯一持有。
+变异证明:在任意 src 文件造一处裸解析,本测试必须红。
 
 白名单的另一半纪律是**只能收缩**:每条豁免必须**恰好命中一行现行代码**
 (见 `test_whitelist_entries_match_exactly_one_live_line`)。空条目不是
@@ -34,27 +36,23 @@ _TOKENS = (
 # 白名单收缩方向:只出不进。新增条目必须在 PR 里说明文法所有者是谁;
 # 并且必须恰好命中一行现行代码(空条目/宽条目由下面的守卫测试钉住)。
 _WHITELIST: tuple[tuple[str, str], ...] = (
-    # route:<adapter>:<route> 文法的所有者(RouteTarget.parse)。
-    ("daemon/impl/network/route_delivery.py", 'parts = value.split(":")'),
     # harness:provider:model CLI 组合参数(_parse_combo)。
     # M0.3 叶子切分之后,这份文法的唯一持有者是 agent/runtime/tiers.py:
     # squire 那条命令的入口已经不再持有该文法,因此不再占白名单条目。
     ("shell/impl/cli/commands/agent/runtime/tiers.py", 'parts = raw.split(":")'),
-    # active:<harnesses>:<files>:<bytes> 落地回执文法,所有者是
-    # p2/orchestration/target.py 的 _parse_active_receipt —— 回执自身是耐久
-    # 见证,与 agent:/channel: 身份 URI 无关,不进 uri 模块。
-    (
-        "daemon/impl/transfer/p2/orchestration/target.py",
-        'parts = receipt.split(":")',
-    ),
-    # channel 进程身份标记的 scheme:value 分解(mcp/channel 自有文法)。
-    ("daemon/impl/mcp/channel/ownership.py", 'scheme, separator, value = piece.partition(":")'),
+    ("kernel/impl/manysys/process/owned_process.py", 'scheme, separator, value = piece.partition(":")'),
     # 目标类型分类文法的所有者(classify_target_identity)。
     ("daemon/impl/configuration/identity.py", 'scheme, _, remainder = value.partition(":")'),
-    ("daemon/impl/configuration/identity.py", 'parts = value.split(":")'),
     # PAC activation marker pac:<graph>:<node>:<incarnation>:<effect>, written
     # into desired-state nicknames; its single owner is pac/actors/marker.py.
     ("daemon/impl/pac/actors/marker.py", 'parts = nickname.split(":")'),
+    # tcp:127.0.0.1:<port> forwarding inbound-target grammar, introduced by
+    # #2676; its single owner is _loopback_tcp_port in forwarding/policy.py.
+    # It describes a socket endpoint, not an agent:/channel: identity URI.
+    (
+        "daemon/impl/forwarding/policy.py",
+        'host, separator, raw_port = address.partition(":")',
+    ),
 )
 
 
@@ -95,7 +93,7 @@ def test_no_bare_address_parsing_outside_the_uri_module() -> None:
 
     assert not offenders, (
         "bare address parsing outside hyprial/uri.py — decompose "
-        "URIs only through parse_agent_uri/parse_channel_uri "
+        "URIs only through parse_agent_uri "
         "(URI 产生点唯一,读写同源):\n" + "\n".join(offenders)
     )
 

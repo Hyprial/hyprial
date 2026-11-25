@@ -2,10 +2,8 @@
 
 Lifecycle/membership methods keep the flat external-mutation refusal on
 every node.  Content writes on the owner node go through the entry gate:
-the owner's terminal and the owner's daemon-launched user-proxy pass, a
-granted agent passes until revoked/expired, and everything else — including
-a session that merely *claims* the user-proxy runtime — is denied with
-``ORG_ACL_WRITE_DENIED``.
+the owner's terminal passes, a granted agent passes until revoked/expired,
+and everything else is denied with ``ORG_ACL_WRITE_DENIED``.
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from hyprial.daemon.impl.application.messaging.orgfs_bridge import (
 from hyprial.daemon.impl.ipc.router import _IPC_STATS_METHODS
 from hyprial.daemon.impl.org.network.ipc import (
     ipc_org_acl_grant,
-    ipc_org_acl_ls,
     ipc_org_acl_revoke,
     ipc_org_create,
 )
@@ -29,7 +26,7 @@ from hyprial.daemon.impl.org.network.state import add_org_acl_grant
 from hyprial.identity import ORG_META_DOC
 from hyprial.identity.impl.device import DeviceRecord, address_path, write_device_record
 from tests.support.tailnet_membership import FakeMembershipSidecar, key
-from hyprial.kernel import DaemonRequestError, HarnessLaunchSpec, ipc_errors
+from hyprial.kernel import DaemonRequestError, ipc_errors
 from hyprial.shell.impl.daemon_wiring import (
     daemon_dependencies as _deep_module_daemon_dependencies,
 )
@@ -40,8 +37,6 @@ AGENT_NAME = "worker"
 AGENT_SESSION = "session-worker"
 IMPOSTOR_NAME = "not-a-proxy"
 IMPOSTOR_SESSION = "session-not-a-proxy"
-PROXY_NAME = "proxy"
-PROXY_SESSION = "session-proxy"
 
 
 class _FakeTransport:
@@ -138,8 +133,12 @@ def _write(application, space_id: str, caller: dict[str, str], **extra):
     )
 
 
-def _actor_uri(name: str) -> str:
-    return f"agent:{OWNER}:node-a:{name}"
+def _actor_uri(application, name: str) -> str:
+    """The official (id-form) address of the registered agent ``name``."""
+
+    agent = application.agents.require(name)
+    assert agent.uri == f"agent:{OWNER}:node-a:{agent.agent_id}"
+    return agent.uri
 
 
 def test_every_orgfs_router_method_is_classified() -> None:
@@ -213,7 +212,7 @@ def test_agent_session_write_is_denied(application) -> None:
         )
     assert raised.value.code == ipc_errors.ORG_ACL_WRITE_DENIED
     assert raised.value.data["reason"] == "not-granted"
-    assert raised.value.data["caller"] == _actor_uri(AGENT_NAME)
+    assert raised.value.data["caller"] == _actor_uri(application, AGENT_NAME)
 
 
 def test_self_reported_user_proxy_runtime_is_still_an_agent(application) -> None:
@@ -235,30 +234,6 @@ def test_self_reported_user_proxy_runtime_is_still_an_agent(application) -> None
     assert raised.value.code == ipc_errors.ORG_ACL_WRITE_DENIED
 
 
-def _launch_user_proxy(application) -> None:
-    """A user-proxy the daemon launched: launch spec + worker session ref."""
-
-    _prime_agent_dependencies(application)
-    application.handle("agent.create", {"name": PROXY_NAME})
-    application.desired_state.upsert_harness(
-        HarnessLaunchSpec(harness="user-proxy", name=PROXY_NAME, headless=True)
-    )
-    application._harnesses = _WorkerRefs(  # type: ignore[assignment]
-        {("user-proxy", PROXY_NAME): PROXY_SESSION}
-    )
-
-
-def test_daemon_launched_user_proxy_writes_the_acl_space(application) -> None:
-    acl_space_id = _acl_space_id(application)
-    _launch_user_proxy(application)
-    written = _write(
-        application,
-        acl_space_id,
-        {"from": PROXY_NAME, "sessionRef": PROXY_SESSION},
-    )
-    assert written["path"] == "policy/role-grants.json"
-
-
 def test_granted_agent_writes_until_revoked(application) -> None:
     acl_space_id = _acl_space_id(application)
     _register_agent_session(application, AGENT_NAME, AGENT_SESSION)
@@ -267,7 +242,7 @@ def test_granted_agent_writes_until_revoked(application) -> None:
     granted = ipc_org_acl_grant(
         application, {**OPERATOR, "org": "group-acme", "agent": AGENT_NAME}
     )
-    assert granted["agent"] == _actor_uri(AGENT_NAME)
+    assert granted["agent"] == _actor_uri(application, AGENT_NAME)
     assert _write(application, acl_space_id, caller)["path"]
 
     revoked = ipc_org_acl_revoke(
@@ -285,7 +260,7 @@ def test_expired_grant_no_longer_admits(application) -> None:
     add_org_acl_grant(
         application.hyprial_home,
         "group-acme",
-        _actor_uri(AGENT_NAME),
+        _actor_uri(application, AGENT_NAME),
         granted_at_ms=1,
         until_ms=2,  # long past
     )
@@ -334,7 +309,7 @@ def test_directory_org_document_is_not_treated_as_the_acl_binding(application) -
 # -- org.acl.* custody --------------------------------------------------------
 
 
-def test_grant_requires_the_owner_terminal_or_user_proxy(application) -> None:
+def test_grant_requires_the_owner_terminal(application) -> None:
     _acl_space_id(application)
     _register_agent_session(application, AGENT_NAME, AGENT_SESSION)
     with pytest.raises(DaemonRequestError) as raised:
@@ -348,21 +323,6 @@ def test_grant_requires_the_owner_terminal_or_user_proxy(application) -> None:
             },
         )
     assert raised.value.code == ipc_errors.ORG_ACL_GRANT_FORBIDDEN
-
-
-def test_user_proxy_may_manage_grants(application) -> None:
-    _acl_space_id(application)
-    _launch_user_proxy(application)
-    application.handle("agent.create", {"name": AGENT_NAME})
-    caller = {"from": PROXY_NAME, "sessionRef": PROXY_SESSION}
-    granted = ipc_org_acl_grant(
-        application, {**caller, "org": "group-acme", "agent": AGENT_NAME}
-    )
-    assert granted["agent"] == _actor_uri(AGENT_NAME)
-    listed = ipc_org_acl_ls(application, {**caller, "org": "group-acme"})
-    assert [entry["agent"] for entry in listed["grants"]] == [
-        _actor_uri(AGENT_NAME)
-    ]
 
 
 def test_grant_refuses_an_agent_nobody_registered(application) -> None:
@@ -417,6 +377,6 @@ def test_revoke_without_a_grant_reports_revoked_false(application) -> None:
     )
     assert result == {
         "org": "group-acme",
-        "agent": _actor_uri(AGENT_NAME),
+        "agent": _actor_uri(application, AGENT_NAME),
         "revoked": False,
     }

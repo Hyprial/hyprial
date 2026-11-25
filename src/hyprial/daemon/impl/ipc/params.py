@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import socket
-import struct
-import sys
 from typing import Any
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
+from hyprial.kernel import local_ipc_peer_pid
 
 JsonObject = dict[str, Any]
 
@@ -50,23 +49,10 @@ def _actor(params: JsonObject) -> str:
     return _required_string(params.get("actor") or params.get("from"), "actor")
 
 def _peer_process_id(connection: socket.socket) -> int | None:
-    """Return a Unix peer PID when the platform exposes one, else ``None``."""
+    """Return a Unix peer PID when the platform exposes one, else ``None``.
 
-    peer_credential = getattr(socket, "SO_PEERCRED", None)
-    if peer_credential is not None:
-        try:
-            raw = connection.getsockopt(socket.SOL_SOCKET, peer_credential, 12)
-            pid, _uid, _gid = struct.unpack("3i", raw)
-        except (OSError, struct.error):
-            return None
-        return pid if pid > 0 else None
-    if sys.platform == "darwin":
-        # Darwin exposes LOCAL_PEERPID in <sys/un.h>, but Python's socket
-        # module does not publish the constants.
-        try:
-            raw = connection.getsockopt(0, 0x002, 4)
-            (pid,) = struct.unpack("i", raw)
-        except (OSError, struct.error):
-            return None
-        return pid if pid > 0 else None
-    return None
+    The reader itself lives in the kernel local IPC seam (with the listener
+    that resolves the peer at accept time); this name forwards to it.
+    """
+
+    return local_ipc_peer_pid(connection)

@@ -132,6 +132,7 @@ class _ServiceConnectOpsMixin:
                     access_path=access_path,
                     scheduler=scheduler,
                     service_discovery=self._service_discovery,
+                    actor_host=self._agent_session_domains.actor_hosts.host_for("service-connect"),
                 )
             except BaseException:
                 scheduler.shutdown(5.0)

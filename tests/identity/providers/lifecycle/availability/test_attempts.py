@@ -1,9 +1,10 @@
 """provider_availability_contract: attempts scenarios."""
 
 from __future__ import annotations
+
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 import json
 import os
-from dataclasses import replace
 from pathlib import Path
 import pytest
 from hyprial.daemon import AttemptIdentity, unavailable_notice
@@ -17,12 +18,10 @@ from .support import (
     FakeHarnessFarm,
     LoudInbox,
     OWNER,
-    PROXY,
     REQUESTER,
     WORKER,
     _NullTransport,
     _notices_to,
-    _proxy_runtime,
     _reply,
     _request,
     _runtime,
@@ -31,7 +30,7 @@ from .support import (
 
 
 def test_pc2_failed_attempt_reaches_the_sender_with_this_attempts_evidence(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """The main case: quota-class failure, owner distinct from sender.
 
@@ -44,7 +43,7 @@ def test_pc2_failed_attempt_reaches_the_sender_with_this_attempts_evidence(
     inbox.add(_request("req-1"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()  # dispatch: the attempt clock starts here
         assert farm.deliveries == [("squire", "req-1")]
@@ -93,7 +92,7 @@ def test_pc2_failed_attempt_reaches_the_sender_with_this_attempts_evidence(
 
 
 def test_pc2_rate_limited_failure_is_one_terminal_notice_not_one_per_attempt(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """§8.2: a 429 settles the delivery once and tells the sender once.
 
@@ -108,7 +107,7 @@ def test_pc2_rate_limited_failure_is_one_terminal_notice_not_one_per_attempt(
     inbox.add(_request("req-429"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()
         assert farm.deliveries == [("squire", "req-429")]
@@ -141,7 +140,9 @@ def test_pc2_rate_limited_failure_is_one_terminal_notice_not_one_per_attempt(
     assert farm.deliveries == [("squire", "req-429")]
 
 
-def test_pc2_second_attempt_has_its_own_notice_and_key(tmp_path: Path) -> None:
+def test_pc2_second_attempt_has_its_own_notice_and_key(
+    tmp_path: Path, *, actor_host
+) -> None:
     """One delivery id can host two attempts; the second needs its own loud.
 
     Migration-relevant: the plan's negative control was a 710s second attempt
@@ -153,7 +154,7 @@ def test_pc2_second_attempt_has_its_own_notice_and_key(tmp_path: Path) -> None:
     inbox.add(_request("req-2"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()
         farm.results.append(
@@ -216,7 +217,9 @@ def test_pc2_notice_is_idempotent_per_attempt(tmp_path: Path) -> None:
     assert original.message_id != first.message_id
 
 
-def test_pc2_notice_survives_a_fetched_or_settled_original(tmp_path: Path) -> None:
+def test_pc2_notice_survives_a_fetched_or_settled_original(
+    tmp_path: Path, *, actor_host
+) -> None:
     """A row consumed before the failure lands still gets a report.
 
     ``pending_messages`` excludes fetched/terminal rows; the settlement
@@ -229,7 +232,7 @@ def test_pc2_notice_survives_a_fetched_or_settled_original(tmp_path: Path) -> No
     inbox.consumed.add("req-4")
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         farm.results.append(
             HarnessResult(
@@ -250,7 +253,7 @@ def test_pc2_notice_survives_a_fetched_or_settled_original(tmp_path: Path) -> No
 
 
 def test_pc2_refused_submission_is_retried_and_never_claimed_delivered(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """A notice the inbox refuses is held, retried, and never reported sent."""
 
@@ -259,7 +262,7 @@ def test_pc2_refused_submission_is_retried_and_never_claimed_delivered(
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
     logged: list[tuple[str, str]] = []
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     runtime._logger = lambda level, component, event, **fields: logged.append((level, event))
     try:
         inbox.refuse_submit = True
@@ -287,7 +290,7 @@ def test_pc2_refused_submission_is_retried_and_never_claimed_delivered(
 
 
 def test_pc2_no_event_stall_is_reported_and_progress_resets_the_clock(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """The stuck class has no event, so the clock must be the trigger.
 
@@ -300,7 +303,7 @@ def test_pc2_no_event_stall_is_reported_and_progress_resets_the_clock(
     inbox.add(_request("req-6", created_at_ms=1_000))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()  # dispatch: clock starts now
 
@@ -345,7 +348,9 @@ def test_pc2_no_event_stall_is_reported_and_progress_resets_the_clock(
         runtime.stop()
 
 
-def test_pc2_reply_dispatches_without_arming_a_silence_attempt(tmp_path: Path) -> None:
+def test_pc2_reply_dispatches_without_arming_a_silence_attempt(
+    tmp_path: Path, *, actor_host
+) -> None:
     """A reply is delivered, but only the unanswered request can alarm."""
 
     inbox = LoudInbox()
@@ -353,7 +358,7 @@ def test_pc2_reply_dispatches_without_arming_a_silence_attempt(tmp_path: Path) -
     inbox.add(_request("req-silent"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()
         assert farm.deliveries == [
@@ -374,14 +379,16 @@ def test_pc2_reply_dispatches_without_arming_a_silence_attempt(tmp_path: Path) -
         runtime.stop()
 
 
-def test_pc2_acknowledged_request_settles_silence_attempt(tmp_path: Path) -> None:
+def test_pc2_acknowledged_request_settles_silence_attempt(
+    tmp_path: Path, *, actor_host
+) -> None:
     """An answered long-lived turn must not leave a later silence alarm."""
 
     inbox = LoudInbox()
     inbox.add(_request("req-answered"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()
         assert set(runtime._inflight) == {"req-answered"}
@@ -398,14 +405,16 @@ def test_pc2_acknowledged_request_settles_silence_attempt(tmp_path: Path) -> Non
         runtime.stop()
 
 
-def test_pc2_a_completed_slow_turn_is_not_reported_or_killed(tmp_path: Path) -> None:
+def test_pc2_a_completed_slow_turn_is_not_reported_or_killed(
+    tmp_path: Path, *, actor_host
+) -> None:
     """Healthy slow work must not be mislabelled or interrupted."""
 
     inbox = LoudInbox()
     inbox.add(_request("req-7"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()
         now["v"] += 480_000
@@ -432,8 +441,7 @@ def test_pc2_a_completed_slow_turn_is_not_reported_or_killed(tmp_path: Path) -> 
     [HarnessResultStatus.FAILED, HarnessResultStatus.INTERRUPTED],
 )
 def test_pc2_a_terminal_turn_is_not_reported_when_workflow_settlement_defers(
-    tmp_path: Path,
-    status: HarnessResultStatus,
+    tmp_path: Path, status: HarnessResultStatus, *, actor_host
 ) -> None:
     """A closed PAC node must not leave its ended turn's silence clock alive."""
 
@@ -450,7 +458,7 @@ def test_pc2_a_terminal_turn_is_not_reported_when_workflow_settlement_defers(
         inbox,
         farm,
         now,
-        workflow_outcome=defer_workflow_outcome,
+        workflow_outcome=defer_workflow_outcome, actor_host=actor_host,
     )
     try:
         runtime.on_timer()
@@ -472,12 +480,14 @@ def test_pc2_a_terminal_turn_is_not_reported_when_workflow_settlement_defers(
         runtime.stop()
 
 
-def test_pc2_a_stopped_worker_finishes_its_silence_attempt(tmp_path: Path) -> None:
+def test_pc2_a_stopped_worker_finishes_its_silence_attempt(
+    tmp_path: Path, *, actor_host
+) -> None:
     inbox = LoudInbox()
     inbox.add(_request("req-stopped"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()
         assert set(runtime._inflight) == {"req-stopped"}
@@ -491,12 +501,14 @@ def test_pc2_a_stopped_worker_finishes_its_silence_attempt(tmp_path: Path) -> No
         runtime.stop()
 
 
-def test_pc2_a_started_retry_gets_a_fresh_silence_notice(tmp_path: Path) -> None:
+def test_pc2_a_started_retry_gets_a_fresh_silence_notice(
+    tmp_path: Path, *, actor_host
+) -> None:
     inbox = LoudInbox()
     inbox.add(_request("req-retry"))
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     try:
         runtime.on_timer()
         farm.results.append(
@@ -529,7 +541,7 @@ def test_pc2_a_started_retry_gets_a_fresh_silence_notice(tmp_path: Path) -> None
 
 
 def test_pc2_owed_notice_survives_a_restart_and_replays_idempotently(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """A notice that never got submitted before a crash is still owed.
 
@@ -577,7 +589,8 @@ def test_pc2_owed_notice_survives_a_restart_and_replays_idempotently(
             inbox=inbox,
             harnesses=farm,
             harness_actor_uri=_uri,
-            clock_ms=lambda: now["v"],
+            clock_ms=lambda: now["v"], actor_host=actor_host,
+            cell_delivery=AdmittingCellDelivery(),
         )
         runtime.start()
         try:
@@ -627,7 +640,7 @@ def test_pc2_owed_notice_survives_a_restart_and_replays_idempotently(
 
 
 def test_pc2_undelivered_notice_is_visible_when_the_daemon_shuts_down(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """On a clean stop there is no restart to recover from -- say it out loud."""
 
@@ -636,7 +649,7 @@ def test_pc2_undelivered_notice_is_visible_when_the_daemon_shuts_down(
     farm = FakeHarnessFarm()
     now = {"v": 1_000}
     logged: list[tuple[str, str, dict]] = []
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     runtime._logger = lambda level, component, event, **fields: logged.append(
         (level, event, fields)
     )
@@ -675,7 +688,7 @@ def test_pc2_undelivered_notice_is_visible_when_the_daemon_shuts_down(
 
 
 def test_t1_steers_a_queued_delivery_and_notices_after_the_second_window(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = LoudInbox()
     inbox.add(_request("req-steer-1"))
@@ -683,7 +696,7 @@ def test_t1_steers_a_queued_delivery_and_notices_after_the_second_window(
     farm.steer_returns = True
     now = {"v": 1_000}
     logged: list[tuple[str, str, dict]] = []
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     runtime._logger = lambda level, component, event, **fields: logged.append(
         (level, event, fields)
     )
@@ -714,7 +727,7 @@ def test_t1_steers_a_queued_delivery_and_notices_after_the_second_window(
 
 
 def test_t1_steer_failure_raises_the_notice_and_is_recorded(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     inbox = LoudInbox()
     inbox.add(_request("req-steer-2"))
@@ -722,7 +735,7 @@ def test_t1_steer_failure_raises_the_notice_and_is_recorded(
     farm.steer_returns = False
     now = {"v": 1_000}
     logged: list[tuple[str, str, dict]] = []
-    runtime = _runtime(tmp_path, inbox, farm, now)
+    runtime = _runtime(tmp_path, inbox, farm, now, actor_host=actor_host)
     runtime._logger = lambda level, component, event, **fields: logged.append(
         (level, event, fields)
     )
@@ -739,30 +752,6 @@ def test_t1_steer_failure_raises_the_notice_and_is_recorded(
     ]
     failed = [f for _l, e, f in logged if e == "availability_loud.steer_failed"]
     assert failed and failed[0]["deliveryId"] == "req-steer-2"
-
-
-def test_t1_never_steers_a_user_proxy_relay(tmp_path: Path) -> None:
-    """A user-proxy turn is a person's chat leg; the daemon may not fold input
-    into it.  The delivery still gets its fail-loud notice."""
-
-    inbox = LoudInbox()
-    inbox.add(replace(_request("req-proxy-steer"), recipient=PROXY))
-    farm = FakeHarnessFarm(actors=("proxy",))
-    now = {"v": 1_000}
-    runtime, events = _proxy_runtime(tmp_path, inbox, farm, now)
-    try:
-        runtime.on_timer()
-        assert farm.deliveries == [("proxy", "req-proxy-steer")]
-        now["v"] += 2_520_000  # user-proxy has no measured budget: the maximum
-        runtime.on_timer()
-    finally:
-        runtime.stop()
-
-    assert farm.steers == [], "a user-proxy relay must never be steered"
-    assert [notice["notification"] for notice in _notices_to(inbox, REQUESTER)] == [
-        "provider-no-progress"
-    ]
-    assert not [e for e, _f in events if e == "availability_loud.steer_accepted"]
 
 
 def test_t1_budget_is_configurable_with_one_env_override(monkeypatch) -> None:

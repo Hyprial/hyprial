@@ -1,7 +1,7 @@
 """`hyprial routine` command group (self-drive; design-selfdrive-routine).
 
-`plan` validates a routine file locally; the lifecycle commands talk to the
-daemon.  Everything else is design-documented deterministic machinery.
+`plan` reads the file locally and validates it through the daemon; lifecycle
+commands also talk to the daemon.  Everything else is design-documented deterministic machinery.
 """
 
 from __future__ import annotations
@@ -14,8 +14,7 @@ import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
 
-from hyprial.biz  import RoutineSchemaError, RoutineSpec, load_routine
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.support import _render_routine_list
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from typing import Any
@@ -73,41 +72,6 @@ def template_show(
     get_services().runtime.execute(operation, json_output=json_out, allow_missing_home=True)
 
 
-def _plan_document(spec: RoutineSpec) -> dict[str, object]:
-    return {
-        "name": spec.name,
-        "mode": spec.mode,
-        "role": spec.role,
-        "actor": spec.actor or spec.produces,
-        "actorOwnership": "borrowed" if spec.actor else "routine",
-        "launch": spec.launch,
-        "overlap": "skip" if spec.mode == "scheduled" else None,
-        "missedPeriods": "skip" if spec.mode == "scheduled" else None,
-        "intervalSeconds": spec.interval_seconds,
-        "source": {
-            "kind": spec.source_kind,
-            **({"filter": spec.source_filter} if spec.source_kind == "taskwarrior" else {}),
-            **(
-                {"idleThresholdSeconds": spec.source_idle_threshold_seconds}
-                if spec.source_kind == "pac-journal"
-                else {}
-            ),
-        },
-        **({"produces": spec.produces} if spec.produces is not None else {}),
-        "routes": [{"tag": r.tag, "kind": r.kind, "value": r.value} for r in spec.routes],
-        "defaultRoute": spec.default_route,
-        "limits": {
-            "maxInFlight": spec.limits.max_in_flight,
-            "circuitBreaker": {
-                "windowRuns": spec.limits.circuit_breaker.window_runs,
-                "escalateRatio": spec.limits.circuit_breaker.escalate_ratio,
-                "action": spec.limits.circuit_breaker.action,
-            },
-        },
-        "escalateTo": spec.escalate_to,
-    }
-
-
 @routine_app.command("plan")
 def plan(
     file: Path = typer.Argument(..., help="Path to the routine.yaml to validate."),
@@ -115,32 +79,36 @@ def plan(
 ) -> None:
     """Validate a routine file and print the expanded duty-cycle plan."""
 
-    def render(_data: Any) -> str:
+    def render(data: Any) -> str:
+        result = data["plan"]
+        source = result["source"]
+        limits = result["limits"]
+        breaker = limits["circuitBreaker"]
         lines = [
-            f"routine: {spec.name} — every {spec.interval_seconds:.0f}s, "
-            f"source {spec.source_kind} filter {spec.source_filter!r}"
+            f"routine: {result['name']} — every {result['intervalSeconds']:.0f}s, "
+            f"source {source['kind']} filter {source.get('filter', '')!r}"
         ]
-        lines += [f"  route: tag {rule.tag!r} -> {rule.kind} {rule.value}" for rule in spec.routes]
-        lines.append(f"  default: {spec.default_route}; escalate_to: {spec.escalate_to}")
+        lines += [f"  route: tag {rule['tag']!r} -> {rule['kind']} {rule['value']}"
+                  for rule in result["routes"]]
+        lines.append(f"  default: {result['defaultRoute']}; escalate_to: {result['escalateTo']}")
         lines.append(
-            f"  limits: max_in_flight {spec.limits.max_in_flight}, "
-            f"circuit_breaker {spec.limits.circuit_breaker.window_runs} runs "
-            f"@ ratio {spec.limits.circuit_breaker.escalate_ratio} -> "
-            f"{spec.limits.circuit_breaker.action}"
+            f"  limits: max_in_flight {limits['maxInFlight']}, "
+            f"circuit_breaker {breaker['windowRuns']} runs "
+            f"@ ratio {breaker['escalateRatio']} -> {breaker['action']}"
         )
         return "\n".join(lines)
 
     def operation() -> CliResult:
-        nonlocal spec
+        services = get_services()
         try:
-            spec = load_routine(file)
-        except RoutineSchemaError as error:
-            raise get_services().CliError(
-                "ROUTINE_SCHEMA_ERROR", f"routine schema error: {error}"
+            text = file.read_text(encoding="utf-8")
+        except OSError as error:
+            raise services.CliError(
+                codes.ROUTINE_SCHEMA_ERROR, f"routine schema error: cannot read {file}: {error}"
             ) from None
-        return CliResult({"ok": True, "plan": _plan_document(spec)}, render=render, json_indent=2)
+        result = services.runtime.request("routine.plan", {"yaml": text, "label": str(file)})
+        return CliResult({"ok": True, **result}, render=render, json_indent=2)
 
-    spec: RoutineSpec
     get_services().runtime.execute(operation, json_output=json_out)
 
 
@@ -179,11 +147,11 @@ def routine_add(
         from hyprial.biz import render_template
 
         if (file is None) == (template is None):
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, "provide exactly one of FILE or --template")
+            raise services.CliError(codes.INVALID_ARGUMENT, "provide exactly one of FILE or --template")
         if template is not None:
             if from_identity is not None or coordinator is None or escalate_to is None:
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "--template requires --for and --escalate-to; do not use --from",
                 )
             try:
@@ -193,23 +161,23 @@ def routine_add(
                     idle_threshold=idle_threshold,
                 )
             except RoutineSchemaError as error:
-                raise services.CliError("ROUTINE_SCHEMA_ERROR", str(error)) from None
+                raise services.CliError(codes.ROUTINE_SCHEMA_ERROR, str(error)) from None
             except ValueError as error:
-                raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from None
+                raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from None
         else:
             if any(
                 value is not None
                 for value in (coordinator, escalate_to, name, interval, source, filter_expr, idle_threshold)
             ):
                 raise services.CliError(
-                    ipc_errors.INVALID_ARGUMENT,
+                    codes.INVALID_ARGUMENT,
                     "template options require --template",
                 )
             assert file is not None
             try:
                 text = file.read_text(encoding="utf-8")
             except OSError as error:
-                raise services.CliError(ipc_errors.INVALID_ARGUMENT, f"cannot read {file}: {error}") from None
+                raise services.CliError(codes.INVALID_ARGUMENT, f"cannot read {file}: {error}") from None
         # Coordinator admission includes one shared lifecycle start.
         result = services.runtime.request("routine.add", {"yaml": text, **_routine_identity(from_identity)}, timeout=60.0)
         if not isinstance(result, dict) or not isinstance(result.get("name"), str):
@@ -301,7 +269,7 @@ def routine_set(
             text = file.read_text(encoding="utf-8")
         except OSError as error:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT, f"cannot read {file}: {error}"
+                codes.INVALID_ARGUMENT, f"cannot read {file}: {error}"
             ) from None
         result = services.runtime.request(
             "routine.set",

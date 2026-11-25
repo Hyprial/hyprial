@@ -37,6 +37,7 @@ from .support import (
     _registry,
 )
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_agent_settled_call_submits_once_and_retains_its_completion() -> None:
@@ -201,19 +202,23 @@ def test_provider_auth_factory_wraps_only_agent_context_runner(
             captured.update(options)
 
     application = object.__new__(DaemonApplication)
-    application.user_profiles = SimpleNamespace(path=tmp_path / "missing-profiles")
     application.owner = "owner"
     application.hyprial_home = tmp_path / "home"
     application.state_dir = tmp_path / "state"
     application.stop_event = threading.Event()
     application._log = lambda *_args, **_kwargs: None
     application._agent_runtime_launch_custody = lambda _context: contextlib.nullcontext()
+    actor_host = object()
+    application._agent_session_domains = SimpleNamespace(
+        actor_hosts=SimpleNamespace(host_for=lambda _name: actor_host)
+    )
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi-agent"))
     monkeypatch.setattr(provider_auth_module, "DeviceLoginRunner", Runner)
     monkeypatch.setattr(provider_auth_actor_module, "ProviderAuthAuthority", Coordinator)
 
     coordinator = application._build_provider_auth_coordinator()
     assert isinstance(coordinator, Coordinator)
+    assert captured["actor_host"] is actor_host
     assert isinstance(captured["helper_runner"], Runner)
     assert not isinstance(
         captured["helper_runner"], _ContextBoundProviderAuthRunner
@@ -417,7 +422,7 @@ def test_application_retains_agent_domains_when_retryable_close_is_incomplete() 
 
     class Domains:
         @staticmethod
-        def close():
+        def close(shutdown_hosts=True):
             calls.append("domains.close")
             return False
 
@@ -490,7 +495,7 @@ def test_revoked_home_cleanup_has_a_typed_agent_port(
         registry.destroy("worker")
     monkeypatch.setattr(registry, "cleanup_home", cleanup)
     events = _AgentEvents()
-    actor = AgentActor(registry, event_sink=events)
+    actor = AgentActor(registry, event_sink=events, actor_host=new_actor_host())
     try:
         command = CleanupRevokedAgentHomeCommand("cleanup-revoked", "worker")
         assert actor.submit(command) is PortAdmission.ACCEPTED

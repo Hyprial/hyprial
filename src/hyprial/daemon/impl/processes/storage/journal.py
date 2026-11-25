@@ -1,3 +1,7 @@
+# Decision record (W2B-2, 2026-11-21):
+# - CustodyJournal.commit flushes directory entries via
+#   hyprial.kernel.fsync_directory instead of opening the parent directory
+#   directly with os.O_RDONLY.
 """Idempotent fsynced deltas with sequence-fenced snapshot compaction.
 
 The snapshot remains v1-readable. Recovery applies only journal sequences newer
@@ -10,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-from hyprial.kernel import ProcessLivenessProbeError
+from hyprial.kernel import ProcessLivenessProbeError, fsync_directory
 
 SCHEMA = "hyprial.orphan-processes/v1"
 
@@ -111,12 +115,7 @@ class CustodyJournal:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
-            # The journal name itself must survive a crash, as well as its bytes.
-            directory = os.open(self.log_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            fsync_directory(self.log_path.parent)
         except OSError:
             self._failed = True
             raise

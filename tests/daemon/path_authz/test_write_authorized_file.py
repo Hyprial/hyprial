@@ -14,7 +14,8 @@ from hyprial.daemon.impl.path_authz import (
     session_policy,
 )
 from hyprial.daemon.impl.path_authz import write as write_module
-from hyprial.daemon.impl.path_authz.write import write_authorized_file
+from hyprial.daemon.impl.path_authz.write import authorize_write_path, write_authorized_file
+from hyprial.kernel import posix_metadata_enforced
 
 
 @pytest.fixture
@@ -53,7 +54,8 @@ def test_session_writes_into_its_workspace_and_cwd(roots) -> None:
         written = write_authorized_file(root / "out.bin", b"bytes", roots["session"], overwrite=False)
         assert written == root / "out.bin"
         assert written.read_bytes() == b"bytes"
-        assert stat.S_IMODE(written.stat().st_mode) == 0o600
+        if posix_metadata_enforced():
+            assert stat.S_IMODE(written.stat().st_mode) == 0o600
 
 
 def test_session_cannot_write_outside_its_roots(roots) -> None:
@@ -140,17 +142,52 @@ def test_parent_swap_after_judgment_cannot_redirect_the_open(
     assert not (displaced / target.name).exists()
 
 
-def test_unreportable_parent_descriptor_fails_closed_before_file_creation(
+def test_reparse_parent_or_mismatched_inode_fails_closed_before_write(
     roots, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    target = roots["cwd"] / "unverified.txt"
-    monkeypatch.setattr(write_module, "_descriptor_path", lambda _fd: None)
+    nested = roots["cwd"] / "reparse-dir"
+    nested.mkdir()
+    target = nested / "unverified.txt"
+    nested_ino = os.lstat(nested).st_ino
 
+    monkeypatch.setattr(
+        write_module, "path_is_reparse", lambda meta: meta.st_ino == nested_ino
+    )
+    with pytest.raises(PathRefused) as auth_refusal:
+        authorize_write_path(target, roots["session"])
+    assert auth_refusal.value.reason == "symlink"
     failure = _refused(target, roots["session"])
-
-    assert failure.reason == "unverifiable"
-    assert failure.path is None
+    assert failure.reason == "symlink"
     assert not target.exists()
+
+    monkeypatch.setattr(write_module, "path_is_reparse", lambda _meta: False)
+    existing = roots["cwd"] / "existing.txt"
+    existing.write_bytes(b"original")
+    real_fstat = os.fstat
+
+    def mismatched_fstat(fd: int):
+        observed = real_fstat(fd)
+        return os.stat_result(
+            (
+                observed.st_mode,
+                observed.st_ino + 999999,
+                observed.st_dev,
+                observed.st_nlink,
+                observed.st_uid,
+                observed.st_gid,
+                observed.st_size,
+                observed.st_atime,
+                observed.st_mtime,
+                observed.st_ctime,
+            )
+        )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(write_module.os, "fstat", mismatched_fstat)
+        mismatch = _refused(existing, roots["session"], overwrite=True)
+    assert mismatch.reason == "unverifiable"
+    assert mismatch.path is None
+    assert existing.read_bytes() == b"original"
 
 
 def test_overwrite_refuses_a_hardlink_without_changing_its_secret_inode(roots) -> None:
@@ -230,7 +267,10 @@ def test_middle_component_swap_after_judgment_cannot_redirect_the_open(
     assert not (displaced / "2026" / "export" / target.name).exists()
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+@pytest.mark.skipif(
+    not posix_metadata_enforced() or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX directory execute-bit test",
+)
 def test_a_search_only_directory_on_the_path_is_not_refused(roots) -> None:
     """Review 1012: traversing a --x component must not need read access."""
 

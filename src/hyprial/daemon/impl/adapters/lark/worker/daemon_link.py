@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import socket
 import sys
 import time
 from collections.abc import Callable
@@ -12,6 +11,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from hyprial.kernel import Logger
+from hyprial.kernel import connect_local_ipc
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
 
@@ -33,16 +33,14 @@ def _ipc(
 ) -> dict[str, Any]:
     request_id = str(uuid4())
     frame = {"version": 1, "id": request_id, "method": method, "params": params}
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     deadline = time.monotonic() + max(0.0, timeout)
     def remaining() -> float:
         value = deadline - time.monotonic()
         if value <= 0:
             raise TimeoutError("daemon adapter request deadline elapsed")
         return value
+    client = connect_local_ipc(socket_path, remaining())
     try:
-        client.settimeout(remaining())
-        client.connect(str(socket_path))
         client.settimeout(remaining())
         client.sendall(json.dumps(frame, separators=(",", ":")).encode() + b"\n")
         buffer = bytearray()
@@ -177,8 +175,8 @@ class _Routes:
     Python writer and an empty production value; the ``default``-route
     fallback and route-name mention matching both returned a Lark chat id
     where an actor id belongs, and could never match anything real.  What
-    remains is one question -- "which agent is this adapter pinned to?" --
-    answered by the daemon, which owns the adapter->agent index.
+    remains is one question -- "which agent is this adapter bound to?" --
+    answered by the daemon, whose cell documents own the adapter->agent index.
     """
 
     def __init__(
@@ -191,8 +189,8 @@ class _Routes:
         self.gateway_name = gateway_name
         self.socket_path = socket_path
         self._report = report or self._report_to_stderr
-        self._has_cached_pin = False
-        self._cached_pin: str | None = None
+        self._has_cached_binding = False
+        self._cached_binding: str | None = None
 
     @staticmethod
     def _report_to_stderr(payload: dict[str, object]) -> None:
@@ -213,28 +211,35 @@ class _Routes:
     def actor_by_key(self, actor_key: str) -> ActorTarget | None:
         return self._target(actor_key)
 
-    def pinned_actor(self, conversation_id: str) -> ActorTarget | None:
-        """The agent this adapter is pinned to, per the daemon's pin index.
+    def routed_actor(self, conversation_id: str) -> ActorTarget | None:
+        """The agent this adapter is bound to, per the daemon's cell documents.
 
-        Pins live in the daemon's agents database (``pins`` table); the
-        worker never reads daemon state files itself.  Every message queries
-        the daemon; a successful empty result replaces the cache (so unpin is
-        immediate), while a query failure can reuse a last successful pin.
-        Without a known destination, the failure propagates to the inbound
-        retry/custody boundary; unavailable authority is not proof of no pin.
+        Bindings live in agent cell documents; the daemon projects them into
+        ``adapter.list`` and the worker never reads daemon state files itself.
+        Every message queries the daemon; a successful empty result replaces
+        the cache (so unbinding is immediate), while a query failure can reuse
+        a last successful binding.  Without a known destination, the failure
+        propagates to the inbound retry/custody boundary; unavailable
+        authority is not proof of no binding.
         """
 
-        del conversation_id  # a pin is per adapter, never per conversation
+        del conversation_id
         try:
-            result = _ipc(self.socket_path, "adapter.pins", {})
-            pins = result.get("pins")
-            if not isinstance(pins, dict):
-                raise RuntimeError("daemon pins response must contain an object")
-            actor = pins.get(self.gateway_name)
-            if self.gateway_name in pins and (
-                not isinstance(actor, str) or not actor
-            ):
-                raise RuntimeError("daemon returned an invalid adapter pin")
+            result = _ipc(self.socket_path, "adapter.list", {})
+            adapters = result.get("adapters")
+            if not isinstance(adapters, list):
+                raise RuntimeError("daemon adapter.list response must contain an array")
+            actor: str | None = None
+            for item in adapters:
+                if not isinstance(item, dict) or item.get("name") != self.gateway_name:
+                    continue
+                candidate = item.get("agent")
+                if candidate is not None and (
+                    not isinstance(candidate, str) or not candidate
+                ):
+                    raise RuntimeError("daemon returned an invalid adapter binding")
+                actor = candidate
+                break
         except (
             OSError,
             RuntimeError,
@@ -242,11 +247,11 @@ class _Routes:
             UnicodeDecodeError,
         ) as error:
             fallback = "no-successful-query"
-            if self._has_cached_pin:
+            if self._has_cached_binding:
                 fallback = (
-                    "last-successful-pin"
-                    if self._cached_pin is not None
-                    else "last-successful-unpinned"
+                    "last-successful-binding"
+                    if self._cached_binding is not None
+                    else "last-successful-unbound"
                 )
             warning: dict[str, object] = {
                 "status": "warning",
@@ -254,15 +259,15 @@ class _Routes:
                 "errorType": type(error).__name__,
                 "fallback": fallback,
             }
-            if self._cached_pin is not None:
-                warning["cachedActor"] = self._cached_pin
+            if self._cached_binding is not None:
+                warning["cachedActor"] = self._cached_binding
             self._report(warning)
-            if self._cached_pin is None:
+            if self._cached_binding is None:
                 raise
-            actor = self._cached_pin
+            actor = self._cached_binding
         else:
-            self._cached_pin = actor
-            self._has_cached_pin = True
+            self._cached_binding = actor
+            self._has_cached_binding = True
         if actor is None:
             return None
         assert isinstance(actor, str)
@@ -319,6 +324,23 @@ class _Routes:
             raise RuntimeError("daemon ps response must contain an agents array")
         targets = self.list_runtime_targets()
         target_status = {target.target_uri: target.status for target in targets}
+        listing = _ipc(self.socket_path, "adapter.list", {})
+        raw_adapters = listing.get("adapters")
+        if not isinstance(raw_adapters, list):
+            raise RuntimeError("daemon adapter.list response must contain an array")
+        bound: dict[str, list[str]] = {}
+        for item in raw_adapters:
+            if not isinstance(item, dict):
+                continue
+            agent_uri = item.get("agent")
+            adapter_name = item.get("name")
+            if (
+                isinstance(agent_uri, str)
+                and agent_uri
+                and isinstance(adapter_name, str)
+                and is_safe_runtime_target_field(adapter_name)
+            ):
+                bound.setdefault(agent_uri, []).append(adapter_name)
         entries: dict[str, AgentDirectoryEntry] = {}
         for item in raw_agents:
             if not isinstance(item, dict):
@@ -329,16 +351,6 @@ class _Routes:
                 continue
             if not isinstance(name, str) or not is_safe_runtime_target_field(name):
                 name = uri
-            raw_pins = item.get("pinnedAdapters", ())
-            pins = (
-                tuple(
-                    pin
-                    for pin in raw_pins
-                    if isinstance(pin, str) and is_safe_runtime_target_field(pin)
-                )
-                if isinstance(raw_pins, list)
-                else ()
-            )
             preferred = item.get("preferredHarness")
             if not isinstance(preferred, str) or not is_safe_runtime_target_field(
                 preferred
@@ -349,7 +361,7 @@ class _Routes:
             entries[uri] = AgentDirectoryEntry(
                 name=name,
                 status="running" if status == "online" else "down",
-                pinned_adapters=tuple(sorted(set(pins))),
+                bound_adapters=tuple(sorted(set(bound.get(uri, ())))),
                 preferred_harness=preferred,
             )
         for target in targets:

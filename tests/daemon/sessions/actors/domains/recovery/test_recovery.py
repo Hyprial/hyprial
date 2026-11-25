@@ -30,6 +30,7 @@ from ..support import (
     _registered,
     _wait_until,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_session_restart_recovers_registration_but_not_generation_proof(
@@ -39,7 +40,7 @@ def test_session_restart_recovers_registration_but_not_generation_proof(
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     registry.create("foo")
     relay = _AgentEventRelay()
-    agent = AgentActor(registry, event_sink=relay)
+    agent = AgentActor(registry, event_sink=relay, actor_host=new_actor_host())
     first_events: list[object] = []
     first = SessionActor(
         store,
@@ -135,7 +136,8 @@ def test_agent_restart_recovers_binding_and_drain_closes_admission(
 ) -> None:
     database = tmp_path / "agents.sqlite3"
     registry = AgentRegistry(database, owner=OWNER, machine=NODE)
-    registry.create("foo")
+    address = registry.create("foo").uri
+    assert address != ACTOR
     desired = DesiredStateStore(tmp_path / "desired.json")
     desired.upsert_harness(HarnessLaunchSpec("pi", "foo", True))
 
@@ -144,12 +146,12 @@ def test_agent_restart_recovers_binding_and_drain_closes_admission(
         AgentRegistry(database, owner=OWNER, machine=NODE),
         event_sink=events.append,
         desired_state=desired,
-        worker_running=lambda candidate: True if candidate == ACTOR else None,
+        worker_running=lambda candidate: True if candidate == address else None, actor_host=new_actor_host(),
     )
-    binding = actor.read_binding(ACTOR)
+    binding = actor.read_binding(address)
     assert binding is not None
     assert (binding.harness, binding.runtime) == ("pi", "headless")
-    assert actor.read_agent("foo").to_payload()["uri"] == ACTOR  # type: ignore[union-attr]
+    assert actor.read_agent("foo").to_payload()["uri"] == address  # type: ignore[union-attr]
 
     assert actor.drain(1.0).complete is True
     admission = actor.submit(CreateAgentCommand("after-drain", "bar"))
@@ -444,7 +446,7 @@ def test_agent_rejection_is_not_reported_as_session_success(tmp_path: Path) -> N
     relay = _AgentEventRelay()
     agent = AgentActor(
         AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE),
-        event_sink=relay,
+        event_sink=relay, actor_host=new_actor_host(),
     )
     events: list[object] = []
     store = DesiredStateStore(tmp_path / "desired.json")

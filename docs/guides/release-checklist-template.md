@@ -45,14 +45,18 @@ removal. Obtain the approvals in section 7 immediately before those actions.
   creation; `github-publish` checks before building/publishing a formal release.
   The track-only wheel lane still rejects `v*` and has a defensive pre-build
   check. Movable `internal`/`nightly`/`stable` tracks are unchanged.
-- [ ] Set the PEP 440 version once with `uv version <version> --no-sync`.
-  The declared form is exactly `X.Y.Z` — development `.devN` suffixes are
-  retired and version bumps are developer-manual only.  The `+g<short7>`
-  local segment exists only on built wheels (stamped by
-  `scripts/build/build-wheel.sh`), never in `pyproject.toml`.
-  Confirm `pyproject.toml`, the regenerated `uv.lock`, installed distribution
-  metadata, and runtime `hyprial.__version__` agree; do not add a second handwritten
-  version constant.
+- [ ] Set the release base version in the root `VERSION` file. The current
+  release is `0.5.5.4`; supported versions use the repository's PEP 440 format,
+  including existing four- and five-component versions. `pyproject.toml` derives
+  its dynamic version from this file. Refresh the lock metadata when required,
+  and confirm the built distribution and runtime `hyprial.__version__` agree.
+  The `+g<short7>` local segment is stamped only into built wheels; do not add a
+  second handwritten version constant.
+- [ ] The main-push release listener is retired. Record the explicit
+  `release-tag.yml` inputs (tag, full dev-history SHA, dry_run) and the actual
+  candidate evidence. Internal and formal publication holds remain closed until
+  separately reviewed; dry-run is not release acceptance or permission to open
+  either hold.
 - [ ] Confirm the proposed tag is a valid tag-only upgrade candidate and does
   not already exist. Existing release tags are immutable and must not move.
   The only movable tag refs are `internal`, `nightly`, and `stable`.

@@ -24,22 +24,36 @@
   It also records the existing install's fingerprint before and after, so that
   "nothing was disturbed" is a measurement rather than a promise.
 
-  It does not start or stop a daemon. `hyprial ps` is a read.
+  `hyprial ps` is a read against whatever daemon already runs. The GUI steps
+  (skip them with -SkipGui) start `hyprial gui` on a separate isolated home under
+  the same temporary root; that launch starts a bootstrap daemon for the isolated
+  home only, and the script stops exactly that daemon with `daemon stop --json`.
 
   Usage:
     powershell -ExecutionPolicy Bypass -File test-wheel-on-windows.ps1
     powershell -ExecutionPolicy Bypass -File test-wheel-on-windows.ps1 -Tag nightly
     powershell -ExecutionPolicy Bypass -File test-wheel-on-windows.ps1 -KeepArtifacts
+    powershell -ExecutionPolicy Bypass -File test-wheel-on-windows.ps1 -SkipGui
 
   Exit codes (same table as the installer, so the numbers mean the same thing):
     0   every step PASS
     1   a step FAILed
     2   NOT EVALUABLE: a prerequisite is missing; nothing was tested
+
+  The GUI acceptance steps cover the portable runtime. The single-instance lock
+  uses the kernel ProcessFileLock and --stdin-stop does not require
+  signal.pthread_kill. They mirror packaging/clients/verify_runtime.py with a
+  scrubbed environment whose HOME, USERPROFILE, HYPRIAL_HOME,
+  HARNESS_STATE_DIR and TEMP live under the isolated root, network isolation,
+  and a throwaway node id. The isolated home starts a bootstrap daemon, which
+  is stopped with daemon stop --json after the GUI closes. -SkipGui omits these
+  steps.
 #>
 
 param(
   [string]$Tag = "stable",
-  [switch]$KeepArtifacts
+  [switch]$KeepArtifacts,
+  [switch]$SkipGui
 )
 
 # PS 5.1 turns a native command's stderr into a terminating error when this is
@@ -278,6 +292,193 @@ if ($psOut -match "running:\s*true") {
   Say "PASS" "daemon_visible" "an existing daemon answered (nothing was started by this test)"
 } else {
   Say "INFO" "daemon_visible" "no daemon answered; that is not a wheel failure, only a missing round trip"
+}
+
+function Get-IsolatedProcesses([string]$marker) {
+  @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($marker) })
+}
+function Test-Alive([int]$id) {
+  return [bool](Get-Process -Id $id -ErrorAction SilentlyContinue)
+}
+function Start-Gui([string]$exePath, [hashtable]$environment, [string]$cwd) {
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $exePath
+  $info.Arguments = "gui --no-open --json --port 0 --stdin-stop"
+  $info.UseShellExecute = $false
+  $info.RedirectStandardInput = $true
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $info.WorkingDirectory = $cwd
+  $info.EnvironmentVariables.Clear()
+  foreach ($key in $environment.Keys) { $info.EnvironmentVariables[$key] = $environment[$key] }
+  $process = [System.Diagnostics.Process]::Start($info)
+  $stderrTask = $process.StandardError.ReadToEndAsync()
+  Add-Member -InputObject $process -NotePropertyName StderrTask -NotePropertyValue $stderrTask -Force
+  return $process
+}
+function Get-StreamResult($task, [int]$milliseconds = 2000) {
+  if (-not $task) { return "" }
+  try {
+    if ($task.Wait($milliseconds)) { return [string]$task.GetAwaiter().GetResult() }
+  } catch { }
+  return ""
+}
+function Format-StreamTail([string]$text, [int]$maxChars = 600) {
+  if (-not $text) { return "" }
+  $flat = ($text.Trim() -replace "`r?`n", " | ")
+  if ($flat.Length -le $maxChars) { return $flat }
+  return "..." + $flat.Substring($flat.Length - $maxChars)
+}
+function Read-FirstLine($process, [int]$seconds) {
+  $task = $process.StandardOutput.ReadLineAsync()
+  Add-Member -InputObject $process -NotePropertyName FirstLineTask -NotePropertyValue $task -Force
+  if ($task.Wait($seconds * 1000)) {
+    $restTask = $process.StandardOutput.ReadToEndAsync()
+    Add-Member -InputObject $process -NotePropertyName RestStdoutTask -NotePropertyValue $restTask -Force
+    return $task.GetAwaiter().GetResult()
+  }
+  return $null
+}
+function Get-RecordedDaemonPids([string]$stateDir) {
+  $found = @()
+  foreach ($name in @("daemon.json", "bootstrap.json")) {
+    $path = Join-Path $stateDir $name
+    if (Test-Path $path) {
+      try {
+        $value = (Get-Content -Raw -Path $path | ConvertFrom-Json).pid
+        if ($value -is [int] -or $value -is [long]) { if ($found -notcontains [int]$value) { $found += [int]$value } }
+      } catch { }
+    }
+  }
+  return $found
+}
+
+if ($SkipGui) {
+  Say "INFO" "gui" "skipped on request (-SkipGui)"
+} else {
+  $guiRoot = Join-Path $root "g"
+  $guiEnv = @{}
+  foreach ($name in @("u", "h", "s", "t")) { New-Item -ItemType Directory -Force -Path (Join-Path $guiRoot $name) | Out-Null }
+  foreach ($key in @("SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS")) {
+    $value = [Environment]::GetEnvironmentVariable($key)
+    if ($value) { $guiEnv[$key] = $value }
+  }
+  $guiEnv["PATH"] = (Join-Path $venv "Scripts") + ";" + [Environment]::GetEnvironmentVariable("SystemRoot") + "\System32"
+  $guiEnv["HOME"] = (Join-Path $guiRoot "u")
+  $guiEnv["USERPROFILE"] = (Join-Path $guiRoot "u")
+  $guiEnv["HYPRIAL_HOME"] = (Join-Path $guiRoot "h")
+  $guiEnv["HARNESS_STATE_DIR"] = (Join-Path $guiRoot "s")
+  $guiEnv["TEMP"] = (Join-Path $guiRoot "t")
+  $guiEnv["TMP"] = (Join-Path $guiRoot "t")
+  $guiEnv["HYPRIAL_NETWORK_ISOLATED"] = "1"
+  $guiEnv["HYPRIAL_USAGE_DISABLE"] = "1"
+  $guiEnv["HYPRIAL_PEER_DISCOVERY"] = "0"
+  $guiEnv["HYPRIAL_ZENOH_LISTEN"] = ""
+  $guiEnv["HYPRIAL_ZENOH_CONNECT"] = ""
+  $guiEnv["HYPRIAL_NODE_ID"] = "verify-windows-" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
+  $guiEnv["NO_PROXY"] = "127.0.0.1,localhost,::1"
+  $guiCwd = Join-Path $guiRoot "u"
+  $stateDir = Join-Path $guiRoot "s"
+
+  $gui = Start-Gui $exe $guiEnv $guiCwd
+  $line = Read-FirstLine $gui 120
+  $record = $null
+  if ($line) { try { $record = $line | ConvertFrom-Json } catch { $record = $null } }
+  if ($record -and $record.ok -eq $true -and $record.record_version -eq 1 -and $record.url) {
+    Say "PASS" "gui_record" "v1 record, url=$($record.url) frontend_pid=$($record.frontend_pid)"
+  } else {
+    $stderrTail = Format-StreamTail (Get-StreamResult $gui.StderrTask 2000)
+    Say "FAIL" "gui_record" ("first stdout line: " + [string]$line + " ; stderr tail: " + $stderrTail)
+  }
+
+  if ($record -and $record.ok -eq $true) {
+    $second = Start-Gui $exe $guiEnv $guiCwd
+    $secondOutTask = $second.StandardOutput.ReadToEndAsync()
+    if ($second.WaitForExit(90000)) {
+      $secondOut = (Get-StreamResult $secondOutTask 5000).Trim()
+      $secondErr = Format-StreamTail (Get-StreamResult $second.StderrTask 5000)
+      $secondCode = $null
+      try { $secondCode = (($secondOut -split "`r?`n" | Select-Object -Last 1) | ConvertFrom-Json).code } catch { }
+      if ($second.ExitCode -ne 0 -and $secondCode -eq "GUI_RUNTIME_BUSY") {
+        Say "PASS" "gui_single_instance" "second instance exit=$($second.ExitCode) code=GUI_RUNTIME_BUSY"
+      } else {
+        Say "FAIL" "gui_single_instance" "second instance exit=$($second.ExitCode) code=$secondCode stdout=$secondOut stderr=$secondErr"
+      }
+    } else {
+      try { $second.Kill() } catch { }
+      $secondErr = Format-StreamTail (Get-StreamResult $second.StderrTask 2000)
+      Say "FAIL" "gui_single_instance" "second instance still running after 90 s (the runtime lock did not refuse it); stderr=$secondErr"
+    }
+  } else {
+    Say "NOT-EVALUABLE" "gui_single_instance" "no first instance to contend with"
+  }
+
+  $recordPids = @()
+  if ($record) {
+    foreach ($candidate in @($record.frontend_pid, $record.backend_pid)) {
+      if ($candidate -is [int] -or $candidate -is [long]) { $recordPids += [int]$candidate }
+    }
+  }
+  if (-not $gui.HasExited) {
+    $gui.StandardInput.Close()
+    if ($gui.WaitForExit(60000)) {
+      $rest = Get-StreamResult $gui.RestStdoutTask 5000
+      $stderrTail = Format-StreamTail (Get-StreamResult $gui.StderrTask 5000)
+      if ($gui.ExitCode -eq 0 -and ($rest -replace "\s", "") -notmatch '"ok":false') {
+        Say "PASS" "gui_stdin_stop" "closing stdin ended the GUI with exit 0"
+      } else {
+        Say "FAIL" "gui_stdin_stop" "exit=$($gui.ExitCode) stdout after record: $rest ; stderr tail: $stderrTail"
+      }
+    } else {
+      try { $gui.Kill() } catch { }
+      $stderrTail = Format-StreamTail (Get-StreamResult $gui.StderrTask 2000)
+      Say "FAIL" "gui_stdin_stop" "GUI still running 60 s after its stdin closed; stderr tail: $stderrTail"
+    }
+  } else {
+    $stderrTail = Format-StreamTail (Get-StreamResult $gui.StderrTask 2000)
+    Say "FAIL" "gui_stdin_stop" "GUI had already exited with $($gui.ExitCode) before stdin was closed; stderr tail: $stderrTail"
+  }
+
+  Start-Sleep -Seconds 2
+  $leftRecord = @($recordPids | Where-Object { Test-Alive $_ })
+  $daemonPids = @(Get-RecordedDaemonPids $stateDir)
+  $leftOther = @(Get-IsolatedProcesses $guiRoot | Where-Object { $daemonPids -notcontains [int]$_.ProcessId })
+  if ($leftRecord.Count -eq 0 -and $leftOther.Count -eq 0) {
+    Say "PASS" "gui_children" "record pids [$($recordPids -join ', ')] gone; only the home's daemon [$($daemonPids -join ', ')] still runs"
+  } else {
+    Say "FAIL" "gui_children" ("left running: record=[" + ($leftRecord -join ', ') + "] other=[" + (($leftOther | ForEach-Object { "$($_.ProcessId) $($_.Name)" }) -join '; ') + "]")
+  }
+
+  if ($daemonPids.Count -gt 0) {
+    $stopOut = ""
+    Push-Location $guiCwd
+    $saved = @{}
+    foreach ($key in $guiEnv.Keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key); [Environment]::SetEnvironmentVariable($key, $guiEnv[$key]) }
+    try { $stopOut = (Invoke-Native $exe @("daemon", "stop", "--json")) } finally {
+      foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) }
+      Pop-Location
+    }
+    $stopExit = $script:NativeExit
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline -and @($daemonPids | Where-Object { Test-Alive $_ }).Count -gt 0) { Start-Sleep -Milliseconds 200 }
+    $stillDaemon = @($daemonPids | Where-Object { Test-Alive $_ })
+    if ($stopExit -eq 0 -and $stillDaemon.Count -eq 0) {
+      Say "PASS" "gui_daemon_stop" "daemon stop exit 0; daemon [$($daemonPids -join ', ')] gone"
+    } else {
+      Say "FAIL" "gui_daemon_stop" "daemon stop exit=$stopExit still=[$($stillDaemon -join ', ')] out=$stopOut"
+      foreach ($id in $stillDaemon) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+    }
+  } else {
+    Say "INFO" "gui_daemon_stop" "no daemon record under $stateDir"
+  }
+  $leftAfter = @(Get-IsolatedProcesses $guiRoot)
+  if ($leftAfter.Count -eq 0) {
+    Say "PASS" "gui_isolated_clean" "no process references $guiRoot"
+  } else {
+    Say "FAIL" "gui_isolated_clean" (($leftAfter | ForEach-Object { "$($_.ProcessId) $($_.Name)" }) -join '; ')
+    foreach ($process in $leftAfter) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
+  }
 }
 
 # ------------------------------------------------------------------- no pollution

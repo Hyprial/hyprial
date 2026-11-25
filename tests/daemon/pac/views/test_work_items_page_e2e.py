@@ -27,11 +27,9 @@ from typing import Any
 import pytest
 
 from hyprial.daemon.impl.pac.views import overview
-from hyprial.daemon.impl.pac.views.work_items import (
-    new_work_item,
-    replace_head,
-    replace_log,
-)
+import yaml
+
+from hyprial.daemon.impl.pac.views.missions import parse_mission
 
 NODE = "e2e-node"
 DAY_MS = 24 * 3600 * 1000
@@ -68,34 +66,14 @@ def _item(
 ) -> dict[str, Any]:
     """One loaded work item in the exact form load_missions hands build_model."""
 
-    item = new_work_item(
-        item_id=item_id,
-        title=title,
-        owner=owner,
-        assignee=assignee,
-        checklist=[text for text, _ in checklist],
-        depends=list(depends),
-        acceptance=acceptance,
-        opened=opened,
-    )
-    for index, (_, done) in enumerate(checklist):
-        if done:
-            entries = [dict(entry) for entry in item.head["checklist"]]
-            entries[index]["done"] = True
-            item = replace_head(item, checklist=entries)
-    if status != "todo":
-        item = replace_head(item, status=status)
-    if closed is not None:
-        item = replace_head(item, closed=closed)
-    if pacs:
-        item = replace_head(item, pacs=list(pacs))
-    if log:
-        item = replace_log(item, list(log))
-    projected = item.to_dict()
-    return {
-        **projected,
-        "pacs": [str(graph).strip() for graph in projected["pacs"] if str(graph).strip()],
+    fields = {
+        "id": item_id, "status": status, "owner": owner, "assignee": assignee,
+        "checklist": [{"text": text, "done": done} for text, done in checklist],
+        "depends": list(depends), "acceptance": acceptance, "pacs": list(pacs),
+        "opened": opened, "closed": closed,
     }
+    text = f"## {item_id} {title}\n\n```yaml\n{yaml.safe_dump(fields)}```\n\n## Log\n" + "\n".join(log)
+    return parse_mission(text)
 
 
 def _work_items() -> list[dict[str, Any]]:
@@ -296,9 +274,11 @@ def test_published_page_renders_the_work_items_model_end_to_end() -> None:
     assert "步骤丙" in detail and "✓" in detail and "○" in detail
     assert "验收 &lt;b&gt;标准&lt;/b&gt;：页面能打开" in detail
     assert "没有依赖。" in detail  # M-eve-0002 declares none
-    assert "未验证 operator" in detail
+    assert "未验证 operator" not in detail
+    assert "文档原文预览" in detail
     assert "打开" in detail  # the opened timestamp renders
-    assert detail.index("最近一条") < detail.index("早的一条")  # log newest first
+    log_view = detail.split('<div class="wi-logbox">', 1)[1]
+    assert log_view.index("最近一条") < log_view.index("早的一条")
     assert '<button type="button" class="wi-pac" data-run="wf-live"' in detail
     assert "wf-gone" in detail and 'data-run="wf-gone"' not in detail
     quiet = _detail_page(model, "M-eve-0001")

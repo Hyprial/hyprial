@@ -21,13 +21,11 @@ TURNS = SRC / "daemon/impl/application/actors/sessions/turns.py"
 
 _CONTRACT_ALLOWED = {
     "hyprial.kernel",
-    "hyprial.daemon.impl.links.ports",
     "hyprial.daemon.impl.inbox.contracts.api",
     "hyprial.daemon.impl.inbox.contracts.summary",
 }
 _SETTLEMENT_ALLOWED = {
     "hyprial.kernel",
-    "hyprial.daemon.impl.links.ports",
     "hyprial.daemon.impl.inbox.contracts.api",
 }
 
@@ -65,9 +63,9 @@ def _iter_python(root: Path):
         yield path
 
 
-def test_links_inbox_application_never_import_carriers() -> None:
+def test_inbox_application_never_import_carriers() -> None:
     forbidden = "hyprial.daemon.impl.harnesses.carrier"
-    for directory in ("links", "inbox", "application"):
+    for directory in ("inbox", "application"):
         for path in _iter_python(SRC / "daemon/impl" / directory):
             for module in _imported_modules(path):
                 assert not module.startswith(forbidden), f"{path} imports {module}"

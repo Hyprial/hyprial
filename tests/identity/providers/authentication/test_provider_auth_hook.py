@@ -36,10 +36,11 @@ from hyprial.daemon.impl.harnesses.streaming.process import StreamingTurnProcess
 from hyprial.daemon.impl.harnesses.worker_channel import WorkerChannel
 from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAuthority
 from hyprial.identity.impl.provider_auth.helper import HelperOutcome
-from hyprial.identity.impl.users.profile import UserProfileStore
+from hyprial.identity import RuntimeCapabilityStore
 
 from tests.daemon.harnesses.pi.rpc.process.support import FAKE_PI, delivery
 from tests.identity.providers.authentication.test_provider_auth_coordinator import ANNOUNCEMENT, FakeRunner, _capabilities, make_coordinator, wait_until
+from tests.support.actor_hosts import new_actor_host
 
 CLAUDE_AUTH_ERROR = "Failed to authenticate. API Error: 403 Request not allowed"
 
@@ -177,7 +178,7 @@ def test_claude_is_error_triggers_observer(tmp_path: Path) -> None:
         assert runner.calls == []  # B never starts a login flow
         marks = [
             c
-            for c in store.get("owner-key").runtime_capabilities
+            for c in store.list("owner-key")
             if c.harness == "claude"
         ]
         assert len(marks) == 1
@@ -424,16 +425,9 @@ def test_auth_overload_retains_observation_without_blocking_turn_result():
 def test_production_auth_overload_settles_before_shutdown_closes_owner(
     tmp_path: Path,
 ) -> None:
-    store = UserProfileStore(tmp_path / "users.json")
-    store.ensure(
-        owner="owner",
-        owner_key="owner-key",
-        login_name="owner",
-        machine="node",
-        machine_key="node-key",
-    )
+    store = RuntimeCapabilityStore(tmp_path / "state" / "runtime-capabilities.json")
     authority = ProviderAuthAuthority(
-        profile_store=store,
+        capability_store=store,
         owner_key="owner-key",
         notifier=lambda *_args, **_kwargs: SimpleNamespace(delivered=True),
         helper_runner=lambda *_args, **_kwargs: HelperOutcome.STOPPED,
@@ -441,7 +435,7 @@ def test_production_auth_overload_settles_before_shutdown_closes_owner(
         host="node",
         stop=threading.Event(),
         observation_capacity=1,
-        notification_retry_seconds=0.01,
+        notification_retry_seconds=0.01, actor_host=new_actor_host(),
     )
     decision_entered = threading.Event()
     release_decision = threading.Event()
@@ -509,7 +503,7 @@ def test_production_auth_overload_settles_before_shutdown_closes_owner(
 
     class AgentDomains:
         @staticmethod
-        def close():
+        def close(shutdown_hosts=True):
             order.append("agent.close")
             return True
 

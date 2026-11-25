@@ -43,6 +43,8 @@ class ReadCapabilityGrants:
 class ReadSecretInventory:
     correlation_id: str
     actor: str | None
+    expected_uri: str | None = None
+    expected_created_at_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,9 +154,10 @@ class AgentReadEffectPort:
             f"agent-capabilities-{uuid4().hex}", actor,
         ))
 
-    def secret_inventory(self, actor: str | None = None) -> tuple[SecretGrant, ...]:
+    def secret_inventory(self, actor: str | None = None, *, expected_uri: str | None = None,
+                         expected_created_at_ms: int | None = None) -> tuple[SecretGrant, ...]:
         return self._call(ReadSecretInventory(
-            f"agent-secrets-{uuid4().hex}", actor,
+            f"agent-secrets-{uuid4().hex}", actor, expected_uri, expected_created_at_ms,
         ))
 
     def grant_journal(self, actor: str) -> tuple[GrantJournalEntry, ...]:
@@ -215,7 +218,11 @@ class AgentReadEffectPort:
                 elif isinstance(command, ReadCapabilityGrants):
                     value = self.registry.capability_grants(command.actor)
                 elif isinstance(command, ReadSecretInventory):
-                    value = self.registry.secret_inventory(command.actor)
+                    constraints = {} if command.expected_uri is None and command.expected_created_at_ms is None else {
+                        "expected_uri": command.expected_uri,
+                        "expected_created_at_ms": command.expected_created_at_ms,
+                    }
+                    value = self.registry.secret_inventory(command.actor, **constraints)
                 elif isinstance(command, ReadGrantJournal):
                     value = self.registry.grant_journal(command.actor)
                 elif isinstance(command, ReadWorkspaceSummary):

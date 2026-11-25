@@ -218,7 +218,7 @@ def test_t2_t3_t4_secret_is_absent_from_projection_custody_state_and_logs(
         if record.get("event") == "agent.runtime_launch.secrets_delivered"
     ]
     assert len(deliveries) == 1
-    assert deliveries[0]["actor"] == "agent:owner:node:granted"
+    assert deliveries[0]["actor"] == app.agents.get("granted").uri
     assert deliveries[0]["names"] == ["DEEPSEEK_API_KEY"]
     assert deliveries[0]["grantCount"] == 1
     assert CANARY not in json.dumps(deliveries, sort_keys=True)
@@ -244,7 +244,7 @@ def test_r2_cross_agent_acquire_is_empty_and_leaves_no_secret_trace(
     app, source = secret_app
     acquired = _acquire(app, _context(app, "empty", tmp_path / "empty"), "agent-b")
     try:
-        assert acquired["actor"] == "agent:owner:node:empty"
+        assert acquired["actor"] == app.agents.get("empty").uri
         assert acquired["secretEnvironment"] == {}
         assert acquired["secretGrants"] == []
     finally:

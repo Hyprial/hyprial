@@ -7,7 +7,9 @@ import threading
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.orgfs.composition import space_purge as space_purge_module
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.kernel import link_directory
 
 
 OWNER = "user:owner"
@@ -405,3 +407,62 @@ def test_space_purge_durable_intent_resumes_after_detach_failure(tmp_path, monke
         assert not (tmp_path / "state" / "orgfs" / "spaces" / space.space_id).exists()
     finally:
         resumed.close()
+
+
+def test_space_purge_internal_links_never_escape_to_delete_external_targets(
+    tmp_path,
+):
+    runtime = _runtime(tmp_path)
+    space = runtime.facade.create_space("scratch")
+    runtime.facade.write_text(space.space_id, "inside.txt", "inside")
+    runtime.serve(space.space_id, "fs")
+
+    external_dir = tmp_path / "external-victim-dir"
+    external_dir.mkdir()
+    nested_victim = external_dir / "keep-nested.txt"
+    nested_victim.write_text("must-survive-dir-link", encoding="utf-8")
+    external_file = tmp_path / "external-victim-file.txt"
+    external_file.write_text("must-survive-file-link", encoding="utf-8")
+
+    space_tree = tmp_path / "state" / "orgfs" / "spaces" / space.space_id
+    replica_tree = tmp_path / "state" / "orgfs" / "replica" / space.space_id
+    link_directory(external_dir, space_tree / "dir-link")
+    link_directory(external_dir, replica_tree / "replica-dir-link")
+    if hasattr(os, "symlink"):
+        try:
+            (space_tree / "file-link.txt").symlink_to(external_file)
+        except OSError:
+            pass
+
+    try:
+        result = runtime.purge_space(space.space_id)
+        assert result == {
+            "spaceId": space.space_id,
+            "purged": True,
+            "localOnly": True,
+        }
+        assert not space_tree.exists()
+        assert not replica_tree.exists()
+        assert external_dir.is_dir()
+        assert nested_victim.read_text("utf-8") == "must-survive-dir-link"
+        assert external_file.read_text("utf-8") == "must-survive-file-link"
+    finally:
+        runtime.close()
+
+
+def test_space_purge_refuses_reparse_point_root_without_deleting(
+    tmp_path, monkeypatch
+):
+    runtime = _runtime(tmp_path)
+    space = runtime.facade.create_space("scratch")
+    space_path = tmp_path / "state" / "orgfs" / "spaces" / space.space_id
+    space_ino = os.lstat(space_path).st_ino
+    monkeypatch.setattr(
+        space_purge_module, "path_is_reparse", lambda meta: meta.st_ino == space_ino
+    )
+    try:
+        with pytest.raises(OrgFsError, match="unsafe-space-path"):
+            runtime.purge_space(space.space_id)
+        assert (space_path / "journal.sqlite3").is_file()
+    finally:
+        runtime.close()

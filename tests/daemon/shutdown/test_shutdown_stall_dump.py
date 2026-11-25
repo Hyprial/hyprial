@@ -170,16 +170,15 @@ def test_a_signal_makes_the_process_print_its_own_stacks(tmp_path: Path) -> None
 def test_the_signal_is_one_nothing_else_in_hyprial_claims() -> None:
     """Choosing a taken signal would replace behaviour rather than add it.
 
-    `SIGINT`, `SIGTERM` and `SIGHUP` are all used, and the first three are
-    forwarded to harness children by `_FORWARDED_SIGNALS`, so a dump request
-    would have reached every child as well.
+    `SIGINT`, `SIGTERM` and `SIGHUP` are lifecycle signals, so a dump request
+    must not use any of them.
     """
 
     from hyprial.daemon.impl.processes.shutdown_stall import STALL_DUMP_SIGNAL
-    from hyprial.daemon.impl.harnesses.python_worker._exec_env_socket import _FORWARDED_SIGNALS
 
+    forwarded_signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     assert STALL_DUMP_SIGNAL == signal.SIGUSR1
-    assert STALL_DUMP_SIGNAL not in _FORWARDED_SIGNALS, (
+    assert STALL_DUMP_SIGNAL not in forwarded_signals, (
         "the dump signal is forwarded to harness children; asking the daemon "
         "for a stack would also signal every process it started"
     )

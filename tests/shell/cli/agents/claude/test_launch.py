@@ -20,8 +20,21 @@ import pytest
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 
-@pytest.mark.parametrize("explicit,expected", [((), "auto"), (("--permission-mode", "plan"), "plan")])
-def test_interactive_claude_uses_current_stored_args(monkeypatch: Any, tmp_path: Path, explicit: tuple[str, ...], expected: str) -> None:
+@pytest.mark.parametrize(
+    ("explicit", "expected", "ignore_stored"),
+    [
+        ((), "auto", False),
+        (("--permission-mode", "plan"), "plan", False),
+        ((), None, True),
+    ],
+)
+def test_interactive_claude_uses_current_stored_args(
+    monkeypatch: Any,
+    tmp_path: Path,
+    explicit: tuple[str, ...],
+    expected: str | None,
+    ignore_stored: bool,
+) -> None:
     observed: dict[str, Any] = {}
 
     def request(method: str, params=None, **_kwargs):
@@ -36,6 +49,11 @@ def test_interactive_claude_uses_current_stored_args(monkeypatch: Any, tmp_path:
         def __init__(self, argv, **_kwargs):
             observed["argv"] = argv
             observed["session"] = argv[argv.index("--session-id") + 1]
+            observed["permission_mode"] = (
+                argv[argv.index("--permission-mode") + 1]
+                if "--permission-mode" in argv
+                else None
+            )
             self.returncode = None
 
         def poll(self):
@@ -49,11 +67,18 @@ def test_interactive_claude_uses_current_stored_args(monkeypatch: Any, tmp_path:
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(_cli_support, "_daemon_request", request)
     monkeypatch.setattr(_cli_subprocess, "Popen", Process)
-    result = CliRunner().invoke(_cli_root_app, ["agent", "start", "claude", "--name", "worker", "--cwd", str(tmp_path), "--json", "--", *explicit])
+    start_args = [
+        "agent", "start", "claude", "--name", "worker", "--cwd", str(tmp_path),
+        *(["--ignore-stored-args"] if ignore_stored else []),
+        "--json", "--", *explicit,
+    ]
+    result = CliRunner().invoke(_cli_root_app, start_args)
     assert result.exit_code == 0, result.output
-    assert observed["argv"].count("--permission-mode") == 1
-    assert observed["argv"][observed["argv"].index("--permission-mode") + 1] == expected
-    assert "Using stored harness_args" in result.stderr
+    assert observed["permission_mode"] == expected
+    expected_notice = (
+        "Ignoring stored harness_args" if ignore_stored else "Using stored harness_args"
+    )
+    assert expected_notice in result.stderr
     assert json.loads(result.stdout)["ok"] is True
 
 
@@ -526,3 +551,287 @@ def test_start_claude_interactive_injects_channel_mcp_and_settings(
     assert calls[0][1]["harness"] == "claude"
     assert calls[1:] == [("ps", {}), ("ps", {})]
     assert not observed["config_path"].exists()
+
+
+_ID_ADDRESS = "agent:op:node-1:a.7k3m2ztw5rq9yb4xnd6vjc8hfe"
+_NAME_URI = "agent:op:node-1:worker"
+
+
+def test_channel_registration_compares_the_official_address() -> None:
+    """D12 for the Claude carrier: ``ps`` lists the Channel session at the
+    record's id URI, not at a name URI the launcher holds."""
+
+    from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
+        _channel_registration_confirmed,
+    )
+
+    def status(
+        session_actor: str, uri: str, *, owner: str = "op", confirmed: bool = True
+    ) -> dict[str, Any]:
+        return {
+            "agents": [
+                {"actor": "worker", "owner": owner, "machine": "node-1", "uri": uri}
+            ],
+            "interactiveSessions": [
+                {"actor": session_actor, "sessionRef": "s", "channelConfirmed": confirmed}
+            ],
+        }
+
+    confirmed = _channel_registration_confirmed
+    assert confirmed(_NAME_URI, "s", status(_ID_ADDRESS, _ID_ADDRESS)) is True
+    assert confirmed(_NAME_URI, "s", status(_NAME_URI, _ID_ADDRESS)) is False
+    assert confirmed(_NAME_URI, "s", status(_NAME_URI, _NAME_URI)) is True
+    assert confirmed(_ID_ADDRESS, "s", status(_ID_ADDRESS, _ID_ADDRESS)) is True
+    assert confirmed(_NAME_URI, "other", status(_ID_ADDRESS, _ID_ADDRESS)) is False
+    assert confirmed(
+        _NAME_URI, "s", status(_ID_ADDRESS, _ID_ADDRESS, confirmed=False)
+    ) is False
+    assert confirmed(
+        _NAME_URI, "s", status(_ID_ADDRESS, _ID_ADDRESS, owner="other")
+    ) is False
+
+
+def test_start_claude_interactive_uri_name_confirms_at_the_id_address(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """``--name agent:<owner>:<node>:<actor>`` passes through the launcher as
+    the name URI, while the daemon registers the Channel session at the
+    record's id URI.  The foreground launch waits on that official address
+    instead of timing out with CHANNEL_REGISTRATION_FAILED."""
+
+    observed: dict[str, Any] = {}
+
+    def daemon_request(
+        method: str, params: dict[str, Any] | None = None, *, timeout: float = 15.0
+    ) -> dict[str, Any]:
+        response: dict[str, Any] = {
+            "daemon": {"running": True, "nodeId": "node-1", "owner": "op"},
+            "agents": [
+                {"actor": "worker", "owner": "op", "machine": "node-1", "uri": _ID_ADDRESS}
+            ],
+        }
+        if "session_ref" in observed:
+            response["interactiveSessions"] = [
+                {
+                    "actor": _ID_ADDRESS,
+                    "sessionRef": observed["session_ref"],
+                    "channelConfirmed": True,
+                }
+            ]
+        return response
+
+    class Process:
+        def __init__(self, argv: list[str], **_kwargs: Any) -> None:
+            self.returncode: int | None = None
+            observed["session_ref"] = argv[argv.index("--session-id") + 1]
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+    class Clock:
+        now = 0.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += max(seconds, 1.0)
+
+    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("HARNESS_CLAUDE_BIN", "/test/bin/claude")
+    monkeypatch.setattr(_cli_support, "_daemon_request", daemon_request)
+    monkeypatch.setattr(_cli_subprocess, "Popen", Process)
+    monkeypatch.setattr(_cli_get_services(), "time", Clock())
+
+    result = CliRunner().invoke(
+        _cli_root_app,
+        ["agent", "start", "claude", "--name", _NAME_URI, "--cwd", str(tmp_path), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["sessionRef"] == observed["session_ref"]
+
+
+@pytest.mark.parametrize(
+    "json_output,notice_on_stderr",
+    [(False, True), (True, False)],
+    ids=["human-warning", "json-silent"],
+)
+def test_runtime_context_notice_is_warned_not_crashed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    json_output: bool,
+    notice_on_stderr: bool,
+) -> None:
+    """#2600: a daemon runtime notice follows ``warn``, never a TypeError.
+
+    The flag is the caller's real ``json_output``: a hardcoded ``False``
+    would leak a stderr warning into ``--json`` output.
+    """
+
+    from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
+        _runtime_context_environment,
+    )
+
+    message = (
+        "tool profile(s) rev-1/legacy predate runtime git-identity resolution "
+        "and were re-resolved to 'profile'; each legacy directory was set aside "
+        "as *.migrated (git history untouched)"
+    )
+    projection = {
+        "ok": True,
+        "mode": "agent-home-p2",
+        "environment": {"HOME": str(tmp_path / "tool-home")},
+        "projectionRoot": str(tmp_path / "projection"),
+        "nativeRoot": str(tmp_path / "native"),
+        "sessionRoot": str(tmp_path / "sessions"),
+        "notices": [
+            {
+                "code": "TOOL_PROFILE_MIGRATED",
+                "actor": "worker",
+                "message": message,
+                "path": str(tmp_path / "projection" / "tools" / "legacy.migrated"),
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        _cli_support, "_daemon_request", lambda *_args, **_kwargs: projection
+    )
+
+    environment = _runtime_context_environment(
+        name="worker", harness="claude", cwd=tmp_path, json_output=json_output
+    )
+
+    assert environment == projection["environment"]
+    assert (message in capsys.readouterr().err) is notice_on_stderr
+
+
+@pytest.mark.parametrize(
+    "json_output,notice_on_stderr",
+    [(False, True), (True, False)],
+    ids=["human-warning", "json-silent"],
+)
+def test_start_claude_interactive_passes_json_output_to_runtime_notices(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    json_output: bool,
+    notice_on_stderr: bool,
+) -> None:
+    """#2600: the Claude launcher's own ``json_output`` reaches the daemon notice.
+
+    The helper under test is the real one (the pre-P22 fixture is undone here);
+    only the daemon transport is faked.  A hardcoded ``False`` at the launcher
+    call site would print the notice on stderr under ``--json``.
+    """
+
+    from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
+        _runtime_context_environment as _real_runtime_context_environment,
+    )
+
+    message = (
+        "tool profile(s) rev-1/legacy predate runtime git-identity resolution "
+        "and were re-resolved to 'profile'; each legacy directory was set aside "
+        "as *.migrated (git history untouched)"
+    )
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    native_root = tmp_path / "native"
+    native_root.mkdir(mode=0o700)
+    credentials = native_root / ".credentials.json"
+    credentials.write_text("{}\n", encoding="utf-8")
+    credentials.chmod(0o600)
+    observed: dict[str, Any] = {}
+
+    def daemon_request(
+        method: str, params: dict[str, Any] | None = None, *, timeout: float = 15.0
+    ) -> dict[str, Any]:
+        response: dict[str, Any] = {
+            "daemon": {"running": True, "nodeId": "node-1", "owner": "op"}
+        }
+        if method == "agent.runtime-context":
+            return {
+                "ok": True,
+                "mode": "agent-home-p2",
+                "environment": {
+                    "HOME": str(tmp_path / "tool-home"),
+                    "CLAUDE_CONFIG_DIR": str(native_root),
+                },
+                "projectionRoot": str(tmp_path / "projection"),
+                "nativeRoot": str(native_root),
+                "sessionRoot": str(tmp_path / "sessions"),
+                "notices": [
+                    {
+                        "code": "TOOL_PROFILE_MIGRATED",
+                        "actor": "worker",
+                        "message": message,
+                        "path": str(tmp_path / "projection" / "tools" / "legacy.migrated"),
+                    }
+                ],
+            }
+        if "session_ref" in observed:
+            response["interactiveSessions"] = [
+                {
+                    "actor": "agent:op:node-1:worker",
+                    "sessionRef": observed["session_ref"],
+                    "channelConfirmed": True,
+                }
+            ]
+        return response
+
+    class Process:
+        def __init__(self, argv: list[str], **_kwargs: Any) -> None:
+            self.returncode: int | None = None
+            observed["session_ref"] = argv[argv.index("--session-id") + 1]
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    monkeypatch.setenv("HYPRIAL_HOME", str(home))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    monkeypatch.setenv("HARNESS_CLAUDE_BIN", "/test/bin/claude")
+    monkeypatch.setattr(_cli_support, "_daemon_request", daemon_request)
+    monkeypatch.setattr(_cli_subprocess, "Popen", Process)
+    monkeypatch.setattr(
+        _cli_get_services(),
+        "_runtime_context_environment",
+        _real_runtime_context_environment,
+    )
+
+    result = _cli_get_services()._start_interactive_claude(
+        name="worker",
+        nickname=None,
+        cwd=tmp_path,
+        resume=None,
+        runtime_args=(),
+        model_provider=None,
+        model=None,
+        json_output=json_output,
+    )
+
+    stderr = capsys.readouterr().err
+    assert result["ok"] is True
+    assert result["sessionRef"] == observed["session_ref"]
+    assert (message in stderr) is notice_on_stderr
+    if json_output:
+        assert stderr == ""

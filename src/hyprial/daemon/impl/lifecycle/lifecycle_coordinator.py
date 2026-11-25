@@ -16,7 +16,7 @@ from queue import Empty, Full, Queue
 from typing import Callable, cast
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 from hyprial.kernel import PortAdmission, LifecycleTarget
 from .observation import LifecycleObservationOwner
 from .observation.actor_reader import ActorLifecycleObservationReader
@@ -38,10 +38,11 @@ from hyprial.daemon.impl.lifecycle_manager  import (
 )
 from hyprial.daemon.impl.lifecycle_manager.steps import _command
 from hyprial.daemon.impl.state_db  import StateDatabase
+from hyprial.kernel import ipc_errors
 
 #: A compensation step still unsettled at the operation deadline; the
 #: operation ends FAILED and its resources are released.
-LIFECYCLE_COMPENSATION_TIMEOUT = "LIFECYCLE_COMPENSATION_TIMEOUT"
+LIFECYCLE_COMPENSATION_TIMEOUT = ipc_errors.LIFECYCLE_COMPENSATION_TIMEOUT
 
 #: How often a waiting caller re-reads the journal when no completion was
 #: observed in the coordinator's cache (a safety net, not the wake path).
@@ -333,7 +334,7 @@ class _StepEffects(LifecycleProcessManager):
                 "lifecycle operation exceeded its "
                 f"{self._operation_deadline:g}s deadline; settled work is being compensated"
             ),
-            "LIFECYCLE_OPERATION_TIMEOUT",
+            ipc_errors.LIFECYCLE_OPERATION_TIMEOUT,
         )
 
     def _settle_unresolved(self, operation_id: str, step: _Step) -> None:
@@ -345,7 +346,7 @@ class _StepEffects(LifecycleProcessManager):
             "lifecycle operation exceeded its "
             f"{self._operation_deadline:g}s deadline with a step still unresolved"
         )
-        code = "LIFECYCLE_OPERATION_TIMEOUT"
+        code = ipc_errors.LIFECYCLE_OPERATION_TIMEOUT
         with self._started_lock:
             self._deadline_exceeded.add(operation_id)
         # A harness start may still own a process effect. Only the harness
@@ -362,6 +363,7 @@ class _StepEffects(LifecycleProcessManager):
                 RemoveHarnessCommand(
                     receipt.correlation_id, step.spec.harness.harness,
                     step.spec.harness.name,
+                    member=step.spec.harness.member,
                 )
             )
             request = LifecycleMutationRequest(
@@ -486,7 +488,10 @@ class LifecycleCoordinator:
         live_resource: Callable[[str, str], bool] | None = None,
         observation_host_id: str = "local",
         observation_fence: Callable[[str], tuple | None] | None = None,
+        actor_host: object | None = None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("lifecycle coordinator requires an actor host")
         if capacity < 1 or effect_workers < 1:
             raise ValueError("capacity and effect_workers must be positive")
         if reservation_timeout <= 0:
@@ -535,13 +540,12 @@ class LifecycleCoordinator:
             admission_deadline, admission_backoff, combined_shared_receipts,
             operation_deadline, event_sink=event_sink, live_resource=live_resource,
         )
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(ActorSpec(
+        self._cell = actor_host.spawn(ActorSpec(
             name="lifecycle-coordinator", handler_factory=lambda: _Mailbox(self),
             mailbox_capacity=capacity,
         ))
         self.lifecycle_observations.reader = ActorLifecycleObservationReader(
-            self.lifecycle_observations, self._runtime, self._handle,
+            self.lifecycle_observations, self._cell,
             "coordinator", self._observation_epoch,
         )
         self._workers = tuple(threading.Thread(
@@ -569,7 +573,7 @@ class LifecycleCoordinator:
     @property
     def crashed(self) -> bool:
         with self._condition:
-            return self._crashed or self._runtime.snapshot(self._handle).state.value == "quarantined"
+            return self._crashed or self._cell.snapshot().state.value == "quarantined"
 
     @property
     def is_running(self) -> bool:
@@ -579,6 +583,10 @@ class LifecycleCoordinator:
     def last_error(self) -> str | None:
         with self._condition:
             return self._last_error
+
+    def read_start_failures(self):
+        """Read compensated startup failures from the existing lifecycle journal."""
+        return self._store.read_start_failures()
 
     def read_run_operations(self):
         """One cache-only read of accepted operations in this owner instance."""
@@ -610,7 +618,7 @@ class LifecycleCoordinator:
                 return PortAdmission.OVERLOADED
             self._incoming.add(request_id)
             self._answers[request_id] = answer
-        admission = self._runtime.tell(self._handle, BeginOperation(operation, request_id))
+        admission = self._cell.tell(BeginOperation(operation, request_id))
         if admission is AdmissionResult.OVERLOADED:
             with self._condition:
                 self._incoming.discard(request_id)
@@ -650,7 +658,7 @@ class LifecycleCoordinator:
 
     def recover(self) -> None:
         operations = tuple(self._store.load(item) for item in self._store.pending())
-        self._runtime.tell(self._handle, Recovered(operations))
+        self._cell.tell(Recovered(operations))
 
     def result(self, operation_id: str) -> LifecycleResult:
         return self._store.result(operation_id)
@@ -716,7 +724,7 @@ class LifecycleCoordinator:
         self._recover_thread.join(max(0.0, deadline - time.monotonic()))
         complete = all(not worker.is_alive() for worker in self._workers)
         complete &= not self._recover_thread.is_alive()
-        complete &= self._runtime.stop(self._handle, timeout=max(0.0, deadline - time.monotonic()))
+        complete &= self._cell.stop(timeout=max(0.0, deadline - time.monotonic()))
         if complete:
             self._store.close()
         return complete
@@ -795,7 +803,7 @@ class LifecycleCoordinator:
 
     def _deliver(self, command: ReservationCompleted | DomainCompleted | Recovered) -> None:
         while not self._closed:
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 return
             if admission is AdmissionResult.CLOSED:

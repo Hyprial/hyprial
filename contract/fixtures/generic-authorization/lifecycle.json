@@ -1,0 +1,446 @@
+{
+  "fixtureVersion": 1,
+  "kind": "lifecycle",
+  "hostBinding": {
+    "record": "verified-host-record-1",
+    "deviceUid": "123e4567-e89b-42d3-a456-426614174000",
+    "host": "d.123e4567e89b42d3a456426614174000",
+    "hostOwner": "u.ou_22222222222222222222222222222222",
+    "enrollmentUidIsProof": false
+  },
+  "ownerAuthorizations": {
+    "alice-for-agent-on-bob-host": {
+      "statementRef": "owner-declaration-alice-1",
+      "signedOwner": "u.ou_11111111111111111111111111111111",
+      "signedHost": "d.123e4567e89b42d3a456426614174000",
+      "signedAgent": "a.abcdefghijklmnopqrstuvwxyz",
+      "trustedKeyOwner": "u.ou_11111111111111111111111111111111",
+      "trustedKeySource": "fixture-owner-key-registry",
+      "keyRef": "alice-owner-key-1",
+      "signatureResult": "valid",
+      "purposeAndVersionValid": true,
+      "current": true
+    }
+  },
+  "cases": [
+    {
+      "id": "alice-agent-on-bob-host-remains-alice",
+      "events": [
+        {
+          "op": "peer_member",
+          "producer": "TailnetCredentials.peer_member",
+          "connection": "conn-1",
+          "member": "network-member-1"
+        },
+        {
+          "op": "bind_host",
+          "record": "verified-host-record-1"
+        },
+        {
+          "op": "owner_authorization",
+          "ref": "alice-for-agent-on-bob-host"
+        },
+        {
+          "op": "registered_agent",
+          "host": "d.123e4567e89b42d3a456426614174000",
+          "agent": "a.abcdefghijklmnopqrstuvwxyz",
+          "agentOwner": "u.ou_11111111111111111111111111111111",
+          "residencyRecord": "verified-host-record-1",
+          "ownerAuthorization": "alice-for-agent-on-bob-host"
+        },
+        {
+          "op": "source_snapshot",
+          "rulesCase": "valid-owner-rule",
+          "at": 100.0,
+          "watchContinuous": true
+        },
+        {
+          "op": "internal_activate"
+        },
+        {
+          "op": "evaluate",
+          "now": 100.0,
+          "expected": {
+            "outcome": "allow",
+            "reason": "MATCH",
+            "subjectOwner": "u.ou_11111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "id": "bob-cannot-assert-alice-ownership",
+      "events": [
+        {
+          "op": "bind_host",
+          "record": "verified-host-record-1"
+        },
+        {
+          "op": "owner_authorization_result",
+          "claimedOwner": "u.ou_11111111111111111111111111111111",
+          "trustedKeyOwner": "u.ou_22222222222222222222222222222222",
+          "trustedKeySource": "fixture-owner-key-registry",
+          "signatureResult": "valid",
+          "signedHost": "d.123e4567e89b42d3a456426614174000",
+          "signedAgent": "a.abcdefghijklmnopqrstuvwxyz"
+        },
+        {
+          "op": "registered_agent",
+          "host": "d.123e4567e89b42d3a456426614174000",
+          "agent": "a.abcdefghijklmnopqrstuvwxyz",
+          "agentOwner": "u.ou_11111111111111111111111111111111",
+          "residencyRecord": "verified-host-record-1",
+          "ownerAuthorization": "rejected-owner-key-mismatch"
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "deny",
+            "reason": "SUBJECT_REJECTED"
+          }
+        }
+      ]
+    },
+    {
+      "id": "self-provided-owner-key-is-not-authority",
+      "events": [
+        {
+          "op": "bind_host",
+          "record": "verified-host-record-1"
+        },
+        {
+          "op": "owner_authorization_result",
+          "claimedOwner": "u.ou_11111111111111111111111111111111",
+          "trustedKeySource": null,
+          "selfProvidedKey": "untrusted-key-1",
+          "signatureResult": "valid-for-self-provided-key"
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "unknown",
+            "reason": "SUBJECT_UNAVAILABLE"
+          }
+        }
+      ]
+    },
+    {
+      "id": "different-host-attribution",
+      "events": [
+        {
+          "op": "peer_member",
+          "producer": "TailnetCredentials.peer_member",
+          "connection": "conn-1",
+          "member": "network-member-1"
+        },
+        {
+          "op": "bind_host",
+          "record": "verified-host-record-1"
+        },
+        {
+          "op": "attribute",
+          "host": "d.223e4567e89b42d3a456426614174000",
+          "agent": "a.abcdefghijklmnopqrstuvwxyz"
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "deny",
+            "reason": "SUBJECT_REJECTED"
+          }
+        }
+      ]
+    },
+    {
+      "id": "proxy-contract-missing",
+      "events": [
+        {
+          "op": "proxy_context",
+          "contractAvailable": false
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "unknown",
+            "reason": "SUBJECT_UNAVAILABLE"
+          }
+        }
+      ]
+    },
+    {
+      "id": "unauthorized-writer-does-not-poison-fresh-active",
+      "events": [
+        {
+          "op": "source_snapshot",
+          "rulesCase": "valid-owner-rule",
+          "at": 100.0,
+          "watchContinuous": true
+        },
+        {
+          "op": "internal_activate"
+        },
+        {
+          "op": "receive",
+          "writerAuthorized": false,
+          "raw": "garbage",
+          "priorActiveStillCurrent": true,
+          "currentnessProof": "independent-source-confirmation-v1",
+          "expectedEvent": "UNAUTHORIZED_WRITER"
+        },
+        {
+          "op": "evaluate",
+          "now": 100.0,
+          "expected": {
+            "outcome": "allow",
+            "reason": "MATCH"
+          }
+        },
+        {
+          "op": "evaluate",
+          "now": 130.0,
+          "expected": {
+            "outcome": "unknown",
+            "reason": "RULESET_STALE"
+          }
+        }
+      ]
+    },
+    {
+      "id": "garbage-with-unproven-new-source-version-is-unknown",
+      "events": [
+        {
+          "op": "source_snapshot",
+          "rulesCase": "valid-owner-rule",
+          "version": "v1",
+          "at": 100.0,
+          "watchContinuous": true
+        },
+        {
+          "op": "internal_activate"
+        },
+        {
+          "op": "receive",
+          "sourceVersion": "v2",
+          "writerAuthorized": false,
+          "raw": "garbage",
+          "priorActiveStillCurrent": false,
+          "expectedEvent": "UNAUTHORIZED_WRITER"
+        },
+        {
+          "op": "assert_cached_observed_at",
+          "expected": 100.0
+        },
+        {
+          "op": "evaluate",
+          "now": 101.0,
+          "expected": {
+            "outcome": "unknown",
+            "reason": "RULESET_UNAVAILABLE"
+          }
+        }
+      ]
+    },
+    {
+      "id": "authorized-writer-invalid-current-document",
+      "events": [
+        {
+          "op": "receive",
+          "writerAuthorized": true,
+          "publicationVerified": true,
+          "raw": "garbage"
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "deny",
+            "reason": "RULESET_INVALID"
+          }
+        }
+      ]
+    },
+    {
+      "id": "no-active-plus-unauthorized-garbage",
+      "events": [
+        {
+          "op": "assert_no_active"
+        },
+        {
+          "op": "receive",
+          "writerAuthorized": false,
+          "raw": "garbage",
+          "priorActiveStillCurrent": false,
+          "expectedEvent": "UNAUTHORIZED_WRITER"
+        },
+        {
+          "op": "evaluate",
+          "now": 100.0,
+          "expected": {
+            "outcome": "unknown",
+            "reason": "RULESET_UNAVAILABLE"
+          }
+        }
+      ]
+    },
+    {
+      "id": "watch-gap-plus-unauthorized-garbage",
+      "events": [
+        {
+          "op": "source_snapshot",
+          "rulesCase": "valid-owner-rule",
+          "at": 100.0,
+          "watchContinuous": true
+        },
+        {
+          "op": "internal_activate"
+        },
+        {
+          "op": "watch_gap",
+          "now": 100.0
+        },
+        {
+          "op": "receive",
+          "writerAuthorized": false,
+          "raw": "garbage",
+          "expectedEvent": "UNAUTHORIZED_WRITER"
+        },
+        {
+          "op": "assert_cached_observed_at",
+          "expected": 100.0
+        },
+        {
+          "op": "evaluate",
+          "now": 100.0,
+          "expected": {
+            "outcome": "unknown",
+            "reason": "RULESET_STALE"
+          }
+        }
+      ]
+    },
+    {
+      "id": "enrollment-uid-without-host-binding",
+      "events": [
+        {
+          "op": "peer_member",
+          "producer": "TailnetCredentials.peer_member",
+          "connection": "conn-1",
+          "member": "network-member-1"
+        },
+        {
+          "op": "enrollment_association",
+          "deviceUid": "123e4567-e89b-42d3-a456-426614174000",
+          "source": "member-self-report"
+        },
+        {
+          "op": "host_binding_result",
+          "status": "unavailable"
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "unknown",
+            "reason": "SUBJECT_UNAVAILABLE"
+          }
+        }
+      ]
+    },
+    {
+      "id": "authorized-revocation-not-hidden-by-garbage",
+      "events": [
+        {
+          "op": "source_snapshot",
+          "rulesCase": "valid-owner-rule",
+          "version": "v1",
+          "at": 100.0,
+          "watchContinuous": true
+        },
+        {
+          "op": "internal_activate"
+        },
+        {
+          "op": "source_revocation",
+          "writerAuthorized": true,
+          "publicationVerified": true,
+          "version": "v2",
+          "at": 101.0,
+          "watchContinuous": true
+        },
+        {
+          "op": "receive",
+          "writerAuthorized": false,
+          "raw": "garbage",
+          "currentnessProof": "independent-revocation-v2",
+          "expectedEvent": "UNAUTHORIZED_WRITER"
+        },
+        {
+          "op": "evaluate",
+          "now": 101.0,
+          "requestedVersion": null,
+          "expected": {
+            "outcome": "deny",
+            "reason": "NO_AUTHORIZATION"
+          }
+        }
+      ]
+    },
+    {
+      "id": "host-mismatch-precedes-missing-proxy-contract",
+      "events": [
+        {
+          "op": "bind_host",
+          "record": "verified-host-record-1"
+        },
+        {
+          "op": "attribute",
+          "host": "d.223e4567e89b42d3a456426614174000",
+          "agent": "a.abcdefghijklmnopqrstuvwxyz"
+        },
+        {
+          "op": "proxy_context",
+          "contractAvailable": false
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "deny",
+            "reason": "SUBJECT_REJECTED"
+          }
+        }
+      ]
+    },
+    {
+      "id": "same-host-wrong-agent-attribution",
+      "events": [
+        {
+          "op": "bind_host",
+          "record": "verified-host-record-1"
+        },
+        {
+          "op": "owner_authorization",
+          "ref": "alice-for-agent-on-bob-host"
+        },
+        {
+          "op": "registered_agent",
+          "host": "d.123e4567e89b42d3a456426614174000",
+          "agent": "a.abcdefghijklmnopqrstuvwxyz",
+          "agentOwner": "u.ou_11111111111111111111111111111111",
+          "residencyRecord": "verified-host-record-1",
+          "ownerAuthorization": "alice-for-agent-on-bob-host"
+        },
+        {
+          "op": "attribute",
+          "host": "d.123e4567e89b42d3a456426614174000",
+          "agent": "a.bcdefghijklmnopqrstuvwxyza",
+          "ownerAuthorization": "alice-for-agent-on-bob-host"
+        },
+        {
+          "op": "evaluate",
+          "expected": {
+            "outcome": "deny",
+            "reason": "SUBJECT_REJECTED"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "policy": "Exact GUI request-architecture findings with occurrence counts. Entries may only leave or shrink; new transport exceptions require a reviewed checker change, never ledger growth.",
+  "findings": [
+    {
+      "kind": "browser-storage",
+      "path": "gui/src/app/capabilities.tsx",
+      "subject": "globalThis.sessionStorage.getItem",
+      "count": 1
+    },
+    {
+      "kind": "browser-storage",
+      "path": "gui/src/app/capabilities.tsx",
+      "subject": "globalThis.sessionStorage.removeItem",
+      "count": 1
+    },
+    {
+      "kind": "browser-storage",
+      "path": "gui/src/app/capabilities.tsx",
+      "subject": "globalThis.sessionStorage.setItem",
+      "count": 1
+    },
+    {
+      "kind": "request-fanout",
+      "path": "gui/src/app/capabilities.tsx",
+      "subject": "createConnectedGuiCapabilities.<anonymous>",
+      "count": 3
+    },
+    {
+      "kind": "request-fanout",
+      "path": "gui/src/features/account/impl/connected-account-actions.ts",
+      "subject": "createConnectedAccountPort.beginLogin",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "gui/src/features/account/impl/connected-account-actions.ts",
+      "subject": "createConnectedAccountPort.logoutAccount",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "gui/src/features/org/impl/domain/live-source.ts",
+      "subject": "createOrgLiveSource.createGateway.createEntry",
+      "count": 2
+    },
+    {
+      "kind": "request-fanout",
+      "path": "gui/src/features/org/impl/domain/live-source.ts",
+      "subject": "createOrgLiveSource.createGateway.loadDetail",
+      "count": 3
+    },
+    {
+      "kind": "request-fanout",
+      "path": "gui/src/features/org/impl/domain/live-source.ts",
+      "subject": "createOrgLiveSource.createGateway.restoreEntry",
+      "count": 3
+    },
+    {
+      "kind": "request-fanout",
+      "path": "gui/src/features/settings/impl/read-adapters/index.ts",
+      "subject": "createSettingsReadApis.<anonymous>",
+      "count": 2
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "gui/src/features/account/impl/connected-account-actions.ts",
+      "subject": "createConnectedAccountPort.logoutAccount",
+      "count": 1
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "gui/src/features/account/impl/connected-account-actions.ts",
+      "subject": "createConnectedAccountPort.pollLogin",
+      "count": 1
+    },
+    {
+      "kind": "request-in-loop",
+      "path": "gui/src/features/org/impl/domain/live-source.ts",
+      "subject": "createOrgLiveSource.createGateway.restoreEntry",
+      "count": 2
+    }
+  ]
+}

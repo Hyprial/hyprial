@@ -1,6 +1,7 @@
 """cli_codex_interactive: settlement scenarios."""
 
 from __future__ import annotations
+from contextlib import closing
 import sqlite3
 import threading
 import time
@@ -186,24 +187,32 @@ def test_codex_interactive_carrier_recovers_final_after_process_rebuild(
         settlement_retry_seconds=5.0,
     )
     _delay_actor_turn_projection(first, monkeypatch)
+    recorded = threading.Event()
+    store = first._store
+    assert store is not None
+    original_record = store.record_settlement_attempts
+
+    def record_and_stop(actor: str, message_id: str, attempts: int) -> None:
+        original_record(actor, message_id, attempts)
+        if message_id == "m-rebuild" and attempts == 1:
+            first._stop.set()
+            recorded.set()
+
+    monkeypatch.setattr(store, "record_settlement_attempts", record_and_stop)
     expected = ("FINAL_OBSERVED", "turn-rebuild", "rebuild final", 1)
-    row = None
     try:
         first.start()
         assert first_attempt.wait(timeout=2.0)
-        deadline = time.monotonic() + 2.0
-        while row != expected and time.monotonic() < deadline:
-            with sqlite3.connect(state_path) as database:
-                row = database.execute(
-                    """
-                    SELECT state, turn_id, final_output, settlement_attempts
-                    FROM codex_interactive_delivery WHERE message_id = 'm-rebuild'
-                    """
-                ).fetchone()
-            if row != expected:
-                time.sleep(0.01)
+        assert recorded.wait(timeout=2.0)
     finally:
         first.stop()
+    with closing(sqlite3.connect(state_path)) as database:
+        row = database.execute(
+            """
+            SELECT state, turn_id, final_output, settlement_attempts
+            FROM codex_interactive_delivery WHERE message_id = 'm-rebuild'
+            """
+        ).fetchone()
     assert row == expected
 
     second = codex.CodexInteractiveCarrier(
@@ -232,7 +241,7 @@ def test_codex_interactive_carrier_recovers_final_after_process_rebuild(
         "messageId": "m-rebuild",
     }
     assert state_path.stat().st_mode & 0o777 == 0o600
-    with sqlite3.connect(state_path) as database:
+    with closing(sqlite3.connect(state_path)) as database:
         assert database.execute(
             "SELECT COUNT(*) FROM codex_interactive_delivery"
         ).fetchone() == (0,)

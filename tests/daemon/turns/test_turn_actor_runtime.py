@@ -312,17 +312,21 @@ def test_completion_relay_retries_backend_overload_without_losing_final() -> Non
     runtime.submit(_enqueue("one"))
     _wait_until(lambda: bool(started))
 
-    original_tell = runtime._runtime.tell  # type: ignore[attr-defined]
+    cell = runtime._handle
     overloads = 3
 
-    def overloaded(handle: object, command: object) -> AdmissionResult:
-        nonlocal overloads
-        if type(command).__name__ == "_IoCompleted" and overloads:
-            overloads -= 1
-            return AdmissionResult.OVERLOADED
-        return original_tell(handle, command)  # type: ignore[arg-type]
+    class FlakyCell:
+        def __getattr__(self, name: str) -> object:
+            return getattr(cell, name)
 
-    runtime._runtime.tell = overloaded  # type: ignore[method-assign,attr-defined]
+        def tell(self, command: object) -> AdmissionResult:
+            nonlocal overloads
+            if type(command).__name__ == "_IoCompleted" and overloads:
+                overloads -= 1
+                return AdmissionResult.OVERLOADED
+            return cell.tell(command)
+
+    runtime._handle = FlakyCell()  # type: ignore[assignment]
     generation, version = started[0]
     assert runtime.complete_io(
         generation=generation,
@@ -386,6 +390,8 @@ def test_actor_crash_aborts_generation_and_never_restarts_same_turn() -> None:
     _wait_until(lambda: len(runtime.read_results()) == 2)
     runtime.drain_results()
     assert runtime.drain(1.0) is True
+    assert starts.count("second") == 1
+    assert [delivery for _, _, delivery in accepted] == ["second"]
 
 
 def test_actor_owns_retry_budget_and_terminal_abandonment() -> None:

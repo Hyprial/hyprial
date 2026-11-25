@@ -8,8 +8,8 @@ The record lives in memory for one daemon epoch: no CLI confirmation file and
 no second durable business authority is created here.  This is the generic
 record/claim protocol, NOT a complete §7 business implementation: a domain
 owner still supplies authorization and resource-version checks before claim
-and owns durable result replay across restarts.  No business write is wired to
-this registry in A-03.
+and owns durable result replay across restarts. Agent deletion consumes this
+protocol through its domain reservation and confirmation boundary.
 """
 
 from __future__ import annotations
@@ -23,9 +23,31 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from hyprial.kernel import DaemonRequestError, MethodSpec, ipc_errors
+from hyprial.kernel import DaemonRequestError, MethodSpec, canonical_user_uri, ipc_errors
 
 DEFAULT_CAPACITY = 256
+
+
+def confirmation_caller(app, params, trusted_message_origin):
+    from hyprial.daemon.impl.application.onboarding import current_onboarding_context
+
+    if trusted_message_origin not in (None, "ipc") or any(
+        field in params for field in ("actor", "sessionRef", "from", "onBehalfOf")
+    ):
+        raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "deletion requires the local administrative socket")
+    operator, _ = app._identity_binding_operator(params, trusted_message_origin=trusted_message_origin)
+    if not operator:
+        raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "bound agent deletion is not admitted")
+    context = current_onboarding_context()
+    if context is not None:
+        if context.phase != "serving" or context.caller != "local-gui":
+            raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "deletion is unavailable during initialization")
+        surface = context.surface
+        session = json.dumps([surface.home_binding, surface.host_control_session_id,
+                              surface.view_session_id, surface.transport_generation])
+    else:
+        session = f"{'ipc' if trusted_message_origin == 'ipc' else 'internal'}:{app.epoch}"
+    return canonical_user_uri(app.owner), session
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -100,7 +122,8 @@ class PreviewRegistry:
         self._lock = threading.Lock()
 
     def __len__(self) -> int:
-        return len(self._records)
+        with self._lock:
+            return len(self._records)
 
     def issue(
         self,
@@ -129,6 +152,7 @@ class PreviewRegistry:
         now = self._now_ms()
         with self._lock:
             operation_id = self._new_id()
+            self._make_room(now)
             record = PreviewRecord(
                 operation_id=operation_id,
                 method=spec.name,
@@ -143,7 +167,67 @@ class PreviewRegistry:
                 params_json=canonical_params,
             )
             self._records[operation_id] = record
-            self._evict()
+        return record
+
+    def lookup(
+        self, spec: MethodSpec, params: Mapping[str, Any], *,
+        caller: str, session: str | None = None,
+    ) -> PreviewRecord:
+        """Read a bound record without claiming; execution must claim again."""
+
+        now = self._now_ms()
+        with self._lock:
+            return self._bound_record(spec, params, caller=caller, session=session, now=now)
+
+    def _bound_record(
+        self, spec: MethodSpec, params: Mapping[str, Any], *,
+        caller: str, session: str | None, now: int,
+    ) -> PreviewRecord:
+        if spec.confirmation != "execute" or spec.preview_of is None:
+            raise ValueError("preview claim requires an execute method with preview_of")
+        field = self._operation_field(spec)
+        if set(params) != {field}:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                f"preview confirmation accepts only {field!r}; no replacement params",
+            )
+        operation_id = params.get(field)
+        if not isinstance(operation_id, str) or not operation_id:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                f"preview confirmation must carry {field!r}",
+            )
+        record = self._records.get(operation_id)
+        if record is None:
+            raise DaemonRequestError(
+                ipc_errors.PREVIEW_UNKNOWN,
+                "preview record is unknown; preview the operation again",
+            )
+        expected_method = (
+            spec.preview_of
+            if spec.confirmation == "execute" and spec.preview_of is not None
+            else spec.name
+        )
+        if (
+            record.method != expected_method
+            or record.caller != caller
+            or record.session != session
+        ):
+            raise DaemonRequestError(
+                ipc_errors.PREVIEW_STALE,
+                "preview record does not belong to this caller and method",
+            )
+        if record.epoch != self.epoch:
+            raise DaemonRequestError(
+                ipc_errors.PREVIEW_STALE,
+                "preview record belongs to another daemon epoch",
+            )
+        if now >= record.expires_at_ms and not record.claimed:
+            self._records.pop(operation_id, None)
+            raise DaemonRequestError(
+                ipc_errors.PREVIEW_EXPIRED,
+                "preview record expired; preview the operation again",
+            )
         return record
 
     def claim(
@@ -159,54 +243,10 @@ class PreviewRegistry:
     ) -> PreviewRecord:
         """Claim one preview for execution; a second claim never runs twice."""
 
-        if spec.confirmation != "execute" or spec.preview_of is None:
-            raise ValueError("preview claim requires an execute method with preview_of")
-        field = self._operation_field(spec)
-        if set(params) != {field}:
-            raise DaemonRequestError(
-                ipc_errors.INVALID_ARGUMENT,
-                f"preview confirmation accepts only {field!r}; no replacement params",
-            )
-        operation_id = params.get(field)
-        if not isinstance(operation_id, str) or not operation_id:
-            raise DaemonRequestError(
-                ipc_errors.INVALID_ARGUMENT,
-                f"preview confirmation must carry {field!r}",
-            )
         now = self._now_ms()
         with self._lock:
-            record = self._records.get(operation_id)
-            if record is None:
-                raise DaemonRequestError(
-                    ipc_errors.PREVIEW_UNKNOWN,
-                    "preview record is unknown; preview the operation again",
-                )
-            expected_method = (
-                spec.preview_of
-                if spec.confirmation == "execute" and spec.preview_of is not None
-                else spec.name
-            )
-            if (
-                record.method != expected_method
-                or record.caller != caller
-                or record.session != session
-            ):
-                # Do not leak another caller/session's target details.
-                raise DaemonRequestError(
-                    ipc_errors.PREVIEW_STALE,
-                    "preview record does not belong to this caller and method",
-                )
-            if record.epoch != self.epoch:
-                raise DaemonRequestError(
-                    ipc_errors.PREVIEW_STALE,
-                    "preview record belongs to another daemon epoch",
-                )
-            if now >= record.expires_at_ms:
-                self._records.pop(operation_id, None)
-                raise DaemonRequestError(
-                    ipc_errors.PREVIEW_EXPIRED,
-                    "preview record expired; preview the operation again",
-                )
+            record = self._bound_record(spec, params, caller=caller, session=session, now=now)
+            operation_id = record.operation_id
             if expected_digest is not None and expected_digest != record.params_digest:
                 raise DaemonRequestError(
                     ipc_errors.PREVIEW_STALE,
@@ -265,7 +305,14 @@ class PreviewRegistry:
             return completed
 
     def discard(self, operation_id: str) -> None:
-        self._records.pop(operation_id, None)
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is not None and record.claimed and not record.completed:
+                raise DaemonRequestError(
+                    ipc_errors.OPERATION_IN_PROGRESS,
+                    "an executing preview cannot be discarded",
+                )
+            self._records.pop(operation_id, None)
 
     def _operation_field(self, spec: MethodSpec) -> str:
         if spec.preview is not None:
@@ -281,9 +328,17 @@ class PreviewRegistry:
                 return candidate
         raise RuntimeError("preview id factory did not produce a unique operation id")
 
-    def _evict(self) -> None:
-        while len(self._records) > self._capacity:
-            oldest = min(
-                self._records.values(), key=lambda record: record.issued_at_ms
+    def _make_room(self, now: int) -> None:
+        for operation_id, record in tuple(self._records.items()):
+            if now >= record.expires_at_ms and (not record.claimed or record.completed):
+                self._records.pop(operation_id)
+        if len(self._records) < self._capacity:
+            return
+        candidates = [record for record in self._records.values() if not record.claimed]
+        if not candidates:
+            raise DaemonRequestError(
+                ipc_errors.RATE_LIMITED,
+                "preview capacity is held by executions; no new preview was issued",
             )
-            self._records.pop(oldest.operation_id, None)
+        oldest = min(candidates, key=lambda record: record.issued_at_ms)
+        self._records.pop(oldest.operation_id)

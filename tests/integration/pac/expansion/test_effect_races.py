@@ -289,7 +289,7 @@ def test_close_during_start_keeps_worktree_cleanup_pending(
         finally:
             write.close()
 
-        generation = authority._runtime.snapshot(authority._handle).generation
+        generation = authority._handle.snapshot().generation
         plan = context.worktrees[0]
         effect = _ActorEffect(
             generation,
@@ -303,7 +303,7 @@ def test_close_during_start_keeps_worktree_cleanup_pending(
             effect,
             worktree_result={"state": "prepared"},
         )
-        assert authority._runtime.tell(authority._handle, completion).value == "accepted"
+        assert authority._handle.tell(completion).value == "accepted"
         assert processed.wait(1.0)
         read = PacGraphStore(database, read_only=True)
         try:

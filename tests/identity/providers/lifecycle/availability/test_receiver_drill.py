@@ -1,6 +1,8 @@
 """provider_availability_contract: receiver drill scenarios."""
 
 from __future__ import annotations
+
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 import json
 from pathlib import Path
 from hyprial.kernel import HarnessLaunchSpec
@@ -19,7 +21,9 @@ from .support import (
 )
 
 
-def test_pc2_isolated_receiver_drill_five_notices_no_online_send(tmp_path: Path) -> None:
+def test_pc2_isolated_receiver_drill_five_notices_no_online_send(
+    tmp_path: Path, *, actor_host
+) -> None:
     """The plan's bounded drill: 5 notices, real durable inbox, no online send.
 
     Unlike the fake-inbox tests above, this drives the *real* ``InboxService``
@@ -32,7 +36,6 @@ def test_pc2_isolated_receiver_drill_five_notices_no_online_send(tmp_path: Path)
     """
 
     from hyprial.daemon.impl.inbox import InboxService, MemoryDeliveryTransport
-    from tests.support.links.gate import permissive_admission_slot
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -42,7 +45,6 @@ def test_pc2_isolated_receiver_drill_five_notices_no_online_send(tmp_path: Path)
         state_dir / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         node_id="node-reg",
-        link_admission=permissive_admission_slot(),
     )
     desired = DesiredStateStore(state_dir / "desired-state.json")
     desired.upsert_harness(
@@ -58,7 +60,8 @@ def test_pc2_isolated_receiver_drill_five_notices_no_online_send(tmp_path: Path)
         inbox=inbox,
         harnesses=farm,
         harness_actor_uri=_uri,
-        clock_ms=lambda: now["v"],
+        clock_ms=lambda: now["v"], actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     drill_ids = [f"drill-{n}" for n in range(1, 6)]
     for message_id in drill_ids:

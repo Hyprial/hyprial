@@ -32,6 +32,35 @@ between the post-gc snapshot and the report is a transient descriptor
 finishing its own teardown, not an accumulator — the same class _fd_set
 already drops at snapshot time. Only descriptors still open at report time
 are counted as leaks; the report names any additionally vanished candidates.
+
+Decision (2026-11-22): function-scoped ``tmp_path`` directories are reclaimed
+from ``pytest_runtest_protocol`` after setup, call, every explicit and autouse
+fixture teardown, and the teardown report have completed.  Pytest's
+``tmp_path_retention_policy`` removes the directory in the ``tmp_path``
+fixture finalizer, before module autouse finalizers can finish using SQLite
+files inside it.  Protocol-end reclamation preserves that teardown ordering
+and prevents passed tests from accumulating their temporary trees until the
+worker exits, which previously drove ``/ci-tmpfs`` to 1.62 GiB and caused OOM
+risk.
+
+Decision (2026-11-23, PR #3106 real-Windows acceptance): Windows has no
+``/dev/fd`` and no way to enumerate CRT descriptors, so the descriptor
+snapshot is empty there and the per-test leak check is a no-op on Windows.
+POSIX keeps the full check; a POSIX host without ``/dev/fd`` still fails loudly.
+
+Decision (2026-11-23, review A-1): on Windows the isolated home also rewrites
+``USERPROFILE``, ``APPDATA``, ``LOCALAPPDATA``, ``HOMEDRIVE`` and ``HOMEPATH``
+in process (``WINDOWS_PROFILE_KEYS``), because ``Path.home`` there ignores
+``HOME``. POSIX applies only ``HOME`` and ``XDG_*`` as before.
+
+Decision (2026-11-23, review A-2): Windows cannot delete a file that is still
+open, and the isolated home's temporary root is removed before ``_fd_hygiene``
+runs its collection. On Windows the isolated home therefore clears the default
+registry pin and runs a full ``gc.collect`` before leaving the temporary
+directory context, so cyclic garbage holding SQLite handles is reclaimed before
+the root is deleted. Values still pinned by ``item.funcargs`` are released only
+by ``_fd_hygiene``; whether any of them hold files under the root on real
+Windows is UNKNOWN. POSIX keeps the previous order and adds no collection.
 """
 
 from __future__ import annotations
@@ -39,10 +68,12 @@ from __future__ import annotations
 from tests.support.runtime._tmp import hyprial_test_tmp_root
 
 import asyncio
+import contextlib
 import gc
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -53,6 +84,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.identity.impl.agents import set_default_registry
+from hyprial.kernel.impl.primitives.node_identity import mint_node_id
 
 # Warm every known one-time fd owner before any per-test measurement, so a
 # first import mid-suite is not mistaken for a leak.  Importing the daemon
@@ -60,9 +92,55 @@ from hyprial.identity.impl.agents import set_default_registry
 # ``asyncio.new_event_loop()`` owns a permanent socketpair.
 import hyprial.daemon.impl.application  # noqa: F401  (import side effect: one-time fds)
 
+from tests.support.runtime.environment import UNIT_USER_ID  # noqa: E402
+_TMP_PATH_STASH = pytest.StashKey[Path]()
+_TEST_FAILED_STASH = pytest.StashKey[bool]()
+
+
+def _remove_tmp_path(path: Path) -> None:
+    def onexc(function, target, _exc_info):
+        try:
+            os.chmod(target, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+            os.chmod(Path(target).parent, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        except OSError:
+            pass
+        try:
+            function(target)
+        except FileNotFoundError:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=onexc)
+    except FileNotFoundError:
+        pass
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    if report.failed:
+        item.stash[_TEST_FAILED_STASH] = True
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    yield
+    tmp_path = item.stash.get(_TMP_PATH_STASH, None)
+    if tmp_path is not None and item.stash.get(_TEST_FAILED_STASH, False) is not True:
+        _remove_tmp_path(tmp_path)
+
 
 @pytest.fixture(autouse=True)
 def _isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run each test inside :func:`isolated_hyprial_home`."""
+
+    with isolated_hyprial_home(monkeypatch):
+        yield
+
+
+@contextlib.contextmanager
+def isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Keep every unit test away from the operator's ambient hyprial state.
 
     Product commands may only create a home through ``hyprial init``.  Unit tests
@@ -76,6 +154,9 @@ def _isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     - ``settings.json`` ``owner`` — the shape a real home has after the
       identity migration, so the fixture home looks like a live one.
+    - ``HYPRIAL_USER_ID`` — paired with ``HYPRIAL_OWNER`` (cell model OC1a): the
+      cell runtime composes only with a uid authority ``user:u.<sub>``, and
+      the owner override alone yields none.
     - ``HYPRIAL_OWNER`` — also covers tests that build their **own** home (e.g.
       the ``adapter remove`` CLI tests seed one) and tests that shell out to
       ``python -m hyprial.cli``, where a settings file in the *fixture* home is
@@ -87,15 +168,23 @@ def _isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     ⛔ Tests that assert the *absence* of an identity must build an explicit
     empty home and pass it in, never rely on this fixture not setting one.
+
+    Z-8c (2026-11-15): the fixture explicitly sets both service opt-out
+    variables to "0" instead of relying on ambient values — an exported
+    ``HYPRIAL_SERVICE_AUTOINSTALL``/``HYPRIAL_DAEMON_AUTOSTART`` in the
+    developer's environment must never flip the in-process launch primitive
+    into installing real units mid-suite. Tests that exercise auto-install
+    opt back in per test with ``monkeypatch.setenv``; product code never
+    writes either variable.
     """
 
     with tempfile.TemporaryDirectory(prefix="hyprial-unit-", dir=hyprial_test_tmp_root()) as raw:
-        from tests.support.runtime.environment import isolated_environment
+        from tests.support.runtime.environment import WINDOWS_PROFILE_KEYS, isolated_environment
 
         root = Path(raw)
         environment = isolated_environment(root)
         for key, value in environment.items():
-            if key == "HOME" or key.startswith("XDG_"):
+            if key == "HOME" or key.startswith("XDG_") or key in WINDOWS_PROFILE_KEYS:
                 monkeypatch.setenv(key, value)
         for key in tuple(os.environ):
             if key.startswith("DBUS_"):
@@ -108,13 +197,19 @@ def _isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             json.dumps({"version": 1, "owner": "hyprial-unit-owner"}),
             encoding="utf-8",
         )
+        # A real home carries its minted node id; the host name is never a
+        # fallback (2026-11-20), so the fixture home gets one the same way.
+        mint_node_id(home)
         monkeypatch.setenv("HYPRIAL_OWNER", "hyprial-unit-owner")
+        monkeypatch.setenv("HYPRIAL_USER_ID", UNIT_USER_ID)
         monkeypatch.setenv("HYPRIAL_HOME", str(home))
         # Every daemon a test spawns inherits this: loopback-only, no discovery,
         # forwarding, gossip or usage fetch (2026-09-16 ban on "isolated"
         # daemons that could still reach the tailnet).
         monkeypatch.setenv("HYPRIAL_NETWORK_ISOLATED", "1")
         monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+        monkeypatch.setenv("HYPRIAL_SERVICE_AUTOINSTALL", "0")
+        monkeypatch.setenv("HYPRIAL_DAEMON_AUTOSTART", "0")
         monkeypatch.delenv("HARNESS_SOCKET_PATH", raising=False)
         monkeypatch.delenv("HARNESS_CONFIG", raising=False)
         monkeypatch.setenv("HYPRIAL_ZENOH_LISTEN", "")
@@ -128,7 +223,30 @@ def _isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         monkeypatch.delenv("HYPRIAL_WORKER_ACTOR", raising=False)
         monkeypatch.delenv("HYPRIAL_WORKER_SESSION_REF", raising=False)
         monkeypatch.delenv("HYPRIAL_MANAGED_WORKER", raising=False)
-        yield
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                set_default_registry(None)
+                gc.collect()
+
+
+@pytest.fixture
+def actor_host():
+    from hyprial.kernel import create_actor_host
+
+    host = create_actor_host()
+    yield host
+    assert host.shutdown()
+
+
+@pytest.fixture
+def generation_scheduler():
+    from hyprial.kernel import GenerationScheduler
+
+    scheduler = GenerationScheduler()
+    yield scheduler
+    assert scheduler.shutdown(5.0)
 
 
 @pytest.fixture
@@ -323,6 +441,8 @@ def _fd_set() -> set[int]:
     already closed by then and is dropped.
     """
 
+    if os.name == "nt":
+        return set()
     candidates = {int(fd) for fd in os.listdir("/dev/fd")}
     confirmed = set()
     for fd in candidates:
@@ -403,6 +523,8 @@ def _fd_hygiene(request):
     # finalizers have already run at this point (autouse fixtures tear down
     # last); clearing the dict only releases pytest's own pin.
     funcargs = getattr(request.node, "funcargs", None)
+    if funcargs and isinstance(funcargs.get("tmp_path"), Path):
+        request.node.stash[_TMP_PATH_STASH] = funcargs["tmp_path"]
     if funcargs:
         funcargs.clear()
     # Release the deliberate global pin first. Most tests have no remaining
@@ -452,6 +574,7 @@ class _CiTestProfile:
         self.worker_profiles = {}
         self.collection_count = 0
         self.collection_digest = None
+        self.oom_kill_start = None
 
     def _observe_gc(self, phase, info):
         if phase == "start":
@@ -463,7 +586,10 @@ class _CiTestProfile:
             self.gc_started = None
 
     def pytest_sessionstart(self, session):
+        from tests.support.ci.cgroup_memory import oom_kill
+
         self.started = self.clock()
+        self.oom_kill_start = oom_kill()
         gc.callbacks.append(self._observe_gc)
 
     def pytest_collection_finish(self, session):
@@ -488,6 +614,29 @@ class _CiTestProfile:
         profile = getattr(node, "workeroutput", {}).get("hyprial_ci_profile")
         if profile is not None:
             self.worker_profiles[node.gateway.id] = profile
+        if error is not None:
+            pid = None
+            returncode = None
+            try:
+                process = node.gateway._io.popen
+                pid = process.pid
+                returncode = process.wait(timeout=1.0)
+            except Exception:  # noqa: BLE001
+                pass
+            from tests.support.ci.cgroup_memory import oom_kill_since
+
+            oom_kill, oom_kill_since_start = oom_kill_since(self.oom_kill_start)
+            print(
+                "CI_WORKER_EXIT " + json.dumps({
+                    "worker": node.gateway.id,
+                    "pid": pid,
+                    "returncode": returncode,
+                    "signal": -returncode if os.name == "posix" and isinstance(returncode, int) and returncode < 0 else None,
+                    "oom_kill": oom_kill,
+                    "oom_kill_since_start": oom_kill_since_start,
+                }),
+                flush=True,
+            )
 
     def pytest_runtest_logreport(self, report):
         # xdist synthesizes a crash report with when="???". Preserve it

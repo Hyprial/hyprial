@@ -1,0 +1,9 @@
+"""Read-only maintenance bindings for common registry composition."""
+
+from .read_specs import UPGRADE_BINDINGS, UPGRADE_EXAMPLES
+
+from .status import STATUS_BINDINGS, STATUS_EXAMPLES
+from .logs import LOG_BINDINGS, LOG_EXAMPLES
+
+MAINTENANCE_BINDINGS = (*UPGRADE_BINDINGS, *STATUS_BINDINGS, *LOG_BINDINGS)
+MAINTENANCE_EXAMPLES = (*UPGRADE_EXAMPLES, *STATUS_EXAMPLES, *LOG_EXAMPLES)

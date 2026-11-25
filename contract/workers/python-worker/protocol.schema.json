@@ -23,12 +23,11 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["v", "type", "kind", "pid", "effectiveConfig", "hyprialCommit", "typesafeSdkVersion", "scriptSha256", "startupHash", "credentialSource"],
+      "required": ["v", "type", "kind", "pid", "effectiveConfig", "typesafeSdkVersion", "scriptSha256", "startupHash", "credentialSource"],
       "properties": {
         "v": {"const": 1}, "type": {"const": "ready"}, "kind": {"const": "jev"},
         "pid": {"type": "integer", "minimum": 1},
         "effectiveConfig": {"type": "object"},
-        "hyprialCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "typesafeSdkVersion": {"const": "0.7.0"},
         "scriptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "startupHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

@@ -61,6 +61,7 @@ def help_command(
             {"ok": True, "usage": render_top_level_help(app)}, render=lambda data: data["usage"]
         ),
         json_output=json_output,
+        ensure_daemon=False,
     )
 
 
@@ -72,5 +73,5 @@ def version(
     services = get_services()
 
     services.runtime.execute(
-        _version_result, json_output=json_output, allow_missing_home=True
+        _version_result, json_output=json_output, allow_missing_home=True, ensure_daemon=False
     )

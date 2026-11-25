@@ -1,0 +1,9 @@
+{
+  "status": "draft-local-only",
+  "productionPublication": false,
+  "declarationEncoding": null,
+  "requiredSignerKind": {"user": "owner", "host": "device"},
+  "algorithm": "X25519",
+  "blockedOn": ["R1 declaration encoding and purpose", "U2 verified user anchor", "R6 T7 device signer and anchor", "#2078 directory publication"],
+  "cases": ["independent-user-device-keys", "host-independent-of-login", "copied-fingerprint-quarantined", "revoked-key-unusable", "no-private-material-export"]
+}

@@ -14,7 +14,6 @@ from hyprial.daemon.impl.application.actors.sessions.routes import _INTERACTIVE_
 from hyprial.daemon.impl.application import DaemonRequestError,_LocalPresence
 
 from .support import (
-    CANONICAL,
     FakeInbox,
     IPC_WAIT_SECONDS,
     ROUTE_PROGRESS_SECONDS,
@@ -23,6 +22,7 @@ from .support import (
     _register_channel_session,
     _wire_real_presence,
     application,
+    official_address,
     pending_message,
     register,
 )
@@ -143,7 +143,7 @@ def test_ps_exposes_interactive_channel_registration(tmp_path: Path) -> None:
 
     assert status["interactiveSessions"] == [
         {
-            "actor": "agent:op:node-1:worker-node",
+            "actor": official_address(app, "worker-node"),
             "sessionRef": "session-1",
             "cwd": str(tmp_path),
             "command": ["claude"],
@@ -384,6 +384,7 @@ def test_expired_operational_channel_withdraws_route_but_keeps_offline_actor(
             "channelLeaseToken": token,
         },
     )
+    address = official_address(app)
 
     class Resource:
         def __init__(self) -> None:
@@ -413,24 +414,28 @@ def test_expired_operational_channel_withdraws_route_but_keeps_offline_actor(
 
     class Presence:
         def online_actors(self) -> tuple[str, ...]:
-            return (CANONICAL,) if routes.active else ()
+            return (address,) if routes.active else ()
 
     app._presence = Presence()  # type: ignore[assignment]
-    assert app.handle("targets", {})["targets"][0]["actor"] == CANONICAL
+    assert app.handle("targets", {})["targets"][0]["actor"] == address
 
     now += CHANNEL_LIVENESS_TTL_SECONDS + 0.1
     # Status reads are projection-only (f4a9e5f16); route expiry is owned by
     # the maintenance tick (messaging/maintenance.py), so run that step here.
     app._expire_stale_channel_routes(now)
-    assert app.handle("targets", {})["targets"] == [
+    listed = app.handle("targets", {})["targets"]
+    for row in listed:
+        assert str(row.pop("agentId", "a.")).startswith("a.")
+    assert listed == [
         {
             "targetKind": "agent",
-            "targetUri": CANONICAL,
-            "actor": CANONICAL,
+            "targetUri": address,
+            "actor": address,
             "status": "offline",
             "deliverable": True,
             "hosted": False,
             "hostedBy": None,
+            "displayName": "alice",
         }
     ]
     assert endpoint.closed is True
@@ -508,12 +513,12 @@ def test_non_channel_and_wrong_session_cannot_refresh_channel_generation(
     ]
     assert (
         "channelCurrentThisGeneration"
-        not in statuses["agent:op:node-1:pi-worker"]
+        not in statuses[official_address(app, "pi-worker")]
     )
-    assert statuses["agent:op:node-1:channel"][
+    assert statuses[official_address(app, "channel")][
         "channelCurrentThisGeneration"
     ] is False
-    assert statuses["agent:op:node-1:channel"]["channelCurrentEpoch"] is None
+    assert statuses[official_address(app, "channel")]["channelCurrentEpoch"] is None
 
 
 def test_guarded_refresh_cannot_steal_from_superseding_channel(
@@ -615,12 +620,13 @@ def test_dead_connector_stops_reporting_online_after_heartbeat_expires(
     app._clock = lambda: clock["now"]  # type: ignore[assignment]
 
     _register_channel_session(app, directory)
+    address = official_address(app)
 
     fresh_ps = app.handle("ps", {})["interactiveSessions"][0]
     assert fresh_ps["online"] is True
     assert fresh_ps["channelConfirmed"] is True
     fresh_targets = app.handle("targets", {"kind": "agent"})["targets"]
-    assert CANONICAL in [item["actor"] for item in fresh_targets]
+    assert address in [item["actor"] for item in fresh_targets]
 
     # Simulate the connector process dying: time passes, nothing ever calls
     # the daemon again (no poll, no refresh).
@@ -635,7 +641,7 @@ def test_dead_connector_stops_reporting_online_after_heartbeat_expires(
     assert stale_ps["channelConfirmed"] is True
     stale_targets = app.handle("targets", {"kind": "agent"})["targets"]
     (stale_actor,) = [
-        item for item in stale_targets if item["actor"] == CANONICAL
+        item for item in stale_targets if item["actor"] == address
     ]
     assert stale_actor["status"] == "offline"
 
@@ -661,6 +667,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
             "channelLeaseToken": lease_token,
         },
     )
+    address = official_address(app)
 
     class Runtime:
         def on_timer(self, _observed_at_ms=None):  # type: ignore[no-untyped-def]
@@ -671,7 +678,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
             )()
 
     app._runtime = Runtime()  # type: ignore[assignment]
-    active_routes = {CANONICAL}
+    active_routes = {address}
 
     class Routes:
         def ensure(self, spec, *, owner_lease=None):  # type: ignore[no-untyped-def]
@@ -730,7 +737,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
         # The newer heartbeat completes while expiry holds its stale
         # observation. Its Session version then fences the delayed close.
         assert heartbeat_finished.wait(ROUTE_PROGRESS_SECONDS)
-        assert CANONICAL in active_routes
+        assert address in active_routes
     finally:
         release_expiry.set()
 
@@ -739,7 +746,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
     assert not periodic.is_alive()
     assert not heartbeat_worker.is_alive()
     assert heartbeat_finished.is_set()
-    assert CANONICAL in active_routes
+    assert address in active_routes
 
 
 def test_explicit_heartbeat_keeps_connector_online_past_registration_ttl(
@@ -759,6 +766,7 @@ def test_explicit_heartbeat_keeps_connector_online_past_registration_ttl(
     app._clock = lambda: clock["now"]  # type: ignore[assignment]
 
     _register_channel_session(app, directory)
+    address = official_address(app)
 
     # Several poll cycles, each inside the TTL of the *previous* contact, but
     # together spanning far more wall-clock time than one TTL window alone.
@@ -771,7 +779,7 @@ def test_explicit_heartbeat_keeps_connector_online_past_registration_ttl(
     assert clock["now"] > _INTERACTIVE_HEARTBEAT_TTL_SECONDS
     still_online = app.handle("ps", {})["interactiveSessions"][0]
     assert still_online["online"] is True
-    assert CANONICAL in [
+    assert address in [
         item["actor"] for item in app.handle("targets", {"kind": "agent"})["targets"]
     ]
 
@@ -797,21 +805,23 @@ def test_actor_online_and_online_actors_agree_for_interactive_session(
     clock = {"now": 0.0}
     app._clock = lambda: clock["now"]  # type: ignore[assignment]
 
+    _register_channel_session(app, directory)
+    address = official_address(app)
+
     def agrees() -> bool:
-        return presence.actor_online(CANONICAL) == (  # type: ignore[union-attr]
-            CANONICAL in presence.online_actors()  # type: ignore[union-attr]
+        return presence.actor_online(address) == (  # type: ignore[union-attr]
+            address in presence.online_actors()  # type: ignore[union-attr]
         )
 
-    _register_channel_session(app, directory)
-    assert presence.actor_online(CANONICAL) is True  # type: ignore[union-attr]
+    assert presence.actor_online(address) is True  # type: ignore[union-attr]
     assert agrees()
 
     clock["now"] += _INTERACTIVE_HEARTBEAT_TTL_SECONDS + 1.0
-    assert presence.actor_online(CANONICAL) is False  # type: ignore[union-attr]
+    assert presence.actor_online(address) is False  # type: ignore[union-attr]
     assert agrees()
 
     app.handle("session.refresh", {"actor": "alice", "sessionRef": "session-1"})
-    assert presence.actor_online(CANONICAL) is True  # type: ignore[union-attr]
+    assert presence.actor_online(address) is True  # type: ignore[union-attr]
     assert agrees()
 
 

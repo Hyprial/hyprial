@@ -7,6 +7,8 @@ fixtures the H3 intercept tests drive.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import json
 import sys
 import threading
@@ -101,7 +103,9 @@ class _ExchangeInbox:
             conversation_id=message.conversation_id,
             sender=message.recipient,
             recipient=self.callback,
-            payload=b'{"message":"opaque reply"}',
+            payload=json.dumps(
+                {"message": "opaque reply", "replyTo": message.message_id}
+            ).encode(),
             intent="reply",
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
             created_at_ms=2,
@@ -211,8 +215,9 @@ class _Harnesses:
     def streaming_actors(self) -> tuple[str, ...]:
         return (RECIPIENT,)
 
-    def dispatch(self, actor: str, delivery: HarnessDelivery) -> bool:
-        assert actor == RECIPIENT
+    def dispatch(self, envelope: object) -> bool:
+        delivery = envelope.input  # type: ignore[attr-defined]
+        assert envelope.stamp.member == RECIPIENT  # type: ignore[attr-defined]
         self.deliveries.append(delivery)
         return True
 
@@ -268,6 +273,7 @@ def _delivery_hooks(
     home: Path,
     invoker,
     *,
+    actor_host,
     monotonic=time.monotonic,
     port_monotonic=None,
     logger=None,
@@ -279,7 +285,7 @@ def _delivery_hooks(
 ):
     """One DeliveryHookService over a private bus reading <home>/config/hooks.json."""
 
-    bus = HookBus()
+    bus = HookBus(actor_host=actor_host)
     hooks = DaemonHookService(
         bus=bus,
         config_path_for_agent=lambda _actor: home / "config" / "hooks.json",
@@ -319,7 +325,7 @@ def _prepare_until_decided(
 
 
 def _runtime(
-    tmp_path: Path, service: DeliveryHookService | None
+    tmp_path: Path, service: DeliveryHookService | None, *, actor_host
 ) -> tuple[DaemonEventBridge, _Harnesses]:
     harnesses = _Harnesses()
     runtime = DaemonEventBridge(
@@ -329,7 +335,8 @@ def _runtime(
         transport=_Transport(),  # type: ignore[arg-type]
         inbox=_Inbox(_message()),  # type: ignore[arg-type]
         harnesses=harnesses,  # type: ignore[arg-type]
-        delivery_hooks=service,
+        delivery_hooks=service, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     return runtime, harnesses
 

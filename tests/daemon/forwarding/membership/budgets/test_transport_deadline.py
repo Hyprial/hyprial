@@ -58,9 +58,16 @@ def test_transport_deadline_remains_finite_and_method_specific(monkeypatch, meth
 @pytest.mark.parametrize("method", ["org.join", "org.execute"])
 @pytest.mark.parametrize("override", [None, "1"])
 def test_explicit_join_wait_reaches_socket_without_default_cap(monkeypatch, tmp_path, method, override):
+    """The join-CLI budget reaches the transport socket's settimeout.
+
+    The client delegates to the seam's POSIX backend, so the fake socket is
+    injected there; the real budget still reaches settimeout through it.
+    """
     import json
+    import socket as socket_module
 
     from hyprial.kernel.impl.ipc import client
+    from hyprial.kernel.impl.manysys.ipc import posix as local_ipc_posix
     from hyprial.shell.impl.invites.join import request_join
 
     if override is None:
@@ -79,7 +86,15 @@ def test_explicit_join_wait_reaches_socket_without_default_cap(monkeypatch, tmp_
         }).encode() + b"\n",
         close=lambda: None,
     )
-    monkeypatch.setattr(client.socket, "socket", lambda *args: sock)
+    monkeypatch.setattr(
+        local_ipc_posix,
+        "socket",
+        SimpleNamespace(
+            socket=lambda *args: sock,
+            AF_UNIX=socket_module.AF_UNIX,
+            SOCK_STREAM=socket_module.SOCK_STREAM,
+        ),
+    )
     runtime = SimpleNamespace(request=lambda method, params, **kwargs: client.daemon_request(
         method, params, socket_path=tmp_path / "isolated.sock", **kwargs,
     ))

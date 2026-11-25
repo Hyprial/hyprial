@@ -1,3 +1,9 @@
+# Decision record (file header; no inline comments by repository rule):
+# - The registry generation advances only after RoutineStore and
+#   RoutineRegistry were built. Timer ticks are stamped with the engine
+#   generation, which a failed restart factory no longer advances (ABI v1
+#   5.1 row 4b); bumping first made every later tick stale and routines
+#   stopped firing after one failed reopen.
 """Routine IPC facade over the actor-owned registry.
 
 The facade may wait at the daemon boundary and execute external effects. It
@@ -10,19 +16,22 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Hashable, Sequence
 from pathlib import Path
 from queue import Empty, Full, Queue
-from typing import Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
 from uuid import uuid4
 
 import yaml
 
-from hyprial.kernel import ActorRuntime
 from hyprial.kernel import ActorSpec, AdmissionResult
-from hyprial.daemon import AlarmResult
+from hyprial.daemon import ActorHostCustody, AlarmResult
 from hyprial.kernel import PortAdmission, PortCommandRejected
 from hyprial.kernel import Logger
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 from hyprial.biz.impl.routine.contracts.ports  import (
     AddRoutineCommand,
@@ -143,8 +152,11 @@ class RoutineFacade:
         event_sink: Callable[[object], None] | None = None,
         migrate_address: Callable[[str], str | None] | None = None,
         logger: Logger | None = None,
+        binding_key: Callable[[str], Hashable] | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         self._pac = pac
+        self._binding_key = binding_key
         self._alarm = alarm
         self._migrate_address = migrate_address
         self._logger = logger
@@ -174,31 +186,42 @@ class RoutineFacade:
         self._effect_retry_after: dict[str, int] = {}
         self._generation = 0
         self._timer_sequence = 0
+        # ``graph_absent`` is an optional capability: a PAC port that cannot prove
+        # graph absence simply keeps the durable row (the pre-existing behaviour).
+        # It is read through ``getattr`` so unrelated ports and fakes do not have
+        # to grow a method they cannot implement.
+        graph_absent = getattr(pac, "graph_absent", None)
+        self._graph_absent = graph_absent if callable(graph_absent) else None
         self._closing = False
         self._effect_stop = threading.Event()
         self._writer_store: RoutineStore | None = None
         self._close_lock = threading.Lock()
         self._projection_closed = False
         self._writer_closed = False
-        self._runtime = ActorRuntime()
+        self._hosts = ActorHostCustody(actor_host, owner="routine-service")
 
         def handler_factory() -> RoutineRegistry:
-            self._generation += 1
+            generation = self._generation + 1
             if self._writer_store is not None:
                 self._writer_store.close()
+                self._writer_store = None
             store = RoutineStore(self._database)
             self._writer_store = store
-            return RoutineRegistry(
+            registry = RoutineRegistry(
                 store=store,
-                generation=self._generation,
+                generation=generation,
                 publish=self._publish,
                 clock_ms=self._clock_ms,
                 migrate_address=self._migrate_address,
                 graph_state=self._probe_graph_state,
+                graph_absent=self._probe_graph_absent,
                 logger=self._logger,
+                binding_key=self._binding_key,
             )
+            self._generation = generation
+            return registry
 
-        self._handle = self._runtime.start(
+        self._handle = self._hosts.host.spawn(
             ActorSpec(
                 name="routine-registry",
                 handler_factory=handler_factory,
@@ -226,7 +249,7 @@ class RoutineFacade:
     def submit(self, command: object) -> PortAdmission:
         if self._closing:
             return PortAdmission.CLOSING
-        admission = self._runtime.tell(self._handle, command)
+        admission = self._handle.tell(command)
         return {
             AdmissionResult.ACCEPTED: PortAdmission.ACCEPTED,
             AdmissionResult.OVERLOADED: PortAdmission.OVERLOADED,
@@ -248,6 +271,56 @@ class RoutineFacade:
 
     def list(self) -> dict[str, object]:
         return {"routines": [item.to_payload() for item in self.read_routines()]}
+
+    def export(self, *, name: str) -> dict[str, object]:
+        """Stored YAML text, enabled state and owner; read-only."""
+
+        snapshot = self._projection.snapshot(name)
+        if snapshot is None:
+            raise RoutineServiceError("ROUTINE_NOT_FOUND", f"no such routine: {name}")
+        row = snapshot.routine
+        return {
+            "name": row.name,
+            "yaml": row.yaml_text,
+            "enabled": bool(row.enabled),
+            "owner": row.owner,
+        }
+
+    def list_executed_by(self, *, agent: str) -> dict[str, object]:
+        """Routines whose executing identity (actor, produces, owner) is ``agent``."""
+
+        key = self._binding_key or (lambda value: value)
+        wanted = key(agent)
+        return {
+            "routines": [
+                payload
+                for payload in (item.to_payload() for item in self.read_routines())
+                if key(payload["actor"]) == wanted
+            ]
+        }
+
+    def wait_in_flight_drained(
+        self, *, names: Sequence[str], timeout_seconds: float
+    ) -> list[str]:
+        """Observe until named routines have no in-flight rows; returns the rest."""
+
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+            raise ValueError("timeout_seconds must be finite and >= 0")
+        ordered = list(names)
+        for name in ordered:
+            if self._projection.snapshot(name) is None:
+                raise RoutineServiceError("ROUTINE_NOT_FOUND", f"no such routine: {name}")
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            busy = [name for name in ordered if self._has_in_flight(name)]
+            remaining = deadline - time.monotonic()
+            if not busy or remaining <= 0 or self._closing:
+                return busy
+            self._effect_stop.wait(min(0.05, remaining))
+
+    def _has_in_flight(self, name: str) -> bool:
+        snapshot = self._projection.snapshot(name)
+        return snapshot is not None and bool(snapshot.in_flight)
 
     def address_migrations(self) -> list[dict[str, object]]:
         """Ledger of stored-spec address rewrites (doctor/audit visibility)."""
@@ -363,7 +436,7 @@ class RoutineFacade:
             return PortAdmission.CLOSING
         self._timer_sequence += 1
         try:
-            generation = self._runtime.snapshot(self._handle).generation
+            generation = self._handle.snapshot().generation
         except Exception:
             return PortAdmission.CLOSING
         return self.submit(
@@ -392,9 +465,9 @@ class RoutineFacade:
         if self._closing:
             return
         self._closing = True
-        report = self._runtime.drain(timeout=2.0)
+        report = self._handle.drain(timeout=2.0)
         if not report.complete:
-            self._runtime.stop(self._handle, timeout=0.0)
+            self._handle.stop(timeout=0.0)
         self._effect_stop.set()
         try:
             self._effects.put_nowait(_STOP)
@@ -407,6 +480,7 @@ class RoutineFacade:
             self._close_projection()
         if report.complete and self._writer_store is not None:
             self._close_writer()
+        self._hosts.shutdown()
 
     def _projection_of(self, snapshot: RoutineSnapshot) -> RoutineProjection:
         row = snapshot.routine
@@ -602,11 +676,11 @@ class RoutineFacade:
 
     def _submit_completion(self, effect: RoutineEffect, completion: object) -> bool:
         while not self._effect_stop.is_set():
-            admission = self._runtime.tell(self._handle, completion)
+            admission = self._handle.tell(completion)
             if admission is AdmissionResult.ACCEPTED:
                 return False
             try:
-                generation = self._runtime.snapshot(self._handle).generation
+                generation = self._handle.snapshot().generation
             except Exception:
                 generation = effect.generation
             if generation != effect.generation:
@@ -629,6 +703,7 @@ class RoutineFacade:
                         reason="ROUTINE_ALARM",
                         conversation_id=f"routine:{effect.routine_name}",
                         idempotency_key=effect.idempotency_key,
+                        sender=effect.sender,
                     )
                 except TypeError as error:
                     if "idempotency_key" not in str(error):
@@ -765,6 +840,21 @@ class RoutineFacade:
             code,
             detail,
         )
+
+    def _probe_graph_absent(self, run_id: str) -> bool:
+        """Ask the PAC port whether the local store proves this run is gone.
+
+        A capability that cannot answer (missing, raising, timing out) is not
+        evidence of absence: the row stays.
+        """
+
+        probe = self._graph_absent
+        if probe is None:
+            return False
+        try:
+            return bool(probe(run_id))
+        except Exception:  # noqa: BLE001 - a read failure is never "absent"
+            return False
 
     def _probe_graph_state(self, run_id: str) -> str:
         result = self._pac.status(graph_id=run_id)

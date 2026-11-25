@@ -76,13 +76,15 @@ NOTICE_KIND_NO_PROGRESS = "provider-no-progress"
 T1_BUDGET_ENV = "HYPRIAL_T1_BUDGET_SECONDS"
 
 
-#: Requester URI schemes that address a person, not an agent: a chat adapter
-#: (``adapter:lark:…``), a named route into a chat (``route:…``) or a user.
-HUMAN_FACING_SCHEMES = ("adapter:", "route:", "user:")
+HUMAN_FACING_SCHEMES = ("adapter:", "user:")
 
 
 def is_human_facing_requester(recipient: str) -> bool:
     """True when a notice to ``recipient`` would land in a person's chat.
+
+    The person-facing schemes are a chat adapter (``adapter:lark:…``) and a
+    user.  A retired ``route:<adapter>:<route>`` address (I4a, 2026-11-24)
+    is never a requester, so it is not one of them.
 
     These notices are internal machine text (worker, harness, silence budget,
     attempt id).  A requester behind a chat adapter is a customer or an

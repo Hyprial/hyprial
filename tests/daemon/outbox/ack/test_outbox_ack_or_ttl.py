@@ -26,6 +26,7 @@ from hyprial.daemon.impl.inbox.service.policy import RetryPolicy, online_retry_n
 from hyprial.daemon.impl.runtime import settlement
 from hyprial.daemon.impl.runtime.reconcile import _BridgeReconcileMixin
 from hyprial.kernel import DEFAULT_POLICIES, EXTERNAL_IO
+from tests.support.actor_hosts import new_actor_host
 
 SENDER = "agent:owner:node-a:sender"
 RECIPIENT = "agent:owner:node-b:recipient"
@@ -102,7 +103,7 @@ def _engine(
             database,
             transport,
             _Events(),
-            retry_policy=policy,
+            retry_policy=policy, actor_host=new_actor_host(),
         )
         authority = DeliveryCustodyFacade(coordinator, database)
     return _Engine(authority, transport, database, selected_clock)
@@ -289,7 +290,7 @@ def test_retry_due_excludes_an_actor_claim_while_io_is_in_flight(
     transport = _BlockingTransport()
     transport.set_online(RECIPIENT, True)
     database = tmp_path / "claimed.sqlite3"
-    coordinator = DeliveryCustodyCoordinator(database, transport, _Events())
+    coordinator = DeliveryCustodyCoordinator(database, transport, _Events(), actor_host=new_actor_host())
     authority = DeliveryCustodyFacade(coordinator, database)
     message = _message("claimed", expires_at_ms=start + 60_000)
     authority.submit(message, now_ms=start, defer_direct=True)

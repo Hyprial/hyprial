@@ -1,0 +1,25 @@
+/*
+ * API docs entry of the developer tool layer (PR 4b-G, 2026-11-16):
+ * - These rules style the one link the panel shows over the real backend
+ *   when the host serves the API docs. They live next to the layer, under
+ *   the tool root, so the shared floating-layer stylesheet stays within its
+ *   shrink-only ceiling in the mock-source ledger.
+ */
+.dev-tools-api-docs {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border: 1px solid rgb(120 113 108 / 28%);
+  border-radius: 999px;
+  color: #6d28d9;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.dev-tools-api-docs:hover {
+  background: rgb(109 40 217 / 8%);
+}
+
+.dev-tools-api-docs:focus-visible {
+  outline: 2px solid #6d28d9;
+  outline-offset: 2px;
+}

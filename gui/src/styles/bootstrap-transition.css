@@ -1,0 +1,18 @@
+.bootstrap-transition {
+  align-items: center;
+  justify-content: center;
+}
+
+.bootstrap-transition__card {
+  max-width: var(--ui-width-form);
+  border: 1px solid var(--ui-border);
+}
+
+.bootstrap-transition__card .bootstrap-card__mark {
+  margin: 0 auto var(--ui-space-6);
+}
+
+.bootstrap-transition__status {
+  background: var(--ui-surface);
+  padding: var(--ui-space-4);
+}

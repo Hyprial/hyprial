@@ -220,7 +220,7 @@
       "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
     },
     {
-      "path": "src/hyprial/daemon/impl/harnesses/actor/behaviors/delivery.py",
+      "path": "src/hyprial/daemon/impl/harnesses/actor/behaviors/delivery/__init__.py",
       "symbol": "_on_start_timeout",
       "kind": "function",
       "owner": "hyprial-developer",
@@ -388,24 +388,8 @@
       "reason": "harness 家族自建 startup_timeout_seconds。同上。"
     },
     {
-      "path": "src/hyprial/daemon/impl/harnesses/protocol/common.py",
-      "symbol": "startup_probe_seconds",
-      "kind": "field",
-      "owner": "hyprial-developer",
-      "card": "5c8743093ff5",
-      "reason": "startup_probe_seconds:harness 家族共用的自建启动探测预算。同上。"
-    },
-    {
       "path": "src/hyprial/daemon/impl/harnesses/runtime/launcher.py",
       "symbol": "codex_startup_timeout_seconds",
-      "kind": "parameter",
-      "owner": "hyprial-developer",
-      "card": "5c8743093ff5",
-      "reason": "startup_probe_seconds + codex_startup_timeout_seconds:两个并存的启动预算。同上。"
-    },
-    {
-      "path": "src/hyprial/daemon/impl/harnesses/runtime/launcher.py",
-      "symbol": "startup_probe_seconds",
       "kind": "parameter",
       "owner": "hyprial-developer",
       "card": "5c8743093ff5",
@@ -433,7 +417,7 @@
       "kind": "module constant",
       "owner": "hyprial-developer",
       "card": "pi-p2-launch-trust",
-      "reason": "P2 pi launcher 的声明式启动预算:与 codex app_server/dsh/python-worker 同构,launcher 等 ready 再返回,否则 actor 在 pump spawn 之前捕获身份(pid 恒 null),且 trust 之外的异步启动失败会被当成成功。取 30s 覆盖 SDK bridge 的 get_state ready 往返与冷启动;actor_runtime 只有 stop/drain/shutdown timeout 与重启预算,没有请求级 deadline/ready 原语,组合不出来。"
+      "reason": "P2 pi launcher 的声明式启动预算:与 codex app_server/python-worker 同构,launcher 等 ready 再返回,否则 actor 在 pump spawn 之前捕获身份(pid 恒 null),且 trust 之外的异步启动失败会被当成成功。取 30s 覆盖 SDK bridge 的 get_state ready 往返与冷启动;actor_runtime 只有 stop/drain/shutdown timeout 与重启预算,没有请求级 deadline/ready 原语,组合不出来。"
     },
     {
       "path": "src/hyprial/daemon/impl/harnesses/streaming/process.py",
@@ -500,60 +484,12 @@
       "reason": "外层启动预算的余量项(见 APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT):覆盖两段内层等待【之外】的非超时开销 —— 进程 spawn、birth-identity 探测(本身被 _process_birth_identity 的 ps 1.0s 超时钉住)、initialized notify、asyncio 调度;实测量级几秒,15s 为保守 slack。为何 actor_runtime 给不了:同上,无请求级 deadline 原语。"
     },
     {
-      "path": "src/hyprial/daemon/impl/harnesses/dsh/process.py",
-      "symbol": "DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT",
-      "kind": "module constant",
-      "owner": "hyprial-developer",
-      "card": "NO-CARD (hyprial-developer to file; PR #496 review r2)",
-      "reason": "DSH 的声明式启动预算(launcher 等 ready 再返回,与 codex app_server 同构;否则 actor 在 pump spawn 之前捕获身份,pid 恒为 null)。真实的 ready 在 DshApiClient.__aenter__ 返回之后,其就绪路径是【六个顺序的请求上界】:banner 读取、host.describe、agentPreset.copy(worker channel 时)、session.create/session.history、session.models、session.selectModel —— 六个 DSH_REQUEST_TIMEOUT_SECONDS(15) + 余量 15 = 105。为何 actor_runtime 组合不了:它只有 stop/drain/shutdown 的 timeout 与重启预算,没有请求级 deadline 原语(与 codex APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT 同一理由)。"
-    },
-    {
       "path": "src/hyprial/daemon/impl/harnesses/python_worker/__init__.py",
       "symbol": "PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT",
       "kind": "module constant",
       "owner": "hyprial-cli-developer",
       "card": "NO-CARD (2026-09-26 jev/user-proxy start failures on production)",
       "reason": "Packaged python worker (jev, user-proxy) ready-frame startup budget; was a hard 10 s that production starts exceeded under load. Generous until re-sized from the logged spawn->emit / emit->processed split; the lifecycle deadline still bounds a start."
-    },
-    {
-      "path": "src/hyprial/daemon/impl/harnesses/dsh/process.py",
-      "symbol": "DSH_STARTUP_REAP_SECONDS",
-      "kind": "module constant",
-      "owner": "hyprial-developer",
-      "card": "NO-CARD (hyprial-developer to file; PR #496 review r2)",
-      "reason": "启动/停止握手的一部分:force_close 后等一个被关闭或被拒的 generation 进程组被收尸的上界。它限制的是回收等待,不是一次请求;登记在 manifest 里,以免以后被当成“gate 看不见的等待”而漂移。"
-    },
-    {
-      "path": "src/hyprial/daemon/impl/harnesses/runtime/launcher.py",
-      "symbol": "dsh_startup_timeout_seconds",
-      "kind": "parameter",
-      "owner": "hyprial-developer",
-      "card": "NO-CARD (hyprial-developer to file; PR #496 review r2)",
-      "reason": "HarnessLauncher 的 DSH 启动等待参数,默认 DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT;测试用它把等待缩短为毫秒级。与 codex_startup_timeout_seconds 同一形状。"
-    },
-    {
-      "path": "src/hyprial/daemon/impl/harnesses/dsh_tui/carrier.py",
-      "symbol": "CARRIER_READY_TIMEOUT_SECONDS",
-      "kind": "module constant",
-      "owner": "alicesmith",
-      "card": "PR #1577 dsh-tui interactive connector",
-      "reason": "Launch-scoped bound on one dsh-tui Cordis plugin becoming ready. It observes the plugin control socket the launcher owns; it starts no lifecycle, retry policy, or background work, and the carrier withdraws the registration when the bound expires."
-    },
-    {
-      "path": "src/hyprial/daemon/impl/harnesses/dsh_tui/carrier.py",
-      "symbol": "ready_timeout",
-      "kind": "parameter",
-      "owner": "alicesmith",
-      "card": "PR #1577 dsh-tui interactive connector",
-      "reason": "Test seam for that same single readiness observation (run_dsh_carrier passes it to wait_ready); it is not a second policy and is not used by the launcher."
-    },
-    {
-      "path": "src/hyprial/daemon/impl/harnesses/dsh_tui/carrier.py",
-      "symbol": "wait_ready",
-      "kind": "function",
-      "owner": "alicesmith",
-      "card": "PR #1577 dsh-tui interactive connector",
-      "reason": "Pings the launch-scoped plugin until it reports a live DSH agent, once, before registering. Same shape as streaming/process.py wait_ready: the caller owns the deadline; no native harness readiness or restart policy is composed here."
     },
     {
       "path": "src/hyprial/daemon/impl/network/peer_reachability.py",
@@ -564,36 +500,44 @@
       "reason": "On-demand doctor raw TCP connect bound. It classifies one questioned peer as open, refused, or timeout and starts no lifecycle, retry loop, or background work."
     },
     {
-      "path": "src/hyprial/shell/impl/gui/launcher.py",
+      "path": "src/hyprial/shell/impl/gui/backend/config.py",
       "symbol": "BACKEND_READY_TIMEOUT_SECONDS",
       "kind": "module constant",
       "owner": "hyprial-cli-developer",
-      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
-      "reason": "Foreground source-mode launcher bound on one npm stub printing its ready line and serving /healthz. It starts no daemon lifecycle, retry policy, or background work; a timeout stops only this invocation's child process group."
+      "card": "GUI-M1-SOURCE-ENTRY-20261105 cli-dev-entry",
+      "reason": "Foreground launcher bound on the launcher-owned session host printing its readiness line when it serves the daemon driver in process (daemon attach and catalog build included), or on the launcher-owned Contract Mock publishing its endpoint/token and answering its health probe. It starts no borrowed daemon lifecycle, retry policy, restart loop, or background supervision; a timeout stops only this invocation's owned child process group."
     },
     {
-      "path": "src/hyprial/shell/impl/gui/launcher.py",
+      "path": "src/hyprial/shell/impl/gui/backend/config.py",
       "symbol": "FRONTEND_READY_TIMEOUT_SECONDS",
       "kind": "module constant",
       "owner": "hyprial-cli-developer",
-      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
-      "reason": "Foreground source-mode launcher bound on one Vite/npm frontend serving /__gui/healthz. It is a single readiness observation for the user-visible command, not a daemon/agent start policy or restart loop."
+      "card": "GUI-M1-SOURCE-ENTRY-20261105 cli-dev-entry",
+      "reason": "Foreground source-mode launcher bound on the launcher-owned host child (the Python session host, installed or source; for the daemon driver only its health probe after the ready line, its readiness line itself having the BACKEND_READY_TIMEOUT_SECONDS budget) and, for hyprial gui dev, on the Vite dev server child emitting its readiness line; the host must emit its exact driver-ready line and serve /__gui/healthz. Each child gets one readiness observation for the user-visible command, not a daemon/agent start policy, restart loop, or borrowed-process supervisor."
     },
     {
-      "path": "src/hyprial/shell/impl/gui/launcher.py",
-      "symbol": "STUB_READY_POLL_SECONDS",
+      "path": "src/hyprial/shell/impl/gui/backend/config.py",
+      "symbol": "READY_POLL_INTERVAL_SECONDS",
       "kind": "module constant",
       "owner": "hyprial-cli-developer",
-      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
-      "reason": "Poll interval while reading the one HYPRIAL_STUB_READY line from the child stub pipe. It is not a retry/backoff budget and does not launch or restart anything."
+      "card": "GUI-M1-SOURCE-ENTRY-20261105 cli-dev-entry",
+      "reason": "Bounded queue-read interval while consuming the one launch-scoped Contract Mock endpoint/token publication or the one HYPRIAL_GUI_READY record of a host or dev-server child. The owning launch timeout is the only deadline; this is not a retry/backoff policy and does not launch or restart anything."
     },
     {
-      "path": "src/hyprial/shell/impl/gui/launcher.py",
-      "symbol": "_wait_for_stub_ready",
+      "path": "src/hyprial/shell/impl/gui/backend/lifecycle/process.py",
+      "symbol": "_wait_for_host_ready",
       "kind": "function",
       "owner": "hyprial-cli-developer",
-      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
-      "reason": "Reads the single launch-scoped placeholder-stub handshake before the CLI starts the frontend. The caller owns the only deadline; there is no retry, restart, quarantine, or background supervision."
+      "card": "GUI-M1-SOURCE-ENTRY-20261105 cli-dev-entry",
+      "reason": "Reads the one launch-scoped HYPRIAL_GUI_READY line of the Python session host (or, for hyprial gui dev, of the Vite dev server) from this invocation's captured pipe and hands it to the caller's parser, which validates service, mode, driver, loopback origin and launch-required session. The function owns only the one deadline; there is no retry, restart, quarantine, borrowed-daemon supervision, or background work."
+    },
+    {
+      "path": "src/hyprial/shell/impl/gui/host/__main__.py",
+      "symbol": "_start_timer",
+      "kind": "function",
+      "owner": "hyprial-cli-developer",
+      "card": "GUI-2b python-session-host (feat/gui-python-session-host)",
+      "reason": "Scanner false-positive classification: 'start' names arming a timer, not starting a lifecycle. BoundedHttpProtocol._start_timer arms the per-connection read-idle (10 s, refreshed by received bytes) and whole-request (15 s from the first byte) deadlines of the GUI session host's HTTP stack, and closes only that one browser connection when it fires, deferring while an earlier response is still in flight. It starts, restarts, retries or supervises no process or actor and has no backoff; the host is a single child process owned by the launcher. Source audit 2026-11-15: ActorRuntime/EffectLane/GenerationScheduler model daemon actors and effects, not an HTTP connection's receive deadline inside the uvicorn protocol callbacks; the timers are asyncio loop.call_later handles that connection_lost cancels. Pinned by tests/shell/gui/host/relay/test_http_protocol.py."
     },
     {
       "path": "src/hyprial/daemon/impl/application/actors/lifecycle_ops.py",
@@ -602,6 +546,76 @@
       "owner": "hyprial-developer",
       "card": "PR #2048 agent start rc",
       "reason": "Upper bound (1s) for the single post-start readiness/error observation after lifecycle.start. It is not a retry, restart, backoff or quarantine policy; the caller waits once for the already-recorded outcome and returns readiness=unconfirmed when neither settles."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/channel/store.py",
+      "symbol": "QuarantineResolution",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "Adapter channel persistence quarantines malformed or unresolved delivery records. These are durable message rows, not actor restart or process supervision policy."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/channel/store.py",
+      "symbol": "quarantine_id",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "Adapter channel persistence quarantines malformed or unresolved delivery records. These are durable message rows, not actor restart or process supervision policy."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/channel/store.py",
+      "symbol": "resolve_quarantine",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "Adapter channel persistence quarantines malformed or unresolved delivery records. These are durable message rows, not actor restart or process supervision policy."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/contracts/receipts.py",
+      "symbol": "quarantine_count",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "Receipt quarantine_count reports the count of durable adapter message records. It owns no actor restart, retry or process lifecycle."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/mail/state.py",
+      "symbol": "quarantine",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "Adapter mail quarantine stores and resolves malformed or unprocessable mail rows. It owns message evidence, not actor restart or process supervision."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/mail/state.py",
+      "symbol": "quarantine_row",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "Adapter mail quarantine stores and resolves malformed or unprocessable mail rows. It owns message evidence, not actor restart or process supervision."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/mail/state.py",
+      "symbol": "resolve_quarantine",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "Adapter mail quarantine stores and resolves malformed or unprocessable mail rows. It owns message evidence, not actor restart or process supervision."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/worker/process.py",
+      "symbol": "startup_timeout",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "The bounded startup_timeout and wait_ready observe one authenticated child process startup. Child launch and termination belong to AdapterWorkerProcess; no actor restart or backoff policy is defined here."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/worker/process.py",
+      "symbol": "wait_ready",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "The bounded startup_timeout and wait_ready observe one authenticated child process startup. Child launch and termination belong to AdapterWorkerProcess; no actor restart or backoff policy is defined here."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/worker/wire.py",
+      "symbol": "_wait_readable",
+      "owner": "adapter-worker-maintainers",
+      "card": "PR #2578 CI inventory review",
+      "reason": "The bounded _wait_readable call waits for one authenticated IPC frame on a child socket. It owns a socket read deadline, not actor lifecycle or restart policy."
     }
   ]
 }

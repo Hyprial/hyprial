@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HyprialOS</title>
+  <style>body{font:16px system-ui,sans-serif;margin:3rem;color:#202124}#error{color:#a12}</style>
+</head>
+<body>
+  <main>
+    <h1>HyprialOS</h1>
+    <p id="status">Starting GUI…</p>
+    <p id="error"></p>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.hash.slice(1));
+    const error = params.get('error');
+    if (error) {
+      document.getElementById('status').textContent = 'The GUI could not start.';
+      document.getElementById('error').textContent = error;
+    }
+  </script>
+</body>
+</html>

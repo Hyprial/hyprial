@@ -16,6 +16,7 @@ from uuid import uuid4
 from hyprial.kernel import HookEventPublisher, ipc_errors
 
 from hyprial.identity import PacError
+from hyprial.daemon.impl.pac.storage.agent_uris import AgentReader
 from hyprial.daemon.impl.pac.graphs.reactor  import (
     NotificationSender,
     PacReactor,
@@ -73,6 +74,7 @@ class _GraphWorkflowServiceCore:
         delivery_receipt: NotificationReceiptAuthority | None = None,
         graph_authority: WorkflowTickAuthority | None = None,
         hook_publisher: HookEventPublisher | None = None,
+        agent_reader: AgentReader | None = None,
     ):
         if graph_authority is not None and not start_thread:
             raise ValueError("PAC graph authority requires asynchronous workflow delivery")
@@ -81,6 +83,7 @@ class _GraphWorkflowServiceCore:
         self.owner, self.machine = owner, machine
         self.sender = WorkflowSender(self.database, sender)
         self.admit = admit
+        self._agent_reader = agent_reader
         self.clock = clock_ms or (lambda: time_ns() // 1_000_000)
         self.logger = logger
         self._delivery_receipt = delivery_receipt
@@ -489,8 +492,10 @@ class _GraphWorkflowServiceCore:
             )
         elif row["on_failure"] == "hold":
             store._db.execute(
-                "UPDATE workflow_graphs SET state='held' WHERE graph_id=?",
-                (graph["graph_id"],),
+                "UPDATE workflow_graphs SET state='held',"
+                "held_at_ms=CASE WHEN state='held' THEN held_at_ms ELSE ? END "
+                "WHERE graph_id=?",
+                (at, graph["graph_id"]),
             )
 
     def _project(
@@ -650,8 +655,10 @@ class _GraphWorkflowServiceCore:
                 )
             elif failed and meta["on_failure"] == "hold":
                 db.execute(
-                    "UPDATE workflow_graphs SET state='held' WHERE graph_id=?",
-                    (graph_id,),
+                    "UPDATE workflow_graphs SET state='held',"
+                    "held_at_ms=CASE WHEN state='held' THEN held_at_ms ELSE ? END "
+                    "WHERE graph_id=?",
+                    (at, graph_id),
                 )
             else:
                 # A failed predecessor cannot become a success by skipping it.

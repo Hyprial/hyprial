@@ -1,3 +1,9 @@
+# Decision record (W1E-2, 2026-11-21):
+# - Preserves crash-resumable purge intent files and ancestor/top-level
+#   (st_dev, st_ino) identity fences, while replacing the 14 hand-rolled dir_fd
+#   + os.scandir calls with lstat & manysys.path_is_reparse verification plus
+#   stdlib shutil.rmtree (safe fd-based deletion on POSIX, non-traversing link
+#   and junction removal on Windows) and manysys.fsync_directory.
 """Crash-resumable, local-only removal of one OrgFS space replica."""
 
 from __future__ import annotations
@@ -7,19 +13,18 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import tempfile
 import time
 from typing import Mapping
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError, SpaceInfo
+from hyprial.kernel import fsync_directory, path_is_reparse
 
 
 _SAFE_SPACE_ID = re.compile(r"^[A-Za-z0-9._:-]+$")
 _SAFE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,16 +35,12 @@ class _DirectoryIdentity:
 
 @dataclass(slots=True)
 class _DeletionFence:
-    component_names: tuple[str, ...]
-    component_identities: tuple[_DirectoryIdentity, ...]
-    descriptors: tuple[int, ...]
-    target_name: str
+    path: Path
+    ancestors: tuple[tuple[Path, _DirectoryIdentity], ...]
     target_identity: _DirectoryIdentity | None
 
     def close(self) -> None:
-        for descriptor in reversed(self.descriptors):
-            os.close(descriptor)
-        self.descriptors = ()
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,11 +88,7 @@ class RuntimeSpacePurge:
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
-        descriptor = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(path)
 
     def _write_space_purge_intent(
         self,
@@ -322,52 +319,47 @@ class RuntimeSpacePurge:
         return _DirectoryIdentity(value.st_dev, value.st_ino)
 
     def _open_deletion_fence(self, path: Path, space_id: str) -> _DeletionFence:
-        parent = Path(os.path.abspath(path.parent))
-        descriptors: list[int] = []
-        component_names = tuple(parent.parts[1:])
-        identities: list[_DirectoryIdentity] = []
+        resolved_path = Path(os.path.abspath(path))
+        parent = resolved_path.parent
+        ancestor_paths = tuple(reversed((parent, *parent.parents)))
+        ancestors: list[tuple[Path, _DirectoryIdentity]] = []
         try:
-            descriptor = os.open(os.sep, _DIRECTORY_FLAGS)
-            descriptors.append(descriptor)
-            identities.append(self._directory_identity(os.fstat(descriptor)))
-            for index, component in enumerate(component_names):
+            for index, ancestor in enumerate(ancestor_paths):
                 try:
-                    child = os.open(
-                        component, _DIRECTORY_FLAGS, dir_fd=descriptor
-                    )
+                    observed = os.lstat(ancestor)
                 except FileNotFoundError:
-                    if index != len(component_names) - 1:
+                    if index != len(ancestor_paths) - 1:
                         raise
-                    os.mkdir(component, mode=0o700, dir_fd=descriptor)
-                    os.fsync(descriptor)
-                    child = os.open(
-                        component, _DIRECTORY_FLAGS, dir_fd=descriptor
-                    )
-                descriptors.append(child)
-                descriptor = child
-                identities.append(self._directory_identity(os.fstat(child)))
+                    ancestor.mkdir(mode=0o700)
+                    self._fsync_directory(ancestor.parent)
+                    observed = os.lstat(ancestor)
+                if (
+                    stat.S_ISLNK(observed.st_mode)
+                    or path_is_reparse(observed)
+                    or not stat.S_ISDIR(observed.st_mode)
+                ):
+                    raise OSError("purge ancestor is not a real directory")
+                ancestors.append((ancestor, self._directory_identity(observed)))
             try:
-                target = os.stat(
-                    path.name, dir_fd=descriptor, follow_symlinks=False
-                )
+                target = os.lstat(resolved_path)
             except FileNotFoundError:
                 target_identity = None
             else:
-                if stat.S_ISLNK(target.st_mode) or not stat.S_ISDIR(target.st_mode):
+                if (
+                    stat.S_ISLNK(target.st_mode)
+                    or path_is_reparse(target)
+                    or not stat.S_ISDIR(target.st_mode)
+                ):
                     raise OSError("purge target is not a directory")
                 target_identity = self._directory_identity(target)
         except OSError as error:
-            for descriptor in reversed(descriptors):
-                os.close(descriptor)
             raise OrgFsError(
                 "unsafe-space-path",
                 {"spaceId": space_id, "reason": "unsafe-ancestry"},
             ) from error
         return _DeletionFence(
-            component_names,
-            tuple(identities),
-            tuple(descriptors),
-            path.name,
+            resolved_path,
+            tuple(ancestors),
             target_identity,
         )
 
@@ -391,83 +383,37 @@ class RuntimeSpacePurge:
 
     def _verified_deletion_target(
         self, fence: _DeletionFence, space_id: str
-    ) -> tuple[int, int] | None:
-        descriptor = os.dup(fence.descriptors[0])
+    ) -> Path | None:
         try:
-            if (
-                self._directory_identity(os.fstat(descriptor))
-                != fence.component_identities[0]
-            ):
-                raise OSError("filesystem root identity changed")
-            for component, expected in zip(
-                fence.component_names, fence.component_identities[1:], strict=True
-            ):
-                child = os.open(
-                    component, _DIRECTORY_FLAGS, dir_fd=descriptor
-                )
-                os.close(descriptor)
-                descriptor = child
-                if self._directory_identity(os.fstat(child)) != expected:
+            for ancestor, expected in fence.ancestors:
+                observed = os.lstat(ancestor)
+                if (
+                    stat.S_ISLNK(observed.st_mode)
+                    or path_is_reparse(observed)
+                    or not stat.S_ISDIR(observed.st_mode)
+                    or self._directory_identity(observed) != expected
+                ):
                     raise OSError("directory identity changed")
             try:
-                target = os.stat(
-                    fence.target_name,
-                    dir_fd=descriptor,
-                    follow_symlinks=False,
-                )
+                target = os.lstat(fence.path)
             except FileNotFoundError:
                 if fence.target_identity is None:
-                    os.close(descriptor)
                     return None
                 raise OSError("purge target disappeared") from None
             if (
                 fence.target_identity is None
                 or stat.S_ISLNK(target.st_mode)
+                or path_is_reparse(target)
                 or not stat.S_ISDIR(target.st_mode)
                 or self._directory_identity(target) != fence.target_identity
             ):
                 raise OSError("purge target identity changed")
-            target_descriptor = os.open(
-                fence.target_name, _DIRECTORY_FLAGS, dir_fd=descriptor
-            )
-            if (
-                self._directory_identity(os.fstat(target_descriptor))
-                != fence.target_identity
-            ):
-                os.close(target_descriptor)
-                raise OSError("opened purge target identity changed")
-            return descriptor, target_descriptor
+            return fence.path
         except OSError as error:
-            os.close(descriptor)
             raise OrgFsError(
                 "unsafe-space-path",
                 {"spaceId": space_id, "reason": "path-identity-changed"},
             ) from error
-
-    def _remove_directory_contents(self, descriptor: int) -> None:
-        with os.scandir(descriptor) as entries:
-            for entry in entries:
-                value = os.stat(
-                    entry.name, dir_fd=descriptor, follow_symlinks=False
-                )
-                if stat.S_ISDIR(value.st_mode) and not stat.S_ISLNK(value.st_mode):
-                    child = os.open(entry.name, _DIRECTORY_FLAGS, dir_fd=descriptor)
-                    try:
-                        identity = self._directory_identity(os.fstat(child))
-                        if identity != self._directory_identity(value):
-                            raise OSError("child directory identity changed")
-                        self._remove_directory_contents(child)
-                        current = os.stat(
-                            entry.name, dir_fd=descriptor, follow_symlinks=False
-                        )
-                        if self._directory_identity(current) != identity:
-                            raise OSError("child directory was replaced")
-                    finally:
-                        os.close(child)
-                    os.rmdir(entry.name, dir_fd=descriptor)
-                else:
-                    os.unlink(entry.name, dir_fd=descriptor)
-        os.fsync(descriptor)
 
     def _remove_fenced_tree(
         self, fence: _DeletionFence, space_id: str
@@ -475,27 +421,14 @@ class RuntimeSpacePurge:
         verified = self._verified_deletion_target(fence, space_id)
         if verified is None:
             return
-        parent_descriptor, target_descriptor = verified
         try:
-            try:
-                self._remove_directory_contents(target_descriptor)
-                current = os.stat(
-                    fence.target_name,
-                    dir_fd=parent_descriptor,
-                    follow_symlinks=False,
-                )
-                if self._directory_identity(current) != fence.target_identity:
-                    raise OSError("purge target was replaced")
-                os.rmdir(fence.target_name, dir_fd=parent_descriptor)
-                os.fsync(parent_descriptor)
-            except OSError as error:
-                raise OrgFsError(
-                    "unsafe-space-path",
-                    {"spaceId": space_id, "reason": "deletion-race"},
-                ) from error
-        finally:
-            os.close(target_descriptor)
-            os.close(parent_descriptor)
+            shutil.rmtree(verified)
+            self._fsync_directory(verified.parent)
+        except OSError as error:
+            raise OrgFsError(
+                "unsafe-space-path",
+                {"spaceId": space_id, "reason": "deletion-race"},
+            ) from error
 
     def _delete_space_storage(
         self,

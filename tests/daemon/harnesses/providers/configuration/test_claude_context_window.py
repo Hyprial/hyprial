@@ -33,7 +33,6 @@ from __future__ import annotations
 import pytest
 
 from hyprial.daemon.impl.harnesses.agent_sdk import IsolatedAgentSdkClient
-from hyprial.daemon.impl.harnesses.claude import ClaudeConnector
 from hyprial.daemon.impl.harnesses.codex import CodexAppServerClient
 from hyprial.daemon.impl.harnesses.model_provider import (
     DEEPSEEK_API_KEY_ENV,
@@ -41,10 +40,6 @@ from hyprial.daemon.impl.harnesses.model_provider import (
     HYPRIAL_API_KEY_ENV,
     claude_provider_environment,
     codex_provider_configuration,
-)
-from hyprial.daemon.impl.harnesses.protocol.common import (
-    ConnectorOptions,
-    PtyHarnessProcess,
 )
 from hyprial.kernel import HarnessLaunchSpec
 
@@ -133,34 +128,6 @@ def test_a_resumed_launch_carries_the_boundary_too() -> None:
     assert client.options["resume"] == "0f9b4c1e-3a4d-4f6e-9b1a-8d2f5c7e0a11"
     assert client._env[MAX_CONTEXT_ENV] == MODEL_CONTEXT_TOKENS
     assert client._env[WINDOW_ENV] == COMPACT_WINDOW
-
-
-def test_the_pty_connector_launch_carries_the_boundary(monkeypatch) -> None:
-    """The non-SDK Claude launch is the same provider seam, not a parallel one.
-
-    An operator's own terminal launch is the other way a session grows past a
-    window, so it must size itself from the same table.  The spawn is captured
-    rather than executed: this pins what the connector hands the child, not
-    what a real claude does with it.
-    """
-
-    captured: dict[str, object] = {}
-
-    def fake_spawn(harness, argv, **kwargs):
-        captured["harness"] = harness
-        captured["env"] = dict(kwargs.get("env") or {})
-        return object()
-
-    monkeypatch.setattr(PtyHarnessProcess, "spawn", fake_spawn)
-    connector = ClaudeConnector(
-        ConnectorOptions(("claude",), {DEEPSEEK_API_KEY_ENV: KEY})
-    )
-    connector.launch(spec())
-
-    assert captured["harness"] == "claude"
-    environment = captured["env"]
-    assert environment[MAX_CONTEXT_ENV] == MODEL_CONTEXT_TOKENS
-    assert environment[WINDOW_ENV] == COMPACT_WINDOW
 
 
 # ── precedence: an explicit value is never overwritten ───────────────────────

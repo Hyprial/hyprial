@@ -33,7 +33,7 @@ cc-kanban 的具体故障是 **PAC 拒绝它已有的完整地址**，不是发�
 
 | 对象 | 存储/输出形态 | 边界 |
 | --- | --- | --- |
-| 人 | `user:<owner>` | 人不绑定机器，接收方自己的 Squire 路由负责送达 |
+| 人 | `user:<owner>` | 人不绑定机器；送达路径由接收侧决定（本文不承诺具体通道） |
 | agent | `agent:<owner>:<machine>:<actor>` | 四段均保留；机器不同或 actor 不同即是不同地址 |
 | 节点 owner | 上述两类之一 | task/clock/actor/end 均同形；actor 节点的 owner 是责任人/agent，不等于其被启动对象 |
 | graph.created_by / 新建 --by | 同样的 Principal URI | 避免节点已全限定而图 activate/close/stop 仍比较裸名 |

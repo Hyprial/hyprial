@@ -169,3 +169,98 @@ def test_a_refusal_still_reads_as_a_failure() -> None:
             )
         )
         assert human == f"消息投递失败：{reason}（消息 m-2）。", reason
+
+
+def _claiming_emitter(tmp_path: Path, delivered: list[str]) -> AlarmEmitter:
+    claims: set[tuple[str, str, int]] = set()
+
+    def claim(scope: str, reason: str, window: int, _now: int) -> bool:
+        key = (scope, reason, window)
+        if key in claims:
+            return False
+        claims.add(key)
+        return True
+
+    return AlarmEmitter(
+        Logger.daemon(tmp_path, name="node-a"),
+        deliver_agent=lambda item, _text: not delivered.append(item.message_id),
+        claim=claim,
+        clock_ms=lambda: 61_000,
+    )
+
+
+def _default_conversation_alarm(message_id: str) -> Alarm:
+    from hyprial.daemon.impl.conversations.ids import default_conversation_id
+
+    return Alarm(
+        correlation_id=message_id,
+        message_id=message_id,
+        conversation_id=default_conversation_id(
+            "agent:alice:mac:sender", "agent:bob:pc:missing"
+        ),
+        sender="agent:alice:mac:sender",
+        recipient="agent:bob:pc:missing",
+        reason="TARGET_NOT_FOUND",
+        audience="agent",
+    )
+
+
+def test_two_failing_sends_in_one_default_conversation_each_alarm(
+    tmp_path: Path,
+) -> None:
+    """A default conversation spans every no-id send of a pair, so its
+    throttle unit is the message: a second failing send is not swallowed by
+    the first one's window, while the same message failing again is."""
+
+    delivered: list[str] = []
+    emitter = _claiming_emitter(tmp_path, delivered)
+
+    assert emitter.emit(_default_conversation_alarm("msg-1")).status == "delivered"
+    assert emitter.emit(_default_conversation_alarm("msg-2")).status == "delivered"
+    assert emitter.emit(_default_conversation_alarm("msg-1")).status == "throttled"
+
+    assert delivered == ["msg-1", "msg-2"]
+
+
+def test_an_explicit_conversation_keeps_its_conversation_throttle(
+    tmp_path: Path,
+) -> None:
+    delivered: list[str] = []
+    emitter = _claiming_emitter(tmp_path, delivered)
+    first = alarm()
+    second = Alarm(
+        correlation_id="msg-other",
+        message_id="msg-other",
+        conversation_id=first.conversation_id,
+        sender=first.sender,
+        recipient=first.recipient,
+        reason=first.reason,
+        audience=first.audience,
+    )
+
+    assert emitter.emit(first).status == "delivered"
+    assert emitter.emit(second).status == "throttled"
+    assert delivered == ["msg-original"]
+
+
+def test_every_derived_default_conversation_is_recognised_by_the_dedup_scope() -> None:
+    from hyprial.daemon.impl.conversations.ids import default_conversation_id
+    from hyprial.daemon.impl.correlation.alarm import (
+        failure_dedup_scope,
+        is_default_conversation_id,
+    )
+
+    pairs = (
+        ("agent:op:node-1:alpha", "agent:op:node-1:beta"),
+        ("a.b4kuo3kxusjtp6ug25qzqycshe", "user:op"),
+        ("adapter:lark:app:chat", "route:r:dm"),
+        ("", ""),
+    )
+    for a, b in pairs:
+        conversation = default_conversation_id(a, b)
+        assert is_default_conversation_id(conversation), conversation
+        assert failure_dedup_scope(conversation, "m-1") == "request:m-1"
+        assert failure_dedup_scope(conversation, None) == conversation
+    for explicit in ("conversation-1", "lark:oc_chat", "", "dc.short", "DC.ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+        assert not is_default_conversation_id(explicit), explicit
+        assert failure_dedup_scope(explicit, "m-1") == explicit

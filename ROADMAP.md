@@ -122,6 +122,91 @@ HYPRIAL_NETWORK_ISOLATED=1 uv run --python 3.12 pytest -q \
 
 ---
 
+## G4 · dev CI 稳定性闭环与残余问题归属
+
+**状态：执行中，尚未验收（2026-11-14）。** 用户已批准本任务方案并要求持续推进；
+[#2727](https://code.hyprial.com/HyprialOS/hyprial/pulls/2727) 已进入 dev，当前整合基线为
+`2a494edccdee0135b0a4dbb6fd7f7cf755b803f0`。旧基线的红绿证据保留其原 SHA，
+不能改写为新基线实测。设计见 [WIP #2764](https://code.hyprial.com/HyprialOS/hyprial/pulls/2764)
+与 [CI 稳定化设计](docs/design/dev-ci-stability-2026-11-14.md)；
+原始现场与后续追加记录见 [本轮证据](docs/notes/dev-ci-stability-2026-11-14/README.md)。
+
+### 触发与范围
+
+本轮 dev 的 worker crash、daemon 启动无进展、分片 max-time、settlement/help
+teardown、freshness/Git 环境依赖、isolated contracts、原生引擎及 3.15t 已触发本目标。
+任一未归属失败、缺少完整 CI 终态或残余 KP 缺少决定/owner，目标继续执行；
+协调者失联时，接手者从本条、设计、known-problems 和最新 Forgejo job 接续，不重新猜测旧现场。
+
+### 执行步骤与命令摘要
+
+1. 获取最新 dev 完整 SHA；重读 AGENTS/GLOSSARY/known-problems，核对关联 PR 的合入状态。
+   每类故障独立短分支和小 PR，目标 dev；保留 base/head、runner/OS/arch/Python、命令、
+   同 SHA 样本数、失败数、job URL与原始日志。测试名不是 crash 根因，缺 signal/OOM/栈时写 UNKNOWN。
+2. 在隔离 HOME/socket/port/cache 中先复现，再修原因。产品行为变化先红后绿；测试修复
+   保留原业务不变量，靠明确完成事件、持久化边界和资源所有权消除竞态。修改产品/测试结构先运行：
+
+   ```bash
+   uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py
+   uv run --no-project --python 3.12 python scripts/ci/check_module_boundaries.py
+   ```
+
+   任何代码变更先跑精确焦点；`src/hyprial/` 变化按 AGENTS 追加：
+
+   ```bash
+   uv run --with libcst==1.9.0 pytest tests/
+   uv run ruff check .
+   ```
+
+   C1/跨实现契约修复必须跑完所有段，不能以前序失败遮住后续结果：
+
+   ```bash
+   ./contract/run-all.sh --isolated-only
+   ```
+
+3. Sol 独立检查最终 diff/精确 head、关键红绿、负例和禁区；Astra协调跨模块权威边界与
+   共享 fixture 的唯一 owner；Terra完成小 PR施工。相关失败必须修复或明确 BLOCKED，
+   不把本地通过冒充真实平台 CI。macOS arm64引擎门继续修；Linux arm64只调查、不修、不删，
+   待Allen平台决定。既有Linux arm64三连PASS与其他SHA取消/等待分别保留。
+4. 合入后固定最终 dev 版本及测试/workflow/依赖/runner配置，在 Forgejo Actions 对该冻结ref
+   显式触发 `gate-python.yml` 的 `workflow_dispatch`，核对plan为full、全部checks/unit及四个pytest
+   shards有终态；同时执行适用的GUI/契约/原生引擎门并保存清单。按当前
+   `native-conformance.yml`核对reference-abi，以及各原生平台三次CONFORMANCE PASS；
+   3.15t按既有非阻断探针单列结果。重复完整周期五次，任何代码/测试/workflow/依赖/runner配置变化
+   后重新建立可比窗口，不用retry覆盖失败，不以branch protection的最小contexts代替全矩阵。
+5. 如五次全绿不能取得，在known-problems逐项写现象、影响、已验证规避（没有则写无）、
+   决定、证据、负责人，明确FAIL/BLOCKED/UNKNOWN与缺失次数；证据只追加，不删除历史失败。
+   新编号先核对最新dev，避免重号。完成后更新本条状态，保留证据和PR链。
+
+### 验收判据
+
+- 同一可比最终版本五次完整 CI 全绿，含每次run/job、SHA、矩阵、终态与时长；pending/cancelled/
+  skipped不能填PASS，3.15t既有非阻断结果仍须披露；**或**所有残余KP都具备上述六项且owner/决定明确。
+- 本地焦点、单分片、一次native三连或强行合入均不等于五次完整CI通过。
+- 残余KP不自动关闭required checks，不意味着产品已稳定；完成报告明确采用哪条验收分支。
+
+### 红线与本轮合入授权
+
+- 不新增skip、xfail、自动retry，不放宽业务断言，不无证调高预算，不修改branch protection；
+  证据支持的下载/runner/启动预算设计可独立提出，workflow仍由授权维护者合入。
+- 不修改`gui/`、`src/hyprial/shell/impl/gui/`、`clients/`、`packaging/`。external promotion、
+  GUI signals、daemon-request-browser、reference代理相关两入口按用户决定随GUI单一启动改造移除，
+  本轮不修、不加skip；dev-browser-parity只核#2758已修。crates/conformance引擎门不随旧壳删除。
+- 不读改清理生产daemon、凭据、Lark或用户配置；只能结束本例自有进程。真实环境缺失写BLOCKED。
+- 用户2026-11-14新增授权：**本任务已由Sol独立验收的小PR，若仅被无关失败阻断，允许主协调者
+  强行合入dev。** 这不是跳过相关失败的授权，也不适用于未经本任务验收的其他PR。每次须记录
+  精确base/head、被判无关的job与对照证据、局部验收、授权依据、实际merge结果；不修改分支保护，
+  合入不涂绿失败。API/权限拒绝仍如实BLOCKED，不能伪报已合入。
+
+### 负责人和当前证据
+
+主协调者负责Forgejo小PR、合入审计与最终闭环；Astra负责架构/协同，Sol负责独立验收，Terra负责施工。
+平台决定由Allen负责；具体残余项由known-problems中的模块/runner责任role承接。
+已取得旧基线若干局部候选红绿与独立验收，真实macOS官方依赖获取/三连conformance仍BLOCKED，
+新基线五次完整CI窗口尚未建立。本目标继续执行，不能宣告完成。
+
+---
+
 ## 维护规则
 
 - **每次发版必须过一遍本文件**(发版是天然的触发点,不设"定期维护" —— 定期维护的东西一定会烂);

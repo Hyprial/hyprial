@@ -8,6 +8,15 @@ job introduced on release/v0.5.5.3 and of the desktop-check retirement.
 2026-11-03 (Allen): the four skill-impact-class text gates left the shared
 ubuntu-latest pool for the ci-light HOST runner (no pre-job image), and
 pr-hygiene kept only its release-ci arm on a container pool.
+
+2026-11-14: gate-python.yml's pytest-shard matrix gained the ``isolated``
+entry, which runs tests/integration/teleport alone because those modules
+pushed a shard past the runner memory limit. It is one more matrix-expanded
+caller of the same job on both pools: a new context, not a renamed shard.
+
+2026-11-15: native-conformance.yml gained a ``plan`` job in PR #2821
+(b55e09b14) on the release-ci pool -- one more implicit-image context on
+the same pool as the W2 gate jobs below.
 """
 
 _RELEASE_PUBLISHERS = {
@@ -128,4 +137,43 @@ INTRODUCED_GATE_RENAME_IMAGE_CONTEXTS = {
     (".forgejo/workflows/gate-python.yml", "tailcat-go", "runner-image ubuntu-latest"),
     (".forgejo/workflows/gate-python.yml", "unit", "runner-image release-ci"),
     (".forgejo/workflows/gate-python.yml", "unit", "runner-image ubuntu-latest"),
+}
+
+# KP-027 W2 native conformance gate (2026-11-14). Three jobs use the release-ci
+# pool's implicit node:22-bookworm image after P8 removed the pykka job; the
+# arm64 job declares an explicit manylinux2014_aarch64 container and the darwin
+# job runs on a host runner, so neither adds an implicit runner image.
+INTRODUCED_NATIVE_CONFORMANCE_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/native-conformance.yml", "plan", "runner-image release-ci"),
+    (".forgejo/workflows/native-conformance.yml", "reference-abi", "runner-image release-ci"),
+    (".forgejo/workflows/native-conformance.yml", "native-linux-amd64", "runner-image release-ci"),
+    (".forgejo/workflows/native-conformance.yml", "free-threaded-3-15t", "runner-image release-ci"),
+}
+
+# KP-027 five-platform candidate pipeline (2026-11-14). Five jobs take an
+# implicit runner image; the two arm64 jobs and the darwin job run on host
+# runners and declare their own containers, so they add no implicit image.
+INTRODUCED_KP027_CANDIDATE_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/kp027-native-candidate.yml", "pin", "runner-image release-ci"),
+    (".forgejo/workflows/kp027-native-candidate.yml", "native-linux-amd64", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/kp027-native-candidate.yml", "wheel-linux-amd64", "runner-image release-ci"),
+    (".forgejo/workflows/kp027-native-candidate.yml", "wheel-linux-arm64", "runner-image release-ci"),
+    (".forgejo/workflows/kp027-native-candidate.yml", "assemble", "runner-image release-ci"),
+}
+
+INTRODUCED_ISOLATED_LANE_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=isolated]", pool)
+    for pool in ("runner-image release-ci", "runner-image ubuntu-latest")
+}
+
+INTRODUCED_WIP_PLAN_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/mock-model-harness-e2e.yml", "plan", "runner-image ubuntu-latest"),
+}
+
+INTRODUCED_NATIVE_SHELL_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/gate-native-shell.yml", "launcher", "runner-image ubuntu-latest"),
+}
+
+INTRODUCED_GUI_ACCEPTANCE_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/gate-gui.yml", "gui-acceptance", "runner-image ubuntu-latest"),
 }

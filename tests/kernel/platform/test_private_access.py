@@ -9,11 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from hyprial.kernel.impl.platform.privacy import private_access
+from hyprial.kernel.impl.manysys.fs import private_access
 
 _CURRENT = "S-1-5-21-1000"
 _OTHER_USER = "S-1-5-21-2000"
 _SYSTEM = "S-1-5-18"
+_ADMINISTRATORS = "S-1-5-32-544"
+_OWNER_RIGHTS = "S-1-3-4"
+_AUTHENTICATED_USERS = "S-1-5-11"
 
 
 class _Acl:
@@ -191,6 +194,41 @@ def test_reparse_point_is_rejected(
     )
 
 
+def test_config_file_contract_keeps_only_the_posix_group_write_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(private_access, "posix_metadata_enforced", lambda: True)
+    metadata = _metadata()
+    metadata.st_uid = 4321  # ownership is not part of this file's contract
+    metadata.st_mode = stat.S_IFREG | 0o664
+    assert (
+        private_access.private_config_file_violation(
+            Path("request-http.json"), metadata
+        )
+        == "unsafe-mode"
+    )
+    metadata.st_mode = stat.S_IFREG | 0o644
+    assert (
+        private_access.private_config_file_violation(
+            Path("request-http.json"), metadata
+        )
+        is None
+    )
+
+
+def test_config_file_contract_uses_the_windows_dacl_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "request-http.json"
+    _install_windows(monkeypatch, _Descriptor(path))
+
+    assert private_access.private_config_file_violation(path, _metadata()) is None
+    assert (
+        private_access.private_config_file_violation(path, _metadata(reparse=True))
+        == "unsafe-reparse"
+    )
+
+
 def test_object_allow_ace_fails_closed_instead_of_reading_a_guid_as_a_sid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -314,3 +352,76 @@ def test_unrecognised_ace_shape_fails_closed(
 
     with pytest.raises(OSError):
         private_access.private_metadata_violation(path, _metadata(), mode=0o600)
+
+
+def _cpython_mkdir_0700(path: Path, *, owner: str) -> _Descriptor:
+    """``D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)`` from CPython 3.12.4+ (gh-118486)."""
+
+    descriptor = _Descriptor(path, owner=owner, trustees=())
+    assert descriptor.dacl is not None
+    for sid in (_SYSTEM, _ADMINISTRATORS, _OWNER_RIGHTS):
+        descriptor.dacl.AddAccessAllowedAceEx(2, 0x3, 0x1F01FF, sid)
+    return descriptor
+
+
+def test_cpython_private_mkdir_dacl_owned_by_the_current_user_is_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state"
+    _install_windows(monkeypatch, _cpython_mkdir_0700(path, owner=_CURRENT))
+
+    assert private_access.private_metadata_violation(path, _metadata(), mode=None) is None
+
+
+def test_owner_rights_cannot_admit_a_foreign_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state"
+    _install_windows(monkeypatch, _cpython_mkdir_0700(path, owner=_OTHER_USER))
+
+    assert (
+        private_access.private_metadata_violation(path, _metadata(), mode=None)
+        == "wrong-owner"
+    )
+
+
+def test_owner_rights_does_not_count_as_current_user_read_for_an_admin_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state"
+    _install_windows(monkeypatch, _cpython_mkdir_0700(path, owner=_ADMINISTRATORS))
+
+    assert (
+        private_access.private_metadata_violation(path, _metadata(), mode=None)
+        == "unsafe-acl"
+    )
+
+
+def test_inherit_only_owner_rights_ace_is_not_current_user_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state"
+    descriptor = _Descriptor(path, trustees=())
+    assert descriptor.dacl is not None
+    descriptor.dacl.AddAccessAllowedAceEx(2, 0x3 | 0x8, 0x1F01FF, _OWNER_RIGHTS)
+    _install_windows(monkeypatch, descriptor)
+
+    assert (
+        private_access.private_metadata_violation(path, _metadata(), mode=None)
+        == "unsafe-acl"
+    )
+
+
+def test_owner_rights_does_not_widen_the_trust_set_to_broad_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state"
+    descriptor = _cpython_mkdir_0700(path, owner=_CURRENT)
+    assert descriptor.dacl is not None
+    descriptor.dacl.AddAccessAllowedAceEx(2, 0x3 | 0x10, 0x1200A9, _AUTHENTICATED_USERS)
+    _install_windows(monkeypatch, descriptor)
+
+    assert (
+        private_access.private_metadata_violation(path, _metadata(), mode=None)
+        == "unsafe-acl"
+    )

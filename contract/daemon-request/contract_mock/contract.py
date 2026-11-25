@@ -13,13 +13,20 @@ Decision record (M-03, 2026-10-31)
   semantic-param-error; the kind declares the validation boundary and the code
   is not used to infer it.  Selecting a scenario a method does not declare is an
   explicit 409, never a fabricated payload.
+- Case selection, selectors and the served mock moved to the JavaScript Contract
+  Mock (gui/contract-mock, 1e-2, 2026-11-15); this package keeps what Python
+  alone can check: load-time validation of every example against the projected
+  schemas with jsonschema, the sensitive-material scan and envelope validation
+  (checks.py), and example lookup by name for tests of the exporters.
+- Decision update (2026-11-21): validate ``x-hyprial-mock-echo`` on each
+  method contract using the same structural rules as ``gui/contract-mock``
+  (non-empty string->string mapping over declared param and result properties).
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -45,17 +52,11 @@ EXAMPLE_KINDS = frozenset(
 PARAM_ERROR_CODES = frozenset({"INVALID_ARGUMENT", "INVALID_PARAMS", "INVALID_REQUEST"})
 DEFAULT_CONTRACT = Path(__file__).resolve().parents[1] / "openapi.json"
 DEFAULT_ENVELOPE = Path(__file__).resolve().parents[1] / "http-envelope.schema.json"
+_MISSING = object()
 
 
 class ContractError(ValueError):
     """The projection cannot be used as a mock contract."""
-
-
-def canonical_digest(document: Any) -> str:
-    payload = json.dumps(
-        document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def _plain(value: Any) -> Any:
@@ -86,51 +87,36 @@ class MethodContract:
     errors: tuple[MappingLike, ...]
     examples: tuple[MappingLike, ...]
     gaps: MappingLike
+    echo: MappingLike = field(default_factory=dict)
 
     def cases_for(self, scenario: str) -> tuple[MappingLike, ...]:
         kinds = SCENARIO_KINDS[scenario]
         return tuple(case for case in self.examples if case["kind"] in kinds)
 
     def gap_for(self, scenario: str) -> str | None:
-        key = {"empty": "empty", "error": "domainErrors"}.get(scenario)
+        key = {"success": "success", "empty": "empty", "error": "domainErrors"}.get(scenario)
         if key is None:
             return None
         value = self.gaps.get(key)
         return value if isinstance(value, str) and value else None
-
-    def available_scenarios(self) -> tuple[str, ...]:
-        return tuple(scenario for scenario in SCENARIOS if self.cases_for(scenario))
 
 
 @dataclass(frozen=True, slots=True)
 class Contract:
     openapi_version: str
     contract_version: str
-    digest: str
     methods: dict[str, MethodContract]
     skipped: MappingLike
     envelope_schema: MappingLike
 
-    @property
-    def envelope_source(self) -> MappingLike:
-        source = self.envelope_schema.get("x-hyprial-source")
-        return source if isinstance(source, dict) else {}
-
-    def select(
-        self, method: str, scenario: str, case_name: str | None = None
-    ) -> MappingLike | None:
-        if scenario not in SCENARIOS:
-            raise ContractError(f"unknown scenario {scenario!r}")
+    def case(self, method: str, name: str) -> MappingLike:
         contract = self.methods.get(method)
         if contract is None:
             raise ContractError(f"unknown method {method!r}")
-        if case_name is not None:
-            for case in contract.examples:
-                if case["name"] == case_name:
-                    return case
-            raise ContractError(f"{method}: no example case named {case_name!r}")
-        candidates = contract.cases_for(scenario)
-        return candidates[0] if candidates else None
+        for example in contract.examples:
+            if example["name"] == name:
+                return example
+        raise ContractError(f"{method}: no example case named {name!r}")
 
 
 def _read_json(path: Path, label: str) -> Any:
@@ -174,11 +160,11 @@ def _check_error_case(
     _require(len(message) <= 512, f"{case.get('name')}: error message is too long")
     _require(code in declared, f"{case.get('name')}: error {code!r} is not declared")
     data_schema = declared[code]
-    data = error.get("data")
-    if data_schema is None:
-        _require(data is None, f"{case.get('name')}: declared {code} has no data schema")
+    if "data" not in error:
         return
-    _require(isinstance(data, dict), f"{case.get('name')}: declared {code} requires data")
+    _require(data_schema is not None, f"{case.get('name')}: declared {code} has no data schema")
+    data = error["data"]
+    _require(isinstance(data, dict), f"{case.get('name')}: error data must be an object")
     validator = _validator(data_schema, f"{kind} error data {code}")
     _require(
         validator.is_valid(_plain(data)),
@@ -252,7 +238,12 @@ def _validate_examples(contract: MethodContract) -> None:
             )
         else:
             _require("reason" not in case, f"{name}: reason is only for empty/unconfigured")
-    _require("success" in kinds, f"{contract.name}: no success example")
+    _require(
+        "success" in kinds or bool(contract.gap_for("success")),
+        f"{contract.name}: no success example or gap reason",
+    )
+    if "success" in kinds:
+        _require(not contract.gap_for("success"), f"{contract.name}: success gap contradicts a case")
     _require("invalid-params" in kinds, f"{contract.name}: no invalid-params example")
     has_empty = bool(kinds & {"empty", "unconfigured"})
     _require(
@@ -271,6 +262,36 @@ def _validate_examples(contract: MethodContract) -> None:
             not contract.gap_for("error"),
             f"{contract.name}: error gap contradicts a declared error case",
         )
+
+
+def _check_echo(
+    name: str,
+    raw_echo: Any,
+    params_schema: MappingLike,
+    result_schema: MappingLike,
+) -> MappingLike:
+    if raw_echo is _MISSING:
+        return {}
+    _require(isinstance(raw_echo, dict), f"{name}: x-hyprial-mock-echo is not an object")
+    _require(bool(raw_echo), f"{name}: x-hyprial-mock-echo must not be empty")
+    params_props = params_schema.get("properties")
+    result_props = result_schema.get("properties")
+    _require(
+        isinstance(params_props, dict) and isinstance(result_props, dict),
+        f"{name}: x-hyprial-mock-echo requires object schemas",
+    )
+    checked: dict[str, str] = {}
+    for param_key, result_key in sorted(raw_echo.items()):
+        _require(
+            isinstance(param_key, str) and bool(param_key) and param_key in params_props,
+            f"{name}: x-hyprial-mock-echo param {param_key!r} is not declared",
+        )
+        _require(
+            isinstance(result_key, str) and bool(result_key) and result_key in result_props,
+            f"{name}: x-hyprial-mock-echo result {result_key!r} is not declared",
+        )
+        checked[param_key] = result_key
+    return checked
 
 
 def _method_contract(name: str, path: str, operation: MappingLike) -> MethodContract:
@@ -302,6 +323,9 @@ def _method_contract(name: str, path: str, operation: MappingLike) -> MethodCont
     _require(isinstance(examples, list), f"{name}: x-hyprial-examples is missing")
     gaps = operation.get("x-hyprial-example-gaps", {})
     _require(isinstance(gaps, dict), f"{name}: x-hyprial-example-gaps is not an object")
+    echo = _check_echo(
+        name, operation.get("x-hyprial-mock-echo", _MISSING), params_schema, result
+    )
     return MethodContract(
         name=name,
         path=path,
@@ -310,6 +334,7 @@ def _method_contract(name: str, path: str, operation: MappingLike) -> MethodCont
         errors=tuple(error for error in errors if isinstance(error, dict) and error.get("code")),
         examples=tuple(examples),
         gaps=gaps,
+        echo=echo,
     )
 
 
@@ -357,7 +382,7 @@ def load_contract(
         methods[name] = contract
     for entry in document.get("x-hyprial-methods", []):
         name = entry["name"]
-        declaration_only = not entry.get("httpExposed") or (entry.get("httpBinding") or {}).get("readOnlyParamsSchema") is not None
+        declaration_only = not entry.get("httpExposed")
         if name in methods or not declaration_only or not entry.get("x-hyprial-examples"):
             continue
         contract = MethodContract(
@@ -365,6 +390,12 @@ def load_contract(
             params_schema=entry["paramsSchema"], result_schema=entry["resultSchema"],
             errors=tuple(entry["errors"]), examples=tuple(entry["x-hyprial-examples"]),
             gaps=entry.get("x-hyprial-example-gaps", {}),
+            echo=_check_echo(
+                name,
+                entry.get("x-hyprial-mock-echo", _MISSING),
+                entry["paramsSchema"],
+                entry["resultSchema"],
+            ),
         )
         _validate_examples(contract)
         methods[name] = contract
@@ -379,7 +410,6 @@ def load_contract(
     return Contract(
         openapi_version=document["openapi"],
         contract_version=str(info.get("version", "")),
-        digest=canonical_digest(document),
         methods=methods,
         skipped=skipped,
         envelope_schema=envelope,

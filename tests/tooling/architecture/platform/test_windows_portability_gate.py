@@ -25,7 +25,17 @@ SPEC.loader.exec_module(GATE)
 # Ceiling on the baseline's total finding count.  It may only be LOWERED (when
 # findings are fixed); raising it to admit a new finding defeats the ratchet.
 # The per-key ratchet against the PR base is ``--base-ref`` (gate-python.yml).
-MAX_BASELINE_FINDINGS = 350
+# Merge of release/v0.5.5.3.4 (which introduced this gate at 350) into
+# release/v0.5.5.4 (per Allen 2026-11-07): +51 findings that already existed on
+# release/v0.5.5.4 (bootstrap onboarding control/journal, GUI backend, request
+# catalog examples, identity worker handoff), recorded as debt-0.5.5.4 keys;
+# no new code.  Lower it as those keys are fixed.
+# Merge of release/v0.5.5.4 b318fe94c (UUID addressing #2546) into the sync
+# branch: the request-catalog examples.py key moved with its split into
+# examples/ (same 4 findings), and +1 W015 in gui/live/personal.py, new on
+# release/v0.5.5.4, recorded as debt-0.5.5.4; no new code (402 pending
+# Allen's confirmation).
+MAX_BASELINE_FINDINGS = 36
 PROBE = "src/hyprial/daemon/impl/probe.py"
 
 
@@ -210,22 +220,18 @@ def test_a_guarded_import_that_re_raises_is_not_a_guard() -> None:
 
 
 def test_platform_seams_are_exempt_but_windows_code_outside_is_always_counted() -> None:
-    seam = "src/hyprial/kernel/impl/platform/file_lock.py"
+    assert GATE.PLATFORM_SEAMS == ("src/hyprial/kernel/impl/manysys/",)
+    seam = "src/hyprial/kernel/impl/manysys/fs/file_lock.py"
     source = "import os\nif os.name == 'nt':\n    import msvcrt\nelse:\n    import fcntl\n"
     assert rules(source, seam) == []
-    # Outside the seams the branch is itself a finding (W015) and so is the
-    # Windows-only import (W019), even though the fcntl import is guarded.
     assert rules(source) == ["W015", "W019"]
-    # A value-level guard (lark authorization/process.py) keeps start_new_session
-    # out of W005; the os.name test it uses is still a W015 finding.
     value_guard = "import os, subprocess\nsubprocess.Popen(['x'], start_new_session=os.name != 'nt')\n"
     assert rules(value_guard) == ["W015"]
-    # The seam's own capability-based directory flush is allowed there only.
     flush = (
         "import os\ndef f(p):\n    d = os.open(p, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))\n"
         "    os.fsync(d)\n"
     )
-    assert rules(flush, "src/hyprial/kernel/impl/platform/filesystem/durability.py") == []
+    assert rules(flush, "src/hyprial/kernel/impl/manysys/fs/durability.py") == []
     assert rules(flush) == ["W007"]
 
 
@@ -295,7 +301,7 @@ def test_a_fixed_finding_leaves_a_stale_key_that_is_red(tmp_path: Path) -> None:
         {PROBE: {"W002": _entry(count=True)}},
         {PROBE: {"W002": {**_entry(), "scope": "f"}}},
         {PROBE: {}},
-        {"src/hyprial/kernel/impl/platform/file_lock.py": {"W001": _entry()}},
+        {"src/hyprial/kernel/impl/manysys/fs/file_lock.py": {"W001": _entry()}},
     ],
 )
 def test_a_malformed_baseline_fails_closed(tmp_path: Path, bad: dict[str, dict[str, object]]) -> None:
@@ -335,11 +341,74 @@ def test_the_base_comparison_rejects_new_keys_and_raised_counts() -> None:
     assert GATE.compare_with_base(same, base) == []
     raised = GATE.parse_baseline(_document({PROBE: {"W002": _entry(count=3)}}))
     assert "raised" in GATE.compare_with_base(raised, base)[0]
-    # Swapping a fixed finding for a new one elsewhere keeps the total but is red.
     swapped = GATE.parse_baseline(
         _document({PROBE: {"W002": _entry(count=1), "W009": _entry(count=1)}})
     )
     assert "new baseline key" in GATE.compare_with_base(swapped, base)[0]
+    first_seed = GATE.parse_baseline(
+        _document({PROBE: {"W002": _entry(count=2), "W021": _entry(count=1)}})
+    )
+    assert GATE.compare_with_base(first_seed, base) == []
+    assert "new baseline key" in GATE.compare_with_base(
+        first_seed, base, frozenset({*GATE.semantics.INITIAL_V2_RULES, "W021"})
+    )[0]
+
+
+def test_first_seed_against_git_base_passes_once_and_locks_thereafter(tmp_path: Path) -> None:
+    other = "src/hyprial/daemon/impl/other.py"
+    root = _tree(tmp_path, KILLPG + "    if not hasattr(os, 'fork'):\n        raise RuntimeError('x')\n")
+    (root / other).write_text("import os\ndef g():\n    if os.name == 'nt':\n        raise RuntimeError('x')\n",
+                              encoding="utf-8")
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    _baseline(root, {PROBE: {"W002": _entry()}})
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "v2-without-w021"], check=True)
+
+    seeded_doc = {
+        "version": GATE.BASELINE_VERSION,
+        "seededRules": ["W002", "W021"],
+        "entries": {PROBE: {"W002": _entry(), "W021": _entry()}, other: {"W015": _entry(), "W021": _entry()}},
+    }
+    (root / GATE.BASELINE_RELATIVE_PATH).write_text(json.dumps(seeded_doc), encoding="utf-8")
+    sneaked = GATE.scan(root, base_ref="HEAD")
+    assert sneaked["status"] == "FAIL"
+    assert any("W015" in err for err in sneaked["baselineErrors"])
+
+    first_w021_only = {
+        "version": GATE.BASELINE_VERSION,
+        "seededRules": ["W002", "W021"],
+        "entries": {PROBE: {"W002": _entry(), "W021": _entry()}},
+    }
+    (root / other).unlink()
+    (root / GATE.BASELINE_RELATIVE_PATH).write_text(json.dumps(first_w021_only), encoding="utf-8")
+    assert GATE.scan(root, base_ref="HEAD")["status"] == "PASS"
+
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "w021-seeded"], check=True)
+
+    (root / other).write_text("def g():\n    raise RuntimeError('Windows unsupported')\n", encoding="utf-8")
+    second_w021 = {
+        "version": GATE.BASELINE_VERSION,
+        "seededRules": ["W002", "W021"],
+        "entries": {PROBE: {"W002": _entry(), "W021": _entry()}, other: {"W021": _entry()}},
+    }
+    (root / GATE.BASELINE_RELATIVE_PATH).write_text(json.dumps(second_w021), encoding="utf-8")
+    locked = GATE.scan(root, base_ref="HEAD")
+    assert locked["status"] == "FAIL"
+    assert any("new baseline key" in err and "W021" in err for err in locked["baselineErrors"])
+
+    (root / other).unlink()
+    (root / PROBE).write_text(KILLPG, encoding="utf-8")
+    GATE.prune_baseline(root)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "w021-pruned-to-zero"], check=True)
+
+    (root / PROBE).write_text(KILLPG + "    raise RuntimeError('Windows unsupported')\n", encoding="utf-8")
+    (root / GATE.BASELINE_RELATIVE_PATH).write_text(json.dumps(first_w021_only), encoding="utf-8")
+    reseeded = GATE.scan(root, base_ref="HEAD")
+    assert reseeded["status"] == "FAIL"
+    assert any("new baseline key" in err and "W021" in err for err in reseeded["baselineErrors"])
 
 
 def test_the_base_ref_is_read_from_git(tmp_path: Path) -> None:
@@ -381,13 +450,15 @@ def test_the_baseline_only_shrinks_and_every_entry_is_reviewed() -> None:
 
 
 def test_rule_ids_agree_across_gate_ci_and_pr_template() -> None:
-    assert sorted(GATE.AST_RULES) == [f"W{n:03d}" for n in (*range(1, 16), 19)]
+    assert GATE.ADVISORY_RULES == frozenset()
+    assert sorted(GATE.AST_RULES) == [f"W{n:03d}" for n in (*range(1, 16), 19, 20, 21)]
     workflow = (ROOT / ".forgejo" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
     template = (ROOT / ".forgejo" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
-    assert "W001-W015, W019" in workflow and "--base-ref" in workflow
-    for rule in ("W015", "W017", "W018", "W019"):
+    assert "W001-W015, W019-W021" in workflow and "--base-ref" in workflow
+    assert "kernel/impl/manysys/**" in template
+    for rule in ("W015", "W017", "W018", "W019", "W020", "W021"):
         assert rule in template, rule
-    assert "W001-W015 and W019" in (GATE.__doc__ or "")
+    assert "W001-W015 and W019-W021" in (GATE.__doc__ or "")
 
 
 def test_the_fixed_0_5_5_3_4_blockers_stay_out_of_the_baseline() -> None:

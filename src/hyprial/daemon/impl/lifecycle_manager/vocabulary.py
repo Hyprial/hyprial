@@ -58,6 +58,7 @@ class LifecycleSpec:
     session: SessionLifecycleSpec | None = None
     interruption_reason: str | None = None
     expected_entity_token: str | None = None
+    keep_intent: bool = False
 
     def __post_init__(self) -> None:
         if self.expected_entity_token is not None and (
@@ -73,6 +74,7 @@ class LifecycleOperation:
     kind: LifecycleKind
     target: LifecycleSpec
     source: LifecycleSpec | None = None
+    observed_entity_token: str | None = None
 
     @classmethod
     def create(cls, operation_id: str, target: LifecycleSpec) -> LifecycleOperation:

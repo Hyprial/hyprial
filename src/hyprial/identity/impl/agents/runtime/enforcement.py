@@ -1,9 +1,14 @@
 """AT10: map each frozen capability to the entry point that enforces it.
 
 Card 359 asks for the capability enum to be bound to real use sites --
-tool-surface, channel, shared-path, org-context, isolation -- with default-deny
+tool-surface, shared-path, org-context, isolation -- with default-deny
 for anything outside the agent's own home, minimum grant, and withdrawal
 handled at the point of use.
+
+Decision (owner, 2026-11-24): the ``channel`` capability is retired.  I4b
+removed its only entry point (``message.send`` to ``route:``), so
+``check_channel`` and the ``channel`` entry point are gone and the ledger no
+longer accepts it.
 
 Recording a grant is not enforcement (that is the AT02 ledger's own rule, and
 ``hyprial.identity.impl.agents.runtime.grants`` says so in its docstring).  This module is the other
@@ -34,7 +39,6 @@ __all__ = [
     "Principal",
     "CapabilityRecord",
     "Verdict",
-    "check_channel",
     "check_isolation",
     "check_org_context",
     "check_shared_path",
@@ -46,7 +50,6 @@ __all__ = [
 CAPABILITY_ENTRY_POINTS: Mapping[str, str] = {
     "agent-home": "the agent's own home (inherent, never granted to a visitor)",
     "tool-surface": "harness tool broker: the agent's tool allow-list",
-    "channel": "outbound channel routes: adapter send paths",
     "shared-path": "filesystem access outside the agent home",
     "org-context": "org shared folder reads",
     "isolation": "execution isolation mode (directory or container)",
@@ -55,7 +58,6 @@ CAPABILITY_ENTRY_POINTS: Mapping[str, str] = {
 #: Capabilities that are granted (as opposed to agent-home, which is inherent).
 GRANTABLE_CAPABILITIES = (
     "tool-surface",
-    "channel",
     "shared-path",
     "org-context",
     "isolation",
@@ -341,10 +343,6 @@ def _within(path: Path, root: Path) -> bool:
 
 def check_tool(tool: str, *, caller: Principal | None = None, records=()) -> Verdict:
     return explain("tool-surface", tool, caller=caller, records=records)
-
-
-def check_channel(channel: str, *, caller: Principal | None = None, records=()) -> Verdict:
-    return explain("channel", channel, caller=caller, records=records)
 
 
 def check_shared_path(

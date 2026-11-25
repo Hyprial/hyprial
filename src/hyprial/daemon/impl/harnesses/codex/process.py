@@ -1,4 +1,16 @@
-"""Codex managed process-group authority, launch constants and connector."""
+"""Codex managed process-group authority and launch constants.
+
+Decision record (2026-11-19, PTY connector removal): the interactive
+connector class was deleted with the PTY launch path; managed codex workers start
+through the app-server process in ``client.py`` and interactive codex
+sessions are started by the CLI.
+
+Decision record (W2B-3 manysys sweep, 2026-11-21):
+- Eliminated business-layer os.name / sys.platform branches, raw signal.SIGKILL
+  references, and the explicit Windows launch refusal in _spawn_managed_codex.
+- npm vendor target selection, process-group construction, child spawning, and
+  escalation signals now delegate to hyprial.kernel / manysys capabilities.
+"""
 from __future__ import annotations
 
 
@@ -6,6 +18,7 @@ import asyncio
 import json
 import os
 import platform
+import select
 import shutil
 import signal
 import sys as sys
@@ -13,30 +26,23 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from hyprial.identity import (
-    ChildEnvironmentLaunch,
-    whitelist_replacement_environment,
-)
-from hyprial.kernel import HarnessLaunchSpec
-
 from hyprial.daemon.impl.harnesses.protocol.common  import (
-    ConnectorOptions,
-    HarnessStartError,
-    PtyHarnessProcess,
     summarize_stderr,
 )
 from hyprial.daemon.impl.harnesses.streaming.protocol  import (
     ProgressObservation,
 )
-from hyprial.daemon.impl.harnesses.model_provider  import codex_provider_configuration
-from hyprial.kernel import create_owned_process_group, is_windows_owned_process_group
 from hyprial.kernel import (
     PROCESS_FORCE_KILL_SECONDS,
     OwnedProcessGroup,
+    create_owned_process_group,
     darwin_group_has_live_members,
+    is_windows_owned_process_group,
     linux_group_has_live_members,
+    manysys,
     parse_linux_process_stat,
     process_birth_identity,
+    spawn_kwargs,
 )
 
 STREAM_LIMIT_BYTES = 8 * 1024 * 1024
@@ -98,13 +104,13 @@ _CODEX_NPM_TARGETS: dict[tuple[str, str], tuple[str, str]] = {
 
 
 def _npm_platform() -> str:
-    if sys.platform == "darwin":
-        return "darwin"
-    if sys.platform.startswith("linux"):
-        return "linux"
-    if sys.platform == "win32":
+    if not manysys.file_modes_are_significant():
         return "win32"
-    return sys.platform
+    if hasattr(select, "epoll"):
+        return "linux"
+    if hasattr(select, "kqueue"):
+        return "darwin"
+    return ""
 
 
 def _npm_arch() -> str:
@@ -215,7 +221,9 @@ def _npm_shim_vendor_executable(shim: Path) -> Path | None:
     optional = manifest.get("optionalDependencies")
     if not isinstance(optional, dict) or package_name not in optional:
         return None
-    executable_name = "codex.exe" if sys.platform == "win32" else "codex"
+    executable_name = (
+        "codex" if manysys.file_modes_are_significant() else "codex.exe"
+    )
     # The shim resolves the platform package's ``package.json`` once and uses
     # that vendor root; only when the resolution fails does it use the main
     # package's vendor. A resolved platform package with a missing binary is
@@ -447,17 +455,16 @@ class _OwnedProcessGroup(OwnedProcessGroup):
         return _darwin_group_has_live_members(process_group_id)
 
 def _managed_process_group() -> OwnedProcessGroup:
-    if os.name == "nt":
-        return create_owned_process_group(label="Codex app-server")
-    return _OwnedProcessGroup()
+    group = create_owned_process_group(label="Codex app-server")
+    if type(group).__name__ == "OwnedProcessGroup":
+        return _OwnedProcessGroup()
+    return group
 
 async def _spawn_managed_codex(command, process_group, **options):
-    if os.name == "nt":
-        if not is_windows_owned_process_group(process_group):
-            raise ConnectionError("Windows Codex requires a Job-owned launch")
+    if is_windows_owned_process_group(process_group):
         return await process_group.spawn(command, **options)
     return await asyncio.create_subprocess_exec(
-        *command, start_new_session=True, **options
+        *command, **spawn_kwargs(), **options
     )
 
 #: The ordinary per-request deadline for a managed app-server RPC (initialize,
@@ -471,68 +478,6 @@ def _thread_id(result: object) -> str:
     if not isinstance(thread_id, str) or not thread_id:
         raise ConnectionError("Codex app-server did not return a thread ID")
     return thread_id
-
-class CodexConnector:
-    def __init__(self, options: ConnectorOptions | None = None) -> None:
-        self.options = options or ConnectorOptions(("codex",))
-
-    def build_argv(self, spec: HarnessLaunchSpec) -> tuple[str, ...]:
-        if spec.harness != "codex":
-            raise HarnessStartError(spec.harness, (), "Codex connector mismatch")
-        provider_args, _provider_environment = codex_provider_configuration(
-            spec,
-            whitelist_replacement_environment(
-                os.environ, self.options.env or {}
-            ),
-        )
-        model_args = ("--model", spec.model) if spec.model is not None else ()
-        return (
-            *spec.resolved_command(self.options.command),
-            *provider_args,
-            *model_args,
-            *spec.args,
-        )
-
-    def launch(
-        self,
-        spec: HarnessLaunchSpec,
-        *,
-        complete_launch: ChildEnvironmentLaunch | None = None,
-    ) -> PtyHarnessProcess:
-        base = (
-            complete_launch.environment.for_exec()
-            if complete_launch is not None
-            else whitelist_replacement_environment(
-                os.environ, self.options.env or {}
-            )
-        )
-        _provider_args, provider_environment = codex_provider_configuration(
-            spec, base
-        )
-        model_args = ("--model", spec.model) if spec.model is not None else ()
-        argv = (
-            *spec.resolved_command(self.options.command),
-            *_provider_args,
-            *model_args,
-            *spec.args,
-        )
-        environment = (
-            {**base, **provider_environment}
-            if complete_launch is not None
-            else whitelist_replacement_environment(
-                os.environ, self.options.env or {}, provider_environment
-            )
-        )
-        return PtyHarnessProcess.spawn(
-            "codex",
-            argv,
-            cwd=spec.cwd,
-            env=environment or None,
-            complete_environment=complete_launch is not None,
-            startup_probe_seconds=self.options.startup_probe_seconds,
-            stop_grace_seconds=self.options.stop_grace_seconds,
-        )
-
 
 """CodexAppServerClient shutdown and force-close behaviors follow: the
 client-side process-lifecycle tail, kept beside the process constants it uses.
@@ -572,11 +517,7 @@ class _ClientCloseMixin:
             )
 
         async def _close_process(self) -> None:
-            try:
-                await self._close_host_process()
-            finally:
-                if self._execution_runtime is not None:
-                    self._execution_runtime.close()
+            await self._close_host_process()
 
         async def _close_host_process(self) -> None:
             process = self._process
@@ -593,23 +534,21 @@ class _ClientCloseMixin:
                 except TimeoutError:
                     pass
     
-            # The app-server owns a new process group.  Always drain that group:
-            # the leader may exit cleanly on stdin EOF while a tool subprocess that
-            # inherited its pipes remains alive.
+            kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
             if process_group_id is not None and self._process_group.exists(process_group_id):
                 self._process_group.signal(process_group_id, signal.SIGTERM)
                 exited = await self._wait_for_process_group_exit(
                     process_group_id, timeout=PROCESS_GROUP_TERM_SECONDS
                 )
                 if not exited:
-                    self._process_group.signal(process_group_id, signal.SIGKILL)
+                    self._process_group.signal(process_group_id, kill_signal)
                     await self._wait_for_process_group_exit(
                         process_group_id, timeout=PROCESS_GROUP_KILL_SECONDS
                     )
     
             if process.returncode is None:
                 if process_group_id is not None:
-                    self._process_group.signal(process_group_id, signal.SIGKILL)
+                    self._process_group.signal(process_group_id, kill_signal)
                 try:
                     await asyncio.wait_for(
                         process.wait(), timeout=PROCESS_GROUP_KILL_SECONDS

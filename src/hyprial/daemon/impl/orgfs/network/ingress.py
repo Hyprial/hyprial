@@ -120,7 +120,7 @@ class MeshIngress:
             )
             token = (command.operation_id, command.generation)
             self._ingress_pending.add(token)
-            admission = self._ingress_runtime.tell(self._ingress_actor, command)
+            admission = self._ingress_cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._ingress_pending.discard(token)
                 self._ingress_dropped += 1

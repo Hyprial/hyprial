@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "fields": ["ts", "requestId", "owner", "keyId", "purpose", "kind", "domain", "payloadSha256", "org", "target", "caller", "decision", "code"],
+  "callerFields": ["class", "actor", "sessionRefSha256", "pid"],
+  "decisions": ["signed", "refused"],
+  "unknownPurpose": null,
+  "invalidPayloadMetadata": null,
+  "maxBytes": 16777216,
+  "retainedRotations": 4,
+  "directoryMode": "0700",
+  "fileMode": "0600",
+  "noRawPayload": true,
+  "noRawSessionRef": true,
+  "auditFailurePreventsSignatureDelivery": true
+}

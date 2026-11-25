@@ -1,4 +1,13 @@
-"""Long-lived Claude Agent SDK streaming process owned by the harness layer."""
+"""Long-lived Claude Agent SDK streaming process owned by the harness layer.
+
+Decision record (W2B-3 manysys sweep, 2026-11-21):
+- Eliminated all business-layer os.name branches and the explicit Windows
+  launch refusal in IsolatedAgentSdkClient.__aenter__.
+- Process-group construction, executable suffix/mode checks, child session
+  creation, and forced group drain delegate uniformly to hyprial.kernel /
+  manysys primitives (create_owned_process_group, is_windows_owned_process_group,
+  spawn_kwargs, file_modes_are_significant).
+"""
 
 from __future__ import annotations
 
@@ -6,12 +15,13 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
 from hyprial.identity import (
@@ -19,15 +29,25 @@ from hyprial.identity import (
     whitelist_replacement_environment,
 )
 from hyprial.identity import AgentRuntimeContext
-from hyprial.kernel import HarnessLaunchSpec, create_owned_process_group, is_windows_owned_process_group
+from hyprial.kernel import (
+    HarnessLaunchSpec,
+    OwnedProcessGroup,
+    create_owned_process_group,
+    is_windows_owned_process_group,
+    manysys,
+    spawn_kwargs,
+)
 from hyprial.kernel import Logger
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 from hyprial.daemon.impl.transfer.execution.container import (
     CONTAINER_SDK_PYTHON,
     CONTAINER_SDK_WORKER,
     wrap_worker_launch,
 )
 
-from hyprial.daemon.impl.harnesses.codex.process  import PROCESS_FORCE_JOIN_SECONDS, _OwnedProcessGroup
+from hyprial.daemon.impl.harnesses.codex.process import PROCESS_FORCE_JOIN_SECONDS
 from hyprial.daemon.impl.harnesses.claude.runtime  import (
     CLAUDE_RUNTIME_ENVIRONMENT,
     ClaudeRuntimeError,
@@ -54,7 +74,7 @@ from .readiness import observe_readiness
 # them so existing composition and tests keep one import path.
 AgentSdkClient = TurnClient
 ClientFactory = TurnClientFactory
-AGENT_SDK_VERSION = "0.2.125"
+AGENT_SDK_VERSION = "0.2.178"
 _RUNTIME_CONTEXT_MODE_ENV = "HYPRIAL_AGENT_SDK_RUNTIME_CONTEXT_MODE"
 _P2_RUNTIME_CONTEXT_MODE = "agent-home-p2"
 
@@ -174,13 +194,14 @@ def _validated_claude_launch_environment(
                 actor=complete_launch.actor,
                 runtimeMode="p2" if runtime_context is not None else "legacy",
             )
+    proof = getattr(complete_launch, "native_auth_launch", None)
+    if proof is not None:
+        proof.select(Path(combined["CLAUDE_CONFIG_DIR"]) if source == "agent-native" else None)
     return runtime_context, base_environment, provider_environment
 
 
-def _sdk_process_group():
-    if os.name == "nt":
-        return create_owned_process_group(label="Claude SDK")
-    return _OwnedProcessGroup()
+def _sdk_process_group() -> OwnedProcessGroup:
+    return create_owned_process_group(label="Claude SDK")
 
 
 def _option_value(args: tuple[str, ...], option: str) -> str | None:
@@ -236,7 +257,9 @@ def _sdk_worker_interpreter() -> str | None:
     executable = sys.executable
     if not executable or not os.path.isabs(executable):
         return None
-    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+    if not os.path.isfile(executable) or (
+        manysys.file_modes_are_significant() and not os.access(executable, os.X_OK)
+    ):
         return None
     return executable
 
@@ -252,10 +275,11 @@ def sdk_worker_command(*, uv_executable: str | None = None) -> tuple[str, ...]:
         return (sys.executable, "-I", "-S", "-B", str(entry))
     uv = uv_executable or shutil.which("uv")
     if uv is None:
-        user_uv = (
-            Path.home() / ".local" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
-        )
-        if user_uv.is_file() and os.access(user_uv, os.X_OK):
+        uv_name = "uv" if manysys.file_modes_are_significant() else "uv.exe"
+        user_uv = Path.home() / ".local" / "bin" / uv_name
+        if user_uv.is_file() and (
+            not manysys.file_modes_are_significant() or os.access(user_uv, os.X_OK)
+        ):
             uv = str(user_uv)
     if uv is None:
         raise RuntimeError("uv is required to launch the isolated Claude Agent SDK")
@@ -320,7 +344,7 @@ class IsolatedAgentSdkClient:
         resume: str | None = None,
         last_session_id: str | None = None,
         on_session_established: Callable[[str], None] | None = None,
-        process_group: _OwnedProcessGroup | None = None,
+        process_group: OwnedProcessGroup | None = None,
         complete_launch: "ChildEnvironmentLaunch | None" = None,
         runtime_launch_custody: (
             Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
@@ -329,14 +353,8 @@ class IsolatedAgentSdkClient:
         if session_id is not None and resume is not None:
             raise ValueError("session_id and resume are mutually exclusive")
         self.spec = spec
-        # OS-level custody of the worker's process group, shared with the
-        # harness wrapper so a stop that the graceful protocol cannot complete
-        # (a worker still in its ``uv`` install phase never reads "stop") can
-        # be forced by PID group instead of hanging the lifecycle effect.
         self._process_group = (
-            process_group
-            if process_group is not None
-            else (_sdk_process_group() if os.name == "nt" else None)
+            process_group if process_group is not None else _sdk_process_group()
         )
         self._on_session_established = on_session_established
         self._last_session_id = last_session_id
@@ -387,14 +405,19 @@ class IsolatedAgentSdkClient:
             )
             self.options["strictMcpConfig"] = True
             self.options["mcpServers"] = {"harness-bridge": worker_channel.mcp_server}
-            self.options["allowedTools"] = list(worker_channel.allowed_tools)
-            # The CLI allow rule overlaps the state-changing commands it must
-            # not reach; Claude Code evaluates deny before allow, so the deny
-            # list travels with the allow list in the same option bundle.
-            if worker_channel.disallowed_tools:
-                self.options["disallowedTools"] = list(
-                    worker_channel.disallowed_tools
-                )
+            authority = worker_channel.authority
+            if authority is not None:
+                self.options.update(authority.launch_options)
+                self.options["authorityVersion"] = authority.version
+            else:
+                self.options["allowedTools"] = list(worker_channel.allowed_tools)
+                # The CLI allow rule overlaps the state-changing commands it
+                # must not reach; Claude Code evaluates deny before allow, so
+                # the deny list travels with the allow list in the same bundle.
+                if worker_channel.disallowed_tools:
+                    self.options["disallowedTools"] = list(
+                        worker_channel.disallowed_tools
+                    )
         identity_environment = (
             worker_channel.identity_environment() if worker_channel is not None else {}
         )
@@ -438,6 +461,7 @@ class IsolatedAgentSdkClient:
             )
         self._startup_timeout_seconds = startup_timeout_seconds
         self._logger = logger
+        self.last_ready: dict[str, object] | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._exit_task: asyncio.Task[None] | None = None
@@ -479,23 +503,23 @@ class IsolatedAgentSdkClient:
             if self._runtime_context is None or self._runtime_launch_custody is None
             else self._runtime_launch_custody(self._runtime_context)
         )
+        job_owned = is_windows_owned_process_group(self._process_group)
         with custody:
-            if os.name == "nt":
-                if not is_windows_owned_process_group(self._process_group):
-                    raise ConnectionError("Windows SDK requires a Job-owned launch")
-                self._process = await observe_readiness(
-                    self._process_group.spawn(self.command, **options),
-                    logger=self._logger, stage="worker-spawn",
+            spawn = (
+                self._process_group.spawn(self.command, **options)
+                if job_owned
+                else asyncio.create_subprocess_exec(
+                    *self.command, **spawn_kwargs(), **options
                 )
-            else:
-                self._process = await observe_readiness(
-                    asyncio.create_subprocess_exec(*self.command, start_new_session=True, **options),
-                    logger=self._logger, stage="worker-spawn",
-                )
-        if self._process_group is not None:
-            # Publishing ownership can raise if the group is already stopping or
-            # its birth identity is unreadable; let that fail the client so the
-            # reconnect loop treats it as an unhealthy start.
+            )
+            self._process = await observe_readiness(
+                spawn,
+                logger=self._logger,
+                stage="worker-spawn",
+            )
+        if self._process_group is not None and (
+            job_owned or self._process.returncode is None
+        ):
             self._process_group.register(self._process.pid)
         self._expected_stop = False
         self._exit_logged = False
@@ -520,6 +544,7 @@ class IsolatedAgentSdkClient:
             )
             if ready.get("type") != "ready":
                 raise ConnectionError(f"Agent SDK worker failed to start: {ready!r}")
+            self.last_ready = dict(ready)
             session_id = ready.get("sessionId")
             expected_ref = self.options.get("resume") or self.options.get("sessionId")
             if expected_ref is not None and session_id != expected_ref:
@@ -573,25 +598,31 @@ class IsolatedAgentSdkClient:
         process = self._process
         if process is None:
             return
+        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
         if process.returncode is None:
             try:
                 await self._write_message({"op": "stop"})
                 await asyncio.wait_for(process.wait(), timeout=2.0)
             except (ConnectionError, TimeoutError):
-                if os.name == "nt" and self._process_group is not None:
-                    self._process_group.signal(process.pid, 15)
+                if (
+                    self._process_group is not None
+                    and self._process_group.exists(process.pid)
+                ):
+                    self._process_group.signal(process.pid, signal.SIGTERM)
                 else:
                     process.terminate()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=1.0)
                 except TimeoutError:
+                    if (
+                        self._process_group is not None
+                        and self._process_group.exists(process.pid)
+                    ):
+                        self._process_group.signal(process.pid, kill_signal)
                     process.kill()
                     await process.wait()
-        if os.name == "nt" and self._process_group is not None:
-            # A surviving descendant may still hold the stdio pipe after the
-            # worker has exited; drain the owned Job before joining readers.
-            if self._process_group.exists(process.pid):
-                self._process_group.signal(process.pid, 9)
+        if self._process_group is not None and self._process_group.exists(process.pid):
+            self._process_group.signal(process.pid, kill_signal)
         if self._stderr_task is not None:
             await self._stderr_task
         if self._exit_task is not None:
@@ -736,7 +767,7 @@ def create_claude_sdk_client(
     resume: str | None = None,
     last_session_id: str | None = None,
     on_session_established: Callable[[str], None] | None = None,
-    process_group: _OwnedProcessGroup | None = None,
+    process_group: OwnedProcessGroup | None = None,
     complete_launch: "ChildEnvironmentLaunch | None" = None,
     runtime_launch_custody: (
         Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
@@ -780,6 +811,7 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         runtime_launch_custody: (
             Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
         ) = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         if spec.harness != "claude" or not spec.headless:
             raise ValueError("Claude Agent SDK requires a managed headless spec")
@@ -839,12 +871,21 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
                 else None
             ),
             on_turn_completed=on_turn_completed,
+            actor_host=actor_host,
         )
 
     @property
     def session_ref(self) -> str:
         """The session id the current (or next) client resumes or establishes."""
         return self._session_id
+
+    @property
+    def last_ready(self) -> Mapping[str, object] | None:
+        """The raw ready frame of the current client, including authority."""
+        with self._lock:
+            client = self._client
+        ready = getattr(client, "last_ready", None)
+        return dict(ready) if isinstance(ready, Mapping) else None
 
     def _session_established(self, session_id: str) -> None:
         self._session_id = session_id

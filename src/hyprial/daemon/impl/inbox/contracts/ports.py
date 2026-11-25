@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Mapping, Protocol, TypeAlias, runtime_checkable
+from typing import Protocol, TypeAlias
 
 from hyprial.kernel import CommandSink, EventSink, PortCommandRejected
 from hyprial.daemon import Alarm, AlarmResult
+from hyprial.daemon.impl.delivery.ports import BodyGrant
 
 from hyprial.daemon.impl.inbox.contracts.api  import (
     AckResult,
@@ -13,12 +14,13 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     HarnessFailureSettlement,
     InboxMessage,
     InboxPruneItem,
-    LinkLedgerCensor,
-    LinkLedgerOpen,
-    LinkLedgerResult,
     OutboxPruneItem,
     ReceiveResult,
     SubmissionResult,
+)
+from hyprial.daemon.impl.inbox.contracts.origin import (
+    OriginClaimResult,
+    OriginClaimant,
 )
 from hyprial.daemon.impl.inbox.tracking.progress  import ProgressEvent
 
@@ -36,35 +38,6 @@ class SubmitMessageCommand:
     message: InboxMessage
     now_ms: int | None = None
     defer_direct: bool = False
-    #: Send-link hold reason (WP2 §2.4, §3.6): non-None parks the row in the
-    #: outbox with ``next_attempt_ms = expires_at_ms`` and no I/O.
-    link_hold: str | None = None
-    #: Durable outbound ledger row written in this same transaction (§3.9).
-    link_open: LinkLedgerOpen | None = None
-    #: Reply accepted: close the original inbound ledger row in this
-    #: transaction (B5, §3.9).
-    link_reply_close: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class UpdateLinkLedgerCommand:
-    """One inbox transaction's worth of durable link bookkeeping (§3.6)."""
-
-    correlation_id: str
-    release: tuple[str, ...] = ()
-    reasons: Mapping[str, str] = field(default_factory=dict)
-    fail: Mapping[str, str] = field(default_factory=dict)
-    drain: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-    cancel_outbound: Mapping[str, str] = field(default_factory=dict)
-    release_outbound: tuple[tuple[str, str], ...] = ()
-    censor: tuple[LinkLedgerCensor, ...] = ()
-    sampled: tuple[tuple[str, str], ...] = ()
-    open_outbound: tuple[LinkLedgerOpen, ...] = ()
-    close_inbound: tuple[tuple[str, str, int], ...] = ()
-    bind_tasks: tuple[tuple[str, str, str, int], ...] = ()
-    unbind_tasks: tuple[tuple[str, str, str], ...] = ()
-    purge_before_ms: int | None = None
-    now_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +75,14 @@ class PruneInboxCommand:
     generation: int
     version: int
     now_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class GrantBodyReleaseCommand:
+    correlation_id: str
+    grant: BodyGrant
+    retention_ms: int
+    now_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +175,7 @@ class BatchSnapshotCommand:
     include_notices: bool = True
     only: tuple[str, ...] | None = None
     mark_fetched: bool = True
+    origin_claim: OriginClaimant | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +203,7 @@ class FetchPendingCommand:
     #: clears the row's non-terminal failure retries in the same transaction,
     #: so a body read before a failed turn does not suppress its retry.
     completed_turn: bool = False
+    origin_claim: OriginClaimant | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +229,28 @@ class AdmittedDispatchableCommand:
     recipient: str
     now_ms: int | None = None
     exclude: tuple[str, ...] = ()
+    origin_claim: OriginClaimant | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimOriginCommand:
+    """Atomically admit and claim scalar origin rows on the inbox actor."""
+
+    correlation_id: str
+    recipient: str
+    message_ids: tuple[str, ...]
+    claimant: OriginClaimant
+    now_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseOriginClaimsCommand:
+    """CAS-release headless origin claims matching ``(owner_actor, claim_seq)``."""
+
+    correlation_id: str
+    message_ids: tuple[str, ...]
+    owner_actor: str
+    claim_seq: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,9 +294,11 @@ InboxCommand: TypeAlias = (
     | FetchPendingCommand
     | AdmittedPendingCommand
     | AdmittedDispatchableCommand
+    | ClaimOriginCommand
+    | ReleaseOriginClaimsCommand
     | PruneOutboxCommand
     | EmitAlarmCommand
-    | UpdateLinkLedgerCommand
+    | GrantBodyReleaseCommand
     | CloseInboxCommand
 )
 
@@ -450,11 +457,11 @@ class AlarmCompleted:
 
 
 @dataclass(frozen=True, slots=True)
-class LinkLedgerUpdated:
+class OriginClaimCompleted:
     correlation_id: str
     generation: int
     version: int
-    result: LinkLedgerResult
+    result: OriginClaimResult
 
 
 InboxEvent: TypeAlias = (
@@ -471,45 +478,12 @@ InboxEvent: TypeAlias = (
     | SubmissionBatchCompleted
     | OutboxPruneCompleted
     | AlarmCompleted
-    | LinkLedgerUpdated
+    | OriginClaimCompleted
     | InboxClosed
     | PortCommandRejected
 )
 InboxCommandSink: TypeAlias = CommandSink[InboxCommand]
 InboxEventSink: TypeAlias = EventSink[InboxEvent]
-
-
-@runtime_checkable
-class LinkLedgerSink(Protocol):
-    """What the inbox tells the link service after a commit (WP2 §3.1).
-
-    All three callbacks run synchronously on the inbox actor thread after the
-    transaction commits and change memory only.  The inbox never imports the
-    links implementation; it resolves the sink from the one bound gate slot.
-    """
-
-    def injected(
-        self,
-        *,
-        actor: str,
-        message_id: str,
-        sender: str,
-        intent: str,
-        reply_to: str | None,
-        received_at_ms: int,
-    ) -> None: ...
-
-    def reply_received(
-        self,
-        *,
-        actor: str,
-        reply_message_id: str,
-        reply_to: str,
-        sender: str,
-        received_at_ms: int,
-    ) -> None: ...
-
-    def discard(self, *, actor: str, message_ids: object) -> None: ...
 
 
 class InboxProjectionPort(Protocol):

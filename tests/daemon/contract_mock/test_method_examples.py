@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -420,3 +421,41 @@ def test_non_invalid_cases_still_require_object_params() -> None:
     )
     with pytest.raises(Exception, match="params must be a JSON object"):
         validate_method_example_set(universal, example_set)
+
+
+def test_mock_echo_projects_to_openapi_and_rejects_invalid_fields() -> None:
+    base = demo_specs()[1]
+    params_schema = {
+        "type": "object",
+        "properties": {"idempotencyKey": {"type": "string"}},
+        "required": ["idempotencyKey"],
+        "additionalProperties": False,
+    }
+    result_schema = {
+        "type": "object",
+        "properties": {"commandId": {"type": "string"}},
+        "required": ["commandId"],
+        "additionalProperties": False,
+    }
+    spec_with_echo = replace(
+        base,
+        name="demo.echo",
+        params_schema=params_schema,
+        result_schema=result_schema,
+        mock_echo={"idempotencyKey": "commandId"},
+    )
+    document = export_openapi((spec_with_echo,))
+    operation = _operation(document, "demo.echo")
+    assert operation["x-hyprial-mock-echo"] == {"idempotencyKey": "commandId"}
+    declaration = next(entry for entry in document["x-hyprial-methods"] if entry["name"] == "demo.echo")
+    assert declaration["x-hyprial-mock-echo"] == {"idempotencyKey": "commandId"}
+
+    bad_spec = replace(
+        base,
+        name="demo.bad_echo",
+        params_schema=params_schema,
+        result_schema=result_schema,
+        mock_echo={"idempotencyKey": "noSuchResultField"},
+    )
+    with pytest.raises(ValueError, match="mock_echo"):
+        export_openapi((bad_spec,))

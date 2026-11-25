@@ -153,3 +153,65 @@ def test_maintenance_lock_symlink_is_refused(tmp_path: Path) -> None:
     (native / ".sqlite-maintenance.lock").symlink_to(foreign)
     with pytest.raises(CodexAgentHomeError, match="unauthorized symbolic link"):
         _prepare(projection, native, sessions, codex)
+
+
+def test_reparse_sessions_link_is_admitted_and_rogue_junction_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stat
+    from types import SimpleNamespace
+    from hyprial.daemon.impl.harnesses.codex import native_env
+
+    projection, native, sessions = _roots(tmp_path)
+    codex = _codex_bin(tmp_path)
+    _prepare(projection, native, sessions, codex)
+    (sessions / "2026" / "11" / "rollout.jsonl").parent.mkdir(parents=True)
+    (sessions / "2026" / "11" / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+
+    sessions_entry = native / "sessions"
+    rogue = native / "rogue-junction"
+    rogue.mkdir()
+    real_scandir = native_env.os.scandir
+
+    class _EntryProxy:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self.path = inner.path
+            self.name = inner.name
+
+        def stat(self, *, follow_symlinks: bool = True):
+            meta = self._inner.stat(follow_symlinks=follow_symlinks)
+            if not follow_symlinks and Path(self.path) in {sessions_entry, rogue}:
+                return SimpleNamespace(
+                    st_mode=stat.S_IFDIR | 0o700,
+                    st_file_attributes=0x400,
+                )
+            return meta
+
+    class _ScandirProxy:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __enter__(self):
+            return (_EntryProxy(item) for item in self._inner.__enter__())
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+        def __iter__(self):
+            return (_EntryProxy(item) for item in self._inner)
+
+        def close(self) -> None:
+            self._inner.close()
+
+    def fake_scandir(directory):
+        if isinstance(directory, (str, native_env.os.PathLike)) and Path(directory) == native:
+            return _ScandirProxy(real_scandir(directory))
+        return real_scandir(directory)
+
+    monkeypatch.setattr(native_env.os, "scandir", fake_scandir)
+    with pytest.raises(CodexAgentHomeError, match="unauthorized symbolic link"):
+        _prepare(projection, native, sessions, codex)
+    rogue.rmdir()
+    _prepare(projection, native, sessions, codex)
+    monkeypatch.undo()

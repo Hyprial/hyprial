@@ -16,9 +16,8 @@ from uuid import uuid4
 from hyprial.identity import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from hyprial.daemon.impl.pac.storage.journal  import JOURNAL_SCHEMA, append_event
 from hyprial.identity import principal_kind
-from hyprial.kernel import legacy_user_uri
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -212,7 +211,7 @@ def _upgrade_v7_to_v8(db: sqlite3.Connection, state_dir: Path) -> None:
     graph that kept its short names would be locked out of flag/close/stop.
     This migration rewrites the two AUTHORIZATION fields -- ``nodes.owner``
     and ``graphs.created_by`` -- to full principal URIs, but ONLY where the
-    local agents registry / user profiles resolve the short name uniquely.
+    local agents registry resolves the short name uniquely.
     Ambiguous or unresolvable values are kept VERBATIM (never guessed); the
     kept values are listed per graph in the ``schema_era`` report, and the
     authorization refusals for those graphs point at it.  Historical fact
@@ -238,20 +237,13 @@ def _upgrade_v7_to_v8(db: sqlite3.Connection, state_dir: Path) -> None:
         )
         """
     )
-    registry_uris, profile_owners = _era_resolution_sources(state_dir)
+    registry_uris = _era_resolution_sources(state_dir)
 
     def resolve(short_name: str) -> tuple[str | None, str | None]:
         """("user:<owner>" | "agent:…" | None, reason for keeping)."""
 
-        candidates = set()
-        if short_name in profile_owners:
-            candidates.add(legacy_user_uri(short_name))
         if short_name in registry_uris:
-            candidates.add(registry_uris[short_name])
-        if len(candidates) == 1:
-            return candidates.pop(), None
-        if len(candidates) > 1:
-            return None, "ambiguous"
+            return registry_uris[short_name], None
         return None, "unresolvable"
 
     report: dict[str, Any] = {"graphs": []}
@@ -438,8 +430,8 @@ def _upgrade_v8_to_v9(db: sqlite3.Connection) -> None:
     )
 
 
-def _era_resolution_sources(state_dir: Path) -> tuple[dict[str, str], set[str]]:
-    """(registry actor -> canonical uri, profile owner names) for rewrites.
+def _era_resolution_sources(state_dir: Path) -> dict[str, str]:
+    """Registry actor -> canonical uri for rewrites.
 
     Read-only against the REAL serializations.  A source that exists but
     cannot be parsed raises PAC_MIGRATION_SOURCE_UNREADABLE -- the migration
@@ -465,31 +457,7 @@ def _era_resolution_sources(state_dir: Path) -> tuple[dict[str, str], set[str]]:
                 "the schema-8 migration refuses to rewrite owners half-blind",
             ) from error
         registry_uris = {str(row[0]): str(row[1]) for row in rows}
-
-    profile_owners: set[str] = set()
-    store_path = Path(state_dir) / "users.json"
-    if store_path.is_file():
-        try:
-            document = json.loads(store_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            raise PacError(
-                PAC_MIGRATION_SOURCE_UNREADABLE,
-                f"cannot read the user profiles at {store_path}: {error}; "
-                "the schema-8 migration refuses to rewrite owners half-blind",
-            ) from error
-        users = document.get("users") if isinstance(document, dict) else None
-        if not isinstance(users, list):
-            raise PacError(
-                PAC_MIGRATION_SOURCE_UNREADABLE,
-                f"user profiles at {store_path} have an unsupported shape; "
-                "the schema-8 migration refuses to rewrite owners half-blind",
-            )
-        profile_owners = {
-            str(profile["owner"])
-            for profile in users
-            if isinstance(profile, dict) and isinstance(profile.get("owner"), str)
-        }
-    return registry_uris, profile_owners
+    return registry_uris
 
 
 def unrewritten_owners_note(db: sqlite3.Connection, graph_id: str) -> str | None:

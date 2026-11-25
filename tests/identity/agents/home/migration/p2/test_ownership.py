@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import pytest
+import hyprial.identity.impl.agents.addressing as addressing
 from hyprial.identity.impl.agents import (
     AgentConfig,
 )
@@ -488,9 +489,17 @@ def test_t18_incarnation_rotation_fences_plan_before_any_copy(tmp_path: Path) ->
         registry.close()
 
 
+@pytest.mark.parametrize("destroy", ["forward", "forward-switch-off", "compensating"])
 def test_t18_destroy_cleans_native_and_tool_custody_before_recreate(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destroy: str
 ) -> None:
+    """A same-name recreate on the old home path sees no native or tool custody.
+
+    Every destroy path leaves the name free (owner decision 2026-11-19).
+    """
+
+    if destroy == "forward-switch-off":
+        monkeypatch.setattr(addressing, "ID_FORM_MINTING", False)
     registry = _registry(tmp_path)
     try:
         original = registry.create("worker")
@@ -504,7 +513,12 @@ def test_t18_destroy_cleans_native_and_tool_custody_before_recreate(
         (native / "auth.json").write_text("NON_PRODUCTION_SENTINEL\n", encoding="utf-8")
         (tools / "login.json").write_text("NON_PRODUCTION_SENTINEL\n", encoding="utf-8")
 
-        assert registry.destroy("worker")
+        if destroy == "compensating":
+            assert registry.destroy_landing_home(
+                "worker", expected_entity_token=original.entity_token
+            )
+        else:
+            assert registry.destroy("worker")
         assert not root.exists()
         with pytest.raises(Exception, match="cleanup-fenced"):
             registry.cleanup_home("worker", expected_token="wrong-token")
@@ -512,6 +526,7 @@ def test_t18_destroy_cleans_native_and_tool_custody_before_recreate(
         rebuilt = registry.create("worker")
         assert rebuilt.entity_token != original.entity_token
         rebuilt_root = Path(registry.home_receipt("worker").path)
+        assert rebuilt_root == root
         assert not (rebuilt_root / "secrets" / "native").exists()
         assert not (rebuilt_root / "secrets" / "tools").exists()
     finally:

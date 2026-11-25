@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import threading
 import time
 from pathlib import Path
@@ -21,7 +23,7 @@ def _claim(delivery_id: str) -> ClaimedHarnessResult:
     )
 
 
-def test_blocked_result_does_not_hold_unrelated_settlement() -> None:
+def test_blocked_result_does_not_hold_unrelated_settlement(actor_host) -> None:
     blocked = threading.Event()
     release = threading.Event()
     second = threading.Event()
@@ -34,7 +36,7 @@ def test_blocked_result_does_not_hold_unrelated_settlement() -> None:
             second.set()
         return True
 
-    owner = ResultSettlementCoordinator(settle, capacity=2, workers=2)
+    owner = ResultSettlementCoordinator(settle, capacity=2, workers=2, actor_host=actor_host)
     try:
         assert owner.submit(_claim("first")) is AdmissionResult.ACCEPTED
         assert blocked.wait(1)
@@ -50,7 +52,7 @@ def test_blocked_result_does_not_hold_unrelated_settlement() -> None:
         assert owner.close(2)
 
 
-def test_settlement_timeout_keeps_accepted_effect_for_retryable_close() -> None:
+def test_settlement_timeout_keeps_accepted_effect_for_retryable_close(actor_host) -> None:
     entered = threading.Event()
     release = threading.Event()
 
@@ -59,7 +61,7 @@ def test_settlement_timeout_keeps_accepted_effect_for_retryable_close() -> None:
         assert release.wait(2)
         return True
 
-    owner = ResultSettlementCoordinator(settle, capacity=1, workers=1)
+    owner = ResultSettlementCoordinator(settle, capacity=1, workers=1, actor_host=actor_host)
     try:
         assert owner.submit(_claim("held")) is AdmissionResult.ACCEPTED
         assert entered.wait(1)
@@ -72,7 +74,7 @@ def test_settlement_timeout_keeps_accepted_effect_for_retryable_close() -> None:
         assert owner.close(2)
 
 
-def test_blocked_workflow_result_does_not_hold_new_dispatch(tmp_path: Path) -> None:
+def test_blocked_workflow_result_does_not_hold_new_dispatch(tmp_path: Path, actor_host) -> None:
     entered = threading.Event()
     release = threading.Event()
     dispatched = threading.Event()
@@ -87,7 +89,7 @@ def test_blocked_workflow_result_does_not_hold_new_dispatch(tmp_path: Path) -> N
         def streaming_actors(self) -> tuple[str, ...]:
             return ("worker-b",)
 
-        def dispatch(self, _actor: str, _delivery: object) -> bool:
+        def dispatch(self, _envelope: object) -> bool:
             dispatched.set()
             return True
 
@@ -114,12 +116,14 @@ def test_blocked_workflow_result_does_not_hold_new_dispatch(tmp_path: Path) -> N
         return True
 
     bridge = DaemonEventBridge(
+        actor_host=actor_host,
         state_dir=tmp_path / "state", node_id="node",
         desired_state=DesiredStateStore(tmp_path / "desired.json"),
         transport=object(),  # type: ignore[arg-type]
         inbox=Inbox(),  # type: ignore[arg-type]
         harnesses=Harnesses(),  # type: ignore[arg-type]
         workflow_outcome=workflow_outcome, actor_mode=True,
+        cell_delivery=AdmittingCellDelivery(),
     )
     bridge.start()
     try:

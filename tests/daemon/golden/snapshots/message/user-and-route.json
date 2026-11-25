@@ -1,0 +1,403 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "message",
+ "scenario": "user-and-route",
+ "steps": [
+  {
+   "step": 1,
+   "method": "message.send",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "user:op"
+    ],
+    "summary": "summary user",
+    "message": "body user",
+    "conversationId": "conv-user",
+    "idempotencyKey": "key-user"
+   },
+   "error": {
+    "code": "TARGET_UNRESOLVED",
+    "message": "no copy of this message was pushed to the owner's chats",
+    "data": {
+     "target": "user:op",
+     "messageId": "5cfc6f77-6bfd-51d6-9cef-125f93e2401a"
+    }
+   }
+  },
+  {
+   "step": 2,
+   "method": "message.send",
+   "label": "idempotent-replay",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "user:op"
+    ],
+    "summary": "summary user",
+    "message": "body user",
+    "conversationId": "conv-user",
+    "idempotencyKey": "key-user"
+   },
+   "error": {
+    "code": "TARGET_UNRESOLVED",
+    "message": "no copy of this message was pushed to the owner's chats",
+    "data": {
+     "target": "user:op",
+     "messageId": "5cfc6f77-6bfd-51d6-9cef-125f93e2401a"
+    }
+   }
+  },
+  {
+   "step": 3,
+   "method": "message.send.lookup",
+   "label": "user-target-refused",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "target": "user:op",
+    "text": "body user",
+    "conversationId": "conv-user",
+    "idempotencyKey": "key-user"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "lookup target must be a canonical agent URI"
+   }
+  },
+  {
+   "step": 4,
+   "method": "message.send.lookup",
+   "label": "user-target-refused-text-mismatch",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "target": "user:op",
+    "text": "different text",
+    "conversationId": "conv-user",
+    "idempotencyKey": "key-user"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "lookup target must be a canonical agent URI"
+   }
+  },
+  {
+   "step": 5,
+   "method": "message.send.lookup",
+   "label": "user-target-refused-unknown",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "target": "user:op",
+    "text": "body never",
+    "conversationId": "conv-never",
+    "idempotencyKey": "key-never"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "lookup target must be a canonical agent URI"
+   }
+  },
+  {
+   "step": 6,
+   "method": "message.send",
+   "label": "other-user",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "user:reviewer"
+    ],
+    "summary": "summary user-other",
+    "message": "body user-other",
+    "conversationId": "conv-user-other",
+    "idempotencyKey": "key-user-other"
+   },
+   "result": {
+    "ok": true,
+    "actingPrincipal": "agent:op:node-1:alpha",
+    "operationId": "key-user-other",
+    "conversationId": "conv-user-other",
+    "deliveries": [
+     {
+      "target": "user:reviewer",
+      "messageId": "23c91424-209e-5a97-b7bc-091b1d7bf8ad",
+      "accepted": true,
+      "queued": false,
+      "receiverAdapter": true,
+      "nativeMessageId": "om-user-1",
+      "conversationId": "conv-user-other"
+     }
+    ],
+    "messageId": "23c91424-209e-5a97-b7bc-091b1d7bf8ad"
+   }
+  },
+  {
+   "step": 7,
+   "method": "message.send",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "route:golden-lark:group"
+    ],
+    "summary": "summary route-group",
+    "message": "body route-group",
+    "conversationId": "conv-route-group",
+    "idempotencyKey": "key-route-group"
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'route:golden-lark:group' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "route:golden-lark:group"
+    }
+   }
+  },
+  {
+   "step": 8,
+   "method": "message.send",
+   "label": "idempotent-replay",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "route:golden-lark:group"
+    ],
+    "summary": "summary route-group",
+    "message": "body route-group",
+    "conversationId": "conv-route-group",
+    "idempotencyKey": "key-route-group"
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'route:golden-lark:group' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "route:golden-lark:group"
+    }
+   }
+  },
+  {
+   "step": 9,
+   "method": "message.send",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "route:golden-lark:dm"
+    ],
+    "summary": "summary route-dm",
+    "message": "body route-dm",
+    "conversationId": "conv-route-dm",
+    "idempotencyKey": "key-route-dm"
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'route:golden-lark:dm' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "route:golden-lark:dm"
+    }
+   }
+  },
+  {
+   "step": 10,
+   "method": "message.send",
+   "label": "unknown-route",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "route:golden-lark:missing"
+    ],
+    "summary": "summary route-missing",
+    "message": "body route-missing",
+    "conversationId": "conv-route-missing",
+    "idempotencyKey": "key-route-missing"
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'route:golden-lark:missing' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "route:golden-lark:missing"
+    }
+   }
+  },
+  {
+   "step": 11,
+   "method": "message.send",
+   "label": "unknown-adapter",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "route:no-such-adapter:group"
+    ],
+    "summary": "summary route-adapter",
+    "message": "body route-adapter",
+    "conversationId": "conv-route-adapter",
+    "idempotencyKey": "key-route-adapter"
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'route:no-such-adapter:group' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "route:no-such-adapter:group"
+    }
+   }
+  },
+  {
+   "step": 12,
+   "method": "message.send",
+   "label": "malformed-route",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "route:golden-lark"
+    ],
+    "summary": "summary route-bad",
+    "message": "body route-bad",
+    "conversationId": "conv-route-bad",
+    "idempotencyKey": "key-route-bad"
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'route:golden-lark' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "route:golden-lark"
+    }
+   }
+  },
+  {
+   "step": 13,
+   "method": "message.send",
+   "label": "mixed-targets",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "to": [
+     "agent:op:node-1:beta",
+     "user:op",
+     "route:golden-lark:group"
+    ],
+    "summary": "summary fanout",
+    "message": "body fanout",
+    "conversationId": "conv-fanout",
+    "idempotencyKey": "key-fanout"
+   },
+   "error": {
+    "code": "UNSUPPORTED_TARGET",
+    "message": "target 'route:golden-lark:group' matches no deliverable address form; deliverable forms are agent:<owner>:<machine>:<agent> and user:<owner>",
+    "data": {
+     "target": "route:golden-lark:group"
+    }
+   }
+  },
+  {
+   "step": 14,
+   "method": "message.send.lookup",
+   "label": "agent-target",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "target": "agent:op:node-1:beta",
+    "text": "body fanout",
+    "conversationId": "conv-fanout",
+    "idempotencyKey": "key-fanout"
+   },
+   "result": {
+    "status": "unknown",
+    "reason": "not-found"
+   }
+  },
+  {
+   "step": 15,
+   "method": "message.send.lookup",
+   "label": "agent-text-mismatch",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "target": "agent:op:node-1:beta",
+    "text": "different text",
+    "conversationId": "conv-fanout",
+    "idempotencyKey": "key-fanout"
+   },
+   "result": {
+    "status": "unknown",
+    "reason": "not-found"
+   }
+  },
+  {
+   "step": 16,
+   "method": "message.send.lookup",
+   "label": "agent-unknown",
+   "origin": "ipc",
+   "params": {
+    "from": "agent:op:node-1:alpha",
+    "sessionRef": "session-alpha",
+    "target": "agent:op:node-1:beta",
+    "text": "body never",
+    "conversationId": "conv-never",
+    "idempotencyKey": "key-never"
+   },
+   "result": {
+    "status": "unknown",
+    "reason": "not-found"
+   }
+  },
+  {
+   "step": 17,
+   "method": "message.send.lookup",
+   "label": "operator-on-behalf-of-schema-refused",
+   "origin": "ipc",
+   "params": {
+    "from": "user:op",
+    "onBehalfOf": "agent:op:node-1:alpha",
+    "target": "agent:op:node-1:beta",
+    "text": "body fanout",
+    "conversationId": "conv-fanout",
+    "idempotencyKey": "key-fanout"
+   },
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "message.send.lookup params do not match the declared schema at <root>"
+   }
+  },
+  {
+   "step": 18,
+   "observe": "lark-route-calls",
+   "value": []
+  },
+  {
+   "step": 19,
+   "observe": "user-deliveries",
+   "value": [
+    {
+     "messageId": "23c91424-209e-5a97-b7bc-091b1d7bf8ad",
+     "key": "key-user-other:user:reviewer",
+     "owner": "reviewer",
+     "sender": "agent:op:node-1:alpha",
+     "conversationId": "conv-user-other"
+    }
+   ]
+  }
+ ]
+}

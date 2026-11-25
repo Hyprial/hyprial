@@ -17,6 +17,7 @@ from hyprial.daemon.impl.inbox.actor import InboxAuthorityUnavailable
 from hyprial.daemon.impl.inbox.actor.internal import _ActorOwnedInboxService
 from hyprial.daemon.impl.inbox.contracts.ports import ReceiveMessageCommand
 from hyprial.daemon.impl.inbox.links.zenoh_link import ZenohInboxEndpoint, encode_delivery_frame
+from tests.support.actor_hosts import new_actor_host
 
 
 class _Session:
@@ -43,7 +44,7 @@ def test_rx_admission_does_not_wait_for_commit_and_never_forges_receipt(
         db,
         MemoryDeliveryTransport(),
         SimpleNamespace(publish=lambda event: None),
-        mailbox_capacity=1,
+        mailbox_capacity=1, actor_host=new_actor_host(),
     )
     facade = DeliveryCustodyFacade(coordinator, db)
     endpoint = ZenohInboxEndpoint(_Session(), facade, "recipient")

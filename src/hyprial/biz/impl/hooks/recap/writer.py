@@ -1,3 +1,6 @@
+# Decision record (W2B-2, 2026-11-21):
+# - RecapWriter._append writes inside the fenced agent home under process
+#   umask(0o077) and os.open(..., 0o600), removing POSIX-only per-line os.fchmod.
 """The recap writer: append-only ``state/recaps.jsonl`` owned per agent home.
 
 Moved verbatim from the retired ``turn_delivery`` turn-hook service (H2 of the
@@ -180,7 +183,6 @@ class RecapWriter:
         with lock:
             descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
             with os.fdopen(descriptor, "ab", closefd=True) as target:
-                os.fchmod(target.fileno(), 0o600)
                 target.write(encoded)
                 target.flush()
                 os.fsync(target.fileno())

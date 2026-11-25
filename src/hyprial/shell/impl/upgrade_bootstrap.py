@@ -19,7 +19,6 @@ def prime_post_install_imports() -> frozenset[str]:
         AUTOUPDATE_TRIGGER_ENV,
         DesiredStateStore,
         ForwardingConfigurationError,
-        OwnerMigrationHostedConflict,
         RestartProcessObservation,
         RestartProcessState,
         ServiceConfig,
@@ -28,13 +27,12 @@ def prime_post_install_imports() -> frozenset[str]:
         ensure_dispatch_policy,
         harness_desired_generation,
         latest_start_failure,
-        notify_restore_followup,
-        notify_upgrade_outcome,
+        node_owner_or_none,
         owner_process_status,
-        prime_upgrade_alert_imports,
         process_cpu_seconds,
         read_last_run,
         read_process_identity,
+        resolve_node_owner,
         resolve_profile,
         restart_failure_detail,
         restore_followup_budget_seconds,
@@ -49,20 +47,19 @@ def prime_post_install_imports() -> frozenset[str]:
         EXPECTED_IDENTITY_GENERATION_ENV,
         IdentityTransactionBusy,
         IdentityTransactionLock,
-        UserProfileError,
-        UserProfileStore,
     )
-    from hyprial.kernel import DaemonLaunchResult, HarnessLaunchSpec, parse_channel_uri
-    from hyprial.shell.impl.gui import runtime as gui_runtime
+    from hyprial.kernel import DaemonLaunchResult, HarnessLaunchSpec
+    from hyprial.shell.impl.gui import launcher as gui_launcher
+    from hyprial.shell.impl.gui import termination as gui_termination
     from hyprial.shell.impl.login import generation as login_generation
     from hyprial.shell.impl.gui.apps import upgrade as unpack_gui
+    from hyprial.shell.impl.gui.install import launch as gui_install_launch
 
     _ = (
         AUTOUPDATE_CHILD_ENV,
         AUTOUPDATE_TRIGGER_ENV,
         DesiredStateStore,
         ForwardingConfigurationError,
-        OwnerMigrationHostedConflict,
         RestartProcessObservation,
         RestartProcessState,
         ServiceConfig,
@@ -71,13 +68,12 @@ def prime_post_install_imports() -> frozenset[str]:
         ensure_dispatch_policy,
         harness_desired_generation,
         latest_start_failure,
-        notify_restore_followup,
-        notify_upgrade_outcome,
+        node_owner_or_none,
         owner_process_status,
-        prime_upgrade_alert_imports,
         process_cpu_seconds,
         read_last_run,
         read_process_identity,
+        resolve_node_owner,
         resolve_profile,
         restart_failure_detail,
         restore_followup_budget_seconds,
@@ -90,16 +86,14 @@ def prime_post_install_imports() -> frozenset[str]:
         EXPECTED_IDENTITY_GENERATION_ENV,
         IdentityTransactionBusy,
         IdentityTransactionLock,
-        UserProfileError,
-        UserProfileStore,
         DaemonLaunchResult,
         HarnessLaunchSpec,
-        parse_channel_uri,
+        gui_install_launch,
+        gui_launcher,
+        gui_termination,
         unpack_gui,
-        gui_runtime,
         login_generation,
     )
-    prime_upgrade_alert_imports()
     return frozenset(
         name for name in sys.modules if name == "hyprial" or name.startswith("hyprial.")
     )

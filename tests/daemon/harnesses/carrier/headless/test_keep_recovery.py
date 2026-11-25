@@ -9,16 +9,15 @@ is not merged on this branch: they are strict xfails until it lands.
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from hyprial.daemon.impl.api import HarnessResult, HarnessResultStatus
 from hyprial.daemon.impl.desired_state import DesiredStateStore
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.daemon.impl.inbox import (
     DeliveryCustodyCoordinator,
     DeliveryCustodyFacade,
@@ -26,9 +25,8 @@ from hyprial.daemon.impl.inbox import (
     InboxAuthorityTimeout,
     InboxMessage,
 )
-from hyprial.daemon.impl.links.ports import Allow
 from hyprial.daemon.impl.runtime import DaemonEventBridge
-from tests.support.links.gate import permissive_admission_slot
+from tests.support.actor_hosts import new_actor_host
 
 NODE = "wp5a-keep"
 AGENT = f"agent:op:{NODE}:sprite"
@@ -62,8 +60,8 @@ class _ScriptedHarnesses:
     def streaming_actors(self) -> tuple[str, ...]:
         return ("sprite",)
 
-    def dispatch(self, _actor: str, delivery: Any) -> bool:
-        self.dispatched.append(delivery)
+    def dispatch(self, envelope: Any) -> bool:
+        self.dispatched.append(envelope)
         self.turns += 1
         return True
 
@@ -132,7 +130,7 @@ def _inbox(database: Path, *, gate: object | None = None) -> DeliveryCustodyFaca
         transport,
         type("_Events", (), {"publish": staticmethod(lambda _event: None)})(),
         node_id=NODE,
-        service_options={"link_admission": permissive_admission_slot()},
+        actor_host=new_actor_host(),
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     transport.bind(facade)
@@ -145,12 +143,8 @@ def _bridge(
     harnesses: _ScriptedHarnesses,
     clock: dict[str, int],
     *,
-    gate: object | None = None,
+    actor_host,
 ) -> DaemonEventBridge:
-    slot = None
-    if gate is not None:
-        slot = LinkAdmission()
-        slot.bind(gate)
     return DaemonEventBridge(
         state_dir=tmp_path,
         node_id=NODE,
@@ -160,7 +154,8 @@ def _bridge(
         harnesses=harnesses,  # type: ignore[arg-type]
         harness_actor_uri=lambda name: f"agent:op:{NODE}:{name}",
         clock_ms=lambda: clock["now"],
-        link_admission=slot,
+        actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
 
 
@@ -205,22 +200,6 @@ def _expires(database: Path, message_id: str) -> tuple[int | None]:
     return (None if row[0] is None else int(row[0]),)
 
 
-class _AckGate:
-    """A gate that always answers ack (an explicit premise, like wp4 T13)."""
-
-    def admit_send(self, **_kwargs: object) -> Allow:
-        return Allow()
-
-    def sender_known(self, *, recipient: str, sender: str) -> bool:
-        return True
-
-    def admit_dispatch(self, **_kwargs: object) -> bool:
-        return True
-
-    def settle_hint(self, *, actor: str, message_id: str) -> str:
-        return "ack"
-
-
 class _FailsNthFetch:
     """Fails the Nth (1-based) fetch_pending with an authority timeout."""
 
@@ -239,37 +218,19 @@ class _FailsNthFetch:
         return getattr(self._inner, name)
 
 
-class _AckBreaks:
-    """The first ack of a given id breaks at ``when`` ('before'/'after' commit)."""
-
-    def __init__(self, inner: Any, *, when: str) -> None:
-        self._inner = inner
-        self._when = when
-        self.broken = False
-
-    def ack(self, recipient: str, message_id: str) -> object:
-        if not self.broken:
-            self.broken = True
-            if self._when == "after":
-                self._inner.ack(recipient, message_id)  # the commit survives
-            raise InboxAuthorityTimeout("ack did not confirm in time")
-        return self._inner.ack(recipient, message_id)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._inner, name)
-
-
 def _kept_request(
     tmp_path: Path,
     database: Path,
     harnesses: _ScriptedHarnesses,
     clock: dict[str, int],
     message_id: str,
+    *,
+    actor_host,
 ) -> tuple[DaemonEventBridge, DeliveryCustodyFacade]:
     """Dispatch one request and settle it to keep; caller owns the bridge."""
 
     inbox = _inbox(database)
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     assert inbox.receive(_message(message_id), now_ms=clock["now"]).accepted
     bridge.start()
     assert bridge.on_timer().harness_deliveries == 1
@@ -280,12 +241,14 @@ def _kept_request(
     return bridge, inbox
 
 
-def test_keep_survives_restart_without_redispatch(tmp_path: Path) -> None:
+def test_keep_survives_restart_without_redispatch(
+    tmp_path: Path, *, actor_host
+) -> None:
     database = tmp_path / "inbox.sqlite3"
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
     inbox = _inbox(database)
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     bridge.start()
     try:
         for message_id in ("k1", "k2", "k3"):
@@ -306,7 +269,7 @@ def test_keep_survives_restart_without_redispatch(tmp_path: Path) -> None:
     harnesses = _ScriptedHarnesses()
     clock = {"now": 9_000}
     inbox = _inbox(database)
-    bridge = _bridge(tmp_path, inbox, harnesses, clock)
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     bridge.start()
     try:
         assert _pending(inbox) == {"k1", "k2", "k3"}
@@ -327,9 +290,8 @@ def test_keep_survives_restart_without_redispatch(tmp_path: Path) -> None:
         inbox.close()
 
 
-@pytest.mark.parametrize("breakpoint", ["stamp", "hint", "ack-confirm"])
 def test_settle_interruption_resumes_settlement_only(
-    tmp_path: Path, breakpoint: str
+    tmp_path: Path, *, actor_host
 ) -> None:
     """Each breakpoint defers its own result only; resume never re-runs turn."""
 
@@ -338,16 +300,8 @@ def test_settle_interruption_resumes_settlement_only(
     clock = {"now": 1_000}
 
     real_inbox = _inbox(database)
-    if breakpoint == "stamp":
-        gate = None
-        flaky: Any = _FailsNthFetch(real_inbox, 1)
-    elif breakpoint == "hint":
-        gate = _AckGate()
-        flaky = _AckBreaks(real_inbox, when="before")
-    else:
-        gate = _AckGate()
-        flaky = _AckBreaks(real_inbox, when="after")
-    bridge = _bridge(tmp_path, flaky, harnesses, clock, gate=gate)
+    flaky: Any = _FailsNthFetch(real_inbox, 1)
+    bridge = _bridge(tmp_path, flaky, harnesses, clock, actor_host=actor_host)
     assert real_inbox.receive(_message("r1")).accepted
 
     bridge.start()
@@ -359,75 +313,32 @@ def test_settle_interruption_resumes_settlement_only(
         turns_after_dispatch = harnesses.turns
         bridge.on_timer()  # the settlement hits its breakpoint
 
-        if breakpoint == "stamp":
-            assert not bridge._pending_settle_results
-            assert _fetched(database, "r1") is not None
-        else:
-            assert set(bridge._pending_settle_results) == {"r1"}
+        assert not bridge._pending_settle_results
+        assert _fetched(database, "r1") is not None
         assert harnesses.turns == turns_after_dispatch  # no turn re-run
 
         bridge.on_timer()  # resume: the same result, settlement only
 
         assert bridge._pending_settle_results == {}
         assert harnesses.turns == turns_after_dispatch
-        if breakpoint == "stamp":
-            # keep: pending and stamped, never re-dispatched.
-            assert _fetched(database, "r1") is not None
-            assert "r1" in _pending(real_inbox)
-            bridge._dispatch_harness_deliveries()
-            assert harnesses.turns == turns_after_dispatch
-        else:
-            # the ack hint was executed (or proven committed): row consumed.
-            assert "r1" not in _pending(real_inbox)
+        assert _fetched(database, "r1") is not None
+        assert "r1" in _pending(real_inbox)
+        bridge._dispatch_harness_deliveries()
+        assert harnesses.turns == turns_after_dispatch
     finally:
         bridge.stop()
         real_inbox.close()
 
 
-@pytest.mark.xfail(strict=True, reason="BLOCKED-on-WP2")
-def test_kept_request_holds_the_window_until_explicit_close(
-    tmp_path: Path,
-) -> None:
-    """R5 needs the real WP2 gate: W accounting, reclaim and explicit close.
-
-    A kept request occupies the recipient's W until an explicit reply or ack;
-    a fresh send without replyTo opens a new item and closes nothing; an
-    unadmitted request is never injected.  None of this is assertable without
-    the real link service, so this stays a strict xfail until WP2 lands.
-    """
-
-    from hyprial.daemon.impl.links.service import LinkService
-
-    gate = LinkService(...)
-    assert gate.settle_hint(actor=AGENT, message_id="k1") == "keep"
-    pytest.fail("BLOCKED-on-WP2: real gate assertions pending the link service")
-
-
-@pytest.mark.xfail(strict=True, reason="BLOCKED-on-WP2")
-def test_drain_and_abandon_release_kept_requests(tmp_path: Path) -> None:
-    """R6 needs the real gate's reclaim/abandon path (BLOCKED-on-WP2).
-
-    After a reclaim the sender's reply answers LINK_RECLAIMED and the kept
-    item releases; the abandon threshold and TTL free pending rows and
-    capacity without re-sending the original request.
-    """
-
-    from hyprial.daemon.impl.links.service import LinkService
-
-    gate = LinkService(...)
-    assert gate.settle_hint(actor=AGENT, message_id="k1") == "keep"
-    pytest.fail("BLOCKED-on-WP2: real gate assertions pending the link service")
-
-
-@pytest.mark.parametrize("gate_answers_ack", [False, True])
 def test_startup_sweep_settles_rows_stamped_before_a_crash(
-    tmp_path: Path, gate_answers_ack: bool
+    tmp_path: Path, *, actor_host
 ) -> None:
     """R8 (ruling 74, P4): stamp -> crash -> restart settles by the one hint.
 
     The first life stamped ``fetched`` (``completed_turn``) and died before
-    its ack.  The restart's one-shot sweep asks ``settle_hint_for``: ack rows
-    are acked, keep rows are left alone, and the model never runs again.
+    its ack.  The restart's one-shot sweep asks ``settle_hint_for``: reply
+    and event rows are acked, a request is left alone, and the model never
+    runs again.
     """
 
     database = tmp_path / "inbox.sqlite3"
@@ -447,13 +358,10 @@ def test_startup_sweep_settles_rows_stamped_before_a_crash(
 
     harnesses = _ScriptedHarnesses()
     inbox = _inbox(database)
-    bridge = _bridge(
-        tmp_path, inbox, harnesses, clock, gate=_AckGate() if gate_answers_ack else None
-    )
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     bridge.start()
     try:
-        expected_kept = {"fresh"} if gate_answers_ack else {"q1", "fresh"}
-        assert _pending(inbox) == expected_kept
+        assert _pending(inbox) == {"q1", "fresh"}
         before = _fetched(database, "q1")
         for _ in range(3):
             clock["now"] += 1_000
@@ -466,13 +374,15 @@ def test_startup_sweep_settles_rows_stamped_before_a_crash(
         inbox.close()
 
 
-def test_expired_kept_row_does_not_block_new_work(tmp_path: Path) -> None:
+def test_expired_kept_row_does_not_block_new_work(
+    tmp_path: Path, *, actor_host
+) -> None:
     """R6's TTL half is real today: expiry sweeps the kept row and frees the FIFO."""
 
     database = tmp_path / "inbox.sqlite3"
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
-    bridge, inbox = _kept_request(tmp_path, database, harnesses, clock, "k1")
+    bridge, inbox = _kept_request(tmp_path, database, harnesses, clock, "k1", actor_host=actor_host)
     try:
         assert _pending(inbox) == {"k1"}
 
@@ -499,13 +409,13 @@ def test_expired_kept_row_does_not_block_new_work(tmp_path: Path) -> None:
         inbox.close()
 
 
-def test_many_requests_do_not_starve_each_other(tmp_path: Path) -> None:
+def test_many_requests_do_not_starve_each_other(tmp_path: Path, *, actor_host) -> None:
     database = tmp_path / "inbox.sqlite3"
     harnesses = _ScriptedHarnesses()
     clock = {"now": 1_000}
     real_inbox = _inbox(database)
     flaky = _FailsNthFetch(real_inbox, 1)  # the first settlement defers once
-    bridge = _bridge(tmp_path, flaky, harnesses, clock)
+    bridge = _bridge(tmp_path, flaky, harnesses, clock, actor_host=actor_host)
     for message_id, intent in (
         ("a", "request"),
         ("b", "request"),
@@ -556,7 +466,9 @@ def test_many_requests_do_not_starve_each_other(tmp_path: Path) -> None:
         real_inbox.close()
 
 
-def test_the_sweep_is_what_settles_the_stamped_rows(tmp_path: Path, monkeypatch) -> None:
+def test_the_sweep_is_what_settles_the_stamped_rows(
+    tmp_path: Path, monkeypatch, *, actor_host
+) -> None:
     """Negative control for the E26-11 restart leg and R8's positive test.
 
     The positive test above ("startup sweep settles rows stamped before a
@@ -580,7 +492,7 @@ def test_the_sweep_is_what_settles_the_stamped_rows(tmp_path: Path, monkeypatch)
 
     harnesses = _ScriptedHarnesses()
     inbox = _inbox(database)
-    bridge = _bridge(tmp_path, inbox, harnesses, clock, gate=_AckGate())
+    bridge = _bridge(tmp_path, inbox, harnesses, clock, actor_host=actor_host)
     monkeypatch.setattr(
         runtime_results._BridgeResultsMixin,
         "_settle_stranded_rows",
@@ -588,9 +500,6 @@ def test_the_sweep_is_what_settles_the_stamped_rows(tmp_path: Path, monkeypatch)
     )
     bridge.start()
     try:
-        # With the sweep disabled the ack-answerable rows survive, so the
-        # positive assertion ({"r1","e1"} gone) would be red.  The request is
-        # kept either way; the reply/event rows are the discriminating part.
         assert _pending(inbox) == {"r1", "e1"}
         assert harnesses.dispatched == []
     finally:

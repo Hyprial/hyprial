@@ -1,0 +1,29 @@
+{"v":6,"event":"hello","sidecar":"0.1.0","tailcat":"b4dc28e8aa8936f0a90a41ad8293a64e3d6b645f","capabilities":["map-peer","unmap-peer","expose","unexpose","peer-key","tailnet-membership-v1","tailnet-control-v1","unix-inbound-v1","service-connect-v1","forwarding-request-id-v1","peer-slots-v1","connection-telemetry-v1","derp-map-v1","client-key-derivation-v1"]}
+{"v":6,"event":"state","state":"Starting","peers":[]}
+{"v":6,"event":"state","state":"Running","requestId":"up","readiness":{"sidecar":true,"control":true,"member":false},"serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","clientPublic":"nodekey:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210","peers":[],"connectionTelemetry":{"ringCapacity":16,"slots":[]},"derpMapURL":"https://derpmap.hyprial.ai/map.json","derpMapSource":"configured"}
+{"v":6,"event":"state","state":"Running","serverPublic":"nodekey:a","clientPublic":"nodekey:b","peers":[{"peer":"dev-a","slot":"tcp:127.0.0.1:41001"}],"slots":["tcp:127.0.0.1:41001"],"connectionTelemetry":{"ringCapacity":16,"slots":[{"peer":"dev-a","slot":"tcp:127.0.0.1:41001","mapPort":41001,"dialAttempts":3,"dialFailures":2,"dialFailureReasons":{"timeout":0,"refused":2,"neterr":0,"other":0},"splicesEstablished":1,"dialFailureCount":2,"lastDialAtMs":1792680000000,"lastDialError":"refused","closedCount":1,"closeReasons":{"eof":1},"errorCounts":{"eof":1},"recent":[{"peer":"dev-a","slot":"tcp:127.0.0.1:41001","mapPort":41001,"bytesIn":17,"bytesOut":19,"durationMs":23,"closeSide":"peer","errors":{"in":"reset","out":"eof"}}]}]}}
+{"v":6,"event":"state","state":"Down","peers":[]}
+{"v":6,"event":"peer-mapped","requestId":"request-map-slot","peer":"dev-alice-laptop","slot":"/run/hyprial/slots/slot-00"}
+{"v":6,"event":"peer-unmapped","requestId":"request-unmap-peer","peer":"dev-alice-laptop"}
+{"v":6,"event":"exposed","requestId":"request-expose-tcp","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow"}
+{"v":6,"event":"exposed","requestId":"request-expose-unix","port":9000,"target":"unix:/run/hyprial/app.sock","proxyProtocol":"v2","admission":"allow"}
+{"v":6,"event":"unexposed","requestId":"request-unexpose","port":8447}
+{"v":6,"event":"peer-key","requestId":"request-peer-key","addr":"[fd7a:115c:a1e0::1]:51023","found":true,"key":"nodekey:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}
+{"v":6,"event":"client-key-derived","requestId":"request-derive-client-key","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","clientPublic":"nodekey:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}
+{"v":6,"event":"peer-key","addr":"[fd7a:115c:a1e0::9]:51023","found":false,"key":""}
+{"v":6,"event":"service-mapped","requestId":"request-map-api","service":{"name":"api","deviceId":"sub2api","remotePort":8080,"recordGeneration":7,"localPort":18080,"activeConnections":0,"path":"unknown","pathDetail":null,"observedAtMs":null,"lastDialState":"unknown","lastDialMs":null,"lastError":null,"lastErrorAtMs":null}}
+{"v":6,"event":"service-unmapped","requestId":"request-unmap-api","name":"api","removed":true}
+{"v":6,"event":"service-status","requestId":"request-service-status","services":[]}
+{"v":6,"event":"service-failed","requestId":"request-status-failed","op":"service-status","name":null,"code":"INTERNAL","message":"service operation failed"}
+{"v":6,"event":"error","code":"SIDECAR_PROTOCOL_MISMATCH","message":"Invalid protocol-v6 request."}
+{"v":6,"event":"error","requestId":"fetch","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"Authority is unreachable."}
+{"v":6,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"control unreachable: deadline-exceeded (proxy configured).","data":{"stage":"control","cause":"deadline-exceeded","proxy":"configured","bytesReceived":33}}
+{"v":6,"event":"error","requestId":"closed-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"control unreachable: transport-failed (proxy configured).","data":{"stage":"control","cause":"transport-failed","proxy":"configured","bytesReceived":0}}
+{"v":6,"event":"error","requestId":"redeem","op":"invite-redeem","code":"AUTHORITY_UNREACHABLE","message":"derp unreachable: proxy-rejected (proxy configured).","data":{"stage":"derp","cause":"proxy-rejected","proxy":"configured"}}
+{"v":6,"event":"error","requestId":"redeem-exhausted","op":"invite-redeem","code":"AUTHORITY_UNREACHABLE","message":"derp unreachable: proxy-rejected (proxy configured). blocked.invalid:443: proxy-rejected. hung.invalid:443: deadline-exceeded (diagnostic probe).","data":{"stage":"derp","cause":"proxy-rejected","proxy":"configured","attempts":[{"node":"blocked.invalid:443","cause":"proxy-rejected"},{"node":"hung.invalid:443","cause":"deadline-exceeded","source":"diagnostic-probe"}]}}
+{"v":6,"event":"membership-result","requestId":"init","op":"membership-init","data":{"tailnetId":"org-space","revision":1,"initialized":true}}
+{"v":6,"event":"membership-result","requestId":"members","op":"membership-status","data":{"readiness":{"sidecar":true,"control":true,"member":false},"tailnets":[]}}
+{"v":6,"event":"membership-changed","tailnetId":"org-space","revision":1,"code":null}
+{"v":6,"event":"membership-changed","tailnetId":"org-space","revision":1,"code":"MEMBERSHIP_LEASE_EXPIRED"}
+{"v":6,"event":"readiness","readiness":{"sidecar":true,"control":true,"member":false}}
+{"v":6,"event":"exited"}

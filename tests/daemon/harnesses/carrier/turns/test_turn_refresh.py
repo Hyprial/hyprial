@@ -17,7 +17,6 @@ import pytest
 from hyprial.kernel import CHANNEL_PROTOCOL_VERSION, DaemonRequestError
 from tests.daemon.harnesses.carrier.turns.test_turn_reports import (
     A_NAME,
-    A_URI,
     _TurnApp,
 )
 
@@ -100,8 +99,8 @@ def _published(app: _TurnApp, *, monotonic_ms: int | None = None) -> dict:
         app.app._cell_interactive_facts(), {}, now_ms=monotonic_ms,
         monotonic_ms=monotonic_ms,
     )
-    assert A_URI in rows, rows
-    return rows[A_URI]
+    assert app.a_uri in rows, rows
+    return rows[app.a_uri]
 
 
 def _pending(app: _TurnApp) -> list[str]:
@@ -358,7 +357,7 @@ def test_refresh_never_touches_the_inbox_or_publishes_turn_events(
         assert _pending(app) == before == ["r1"]
         time.sleep(0.1)
         assert app.recorder.events == []
-        assert app.inbox.system_notices(A_URI) == ()
+        assert app.inbox.system_notices(app.a_uri) == ()
         # A later real start report publishes normally: the refresh did not
         # occupy the report id or suppress the business event.
         app.started("s1")
@@ -373,11 +372,11 @@ def test_gap_is_cleared_only_by_an_authoritative_refresh(tmp_path: Path) -> None
     app = _app(tmp_path, {"now": 5_000})
     try:
         _register(app)
-        app.app._record_carrier_turn_started(A_URI, SESSION, "s1")
-        ledger = app.app._carrier_turn_ledgers[(A_URI, SESSION)]
+        app.app._record_carrier_turn_started(app.a_uri, SESSION, "s1")
+        ledger = app.app._carrier_turn_ledgers[(app.a_uri, SESSION)]
         for index in range(ledger.observation.capacity + 1):
             ledger.observation.record(
-                app.app._cell_binding_fence(A_URI, SESSION),
+                app.app._cell_binding_fence(app.a_uri, SESSION),
                 f"filler-{index}",
                 "start",
                 at_ms=5_000,
@@ -403,13 +402,13 @@ def _open_contact_gap(app: _TurnApp, session_ref: str = SESSION) -> None:
     now_ms = session._clock_ms()
     runtime = session._runtime_projection
     runtime.register(
-        A_URI,
+        app.a_uri,
         session_ref,
         now_ms - int(CHANNEL_LIVENESS_TTL_SECONDS * 1_000) - 1,
         confirmed=True,
     )
-    runtime.register(A_URI, session_ref, now_ms, confirmed=True)
-    assert app.app._agent_session_domains.session.read_runtime(A_URI).observation_gap
+    runtime.register(app.a_uri, session_ref, now_ms, confirmed=True)
+    assert app.app._agent_session_domains.session.read_runtime(app.a_uri).observation_gap
 
 
 def test_current_refresh_acknowledges_a_recovered_contact_gap(tmp_path: Path) -> None:
@@ -459,7 +458,7 @@ def test_a_heartbeat_or_stale_contact_cannot_clear_the_gap(tmp_path: Path) -> No
         app.app.handle(
             "session.heartbeat", {"actor": A_NAME, "sessionRef": SESSION}
         )
-        assert app.app._agent_session_domains.session.read_runtime(A_URI).observation_gap
+        assert app.app._agent_session_domains.session.read_runtime(app.a_uri).observation_gap
         assert _facts(app).known is False
 
         # Stale contact cannot claim recovery either: age the heartbeat past TTL.
@@ -472,9 +471,9 @@ def test_a_heartbeat_or_stale_contact_cannot_clear_the_gap(tmp_path: Path) -> No
             - int(CHANNEL_LIVENESS_TTL_SECONDS * 1_000)
             - 5_000
         )
-        runtime.register(A_URI, SESSION, stale_ms, confirmed=True)
+        runtime.register(app.a_uri, SESSION, stale_ms, confirmed=True)
         stale = runtime.read(
-            A_URI,
+            app.a_uri,
             SESSION,
             now_ms=session._clock_ms(),
             ttl_seconds=CHANNEL_LIVENESS_TTL_SECONDS,
@@ -483,7 +482,7 @@ def test_a_heartbeat_or_stale_contact_cannot_clear_the_gap(tmp_path: Path) -> No
         answer = _refresh(app)
         assert answer["observationGapCleared"] is False
         assert runtime.read(
-            A_URI,
+            app.a_uri,
             SESSION,
             now_ms=session._clock_ms(),
             ttl_seconds=CHANNEL_LIVENESS_TTL_SECONDS,
@@ -501,7 +500,7 @@ def test_a_superseded_session_cannot_clear_the_new_session_gap(
         _open_contact_gap(app)
         _register(app, session_ref="session-2")
         # A generation change drops the old session's gap with its ledger.
-        assert not app.app._agent_session_domains.session.read_runtime(A_URI).observation_gap
+        assert not app.app._agent_session_domains.session.read_runtime(app.a_uri).observation_gap
         with pytest.raises(DaemonRequestError):
             _refresh(app, session_ref=SESSION)
     finally:

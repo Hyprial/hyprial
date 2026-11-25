@@ -2,10 +2,15 @@ import threading
 import pytest
 
 from hyprial.kernel.impl.actor_runtime import AdmissionResult
-from hyprial.daemon.impl.processes.process_owner import own_process
+from hyprial.daemon.impl.processes.process_owner import ProcessOwner, own_process
 
 
-def test_failed_native_stop_can_be_retried_but_detach_never_signals():
+def test_process_owner_requires_an_actor_host():
+    with pytest.raises(ValueError, match="process owner requires an actor host"):
+        ProcessOwner(None)
+
+
+def test_failed_native_stop_can_be_retried_but_detach_never_signals(actor_host):
     class Process:
         pid = None
         running = True
@@ -18,20 +23,20 @@ def test_failed_native_stop_can_be_retried_but_detach_never_signals():
             self.running = False
 
     raw = Process()
-    owner = own_process(raw)
+    owner = own_process(raw, actor_host=actor_host)
     with pytest.raises(OSError, match="transient stop failure"):
         owner.stop()
     owner.stop()
     assert raw.stops == 2
     second_raw = Process()
-    second = own_process(second_raw)
+    second = own_process(second_raw, actor_host=actor_host)
     assert second.detach()
     assert second_raw.stops == 0
     with pytest.raises(RuntimeError):
         second.stop()
 
 
-def test_observe_after_stop_uses_its_receipt_but_detach_still_rejects():
+def test_observe_after_stop_uses_its_receipt_but_detach_still_rejects(actor_host):
     class Process:
         pid = None
         running = True
@@ -40,7 +45,7 @@ def test_observe_after_stop_uses_its_receipt_but_detach_still_rejects():
         def stop(self):
             self.running = False
 
-    owner = own_process(Process())
+    owner = own_process(Process(), actor_host=actor_host)
     owner.stop()
     facts = owner.observe_facts()
     assert facts.running is False
@@ -48,13 +53,13 @@ def test_observe_after_stop_uses_its_receipt_but_detach_still_rejects():
     assert owner.detach()
     with pytest.raises(RuntimeError, match="closed"):
         owner.observe_facts()
-    detached = own_process(Process())
+    detached = own_process(Process(), actor_host=actor_host)
     assert detached.detach()
     with pytest.raises(RuntimeError, match="closed"):
         detached.observe_facts()
 
 
-def test_observe_does_not_hide_failed_stop():
+def test_observe_does_not_hide_failed_stop(actor_host):
     class Process:
         pid = None
         running = True
@@ -62,7 +67,7 @@ def test_observe_does_not_hide_failed_stop():
         def stop(self):
             raise OSError("stop failed")
 
-    owner = own_process(Process())
+    owner = own_process(Process(), actor_host=actor_host)
     try:
         with pytest.raises(OSError, match="stop failed"):
             owner.stop()
@@ -72,7 +77,7 @@ def test_observe_does_not_hide_failed_stop():
         assert owner.detach()
 
 
-def test_observe_does_not_replace_unrelated_runtime_failure_with_stop_facts(monkeypatch):
+def test_observe_does_not_replace_unrelated_runtime_failure_with_stop_facts(monkeypatch, actor_host):
     class Process:
         pid = None
         running = True
@@ -80,7 +85,7 @@ def test_observe_does_not_replace_unrelated_runtime_failure_with_stop_facts(monk
         def stop(self):
             self.running = False
 
-    owner = own_process(Process())
+    owner = own_process(Process(), actor_host=actor_host)
     owner.stop()
 
     def fail(_command):
@@ -91,7 +96,7 @@ def test_observe_does_not_replace_unrelated_runtime_failure_with_stop_facts(monk
         owner.observe_facts()
 
 
-def test_slow_driver_getter_never_blocks_owner_fact_reads():
+def test_slow_driver_getter_never_blocks_owner_fact_reads(actor_host):
     entered, release = threading.Event(), threading.Event()
 
     class Process:
@@ -110,7 +115,7 @@ def test_slow_driver_getter_never_blocks_owner_fact_reads():
             self.alive = False
 
     raw = Process()
-    owner = own_process(raw)
+    owner = own_process(raw, actor_host=actor_host)
     try:
         raw.block = True
         owner._poll()
@@ -124,7 +129,7 @@ def test_slow_driver_getter_never_blocks_owner_fact_reads():
     assert owner.running is False
 
 
-def test_process_effects_have_one_owner_and_streaming_protocol_is_preserved():
+def test_process_effects_have_one_owner_and_streaming_protocol_is_preserved(actor_host):
     threads = []
 
     class Process:
@@ -145,7 +150,7 @@ def test_process_effects_have_one_owner_and_streaming_protocol_is_preserved():
         def stop(self):
             self.running = False
 
-    owner = own_process(Process())
+    owner = own_process(Process(), actor_host=actor_host)
     try:
         assert owner.enqueue(None)
         assert owner.drain_results() == ()
@@ -156,7 +161,7 @@ def test_process_effects_have_one_owner_and_streaming_protocol_is_preserved():
 
 
 @pytest.mark.parametrize("operation", ["enqueue", "drain_results", "drain_progress"])
-def test_resource_transfer_waits_for_late_native_completion(operation):
+def test_resource_transfer_waits_for_late_native_completion(operation, actor_host):
     from hyprial.daemon.impl.processes.process_owner import StreamingProcessOwner
 
     entered, release, done = threading.Event(), threading.Event(), threading.Event()
@@ -182,7 +187,7 @@ def test_resource_transfer_waits_for_late_native_completion(operation):
             self.running = False
 
     native = Process()
-    owner = StreamingProcessOwner(native, timeout=0.01)
+    owner = StreamingProcessOwner(native, timeout=0.01, actor_host=actor_host)
 
     def invoke():
         try:
@@ -210,7 +215,7 @@ def test_resource_transfer_waits_for_late_native_completion(operation):
         assert owner.detach(2)
 
 
-def test_post_transfer_probe_failure_cannot_discard_result_or_acceptance():
+def test_post_transfer_probe_failure_cannot_discard_result_or_acceptance(actor_host):
     from hyprial.kernel import ProcessLiveness, ProcessLivenessState
     from hyprial.daemon.impl.processes.process_owner import StreamingProcessOwner
 
@@ -238,7 +243,7 @@ def test_post_transfer_probe_failure_cannot_discard_result_or_acceptance():
             self.probe_fails = False
             self.running = False
 
-    owner = StreamingProcessOwner(Process())
+    owner = StreamingProcessOwner(Process(), actor_host=actor_host)
     try:
         assert owner.enqueue(None)
         assert owner.drain_results() == ("native-result",)
@@ -249,7 +254,7 @@ def test_post_transfer_probe_failure_cannot_discard_result_or_acceptance():
         owner.stop()
 
 
-def test_never_begun_transfer_is_explicitly_rejected_after_owner_restart(monkeypatch):
+def test_never_begun_transfer_is_explicitly_rejected_after_owner_restart(monkeypatch, actor_host):
     import time
 
     from hyprial.kernel.impl.actor_runtime import ActorState
@@ -289,17 +294,18 @@ def test_never_begun_transfer_is_explicitly_rejected_after_owner_restart(monkeyp
             return super()._receive(event)
 
     native = Process()
-    owner = CrashableOwner(native, capacity=1)
-    assert owner._runtime.tell(
-        owner._handle, "crash-before-next-envelope"
+    owner = CrashableOwner(native, capacity=1, actor_host=actor_host)
+    assert owner._cell.tell(
+        "crash-before-next-envelope"
     ) is AdmissionResult.ACCEPTED
     assert entered.wait(1)
 
     admitted = threading.Event()
-    tell = owner._runtime.tell
+    cell_type = type(owner._cell)
+    tell = cell_type.tell
 
-    def observe_admission(handle, command):
-        result = tell(handle, command)
+    def observe_admission(cell, command):
+        result = tell(cell, command)
         if (
             isinstance(command, ProcessOperation)
             and isinstance(command.command, EnqueueTurn)
@@ -308,7 +314,7 @@ def test_never_begun_transfer_is_explicitly_rejected_after_owner_restart(monkeyp
             admitted.set()
         return result
 
-    monkeypatch.setattr(owner._runtime, "tell", observe_admission)
+    monkeypatch.setattr(cell_type, "tell", observe_admission)
 
     def invoke() -> None:
         try:
@@ -331,7 +337,7 @@ def test_never_begun_transfer_is_explicitly_rejected_after_owner_restart(monkeyp
         # Opposite order: a fresh envelope admitted after restart must execute.
         deadline = time.monotonic() + 2
         while True:
-            snapshot = owner._runtime.snapshot(owner._handle)
+            snapshot = owner._cell.snapshot()
             if snapshot.generation > 1 and snapshot.state is ActorState.RUNNING:
                 break
             assert time.monotonic() < deadline, snapshot

@@ -158,11 +158,6 @@
       "operation": "receive"
     },
     {
-      "path": "src/hyprial/daemon/impl/ipc/wire.py",
-      "owner": "_WireEvaluator._WG_037",
-      "operation": "receive"
-    },
-    {
       "path": "src/hyprial/daemon/impl/application/actors/agents_admin/destroys.py",
       "owner": "DaemonApplication._destroy_agent_messages",
       "operation": "ack"
@@ -258,16 +253,16 @@
       "reason": "2026-09-28 actor composition: this is bound-method capture for ProgressPublishCoordinator. Its bounded effect calls DeliveryCustodyFacade and SubmitProgressCommand; local writes remain on Inbox owner and remote progress goes through DeliveryIoWorker. No raw service/native call is introduced here."
     },
     {
-      "path": "src/hyprial/daemon/impl/runtime/results.py",
-      "owner": "DaemonEventBridge._complete_harness_results",
+      "path": "src/hyprial/daemon/impl/runtime/batch_claims.py",
+      "owner": "_BridgeBatchClaimsMixin._fetch_with_headless_origin",
       "operation": "fetch_pending",
-      "reason": "WP5-A (ruling 61): the headless turn end stamps the first fetched time and clears non-terminal failure retries for one already-injected row through DeliveryCustodyFacade's FetchPendingCommand(message_id, completed_turn=True). It is a typed facade call, not a raw InboxService mutation."
+      "reason": "Batch claim acquisition stamps the accepted row through the injected DeliveryCustodyFacade and FetchPendingCommand, preserving Inbox authority ownership."
     },
     {
       "path": "src/hyprial/daemon/impl/runtime/results.py",
-      "owner": "DaemonEventBridge._settle_claimed_result_member",
+      "owner": "_BridgeResultsMixin._fetch_completed_turn_origin",
       "operation": "fetch_pending",
-      "reason": "WP5-A (ruling 61): each claimed-result member stamps the first fetched time and clears non-terminal failure retries for one already-injected row through DeliveryCustodyFacade's FetchPendingCommand(message_id, completed_turn=True). It is a typed facade call, not a raw InboxService mutation."
+      "reason": "Completed-turn settlement stamps the fetched origin through the injected DeliveryCustodyFacade and FetchPendingCommand, preserving Inbox authority ownership."
     },
     {
       "path": "src/hyprial/daemon/impl/runtime/forwards.py",
@@ -309,18 +304,6 @@
       "reason": "2026-09-14: the tick only kicks; the blocking retry_due moved onto the dedicated delivery-pump thread so a stuck outbound send cannot hold the reconcile tick. Same cadence ownership, new call site."
     },
     {
-      "path": "src/hyprial/daemon/impl/harnesses/dsh/api.py",
-      "owner": "_ResolverRequest.__init__",
-      "operation": "close",
-      "reason": "Closes the parent copy of a multiprocessing resolver Pipe sender; this is OS transport custody, not inbox state mutation."
-    },
-    {
-      "path": "src/hyprial/kernel/impl/processes/_dsh_resolver.py",
-      "owner": "resolve_hostname",
-      "operation": "close",
-      "reason": "Closes the child multiprocessing resolver Pipe sender; this is OS transport custody, not inbox state mutation."
-    },
-    {
       "path": "src/hyprial/daemon/impl/inbox/links/zenoh_link.py",
       "owner": "ZenohInboxEndpoint._on_custody",
       "operation": "accept_custody"
@@ -346,28 +329,10 @@
       "operation": "receive_system_notice"
     },
     {
-      "path": "src/hyprial/daemon/impl/application/actors/transfer_p2.py",
-      "owner": "_TransferP2Mixin._transfer_override_alert",
-      "operation": "receive_system_notice",
-      "reason": "2026-10-10 transfer P2 C2: the owner-authenticated custody override writes its durable structured operator alert through the composed DeliveryCustodyFacade (ReceiveSystemNoticeCommand to the Inbox owner), never a raw InboxService. The journal audit row is the primary receipt; the alert must land durably before any hold is released."
-    },
-    {
       "path": "src/hyprial/daemon/impl/application/messaging/inbox_surface/reply_reminders.py",
       "owner": "InboxReplyReminders.post_reply_reminder",
       "operation": "receive_system_notice",
       "reason": "2026-10-14 WP7: the reply reminder writes its durable system notice through the injected inbox port. In composition that port is the DeliveryCustodyFacade, whose receive_system_notice sends ReceiveSystemNoticeCommand to the Inbox owner; this adapter never constructs or mutates a raw InboxService."
-    },
-    {
-      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
-      "owner": "_BridgeReconcileMixin._confirm_batch_fetched",
-      "operation": "fetch_pending",
-      "reason": "WP5-A accepted-only stamp: after a worker accepts a batch offer, the runtime asks the composed DeliveryCustodyFacade to stamp the accepted members via FetchPendingCommand. This is a typed facade call, not a raw InboxService mutation; it is idempotent, bounded to the accepted member set, and retried through the pending-fetch map without opening a second settlement path."
-    },
-    {
-      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
-      "owner": "_BridgeReconcileMixin._retry_batch_fetches",
-      "operation": "fetch_pending",
-      "reason": "WP5-A retry of the accepted-only stamp: a failed facade fetch is retried from the bounded in-memory pending map on the next tick. The composed DeliveryCustodyFacade submits FetchPendingCommand to the Inbox owner; this is not a raw service write and cannot revive a settled batch."
     }
   ]
 }

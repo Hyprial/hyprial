@@ -7,8 +7,8 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +46,9 @@ class IpcRequestOwner:
     acknowledges them, including across a transient actor restart.
     """
 
-    def __init__(self, *, capacity: int = 64, runtime: ActorRuntime | None = None):
-        self._runtime = runtime or ActorRuntime()
+    def __init__(self, *, capacity: int = 64, actor_host=None):
+        if actor_host is None:
+            raise ValueError("actor_host is required")
         self._guard = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
@@ -56,17 +57,17 @@ class IpcRequestOwner:
         self._active: dict[str, RequestStarted] = {}
         self._accepted = self._overloaded = self._completed = self._failed = 0
         self._high_water = 0
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="ipc-requests",
                 handler_factory=lambda: self._receive,
                 mailbox_capacity=capacity * 2,
             )
         )
-        self._effects: EffectLane[RequestCompleted, RequestCompleted] = EffectLane(
+        self._effects = actor_host.effect_lane(
             name="ipc-completions",
             execute=lambda completed: completed,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=lambda event: self._cell.tell(event),
             capacity=capacity,
         )
 
@@ -77,7 +78,7 @@ class IpcRequestOwner:
         with self._guard:
             if self._closing:
                 return None
-            result = self._runtime.tell(self._handle, command)
+            result = self._cell.tell(command)
             if result is AdmissionResult.ACCEPTED:
                 self._accepted += 1
                 self._idle.clear()
@@ -113,8 +114,8 @@ class IpcRequestOwner:
             return False
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        stopped = self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
+        stopped = self._cell.stop(
+            max(0.0, deadline - time.monotonic())
         )
         with self._guard:
             self._closed = stopped

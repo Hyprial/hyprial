@@ -5,19 +5,16 @@ from __future__ import annotations
 import base64
 import json
 import time
-from types import SimpleNamespace
 
 import pytest
 from pycrdt import Map
 
-from hyprial.daemon.impl.org.network import directory as directory_module
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
 )
 from hyprial.daemon.impl.org.network.service import OrgNetworkService
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.storage.store import admission as admission_module
 from hyprial.identity import (
     identity_slug,
     protected_directory_doc_id,
@@ -32,7 +29,6 @@ from .test_round4 import (
     BOB,
     OWNER,
     _add_tree_doc,
-    _commits_since,
     _deliver_all,
     _device,
     _position,
@@ -120,7 +116,7 @@ def test_r2_other_member_cannot_link_people_binding_row_on_any_replica(
     alice.facade.mkdir(space_id, f"directory/people/{user_key}")
     _deliver_all(alice, (owner, bob, carol), space_id, before)
     parent = owner.facade.stat(space_id, f"directory/people/{user_key}")
-    path = f"directory/people/{user_key}/binding.json"
+    path = f"directory/people/{user_key}/agents-node-1.json"
     node_id = protected_directory_node_id(
         space_id, path, space_owner=f"user:{OWNER}"
     )
@@ -136,7 +132,7 @@ def test_r2_other_member_cannot_link_people_binding_row_on_any_replica(
             doc.get("nodes", type=Map),
             node_id=node_id,
             parent=parent.node_id,
-            name="binding.json",
+            name="agents-node-1.json",
             doc_id=doc_id,
         ),
     )
@@ -149,65 +145,29 @@ def test_r2_other_member_cannot_link_people_binding_row_on_any_replica(
         assert missing.value.code == "unknown-doc"
 
 
-def test_r2_binding_row_publishes_with_exact_shape_to_every_replica(
+def test_a_people_row_written_by_its_member_replicates_to_every_replica(
     round9_replicas,
 ) -> None:
+    """R3: no publication-time gate; a member's own ``people`` row replicates
+    whatever its content, including an unexpired proof-shaped value."""
+
     _tmp_path, space_id, owner, alice, bob, carol = round9_replicas
     alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
     before = _position(alice, space_id)
     row = {
         "user": ALICE,
         "larkUnionId": "on_alice",
-        "proof": _unverified_proof(expires_at=1),
+        "proof": _unverified_proof(expires_at=int(time.time()) + 3_600),
         "publishedAt": "2026-10-07T12:00:00+00:00",
     }
-    OrgFsDirectoryStore(alice.facade).put_binding("group-acme", row)
+    path = f"directory/people/{identity_slug(ALICE)}/agents-node-1.json"
+    alice.facade.mkdir(space_id, path.rsplit("/", 1)[0])
+    alice.facade.write_text(space_id, path, json.dumps(row))
     _deliver_all(alice, (owner, bob, carol), space_id, before)
 
     for replica in (owner, alice, bob, carol):
-        assert OrgFsDirectoryStore(replica.facade).list_binding_rows(
-            "group-acme"
-        ) == [(identity_slug(ALICE), row)]
-        text, _version = replica.facade.read_text(
-            space_id, f"directory/people/{identity_slug(ALICE)}/binding.json"
-        )
-        assert set(json.loads(text)) == {
-            "user",
-            "larkUnionId",
-            "proof",
-            "publishedAt",
-        }
-
-
-def test_r2f_future_binding_proof_is_accepted_on_peer_import(
-    round9_replicas, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A receiver clock behind the publisher must not reject replicated facts."""
-
-    _tmp_path, space_id, owner, alice, _bob, _carol = round9_replicas
-    alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(alice, space_id)
-    expires_at = int(time.time()) + 3_600
-    row = {
-        "user": ALICE,
-        "larkUnionId": "on_alice",
-        "proof": _unverified_proof(expires_at=expires_at),
-        "publishedAt": "2026-10-07T12:00:00+00:00",
-    }
-
-    with monkeypatch.context() as source_clock:
-        advanced_time = SimpleNamespace(time=lambda: expires_at + 120)
-        source_clock.setattr(admission_module, "time", advanced_time)
-        source_clock.setattr(directory_module, "time", advanced_time)
-        OrgFsDirectoryStore(alice.facade).put_binding("group-acme", row)
-
-    assert expires_at > time.time()
-    for envelope in _commits_since(alice, space_id, before):
-        result = _receive(owner, space_id, envelope, alice.node_id)
-        assert (result.status, result.code) == ("applied", None)
-    assert OrgFsDirectoryStore(owner.facade).list_binding_rows("group-acme") == [
-        (identity_slug(ALICE), row)
-    ]
+        text, _version = replica.facade.read_text(space_id, path)
+        assert json.loads(text) == row
 
 
 def test_r9_move_cannot_squat_the_shared_directory_root(round9_replicas) -> None:

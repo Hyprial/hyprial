@@ -9,7 +9,9 @@ AUTHORITY_FIELDS = {'owner', 'deviceId', 'masterPublic', 'serverPublic', 'addres
 INVITE_FIELDS = {'version', 'tailnetId', 'authority', 'inviteId', 'token', 'owner', 'expiresAtMs'}
 
 
-def validate_tailnet_invite(value: object, *, space_id: str) -> dict:
+def validate_tailnet_invite(
+    value: object, *, space_id: str, allow_inherited: bool = False
+) -> dict:
     if not isinstance(value, Mapping) or set(value) != INVITE_FIELDS:
         raise ValueError('tailnet invitation fields are invalid')
     if type(value['version']) is not int or value['version'] != 2:
@@ -18,7 +20,10 @@ def validate_tailnet_invite(value: object, *, space_id: str) -> dict:
         text = value[field]
         if not isinstance(text, str) or not text or len(text.encode()) > 1024:
             raise ValueError('tailnet invitation identity is invalid')
-    if value['tailnetId'] != space_id:
+    if allow_inherited:
+        if value['tailnetId'] == space_id:
+            raise ValueError('sub-org tailnet invitation must inherit parent tailnetId')
+    elif value['tailnetId'] != space_id:
         raise ValueError('tailnet invitation space mismatch')
     token = value['token']
     if not isinstance(token, str) or re.fullmatch(r'[A-Za-z0-9_-]{43}', token) is None:

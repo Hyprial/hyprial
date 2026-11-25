@@ -66,6 +66,7 @@ def network_view(
     own_address: Callable[[], str | None],
     server_public: str,
     logger: Callable[..., None],
+    device_uid: str | None = None,
 ) -> dict[str, Any]:
     """Return directory, mapped-peer, and sidecar panes with source status."""
 
@@ -172,6 +173,7 @@ def network_view(
         "directoryPending": directory_pending,
         "self": {
             "deviceId": node_id,
+            "deviceUid": device_uid,
             "owner": owner,
             "serverPublic": server_public,
             "addressPresent": address is not None,

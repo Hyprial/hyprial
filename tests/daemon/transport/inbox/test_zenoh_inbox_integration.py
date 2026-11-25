@@ -27,6 +27,7 @@ from hyprial.daemon.impl.inbox import (
 from hyprial.daemon.impl.inbox.tracking.progress import ProgressEvent, encode_progress_event
 from hyprial.daemon.impl.transport import LivelinessDirectory, ZenohConfig, ZenohTransport
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.actor_hosts import new_actor_host
 
 
 class _Presence:
@@ -65,7 +66,7 @@ def _actor_owned_sender(
         transport,
         _DiscardInboxEvents(),
         retry_policy=RetryPolicy(),
-        node_id="mac",
+        node_id="mac", actor_host=new_actor_host(),
     )
     return DeliveryCustodyFacade(coordinator, database)
 
@@ -517,7 +518,7 @@ class ZenohInboxIntegrationTests(unittest.TestCase):
                     sender_transport, directory_view, receipt_timeout=2.0
                 ),
             )
-            actor = "agent:owner:host:hq-adjutant"
+            name_uri = "agent:owner:host:hq-adjutant"
             try:
                 registration = app.handle(
                     "session.register",
@@ -532,6 +533,8 @@ class ZenohInboxIntegrationTests(unittest.TestCase):
                         "channelConfirmed": True,
                     },
                 )
+                actor = app.agents.get("hq-adjutant").uri
+                self.assertNotEqual(actor, name_uri)
                 self.assertEqual(registration["actor"], actor)
                 deadline = time.monotonic() + 3.0
                 while not directory_view.actor_online(actor):

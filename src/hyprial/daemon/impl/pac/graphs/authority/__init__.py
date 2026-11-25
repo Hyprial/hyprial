@@ -1,3 +1,14 @@
+# Decision record (file header; no inline comments by repository rule):
+# - NotificationDelivered is fenced on the business generation it is checked
+#   against, not the engine generation (待 HQ 追认): the engine keeps queued
+#   commands across a restart, and an engine-stamped receipt queued while
+#   restart_pending would carry g and be dropped by generation g + 1.
+# - The business generation advances only after its handler is built.
+# - A CLOSED admission no longer ends the delivery thread; the item stays
+#   pending in its durable row and the next scan re-sends it.
+# - close() shuts a privately owned host only after a complete drain: the
+#   engine caches a failed shutdown, so spending the budget on an early
+#   attempt would poison the retry the custody contract promises.
 """Typed PAC graph writer with a separate durable-notification I/O lane.
 
 This port owns the graph writes routed to it.  The rest of the PAC producers
@@ -14,13 +25,17 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 from hyprial.kernel import HookEventPublisher
 from hyprial.kernel import PAC_WORKTREE_GIT_TIMEOUT_SECONDS
 from hyprial.daemon import summary_from_text
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 from hyprial.daemon.impl.pac.actors.coordinator  import FileLaunchResolver
 from hyprial.daemon.impl.pac.graphs.reactor  import NotificationSender, permanent_delivery_failure
@@ -71,6 +86,7 @@ from hyprial.daemon.impl.pac.graphs.authority.commands import (
     _RESTORE_FACT_COMMANDS,  # noqa: F401  (facade compatibility)
 )
 from hyprial.daemon.impl.pac.graphs.authority.generation import _Generation
+from hyprial.daemon.impl.pac.storage.agent_uris import AgentReader
 
 
 class PacGraphAuthority:
@@ -88,6 +104,8 @@ class PacGraphAuthority:
         call_timeout: float = 15.0,
         logger: Callable[..., None] | None = None,
         hook_publisher: HookEventPublisher | None = None,
+        agent_reader: AgentReader | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
         if mailbox_capacity < 1 or completion_capacity < mailbox_capacity:
             raise ValueError("invalid PAC graph authority capacity")
@@ -105,6 +123,7 @@ class PacGraphAuthority:
                 )
             raise
         self.sender = sender
+        self.agent_reader = agent_reader
         self._notification_logger = logger
         self._call_timeout = call_timeout
         self._completion_capacity = completion_capacity
@@ -135,19 +154,20 @@ class PacGraphAuthority:
             str, tuple[threading.Event, list[Any]]
         ] = {}
         self._wake = threading.Event()
-        self._runtime = ActorRuntime()
+        self._hosts = ActorHostCustody(actor_host, owner="pac-graph-authority")
         self._refresh_restore_facts()
 
         def factory() -> _Generation:
-            self._generation += 1
             with self._actor_lock:
                 self._actor_active.clear()
-            return _Generation(
-                self._generation, self.database, self._complete, self._wake.set,
-                lambda: self._workflow_service, self,
+            generation = _Generation(
+                self._generation + 1, self.database, self._complete,
+                self._wake.set, lambda: self._workflow_service, self,
             )
+            self._generation = generation.generation
+            return generation
 
-        self._handle = self._runtime.start(
+        self._handle = self._hosts.host.spawn(
             ActorSpec(
                 name="pac-graph-authority",
                 handler_factory=factory,
@@ -318,7 +338,7 @@ class PacGraphAuthority:
         try:
             # tell can synchronously call the undelivered sink; never hold
             # the owner lock across this boundary.
-            admission = self._runtime.tell(self._handle, claim.command)
+            admission = self._handle.tell(claim.command)
         except BaseException:
             self._retire_reconcile_claim(claim.command)
             raise
@@ -356,6 +376,7 @@ class PacGraphAuthority:
         caller_deadline = time.monotonic() + self._call_timeout
         facts = {
             **facts,
+            "agent_reader": self.agent_reader,
             "git_timeout_s": min(
                 PAC_WORKTREE_GIT_TIMEOUT_SECONDS,
                 max(0.001, self._call_timeout - reserve),
@@ -632,7 +653,7 @@ class PacGraphAuthority:
                         pending[0].set()
                 continue
             while not self._closed:
-                admission = self._runtime.tell(self._handle, completed)
+                admission = self._handle.tell(completed)
                 if admission is AdmissionResult.ACCEPTED:
                     break
                 if admission is AdmissionResult.CLOSED:
@@ -807,7 +828,7 @@ class PacGraphAuthority:
             if self._closed or len(self._pending) >= self._completion_capacity:
                 raise PacGraphOverloaded("PAC graph authority is closing or full")
             self._pending[command.correlation_id] = pending
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._handle.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 del self._pending[command.correlation_id]
                 raise PacGraphOverloaded(f"PAC graph admission: {admission.value}")
@@ -939,15 +960,13 @@ class PacGraphAuthority:
                             pass
                     continue
                 command = NotificationDelivered(
-                    self._runtime.snapshot(self._handle).generation,
+                    self._generation,
                     item.graph_id, item.event_id, item.edge, str(message_id),
                 )
                 while not self._closed:
-                    admission = self._runtime.tell(self._handle, command)
-                    if admission is AdmissionResult.ACCEPTED:
+                    admission = self._handle.tell(command)
+                    if admission is not AdmissionResult.OVERLOADED:
                         break
-                    if admission is AdmissionResult.CLOSED:
-                        return
                     time.sleep(0.01)
 
     def close(self, timeout: float = 5.0) -> bool:
@@ -960,7 +979,10 @@ class PacGraphAuthority:
         self._delivery.join(max(0.0, deadline - time.monotonic()))
         for worker in self._actor_workers:
             worker.join(max(0.0, deadline - time.monotonic()))
-        drained = self._runtime.drain(max(0.0, deadline - time.monotonic()))
+        drained = self._handle.drain(max(0.0, deadline - time.monotonic()))
+        closed = drained.complete and self._hosts.shutdown(
+            max(0.0, deadline - time.monotonic())
+        )
         with self._lock:
             claims_settled = not self._reconcile_claims
         return (
@@ -968,4 +990,5 @@ class PacGraphAuthority:
             and not any(worker.is_alive() for worker in self._actor_workers)
             and drained.complete
             and claims_settled
+            and closed
         )

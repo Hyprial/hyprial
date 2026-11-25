@@ -6,7 +6,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
 from hyprial.kernel import LIFECYCLE_IPC_MARGIN_SECONDS, LIFECYCLE_OPERATION_DEADLINE_SECONDS, LIFECYCLE_WAIT_MARGIN_SECONDS
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import typer
 
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
@@ -51,12 +51,12 @@ def agent_stop(
         services = get_services()
         if all_agents and name is not None:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--all cannot be combined with an agent name",
             )
         if not all_agents and name is None:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "agent stop requires an agent name or --all",
             )
         params: dict[str, Any] = {"all": all_agents, "agentsOnly": True}

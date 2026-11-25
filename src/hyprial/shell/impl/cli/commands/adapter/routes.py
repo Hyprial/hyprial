@@ -1,105 +1,75 @@
-"""``hyprial adapter route`` commands."""
+"""``hyprial adapter route`` commands.
+
+Decision F1a (2026-11-23): every subcommand is a presentation of the daemon's
+``adapter.routes.*`` requests; the IPC-only ``adapter.route-config.*`` twin is
+retired.  ``route add`` no longer rebinds an existing name: a taken name is
+refused and the caller removes it first, so a failed write never loses the
+route.  ``route remove --force`` maps to ``clearDefault``.
+
+Decision F1a review (2026-11-24, coordinator ruling on P1-1): each command sends
+exactly one daemon request, written in its own operation so the
+request-architecture gate sees it.  Writes omit the optional
+``expectedRevision``; the daemon still refuses a taken, unbound or default route
+under its write lease.  ``route list`` requires an adapter name, because no
+daemon request returns every adapter's routes and a per-adapter loop is
+request orchestration the CLI must not own.
+"""
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
-from typing import Any
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
-from hyprial.shell.impl.cli.commands.adapter.admin import _parse_adapter_routes
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 route_app = group(
-    help="Manage one adapter's outbound routes (route:<adapter>:<route>)."
+    help="Manage one adapter's outbound routes (named chats of that adapter)."
 )
 
 
-def _route_candidates(name: str) -> list[JsonObject]:
-    """Chat ids this adapter observed inbound traffic from, as CLI JSON rows.
+def _parse_one_route(value: str) -> tuple[str, str]:
+    name, separator, native_id = value.partition("=")
+    if not separator or not name or not native_id:
+        raise get_services().CliError(codes.INVALID_ARGUMENT, f"--route {value!r} must be name=native_id")
+    return name, native_id
 
-    Reads the shared adapter database through one adapter's namespace, read-only:
-    a machine that has never received an inbound event has no database, and asking
-    must not create one.  Unreadable state is reported as "no candidates" rather
-    than as a failure, because this feeds first-run planning, which stays useful
-    for every step that has nothing to do with messaging.
-    """
+
+def _restate_refusal(error: Exception, name: str, route: str) -> NoReturn:
+    """Re-raise a daemon route refusal in CLI terms; other errors pass through unchanged."""
+
     services = get_services()
-
-    from hyprial.daemon import adapter_namespace
-    from hyprial.daemon import observed_chats
-
-    try:
-        rows = observed_chats(
-            services._state_dir() / "adapters.sqlite3",
-            adapter=adapter_namespace(name),
-        )
-    except Exception:  # noqa: BLE001 - an unreadable store is absence, not failure
-        return []
-    return [{"chatId": row.chat_id, "chatType": row.chat_type} for row in rows]
-
-
-def _parse_one_route(value: str) -> Any:
-    """Parse a single ``name=native_id`` pair, reusing the add-time rules."""
-
-    return _parse_adapter_routes([value])[0]
-
-
-def _route_error_code(error: Exception) -> str:
-    """Map a config error to the same code ``adapter remove`` reports."""
-
-    from hyprial.daemon import AdapterNotFoundError
-
-    if isinstance(error, AdapterNotFoundError):
-        return ipc_errors.ADAPTER_NOT_FOUND
-    return getattr(error, "code", None) or ipc_errors.INVALID_ARGUMENT
-
-
-def _route_operation(call: Any) -> JsonObject:
-    """Run one route mutation, map its error code, then hot-reload.
-
-    A route that exists only in the file is a route the running daemon cannot
-    deliver to, so the reload belongs to the change -- but an unreachable
-    daemon is not a failure: it reads the same config at its next start. This
-    is the same contract as ``adapter add``.
-    """
-    services = get_services()
-
-    from hyprial.kernel import PersistentConfigError
-
-    try:
-        result = call()
-    except PersistentConfigError as error:
-        raise services.CliError(_route_error_code(error), str(error)) from error
-    try:
-        result["daemonReload"] = services.runtime.request(
-            "adapter.reload", {}, timeout=5.0, restore_wait=0.0
-        )
-    except (services.CliError, ipc_errors.TransientDaemonError):
-        result["daemonReload"] = None
-    return result
+    code = getattr(error, "code", None)
+    if code == "ROUTE_EXISTS":
+        message = (f"route {route!r} already exists on adapter {name!r}; run "
+                   f"'hyprial adapter route remove {name} {route}' first, then add it again")
+    elif code == "ROUTE_NOT_FOUND":
+        message = (f"route {route!r} is not bound on adapter {name!r}; run "
+                   f"'hyprial adapter route list {name}' to see the bound routes")
+    elif code == "ROUTE_IN_USE":
+        message = (f"route {route!r} is the default route of adapter {name!r}; "
+                   "pass --force to remove it and clear the default")
+    elif code == "ADAPTER_CONFIG_CONFLICT":
+        message = f"adapter {name!r} changed while the route was being written; run the command again"
+    else:
+        raise error
+    raise services.CliError(code, message, getattr(error, "data", None)) from None
 
 
 @route_app.command("list")
 def adapter_route_list(
-    name: str | None = typer.Argument(
-        None, help="Configured adapter name; omit to list every adapter."
-    ),
+    name: str = typer.Argument(..., help="Configured adapter name."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show the routes bound on an adapter, read from local config."""
+    """Show the routes bound on one adapter, as the daemon reports them."""
     services = get_services()
 
     def operation() -> JsonObject:
-        services = get_services()
-        from hyprial.daemon import list_gateway_routes
-        from hyprial.kernel import PersistentConfigError
-
-        try:
-            return list_gateway_routes(hyprial_home=services._hyprial_home(), name=name)
-        except PersistentConfigError as error:
-            raise services.CliError(_route_error_code(error), str(error)) from error
+        listed = services.runtime.request("adapter.routes.list", {"name": name})
+        return {"ok": True, "adapters": [listed["adapter"]]}
 
     services.runtime.execute(operation, json_output=json_output)
 
@@ -113,18 +83,13 @@ def adapter_route_candidates(
 
     This is the machine-side answer to "which chat should a first route point
     at": the user talks to the bot once and the id is observed, instead of being
-    copied by hand.  Read-only by construction -- it never creates adapter state,
-    so a first-run plan may call it before any route exists.
+    copied by hand.  Read-only by construction -- it never creates adapter state.
+    The adapter must be configured.
     """
     services = get_services()
 
     def operation() -> JsonObject:
-        services = get_services()
-        return {
-            "ok": True,
-            "adapter": name,
-            "candidates": services._route_candidates(name),
-        }
+        return services.runtime.request("adapter.routes.candidates", {"name": name})
 
     services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
@@ -138,33 +103,24 @@ def adapter_route_add(
     make_default: bool = typer.Option(
         False, "--default", help="Also make this the gateway's default route."
     ),
-    force: bool = typer.Option(
-        False, "--force", help="Rebind a route name that already exists."
-    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Bind one outbound route on an existing adapter.
 
-    Touches only ``channels.json`` -- never the App credential -- then asks a
-    running daemon to reload. Use this instead of ``adapter add --force``,
-    which replaces the whole gateway entry and rewrites its secret file.
+    Touches only ``channels.json`` -- never the App credential -- and the daemon
+    reloads the adapter. A route name that is already bound is refused; remove
+    it first to point it at another chat.
     """
     services = get_services()
 
     def operation() -> JsonObject:
-        services = get_services()
-        from hyprial.daemon import add_gateway_route
-
-        parsed = _parse_one_route(route)
-        return _route_operation(
-            lambda: add_gateway_route(
-                hyprial_home=services._hyprial_home(),
-                name=name,
-                route=parsed,
-                make_default=make_default,
-                force=force,
-            )
-        )
+        route_name, native_id = _parse_one_route(route)
+        try:
+            return services.runtime.request("adapter.routes.add", {
+                "name": name, "route": route_name, "chatId": native_id, "makeDefault": make_default,
+            })
+        except services.CliError as error:
+            _restate_refusal(error, name, route_name)
 
     services.runtime.execute(operation, json_output=json_output)
 
@@ -184,16 +140,11 @@ def adapter_route_remove(
     services = get_services()
 
     def operation() -> JsonObject:
-        services = get_services()
-        from hyprial.daemon import remove_gateway_route
-
-        return _route_operation(
-            lambda: remove_gateway_route(
-                hyprial_home=services._hyprial_home(),
-                name=name,
-                route_name=route_name,
-                force=force,
-            )
-        )
+        try:
+            return services.runtime.request("adapter.routes.remove", {
+                "name": name, "route": route_name, "clearDefault": force,
+            })
+        except services.CliError as error:
+            _restate_refusal(error, name, route_name)
 
     services.runtime.execute(operation, json_output=json_output)

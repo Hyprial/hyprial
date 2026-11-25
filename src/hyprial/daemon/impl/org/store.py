@@ -1,3 +1,7 @@
+# Decision record (W1E-2, 2026-11-21):
+# - OrgContextStore lives inside the guarded HYPRIAL_HOME root and writes via
+#   tempfile.mkstemp + os.replace under process umask(0o077), removing redundant
+#   inner os.chmod calls.
 """Local accepted and pending slots for owner-sovereign org context."""
 
 from __future__ import annotations
@@ -76,7 +80,7 @@ def _parse_timestamp(value: object, label: str) -> datetime:
     return _aware(parsed, label)
 
 
-def _atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
@@ -87,9 +91,7 @@ def _atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, mode)
         os.replace(temporary, path)
-        os.chmod(path, mode)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -138,9 +140,6 @@ class OrgContextStore:
         self.org_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.adoptions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.pending_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.org_dir, 0o700)
-        os.chmod(self.adoptions_dir, 0o700)
-        os.chmod(self.pending_dir, 0o700)
 
     def _adoption_path(self, document_sha256: str) -> Path:
         return self.adoptions_dir / f"{document_sha256}.json"

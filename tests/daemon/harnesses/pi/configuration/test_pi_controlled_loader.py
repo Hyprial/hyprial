@@ -37,7 +37,7 @@ from hyprial.daemon.impl.harnesses.pi.loader import (
 from hyprial.daemon.impl.harnesses.pi.rpc_client import PI_HARNESS_BRIDGE_EXTENSION, PiRpcClient
 from hyprial.daemon.impl.harnesses.worker_channel import build_worker_channel
 from hyprial.identity.impl.provider_auth import HelperOutcome, ProviderAuthCoordinator
-from hyprial.identity import UserProfileStore
+from hyprial.identity import RuntimeCapabilityStore
 from hyprial.daemon.impl.transfer.archive.session_files import (
     locate_session_file,
     session_target_path,
@@ -869,14 +869,7 @@ def test_t14_provider_auth_routes_two_agents_to_their_own_native_roots(
     registry_b, *_rest_b, context_b, _channel_b, _launch_b = _real_p22_context(
         tmp_path / "b"
     )
-    store = UserProfileStore(tmp_path / "users.json")
-    store.ensure(
-        owner="p23-owner",
-        owner_key="owner-key",
-        login_name="unit",
-        machine="p23-node",
-        machine_key="machine-key",
-    )
+    store = RuntimeCapabilityStore(tmp_path / "runtime-capabilities.json")
     legacy = _RouteRunner({})
     routes: dict[str, _RouteRunner] = {}
     log_events: list[str] = []
@@ -889,7 +882,7 @@ def test_t14_provider_auth_routes_two_agents_to_their_own_native_roots(
 
     valid_tokens = {context_a.entity_token, context_b.entity_token}
     coordinator = ProviderAuthCoordinator(
-        profile_store=store,
+        capability_store=store,
         owner_key="owner-key",
         notifier=lambda _text, *, idempotency_key: idempotency_key,
         helper_runner=legacy,
@@ -931,9 +924,7 @@ def test_t14_provider_auth_routes_two_agents_to_their_own_native_roots(
         assert routes[context_b.entity_token].environment[
             "PI_CODING_AGENT_DIR"
         ] == str(context_b.roots.native_root)
-        profile = store.get("owner-key")
-        assert profile is not None
-        assert profile.runtime_capabilities == ()
+        assert store.list("owner-key") == ()
 
         stale = replace(context_a, entity_token="stale-incarnation")
         coordinator.handle_turn_failure(

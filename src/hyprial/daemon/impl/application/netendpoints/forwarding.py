@@ -84,6 +84,7 @@ class _ForwardingOpsMixin:
                 level, "zenoh", event, **fields
             ),
             scheduler=self._maintenance_scheduler,
+            actor_host=self._actor_hosts.host_for("forwarding-supervisor"),
             own_io=True,
             desired_exposures=self._exposure_store.list,
             slots=lambda: slot_store_for_app(self).endpoints(),
@@ -93,6 +94,21 @@ class _ForwardingOpsMixin:
         )
         self._forwarding_supervisor = supervisor
         supervisor.ensure_started()
+
+    def _rebind_forwarding_endpoint(self, listener: str) -> None:
+        """Restart the sidecar on the loopback listener chosen after a re-pick."""
+
+        if self._forwarding_automatic is None:
+            raise RuntimeError("forwarding listener changed without an automatic plan")
+        from hyprial.daemon.impl.forwarding.policy import inbound_target_from_listener
+        target = inbound_target_from_listener(listener)
+        self._forwarding_environment = self._forwarding_automatic.environment(target)
+        if self._forwarding_supervisor is not None:
+            self._forwarding_supervisor.close()
+            self._forwarding_supervisor = None
+        self._forwarding_start_attempted = False
+        self._start_forwarding_supervisor()
+        self.zenoh_listen = (listener,)
 
     def _ensure_tailcat_machine_binding(self) -> None:
         """Adopt a legacy key or rotate a copied-home identity before launch."""
@@ -520,6 +536,7 @@ class _ForwardingOpsMixin:
                     "forwarding-reconcile",
                     lambda _observed_at_ms: self._reconcile_forwarding_endpoints(),
                     self._on_forwarding_tick_completed,
+                    actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
                 )
                 self._forwarding_cadence = cadence
             return cadence

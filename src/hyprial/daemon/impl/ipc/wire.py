@@ -31,8 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from hyprial.kernel import ipc_errors
-from hyprial.daemon.impl.application.messaging.inbox_surface.link_send import (
-    _LinkSendMixin,
+from hyprial.daemon.impl.application.messaging.inbox_surface.send_receipts import (
+    _SendReceiptsMixin,
 )
 from hyprial.daemon.impl.application.messaging.inbox_surface.queries import (
     _MessageQueriesMixin,
@@ -44,10 +44,9 @@ from hyprial.daemon.impl.inbox import (
     InboxService,
     MemoryDeliveryTransport,
 )
-from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.daemon.impl.inbox.contracts.settlement import settle_hint_for
 from hyprial.daemon.impl.inbox.contracts.summary import check_summary
-from hyprial.kernel import ADAPTER_URI_PREFIX, CHANNEL_URI_PREFIX
+from hyprial.kernel import ADAPTER_URI_PREFIX
 from hyprial.kernel import DaemonRequestError
 
 JsonObject = dict[str, Any]
@@ -123,13 +122,11 @@ class _Stack(AbstractContextManager["_Stack"]):
         transport: MemoryDeliveryTransport | None = None,
         *,
         max_inbox_items: int = 10_000,
-        link_admission: LinkAdmission | None = None,
     ) -> InboxService:
         service = InboxService(
             self.root / f"{name}.sqlite3",
             transport or MemoryDeliveryTransport(),
             max_inbox_items=max_inbox_items,
-            link_admission=link_admission,
         )
         self._services.append(service)
         return service
@@ -155,7 +152,7 @@ def _lifecycle(value: str | None, recipient: str) -> DeliveryLifecycle:
 
     return (
         DeliveryLifecycle.DURABLE_SERVICE
-        if recipient.startswith((CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX))
+        if recipient.startswith(ADAPTER_URI_PREFIX)
         else DeliveryLifecycle.ONLINE_ONLY
     )
 
@@ -196,40 +193,11 @@ def _text(envelope: JsonObject) -> str:
     return str(content.get("text", "")) if isinstance(content, dict) else ""
 
 
-class _DenyIngressGate:
-    """A gate that says the sender has no link file (WG-037, WP4 §4.6)."""
-    def sender_known(self, *, recipient: str, sender: str) -> bool:
-        return False
+class _WireCellDelivery:
+    """Minimal admitting interactive cell gate for wire contract surface checks."""
 
-    def admit_dispatch(self, *, recipient: str, sender: str, message_id: str,
-                       now_ms: int, intent: str = "request",
-                       reply_to: str | None = None) -> bool:
-        return False
-
-    def admit_send(self, *, sender: str, target: str, intent: str,
-                   reply_to: str | None, now_ms: int):  # type: ignore[no-untyped-def]
-        raise AssertionError("WG-037 never asks admit_send")
-
-    def settle_hint(self, *, actor: str, message_id: str) -> str:
-        return "keep"
-
-
-class _AllowGate(_DenyIngressGate):
-    """A gate that admits everything (WG-033 reads an admitted row)."""
-
-    def sender_known(self, *, recipient: str, sender: str) -> bool:
-        return True
-
-    def admit_dispatch(self, *, recipient: str, sender: str, message_id: str,
-                       now_ms: int, intent: str = "request",
-                       reply_to: str | None = None) -> bool:
-        return True
-
-    def admit_send(self, *, sender: str, target: str, intent: str,
-                   reply_to: str | None, now_ms: int):  # type: ignore[no-untyped-def]
-        from hyprial.daemon.impl.links.ports import Allow
-
-        return Allow()
+    def interactive_admission(self, actor: str) -> object:
+        return object()
 
 
 class _SurfaceHost(_MessageQueriesMixin):
@@ -242,11 +210,11 @@ class _SurfaceHost(_MessageQueriesMixin):
     values are product-constructed.
     """
 
-    def __init__(self, inbox: InboxService, admission: LinkAdmission | None = None) -> None:
+    def __init__(self, inbox: InboxService) -> None:
         self._inbox = inbox
-        self.link_admission = admission or LinkAdmission()
         self.epoch = "wire-contract"
         self._fetch_receipt_publisher = None
+        self._cell_delivery = _WireCellDelivery()
 
     def _log(self, *_: object, **__: object) -> None:
         """The golden runner has no daemon logger."""
@@ -258,6 +226,11 @@ class _SurfaceHost(_MessageQueriesMixin):
 
         claim = str(params.get("actor") or params.get("from"))
         return _MessageCaller(claim, claim, "session")
+
+    def _consumer_read_keys(self, address: str) -> tuple[str, ...]:
+        """The one inbox key a consumer at ``address`` reads."""
+
+        return (address,)
 
     def pending_rows(self, actor: str) -> list[JsonObject]:  # C07 rows
         answer = self._ipc_message_pending_list(
@@ -693,12 +666,10 @@ class _WireEvaluator:
 
     def _WG_032(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
         message, _ = _message(fixtures[0])
-        admission = LinkAdmission()
-        admission.bind(_AllowGate())
         with _Stack() as stack:
-            inbox = stack.service("recipient", link_admission=admission)
+            inbox = stack.service("recipient")
             inbox.receive(message)
-            rows = _SurfaceHost(inbox, admission).pending_rows(message.recipient)
+            rows = _SurfaceHost(inbox).pending_rows(message.recipient)
         assert rows, "the pending reader returned no row for a received message"
         row = rows[0]
         return {
@@ -709,12 +680,10 @@ class _WireEvaluator:
 
     def _WG_033(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
         message, decoded = _message(fixtures[0])
-        admission = LinkAdmission()
-        admission.bind(_AllowGate())
         with _Stack() as stack:
-            inbox = stack.service("recipient", link_admission=admission)
+            inbox = stack.service("recipient")
             inbox.receive(message)
-            host = _SurfaceHost(inbox, admission)
+            host = _SurfaceHost(inbox)
             params: JsonObject = {"actor": message.recipient, "messageId": message.message_id,
                                  "sessionRef": "wire-session"}
             body = host._ipc_message_read_body("message.read_body", params)
@@ -746,10 +715,10 @@ class _WireEvaluator:
         message, _ = _message(fixtures[0])
         actor = message.recipient
         pending = settle_hint_for(
-            pending=message, gate=None, actor=actor,
+            pending=message, actor=actor,
             message_id=message.message_id)
         after_reply = settle_hint_for(
-            pending=None, gate=None, actor=actor,
+            pending=None, actor=actor,
             message_id=message.message_id)
         return {"pendingRequest": pending, "afterReply": after_reply}
 
@@ -758,10 +727,10 @@ class _WireEvaluator:
         event, _ = _message(fixtures[1])
         return {
             "reply": settle_hint_for(
-                pending=reply, gate=None, actor=reply.recipient,
+                pending=reply, actor=reply.recipient,
                 message_id=reply.message_id),
             "event": settle_hint_for(
-                pending=event, gate=None, actor=event.recipient,
+                pending=event, actor=event.recipient,
                 message_id=event.message_id),
         }
 
@@ -769,28 +738,13 @@ class _WireEvaluator:
         _, decoded = _message(fixtures[0])
         # The real validator the ``message.send`` boundary calls (ruling 39):
         # never a second copy of the rule.
-        reply_to = _LinkSendMixin._link_reply_to_param(decoded.get("replyTo"))
+        reply_to = _SendReceiptsMixin._link_reply_to_param(decoded.get("replyTo"))
         try:
-            _LinkSendMixin._link_reply_to_param("")
+            _SendReceiptsMixin._link_reply_to_param("")
             empty = None
         except DaemonRequestError as error:
             empty = error.code
         return {"replyTo": reply_to, "emptyReplyTo": empty}
-
-    def _WG_037(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
-        message, _ = _message(fixtures[0])
-        admission = LinkAdmission()
-        admission.bind(_DenyIngressGate())
-        with _Stack() as stack:
-            inbox = stack.service("ingress", link_admission=admission)
-            result = inbox.receive(message, now_ms=0)
-            state = inbox.consumption_state(message.message_id)
-        return {
-            "accepted": result.accepted,
-            "code": result.code,
-            "state": state.value,
-        }
-
 
 def evaluate_case(case: JsonObject, envelopes: dict[str, JsonObject]) -> JsonObject:
     """Execute one declared case without consulting its expected output."""

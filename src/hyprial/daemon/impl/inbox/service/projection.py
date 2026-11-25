@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 from collections.abc import Callable
 from typing import Self
 from hyprial.daemon.impl.inbox.contracts.api  import (
@@ -20,7 +19,7 @@ from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
 from hyprial.daemon.impl.inbox.history import (
     conversation_messages as _conversation_messages,
 )
-from hyprial.daemon.impl.inbox.send_lookup import lookup_send
+from hyprial.daemon.impl.inbox.send_lookup import key_lookup_send, lookup_send
 from hyprial.daemon.impl.inbox.links.pull  import (
     DeliveryStatus,
     DeliveryStatusStore,
@@ -34,29 +33,14 @@ from hyprial.daemon.impl.inbox.service.synchronization import (
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
 
 
-def _dispatch_reply_to(message: InboxMessage) -> str | None:
-    """The reply association of a message, from its JSON body (review B1.2).
-
-    Only a non-empty ``replyTo`` string counts.  A missing key, a wrong type
-    or un-decodable body is no association -- never guessed from the text,
-    the conversation id or the message id.
-    """
-
-    try:
-        body = json.loads(message.payload)
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-        return None
-    if not isinstance(body, dict):
-        return None
-    reply_to = body.get("replyTo")
-    if isinstance(reply_to, str) and reply_to:
-        return reply_to
-    return None
-
 class InboxServiceProjectionMixin:
     @_synchronized
     def lookup_send(self, **selectors: str) -> dict[str, str]:
         return lookup_send(self._db, **selectors)
+
+    @_synchronized
+    def key_lookup_send(self, **selectors: str) -> dict[str, str]:
+        return key_lookup_send(self._db, **selectors)
 
     @_synchronized
     def prune_outbox(
@@ -152,6 +136,7 @@ class InboxServiceProjectionMixin:
     ) -> tuple[tuple[InboxPruneItem, ...], tuple[_ExpiredSenderNotice, ...]]:
         """Commit one inbox sweep and return its best-effort notice effects."""
 
+        self._sweep_body_retention(now_ms)
         rows = self._db.execute(
             """SELECT inbox.*,
                       COALESCE(harness_failure_settlements.terminal, 0)
@@ -174,10 +159,6 @@ class InboxServiceProjectionMixin:
             and (notice := self._expired_sender_notice(row, now_ms)) is not None
         )
         with self._db:
-            for row in rows:
-                self._ledger_expire_inbound_locked(
-                    str(row["recipient"]), str(row["message_id"])
-                )
             removed = self._db.execute(
                 """DELETE FROM inbox
                    WHERE consumed = 0
@@ -186,8 +167,6 @@ class InboxServiceProjectionMixin:
                 (now_ms,),
             ).rowcount > 0
         _record_committed_change(self, removed)
-        for row in rows:
-            self._forget_admission(str(row["message_id"]))
         items = tuple(
             InboxPruneItem(
                 message_id=str(row["message_id"]),
@@ -471,13 +450,16 @@ class InboxServiceProjectionMixin:
         *,
         now_ms: int | None = None,
         exclude: frozenset[str] = frozenset(),
+        claim_filter: Callable[[tuple[InboxMessage, ...]], tuple[InboxMessage, ...]]
+        | None = None,
     ) -> tuple[InboxMessage, ...]:
         """Dispatchable rows (failure backoff elapsed) this recipient may inject."""
 
         now = self._now_ms() if now_ms is None else now_ms
-        return self._admit_dispatch(
+        admitted = self._admit_dispatch(
             self.dispatchable_messages(recipient, now_ms=now), now, exclude
         )
+        return claim_filter(admitted) if claim_filter is not None else admitted
 
     @_synchronized
     def fetch_pending_admitted(
@@ -487,6 +469,8 @@ class InboxServiceProjectionMixin:
         now_ms: int | None = None,
         only: frozenset[str] | None = None,
         completed_turn: bool = False,
+        claim_filter: Callable[[tuple[InboxMessage, ...]], tuple[InboxMessage, ...]]
+        | None = None,
     ) -> tuple[InboxMessage, ...]:
         """Admit, then stamp fetched, in one actor command (review B3.3).
 
@@ -507,6 +491,8 @@ class InboxServiceProjectionMixin:
         if only is not None:
             candidates = tuple(m for m in candidates if m.message_id in only)
         admitted = self._admit_dispatch(candidates, now, frozenset())
+        if claim_filter is not None:
+            admitted = claim_filter(admitted)
         self._stamp_inbox_fetch(admitted, now, completed_turn=completed_turn)
         return admitted
 
@@ -608,10 +594,14 @@ class InboxServiceProjectionMixin:
         deferred: tuple[BatchMember, ...] = (),
         predecessor_digest: str | None = None,
         mark_fetched: bool = True,
+        claim_filter: Callable[[tuple[InboxMessage, ...]], tuple[InboxMessage, ...]]
+        | None = None,
     ) -> BatchSelection:
         """Admit inbox candidates once, then freeze members and deferred."""
 
         admitted = self._admit_dispatch(inbox_rows, now, frozenset())
+        if claim_filter is not None:
+            admitted = claim_filter(admitted)
         admitted_ids = {message.message_id for message in admitted}
         deleted = tuple(
             message for message in inbox_rows if message.message_id not in admitted_ids
@@ -666,29 +656,14 @@ class InboxServiceProjectionMixin:
         """Commit actual fetch changes before publishing their external effects."""
 
         if inbox_rows:
-            meta = self._inbound_ledger_meta(inbox_rows)
             with self._db:
                 stamped = self._db.executemany(
                     """UPDATE inbox SET fetched_at_ms = ?
                         WHERE message_id = ? AND fetched_at_ms IS NULL""",
                     ((now, message.message_id) for message in inbox_rows),
                 ).rowcount > 0
-                fresh = [
-                    message
-                    for message in inbox_rows
-                    if self._write_inbound_ledger_locked(
-                        actor=message.recipient,
-                        message=message,
-                        received_at_ms=meta[message.message_id][0],
-                        expires_at_ms=meta[message.message_id][1],
-                    )
-                ]
                 cleared = self._clear_nonterminal_failures(inbox_rows, completed_turn)
-            _record_committed_change(self, stamped or bool(fresh) or cleared)
-            for message in fresh:
-                self._sink_injected(
-                    message.recipient, message, meta[message.message_id][0]
-                )
+            _record_committed_change(self, stamped or cleared)
             for message in inbox_rows:
                 self.retire_outbox_receipt(
                     message.sender, message.message_id, now_ms=now
@@ -726,6 +701,8 @@ class InboxServiceProjectionMixin:
         include_notices: bool = True,
         only: tuple[str, ...] | None = None,
         mark_fetched: bool = True,
+        claim_filter: Callable[[tuple[InboxMessage, ...]], tuple[InboxMessage, ...]]
+        | None = None,
     ) -> BatchSelection:
         """Select exactly one frozen batch; a read, never a settlement.
 
@@ -777,6 +754,14 @@ class InboxServiceProjectionMixin:
                     continue
                 rows.append(self._batch_row(member.source, message, member.ordinal))
             admitted = tuple(r.message for r in rows if r.source == SOURCE_INBOX)
+            if claim_filter is not None and admitted:
+                admitted = claim_filter(admitted)
+                allowed_ids = {m.message_id for m in admitted}
+                rows = [
+                    r
+                    for r in rows
+                    if r.source != SOURCE_INBOX or r.message.message_id in allowed_ids
+                ]
             noticed = tuple(r.message for r in rows if r.source == SOURCE_NOTICE)
             if mark_fetched:
                 self._batch_stamp(admitted, noticed, now)
@@ -795,6 +780,7 @@ class InboxServiceProjectionMixin:
                 ),
                 bounds=bounds,
                 mark_fetched=mark_fetched,
+                claim_filter=claim_filter,
             )
         deferred_keys = {
             (m.source, m.message_id, m.ordinal) for m in after.deferred
@@ -834,6 +820,7 @@ class InboxServiceProjectionMixin:
             bounds=bounds,
             predecessor_digest=after_digest,
             mark_fetched=mark_fetched,
+            claim_filter=claim_filter,
         )
 
     def _clear_nonterminal_failures(
@@ -853,55 +840,18 @@ class InboxServiceProjectionMixin:
             ((message.message_id,) for message in messages),
         ).rowcount > 0
 
-    def _inbound_ledger_meta(
-        self, messages: tuple[InboxMessage, ...]
-    ) -> dict[str, tuple[int, int]]:
-        """Each message id's durable ``(received_at_ms, expires_at_ms)`` (B7)."""
-
-        placeholders = ", ".join("?" for _ in messages)
-        rows = self._db.execute(
-            f"""SELECT message_id, received_at_ms, expires_at_ms FROM inbox
-                 WHERE message_id IN ({placeholders})""",  # noqa: S608
-            tuple(message.message_id for message in messages),
-        ).fetchall()
-        meta: dict[str, tuple[int, int]] = {}
-        now = self._now_ms()
-        for row in rows:
-            received_at_ms = int(row["received_at_ms"])
-            expires = row["expires_at_ms"]
-            meta[str(row["message_id"])] = (
-                received_at_ms,
-                int(expires) if expires is not None else now + self.durable_ttl_ms,
-            )
-        return meta
-
     def _admit_dispatch(
         self,
         messages: tuple[InboxMessage, ...],
         now_ms: int,
         exclude: frozenset[str],
     ) -> tuple[InboxMessage, ...]:
-        admission = self._link_admission
-        admitted: list[InboxMessage] = []
-        for message in messages:
-            if message.message_id in exclude:
-                continue
-            if admission.dispatch_admitted(
-                sender=message.sender,
-                recipient=message.recipient,
-                intent=message.intent,
-                message_id=message.message_id,
-                now_ms=now_ms,
-                reply_to=_dispatch_reply_to(message),
-            ):
-                admitted.append(message)
-        return tuple(admitted)
-    def _forget_admission(self, message_id: str) -> None:
-        """Drop in-memory held/admitted state once a row is no longer live."""
+        """Exclude rows already answered or being settled."""
 
-        forget = getattr(self._link_admission, "forget", None)
-        if callable(forget):
-            forget(message_id)
+        del now_ms
+        return tuple(
+            message for message in messages if message.message_id not in exclude
+        )
 
     @_synchronized
     def has_fetched(self, message_id: str) -> bool:

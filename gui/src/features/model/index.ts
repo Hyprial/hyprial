@@ -1,8 +1,10 @@
 export {
-  ModelServicePanel,
-  type ModelAuthMode,
-  type ModelConnectionState,
-  type ModelServicePanelProps,
-  type ModelValidationRequest,
-  type ModelValidationResult,
-} from './ModelServicePanel';
+  createConnectedModelKeyActions,
+  createModelKeySaveAdapter,
+  DEEPSEEK_MODEL_KEY_TARGET,
+} from './impl/model-key-save-adapter';
+export type {
+  ModelKeySaveAdapter,
+  ModelKeySaveOptions,
+  ModelKeySaveTarget,
+} from './impl/model-key-save-adapter';

@@ -6,9 +6,8 @@
 
 | 组件 | 输入与意图 | 职责 |
 | --- | --- | --- |
-| `gui/src/pages/chat/ChatComposer.tsx` | `ChatComposerProps`：对象、草稿、能力、发送操作；`onDraftChange/onSend/onRetry` | 受控文本、IME/键盘、等待/失败/未知结果提示和动作门控 |
-| `gui/src/pages/chat/ChatWorkspaceView.tsx` | `ChatWorkspaceViewProps`：`SessionTarget[]`、活跃对象、`ConversationMessage[]`、历史状态、草稿、信息展开与回调 | 列表、消息、输入、信息；按对象滚动和信息关闭焦点返回 |
-| `gui/src/pages/channels/LarkChannelView.tsx` | `LarkChannelViewProps`：选择、步骤、授权/切换能力与操作、当前对象的授权/连接结果、意图回调 | 选择 Agent → 授权 → 切换渠道 → 结果的受控呈现 |
+| `gui/src/features/agent-chat/impl/ChatComposer.tsx` | `ChatComposerProps`：对象、草稿、能力、发送操作；`onDraftChange/onSend/onRetry` | 受控文本、IME/键盘、等待/失败/未知结果提示和动作门控 |
+| `gui/src/features/agent-chat/impl/AgentChatSection.tsx` | `ChatWorkspaceViewProps`：`SessionTarget[]`、活跃对象、`ConversationMessage[]`、历史状态、草稿、信息展开与回调 | 列表、消息、输入、信息；按对象滚动和信息关闭焦点返回 |
 
 TypeScript 源文件导出的 props 是精确视图接口。这些类型不是 HTTP/daemon 契约，不能据此新增后端方法。没有新增包、状态仓库、网络客户端、OAuth URL、凭据输入或浏览器持久存储。单元测试/预览里的模拟数据仅存在于 `gui/tests/dev-03/`。
 
@@ -30,7 +29,7 @@ TypeScript 源文件导出的 props 是精确视图接口。这些类型不是 H
 
 ### 样式与挂载
 
-使用公共 `tokens.css`、`primitives.css`；新组件仅用既有 token。工作区和飞书视图各自导入作用域 CSS。单独使用 ChatComposer 时同时导入 `chat/chat.css`。
+使用公共 `tokens.css`、`primitives.css`；新组件仅用既有 token。工作区和飞书视图各自导入作用域 CSS。单独使用 ChatComposer 时同时导入 `features/agent-chat/impl/chat.css`。
 
 聊天宿主提供确定高度，内部管理消息区滚动；窄屏采用单列布局。信息区关闭后焦点回到“信息”按钮。可选 `onManageTarget` 未提供时管理按钮禁用；本批不接管 Agent 管理。
 
@@ -48,13 +47,7 @@ hyprial gui dev \
   --ip ::1 --port 4174 --no-open --json
 ```
 
-核对输出 `git_branch=feat/gui-dev-03`。正式根页面仍展示公共基线；本批独立组件验收地址：
-
-```text
-http://[::1]:4174/tests/dev-03/preview/index.html
-```
-
-该测试 HTML 使用同一份生产组件，未建立生产路由，也未修改 Vite 入口。顶部始终标明“模拟数据 · 未接后端”；切换“模拟状态”只是输入测试 props。默认不可用，操作意图计数应为零。测试 fixture 不被生产入口引用。
+核对输出 `git_branch=feat/gui-dev-03`。正式根页面仍展示公共基线。原独立组件验收页（`tests/dev-03/preview/`）已随其唯一使用方 `chat-browser.mjs` 一并删除；组件验收以 `tests/dev-03` 的 vitest 为准。
 
 本机 WSL 的 127.0.0.1 曾被路由到 `loopback0` 而非本地 `lo`，出现服务已监听但 Linux 浏览器连接拒绝，因此当前预览使用 IPv6 回环地址。已在真实工作树服务上通过 Chromium 打开上述页面并确认无运行时错误；Windows 浏览器可达性尚未单独验证。隔离网络命名空间用于自动化测试，没有修改主机网络路由。
 
@@ -66,8 +59,6 @@ http://[::1]:4174/tests/dev-03/preview/index.html
 cd gui
 npm run typecheck
 npx vitest run tests/dev-03 --maxWorkers=1
-DEV03_CHROMIUM_PATH=/实际/Chromium可执行文件 \
-  node --test --test-concurrency=1 tests/dev-03/chat-browser.mjs
 npm run verify
 npm run verify:production-copy
 npm run verify:safe-r1-build

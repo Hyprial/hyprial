@@ -8,7 +8,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from hyprial.kernel.impl.actor_runtime import ActorRuntime
 from hyprial.kernel.impl.actor_runtime.contracts import ActorSpec, AdmissionResult
 
 
@@ -35,7 +34,9 @@ class LogWriter:
     through the failing writer. A timed-out drain retains the accepted queue.
     """
 
-    def __init__(self, append: Callable[[bytes], None], *, capacity: int = 4096):
+    def __init__(self, append: Callable[[bytes], None], *, capacity: int = 4096, actor_host=None):
+        if actor_host is None:
+            raise ValueError("log writer requires an actor host")
         self._append = append
         self._pid = os.getpid()
         self._guard = threading.Condition()
@@ -43,9 +44,7 @@ class LogWriter:
         self._first_failed_sequence: int | None = None
         self._last_error: str | None = None
         self._closed = False
-        # Runtime lifecycle diagnostics must never feed back into this writer.
-        self._runtime = ActorRuntime(event_sink=lambda event: None)
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="log-writer",
                 handler_factory=lambda: self._handle_append,
@@ -62,7 +61,7 @@ class LogWriter:
             result = (
                 AdmissionResult.CLOSED
                 if self._closed
-                else self._runtime.tell(self._handle, AppendLog(sequence, payload))
+                else self._cell.tell(AppendLog(sequence, payload))
             )
             if result is AdmissionResult.ACCEPTED:
                 self._accepted = sequence
@@ -128,6 +127,9 @@ class LogWriter:
     def close(self, timeout: float = 1.0) -> bool:
         if os.getpid() != self._pid:
             return True
+        deadline = time.monotonic() + max(0.0, timeout)
         with self._guard:
             self._closed = True
-        return self._runtime.stop(self._handle, timeout=max(0.0, timeout))
+        if not self._cell.drain(timeout=max(0.0, deadline - time.monotonic())).complete:
+            return False
+        return self._cell.stop(timeout=max(0.0, deadline - time.monotonic()))

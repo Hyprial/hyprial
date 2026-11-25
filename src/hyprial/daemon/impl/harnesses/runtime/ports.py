@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-from .transfer_ports import (
-    HoldStartsForTransfer, ReleaseStartsHold, StartsHeld, StartsHoldReleased,
-)
 from .observation import RuntimeFactsGrant
-
-from hyprial.kernel import SmolvmRuntimeSpec
 
 from dataclasses import dataclass
 from hyprial.daemon.impl.adapters.spec import AdapterSpec
 import hashlib
 import json
-from typing import Protocol, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from hyprial.kernel import CommandSink, EventSink, PortCommandRejected
+
+if TYPE_CHECKING:
+    from hyprial.daemon.impl.cells.actor.contracts import CellDispatchEnvelope
 from hyprial.kernel import ReadinessReport
 
-from hyprial.daemon.impl.api  import HarnessDelivery, HarnessResult
+from hyprial.daemon.impl.api  import HarnessResult
 from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import LifecycleReceiptCompleted
 
 
@@ -37,15 +35,20 @@ class HarnessLaunchProjection:
     containerized: bool = False
     pinned_owner: str | None = None
     container_image: str | None = None
-    execution_runtime: SmolvmRuntimeSpec | None = None
     model_provider: str | None = None
     model: str | None = None
+    member: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.member is None:
+            object.__setattr__(self, "member", self.name)
 
     def to_payload(self) -> dict[str, object]:
         return {
             "provider": self.harness,
             "name": self.name,
             "headless": self.headless,
+            **({"member": self.member} if self.member is not None and self.member != self.name else {}),
             "args": list(self.args),
             "ownership": self.ownership,
             **({"nickname": self.nickname} if self.nickname is not None else {}),
@@ -66,7 +69,6 @@ class HarnessLaunchProjection:
                 else {}
             ),
             **({"containerized": True} if self.containerized else {}),
-            **({"executionRuntime": self.execution_runtime.to_json()} if self.execution_runtime is not None else {}),
             **(
                 {"pinnedOwner": self.pinned_owner}
                 if self.pinned_owner is not None
@@ -98,6 +100,8 @@ class RemoveHarnessCommand:
     harness: str
     name: str
     interruption_reason: str | None = None
+    member: str | None = None
+    keep_intent: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,13 +140,20 @@ class WaitHarnessReadyCommand:
     harness: str
     name: str
     timeout_seconds: float
+    member: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class DispatchHarnessDeliveryCommand:
+    """One admitted cell dispatch; the actor selects the member from the stamp.
+
+    Decision record (cell model I5-2 B): the command carries no worker name.
+    The envelope's stamp member is the only selection key, so no caller can
+    assert a target harness next to the credential that names it.
+    """
+
     correlation_id: str
-    name: str
-    delivery: HarnessDelivery
+    envelope: CellDispatchEnvelope
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,12 +162,13 @@ class SteerHarnessDeliveryCommand:
 
     The message text is not carried: the process owns the queued delivery
     and reads its message from there, so message custody is never duplicated
-    across the daemon/actor boundary.
+    across the daemon/actor boundary.  Since I5-2 the steered delivery id
+    and the target member travel inside the steer envelope's stamp; a bare
+    delivery id is not accepted (M′ M6).
     """
 
     correlation_id: str
-    name: str
-    delivery_id: str
+    envelope: CellDispatchEnvelope
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,7 +252,6 @@ class RemoveAdapterRegistrationCommand:
     correlation_id: str
     name: str
     expected_spec: AdapterSpec | None
-    expected_legacy_pin: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,7 +259,6 @@ class RestoreAdapterRegistrationCommand:
     correlation_id: str
     name: str
     spec: AdapterSpec | None
-    legacy_pin: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +279,10 @@ class AgentIdentityProjectionPort(Protocol):
     def binding_key(
         self, actor: str
     ) -> tuple[int, str | None, str | None, str | None]: ...
+
+    def actor_name(self, actor: str) -> str | None:
+        """The local agent name behind ``actor`` (name, URI or ``a.`` id)."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,8 +305,6 @@ def harness_desired_generation(spec: object) -> str:
 
 HarnessCommand: TypeAlias = (
     EnsureHarnessCommand
-    | HoldStartsForTransfer
-    | ReleaseStartsHold
     | RemoveHarnessCommand
     | HarnessTimerElapsedCommand
     | StopHarnessesCommand
@@ -335,10 +347,6 @@ class HarnessStatusProjection:
     state: str | None = None
     error: str | None = None
     endpoint: str | None = None
-    # DSH-only: the private per-worker DSH_HOME the current generation spawned
-    # against.  Reported so an operator (and E2E-014) can locate the real home
-    # instead of the retired shared ``~/.dsh`` default.
-    dsh_home: str | None = None
     max_in_flight: int | None = None
     in_flight: int | None = None
     queue_depth: int | None = None
@@ -366,7 +374,6 @@ class HarnessStatusProjection:
             **({"quarantined": True} if self.quarantined else {}),
             **({"error": self.error} if self.error is not None else {}),
             **({"endpoint": self.endpoint} if self.endpoint is not None else {}),
-            **({"dshHome": self.dsh_home} if self.dsh_home is not None else {}),
             **({"maxInFlight": self.max_in_flight} if self.max_in_flight is not None else {}),
             **({"inFlight": self.in_flight} if self.in_flight is not None else {}),
             **({"queueDepth": self.queue_depth} if self.queue_depth is not None else {}),
@@ -386,6 +393,11 @@ class HarnessSessionRefProjection:
     harness: str
     name: str
     session_ref: str
+    member: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.member is None:
+            object.__setattr__(self, "member", self.name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,8 +640,6 @@ class HarnessesStopped:
 
 HarnessEvent: TypeAlias = (
     HarnessMutationCompleted
-    | StartsHeld
-    | StartsHoldReleased
     | HarnessRestoreCompleted
     | HarnessTimerCompleted
     | HarnessFailedDrained

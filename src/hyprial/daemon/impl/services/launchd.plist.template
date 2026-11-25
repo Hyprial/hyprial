@@ -6,9 +6,7 @@
   <string>{{LABEL}}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{{EXECUTABLE}}</string>
-    <string>daemon</string>
-    <string>run</string>
+{{EXECUTABLE_ARGS}}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -26,7 +24,7 @@
     <string>launchd</string>
     <key>HYPRIAL_SERVICE_UNIT</key>
     <string>{{LABEL}}</string>
-  </dict>
+{{PROXY_ENV}}  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

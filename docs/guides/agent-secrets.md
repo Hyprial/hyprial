@@ -110,9 +110,8 @@ hyprial agent secret grant <consumer> --source agent-shared --owner-agent <owner
 owner 轮换值后，下次解析使用新值；删除值或更换 owner 化身后，解析失败。
 运行中的消费者须重启，才能观察轮换或撤销。
 没有显式 auth 环境或自有私密 native 根时，P1 SDK 启动返回永久错误
-`CLAUDE_CREDENTIAL_MISSING`。工作流所有或启动时创建的 agent，其 PTY 启动也执行此检查。
-命令覆盖和交互式 CLI 不得绕过检查。系统不借用 daemon 登录，也不发起模型请求。
-操作员创建的常驻 PTY 不因缺少凭据被拒绝，来源记录为 `ambient`。
+`CLAUDE_CREDENTIAL_MISSING`。受管 agent 的交互式 CLI 启动同样不得绕过检查。
+系统不借用 daemon 登录，也不发起模型请求。
 由 daemon 组合环境的 P1 Claude 始终使用自有 native 根。
 `CLAUDE_CONFIG_DIR` 指向 `<agent home>/secrets/native/claude`。
 `projects` 链接指向 `<agent home>/state/sessions/claude`。

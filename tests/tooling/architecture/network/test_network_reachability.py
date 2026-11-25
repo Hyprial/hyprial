@@ -126,27 +126,114 @@ def test_checked_in_baseline_keeps_repository_gate_green() -> None:
     assert report["knownViolationCount"] > 0
 
 
+def test_retired_discord_heartbeat_alias_is_not_baselined() -> None:
+    document = json.loads((ROOT / "scripts/ci/network-reachability-baseline.json").read_text())
+    fingerprint = "ccf5d6a7fa919e13b652ed6b7096cbbc28cb454c65bbe4a5e2194ff3b4e9584c"
+    assert fingerprint not in {row["fingerprint"] for row in document["violations"]}
+    assert "KP-008" in document["description"]
+    assert "HeartbeatSender" in document["description"]
+    assert "DiscordTransport.send" in document["description"]
+    assert "eaa63db54b374230e4815187a1bccaff24e814452ca502a36a6d1afa4aed7fb1" not in {
+        row["fingerprint"] for row in document["violations"]
+    }
+
+
+def test_discord_heartbeat_still_reaches_its_transport() -> None:
+    import asyncio
+    from hyprial.daemon.impl.adapters.discord.components import HeartbeatSupervisor
+    from hyprial.daemon.impl.adapters.discord.provider import DiscordGatewayRuntime
+
+    calls = []
+    runtime = DiscordGatewayRuntime.__new__(DiscordGatewayRuntime)
+    runtime._last_seen_seq = 17
+
+    class Transport:
+        async def send(self, payload):
+            calls.append(payload)
+            supervisor._generation = 2
+
+    async def sleep(_seconds):
+        return None
+
+    async def missed(_generation):
+        raise AssertionError("unexpected missed heartbeat")
+
+    runtime._transport = Transport()
+    supervisor = HeartbeatSupervisor(send_heartbeat=runtime._send_heartbeat, on_missed_ack=missed,
+                                     sleep=sleep, jitter=lambda _low, _high: 0.0)
+    supervisor._generation = 1
+    asyncio.run(supervisor._run(1, 1.0))
+    assert calls == [{"op": 1, "d": 17}]
+
+
 def test_send_and_lookup_remain_visible_to_network_gate() -> None:
+    """Pin both real registry bindings and their scanner-resolved handler edges."""
+    from hyprial.daemon.impl.request_catalog import METHOD_REGISTRY
+    from hyprial.daemon.impl.request_catalog.daemon.message_lookup import message_send_lookup
+    from hyprial.daemon.impl.request_catalog.message.send.specs import message_send
+
     functions, imports, errors = GATE._load(ROOT)
     assert not errors
     by_short_name: dict[str, set[str]] = defaultdict(set)
     for name in functions:
         by_short_name[name.rsplit(".", 1)[-1]].add(name)
-    root = "hyprial.daemon.impl.ipc.router._IpcDispatchMixin.handle"
-    edges = GATE._resolve_calls(
-        functions[root], functions=functions, imports=imports,
-        by_short_name=by_short_name,
+    for method, handler, short_name in (
+        ("message.send", message_send, "_ipc_message_send"),
+        ("message.send.lookup", message_send_lookup, "_ipc_message_send_lookup"),
+    ):
+        assert METHOD_REGISTRY.get(method).handler is handler
+        name = handler.__module__ + "." + handler.__qualname__
+        edges = GATE._resolve_calls(
+            functions[name], functions=functions, imports=imports, by_short_name=by_short_name,
+        )
+        targets = by_short_name[short_name]
+        assert targets and targets <= edges, f"registered {method} handler hides {short_name}"
+
+
+def test_owned_attribute_named_after_its_class_survives_many_same_named_methods(
+    tmp_path: Path,
+) -> None:
+    """More than eight unrelated ``admit`` methods must not erase the real edge."""
+
+    _write(
+        tmp_path,
+        "src/hyprial/daemon/impl/ipc/router.py",
+        """
+        class _IpcDispatchMixin:
+            def handle(self):
+                return self._remote_workflow.admit()
+        """,
     )
-    for method in ("_ipc_message_send",):
-        targets = by_short_name[method]
-        assert targets and targets <= edges, f"IPC route hides {method} from the network gate"
-    # message.send.lookup is dispatched by the registry, outside the router
-    # root's resolvable body; KP-008 (docs/reference/known-problems.md) owns
-    # restoring root-level gate visibility. Pin the declared dispatch chain:
-    handler = functions[
-        "hyprial.daemon.impl.request_catalog.daemon.message_lookup.message_send_lookup"
+    _write(
+        tmp_path,
+        "src/hyprial/daemon/impl/dispatch/remote/__init__.py",
+        """
+        class RemoteWorkflow:
+            def admit(self):
+                return self._wire.call()
+        """,
+    )
+    _write(
+        tmp_path,
+        "src/hyprial/daemon/impl/dispatch/remote/wire.py",
+        """
+        class RemoteWire:
+            def call(self):
+                return None
+        """,
+    )
+    for index in range(9):
+        _write(
+            tmp_path,
+            f"src/hyprial/daemon/impl/other/unrelated_{index}.py",
+            f"""
+            class Unrelated{index}:
+                def admit(self):
+                    return None
+            """,
+        )
+    report = GATE.scan(tmp_path, baseline=frozenset())
+    assert report["status"] == "FAIL"
+    assert [row["caller"] for row in report["violations"]] == [
+        "hyprial.daemon.impl.dispatch.remote.RemoteWorkflow.admit"
     ]
-    handler_edges = GATE._resolve_calls(
-        handler, functions=functions, imports=imports, by_short_name=by_short_name,
-    )
-    assert by_short_name["_ipc_message_send_lookup"] <= handler_edges

@@ -1,0 +1,1787 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hyprial org 能力全景 · 用户旅程 / GUI / MethodSpec / API / Mock</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cpath d='M18 40V24l14 8 14-8v16' stroke='%235eead4' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #090e1a;
+    --bg-soft: #0f172a;
+    --panel: #121c31;
+    --panel-2: #16233b;
+    --line: #24324e;
+    --line-soft: #1b2942;
+    --text: #e7edf8;
+    --muted: #93a2bd;
+    --faint: #6c7b96;
+    --ok: #5eead4;
+    --ok-bg: rgba(94, 234, 212, .10);
+    --blue: #7dd3fc;
+    --blue-bg: rgba(125, 211, 252, .10);
+    --warn: #fbbf24;
+    --warn-bg: rgba(251, 191, 36, .10);
+    --bad: #fb7185;
+    --bad-bg: rgba(251, 113, 133, .10);
+    --spec: #c084fc;
+    --spec-bg: rgba(192, 132, 252, .10);
+    --local: #a3e635;
+    --local-bg: rgba(163, 230, 53, .10);
+    --radius: 14px;
+    --mono: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1100px 500px at 12% -8%, rgba(94, 234, 212, .10), transparent 60%),
+      radial-gradient(900px 500px at 92% -12%, rgba(96, 165, 250, .10), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC", "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); }
+  code { font-size: .9em; color: #c7d7f5; }
+  .wrap { width: min(1280px, calc(100% - 48px)); margin: 0 auto; }
+  .hero { padding: 54px 0 26px; border-bottom: 1px solid var(--line-soft); }
+  .eyebrow { color: var(--ok); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; font-weight: 700; }
+  h1 { margin: 10px 0 12px; font-size: clamp(30px, 4.4vw, 54px); line-height: 1.12; letter-spacing: -.03em; }
+  h1 span { display: block; color: var(--muted); font-size: .42em; letter-spacing: .01em; font-weight: 500; margin-top: 12px; }
+  .lede { max-width: 920px; color: #b8c5dc; font-size: 16px; margin: 0 0 18px; }
+  .callout {
+    border: 1px solid rgba(94,234,212,.30); background: rgba(94,234,212,.07);
+    color: #cfeee9; border-radius: 11px; padding: 12px 14px; font-size: 13px;
+    margin: 0 0 18px; line-height: 1.6;
+  }
+  .callout b { color: var(--ok); }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--faint); font-size: 13px; }
+  .meta b { color: var(--muted); font-weight: 600; }
+  .stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-top: 26px; }
+  .stat {
+    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.012));
+    border: 1px solid var(--line); border-radius: 12px; padding: 14px 15px;
+  }
+  .stat .n { font-size: 26px; font-weight: 750; letter-spacing: -.03em; line-height: 1.1; }
+  .stat .l { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .stat .h { color: var(--faint); font-size: 11px; margin-top: 6px; }
+  .toolbar {
+    position: sticky; top: 0; z-index: 20; background: rgba(9, 14, 26, .88);
+    backdrop-filter: blur(14px); border-bottom: 1px solid var(--line-soft);
+  }
+  .toolbar-inner { display: flex; gap: 14px; align-items: center; padding: 10px 0; }
+  .toc { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; flex: 1; }
+  .toc::-webkit-scrollbar { display: none; }
+  .toc a {
+    white-space: nowrap; color: var(--muted); font-size: 12.5px; padding: 6px 10px;
+    border: 1px solid transparent; border-radius: 999px; text-decoration: none;
+  }
+  .toc a:hover { color: var(--text); border-color: var(--line); background: var(--panel); }
+  .filters { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+  .filters select, .filters input {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 9px; padding: 7px 10px; font: inherit; font-size: 12.5px; outline: none;
+  }
+  .filters input { width: 150px; }
+  .filters input:focus, .filters select:focus { border-color: var(--blue); }
+  main { padding: 30px 0 72px; }
+  .panel {
+    background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.008));
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px;
+  }
+  .legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .legend .panel { padding: 15px 16px; }
+  .legend h3 { margin: 0 0 10px; font-size: 14px; }
+  .legend p, .legend li { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .legend ul { margin: 0; padding-left: 17px; }
+  .legend li + li { margin-top: 4px; }
+  .legend .tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .legend-row { display: flex; gap: 8px; align-items: flex-start; margin: 5px 0; }
+  .legend-row .legend-desc { color: var(--muted); font-size: 12.5px; }
+  .journey { margin-top: 34px; scroll-margin-top: 74px; }
+  .journey-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+  .journey-head .kicker { color: var(--ok); font-size: 11.5px; letter-spacing: .16em; font-weight: 700; text-transform: uppercase; }
+  .journey-head h2 { margin: 5px 0 0; font-size: clamp(22px, 2.4vw, 32px); letter-spacing: -.02em; }
+  .journey-head p { margin: 6px 0 0; color: var(--muted); font-size: 13.5px; max-width: 820px; }
+  .journey-count { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .flow-wrap { padding: 18px; overflow: hidden; }
+  .flow-title { color: var(--faint); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 12px; }
+  .flow { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+  .flow-node {
+    position: relative; background: var(--panel-2); border: 1px solid var(--line);
+    border-left: 3px solid var(--blue); border-radius: 10px; padding: 11px 13px;
+  }
+  .flow-node .ft { font-weight: 650; font-size: 13.5px; }
+  .flow-node .fn { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .flow-node .fm { display: inline-block; margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--blue); background: var(--blue-bg); border: 1px solid rgba(125,211,252,.22); border-radius: 6px; padding: 1px 6px; }
+  .flow-node.start { border-left-color: var(--ok); }
+  .flow-node.end { border-left-color: var(--ok); background: rgba(94,234,212,.06); }
+  .flow-node.method { border-left-color: var(--spec); }
+  .flow-node.method .fm { color: var(--spec); background: var(--spec-bg); border-color: rgba(192,132,252,.24); }
+  .flow-node.warn { border-left-color: var(--warn); }
+  .flow-node.bad { border-left-color: var(--bad); }
+  .flow-arrow { align-self: center; color: var(--faint); font-size: 15px; line-height: 1; padding: 5px 0; }
+  .flow-decision {
+    align-self: center; background: rgba(251,191,36,.07); border: 1px solid rgba(251,191,36,.35);
+    color: #fde68a; border-radius: 10px; padding: 9px 16px; font-size: 13px; font-weight: 650;
+    text-align: center; position: relative;
+  }
+  .flow-decision::before, .flow-decision::after { content: ""; position: absolute; left: 50%; width: 1px; height: 10px; background: rgba(251,191,36,.35); }
+  .flow-decision::before { top: -10px; }
+  .flow-decision::after { bottom: -10px; }
+  .branch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 6px 0; }
+  .branch { border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: rgba(255,255,255,.012); }
+  .branch-label { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; margin-bottom: 8px; }
+  .branch.ok .branch-label { color: var(--ok); }
+  .branch.warn .branch-label { color: var(--warn); }
+  .branch.bad .branch-label { color: var(--bad); }
+  .branch .flow-node { padding: 9px 10px; }
+  .branch .flow-arrow { padding: 3px 0; font-size: 12px; }
+  .features { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+  .feature {
+    background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.008));
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 17px 18px;
+    scroll-margin-top: 78px;
+  }
+  .feature[data-status="unavailable"] { border-color: rgba(251,113,133,.28); }
+  .feature[data-status="partial"] { border-color: rgba(251,191,36,.28); }
+  .feature[data-status="http-only"] { border-color: rgba(125,211,252,.28); }
+  .feature[data-status="spec-only"] { border-color: rgba(192,132,252,.28); }
+  .feature-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .feature-kicker { color: var(--faint); font-family: var(--mono); font-size: 11px; }
+  .feature h3 { margin: 2px 0 0; font-size: 16.5px; letter-spacing: -.01em; }
+  .pill {
+    display: inline-block; white-space: nowrap; border-radius: 999px; padding: 3px 9px;
+    font-size: 11.5px; font-weight: 700; border: 1px solid transparent;
+  }
+  .pill.ok { color: var(--ok); background: var(--ok-bg); border-color: rgba(94,234,212,.28); }
+  .pill.warn { color: var(--warn); background: var(--warn-bg); border-color: rgba(251,191,36,.28); }
+  .pill.bad { color: var(--bad); background: var(--bad-bg); border-color: rgba(251,113,133,.28); }
+  .pill.api { color: var(--blue); background: var(--blue-bg); border-color: rgba(125,211,252,.28); }
+  .pill.spec { color: var(--spec); background: var(--spec-bg); border-color: rgba(192,132,252,.28); }
+  .pill.local { color: var(--local); background: var(--local-bg); border-color: rgba(163,230,53,.28); }
+  .feature-desc { color: #c3cee2; font-size: 13px; margin: 9px 0 12px; }
+  .kv { display: grid; gap: 7px; margin: 0; }
+  .kv > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 9px; align-items: start; }
+  .kv dt { color: var(--faint); font-size: 11.5px; font-weight: 650; padding-top: 1px; }
+  .kv dd { margin: 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+  .kv dd code { color: #d8e4fb; }
+  .kv .none { color: var(--faint); font-style: italic; }
+  .badge-row { display: flex; flex-wrap: wrap; gap: 5px; }
+  .badge {
+    display: inline-block; border-radius: 6px; padding: 1px 7px; font-size: 11px; font-weight: 650;
+    border: 1px solid var(--line); color: var(--muted); background: rgba(255,255,255,.025);
+  }
+  .badge.contract { color: var(--ok); border-color: rgba(94,234,212,.28); background: var(--ok-bg); }
+  .badge.fixture { color: var(--blue); border-color: rgba(125,211,252,.28); background: var(--blue-bg); }
+  .badge.browser { color: var(--spec); border-color: rgba(192,132,252,.28); background: var(--spec-bg); }
+  .badge.e2e { color: var(--warn); border-color: rgba(251,191,36,.28); background: var(--warn-bg); }
+  .feature-note { margin-top: 10px; padding: 9px 11px; border-radius: 8px; background: rgba(255,255,255,.025); color: var(--muted); font-size: 12px; }
+  .feature-note b { color: #dbe6fa; }
+  details.mock { margin-top: 11px; border-top: 1px dashed var(--line); padding-top: 9px; }
+  details.mock summary { cursor: pointer; color: var(--blue); font-size: 12px; font-weight: 650; user-select: none; }
+  details.mock summary::marker { color: var(--faint); }
+  .mock-source { color: var(--faint); font-size: 11.5px; margin: 8px 0 5px; }
+  pre {
+    margin: 0; padding: 11px 12px; background: #0a1222; border: 1px solid var(--line-soft);
+    border-radius: 9px; overflow-x: auto; color: #cfe0ff; font-size: 11.5px; line-height: 1.55;
+  }
+  .no-mock { color: var(--faint); font-size: 12px; margin-top: 10px; font-style: italic; }
+  .mock-preview { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 9px; }
+  .mock-one {
+    white-space: pre-wrap; word-break: break-all; max-height: 76px; overflow: hidden;
+    color: #bfd0ec; background: #0a1222; border: 1px solid var(--line-soft);
+    border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.5;
+  }
+  .mock-preview .mock-source { margin: 0 0 5px; }
+  .section-title { margin: 44px 0 14px; font-size: 22px; letter-spacing: -.02em; }
+  .section-sub { color: var(--muted); font-size: 13.5px; margin: -6px 0 16px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { color: var(--muted); background: rgba(255,255,255,.03); font-weight: 650; white-space: nowrap; position: sticky; top: 0; }
+  tr:last-child td { border-bottom: none; }
+  td code { font-size: 11.5px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+  .dot.ok { background: var(--ok); }
+  .dot.api { background: var(--blue); }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--bad); }
+  .dot.spec { background: var(--spec); }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .list-panel h3 { margin: 0 0 8px; font-size: 14px; }
+  .list-panel ul { margin: 0; padding-left: 18px; }
+  .list-panel li { color: var(--muted); font-size: 12.5px; margin: 4px 0; }
+  .list-panel li code { color: #d8e4fb; }
+  .footer { border-top: 1px solid var(--line-soft); padding: 22px 0 40px; color: var(--faint); font-size: 12px; }
+  .footer b { color: var(--muted); }
+  .hidden { display: none !important; }
+  @media (max-width: 1080px) {
+    .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .features { grid-template-columns: 1fr; }
+    .legend { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 720px) {
+    .wrap { width: calc(100% - 28px); }
+    .hero { padding-top: 34px; }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .toolbar-inner { flex-wrap: wrap; }
+    .filters { width: 100%; }
+    .filters input { flex: 1; width: auto; }
+    .grid-2 { grid-template-columns: 1fr; }
+    .kv > div { grid-template-columns: 82px minmax(0, 1fr); }
+    .journey-head { align-items: flex-start; flex-direction: column; }
+  }
+  @media print {
+    body { background: #fff; color: #111; }
+    .toolbar, .filters { display: none; }
+    .panel, .feature, .flow-node, .table-wrap { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">hyprial · org lifecycle · capability map</div>
+    <h1>组织能力全景
+      <span>用户旅程 → GUI → MethodSpec → HTTP API → daemon request → daemon 方法 → Mock 数据</span>
+    </h1>
+    <p class="lede">
+      以用户旅程为主线，把 <code>org.*</code>、<code>orgfs.*</code>、<code>hosts</code>、
+      <code>top.snapshot</code>、<code>link.*</code> 的实现状态摊开：哪些已经能从 GUI 走到 daemon，
+      哪些只有 HTTP，哪些 GUI 有入口但没有 daemon 方法，以及每一层各自有什么 mock 数据。
+      没有 daemon 方法的能力必须显式失败，不能伪装成功。
+    </p>
+    <div class="callout">
+      <b>本页口径：未来完整 intg。</b> Contract Mock 覆盖按“当前 <code>intg/gui-v1</code> +
+      <code>intg/daemon-request-examples</code>（PR #2297）merge-forward 后”的预期状态展示，即
+      <b>60/60 路径、org 线 48/48</b>。功能状态仍按当前 daemon 实现：mock 覆盖完整
+      <b>不等于</b> 17 个无 daemon 方法动作、<code>org.delete</code>、OrgFS 目录恢复/条目级 purge、
+      live people/agents/config/routes/stats 已经可用。
+    </div>
+    <div class="meta">
+      <span><b>功能基线</b> <code>5d2ddea1e</code>（PR #2305，已并入 <code>intg/gui-v1</code>）</span>
+      <span><b>未来完整 intg</b> 当前 <code>a785b6b00</code> + PR #2297 merge-forward（预期）</span>
+      <span><b>Contract Mock</b> 未来 <b>60/60</b>；org 线 <b>48/48</b>；#2297 仍 WIP</span>
+      <span><b>页面</b> <code>docs/gui/org/index.html</code></span>
+      <span><b>本地 HTTP</b> <code>sh docs/gui/org/serve.sh 8765</code> → <code>http://127.0.0.1:8765/</code></span>
+      <span><b>日期</b> 2026-11-04</span>
+    </div>
+    <div class="stats" id="stats"></div>
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="wrap toolbar-inner">
+    <nav class="toc" id="toc" aria-label="旅程目录"></nav>
+    <div class="filters">
+      <select id="statusFilter" aria-label="按状态筛选">
+        <option value="all">全部状态</option>
+        <option value="ready">可用</option>
+        <option value="partial">部分可用</option>
+        <option value="unavailable">无 daemon 方法</option>
+        <option value="http-only">仅 HTTP</option>
+        <option value="spec-only">仅 MethodSpec</option>
+        <option value="local">本地 / 无需 daemon</option>
+      </select>
+      <input id="search" type="search" placeholder="搜索功能 / 方法…" aria-label="搜索功能或方法">
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+  <section class="legend" aria-label="图例">
+    <div class="panel">
+      <h3>状态图例</h3>
+      <p id="statusLegend"></p>
+    </div>
+    <div class="panel">
+      <h3>API 规则</h3>
+      <ul>
+        <li>所有 org 线 HTTP 方法都是 <code>POST /daemon/request/&lt;method&gt;</code>。</li>
+        <li>浏览器不能自报 <code>from</code> / <code>sessionRef</code> / <code>onBehalfOf</code>；<code>link.add/drop</code> 用 <code>local-owner-selector</code>。</li>
+        <li><code>link.list/stats</code> 用 <code>local-operator-selector</code>；<code>orgfs.export/import</code> 用 <code>local-owner-selector</code>。</li>
+        <li>ACL 三个方法 <code>http_exposed=false</code>，不生成 OpenAPI、不进浏览器 bundle、GUI 不提供入口。</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Mock 层图例</h3>
+      <div class="tag-row">
+        <span class="badge contract">Contract Mock</span>
+        <span class="badge fixture">GUI fixture</span>
+        <span class="badge browser">Browser route mock</span>
+        <span class="badge e2e">真实 E2E（非 mock）</span>
+      </div>
+      <p style="margin-top:9px">Contract Mock 只服务 OpenAPI 中带 <code>x-hyprial-examples</code> 的操作；未来完整 intg 预期 60/60 覆盖。GUI fixture 是内存开发数据，不是后端；两种 mock 都不等于 daemon 已实现。</p>
+    </div>
+  </section>
+
+  <section id="journeys"></section>
+
+  <section id="appendices">
+    <h2 class="section-title">附录 A · 没有 daemon 方法的 GUI 动作（17）</h2>
+    <p class="section-sub">这些动作在 live source 中继续走 <code>unwired</code>，调用即返回 <code>unavailable</code>；fixture 可以演示，但不能当作后端已实现。</p>
+    <div class="table-wrap"><table id="missingTable"></table></div>
+
+    <h2 class="section-title">附录 B · 仅 HTTP、GUI 无入口的方法（19）</h2>
+    <p class="section-sub">MethodSpec、HTTP binding、daemon handler 都存在；GUI 没有对应动作。18 个是 org 生命周期动作，另加 <code>top.snapshot</code> 视图读取。它们不是“坏掉”，只是当前不在 GUI 生命周期内。</p>
+    <div class="table-wrap"><table id="httpOnlyTable"></table></div>
+
+    <h2 class="section-title">附录 C · Mock 数据覆盖（未来完整 intg）</h2>
+    <div class="grid-2">
+      <div class="panel list-panel">
+        <h3>Contract Mock（未来完整 intg）</h3>
+        <ul>
+          <li><b>未来完整 intg：60/60 路径有例子，org 线 48/48。</b> 当前 <code>intg/gui-v1</code> 是 17/60；PR #2297 合并后补齐剩余 43 个缺口。</li>
+          <li><b>PR #2297</b>（<code>intg/daemon-request-examples</code>，目标 <code>intg/gui-v1</code>）在固定源 <code>952d80c3</code> 独立评审 PASS：41 个新增 + 2 个 link 复用，53 个 HTTP 方法、162 个 case；真实 loopback HTTP 验证 221 个 case 请求。</li>
+          <li>#2297 目前仍是 WIP：目标已从 <code>d67c7436a8</code> 前进到 <code>a785b6b00</code>（agents 线），merge-tree 有 4 个生成物/测试冲突；必须 merge-forward 并重跑 merged-tree 校验后，才能把“未来 60/60”当作已合并事实。</li>
+          <li>例子是 examples-only：不新增业务方法、handler、schema 或权限；ACL 仍是 IPC-only。真实 <code>org.delete</code> 仍固定 <code>LAST_AUTHORITY_REFUSED</code>，成功场景是显式 gap，Contract Mock 返回 409 <code>MOCK_SCENARIO_MISSING</code>，不会伪造成功。</li>
+          <li><b>mock 覆盖 ≠ 功能完成：</b> 17 个 GUI 动作仍没有 daemon 方法（附录 A），所以未来 intg 的 Contract Mock 也覆盖不到它们；这些要补 daemon 方法/产品语义，不是再补 mock。</li>
+        </ul>
+      </div>
+      <div class="panel list-panel">
+        <h3>GUI fixture / 浏览器 / 真实 E2E</h3>
+        <ul>
+          <li><b>GUI fixture</b>：<code>OrgGateway</code> 40 个动作都有内存实现，覆盖 17 个“无 daemon 方法”动作；刷新即重置，不持久化。</li>
+          <li><b>Browser route mock</b>（历史）：<code>org-rework</code> 与 <code>org-lifecycle</code> 两个脚本已随 PR 1e-4 删除，其八类场景保留为 Stage F 验收清单（<code>docs/design/gui-single-launch-plans-2026-11-15/1e-4-stage-f-acceptance.md</code>）；<code>org-request</code> 已迁到 Contract Mock（org.fetch/list）。下文标注 “org-rework” 的 mock 来源是这些已删除脚本留下的记录。</li>
+          <li><b>真实 E2E</b>：隔离 daemon，不是 mock；E2E-025（invite/join/directory/orgfs roundtrip/org.fetch）与 E2E-028（remote drop 不重建）在本线验证中 PASS。</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 class="section-title">附录 D · 51 个 org 线 MethodSpec 清单</h2>
+    <p class="section-sub">47 个 <code>ORG_BINDINGS</code> + 4 个 <code>LINK_BINDINGS</code>；48 个 HTTP 暴露，3 个 ACL 仅 MethodSpec。未来完整 intg 下 48 个 HTTP 方法都有 Contract Mock；ACL 仍 IPC-only。</p>
+    <div class="table-wrap"><table id="inventoryTable"></table></div>
+
+    <h2 class="section-title">附录 E · 下一步：mock 缺口还是功能缺口</h2>
+    <div class="grid-2">
+      <div class="panel list-panel">
+        <h3>已解决（待合并）</h3>
+        <ul>
+          <li><b>41 个方法的 Contract Mock 例子</b>：PR #2297 已完成 41 个新增 + 2 个 link 复用，162 个 case，独立评审 PASS；不是“还要再调研 mock”。</li>
+          <li>剩余动作只是 <b>merge-forward</b>：目标前进后解决 4 个生成物/测试冲突，重跑 merged-tree 校验；预期未来 intg 60/60。</li>
+          <li>例子是 examples-only，不新增业务方法；不要把“有 mock”误读成“功能已实现”。</li>
+        </ul>
+      </div>
+      <div class="panel list-panel">
+        <h3>需要补 daemon 方法</h3>
+        <ul>
+          <li><b>17 个 GUI 动作</b>：<code>claimInvite</code>、<code>renameOrg</code>、模板/导入/校验/候选/采信、<code>joinAgentOrg</code>/<code>leaveAgentOrg</code>、迁移全流程。</li>
+          <li><code>setCurrentOrg</code> 可能只需本地状态，不一定需要 daemon 方法；但当前 live 仍 unavailable。</li>
+          <li>GUI 页面/fixture 已有，live-source 故意保持 <code>unavailable</code>；补 MethodSpec + daemon handler 后，再做 GUI 接线与测试。</li>
+        </ul>
+      </div>
+      <div class="panel list-panel">
+        <h3>需要补产品/后端语义</h3>
+        <ul>
+          <li><b>org.delete</b>：固定 <code>LAST_AUTHORITY_REFUSED</code>，需要独立的确认关停维护流程；Contract Mock 只有拒绝场景。</li>
+          <li><b>OrgFS 目录恢复、条目级 purge</b>：GUI 明确返回 unsupported；需要 daemon 提供删除前快照/条目级 purge 语义。</li>
+          <li><b>live people/agents/config/routes/stats</b>：当前为 <code>null</code>，需要后端目录/配置/统计读模型；成员移除因此有 API 但入口不可达。</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 class="section-title">附录 F · 结论</h2>
+    <div class="grid-2">
+      <div class="panel list-panel">
+        <h3>已经完整接通</h3>
+        <ul>
+          <li>创建、创建结果判定、修复预览/应用、发布本机记录。</li>
+          <li>邀请生成、链接加入、四步 bootstrap 反馈；重复加入跳过。</li>
+          <li>组织列表、详情聚合读取、手动刷新、org.fetch 同步、单路失败未知态。</li>
+          <li>离开组织；link.list/add/drop；OrgFS 读、写、建、移、删、历史（含版本读取）。</li>
+        </ul>
+      </div>
+      <div class="panel list-panel">
+        <h3>明确受限 / 仍需后端</h3>
+        <ul>
+          <li><b>17 个 GUI 动作</b>没有 daemon 方法：待处理邀请、切换当前组织、改名、模板/导入/配置候选/采信、Agent-org、迁移全流程。</li>
+          <li><b>org.delete</b> 有 MethodSpec/HTTP/GUI，但 daemon 固定 <code>LAST_AUTHORITY_REFUSED</code>，需要独立的确认关停维护流程。</li>
+          <li><b>人员/Agent 目录、组织配置、统计</b>在 live detail 中为 <code>null</code>，目前只有 fixture 数据；成员移除因此有 API 但入口不可达。</li>
+          <li><b>OrgFS 目录恢复、条目级彻底清除</b>未实现；GUI 分别返回 <code>ORG_FOLDER_RESTORE_UNSUPPORTED</code> 与 <code>ORG_PURGE_UNSUPPORTED</code>。</li>
+          <li><b>Contract Mock 不再是功能缺口</b>：未来完整 intg 预期 60/60；但 #2297 仍需 merge-forward。合并后剩余问题都是 daemon/产品语义，不是 mock 例子。</li>
+        </ul>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <b>证据基线</b>：<code>docs/notes/org-lifecycle-batch2-2026-11-02/26-final-validation-2026-11-03.md</code>；
+    <b>MethodSpec</b>：<code>src/hyprial/daemon/impl/request_catalog/org/</code>；
+    <b>GUI live source</b>：<code>gui/src/features/org/domain/live-source.ts</code>；
+    <b>Contract Mock 例子</b>：<code>src/hyprial/daemon/impl/request_catalog/**/examples.py</code>；
+    <b>未来 intg 例子证据</b>：<code>docs/notes/daemon-request-examples-2026-11-03/</code>（PR #2297）。
+    本页面是静态 HTML，不连接 daemon，也不包含真实邀请链接或凭据。
+  </div>
+</footer>
+
+<script>
+const STATUS = {
+  ready: { label: '可用', cls: 'ok', desc: 'GUI → HTTP → daemon 成功路径已接通' },
+  partial: { label: '部分可用', cls: 'warn', desc: '有接线，但存在明确限制、后端拒绝或 GUI 入口不可达' },
+  unavailable: { label: '无 daemon 方法', cls: 'bad', desc: 'GUI 动作存在，但没有 daemon request；调用返回 unavailable' },
+  'http-only': { label: '仅 HTTP', cls: 'api', desc: 'MethodSpec / HTTP / daemon 存在，GUI 无入口' },
+  'spec-only': { label: '仅 MethodSpec', cls: 'spec', desc: '已声明但未暴露 HTTP，也不进 GUI' },
+  local: { label: '本地 / 无需 daemon', cls: 'local', desc: '纯 GUI 状态或结果展示，不需要 daemon 方法' },
+};
+
+const MOCK_LAYER = {
+  contract: { label: 'Contract Mock', cls: 'contract' },
+  fixture: { label: 'GUI fixture', cls: 'fixture' },
+  browser: { label: 'Browser route mock', cls: 'browser' },
+  e2e: { label: '真实 E2E（非 mock）', cls: 'e2e' },
+};
+
+const JOURNEYS = [
+  {
+    id: 'j1', kicker: 'Journey 01', title: '组织创建、修复与发布',
+    intro: '本机 owner 从空状态创建一个工作组织；创建结果可能“空间已建但设备未发布”，必须由修复/发布动作收尾，不能把 create 返回当成无条件成功。',
+    flowTitle: '创建 → 结果判定 → 修复/发布',
+    flow: [
+      { type: 'start', title: '登录后的本地 operator', note: '打开组织页' },
+      { type: 'step', title: '输入组织名', note: '必须匹配 group-<slug>；GUI 补齐 group- 前缀' },
+      { type: 'method', title: '创建组织', method: 'org.create' },
+      { type: 'decision', title: 'published && devicePublished ?' },
+      { type: 'branches', branches: [
+        { label: '是 · 创建完成', tone: 'ok', nodes: [
+          { type: 'step', title: '刷新组织列表', note: '读取刚创建的同一行', method: 'org.list' },
+          { type: 'step', title: '加载详情', note: 'org.network / hosts / orgfs.*', method: 'detail reads' },
+          { type: 'end', title: '组织可用' },
+        ]},
+        { label: '否 / 超时 · 创建未完成', tone: 'warn', nodes: [
+          { type: 'step', title: '显示“创建未完成”', note: '不得落本地假组织，不得报成功' },
+          { type: 'method', title: '同名重试', method: 'org.create' },
+        ]},
+        { label: 'typed error', tone: 'bad', nodes: [
+          { type: 'step', title: '展示错误码与原因', note: 'INVALID_ARGUMENT / DEVICE_RECORD_MISSING / ambiguous-space …' },
+          { type: 'end', title: '不创建本地假组织' },
+        ]},
+      ]},
+    ],
+    flow2Title: '修复与发布',
+    flow2: [
+      { type: 'start', title: '打开组织详情', note: '读取 org.network 的 dataProblems' },
+      { type: 'method', title: '修复预览', method: 'org.repair(apply=false)' },
+      { type: 'decision', title: '存在可修复候选？' },
+      { type: 'branches', branches: [
+        { label: '有候选', tone: 'ok', nodes: [
+          { type: 'step', title: '人工确认', note: '列出 org / reason / repairable' },
+          { type: 'method', title: '应用修复', method: 'org.repair(apply=true)' },
+          { type: 'step', title: '复读网络状态', note: '空 repaired 不显示“修复完成”', method: 'org.network' },
+        ]},
+        { label: '无可自动修复项', tone: 'warn', nodes: [
+          { type: 'step', title: '禁用确认按钮', note: '只展示需要人工处理的原因' },
+        ]},
+      ]},
+      { type: 'method', title: '发布本机组织记录', method: 'org.publish' },
+      { type: 'decision', title: 'published && orgfsPublished ?' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'ok', nodes: [{ type: 'end', title: '记录已发布' }] },
+        { label: '否', tone: 'warn', nodes: [{ type: 'step', title: '提示未全部发布', note: '刷新后重试' }] },
+      ]},
+    ],
+    features: [
+      {
+        id: 'f-create', title: '新建组织', status: 'ready',
+        kicker: 'org.create',
+        desc: '组织页 → 新建组织。GUI 只把 `published=true` 且 `devicePublished=true` 当作成功；任一 false 都显示“创建未完成”。',
+        gui: '新建组织对话框；输入名称、提交、失败/未发布状态可重试。',
+        spec: 'org.create（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.create',
+        daemonRequest: 'org_create',
+        daemonMethod: 'OrgNetworkService.create',
+        mock: { layers: ['contract', 'fixture'], source: 'Contract Mock · created-and-published', sample: {
+          org: 'group-hyprial-dev', spaceId: 'space-hyprial-dev', aclSpaceId: 'space-hyprial-dev-acl',
+          existed: false, aclExisted: false, casdoorGroup: 'verified', published: true, devicePublished: true
+        }},
+        note: '创建后先 refresh() 再按 id 读回 org.list 的同一行；角色/状态/机器数由列表补齐，不凭 create 结果推断。',
+      },
+      {
+        id: 'f-create-resume', title: '创建未完成 / 断线恢复', status: 'ready',
+        kicker: 'org.create · outcome',
+        desc: '同名重试可能返回 `existed=true` 但两个发布标志都是 false：这是“恢复创建”，不是“新建成功”。',
+        gui: '展示创建未完成提示，保留重试入口；不写入本地假组织。',
+        spec: 'org.create（同一 MethodSpec）',
+        api: 'POST /daemon/request/org.create',
+        daemonRequest: 'org_create',
+        daemonMethod: 'OrgNetworkService.create',
+        mock: { layers: ['contract'], source: 'Contract Mock · resumed-without-republishing', sample: {
+          org: 'group-hyprial-dev', existed: true, aclExisted: true,
+          casdoorGroup: 'not-configured', published: false, devicePublished: false
+        }},
+        note: 'dispatch=unknown 只报“结果未知”，不自动重试；只有明确 not-dispatched 的失败才是普通失败。',
+      },
+      {
+        id: 'f-repair-preview', title: '修复预览', status: 'ready',
+        kicker: 'org.repair · preview',
+        desc: '读取 dataProblems 后先预览候选，不直接写；有候选才允许确认，没有候选时确认按钮不可用。',
+        gui: '修复入口 → 候选列表；展示 org / reason / repairable。',
+        spec: 'org.repair（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.repair',
+        daemonRequest: 'org_repair',
+        daemonMethod: 'OrgNetworkService.repair(apply=False)',
+        mock: { layers: ['fixture'], source: 'GUI fixture · previewRepair', sample: [
+          { org: 'org-hyprial-dev', reason: '补齐组织配置空间（space-config）', repairable: true },
+          { org: 'org-hyprial-dev', reason: '重新发布这台电脑的设备记录', repairable: true }
+        ]},
+        note: '基线 Contract Mock 没有 org.repair 例子；未来 intg（#2297）会补。浏览器 org-rework 只 mock 了 apply=false 的预览与 apply=true 的确认路径。',
+      },
+      {
+        id: 'f-repair-apply', title: '应用修复', status: 'ready',
+        kicker: 'org.repair · apply',
+        desc: '确认时提交 apply=true；返回的 repaired 数组必须保留 published/devicePublished，空数组不显示“修复已完成”。',
+        gui: '确认对话框 → 逐项展示 repaired 结果 → 刷新 org.network。',
+        spec: 'org.repair（同一 MethodSpec）',
+        api: 'POST /daemon/request/org.repair',
+        daemonRequest: 'org_repair',
+        daemonMethod: 'OrgNetworkService.repair(apply=True)',
+        mock: { layers: ['fixture'], source: 'GUI fixture · repairOrg', sample: [
+          { org: 'org-hyprial-dev', published: true, devicePublished: true }
+        ]},
+        note: 'GUI 不把“候选为空”或“repaired 为空”解释成成功；F1.1 修复后复审已验证。',
+      },
+      {
+        id: 'f-retry-publish', title: '重试发布本机记录', status: 'ready',
+        kicker: 'org.publish',
+        desc: '机器行异常或创建未发布时，GUI 的“立即重试”调用 org.publish；两个发布标志都为 true 才刷新成功。',
+        gui: '机器页 → 立即重试；失败显示“本机组织记录未全部发布”。',
+        spec: 'org.publish（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.publish',
+        daemonRequest: 'org_publish',
+        daemonMethod: 'app._ipc_org_publish',
+        mock: { layers: ['fixture'], source: 'GUI fixture · retryMachine', sample: { published: true, orgfsPublished: true }},
+        note: 'GUI 的 retryMachine 不是独立 daemon 方法；它调用 org.publish 并检查两个标志。',
+      },
+    ],
+  },
+  {
+    id: 'j2', kicker: 'Journey 02', title: '邀请、加入与待处理',
+    intro: 'Owner 生成一次性邀请；受邀人通过 https / deep link / command 加入，GUI 按 daemon 真实步骤逐条反馈。网页接受后的“待处理邀请拾取”没有 daemon request，因此当前明确不可用。',
+    flowTitle: '生成邀请 → 链接加入 → 四步 bootstrap',
+    flow: [
+      { type: 'start', title: 'Owner 打开成员页', note: '本机 operator' },
+      { type: 'step', title: '输入 user:<owner>', note: '不能包含额外冒号' },
+      { type: 'method', title: '生成邀请', method: 'org.invite' },
+      { type: 'step', title: '展示 link / deepLink / command / invite', note: '邀请链接是凭据：只进临时 UI 状态，不写 URL / storage / log' },
+      { type: 'step', title: '受邀人打开链接或粘贴命令' },
+      { type: 'method', title: '加入组织', method: 'org.join' },
+      { type: 'step', title: '四步 bootstrap', note: 'connect-inviter → join-org → register-device → connect-members' },
+      { type: 'decision', title: '全部步骤成功？' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'ok', nodes: [
+          { type: 'method', title: '刷新组织列表', method: 'org.list' },
+          { type: 'end', title: '已加入' },
+        ]},
+        { label: '否', tone: 'bad', nodes: [
+          { type: 'step', title: '展示错误', note: 'INVITE_MALFORMED / INVITE_EXPIRED / no-holder-online' },
+          { type: 'end', title: '未加入' },
+        ]},
+      ]},
+      { type: 'decision', title: '网页已接受，需要拾取？' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'warn', nodes: [
+          { type: 'step', title: 'claimInvite（无 daemon 方法）', note: 'live 返回 unavailable；CLI 的 org pending 也没有对应 request method' },
+          { type: 'end', title: '当前不可用' },
+        ]},
+      ]},
+    ],
+    features: [
+      {
+        id: 'f-invite', title: '生成邀请', status: 'ready',
+        kicker: 'org.invite',
+        desc: 'Owner 输入 `user:<owner>`，返回 https link、deep link、命令和 token 形式；三种形式都指向同一邀请。',
+        gui: '成员页 → 邀请；复制链接/命令。链接只存在对话框临时状态。',
+        spec: 'org.invite（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.invite',
+        daemonRequest: 'org_invite',
+        daemonMethod: 'OrgNetworkService.invite',
+        mock: { layers: ['contract', 'fixture', 'e2e'], source: 'Contract Mock · invite-created（E2E-025 覆盖 invite/join）', sample: {
+          org: 'group-hyprial-dev', user: 'user:bob@example',
+          link: 'https://hyprial.ai/join#v2.example-payload',
+          deepLink: 'hyprial://join#v2.example-payload',
+          command: "hyprial org join 'https://hyprial.ai/join#v2.example-payload'",
+          invite: 'hyprial-invite:v2:example-payload',
+          expiresAt: '2026-11-02T10:30:00Z',
+          member: { spaceId: 'space-hyprial-dev', user: 'user:bob@example', mode: 'rw' },
+          aclMember: { spaceId: 'space-hyprial-dev-acl', user: 'user:bob@example', mode: 'ro' }
+        }},
+        note: '例子里的 link 是合成的，不可兑换；真实链接不得写进日志、URL、localStorage 或遥测。',
+      },
+      {
+        id: 'f-join', title: '通过链接加入', status: 'ready',
+        kicker: 'org.join',
+        desc: '接受 https / deep link / command 三种入口；daemon 执行四步 bootstrap，成功后才刷新组织列表。',
+        gui: '加入对话框 → 粘贴链接 → 步骤反馈 → 成功后切换/刷新。',
+        spec: 'org.join（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.join',
+        daemonRequest: 'org_join',
+        daemonMethod: 'OrgNetworkService.join',
+        mock: { layers: ['contract', 'fixture', 'e2e'], source: 'Contract Mock · all-steps-executed（E2E-025 覆盖 invite/join）', sample: {
+          org: 'group-hyprial-dev', spaceId: 'space-hyprial-dev',
+          steps: [
+            { kind: 'connect-inviter', ok: true, detail: 'tailnet redeemed; selected roster candidates mapped' },
+            { kind: 'join-org', ok: true, detail: 'joined the org directory and ACL spaces' },
+            { kind: 'register-device', ok: true, detail: 'registered this device in the org directory' },
+            { kind: 'connect-members', ok: true, detail: 'mapped 2 member device(s)' }
+          ]
+        }},
+        note: '失败不回调任何步骤，也不把未知结果改写成成功；org.execute 是同一 bootstrap 的旧 HTTP 别名。',
+      },
+      {
+        id: 'f-join-steps', title: '加入步骤反馈', status: 'ready',
+        kicker: 'org.join · steps',
+        desc: 'GUI 按 daemon 返回的 steps 顺序逐条显示；只有 `ok=true` 的步骤才算完成。',
+        gui: '进度列表：连接邀请人 → 加入组织 → 注册设备 → 连接成员。',
+        spec: 'org.join（steps 字段）',
+        api: 'POST /daemon/request/org.join',
+        daemonRequest: 'org_join',
+        daemonMethod: 'OrgNetworkService.join',
+        mock: { layers: ['contract', 'fixture'], source: 'Contract Mock · all-steps-executed（同 f-join）', sample: {
+          steps: [
+            { kind: 'connect-inviter', ok: true },
+            { kind: 'join-org', ok: true },
+            { kind: 'register-device', ok: true },
+            { kind: 'connect-members', ok: true }
+          ]
+        }},
+        note: '不要在第一步成功时就显示“已加入”；步骤是顺序执行的，后一步仍可能失败。',
+      },
+      {
+        id: 'f-claim', title: '待处理邀请拾取', status: 'unavailable',
+        kicker: 'claimInvite',
+        desc: '网页接受邀请后，设备端需要拾取待处理项。GUI 有 claimInvite 动作，但 live source 没有对应 daemon request。',
+        gui: '邀请列表 → 领取；live 直接返回 unavailable。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · ownerSnapshot.receivedInvites', sample: {
+          receivedInvites: [
+            { id: 'inv-design', orgName: 'design-guild', inviterLabel: '周屿', acceptedAt: '10-29 09:12' },
+            { id: 'inv-ops', orgName: 'ops-oncall', inviterLabel: '许沐', acceptedAt: '10-29 11:40' }
+          ]
+        }},
+        note: 'CLI 有 org pending（只读 Casdoor，不写 consumedBy），但没有暴露为 daemon request；需要新增扫描/领取方法后才能接 GUI。',
+      },
+      {
+        id: 'f-skip', title: '重复加入跳过', status: 'ready',
+        kicker: 'org.join · skipped',
+        desc: '已在该组织时，GUI 返回 skipped，不重复创建成员关系；fixture 还覆盖“同一组织多条邀请”的跳过。',
+        gui: '提示“已在该组织中，不重复加入”。',
+        spec: 'org.join（客户端结果分类）',
+        api: 'POST /daemon/request/org.join',
+        daemonRequest: 'org_join',
+        daemonMethod: 'OrgNetworkService.join',
+        mock: { layers: ['fixture'], source: 'GUI fixture · joinByLink skipped', sample: { kind: 'skipped', message: '已在该组织中，不重复加入' }},
+        note: 'skipped 是客户端对 daemon 结果的分类，不是新的 daemon 方法；未来 intg 的 Contract Mock 例子不改变这一点。',
+      },
+    ],
+  },
+  {
+    id: 'j3', kicker: 'Journey 03', title: '查看、切换与详情',
+    intro: '用户打开组织页，看到自己的组织列表，选择其中一个，页面并发读取网络、机器、OrgFS 等明细。任何单路失败都必须显示“状态未确认”，不能伪装成空列表。',
+    flowTitle: '列表 → 选择 → 并发详情读取',
+    flow: [
+      { type: 'start', title: '打开组织页', note: 'autoload 只读 org.list' },
+      { type: 'method', title: '组织列表', method: 'org.list' },
+      { type: 'decision', title: '有当前组织？' },
+      { type: 'branches', branches: [
+        { label: '否', tone: 'warn', nodes: [
+          { type: 'step', title: '选择组织', note: 'setCurrentOrg 当前仍 unavailable；列表默认第一行仅本地显示' },
+        ]},
+        { label: '是', tone: 'ok', nodes: [
+          { type: 'step', title: '加载详情', note: '按 org 保存 generation，旧读不覆盖新选择' },
+        ]},
+      ]},
+      { type: 'step', title: '并发读取', note: 'org.network + hosts + orgfs.spaces/status/ls/trash + 有界 orgfs.read', method: 'detail reads' },
+      { type: 'decision', title: '任一读取失败？' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'warn', nodes: [
+          { type: 'step', title: '该区块显示未知 / 可刷新', note: '失败不等于空数据；machines=null 不显示 0 台' },
+        ]},
+        { label: '否', tone: 'ok', nodes: [
+          { type: 'end', title: '展示概览 / 机器 / 文件' },
+        ]},
+      ]},
+      { type: 'method', title: '手动刷新', method: 'org.list + detail reads' },
+      { type: 'method', title: '组织上下文同步', method: 'org.fetch' },
+    ],
+    features: [
+      {
+        id: 'f-list', title: '组织列表', status: 'ready',
+        kicker: 'org.list',
+        desc: '读取本机已加入组织与已退出组织；每行含 org、spaceId、role、devices、state。',
+        gui: '组织页首屏；没有“当前组织”字段，选择只在本地保留。',
+        spec: 'org.list（read-only, retry=safe）',
+        api: 'POST /daemon/request/org.list',
+        daemonRequest: 'org_list',
+        daemonMethod: 'OrgNetworkService.list',
+        mock: { layers: ['contract', 'fixture'], source: 'Contract Mock · work-org-owner', sample: {
+          orgs: [{ org: 'group-hyprial-dev', spaceId: 'space-hyprial-dev', role: 'owner', devices: 3, state: 'active' }],
+          leftOrgs: []
+        }},
+        note: 'org.list 只发布工作组织（OC4 后无非工作组织条目），也不给 ownerLabel；GUI 不推断，显示“状态未确认”。',
+      },
+      {
+        id: 'f-switch', title: '切换当前组织', status: 'unavailable',
+        kicker: 'setCurrentOrg',
+        desc: '列表里选择另一个组织后，页面应切换到该组织详情；但 live source 没有 override，仍走 unwired 的 unavailable。',
+        gui: '选择组织；当前只能保留列表默认选择，不能持久化“当前组织”。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · setCurrentOrg', sample: { kind: 'ok', value: undefined }},
+        note: '这个动作可能只需要本地状态，不一定需要 daemon 方法；但当前 live 行为是明确 unavailable，不能声称已切换。',
+      },
+      {
+        id: 'f-detail', title: '组织详情聚合读取', status: 'ready',
+        kicker: 'detail reads',
+        desc: '打开组织后并发读取 org.network、hosts、orgfs.spaces/status/ls/trash；文件正文按有界策略读取。',
+        gui: '概览、机器、文件页共用同一批读取；失败区块独立显示未知态。',
+        spec: 'org.network / hosts / orgfs.spaces / orgfs.status / orgfs.ls / orgfs.trash / orgfs.read',
+        api: 'POST /daemon/request/org.network、/hosts、/orgfs.*',
+        daemonRequest: 'org_network / hosts / orgfs_spaces / orgfs_status / orgfs_ls / orgfs_trash / orgfs_read',
+        daemonMethod: 'OrgNetworkService / OrgFs',
+        mock: { layers: ['browser', 'fixture'], source: 'Browser route mock · org-rework BASE', sample: {
+          org: { orgs: ['group-alpha'], unavailableOrgs: [], dataProblems: [], directory: { 'group-alpha': [{ deviceId: 'dev-alpha', owner: 'user:review', presence: 'offline', updatedAt: '2026-11-03' }] }, self: { deviceId: 'dev-alpha', owner: 'user:review' } },
+          spaces: { spaces: [{ space_id: 'space-alpha', name: 'alpha files', owner: 'user:review', created_at: '2026-11-03' }] }
+        }},
+        note: 'live detail 的 people/agents/config/routes/stats 固定为 null；详情聚合只覆盖网络、机器与 OrgFS。',
+      },
+      {
+        id: 'f-partial', title: '单路失败未知态', status: 'ready',
+        kicker: 'unknown state',
+        desc: 'org.network 失败时 machines=null，页面显示“状态未确认”和刷新入口，而不是 0 台机器；文件读取失败同样不伪装成空文件。',
+        gui: 'OrgReadStateBlock / UnknownBlock；刷新后恢复。',
+        spec: '客户端结果分类（非新方法）',
+        api: null,
+        daemonRequest: null,
+        daemonMethod: null,
+        mock: { layers: ['browser'], source: 'Browser route mock · org-rework network-error', sample: { failure: { code: 'DAEMON_ERROR', message: 'directory failed' }, expected: 'machines=null → 状态未确认' }},
+        note: 'F2.1/F3.1 复审已验证：失败不是空数据，旧详情读不能覆盖新 refresh。',
+      },
+      {
+        id: 'f-refresh', title: '手动刷新', status: 'ready',
+        kicker: 'refresh',
+        desc: '重新读取组织列表与当前组织详情；单项失败保持 null/空，不把详情失败说成组织列表失败。',
+        gui: '各区块刷新按钮 / 全局刷新。',
+        spec: 'org.list + detail reads',
+        api: 'POST /daemon/request/org.list、/org.network、/hosts、/orgfs.*',
+        daemonRequest: 'org_list + detail handlers',
+        daemonMethod: 'OrgNetworkService / OrgFs',
+        mock: { layers: ['browser'], source: 'Browser route mock · org-rework refresh', sample: { calls: ['org.list', 'org.network', 'orgfs.spaces', 'orgfs.status', 'orgfs.ls', 'orgfs.trash'] }},
+        note: '刷新不会自动调用 org.fetch；org.fetch 只在用户点“同步组织配置”时调用。',
+      },
+      {
+        id: 'f-fetch', title: '组织上下文同步', status: 'ready',
+        kicker: 'org.fetch',
+        desc: '用户显式触发，从 mesh 或 orgfs 拉取组织上下文候选；超时或中断返回“结果未知”，不自动重试，也不把候选写成已采信。',
+        gui: '“同步组织配置”入口。',
+        spec: 'org.fetch（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.fetch',
+        daemonRequest: 'org_fetch',
+        daemonMethod: 'app._ipc_org_fetch',
+        mock: { layers: ['contract', 'browser', 'e2e'], source: 'Contract Mock · mesh-with-candidates（E2E-025 覆盖 org.fetch）', sample: {
+          requestedSources: ['node-2', 'node-3'], responseCount: 2, receivedCount: 1, rejectedCount: 1,
+          candidates: [{ path: '/tmp/hyprial-example/org-context/pending.json', version: 7, publisher: 'user:lin', receivedAt: '2026-11-02T09:30:00Z', source: 'node-2' }]
+        }},
+        note: 'org.fetch 是写（mutates=true），只用用户显式动作触发；autoload 不调用它。',
+      },
+    ],
+  },
+  {
+    id: 'j4', kicker: 'Journey 04', title: '成员、退出与删除',
+    intro: '成员管理依赖“人”的目录，而不只是 tailnet 设备行。当前 live detail 的 people/agents 为 null，因此移除成员虽有 API，入口却不可达；退出组织可用；删除组织被 daemon 固定拒绝。',
+    flowTitle: '成员操作 → 预览 → 确认 → 刷新',
+    flow: [
+      { type: 'start', title: '打开成员页', note: '读取 org.network 的设备行' },
+      { type: 'method', title: '网络目录', method: 'org.network' },
+      { type: 'decision', title: '有人员/Agent 目录？' },
+      { type: 'branches', branches: [
+        { label: '否 · 当前 live', tone: 'warn', nodes: [
+          { type: 'step', title: '显示“状态未确认”', note: '设备行能显示机器，但不等于人员目录' },
+          { type: 'end', title: '移除成员入口不可达' },
+        ]},
+        { label: '是 · fixture / 未来后端', tone: 'ok', nodes: [
+          { type: 'method', title: '移除预览', method: 'org.remove（confirmed=false）' },
+          { type: 'decision', title: 'revision 仍有效？' },
+          { type: 'branches', branches: [
+            { label: '是', tone: 'ok', nodes: [
+              { type: 'method', title: '确认移除', method: 'org.remove（confirmed=true + operationId + deviceIds）' },
+              { type: 'step', title: '刷新列表与详情' },
+            ]},
+            { label: '否', tone: 'warn', nodes: [
+              { type: 'step', title: 'REVISION_CONFLICT', note: '重新预览，旧确认不重放' },
+            ]},
+          ]},
+        ]},
+      ]},
+      { type: 'method', title: '离开组织', method: 'org.leave（预览 + 确认）' },
+      { type: 'method', title: '删除组织', method: 'org.delete' },
+      { type: 'decision', title: 'daemon 允许删除？' },
+      { type: 'branches', branches: [
+        { label: '当前：否', tone: 'bad', nodes: [
+          { type: 'step', title: 'LAST_AUTHORITY_REFUSED', note: '需要独立的确认关停维护流程' },
+          { type: 'end', title: '删除未执行' },
+        ]},
+      ]},
+    ],
+    features: [
+      {
+        id: 'f-people', title: '人员 / Agent 目录', status: 'unavailable',
+        kicker: 'people / agents',
+        desc: '成员页需要人员与 Agent 记录；live detail 固定 people=null、agents=null，没有对应的 daemon request。org.network 只提供设备行。',
+        gui: '人员/Agent 分段；当前显示“状态未确认”，只有 fixture 有完整数据。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · teamDetail.people', sample: {
+          people: [
+            { id: 'p-me', displayName: '姚', account: 'yao@example.invalid', role: 'owner', source: 'Casdoor', sync: 'synced', isMe: true, machineIds: ['m-yao-mbp'], agentIds: ['agent-squire'] },
+            { id: 'p-lin', displayName: '林澄', account: 'lin@example.invalid', role: 'member', source: 'Casdoor', sync: 'synced', isMe: false, machineIds: ['m-lin-mbp'], agentIds: ['agent-lin-review'] }
+          ]
+        }},
+        note: '需要后端提供组织成员/Agent 目录读取；不能用 tailnet device owner 推断完整成员关系。',
+      },
+      {
+        id: 'f-remove-preview', title: '移除成员预览', status: 'partial',
+        kicker: 'org.remove · preview',
+        desc: 'API 已接通：不带 confirmed 调 org.remove 返回预览，包含 revision、devices、tailnet、authority、impact。',
+        gui: '移除成员对话框；但人员列表为 null 时无法从 live 入口到达。',
+        spec: 'org.remove（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.remove',
+        daemonRequest: 'org_remove',
+        daemonMethod: 'OrgNetworkService.remove',
+        mock: { layers: ['fixture'], source: 'GUI fixture · removalPreview', sample: {
+          revision: 7, devices: ['lin-mbp'], tailnet: 'hyprial-dev 组织网络',
+          authority: '这台电脑（authority）',
+          impact: '确认后先改组织文件，再撤销组织网络；待确认、待 authority 或网络失败都不等于已完成。'
+        }},
+        note: 'org.remove 的 preview 与 confirm 是同一方法的不同参数；GUI 保存 operationId/deviceIds/expectedRevision，过期统一 stale。',
+      },
+      {
+        id: 'f-remove-confirm', title: '移除成员确认', status: 'partial',
+        kicker: 'org.remove · confirm',
+        desc: '确认时原样提交预览得到的 operationId/deviceIds/revision；新增设备不会自动纳入，身份 incarnation 变化会拒绝。',
+        gui: '确认对话框；live 入口同样受人员目录缺失阻塞。',
+        spec: 'org.remove（同一 MethodSpec）',
+        api: 'POST /daemon/request/org.remove',
+        daemonRequest: 'org_remove',
+        daemonMethod: 'OrgNetworkService.remove',
+        mock: { layers: ['fixture'], source: 'GUI fixture · removeMember', sample: { kind: 'submitted', message: '已提交，等待处理（阶段：revoking）' }},
+        note: 'REVISION_CONFLICT 后必须重新预览；旧确认不重放，新增设备不被自动纳入。',
+      },
+      {
+        id: 'f-leave', title: '离开组织', status: 'ready',
+        kicker: 'org.leave',
+        desc: '先预览影响（设备、tailnet、authority、断连），确认后提交；phase=complete 才显示完成，否则显示已提交。',
+        gui: '离开组织对话框 → 预览 → 确认 → 刷新/移除本地组织。',
+        spec: 'org.leave（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.leave',
+        daemonRequest: 'org_leave',
+        daemonMethod: 'OrgNetworkService.leave',
+        mock: { layers: ['fixture'], source: 'GUI fixture · removalPreview / leaveOrg', sample: {
+          preview: { revision: 7, devices: ['yao-mbp', 'yao-mini'], tailnet: 'hyprial-dev 组织网络', authority: '这台电脑（authority）', impact: '确认后先改组织文件，再撤销组织网络；待确认、待 authority 或网络失败都不等于已完成。' },
+          result: { phase: 'complete', complete: true }
+        }},
+        note: '目标包括自己与所有设备；不把“已提交”说成“已离开”。',
+      },
+      {
+        id: 'f-delete', title: '删除组织', status: 'partial',
+        kicker: 'org.delete',
+        desc: 'MethodSpec、HTTP、GUI 都存在，但真实 daemon 的 OrgNetworkService.delete 固定抛 LAST_AUTHORITY_REFUSED；成功路径尚未实现。',
+        gui: '设置页删除入口；调用后如实显示错误。',
+        spec: 'org.delete（mutates, unary, retry=never）',
+        api: 'POST /daemon/request/org.delete',
+        daemonRequest: 'org_delete',
+        daemonMethod: 'OrgNetworkService.delete（固定拒绝）',
+        mock: { layers: ['fixture'], source: 'GUI fixture · deleteOrg（仅演示成功）', sample: { kind: 'ok', value: undefined }},
+        note: '真实 daemon 返回：{"code":"LAST_AUTHORITY_REFUSED","message":"Tailnet deletion requires a separate confirmed shutdown maintenance procedure."}。未来 intg 的 Contract Mock 只有拒绝场景；success 场景返回 409 MOCK_SCENARIO_MISSING。需要后端实现确认关停维护流程，不能靠 mock 成功。',
+      },
+      {
+        id: 'f-rename', title: '组织改名', status: 'unavailable',
+        kicker: 'renameOrg',
+        desc: 'GUI 有改名动作，但没有对应 daemon request；live 直接 unavailable。',
+        gui: '设置页改名；fixture 返回 submitted。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · renameOrg', sample: { kind: 'submitted', message: '改名：已提交，等待处理' }},
+        note: '若产品需要改名，应新增 daemon 方法并定义命名冲突/ACL/目录更新语义；不能只改本地显示名。',
+      },
+      {
+        id: 'f-acl', title: 'ACL 管理', status: 'spec-only',
+        kicker: 'org.acl.*',
+        desc: 'ACL 三个方法已声明 MethodSpec，但 http_exposed=false；不进 OpenAPI、不进浏览器 bundle，GUI 不提供入口。',
+        gui: '无（按设计不进入 GUI）。',
+        spec: 'org.acl.ls（read）/ org.acl.grant（mutates）/ org.acl.revoke（mutates）',
+        api: null, daemonRequest: 'org_acl_ls / org_acl_grant / org_acl_revoke',
+        daemonMethod: 'ACL request handlers',
+        mock: null,
+        note: 'ACL 是 MethodSpec-only；不要为了页面完整而伪造 HTTP 绑定或 GUI 入口。',
+      },
+    ],
+  },
+  {
+    id: 'j5', kicker: 'Journey 05', title: '网络、机器、拓扑与统计',
+    intro: '网络目录与 hosts 提供机器行；拓扑应由已采信配置、Agent、路由和 link 推导；统计需要消息数据。当前只有网络/机器/link 的基础数据是 live 的，配置与统计仍是 fixture。',
+    flowTitle: '网络目录 → 机器行 → 发布/重试',
+    flow: [
+      { type: 'start', title: '组织详情', note: '并发读取网络与 hosts' },
+      { type: 'method', title: '网络目录', method: 'org.network' },
+      { type: 'method', title: '本机 hosts', method: 'hosts' },
+      { type: 'step', title: '合并机器行', note: 'deviceId / owner / presence / host status / stale' },
+      { type: 'decision', title: 'dataProblems 或读取失败？' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'warn', nodes: [
+          { type: 'step', title: '显示警告 / 未知', note: '不显示 0 台机器' },
+        ]},
+        { label: '否', tone: 'ok', nodes: [
+          { type: 'end', title: '机器列表可用' },
+        ]},
+      ]},
+      { type: 'step', title: '机器行异常 / 发布未完成' },
+      { type: 'method', title: '重试发布本机记录', method: 'org.publish' },
+      { type: 'decision', title: 'published && orgfsPublished ?' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'ok', nodes: [{ type: 'end', title: '发布完成' }] },
+        { label: '否', tone: 'warn', nodes: [{ type: 'step', title: '提示未全部发布', note: '刷新后重试' }] },
+      ]},
+      { type: 'step', title: '拓扑 / 统计', note: '依赖 config / agents / routes / link / 消息统计；当前 live 为空' },
+    ],
+    features: [
+      {
+        id: 'f-network', title: '网络状态', status: 'ready',
+        kicker: 'org.network',
+        desc: '读取组织目录、本机设备、不可用组织与 dataProblems；机器列表的权威来源。',
+        gui: '概览与机器页；dataProblems 显示警告，不阻断其它有效设备。',
+        spec: 'org.network（read-only, retry=safe）',
+        api: 'POST /daemon/request/org.network',
+        daemonRequest: 'org_network',
+        daemonMethod: 'OrgNetworkService.network',
+        mock: { layers: ['browser', 'fixture'], source: 'Browser route mock · BASE["org.network"]', sample: {
+          orgs: ['group-alpha'], unavailableOrgs: [], dataProblems: [],
+          directory: { 'group-alpha': [{ deviceId: 'dev-alpha', owner: 'user:review', presence: 'offline', updatedAt: '2026-11-03' }] },
+          self: { deviceId: 'dev-alpha', owner: 'user:review' }
+        }},
+        note: '读取失败时 GUI 置 machines=null；这是“未知”，不是“0 台”。',
+      },
+      {
+        id: 'f-machines', title: '机器列表', status: 'ready',
+        kicker: 'org.network + hosts',
+        desc: '合并网络目录的设备行与 hosts 的在线状态；每行显示主机名、owner、presence、当前设备标记。',
+        gui: '机器页；支持重试发布。',
+        spec: 'org.network + hosts',
+        api: 'POST /daemon/request/org.network、/hosts',
+        daemonRequest: 'org_network / hosts',
+        daemonMethod: 'OrgNetworkService.network / host view',
+        mock: { layers: ['browser', 'fixture'], source: 'GUI fixture · teamDetail.machines', sample: [
+          { id: 'm-yao-mbp', hostname: 'yao-mbp', system: 'macOS 26.1', status: 'online', current: true, ownerLabel: '姚', mine: true },
+          { id: 'm-chen-linux', hostname: 'chen-linux', system: 'Ubuntu 24.04', status: 'dormant', dormant: { failures: 5, lastAttemptAt: '10-29 14:05' }, current: false, ownerLabel: '陈墨', mine: false }
+        ]},
+        note: '设备行问题只影响该行；不阻断同一空间的其它有效设备。',
+      },
+      {
+        id: 'f-hosts', title: '本机 hosts 状态', status: 'ready',
+        kicker: 'hosts',
+        desc: '返回本机 agent/host 的 nodeId、status、stale 等；GUI 用它补齐设备在线状态。',
+        gui: '机器行状态；hosts 为空时按未知处理。',
+        spec: 'hosts（read-only, unary）',
+        api: 'POST /daemon/request/hosts',
+        daemonRequest: 'hosts',
+        daemonMethod: 'hosts handler',
+        mock: { layers: ['browser', 'fixture'], source: 'org-all-methods.test.tsx · hosts', sample: {
+          hosts: [{ nodeId: 'dev-1', status: 'online', observedAtMs: null, ageMs: null, stale: false, lastError: null }]
+        }},
+        note: 'hosts 只描述本机可见的 host；不能代替组织成员目录。',
+      },
+      {
+        id: 'f-topology', title: '拓扑：结构 / 通信', status: 'partial',
+        kicker: 'derived view',
+        desc: '结构视图依赖已采信组织配置（部门/业务线/角色）；通信视图依赖 Agent、路由与 link。live detail 的 config/agents/routes 为 null，因此真实模式只能显示不可用拓扑。',
+        gui: '拓扑页：结构视图 / 通信视图 + Inspect 侧栏；fixture 下完整。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · TEAM_CONFIG_V3', sample: {
+          departments: [{ id: 'd-eng', name: '研发部', lead: '姚', parent: null, members: ['姚', '陈墨'] }],
+          lines: [{ id: 'l-gui', name: 'GUI 初始化', lead: '林澄', coordinator: 'Squire', board: 'gui-init', repo: 'HyprialOS/harness-bridge' }],
+          roles: [{ id: 'r-review', node: 'lin-mbp', role: '评审', serves: 'GUI 初始化' }],
+          routes: [{ id: 'rt-1', kind: '部门', target: '研发部', scope: '全部成员' }]
+        }},
+        note: '没有专用拓扑/统计 daemon 方法；需要先把配置与 Agent/路由数据接入 live，再谈真实拓扑。',
+      },
+      {
+        id: 'f-stats', title: '统计', status: 'unavailable',
+        kicker: 'stats',
+        desc: '窗口 1/7/30 天、按小时消息量、Top 关系与参与者；live detail 的 stats 固定 null，没有统计 daemon request。',
+        gui: '统计页；fixture 有完整图表数据，live 显示不可用。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · stats(1)', sample: {
+          hourly: [0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 9, 7, 5, 8, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0],
+          topPairs: [{ from: 'Squire', to: '评审助手', count: 18 }],
+          participants: [{ label: 'Squire', sent: 26, received: 20 }, { label: '评审助手', sent: 12, received: 21 }]
+        }},
+        note: '按任务统计仍是缺口；不能把 fixture 图表当真实统计。',
+      },
+    ],
+  },
+  {
+    id: 'j6', kicker: 'Journey 06', title: 'OrgFS 文件空间',
+    intro: 'OrgFS 是组织文件空间：读、写、建、移、删、历史与恢复。主路径已经接通；目录恢复与条目级彻底清除有明确语义缺口。高级空间管理/成员/诊断方法只暴露 HTTP，不进 GUI。',
+    flowTitle: '空间 → 文件树 → 读写 → 回收站 / 历史',
+    flow: [
+      { type: 'start', title: '打开文件页' },
+      { type: 'method', title: '空间列表', method: 'orgfs.spaces' },
+      { type: 'step', title: '选择空间', note: 'live 目前只展示当前组织自己的空间' },
+      { type: 'method', title: '状态 + 文件树 + 回收站', method: 'orgfs.status / ls / trash' },
+      { type: 'method', title: '有界读取正文', method: 'orgfs.read（≤256 KiB，最多 50 个）' },
+      { type: 'decision', title: '空间健康？' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'ok', nodes: [
+          { type: 'step', title: '编辑器可用', note: '保存必须带加载时学到的 opaque version' },
+          { type: 'method', title: '保存', method: 'orgfs.write' },
+        ]},
+        { label: '否', tone: 'warn', nodes: [
+          { type: 'step', title: '只读 / 未知状态', note: '禁止保存，提示刷新' },
+        ]},
+      ]},
+      { type: 'method', title: '新建 / 移动 / 删除', method: 'orgfs.mkdir / write(createOnly) / move / remove' },
+      { type: 'method', title: '历史', method: 'orgfs.history + read_at' },
+      { type: 'decision', title: '恢复目录？' },
+      { type: 'branches', branches: [
+        { label: '文件', tone: 'ok', nodes: [{ type: 'method', title: '恢复文件', method: 'orgfs.restore' }] },
+        { label: '目录', tone: 'bad', nodes: [{ type: 'step', title: 'ORG_FOLDER_RESTORE_UNSUPPORTED', note: '缺少删除前快照' }] },
+      ]},
+      { type: 'decision', title: '条目级彻底清除？' },
+      { type: 'branches', branches: [
+        { label: '当前', tone: 'bad', nodes: [{ type: 'step', title: 'ORG_PURGE_UNSUPPORTED', note: 'daemon purge 只清历史，不移回收站条目' }] },
+      ]},
+    ],
+    features: [
+      {
+        id: 'f-spaces', title: '空间列表', status: 'partial',
+        kicker: 'orgfs.spaces',
+        desc: 'HTTP 返回所有已加入空间；live detail 只把当前组织对应的一个 space 放进 detail.spaces，因此 GUI 不能浏览其它空间。',
+        gui: '文件页空间选择；live 只有一个组织空间。',
+        spec: 'orgfs.spaces（read-only, unary）',
+        api: 'POST /daemon/request/orgfs.spaces',
+        daemonRequest: 'orgfs_spaces',
+        daemonMethod: 'OrgFs.spaces',
+        mock: { layers: ['browser', 'fixture'], source: 'Browser route mock · orgfs.spaces', sample: {
+          spaces: [{ space_id: 'space-alpha', name: 'alpha files', owner: 'user:review', created_at: '2026-11-03' }]
+        }},
+        note: '多空间浏览是 GUI 的已知缺口；不是 orgfs.spaces 缺失。',
+      },
+      {
+        id: 'f-status', title: '空间状态', status: 'ready',
+        kicker: 'orgfs.status',
+        desc: '读取 durable holders、online holders、parked/unconfirmed commits；用于文件页健康状态。',
+        gui: '文件页状态；异常时只读/未知。',
+        spec: 'orgfs.status（read-only, unary）',
+        api: 'POST /daemon/request/orgfs.status',
+        daemonRequest: 'orgfs_status',
+        daemonMethod: 'OrgFs.status',
+        mock: { layers: ['browser', 'fixture'], source: 'Browser route mock · orgfs.status', sample: {
+          space_id: 'space-alpha', durable_holders_seen: 1, holders_online: 1, parked_commits: 0, unconfirmed_commits: 0
+        }},
+        note: 'status 只说明空间就绪度，不说明文件内容已到达；正文仍以 read 结果为准。',
+      },
+      {
+        id: 'f-ls', title: '目录列表', status: 'ready',
+        kicker: 'orgfs.ls',
+        desc: '返回节点 node_id、path、name、kind、version、size、contentState 等；GUI 用 version 绑定后续写入。',
+        gui: '文件树。',
+        spec: 'orgfs.ls（read-only, unary）',
+        api: 'POST /daemon/request/orgfs.ls',
+        daemonRequest: 'orgfs_ls',
+        daemonMethod: 'OrgFs.ls',
+        mock: { layers: ['browser', 'fixture'], source: 'Browser route mock · orgfs.ls', sample: {
+          nodes: [{ node_id: 'n1', path: 'a.md', name: 'a.md', kind: 'doc', modified_by: 'user:review', space_id: 'space-alpha', uri: 'orgfs:review:space-alpha:n1', version: 'cmV2aWV3LXZlcnNpb24=', deleted: false, contentState: 'arrived', size: 5 }]
+        }},
+        note: 'version 是不透明字符串；GUI 不解析、不推断，只原样回传。',
+      },
+      {
+        id: 'f-read', title: '读取文件', status: 'ready',
+        kicker: 'orgfs.read',
+        desc: '只读文本正文；GUI 只预读 ≤256 KiB 的前 50 个文件，其余保持未加载，编辑器拒绝在未读到版本时保存。',
+        gui: '打开文件 / 预览；失败显示内容未知，不显示空正文。',
+        spec: 'orgfs.read（read-only, unary）',
+        api: 'POST /daemon/request/orgfs.read',
+        daemonRequest: 'orgfs_read',
+        daemonMethod: 'OrgFs.read_text',
+        mock: { layers: ['browser', 'fixture', 'e2e'], source: 'Browser route mock · orgfs.read（E2E-025 覆盖 orgfs roundtrip）', sample: {
+          node: { node_id: 'n1', path: 'a.md', name: 'a.md', kind: 'doc', version: 'cmV2aWV3LXZlcnNpb24=' },
+          text: 'hello'
+        }},
+        note: '读取有界是刻意的：超出范围的文件保持未知，不能被当成空文件保存。',
+      },
+      {
+        id: 'f-write', title: '保存文件', status: 'ready',
+        kicker: 'orgfs.write',
+        desc: '保存必须带加载时学到的 opaque version；版本未知或已变化时 GUI 直接拒绝，不发写请求。',
+        gui: '编辑器保存；冲突显示 stale/刷新。',
+        spec: 'orgfs.write（mutates, unary）',
+        api: 'POST /daemon/request/orgfs.write',
+        daemonRequest: 'orgfs_write',
+        daemonMethod: 'OrgFs.write_text',
+        mock: { layers: ['fixture', 'e2e'], source: 'org-all-methods.test.tsx · orgfs.write（E2E-025 覆盖 orgfs roundtrip）', sample: {
+          node_id: 'n1', path: 'a.md', name: 'a.md', kind: 'doc', modified_by: 'user:me',
+          space_id: 'space-alpha', uri: 'orgfs:me:space-alpha:n1', version: 'dGVzdC12ZXJzaW9uLTQ=',
+          deleted: false, size: 5
+        }},
+        note: '请求样例：{spaceId, path, text, baseVersion}；返回新 version 后 GUI 才更新绑定。',
+      },
+      {
+        id: 'f-create', title: '新建文件 / 文件夹', status: 'ready',
+        kicker: 'orgfs.mkdir / write(createOnly)',
+        desc: '文件夹走 orgfs.mkdir；文件走 orgfs.write，createOnly=true、text=""，避免覆盖已有正文。',
+        gui: '新建菜单。',
+        spec: 'orgfs.mkdir / orgfs.write（mutates）',
+        api: 'POST /daemon/request/orgfs.mkdir、/orgfs.write',
+        daemonRequest: 'orgfs_mkdir / orgfs_write',
+        daemonMethod: 'OrgFs.mkdir / write_text',
+        mock: { layers: ['fixture'], source: 'org-all-methods.test.tsx · createOnly', sample: {
+          request: { spaceId: 'space-alpha', path: 'new.md', text: '', createOnly: true },
+          result: { node_id: 'n2', path: 'new.md', version: 'dGVzdC12ZXJzaW9uLTQ=' }
+        }},
+        note: '不用普通 write 创建空文件；否则已有同名文件可能被清空。',
+      },
+      {
+        id: 'f-move', title: '移动 / 重命名', status: 'ready',
+        kicker: 'orgfs.move',
+        desc: '移动文件或目录；目标已存在、或把目录移到自身内部时拒绝。',
+        gui: '文件树拖拽/重命名。',
+        spec: 'orgfs.move（mutates, unary）',
+        api: 'POST /daemon/request/orgfs.move',
+        daemonRequest: 'orgfs_move',
+        daemonMethod: 'OrgFs.move',
+        mock: { layers: ['fixture'], source: 'GUI fixture · moveEntry', sample: {
+          from: 'a.md', to: 'docs/a.md',
+          result: { path: 'docs/a.md', name: 'a.md', kind: 'file', version: 2, modifiedBy: '姚', modifiedAt: '16:05' }
+        }},
+        note: '移动目录时其子路径一起变更；GUI 更新本地树后重新读取。',
+      },
+      {
+        id: 'f-delete', title: '删除到回收站', status: 'ready',
+        kicker: 'orgfs.remove',
+        desc: '删除进入回收站，不立即物理清除；回收站列表来自 orgfs.trash。',
+        gui: '删除 → 回收站；可恢复文件。',
+        spec: 'orgfs.remove（mutates, unary）',
+        api: 'POST /daemon/request/orgfs.remove',
+        daemonRequest: 'orgfs_remove',
+        daemonMethod: 'OrgFs.remove',
+        mock: { layers: ['browser', 'fixture'], source: 'GUI fixture · deleteEntry', sample: {
+          trash: [{ id: 't-sim-1', path: 'drafts/old-plan.md', deletedBy: '周屿', deletedAt: '10-25 19:20', kind: 'doc', childCount: 0 }],
+          result: { kind: 'ok', value: undefined }
+        }},
+        note: 'orgfs.trash 读取回收站；基线 Contract Mock 没有例子，未来 intg（#2297）会补；浏览器 org-rework mock 返回空 nodes。',
+      },
+      {
+        id: 'f-history', title: '版本历史', status: 'ready',
+        kicker: 'orgfs.history + read_at',
+        desc: '列出历史事件，再按 node + version 读回历史正文；单个版本内容失败时保留“内容不可用”，不显示空正文。',
+        gui: '历史面板；最多展示 20 个版本。',
+        spec: 'orgfs.history（read）+ orgfs.read_at（read）',
+        api: 'POST /daemon/request/orgfs.history、/orgfs.read_at',
+        daemonRequest: 'orgfs_history / orgfs_read_at',
+        daemonMethod: 'OrgFs.history / read_at',
+        mock: { layers: ['fixture'], source: 'GUI fixture · teamDetail.history', sample: [
+          { version: 3, modifiedBy: '林澄', modifiedAt: '10-28 17:45', contentStatus: 'ready', content: '# 新成员入门\n\n1. 安装 hyprial 并登录。' },
+          { version: 2, modifiedBy: '姚', modifiedAt: '10-27 12:10', contentStatus: 'ready', content: '# 新成员入门' }
+        ]},
+        note: 'read_at 失败只影响该版本预览；不能把空字符串当作真实历史正文。',
+      },
+      {
+        id: 'f-restore', title: '恢复文件', status: 'partial',
+        kicker: 'orgfs.restore',
+        desc: '文件恢复可用；目录恢复被 GUI 明确拒绝，因为当前 daemon 只有删除后版本，缺少删除前快照，无法保证恢复全部内容。',
+        gui: '回收站 → 恢复；目录项显示不可用原因。',
+        spec: 'orgfs.restore（mutates, unary）',
+        api: 'POST /daemon/request/orgfs.restore',
+        daemonRequest: 'orgfs_restore',
+        daemonMethod: 'OrgFs.restore',
+        mock: { layers: ['fixture'], source: 'org-all-methods.test.tsx · orgfs.restore / GUI fixture', sample: {
+          file: { kind: 'ok', value: undefined },
+          folder: { code: 'ORG_FOLDER_RESTORE_UNSUPPORTED', message: '目录恢复需要删除前快照；当前 daemon 只提供删除后版本，无法保证恢复全部内容，暂不可用。' }
+        }},
+        note: '恢复文件时用回收站节点自己的 type/version，不额外调 orgfs.stat。未来 intg 的 Contract Mock 会覆盖文件恢复；目录恢复仍是功能缺口，不是 mock 缺口。',
+      },
+      {
+        id: 'f-purge', title: '彻底清除', status: 'partial',
+        kicker: 'orgfs.purge',
+        desc: 'daemon 的 purge 只清除历史数据，不会移除回收站条目；GUI 不能承诺“彻底清除”，直接返回 ORG_PURGE_UNSUPPORTED。',
+        gui: '回收站 → 彻底清除；当前显示明确不可用。',
+        spec: 'orgfs.purge（mutates, unary）',
+        api: 'POST /daemon/request/orgfs.purge',
+        daemonRequest: 'orgfs_purge',
+        daemonMethod: 'OrgFs.purge（history-only）',
+        mock: { layers: ['fixture'], source: 'GUI live-source · purgeEntry', sample: {
+          code: 'ORG_PURGE_UNSUPPORTED',
+          message: '当前 daemon 的 purge 只清除历史数据，不会移除回收站条目；不能承诺“彻底清除”。'
+        }},
+        note: '需要 daemon 提供条目级 purge 语义后才能放开；Contract Mock 只能表达当前 unsupported/error，不能替代该功能。purge_plan/purge_status/space_purge 是另一些 HTTP-only 方法。',
+      },
+      {
+        id: 'f-orgfs-space-api', title: '空间管理 API（仅 HTTP）', status: 'http-only',
+        kicker: 'orgfs.create / checkout / serve / watch / export / import',
+        desc: '创建空间、checkout、serve、watch、导出/导入都存在 HTTP 入口；GUI 不提供这些管理动作。export/import 使用 local-owner-selector。',
+        gui: '无。',
+        spec: 'orgfs.create / checkout / serve / watch / export / import',
+        api: 'POST /daemon/request/orgfs.create、/checkout、/serve、/watch、/export、/import',
+        daemonRequest: 'orgfs_create / checkout / serve / watch / export / import',
+        daemonMethod: 'OrgFs / orgfs request handlers',
+        mock: null,
+        note: '未来 intg（#2297）会给这些 HTTP 方法补 Contract Mock 例子；不能用 GUI fixture 代替这些方法的验收。',
+      },
+      {
+        id: 'f-orgfs-member-api', title: '成员与诊断 API（仅 HTTP）', status: 'http-only',
+        kicker: 'orgfs.members / invite / join / remove_member / unban / resolve / stat / stat_at / purge_plan / purge_status / space_purge',
+        desc: '空间成员、邀请、加入、移除、解禁，以及 resolve/stat/stat_at 和空间级 purge 计划/状态；GUI 不提供入口。',
+        gui: '无。',
+        spec: 'orgfs.members / invite / join / remove_member / unban / resolve / stat / stat_at / purge_plan / purge_status / space_purge',
+        api: 'POST /daemon/request/orgfs.*',
+        daemonRequest: 'orgfs_* handlers',
+        daemonMethod: 'OrgFs / orgfs request handlers',
+        mock: null,
+        note: '这些方法有 MethodSpec/HTTP/daemon，属于“仅 API”能力；不是缺失方法。',
+      },
+    ],
+  },
+  {
+    id: 'j7', kicker: 'Journey 07', title: 'Agent-Org 与 link',
+    intro: 'Agent 可以持有指向其它 Agent 的 link，也可以属于组织。link 的列表/添加/收回已接通；Agent-org 归属有 GUI 动作但没有 daemon 方法；link.stats 只有 HTTP。',
+    flowTitle: 'Agent 详情 → link 列表 → 添加/收回',
+    flow: [
+      { type: 'start', title: '打开 Agent 详情' },
+      { type: 'method', title: '读取 link', method: 'link.list(from=agent)' },
+      { type: 'decision', title: '已有 link？' },
+      { type: 'branches', branches: [
+        { label: '否', tone: 'warn', nodes: [
+          { type: 'step', title: '添加 link', note: '输入 peer；不能自报 from' },
+          { type: 'method', title: '写入 link', method: 'link.add' },
+          { type: 'step', title: '重新读取', method: 'link.list' },
+        ]},
+        { label: '是', tone: 'ok', nodes: [
+          { type: 'step', title: '发送 / 查看 inFlight' },
+          { type: 'method', title: '收回 link', method: 'link.drop' },
+        ]},
+      ]},
+      { type: 'step', title: 'Agent 组织归属', note: 'joinAgentOrg / leaveAgentOrg 没有 daemon 方法' },
+      { type: 'method', title: 'link 统计', method: 'link.stats（仅 HTTP）' },
+    ],
+    features: [
+      {
+        id: 'f-agent-orgs', title: 'Agent 所属组织', status: 'unavailable',
+        kicker: 'agentOrgs',
+        desc: '展示某个 Agent 属于哪些组织；live snapshot 的 agentOrgs 为 null，没有 daemon request。',
+        gui: 'Agent 详情 / 组织分段；fixture 有完整映射。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · ownerSnapshot.agentOrgs', sample: {
+          'agent-squire': ['org-hyprial-dev'],
+          'agent-writer': ['org-hyprial-dev', 'org-acme-lab']
+        }},
+        note: '需要后端提供 Agent-org 归属读取；不能用 link 或消息关系推断。',
+      },
+      {
+        id: 'f-agent-join', title: 'Agent 加入组织', status: 'unavailable',
+        kicker: 'joinAgentOrg',
+        desc: 'GUI 有 Agent 加入组织动作；live 直接 unavailable。fixture 还规定工作组织不可由该入口直接加入。',
+        gui: 'Agent 组织管理 → 加入；fixture 对工作组织返回 unavailable。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · joinAgentOrg', sample: {
+          work: { kind: 'unavailable', message: '工作组织需要由组织管理员处理' }
+        }},
+        note: '需要后端定义 Agent 加入组织的权限、目录与 link 影响；当前不能伪装成功。',
+      },
+      {
+        id: 'f-agent-leave', title: 'Agent 移出组织', status: 'unavailable',
+        kicker: 'leaveAgentOrg',
+        desc: 'GUI 有移出动作；fixture 允许移出任意工作组织（包括最后一个组织，允许所属组织为空列表）。live 没有 daemon request。',
+        gui: 'Agent 组织管理 → 移出；支持移出最后一个组织。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · leaveAgentOrg', sample: {
+          ok: { kind: 'ok', value: undefined },
+          last: { kind: 'ok', value: undefined }
+        }},
+        note: '需要后端定义移出后消息/link/会话的处置；不能只改本地数组。',
+      },
+      {
+        id: 'f-link-list', title: 'link 列表', status: 'ready',
+        kicker: 'link.list',
+        desc: '读取某个 Agent 持有的 link；每行含 peer、state、inFlight、revision、lifecycle、lastUsedAt 等。',
+        gui: 'Agent 详情 → 可以发送的对象。',
+        spec: 'link.list（read-only, retry=safe, local-operator-selector）',
+        api: 'POST /daemon/request/link.list',
+        daemonRequest: 'link_list',
+        daemonMethod: 'link service.list_links',
+        mock: { layers: ['browser', 'fixture'], source: 'GUI fixture · ownerSnapshot.agentLinks', sample: {
+          actor: 'agent-squire',
+          links: [{ peer: 'agent-lin-review', state: 'active', inFlight: 1, lastUsedAtMs: 1761733680000, mine: true }]
+        }},
+        note: 'HTTP 绑定从受信 selector 取 from，浏览器不能自报；结果 actor 与所选 Agent 不一致时 GUI 显式失败。',
+      },
+      {
+        id: 'f-link-add', title: '添加 link', status: 'ready',
+        kicker: 'link.add',
+        desc: '为 Agent 添加指向 peer 的 link；写动作 retry=never，浏览器不能自报 from/sessionRef/onBehalfOf。',
+        gui: '添加对象 → 输入 peer → 写入 → 重新读取。',
+        spec: 'link.add（mutates, retry=never, local-owner-selector）',
+        api: 'POST /daemon/request/link.add',
+        daemonRequest: 'link_add',
+        daemonMethod: 'link service.add',
+        mock: { layers: ['browser', 'fixture'], source: 'GUI fixture · addLink', sample: {
+          id: 'lk-new-1', holderAgentId: 'agent-squire', peerLabel: '评审助手（林澄）', state: 'active', inFlight: 0, lastUsedAt: null
+        }},
+        note: 'link 是单向引用；添加成功不等于对端已接受或已建立会话。',
+      },
+      {
+        id: 'f-link-drop', title: '收回 link', status: 'ready',
+        kicker: 'link.drop',
+        desc: '收回某个 link；不重建、不自动重拨。E2E-028 已验证 remote drop 不重建。',
+        gui: 'link 列表 → 收回。',
+        spec: 'link.drop（mutates, retry=never, local-owner-selector）',
+        api: 'POST /daemon/request/link.drop',
+        daemonRequest: 'link_drop',
+        daemonMethod: 'link service.drop',
+        mock: { layers: ['browser', 'fixture', 'e2e'], source: 'GUI fixture · revokeLink（E2E-028 覆盖 remote drop）', sample: { kind: 'ok', value: undefined }},
+        note: '收回后发送会被拒；GUI 不把“已收回”显示成“已通知对端”。',
+      },
+      {
+        id: 'f-link-stats', title: 'link 统计', status: 'http-only',
+        kicker: 'link.stats',
+        desc: '返回 active link 数、窗口、RTT、cwnd、inFlight 等；GUI 没有入口。',
+        gui: '无。',
+        spec: 'link.stats（read-only, retry=safe, local-operator-selector）',
+        api: 'POST /daemon/request/link.stats',
+        daemonRequest: 'link_stats',
+        daemonMethod: 'link service.stats',
+        mock: null,
+        note: '未来 intg（#2297）会补 Contract Mock 例子；属于“仅 HTTP”能力。',
+      },
+    ],
+  },
+  {
+    id: 'j8', kicker: 'Journey 08', title: '模板、配置与迁移',
+    intro: '组织配置的完整生命周期（模板 → 导入 → 校验 → 发布候选 → 采信）和 Agent 迁移全流程目前只有 GUI fixture；没有 daemon request。org.fetch 能同步上下文，但不能替代配置读取/写入方法。',
+    flowTitle: '模板/导入 → 校验 → 候选 → 采信',
+    flow: [
+      { type: 'start', title: '打开设置 / 配置' },
+      { type: 'decision', title: '来源？' },
+      { type: 'branches', branches: [
+        { label: '模板', tone: 'warn', nodes: [{ type: 'step', title: 'listTemplates（无 daemon 方法）', note: 'fixture 有模板数据' }] },
+        { label: '文件', tone: 'warn', nodes: [{ type: 'step', title: 'previewImport（无 daemon 方法）', note: '解析 JSON + diff + validation' }] },
+      ]},
+      { type: 'method', title: '校验配置', method: 'validateConfig（无 daemon 方法）' },
+      { type: 'decision', title: '有错误？' },
+      { type: 'branches', branches: [
+        { label: '是', tone: 'bad', nodes: [{ type: 'step', title: '阻止发布', note: '展示 errors/warnings' }] },
+        { label: '否', tone: 'ok', nodes: [
+          { type: 'method', title: '发布候选', method: 'publishCandidate（无 daemon 方法）' },
+          { type: 'method', title: '采信候选', method: 'adoptCandidate（无 daemon 方法）' },
+        ]},
+      ]},
+      { type: 'method', title: '同步组织上下文', method: 'org.fetch（唯一已接通的配置读取路径）' },
+      { type: 'step', title: '迁移分支', note: 'check → plan → submit → decide → start → cancel/rollback；全部无 daemon 方法' },
+    ],
+    features: [
+      {
+        id: 'f-templates', title: '模板列表', status: 'unavailable',
+        kicker: 'listTemplates',
+        desc: '列出小团队/研发部门等配置模板；GUI 有动作，但没有 daemon request，live 直接 unavailable。',
+        gui: '配置向导 → 从模板开始；fixture 有 2 个模板。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · TEMPLATES', sample: {
+          id: 'tpl-small-team', name: '小团队', description: '一个部门、一条业务线，适合 3–8 人。',
+          config: { departments: [{ id: 'd-core', name: '核心组', lead: '姚', parent: null, members: ['姚'] }], lines: [], roles: [], routes: [{ id: 'rt-core', kind: '部门', target: '核心组', scope: '全部成员' }], norms: { autonomy: '例行任务可自行处理。', escalation: '阻塞时找负责人。', etiquette: '写明来意。' } }
+        }},
+        note: '模板可以是前端静态内容，也可以是 daemon 方法；当前两者都没有正式接线，只有 fixture。',
+      },
+      {
+        id: 'f-import', title: '导入预览', status: 'unavailable',
+        kicker: 'previewImport',
+        desc: '从模板或 JSON 文件生成配置预览，返回 config、diff、validation；没有 daemon request。',
+        gui: '导入向导；fixture 解析并校验 JSON。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · previewImport', sample: {
+          config: { departments: [{ id: 'd-eng', name: '研发部', lead: '姚', parent: null, members: ['姚', '陈墨'] }], lines: [], roles: [], routes: [], norms: { autonomy: '', escalation: '', etiquette: '' } },
+          diff: ['新增部门：研发部'],
+          validation: { errors: [], warnings: ['业务线“GUI 初始化”没有填写仓库'] }
+        }},
+        note: '导入不是写入；预览成功不代表配置已发布或已采信。',
+      },
+      {
+        id: 'f-validate', title: '配置校验', status: 'unavailable',
+        kicker: 'validateConfig',
+        desc: '校验部门、业务线、角色、路由、规范；返回 errors/warnings。没有 daemon request。',
+        gui: '编辑器实时/提交前校验；fixture 有完整规则。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · validate', sample: { errors: [], warnings: ['业务线“主线”没有填写仓库'] }},
+        note: '若后端要成为权威校验，需要新增方法；不能只依赖前端规则。',
+      },
+      {
+        id: 'f-publish-candidate', title: '发布候选配置', status: 'unavailable',
+        kicker: 'publishCandidate',
+        desc: '把校验通过的配置写成候选版本，等待 owner 采信；没有 daemon request。',
+        gui: '配置编辑器 → 发布候选；fixture 增加 candidate.version。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · publishCandidate', sample: {
+          candidate: { version: 4, publishedAt: '10-29 15:10', publisher: '姚', diff: ['新增部门：运营组（负责人 周屿）', '新增路由：部门 → 运营组'] }
+        }},
+        note: '候选不是已采信；拓扑/统计不能立即把它当正式配置。',
+      },
+      {
+        id: 'f-adopt-candidate', title: '采信候选配置', status: 'unavailable',
+        kicker: 'adoptCandidate',
+        desc: '把候选版本提升为 adopted；没有 daemon request。fixture 会校验 version 仍匹配。',
+        gui: '配置页 → 采信；版本变化时拒绝并刷新。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · adoptCandidate', sample: {
+          adopted: { version: 4, publishedAt: '10-29 15:10', publisher: '姚' },
+          candidate: null
+        }},
+        note: '采信需要后端持久化与并发版本检查；fixture 的成功不能当作真实写入。',
+      },
+      {
+        id: 'f-sync-config', title: '配置同步', status: 'partial',
+        kicker: 'syncContext → org.fetch',
+        desc: 'org.fetch 已接通，可拉取组织上下文候选；但 live detail 的 config 仍为 null，GUI 没有配置读取/写入方法，因此只能“同步”，不能完整展示/编辑。',
+        gui: '“同步组织配置”入口；同步后仍缺少配置详情。',
+        spec: 'org.fetch（mutates）',
+        api: 'POST /daemon/request/org.fetch',
+        daemonRequest: 'org_fetch',
+        daemonMethod: 'app._ipc_org_fetch',
+        mock: { layers: ['contract'], source: 'Contract Mock · orgfs-refreshed', sample: {
+          source: 'orgfs', refreshed: true, spaceId: 'space-hyprial-context',
+          requestedSources: ['node-2'], responseCount: 1, receivedCount: 1, rejectedCount: 0,
+          candidates: [{ path: '/tmp/hyprial-example/org-context/pending.json', version: 8, publisher: 'user:lin', receivedAt: '2026-11-02T09:30:00Z', source: 'node-2' }]
+        }},
+        note: 'org.fetch 是写，不是自动轮询；候选不会自动变成已采信配置。',
+      },
+      {
+        id: 'f-migration-plan', title: '迁移预检与计划', status: 'unavailable',
+        kicker: 'checkMigration / planMigration',
+        desc: '检查目标机器归属/在线/harness/磁盘，再生成迁移单；两个动作都没有 daemon request。',
+        gui: 'Agent 迁移向导；fixture 有检查项和迁移单。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · checkMigration / planMigration', sample: {
+          checks: [
+            { label: '目标机器属于你', ok: true, detail: '主人 姚' },
+            { label: '目标机器在线', ok: true, detail: '在线' },
+            { label: 'harness 已安装', ok: true, detail: 'codex · 与源机器版本一致' },
+            { label: '磁盘空间', ok: true, detail: '可用 212 GB，需要约 1.3 GB' }
+          ],
+          ticket: { id: 'mig-plan-agent-researcher', ticketNo: 'MT-2026-1030-11', status: 'awaiting-target', sourceMachine: 'yao-mbp', targetMachine: 'yao-mini' }
+        }},
+        note: '迁移涉及 Agent home、密钥、授权、会话、link、harness；不能只搬目录。',
+      },
+      {
+        id: 'f-migration-run', title: '迁移提交、执行、取消与回滚', status: 'unavailable',
+        kicker: 'submitMigration / startMigration / cancelMigration / rollbackMigration',
+        desc: '提交迁移单、目标接受后开始复制、运行中取消、失败/取消后回滚；四个动作都没有 daemon request。',
+        gui: '迁移单详情；fixture 演示 running/completed/cancelled。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · inboundRunningTicket / outboundTicket', sample: {
+          status: 'running',
+          progress: { phase: '复制 Agent home', bytes: '0.5 / 1.2 GB', files: '1,380 / 3,412 个文件', rate: '24 MB/s', lastProgress: '16:02', retryReason: '网络短暂中断，已自动续传' },
+          rollbackAllowed: true
+        }},
+        note: '需要后端定义迁移状态机、幂等、取消/回滚边界；fixture 的进度条不是真实传输。',
+      },
+      {
+        id: 'f-migration-decide', title: '迁入接受 / 拒绝', status: 'unavailable',
+        kicker: 'decideMigration',
+        desc: '目标端接受或拒绝迁入请求；没有 daemon request。',
+        gui: '迁入请求卡片；fixture 把 awaiting-target → verifying/rejected。',
+        spec: null, api: null, daemonRequest: null, daemonMethod: null,
+        mock: { layers: ['fixture'], source: 'GUI fixture · inboundTicket', sample: {
+          ticketNo: 'MT-2026-1029-07', agentName: '评审助手', sourceMachine: 'lin-mbp', targetMachine: 'yao-mbp',
+          status: 'awaiting-target', rollbackAllowed: false
+        }},
+        note: '接受迁入需要后端校验目标身份、资源与安全边界；不能只改 UI 状态。',
+      },
+    ],
+  },
+];
+
+const MISSING = [
+  ['setCurrentOrg', '切换当前组织', '纯本地选择；live 仍走 unwired，未必需要 daemon 方法'],
+  ['claimInvite', '领取已接受的邀请', 'CLI 有 org pending，但没有 request method'],
+  ['renameOrg', '组织改名', '需要命名冲突、ACL、目录更新语义'],
+  ['listTemplates', '模板列表', '可以是静态内容，但当前未正式接线'],
+  ['previewImport', '导入预览', '解析 + diff + validation'],
+  ['validateConfig', '配置校验', '若后端要成为权威校验则需方法'],
+  ['publishCandidate', '发布候选配置', '候选版本持久化'],
+  ['adoptCandidate', '采信候选配置', '版本并发检查 + 正式配置写入'],
+  ['joinAgentOrg', 'Agent 加入组织', '权限、目录、link 影响'],
+  ['leaveAgentOrg', 'Agent 移出组织', '消息/link/会话处置'],
+  ['checkMigration', '迁移预检', '目标机器归属/在线/harness/磁盘'],
+  ['planMigration', '生成迁移计划', '迁移单与物料清单'],
+  ['submitMigration', '提交迁移', '目标端接受流程'],
+  ['startMigration', '开始迁移', '状态机与复制执行'],
+  ['cancelMigration', '取消迁移', '中断与清理'],
+  ['rollbackMigration', '回滚迁移', '回滚边界与幂等'],
+  ['decideMigration', '接受/拒绝迁入', '目标端身份与资源校验'],
+];
+
+const HTTP_ONLY = [
+  ['org.execute', '旧 join 别名（同一 bootstrap）', 'org_execute'],
+  ['orgfs.checkout', '空间 checkout', 'orgfs_checkout'],
+  ['orgfs.serve', '空间 serve', 'orgfs_serve'],
+  ['orgfs.watch', '空间 watch', 'orgfs_watch'],
+  ['orgfs.export', '导出（local-owner-selector）', 'orgfs_export'],
+  ['orgfs.import', '导入（local-owner-selector）', 'orgfs_import'],
+  ['orgfs.invite', '空间邀请', 'orgfs_invite'],
+  ['orgfs.join', '空间加入', 'orgfs_join'],
+  ['orgfs.members', '空间成员列表', 'orgfs_members'],
+  ['orgfs.remove_member', '移除空间成员', 'orgfs_remove_member'],
+  ['orgfs.resolve', '路径解析', 'orgfs_resolve'],
+  ['orgfs.stat', '节点 stat', 'orgfs_stat'],
+  ['orgfs.stat_at', '历史版本 stat', 'orgfs_stat_at'],
+  ['orgfs.unban', '解除空间封禁', 'orgfs_unban'],
+  ['orgfs.purge_plan', '空间 purge 计划', 'orgfs_purge_plan'],
+  ['orgfs.purge_status', '空间 purge 状态', 'orgfs_purge_status'],
+  ['orgfs.space_purge', '空间级 purge', 'orgfs_space_purge'],
+  ['link.stats', 'link 统计', 'link_stats'],
+  ['top.snapshot', '全局 top 快照（视图读取，GUI 未接）', 'top_snapshot'],
+];
+
+const INVENTORY = [
+  ['org.create', true, true, 'yes', true],
+  ['org.delete', true, true, 'yes', false],
+  ['org.execute', true, true, 'no', false],
+  ['org.fetch', true, true, 'yes', true],
+  ['org.invite', true, true, 'yes', true],
+  ['org.join', true, true, 'yes', true],
+  ['org.leave', true, true, 'yes', false],
+  ['org.list', true, false, 'yes', true],
+  ['org.network', true, false, 'yes', false],
+  ['org.publish', true, true, 'yes', false],
+  ['org.remove', true, true, 'yes', false],
+  ['org.repair', true, true, 'yes', false],
+  ['orgfs.checkout', true, true, 'no', false],
+  ['orgfs.create', true, true, 'no', false],
+  ['orgfs.export', true, true, 'no', false],
+  ['orgfs.history', true, false, 'yes', false],
+  ['orgfs.import', true, true, 'no', false],
+  ['orgfs.invite', true, true, 'no', false],
+  ['orgfs.join', true, true, 'no', false],
+  ['orgfs.ls', true, false, 'yes', false],
+  ['orgfs.members', true, false, 'no', false],
+  ['orgfs.mkdir', true, true, 'yes', false],
+  ['orgfs.move', true, true, 'yes', false],
+  ['orgfs.purge', true, true, 'yes', false],
+  ['orgfs.purge_plan', true, true, 'no', false],
+  ['orgfs.purge_status', true, false, 'no', false],
+  ['orgfs.read', true, false, 'yes', false],
+  ['orgfs.read_at', true, false, 'yes', false],
+  ['orgfs.remove', true, true, 'yes', false],
+  ['orgfs.remove_member', true, true, 'no', false],
+  ['orgfs.resolve', true, false, 'no', false],
+  ['orgfs.restore', true, true, 'yes', false],
+  ['orgfs.serve', true, true, 'no', false],
+  ['orgfs.space_purge', true, true, 'no', false],
+  ['orgfs.spaces', true, false, 'yes', false],
+  ['orgfs.stat', true, false, 'no', false],
+  ['orgfs.stat_at', true, false, 'no', false],
+  ['orgfs.status', true, false, 'yes', false],
+  ['orgfs.trash', true, false, 'yes', false],
+  ['orgfs.unban', true, true, 'no', false],
+  ['orgfs.watch', true, false, 'no', false],
+  ['orgfs.write', true, true, 'yes', false],
+  ['hosts', true, false, 'yes', false],
+  ['top.snapshot', true, false, 'no', false],
+  ['link.add', true, true, 'yes', false],
+  ['link.drop', true, true, 'yes', false],
+  ['link.list', true, false, 'yes', false],
+  ['link.stats', true, false, 'no', false],
+  ['org.acl.grant', false, true, 'no', false],
+  ['org.acl.ls', false, false, 'no', false],
+  ['org.acl.revoke', false, true, 'no', false],
+];
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function rich(s) {
+  return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+
+function oneLine(value) {
+  const text = JSON.stringify(value);
+  return text.length > 360 ? `${text.slice(0, 357)}…` : text;
+}
+
+function code(s) {
+  return s === null || s === undefined || s === '—' ? '<span class="none">—</span>' : `<code>${esc(s)}</code>`;
+}
+
+function renderStats() {
+  const totalSpecs = INVENTORY.length;
+  const http = INVENTORY.filter((r) => r[1]).length;
+  const specOnly = totalSpecs - http;
+  const stats = [
+    [totalSpecs, 'MethodSpec', '47 ORG + 4 LINK'],
+    [http, 'HTTP 暴露', '统一 POST /daemon/request'],
+    [specOnly, '仅 MethodSpec', 'ACL 三方法'],
+    [17, '无 daemon 方法', 'GUI 动作（附录 A）'],
+    [19, '仅 HTTP', '含 top.snapshot（附录 B）'],
+    ['48/48', 'org Contract Mock', '未来完整 intg 60/60；#2297 待 merge-forward'],
+  ];
+  document.getElementById('stats').innerHTML = stats.map(([n, l, h]) => `
+    <div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div><div class="h">${esc(h)}</div></div>
+  `).join('');
+}
+
+function renderLegend() {
+  document.getElementById('statusLegend').innerHTML = Object.entries(STATUS)
+    .map(([k, v]) => `<div class="legend-row"><span class="pill ${v.cls}">${esc(v.label)}</span><span class="legend-desc">${esc(v.desc)}</span></div>`)
+    .join('');
+}
+
+function renderFlowNode(node) {
+  if (node.type === 'branches') {
+    return `<div class="branch-grid">${node.branches.map((b) => `
+      <div class="branch ${b.tone}">
+        <div class="branch-label">${esc(b.label)}</div>
+        ${b.nodes.map(renderFlowNode).join('<div class="flow-arrow">↓</div>')}
+      </div>`).join('')}</div>`;
+  }
+  if (node.type === 'decision') {
+    return `<div class="flow-decision">${esc(node.title)}</div>`;
+  }
+  const cls = node.type === 'start' || node.type === 'end' ? node.type : node.type === 'method' ? 'method' : '';
+  return `<div class="flow-node ${cls}">
+    <div class="ft">${rich(node.title)}</div>
+    ${node.note ? `<div class="fn">${rich(node.note)}</div>` : ''}
+    ${node.method ? `<span class="fm">${esc(node.method)}</span>` : ''}
+  </div>`;
+}
+
+function renderFlow(flow) {
+  return flow.map(renderFlowNode).join('<div class="flow-arrow">↓</div>');
+}
+
+function renderFeature(f) {
+  const st = STATUS[f.status];
+  const mock = f.mock;
+  const layers = mock && mock.layers ? mock.layers : [];
+  const badges = [];
+  if (f.api && !layers.includes('contract')) {
+    badges.push('<span class="badge contract">Contract Mock · 未来 intg</span>');
+  }
+  for (const layer of layers) {
+    badges.push(`<span class="badge ${MOCK_LAYER[layer].cls}">${esc(MOCK_LAYER[layer].label)}</span>`);
+  }
+  const mockBadges = badges.length ? badges.join(' ') : '<span class="none">无</span>';
+  const sample = mock && mock.sample !== undefined
+    ? `<div class="mock-preview">
+         <div class="mock-source">样例 · ${esc(mock.source || '')}</div>
+         <pre class="mock-one">${esc(oneLine(mock.sample))}</pre>
+       </div>
+       <details class="mock"><summary>展开完整 mock JSON</summary>
+         <div class="mock-source">${esc(mock.source || '')}</div>
+         <pre>${esc(JSON.stringify(mock.sample, null, 2))}</pre>
+       </details>`
+    : f.api
+      ? `<div class="no-mock">未来完整 intg 已有 Contract Mock 例子；本页不展开该组逐方法样例（见附录 C / PR #2297）。</div>`
+      : `<div class="no-mock">无 mock 样例（该能力当前只有 MethodSpec / daemon 测试，或完全未接线）</div>`;
+  return `<article class="feature" data-status="${esc(f.status)}" id="${esc(f.id)}">
+    <div class="feature-head">
+      <div><div class="feature-kicker">${esc(f.kicker || '')}</div><h3>${esc(f.title)}</h3></div>
+      <span class="pill ${st.cls}">${esc(st.label)}</span>
+    </div>
+    <p class="feature-desc">${rich(f.desc)}</p>
+    <dl class="kv">
+      <div><dt>GUI</dt><dd>${rich(f.gui)}</dd></div>
+      <div><dt>MethodSpec</dt><dd>${code(f.spec)}</dd></div>
+      <div><dt>API</dt><dd>${code(f.api)}</dd></div>
+      <div><dt>daemon request</dt><dd>${code(f.daemonRequest)}</dd></div>
+      <div><dt>daemon 方法</dt><dd>${code(f.daemonMethod)}</dd></div>
+      <div><dt>Mock / 验证层</dt><dd><div class="badge-row">${mockBadges}</div></dd></div>
+    </dl>
+    ${f.note ? `<div class="feature-note">${rich(f.note)}</div>` : ''}
+    ${sample}
+  </article>`;
+}
+
+function renderJourney(j, index) {
+  return `<section class="journey" id="${esc(j.id)}">
+    <div class="journey-head">
+      <div>
+        <div class="kicker">${esc(j.kicker)}</div>
+        <h2>${esc(j.title)}</h2>
+        <p>${rich(j.intro)}</p>
+      </div>
+      <div class="journey-count">${j.features.length} 个功能</div>
+    </div>
+    <div class="panel flow-wrap">
+      <div class="flow-title">${esc(j.flowTitle)}</div>
+      <div class="flow">${renderFlow(j.flow)}</div>
+      ${j.flow2 ? `<div class="flow-title" style="margin-top:22px">${esc(j.flow2Title)}</div><div class="flow">${renderFlow(j.flow2)}</div>` : ''}
+    </div>
+    <div class="features">${j.features.map(renderFeature).join('')}</div>
+  </section>`;
+}
+
+function renderToc() {
+  document.getElementById('toc').innerHTML = JOURNEYS.map((j) => `<a href="#${esc(j.id)}">${esc(j.title)}</a>`).join('')
+    + '<a href="#appendices">附录</a>';
+}
+
+function renderMissing() {
+  document.getElementById('missingTable').innerHTML = `
+    <thead><tr><th>GUI 动作</th><th>功能</th><th>当前边界 / 后端需要补什么</th></tr></thead>
+    <tbody>${MISSING.map(([name, label, note]) => `<tr><td><code>${esc(name)}</code></td><td>${esc(label)}</td><td>${esc(note)}</td></tr>`).join('')}</tbody>`;
+}
+
+function renderHttpOnly() {
+  document.getElementById('httpOnlyTable').innerHTML = `
+    <thead><tr><th>方法</th><th>用途</th><th>daemon request</th></tr></thead>
+    <tbody>${HTTP_ONLY.map(([name, use, handler]) => `<tr><td><code>${esc(name)}</code></td><td>${esc(use)}</td><td><code>${esc(handler)}</code></td></tr>`).join('')}</tbody>`;
+}
+
+function renderInventory() {
+  document.getElementById('inventoryTable').innerHTML = `
+    <thead><tr><th>#</th><th>MethodSpec</th><th>HTTP</th><th>mutates</th><th>GUI</th><th>Contract Mock（未来 intg）</th></tr></thead>
+    <tbody>${INVENTORY.map(([name, http, mutates, gui], i) => `<tr>
+      <td>${i + 1}</td>
+      <td><code>${esc(name)}</code></td>
+      <td>${http ? '<span class="dot api"></span>POST' : '<span class="dot spec"></span>spec-only'}</td>
+      <td>${mutates ? '写' : '读'}</td>
+      <td>${gui === 'yes' ? '<span class="dot ok"></span>有' : gui === 'no' ? '<span class="dot bad"></span>无' : '<span class="dot warn"></span>部分'}</td>
+      <td>${http ? '<span class="dot ok"></span>有' : '<span class="dot bad"></span>无（IPC-only）'}</td>
+    </tr>`).join('')}</tbody>`;
+}
+
+function render() {
+  renderStats();
+  renderLegend();
+  renderToc();
+  document.getElementById('journeys').innerHTML = JOURNEYS.map(renderJourney).join('');
+  renderMissing();
+  renderHttpOnly();
+  renderInventory();
+  applyFilter();
+}
+
+function applyFilter() {
+  const status = document.getElementById('statusFilter').value;
+  const q = document.getElementById('search').value.trim().toLowerCase();
+  document.querySelectorAll('.feature').forEach((el) => {
+    const st = el.getAttribute('data-status');
+    const text = el.textContent.toLowerCase();
+    const statusOk = status === 'all' || st === status;
+    const searchOk = !q || text.includes(q);
+    el.classList.toggle('hidden', !(statusOk && searchOk));
+  });
+  document.querySelectorAll('.journey').forEach((sec) => {
+    const any = [...sec.querySelectorAll('.feature')].some((el) => !el.classList.contains('hidden'));
+    sec.classList.toggle('hidden', !any);
+  });
+}
+
+document.getElementById('statusFilter').addEventListener('change', applyFilter);
+document.getElementById('search').addEventListener('input', applyFilter);
+render();
+</script>
+</body>
+</html>

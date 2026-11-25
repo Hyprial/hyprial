@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import socket
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import connect_local_ipc, ipc_errors
 
 
 #: Daemon IPC round-trip budget per orgfs call.
@@ -88,15 +88,14 @@ def daemon_request(
     frame: dict[str, Any] = {"version": 1, "id": request_id, "method": method}
     if params is not None:
         frame["params"] = dict(params)
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(timeout)
     try:
-        try:
-            client.connect(str(socket_path))
-        except OSError as error:
-            raise OrgfsIpcError(
-                "daemon-unavailable", f"cannot connect to {socket_path}: {error}"
-            ) from error
+        client = connect_local_ipc(socket_path, timeout)
+    except OSError as error:
+        raise OrgfsIpcError(
+            "daemon-unavailable", f"cannot connect to {socket_path}: {error}"
+        ) from error
+    try:
+        client.settimeout(timeout)
         try:
             client.sendall(json.dumps(frame, separators=(",", ":")).encode() + b"\n")
         except OSError as error:

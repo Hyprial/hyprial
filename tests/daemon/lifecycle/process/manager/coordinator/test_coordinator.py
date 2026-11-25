@@ -25,13 +25,14 @@ from ..support import (
 
 
 def test_coordinator_runs_independent_lifecycle_effects_while_one_waits(
-    tmp_path: Path,
+    tmp_path: Path, actor_host
 ) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router, block_effect_token="blocked:forward:0")
     coordinator = LifecycleCoordinator(
         tmp_path / "coordinator.sqlite3", LifecyclePorts(ports, ports, ports, ports),
         router, completion_timeout=0.05, effect_workers=2,
+        actor_host=actor_host,
     )
     try:
         assert coordinator.submit(LifecycleOperation.create("blocked", _spec("blocked"))) is PortAdmission.ACCEPTED
@@ -49,12 +50,15 @@ def test_coordinator_runs_independent_lifecycle_effects_while_one_waits(
         coordinator.drain(3.0)
 
 
-def test_coordinator_serializes_operations_for_same_resource(tmp_path: Path) -> None:
+def test_coordinator_serializes_operations_for_same_resource(
+    tmp_path: Path, actor_host
+) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router, block_effect_token="first:forward:0")
     coordinator = LifecycleCoordinator(
         tmp_path / "serialized.sqlite3", LifecyclePorts(ports, ports, ports, ports),
         router, completion_timeout=0.05, effect_workers=2,
+        actor_host=actor_host,
     )
     try:
         assert coordinator.submit(LifecycleOperation.create("first", _spec("same"))) is PortAdmission.ACCEPTED
@@ -77,13 +81,14 @@ def test_coordinator_serializes_operations_for_same_resource(tmp_path: Path) -> 
 
 
 def test_coordinator_retains_unresolved_domain_until_late_receipt_then_compensates(
-    tmp_path: Path,
+    tmp_path: Path, actor_host
 ) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router, block_effect_token="stuck:forward:0")
     coordinator = LifecycleCoordinator(
         tmp_path / "deadline.sqlite3", LifecyclePorts(ports, ports, ports, ports),
         router, completion_timeout=0.03, operation_deadline=0.15,
+        actor_host=actor_host,
     )
     try:
         assert coordinator.submit(LifecycleOperation.create("stuck", _spec())) is PortAdmission.ACCEPTED
@@ -118,7 +123,7 @@ def test_coordinator_retains_unresolved_domain_until_late_receipt_then_compensat
 
 
 def test_coordinator_total_custody_bound_includes_conflicting_pending_work(
-    tmp_path: Path,
+    tmp_path: Path, actor_host
 ) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router, block_effect_token="first:forward:0")
@@ -130,6 +135,7 @@ def test_coordinator_total_custody_bound_includes_conflicting_pending_work(
         effect_workers=1,
         completion_timeout=0.03,
         operation_deadline=3.0,
+        actor_host=actor_host,
     )
     try:
         assert coordinator.submit(
@@ -154,13 +160,14 @@ def test_coordinator_total_custody_bound_includes_conflicting_pending_work(
 
 
 def test_coordinator_drain_waits_for_durable_reservation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host,
 ) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router)
     coordinator = LifecycleCoordinator(
         tmp_path / "reservation.sqlite3", LifecyclePorts(ports, ports, ports, ports),
         router,
+        actor_host=actor_host,
     )
     reserving = threading.Event()
     release = threading.Event()
@@ -191,12 +198,15 @@ def test_coordinator_drain_waits_for_durable_reservation(
         coordinator.drain(3.0)
 
 
-def test_coordinator_preserves_conflicting_reservation_error(tmp_path: Path) -> None:
+def test_coordinator_preserves_conflicting_reservation_error(
+    tmp_path: Path, actor_host
+) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router)
     coordinator = LifecycleCoordinator(
         tmp_path / "conflict.sqlite3", LifecyclePorts(ports, ports, ports, ports),
         router,
+        actor_host=actor_host,
     )
     try:
         assert coordinator.submit(LifecycleOperation.create("same-id", _spec("one"))) is PortAdmission.ACCEPTED
@@ -209,13 +219,14 @@ def test_coordinator_preserves_conflicting_reservation_error(tmp_path: Path) -> 
 
 
 def test_coordinator_refuses_new_work_after_nonretryable_recovery_fault(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host,
 ) -> None:
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router)
     coordinator = LifecycleCoordinator(
         tmp_path / "recover-fault.sqlite3", LifecyclePorts(ports, ports, ports, ports),
         router,
+        actor_host=actor_host,
     )
     def fail_pending() -> tuple[str, ...]:
         raise ValueError("malformed lifecycle journal")
@@ -412,12 +423,12 @@ def test_lifecycle_operation_timeouts_are_ordered_by_derivation() -> None:
     )
 
 
-def test_coordinator_terminal_result_precedes_owner_custody_release(tmp_path, monkeypatch):
+def test_coordinator_terminal_result_precedes_owner_custody_release(tmp_path, monkeypatch, actor_host):
     from hyprial.daemon.impl.lifecycle.lifecycle_coordinator import DomainCompleted
 
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router)
-    coordinator = LifecycleCoordinator(tmp_path / "receipt.sqlite3", LifecyclePorts(ports, ports, ports, ports), router)
+    coordinator = LifecycleCoordinator(tmp_path / "receipt.sqlite3", LifecyclePorts(ports, ports, ports, ports), router, actor_host=actor_host)
     entered, release = threading.Event(), threading.Event()
     deliver = coordinator._deliver
 
@@ -443,12 +454,12 @@ def test_coordinator_terminal_result_precedes_owner_custody_release(tmp_path, mo
         assert coordinator.drain(3)
 
 
-def test_coordinator_stale_recovery_does_not_requeue_active_operation(tmp_path, monkeypatch):
+def test_coordinator_stale_recovery_does_not_requeue_active_operation(tmp_path, monkeypatch, actor_host):
     from hyprial.daemon.impl.lifecycle.lifecycle_coordinator import Recovered, _Mailbox
 
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router, block_effect_token="active:forward:0")
-    coordinator = LifecycleCoordinator(tmp_path / "active.sqlite3", LifecyclePorts(ports, ports, ports, ports), router, completion_timeout=0.03)
+    coordinator = LifecycleCoordinator(tmp_path / "active.sqlite3", LifecyclePorts(ports, ports, ports, ports), router, completion_timeout=0.03, actor_host=actor_host)
     operation = LifecycleOperation.create("active", _spec())
     processed = threading.Event()
     receive = _Mailbox.__call__
@@ -471,12 +482,12 @@ def test_coordinator_stale_recovery_does_not_requeue_active_operation(tmp_path, 
         assert coordinator.drain(3)
 
 
-def test_coordinator_stale_recovery_cannot_resurrect_terminal_custody(tmp_path, monkeypatch):
+def test_coordinator_stale_recovery_cannot_resurrect_terminal_custody(tmp_path, monkeypatch, actor_host):
     from hyprial.daemon.impl.lifecycle.lifecycle_coordinator import Recovered, _Mailbox
 
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router)
-    coordinator = LifecycleCoordinator(tmp_path / "terminal.sqlite3", LifecyclePorts(ports, ports, ports, ports), router)
+    coordinator = LifecycleCoordinator(tmp_path / "terminal.sqlite3", LifecyclePorts(ports, ports, ports, ports), router, actor_host=actor_host)
     operation = LifecycleOperation.create("done", _spec())
     processed, release = threading.Event(), threading.Event()
     receive = _Mailbox.__call__
@@ -506,12 +517,12 @@ def test_coordinator_stale_recovery_cannot_resurrect_terminal_custody(tmp_path, 
         assert coordinator.drain(3)
 
 
-def test_coordinator_late_reservation_ack_does_not_requeue_recovered_work(tmp_path, monkeypatch):
+def test_coordinator_late_reservation_ack_does_not_requeue_recovered_work(tmp_path, monkeypatch, actor_host):
     from hyprial.daemon.impl.lifecycle.lifecycle_coordinator import ReservationCompleted
 
     router = CorrelationEventRouter()
     ports = _CompletionPorts(router, block_effect_token="reserve:forward:0")
-    coordinator = LifecycleCoordinator(tmp_path / "reserve.sqlite3", LifecyclePorts(ports, ports, ports, ports), router, completion_timeout=0.03)
+    coordinator = LifecycleCoordinator(tmp_path / "reserve.sqlite3", LifecyclePorts(ports, ports, ports, ports), router, completion_timeout=0.03, actor_host=actor_host)
     entered, release = threading.Event(), threading.Event()
     deliver = coordinator._deliver
     answers = []
@@ -597,3 +608,28 @@ def test_drain_racing_a_slow_reservation_keeps_consumer_alive(
     assert admitted == [PortAdmission.ACCEPTED]
     assert manager.wait("slow-race", 2.0).state is LifecycleState.COMPLETED
     assert manager.drain(1.0)
+
+
+def test_start_failure_readback_uses_latest_journal_reservation(tmp_path):
+    from dataclasses import replace
+    from hyprial.daemon.impl.lifecycle_manager.store import _LifecycleStore
+    from hyprial.daemon.impl.state_db import StateDatabase
+
+    store = _LifecycleStore(StateDatabase(tmp_path / "state.sqlite3"))
+    target = _spec("model-test")
+    failed = replace(LifecycleOperation.create("model-failure", target),
+                     observed_entity_token="incarnation-1")
+    store.reserve(failed)
+    store.set_state(failed.operation_id, LifecycleState.COMPENSATED,
+                    "configured Pi model is unavailable", "HARNESS_START_FAILED")
+    rows = store.read_start_failures()
+    assert rows[target.actor][0].observed_entity_token == "incarnation-1"
+    assert rows[target.actor][1] == "configured Pi model is unavailable"
+    assert _LifecycleStore(store._state_db).read_start_failures() == rows
+    newer = LifecycleOperation.create("retry", target)
+    store.reserve(newer)
+    assert store.read_start_failures() == {}
+    store.set_state(newer.operation_id, LifecycleState.COMPLETED)
+    store.set_state(failed.operation_id, LifecycleState.COMPENSATED,
+                    "late old completion", "HARNESS_START_FAILED")
+    assert store.read_start_failures() == {}

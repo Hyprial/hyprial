@@ -53,7 +53,7 @@ class ObservedChat:
 
 
 def observed_chats(
-    path: Path, *, adapter: str = DEFAULT_ADAPTER
+    path: Path, *, adapter: str = DEFAULT_ADAPTER, strict: bool = False
 ) -> tuple[ObservedChat, ...]:
     """Chats with recorded inbound activity, read without creating that state.
 
@@ -66,6 +66,9 @@ def observed_chats(
       ``onboarding plan`` is documented as read-only;
     * retired chats are excluded exactly like :meth:`LarkStateStore.recent_chats`:
       a chat the platform permanently refused is not a candidate to bind.
+
+    Explicit request reads use ``strict=True`` to distinguish a failed read from
+    an empty inventory. Legacy planning retains its absence-only projection.
     """
 
     if not path.is_file():
@@ -74,6 +77,8 @@ def observed_chats(
         uri = f"{path.resolve().as_uri()}?mode=ro"
         connection = sqlite3.connect(uri, uri=True)
     except sqlite3.Error:
+        if strict:
+            raise
         return ()
     try:
         connection.row_factory = sqlite3.Row
@@ -114,8 +119,8 @@ def observed_chats(
             for chat_id in chat_ids
         )
     except sqlite3.Error:
-        # A database predating the correlation tables (or one being written by a
-        # worker mid-rotation) is absence of evidence, not a plan failure.
+        if strict:
+            raise
         return ()
     finally:
         connection.close()

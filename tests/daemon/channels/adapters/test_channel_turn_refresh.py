@@ -189,7 +189,6 @@ async def test_reconnect_refresh_repairs_a_recovered_contact_gap(tmp_path) -> No
     """A real owner-recorded lease gap is repaired by the current run set."""
 
     from hyprial.kernel import CHANNEL_LIVENESS_TTL_SECONDS
-    from tests.daemon.harnesses.carrier.turns.test_turn_reports import A_URI
 
     app, _factory, adapter, _turns, _clock = _fixture(tmp_path)
     try:
@@ -198,12 +197,12 @@ async def test_reconnect_refresh_repairs_a_recovered_contact_gap(tmp_path) -> No
         runtime = session._runtime_projection
         now_ms = session._clock_ms()
         runtime.register(
-            A_URI,
+            app.a_uri,
             adapter.session_ref,
             now_ms - int(CHANNEL_LIVENESS_TTL_SECONDS * 1_000) - 1,
             confirmed=True,
         )
-        runtime.register(A_URI, adapter.session_ref, now_ms, confirmed=True)
+        runtime.register(app.a_uri, adapter.session_ref, now_ms, confirmed=True)
         facts = next(iter(app.app._cell_interactive_facts().values()))
         assert facts.known is False and facts.resync_required is True
 

@@ -33,6 +33,8 @@ MEMBERSHIP_BUDGETS: Mapping[str, MembershipBudget] = MappingProxyType({
     "membership-status": MembershipBudget(10.0, ("membership-status",)),
     "invite-create": MembershipBudget(10.0, ("invite-create",)),
     "authority-repin": MembershipBudget(10.0, ("authority-repin",)),
+    "tailnet-shutdown": MembershipBudget(10.0, ("tailnet-shutdown",)),
+    "tailnet-forget": MembershipBudget(10.0, ("tailnet-forget",)),
     "invite-redeem": MembershipBudget(65.0, ("invite-redeem", "roster-fetch")),
     "roster-fetch": MembershipBudget(35.0, ("roster-fetch",)),
     "member-announce": MembershipBudget(35.0, ("member-announce",)),

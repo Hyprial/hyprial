@@ -2,31 +2,33 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import os
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hyprial.kernel import ManagedHarnessProcess
 from hyprial.kernel import HarnessLaunchSpec
 
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
+
 from hyprial.daemon.impl.harnesses.agent_sdk  import ClaudeAgentSdkProcess
+from hyprial.daemon.impl.harnesses.agy import AgyAcpProcess
+from hyprial.daemon.impl.harnesses.agy.protocol import ACP_REQUEST_TIMEOUT_SECONDS_DEFAULT
+from hyprial.daemon.impl.harnesses.model_provider import agy_provider_environment
 from hyprial.daemon.impl.correlation.readiness_budget import START_TIMEOUT_SECONDS_DEFAULT
 from hyprial.daemon.impl.harnesses.capabilities  import CapabilitySupport, support
 from hyprial.kernel import SupportLevel
 from hyprial.kernel import Capability
-from hyprial.daemon.impl.harnesses.claude  import ClaudeConnector
 from hyprial.daemon.impl.harnesses.codex.app_server  import (
     APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT,
     )
 from hyprial.daemon.impl.harnesses.codex.client  import (
     CodexAppServerProcess,
     )
-from hyprial.daemon.impl.harnesses.codex.process  import (
-    CodexConnector,
-)
-from hyprial.daemon.impl.harnesses.protocol.common  import ConnectorOptions, HarnessStartError
-from hyprial.daemon.impl.harnesses.dsh.process  import DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT, DshHarnessProcess
-from hyprial.daemon.impl.harnesses.pi  import PiConnector
+from hyprial.daemon.impl.harnesses.protocol.common  import HarnessStartError
 from hyprial.daemon.impl.harnesses.pi.rpc_process import (
     PI_RPC_STARTUP_TIMEOUT_SECONDS_DEFAULT,
     PiRpcProcess,
@@ -39,6 +41,7 @@ from hyprial.daemon.impl.harnesses.python_worker  import (
 from hyprial.daemon.impl.harnesses.streaming.protocol  import TurnCompletedObserver
 from hyprial.identity import ChildEnvironmentLaunch
 from hyprial.identity import AgentRuntimeContext
+from .native_auth import native_auth_observer
 from hyprial.daemon.impl.harnesses.worker_channel  import WorkerChannel
 
 WorkerChannelFactory = Callable[[HarnessLaunchSpec], WorkerChannel | None]
@@ -56,7 +59,7 @@ RuntimeLaunchCustody = Callable[
 # Mechanisms whose HEADLESS_EXEC entry gives a managed streaming process
 # (Agent SDK, pi RPC mode, and Codex app-server).
 _STREAMING_MECHANISMS = frozenset(
-    {"agent_sdk", "rpc", "app_server", "dsh_api", "python_worker"}
+    {"agent_sdk", "rpc", "app_server", "python_worker", "acp"}
 )
 
 
@@ -87,14 +90,11 @@ class HarnessLauncher:
     def __init__(
         self,
         *,
-        commands: Mapping[str, Sequence[str]] | None = None,
         env: Mapping[str, str] | None = None,
-        startup_probe_seconds: float = 0.08,
-        stop_grace_seconds: float = 1.0,
         codex_startup_timeout_seconds: float = (
             APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT
         ),
-        dsh_startup_timeout_seconds: float = DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT,
+        agy_request_timeout_seconds: float = ACP_REQUEST_TIMEOUT_SECONDS_DEFAULT,
         last_session_id_reader: Callable[[HarnessLaunchSpec], str | None] | None = None,
         agent_sdk_factory: Callable[[HarnessLaunchSpec], ManagedHarnessProcess]
         | None = None,
@@ -104,9 +104,9 @@ class HarnessLauncher:
             [HarnessLaunchSpec], ManagedHarnessProcess
         ]
         | None = None,
-        dsh_api_factory: Callable[[HarnessLaunchSpec], ManagedHarnessProcess]
-        | None = None,
         python_worker_factory: Callable[[HarnessLaunchSpec], ManagedHarnessProcess]
+        | None = None,
+        acp_factory: Callable[[HarnessLaunchSpec], ManagedHarnessProcess]
         | None = None,
         worker_channel_factory: WorkerChannelFactory | None = None,
         child_environment_factory: "ChildEnvironmentFactory | None" = None,
@@ -115,14 +115,19 @@ class HarnessLauncher:
         daemon_epoch: str | None = None,
         turn_failure_observer: TurnFailureSpecObserver | None = None,
         turn_completed_observer: TurnCompletedObserver | None = None,
+        process_observer: Callable[[HarnessLaunchSpec, ManagedHarnessProcess], None]
+        | None = None,
+        actor_host: ActorHost | None = None,
     ) -> None:
+        del state_dir
         self._last_session_id_reader = last_session_id_reader
-        configured = commands or {}
-        self._claude_command_overridden = "claude" in configured
-        self._pi_command_overridden = "pi" in configured
-        self._codex_command_overridden = "codex" in configured
+        # P7: every managed process this launcher builds takes its turn-pump
+        # cells from the daemon's one host instead of starting an engine per
+        # session. Standalone launchers (tests/tools) leave it None and keep
+        # the custody private-host fallback.
+        self._actor_host = actor_host
         self._codex_startup_timeout_seconds = codex_startup_timeout_seconds
-        self._dsh_startup_timeout_seconds = dsh_startup_timeout_seconds
+        self._agy_request_timeout_seconds = agy_request_timeout_seconds
         # Absent a factory the worker channel is None, so the managed worker
         # keeps its pre-fix ambient configuration; only a daemon that wires the
         # factory gives each worker its own canonical Harness identity.
@@ -138,28 +143,14 @@ class HarnessLauncher:
         # model-vendor failed turn.
         self._turn_failure_observer = turn_failure_observer
         self._turn_completed_observer = turn_completed_observer
+        self._process_observer = process_observer
         self._agent_sdk_factory = agent_sdk_factory or self._make_agent_sdk_process
         self._pi_rpc_factory = pi_rpc_factory or self._make_pi_process
         self._codex_app_server_factory = (
             codex_app_server_factory or self._make_codex_process
         )
-        self._dsh_state_dir = state_dir
-        self._dsh_api_factory = dsh_api_factory or self._make_dsh_process
         self._python_worker_factory = python_worker_factory or self._make_python_process
-
-        def options(harness: str, default: str) -> ConnectorOptions:
-            return ConnectorOptions(
-                tuple(configured.get(harness, (default,))),
-                env=env,
-                startup_probe_seconds=startup_probe_seconds,
-                stop_grace_seconds=stop_grace_seconds,
-            )
-
-        self._connectors = {
-            "claude": ClaudeConnector(options("claude", "claude")),
-            "pi": PiConnector(options("pi", "pi")),
-            "codex": CodexConnector(options("codex", "codex")),
-        }
+        self._acp_factory = acp_factory or self._make_agy_process
 
     def _worker_channel_for(self, spec: HarnessLaunchSpec) -> WorkerChannel | None:
         if self._worker_channel_factory is None:
@@ -186,18 +177,20 @@ class HarnessLauncher:
         """ONE channel mint, ONE environment from that channel (B2)."""
 
         channel = self._worker_channel_for(spec)
+        launch = self._complete_launch_for(spec, channel)
         return ClaudeAgentSdkProcess(
             spec,
             env=self._legacy_env,
             worker_channel=channel,
-            complete_launch=self._complete_launch_for(spec, channel),
+            complete_launch=launch,
             on_turn_failure_for_spec=self._turn_failure_observer,
-            on_turn_completed=self._turn_completed_observer,
+            on_turn_completed=native_auth_observer(launch, self._turn_completed_observer),
             runtime_launch_custody=self._runtime_launch_custody,
             last_session_id=(
                 self._last_session_id_reader(spec)
                 if self._last_session_id_reader is not None else None
             ),
+            actor_host=self._actor_host,
         )
 
     def _make_codex_process(self, spec: HarnessLaunchSpec) -> "CodexAppServerProcess":
@@ -209,12 +202,12 @@ class HarnessLauncher:
             spec,
             env=self._legacy_env if launch is None else None,
             worker_channel=channel,
-            command=(spec.execution_runtime.guest_command if spec.execution_runtime else spec.resolved_command(("codex",))),
-            daemon_epoch=self._daemon_epoch,
+            command=spec.resolved_command(("codex",)),
             complete_launch=launch,
             on_turn_failure_for_spec=self._turn_failure_observer,
-            on_turn_completed=self._turn_completed_observer,
+            on_turn_completed=native_auth_observer(launch, self._turn_completed_observer),
             runtime_launch_custody=self._runtime_launch_custody,
+            actor_host=self._actor_host,
         )
 
     def _make_pi_process(self, spec: HarnessLaunchSpec) -> "PiRpcProcess":
@@ -239,8 +232,9 @@ class HarnessLauncher:
             command=spec.resolved_command(("pi",)),
             complete_launch=complete_launch,
             on_turn_failure_for_spec=self._turn_failure_observer,
-            on_turn_completed=self._turn_completed_observer,
+            on_turn_completed=native_auth_observer(complete_launch, self._turn_completed_observer),
             runtime_launch_custody=self._runtime_launch_custody,
+            actor_host=self._actor_host,
         )
 
     def _make_python_process(self, spec: HarnessLaunchSpec) -> "PythonHarnessProcess":
@@ -263,33 +257,43 @@ class HarnessLauncher:
             on_turn_completed=self._turn_completed_observer,
         )
 
-    def _make_dsh_process(self, spec: HarnessLaunchSpec) -> "DshHarnessProcess":
-        """Build one dsh worker from one channel and its complete environment."""
+    def _make_agy_process(self, spec: HarnessLaunchSpec) -> "AgyAcpProcess":
+        """Build one agy ACP worker from one channel and its complete environment."""
 
         channel = self._worker_channel_for(spec)
         complete_launch = self._complete_launch_for(spec, channel)
-        return DshHarnessProcess(
+        base_env = (
+            complete_launch.environment.for_exec()
+            if complete_launch is not None
+            else {**os.environ, **(self._legacy_env or {})}
+        )
+        agy_provider_environment(
+            spec,
+            base_env,
+            allow_legacy_home_fallback=complete_launch is None,
+        )
+        return AgyAcpProcess(
             spec,
             env=self._legacy_env if complete_launch is None else None,
-            state_dir=self._dsh_state_dir,
             worker_channel=channel,
+            command=spec.resolved_command(("agy",)),
             complete_launch=complete_launch,
-            on_turn_completed=self._turn_completed_observer,
+            request_timeout_seconds=self._agy_request_timeout_seconds,
+            on_turn_failure_for_spec=self._turn_failure_observer,
+            on_turn_completed=native_auth_observer(
+                complete_launch, self._turn_completed_observer
+            ),
+            runtime_launch_custody=self._runtime_launch_custody,
+            actor_host=self._actor_host,
         )
-
-    def _command_overridden(self, harness: str) -> bool:
-        return {
-            "claude": self._claude_command_overridden,
-            "pi": self._pi_command_overridden,
-            "codex": self._codex_command_overridden,
-        }.get(harness, False)
-
     def start(self, spec: HarnessLaunchSpec) -> ManagedHarnessProcess:
-        if spec.execution_runtime is not None and (spec.harness != "codex" or not spec.headless or self._command_overridden(spec.harness)):
-            raise ValueError("smolvm only supports managed Codex without command overrides")
-        # Dispatch on the declared HEADLESS_EXEC mechanism; a command
-        # override still falls back to the PTY connector as before.
-        if spec.headless and not self._command_overridden(spec.harness):
+        process = self._start_process(spec)
+        if self._process_observer is not None:
+            self._process_observer(spec, process)
+        return process
+
+    def _start_process(self, spec: HarnessLaunchSpec) -> ManagedHarnessProcess:
+        if spec.headless:
             declared = _headless_exec(spec.harness)
             if declared is not None and declared.level is SupportLevel.NATIVE:
                 if declared.mechanism == "agent_sdk":
@@ -323,6 +327,9 @@ class HarnessLauncher:
                     ):
                         process.stop()
                         detail = getattr(process, "last_error", None)
+                        failure = getattr(process, "last_failure", None)
+                        if isinstance(failure, Exception) and getattr(failure, "permanent_start_failure", False):
+                            raise failure
                         raise HarnessStartError(
                             "pi",
                             spec.command,
@@ -343,25 +350,6 @@ class HarnessLauncher:
                             str(detail or "app-server did not become ready"),
                         )
                     return process
-                if declared.mechanism == "dsh_api":
-                    process = self._dsh_api_factory(spec)
-                    # Mirror the app_server branch: the actor captures the
-                    # child's PID + birth identity right after start() returns,
-                    # so readiness must be established first (otherwise the
-                    # OrphanProcessRegistry records ``unidentified`` and stop
-                    # cannot fence PID reuse).
-                    wait_ready = getattr(process, "wait_ready", None)
-                    if not callable(wait_ready) or not wait_ready(
-                        timeout=self._dsh_startup_timeout_seconds
-                    ):
-                        process.stop()
-                        detail = getattr(process, "last_error", None)
-                        raise HarnessStartError(
-                            "dsh",
-                            (),
-                            str(detail or "dsh did not become ready"),
-                        )
-                    return process
                 if declared.mechanism == "python_worker":
                     process = self._python_worker_factory(spec)
                     wait_ready = getattr(process, "wait_ready", None)
@@ -376,14 +364,29 @@ class HarnessLauncher:
                             str(detail or "python worker did not become ready"),
                         )
                     return process
-        try:
-            connector = self._connectors[spec.harness]
-        except KeyError as error:
-            raise HarnessStartError(
-                spec.harness,
-                (),
-                "unsupported harness; expected claude, pi, codex, dsh, jev, or user-proxy",
-            ) from error
-        channel = self._worker_channel_for(spec)
-        launch = self._complete_launch_for(spec, channel)
-        return connector.launch(spec, complete_launch=launch)
+                if declared.mechanism == "acp":
+                    process = self._acp_factory(spec)
+                    wait_ready = getattr(process, "wait_ready", None)
+                    if not callable(wait_ready) or not wait_ready(
+                        timeout=self._agy_request_timeout_seconds
+                    ):
+                        process.stop()
+                        detail = getattr(process, "last_error", None)
+                        failure = getattr(process, "last_failure", None)
+                        if isinstance(failure, Exception) and getattr(
+                            failure, "permanent_start_failure", False
+                        ):
+                            raise failure
+                        raise HarnessStartError(
+                            "agy",
+                            spec.command,
+                            str(detail or "agy ACP worker did not become ready"),
+                        )
+                    return process
+        raise HarnessStartError(
+            spec.harness,
+            (),
+            "daemon only starts headless harnesses "
+            "(claude, pi, codex, jev, agy); "
+            "interactive sessions are started by the CLI",
+        )

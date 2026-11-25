@@ -1,12 +1,26 @@
-"""Select an installed GUI target, an explicit project, or a dev worktree.
+"""Select the installed GUI target, the source checkout, or a dev source.
 
-This is the policy boundary for the two environment variables:
+Decision (2026-11-14, GUI launch consolidation PR 1a):
 
-* normal mode reads ``HYPRIAL_GUI_HOME`` or the verified wheel ``_gui``;
-* dev mode reads ``HYPRIAL_DEV_GUI_HOME`` or ``--gui-home``, then a source
-  checkout, then the wheel's exact source commit.
-
-The two variables are never fallbacks for one another.
+* normal mode has two targets only: the verified wheel ``_gui`` or the source
+  checkout.  ``--gui-home`` is rejected with ``INVALID_ARGUMENT`` and a
+  ``HYPRIAL_GUI_HOME`` inherited from the caller is rejected with
+  ``GUI_CONFIG_CONFLICT``; that variable is only the launcher's handoff to its
+  own child processes.
+* live source (``--live-source``, or ``dev``, which implies it; PR 5,
+  2026-11-17) reads ``--gui-home`` or ``HYPRIAL_DEV_GUI_HOME``, then the source
+  checkout's own ``gui/``, then the wheel's exact source commit.  It ignores
+  ``HYPRIAL_GUI_HOME``.  Without live source ``--gui-home`` is an
+  ``INVALID_ARGUMENT`` that names ``--live-source`` and the variable is not read.
+* a wheel whose manifest names ``PUBLIC_SOURCE_REMOTE`` is a release build
+  (decision 2026-11-16): its ``sourceCommit`` is internal and absent from the
+  public mirror, so dev mode without an explicit source or source checkout is
+  refused with ``INVALID_ARGUMENT`` before any fetch or managed-cache operation.  Any
+  other manifest remote keeps the managed exact-SHA worktree.
+* a source GUI project without ``node_modules`` (source-checkout normal or dev,
+  explicit dev home) fails with ``GUI_HOME_INVALID`` naming the ``npm ci``
+  command; nothing is installed automatically.  Only the wheel's managed dev
+  worktree installs its own dependencies.
 """
 
 from __future__ import annotations
@@ -19,18 +33,20 @@ import shlex
 import subprocess
 from typing import Any
 
+from hyprial.kernel import ipc_errors
+
 from ..errors import GuiError
 from ..project import GuiProject, resolve_gui_home
-from ..worktree import SOURCE_CODE, AutoGuiWorktree, ensure_dev_worktree
+from ..worktree import SOURCE_CODE, AutoGuiWorktree, discover_source_repo
 from .dev_source import ensure_installed_dev_worktree
 from .resources import (
     MANIFEST_NAME,
+    PUBLIC_SOURCE_REMOTE,
     GuiAssetError,
     GuiAssets,
     installed_asset_root,
     load_assets,
     redact_remote,
-    resolve_explicit_assets,
 )
 
 NORMAL_HOME_ENV = "HYPRIAL_GUI_HOME"
@@ -54,21 +70,13 @@ def select_normal_target(
     inspect: Callable[..., GuiProject],
     which: Callable[[str], str | None],
     run: Callable[..., Any],
+    preflight: Callable[[], None] | None = None,
 ) -> LaunchTarget:
-    explicit = gui_home is not None or _configured(environ, NORMAL_HOME_ENV)
-    if explicit:
-        home = resolve_gui_home(gui_home, environ=environ, cwd=cwd)
-        assets = _explicit_assets(home)
-        return LaunchTarget(
-            project=_static_project(assets.root, assets),
-            assets=assets,
-            static_root=assets.root,
-        )
-
+    _reject_normal_home(gui_home, environ)
     assets = _builtin_assets()
     if assets is not None:
         return LaunchTarget(
-            project=_static_project(assets.root, assets),
+            project=_static_project(assets),
             assets=assets,
             static_root=assets.root,
         )
@@ -76,15 +84,18 @@ def select_normal_target(
         raise GuiError(
             "GUI_ASSETS_MISSING",
             "the installed hyprial package has no built GUI resources under "
-            f"{installed_asset_root()}; reinstall the wheel or pass "
-            "HYPRIAL_GUI_HOME with a built GUI",
+            f"{installed_asset_root()}; reinstall the wheel",
             {"asset_root": str(installed_asset_root())},
         )
-    home = resolve_gui_home(gui_home, environ=environ, cwd=cwd)
-    return LaunchTarget(project=inspect(home, which=which, run=run))
+    if preflight is not None:
+        preflight()
+    home = resolve_gui_home(cwd=cwd)
+    project = inspect(home, which=which, run=run)
+    _require_dependencies(project)
+    return LaunchTarget(project=project)
 
 
-def select_dev_target(
+def select_live_source_target(
     gui_home: Path | None,
     *,
     environ: Mapping[str, str],
@@ -92,7 +103,8 @@ def select_dev_target(
     inspect: Callable[..., GuiProject],
     which: Callable[[str], str | None],
     run: Callable[..., Any],
-    ensure: Callable[..., AutoGuiWorktree] = ensure_dev_worktree,
+    discover: Callable[..., Path] = discover_source_repo,
+    preflight: Callable[[], None] | None = None,
 ) -> LaunchTarget:
     explicit = gui_home is not None or _configured(environ, DEV_HOME_ENV)
     auto: AutoGuiWorktree | None = None
@@ -102,13 +114,16 @@ def select_dev_target(
             if gui_home is not None
             else Path(str(environ[DEV_HOME_ENV])).expanduser().resolve()
         )
-        _reject_non_dev_home(home, environ)
+        _reject_non_dev_home(home)
+        if preflight is not None:
+            preflight()
         project = inspect(home, which=which, run=run)
+        _require_dependencies(project)
     else:
+        if preflight is not None:
+            preflight()
         try:
-            auto = ensure(
-                cwd=cwd, environ=environ, which=which, run=run
-            )
+            source = discover(cwd=cwd, environ=environ, which=which, run=run)
         except GuiError as error:
             if error.code != SOURCE_CODE:
                 raise
@@ -121,10 +136,25 @@ def select_dev_target(
                     "HYPRIAL_DEV_GUI_HOME to select an existing GUI checkout",
                     error.data,
                 ) from error
+            if assets.source_remote.strip() == PUBLIC_SOURCE_REMOTE:
+                raise GuiError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "this is a release build: --live-source (and `hyprial gui "
+                    "dev`, which implies it) needs GUI sources, which a release "
+                    "build does not carry. Run it from a source checkout or "
+                    f"pass --gui-home <path> (or set {DEV_HOME_ENV}); plain "
+                    "`hyprial gui` works, also with --with-dev-tools.",
+                    {"sourceRemote": redact_remote(assets.source_remote)},
+                ) from error
             auto = ensure_installed_dev_worktree(
                 assets, environ=environ, which=which, run=run
             )
-        project = inspect(auto.home, which=which, run=run)
+            home = auto.home
+        else:
+            home = source / "gui"
+        project = inspect(home, which=which, run=run)
+        if auto is None:
+            _require_dependencies(project)
     return LaunchTarget(
         project=project,
         auto=auto,
@@ -132,23 +162,31 @@ def select_dev_target(
     )
 
 
-def _static_project(root: Path, assets: GuiAssets | None) -> GuiProject:
-    commit = assets.source_commit if assets is not None else ""
-    remote = assets.source_remote if assets is not None else ""
-    verified = assets is not None and bool(assets.manifest)
-    label = f"installed {commit[:12]}" if verified else "explicit unverified build"
+def _require_dependencies(project: GuiProject) -> None:
+    if (project.home / "node_modules").is_dir():
+        return
+    command = f"npm --prefix {shlex.quote(str(project.home))} ci --ignore-scripts"
+    raise GuiError(
+        "GUI_HOME_INVALID",
+        f"the GUI project at {project.home} has no node_modules; install its "
+        f"dependencies first with: {command}",
+        {"gui_home": str(project.home), "command": command},
+    )
+
+
+def _static_project(assets: GuiAssets) -> GuiProject:
     return GuiProject(
-        home=root,
-        worktree=root,
-        branch=label,
+        home=assets.root,
+        worktree=assets.root,
+        branch=f"installed {assets.source_commit[:12]}",
         node="",
         npm="",
         node_version="",
         npm_version="",
         scripts={},
-        installed=verified,
-        source_commit=commit,
-        source_remote=remote,
+        installed=True,
+        source_commit=assets.source_commit,
+        source_remote=assets.source_remote,
     )
 
 
@@ -169,19 +207,6 @@ def _builtin_assets() -> GuiAssets | None:
         raise _asset_error(error) from error
 
 
-def _explicit_assets(home: Path) -> GuiAssets:
-    try:
-        root = resolve_explicit_assets(home)
-    except GuiAssetError as error:
-        raise _asset_error(error) from error
-    if (root / MANIFEST_NAME).is_file():
-        try:
-            return load_assets(root, verify=True)
-        except GuiAssetError as error:
-            raise _asset_error(error) from error
-    return GuiAssets(root=root, manifest={})
-
-
 def _asset_error(error: GuiAssetError) -> GuiError:
     return GuiError(error.code, str(error), dict(error.data))
 
@@ -191,18 +216,7 @@ def _is_installed_package() -> bool:
     return "site-packages" in parts or "dist-packages" in parts
 
 
-def _reject_non_dev_home(home: Path, environ: Mapping[str, str]) -> None:
-    normal = str(environ.get(NORMAL_HOME_ENV) or "").strip()
-    if normal:
-        normal_path = Path(normal).expanduser().resolve()
-        if home == normal_path:
-            raise GuiError(
-                "GUI_DEV_HOME_INVALID",
-                "HYPRIAL_DEV_GUI_HOME/--gui-home points at the normal GUI home "
-                "from HYPRIAL_GUI_HOME; the two variables are independent and "
-                "must not be borrowed from one another",
-                {"gui_home": str(home), "normal_home": str(normal_path)},
-            )
+def _reject_non_dev_home(home: Path) -> None:
     asset_root = installed_asset_root().resolve()
     if home == asset_root or home == asset_root.parent or (
         (home / MANIFEST_NAME).is_file()
@@ -285,6 +299,25 @@ def _git(
     if getattr(completed, "returncode", 1) != 0:
         return ""
     return (getattr(completed, "stdout", "") or "").strip()
+
+
+def _reject_normal_home(gui_home: Path | None, environ: Mapping[str, str]) -> None:
+    if gui_home is not None:
+        raise GuiError(
+            ipc_errors.INVALID_ARGUMENT,
+            "--gui-home is only accepted with live source: add --live-source "
+            "(or use `hyprial gui dev`). The built GUI serves the installed "
+            "wheel assets or the source checkout it runs in",
+            {"option": "--gui-home"},
+        )
+    if _configured(environ, NORMAL_HOME_ENV):
+        raise GuiError(
+            "GUI_CONFIG_CONFLICT",
+            f"{NORMAL_HOME_ENV} is set by the launcher for its own child "
+            "processes and is not a user input; unset it, or use "
+            f"--live-source with --gui-home or {DEV_HOME_ENV}",
+            {"variables": [NORMAL_HOME_ENV]},
+        )
 
 
 def _configured(environ: Mapping[str, str], name: str) -> bool:

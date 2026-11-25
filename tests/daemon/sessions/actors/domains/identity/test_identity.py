@@ -5,10 +5,9 @@ import sqlite3
 from tests.support.runtime.waiting_support import await_recorded
 from pathlib import Path
 from hyprial.identity.impl.agents import AgentActor, AgentLiveness, AgentRegistry
-from hyprial.identity.impl.agents.actor.ports import AgentMutationCompleted, CreateAgentCommand, DestroyAgentCommand, PinAgentAdapterCommand, RecordAgentActivityCommand, UpdateAgentCommand, GrantAgentCapabilityCommand, RevokeAgentCapabilityCommand, AgentCapabilityGrantCompleted, GrantAgentSecretCommand, RevokeAgentSecretCommand, AgentSecretGrantCompleted
+from hyprial.identity.impl.agents.actor.ports import AgentMutationCompleted, CreateAgentCommand, RecordAgentActivityCommand, UpdateAgentCommand, GrantAgentCapabilityCommand, RevokeAgentCapabilityCommand, AgentCapabilityGrantCompleted, GrantAgentSecretCommand, RevokeAgentSecretCommand, AgentSecretGrantCompleted
 from hyprial.identity.impl.agents.runtime.secrets import SecretSource
 from hyprial.kernel.impl.contracts.ports import PortAdmission, PortCommandRejected
-from hyprial.daemon.impl.desired_state import DesiredStateStore
 
 from ..support import (
     ACTOR,
@@ -16,6 +15,7 @@ from ..support import (
     OWNER,
     _SESSION_EVENT_BUDGET,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_sqlite_is_final_duplicate_identity_constraint_across_actors(
@@ -26,11 +26,11 @@ def test_sqlite_is_final_duplicate_identity_constraint_across_actors(
     events_b: list[object] = []
     actor_a = AgentActor(
         AgentRegistry(database, owner=OWNER, machine=NODE),
-        event_sink=events_a.append,
+        event_sink=events_a.append, actor_host=new_actor_host(),
     )
     actor_b = AgentActor(
         AgentRegistry(database, owner=OWNER, machine=NODE),
-        event_sink=events_b.append,
+        event_sink=events_b.append, actor_host=new_actor_host(),
     )
     barrier = threading.Barrier(3)
 
@@ -67,89 +67,12 @@ def test_sqlite_is_final_duplicate_identity_constraint_across_actors(
     assert actor_b.drain(1.0).complete is True
 
 
-def test_pin_mutation_consumes_legacy_staging_and_destroy_cascades(
-    tmp_path: Path,
-) -> None:
-    desired = DesiredStateStore(tmp_path / "desired.json")
-    desired.set_channel_pin("work", ACTOR)
-    registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
-    events: list[object] = []
-    actor = AgentActor(
-        registry,
-        event_sink=events.append,
-        desired_state=desired,
-    )
-    actor.submit(CreateAgentCommand("create", "foo"))
-    await_recorded(
-        lambda: any( isinstance(event, AgentMutationCompleted) and event.correlation_id == "create" for event in events ),
-        budget=_SESSION_EVENT_BUDGET,
-        proves="the AgentMutationCompleted event is recorded",
-        monotonic_because="events is append-only in this file; a recorded AgentMutationCompleted entry is never removed"
-    )
-    actor.submit(PinAgentAdapterCommand("pin", ACTOR, "work"))
-    await_recorded(
-        lambda: any( isinstance(event, AgentMutationCompleted) and event.correlation_id == "pin" for event in events ),
-        budget=_SESSION_EVENT_BUDGET,
-        proves="the AgentMutationCompleted event is recorded",
-        monotonic_because="events is append-only in this file; a recorded AgentMutationCompleted entry is never removed"
-    )
-    assert registry.pins() == {"work": ACTOR}
-    assert desired.load().channel_pins == ()
-
-    actor.submit(DestroyAgentCommand("destroy", "foo"))
-    await_recorded(
-        lambda: any( isinstance(event, AgentMutationCompleted) and event.correlation_id == "destroy" for event in events ),
-        budget=_SESSION_EVENT_BUDGET,
-        proves="the AgentMutationCompleted event is recorded",
-        monotonic_because="events is append-only in this file; a recorded AgentMutationCompleted entry is never removed"
-    )
-    assert registry.list() == ()
-    assert registry.pins() == {}
-    assert actor.drain(1.0).complete is True
-
-
-def test_restore_pin_compare_never_overwrites_a_replacement(tmp_path: Path) -> None:
-    registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
-    registry.create("foo")
-    registry.create("bar")
-    registry.pin("work", "bar")
-    events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
-
-    actor.submit(
-        PinAgentAdapterCommand(
-            "restore-old-pin",
-            ACTOR,
-            "work",
-            None,
-            True,
-        )
-    )
-    await_recorded(
-        lambda: any( isinstance(event, PortCommandRejected) and event.correlation_id == "restore-old-pin" for event in events ),
-        budget=_SESSION_EVENT_BUDGET,
-        proves="the PortCommandRejected event is recorded",
-        monotonic_because="events is append-only in this file; a recorded PortCommandRejected entry is never removed"
-    )
-
-    rejection = next(
-        event
-        for event in events
-        if isinstance(event, PortCommandRejected)
-        and event.correlation_id == "restore-old-pin"
-    )
-    assert rejection.code == "INVALID_ARGUMENT"
-    assert "replacement blocks rollback" in rejection.detail
-    assert registry.pins() == {"work": f"agent:{OWNER}:{NODE}:bar"}
-    assert actor.drain(1.0).complete is True
-
-
 def test_activity_version_is_visible_on_every_agent_projection(tmp_path: Path) -> None:
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     agent_a = registry.create("a")
     registry.create("b")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     try:
         actor.submit(RecordAgentActivityCommand("activity-a", agent_a.uri))
         await_recorded(
@@ -194,31 +117,29 @@ def test_activity_version_is_visible_on_every_agent_projection(tmp_path: Path) -
         registry.close()
 
 
-def test_agent_identity_and_pin_reads_use_projection_with_update_fence(
+def test_agent_identity_projection_reads_use_the_update_fence(
     tmp_path: Path,
 ) -> None:
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     registry.create("foo")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     try:
         projection = actor.read_agent("foo")
         assert projection is not None
         assert actor.read_local_actor(projection.uri) == "foo"
         assert actor.read_uri_for("foo") == projection.uri
-        assert actor.read_pins() == ()
-        assert actor.submit(PinAgentAdapterCommand("projection-pin", projection.uri, "work")) is PortAdmission.ACCEPTED
+        assert actor.submit(RecordAgentActivityCommand("activity", projection.uri)) is PortAdmission.ACCEPTED
         await_recorded(
             lambda: any(
                 isinstance(event, AgentMutationCompleted)
-                and event.correlation_id == "projection-pin"
+                and event.correlation_id == "activity"
                 for event in events
             ),
             budget=_SESSION_EVENT_BUDGET,
-            proves="agent pin completion is recorded",
+            proves="activity completion is recorded",
             monotonic_because="events is append-only",
         )
-        assert actor.read_pins() == (("work", projection.uri),)
         stale = UpdateAgentCommand(
             "stale-update", "foo", expected_version=projection.version,
             expected_entity_token=projection.entity_token,
@@ -251,7 +172,7 @@ def test_agent_capability_grant_mutations_run_on_agent_authority(
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     registry.create("foo")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     try:
         command = GrantAgentCapabilityCommand(
             "grant-capability", ACTOR, "grant-1", "org-context",
@@ -302,7 +223,7 @@ def test_agent_grant_read_fails_closed_after_external_incarnation_change(
     registry = AgentRegistry(database, owner=OWNER, machine=NODE)
     registry.create("foo")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     try:
         assert actor.submit(GrantAgentCapabilityCommand(
             "grant-stale", ACTOR, "grant-1", "org-context",
@@ -334,7 +255,7 @@ def test_synthetic_secret_grant_metadata_is_actor_owned(tmp_path: Path) -> None:
     registry = AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE)
     registry.create("foo")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append)
+    actor = AgentActor(registry, event_sink=events.append, actor_host=new_actor_host())
     try:
         command = GrantAgentSecretCommand(
             "secret-grant", ACTOR, "grant-1", SecretSource.USER_PROVIDER,
@@ -386,7 +307,7 @@ def test_create_launch_incumbent_failure_leaves_no_partial_agent_row(
     liveness = AgentLiveness(node_id=NODE)
     liveness.bind(ACTOR, harness="claude", runtime="headless")
     events: list[object] = []
-    actor = AgentActor(registry, event_sink=events.append, liveness=liveness)
+    actor = AgentActor(registry, event_sink=events.append, liveness=liveness, actor_host=new_actor_host())
 
     actor.submit(
         CreateAgentCommand(
@@ -411,7 +332,7 @@ def test_agent_actor_exposes_only_typed_surface_not_mutable_authorities(
 ) -> None:
     actor = AgentActor(
         AgentRegistry(tmp_path / "agents.sqlite3", owner=OWNER, machine=NODE),
-        event_sink=lambda _event: None,
+        event_sink=lambda _event: None, actor_host=new_actor_host(),
     )
     assert not hasattr(actor, "registry")
     assert not hasattr(actor, "liveness")

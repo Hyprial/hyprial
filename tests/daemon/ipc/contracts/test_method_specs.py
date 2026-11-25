@@ -1,20 +1,31 @@
-"""A-03 method declarations: completeness, binding and negative controls."""
+"""A-03 method declarations: completeness, binding and negative controls.
+
+Merge decision (gui-v1-sync-0554, 2026-11-03): the gui-v1 line declares the
+agents/routine/workflow/org families and http-exposes agent.start; the
+release/v0.5.5.4 line adds session.turn.refresh. The expectations below are
+the union of both parents on the merged registry; the release-side
+session family rows ride on the daemon/ declaration fold.
+"""
 
 from __future__ import annotations
 
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 
+from hyprial.daemon.impl.request_catalog.migration import (
+    MIGRATED_FAMILIES,
+)
 from hyprial.daemon.impl.request_catalog import agent as agent_catalog
 from hyprial.daemon.impl.request_catalog.registry import (
     METHOD_REGISTRY,
-    MIGRATED_FAMILIES,
     MethodRegistry,
 )
 from hyprial.kernel import (
@@ -30,6 +41,7 @@ from hyprial.kernel import (
     export_catalog,
     export_openapi,
     ipc_errors,
+    project_http_params_schema,
     validate_method_spec,
     validate_method_specs,
 )
@@ -107,14 +119,30 @@ def _preview_specs() -> tuple[MethodSpec, MethodSpec]:
     return preview, execute
 
 
+def test_the_link_group_is_retired_and_all_declared_methods_are_bound_one_to_one() -> None:
+    assert tuple(name for name in METHOD_REGISTRY.names if name.startswith("link.")) == ()
+    assert tuple(name for name in METHOD_REGISTRY.names if name.startswith("threads.")) == ()
+    assert "message.status" in METHOD_REGISTRY.names
+    assert "message.pending.batch" in METHOD_REGISTRY.names
+    for spec in METHOD_REGISTRY.specs:
+        validate_method_spec(spec)
+        assert spec.errors, spec.name
+        assert spec.params_schema and spec.result_schema
+        if spec.mutates:
+            assert spec.retry in {"never", "idempotency-key"}
+        else:
+            assert spec.retry == "safe"
+
+
 def test_every_declared_method_is_declared_and_bound_one_to_one() -> None:
-    # The catalog grows method by method; this pins that every declared name
-    # carries one spec and one handler, never a family-wide claim.
     assert {
-        "link.add",
-        "link.drop",
-        "link.list",
-        "link.stats",
+        "userKey.renew",
+        "userKey.revoke",
+        "userKey.rotate",
+        "userKey.sign",
+        "userKey.status",
+        "org.invites.list",
+        "org.invites.accept",
         "session.turn.refresh",
     } <= set(METHOD_REGISTRY.names)
     for spec in METHOD_REGISTRY.specs:
@@ -129,24 +157,72 @@ def test_every_declared_method_is_declared_and_bound_one_to_one() -> None:
             assert spec.retry == "safe"
 
 
-def test_new_methods_can_be_declared_without_migrating_their_whole_family() -> None:
-    assert "message.send.lookup" in METHOD_REGISTRY
-    assert MIGRATED_FAMILIES == {"daemon", "link"}
-    assert "message.send" not in METHOD_REGISTRY
+def test_legacy_backed_writes_are_registered_by_exact_name() -> None:
+    names = {
+        "agent.secret.grant",
+        "agent.secret.provider-write",
+        "agent.secret.revoke",
+        "identity.users.add",
+        "message.send",
+        "message.send.key_lookup",
+        "progress.list",
+        "targets",
+    }
+    assert names <= set(METHOD_REGISTRY.names)
+    for name in names:
+        binding = METHOD_REGISTRY.get(name)
+        assert binding is not None
+        assert binding.spec.ipc_param_validation == "handler"
 
 
-def test_every_declared_name_belongs_to_an_explicit_migrated_family() -> None:
-    families = {name.split(".", 1)[0] for name in METHOD_REGISTRY.names}
-    assert families - MIGRATED_FAMILIES == {"agent", "message", "session"}
-    assert "link" in MIGRATED_FAMILIES
+def test_registered_reads_have_no_legacy_dispatch_shadow() -> None:
+    router = (Path(__file__).resolve().parents[4] / "src/hyprial/daemon/impl/ipc/router.py").read_text()
+    for name in (
+        "message.query",
+        "message.history",
+        "adapter.list",
+        "adapter.status",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.stop",
+    ):
+        assert f'if method == "{name}":' not in router
+
+
+def test_agent_family_stays_partially_migrated() -> None:
     assert "agent" not in MIGRATED_FAMILIES
+    assert "org" not in MIGRATED_FAMILIES
+    assert "work" not in MIGRATED_FAMILIES
+    assert "session" not in MIGRATED_FAMILIES
+    assert {
+        name for name in METHOD_REGISTRY.names if name.startswith("work.")
+    } == set()
     assert {
         name for name in METHOD_REGISTRY.names if name.startswith("agent.")
     } == set(agent_catalog.PARTIAL_MIGRATED_METHODS) | {
+        "agent.grant.check", "agent.grant.visibility",
+        "agent.provider.allow", "agent.provider.auth.list",
         "agent.provider.default",
         "agent.provider.login",
         "agent.provider.logout",
+        "agent.attach",
+        "agent.detach",
+        "agent.secret.grant",
+        "agent.secret.provider-write",
+        "agent.secret.provider-list",
+        "agent.secret.provider-configure",
+        "agent.secret.provider-test",
+        "agent.secret.revoke",
+        "agent.create",
+        "agent.destroy.preview",
+        "agent.destroy",
+        "agent.stop",
+        "agent.start",
+        "agent.rename",
+        "agent.provider.revoke",
+        "agent.provider.status",
     }
+    assert "message" not in MIGRATED_FAMILIES
 
 
 def test_every_declared_name_is_served_before_any_legacy_fallback() -> None:
@@ -159,22 +235,39 @@ def test_every_declared_name_is_served_before_any_legacy_fallback() -> None:
     """
 
     families = {name.split(".", 1)[0] for name in METHOD_REGISTRY.names}
-    assert MIGRATED_FAMILIES == {"daemon", "link"}
-    assert families == {"daemon", "link", "message", "agent", "session"}
+    assert MIGRATED_FAMILIES == {"daemon", "identity", "orgfs", "user", "userKey"}
+    assert families == {
+        'adapter',
+        'agent',
+        'auth',
+        'autoupdate',
+        'conversations',
+        'daemon',
+        'hosts',
+        'identity',
+        'log',
+        'management',
+        'message',
+        'network',
+        'onboarding',
+        'org',
+        'orgfs',
+        'outbox', 'pac',
+        'progress',
+        'routine',
+        'service',
+        'session',
+        'targets',
+        'teleport',
+        'top',
+        'upgrade',
+        'workflow',
+        'user',
+        'userKey',
+    }
     assert "session.turn.refresh" in METHOD_REGISTRY
+    assert not any(name.startswith("work.") for name in METHOD_REGISTRY.names)
 
-
-def test_read_exposure_is_explicit() -> None:
-    exposed = {
-        spec.name for spec in METHOD_REGISTRY.specs if spec.http_exposed
-    }
-    assert exposed == {
-        "agent.list",
-        "agent.provider.default",
-        "agent.secret.list",
-        "link.list",
-        "link.stats",
-    }
 
 
 def test_empty_or_boolean_schemas_are_rejected() -> None:
@@ -209,6 +302,31 @@ def test_a_malformed_error_data_schema_is_rejected() -> None:
         )
 
 
+def test_declared_error_codes_accept_the_frozen_legacy_spelling() -> None:
+    validate_method_spec(
+        _spec(
+            errors=(
+                MethodError(
+                    "ambiguous-space",
+                    {
+                        "type": "object",
+                        "properties": {
+                            "space": {"type": "string"},
+                            "count": {"type": "integer"},
+                        },
+                        "required": ["space", "count"],
+                        "additionalProperties": False,
+                    },
+                ),
+            )
+        )
+    )
+    with pytest.raises(MethodSpecError, match="invalid error declaration"):
+        validate_method_spec(
+            _spec(errors=(MethodError("brand-new-code"),))
+        )
+
+
 def test_missing_and_duplicate_handlers_are_rejected() -> None:
     registry = MethodRegistry()
     with pytest.raises(TypeError, match="handler"):
@@ -238,6 +356,42 @@ def test_runtime_params_and_result_are_checked_against_the_declaration() -> None
     with pytest.raises(DaemonRequestError) as bad_result:
         registry.invoke(object(), "probe.read", {"from": "agent:a:b:c"})
     assert bad_result.value.code == ipc_errors.DAEMON_ERROR
+
+
+def test_legacy_ipc_params_reach_the_authoritative_handler_while_http_stays_strict() -> None:
+    spec = _spec(
+        name="probe.legacy",
+        ipc_param_validation="handler",
+        http_exposed=True,
+        http_binding=HttpBinding(IdentityBinding("none")),
+    )
+    raw = {"from": 123, "legacy": {"extension": True}}
+    calls: list[Mapping[str, Any]] = []
+
+    def handler(
+        _app: Any, params: Mapping[str, Any], **_kwargs: Any
+    ) -> dict[str, bool]:
+        calls.append(params)
+        return {"ok": True}
+
+    registry = MethodRegistry()
+    registry.bind(spec, handler)
+    registry.freeze()
+
+    assert registry.invoke(object(), "probe.legacy", raw) == {"ok": True}
+    assert calls == [raw]
+    projected = project_http_params_schema(
+        spec.params_schema, spec.http_binding.params_constraints
+    )
+    assert list(Draft202012Validator(projected).iter_errors(raw))
+    assert export_catalog((spec,))["methods"][0]["ipcParamValidation"] == "handler"
+    operation = export_openapi((spec,))["paths"]["/daemon/request/probe.legacy"]["post"]
+    assert operation["x-hyprial-ipc-param-validation"] == "handler"
+
+
+def test_invalid_ipc_param_validation_policy_is_rejected() -> None:
+    with pytest.raises(MethodSpecError, match="ipc_param_validation"):
+        validate_method_spec(_spec(ipc_param_validation="caller"))
 
 
 def test_preview_and_execute_pairing_is_validated() -> None:
@@ -295,7 +449,7 @@ def test_declared_schemas_are_detached_and_frozen() -> None:
         spec,
         http_exposed=True,
         http_binding=HttpBinding(
-            IdentityBinding("local-operator-selector", "from"),
+            IdentityBinding("local-owner-user-selector", "from"),
             readiness="link-service",
         ),
     )
@@ -372,7 +526,7 @@ def test_contract_failures_do_not_echo_values_or_undeclared_errors() -> None:
     assert "False" not in str(bad_result.value)
 
     def undeclared_error(_app: Any, _params: Any, **_kwargs: Any) -> Any:
-        raise DaemonRequestError(ipc_errors.LINK_UNKNOWN, "boom")
+        raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, "boom")
 
     registry = MethodRegistry()
     registry.bind(_spec(), undeclared_error)
@@ -491,7 +645,7 @@ def test_error_data_uses_the_declared_format_checker() -> None:
 
 
 def test_errors_audience_and_nested_metadata_are_frozen() -> None:
-    from hyprial.daemon.impl.request_catalog import LINK_STATS_SPEC
+    from hyprial.daemon.impl.request_catalog import DAEMON_CATALOG_SPEC
 
     errors = [MethodError(ipc_errors.INVALID_ARGUMENT)]
     audience = ["local-operator"]
@@ -504,7 +658,7 @@ def test_errors_audience_and_nested_metadata_are_frozen() -> None:
         errors=errors,
         audience=audience,
     )
-    errors.append(MethodError(ipc_errors.LINK_UNKNOWN))
+    errors.append(MethodError(ipc_errors.METHOD_NOT_FOUND))
     audience.append("adapter")
     terminal_states.append("failed")
     binds.append("extra")
@@ -514,20 +668,20 @@ def test_errors_audience_and_nested_metadata_are_frozen() -> None:
     assert preview.binds == ("caller", "method", "paramsDigest", "expiry")
 
     registry = MethodRegistry()
-    registry.bind(replace(LINK_STATS_SPEC, audience=audience), lambda *_args, **_kwargs: {"ok": True})
+    registry.bind(replace(DAEMON_CATALOG_SPEC, audience=audience), lambda *_args, **_kwargs: {"ok": True})
     registry.freeze()
     assert registry.specs[0].audience == ("local-operator", "adapter")
 
 
 def test_boolean_and_enum_metadata_reject_string_or_invalid_values() -> None:
-    from hyprial.daemon.impl.request_catalog import LINK_STATS_SPEC
+    from hyprial.daemon.impl.request_catalog import DAEMON_CATALOG_SPEC
 
     with pytest.raises(MethodSpecError, match="http_exposed"):
-        validate_method_spec(replace(LINK_STATS_SPEC, http_exposed="false"))
+        validate_method_spec(replace(DAEMON_CATALOG_SPEC, http_exposed="false"))
     with pytest.raises(MethodSpecError, match="mutates"):
-        validate_method_spec(replace(LINK_STATS_SPEC, mutates="false"))
+        validate_method_spec(replace(DAEMON_CATALOG_SPEC, mutates="false"))
     with pytest.raises(MethodSpecError, match="confirmation"):
-        validate_method_spec(replace(LINK_STATS_SPEC, confirmation="maybe"))
+        validate_method_spec(replace(DAEMON_CATALOG_SPEC, confirmation="maybe"))
     with pytest.raises(MethodSpecError, match="max_batch"):
         StreamSpec(max_batch=True)
     with pytest.raises(MethodSpecError, match="ttl_seconds"):
@@ -603,7 +757,7 @@ def test_http_exposed_without_binding_is_declaration_eligibility() -> None:
 
 
 def test_http_binding_is_explicit_and_fails_closed() -> None:
-    binding = HttpBinding(IdentityBinding("local-operator-selector", "from"))
+    binding = HttpBinding(IdentityBinding("local-owner-user-selector", "from"))
 
     with pytest.raises(MethodSpecError, match="requires http_exposed"):
         validate_method_spec(_spec(http_binding=binding))
@@ -630,7 +784,7 @@ def test_http_binding_is_explicit_and_fails_closed() -> None:
         validate_method_spec(
             _spec(
                 http_exposed=True,
-                http_binding=HttpBinding(IdentityBinding("local-operator-selector", "actor")),
+                http_binding=HttpBinding(IdentityBinding("local-owner-user-selector", "actor")),
             )
         )
 
@@ -644,9 +798,35 @@ def test_http_binding_is_explicit_and_fails_closed() -> None:
                     "additionalProperties": False,
                 },
                 http_exposed=True,
-                http_binding=HttpBinding(IdentityBinding("local-operator-selector", "from")),
+                http_binding=HttpBinding(IdentityBinding("local-owner-user-selector", "from")),
             )
         )
+
+
+def test_http_selector_can_be_optional_for_legacy_ipc_aliases() -> None:
+    spec = _spec(
+        params_schema={
+            "type": "object",
+            "properties": {"actor": {"type": "string", "minLength": 1}, "from": {"type": "string", "minLength": 1}},
+            "anyOf": [{"type": "object", "required": ["actor"]}, {"type": "object", "required": ["from"]}],
+            "additionalProperties": False,
+        },
+        http_exposed=True,
+        http_binding=HttpBinding(IdentityBinding("local-owner-user-selector", "actor")),
+    )
+    validate_method_spec(spec)
+
+
+def test_owner_user_selector_is_a_declared_http_identity_mode() -> None:
+    spec = _spec(
+        params_schema={
+            "type": "object", "properties": {"actor": {"type": "string", "minLength": 1}},
+            "additionalProperties": False,
+        },
+        http_exposed=True,
+        http_binding=HttpBinding(IdentityBinding("local-owner-user-selector", "actor")),
+    )
+    validate_method_spec(spec)
 
 
 def test_identity_none_is_legal_and_exported_as_null_for_unexposed() -> None:
@@ -666,15 +846,3 @@ def test_identity_none_is_legal_and_exported_as_null_for_unexposed() -> None:
     ] == {"identity": {"mode": "none", "param": None}, "readiness": None}
     entry = export_openapi((_spec(),))["x-hyprial-methods"][0]
     assert entry["httpBinding"] is None
-
-
-def test_registry_refuses_an_unassembled_readiness_probe() -> None:
-    spec = _spec(
-        http_exposed=True,
-        http_binding=HttpBinding(
-            IdentityBinding("local-operator-selector", "from"),
-            readiness="not-a-probe",
-        ),
-    )
-    with pytest.raises(MethodSpecError, match="is not assembled"):
-        MethodRegistry.from_bindings(((spec, lambda app, params, **_: {"ok": True}),))

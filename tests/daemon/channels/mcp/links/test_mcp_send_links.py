@@ -16,7 +16,6 @@ import pytest
 from mcp.client._memory import InMemoryTransport
 from mcp.client.session import ClientSession
 
-from hyprial.daemon import HOLD_REASONS
 from hyprial.daemon.impl.mcp import StatelessDaemonProxy, create_mcp_server
 from hyprial.daemon.impl.mcp.api import DaemonRequestRejected
 from hyprial.kernel import ipc_errors
@@ -137,6 +136,31 @@ async def test_reply_carries_summary() -> None:
     (call,) = factory.calls
     assert call["method"] == "message.reply"
     assert call["params"]["summary"] == "s"
+    assert "mentions" not in call["params"]
+    assert "noMention" not in call["params"]
+    assert call["mutation"] is True
+
+
+async def test_reply_forwards_mentions_and_no_mention() -> None:
+    server, factory = _server()
+
+    async with _client(server) as client:
+        result = await client.call_tool(
+            "harness_reply",
+            {
+                "messageId": "m1",
+                "summary": "s",
+                "message": "done",
+                "mentions": ["a.alphaaaaaaaaaaaaaaaaaaaa"],
+                "noMention": True,
+            },
+        )
+
+    assert result.is_error is not True
+    (call,) = factory.calls
+    assert call["method"] == "message.reply"
+    assert call["params"]["mentions"] == ["a.alphaaaaaaaaaaaaaaaaaaaa"]
+    assert call["params"]["noMention"] is True
     assert call["mutation"] is True
 
 
@@ -183,7 +207,7 @@ async def test_an_unavailable_body_keeps_the_daemon_code() -> None:
 
 async def test_a_refused_reply_is_a_tool_error_without_a_retry() -> None:
     def responder(_method: str, _params: dict[str, Any]) -> dict[str, Any]:
-        raise DaemonRequestRejected(ipc_errors.LINK_RECLAIMED, "gone")
+        raise DaemonRequestRejected(ipc_errors.CALLER_NOT_AUTHORIZED, "denied")
 
     server, factory = _server(responder)
 
@@ -193,7 +217,7 @@ async def test_a_refused_reply_is_a_tool_error_without_a_retry() -> None:
         )
 
     assert result.is_error is True
-    assert ipc_errors.LINK_RECLAIMED in result.content[0].text
+    assert ipc_errors.CALLER_NOT_AUTHORIZED in result.content[0].text
     assert len(factory.calls) == 1
 
 
@@ -203,7 +227,6 @@ async def test_a_refused_reply_is_a_tool_error_without_a_retry() -> None:
         "user:owner",
         "user:someone-else",
         "agent:op:node-1:bob",
-        "route:lark:ops",
     ],
 )
 async def test_send_keeps_the_daemon_verdict_for_every_target_kind(
@@ -212,13 +235,13 @@ async def test_send_keeps_the_daemon_verdict_for_every_target_kind(
     verdict = {
         "ok": True,
         "queued": True,
-        "holdReason": ipc_errors.LINK_WINDOW_FULL,
+        "reason": "target-not-visible",
         "deliveries": [
             {
                 "target": target,
                 "accepted": True,
                 "queued": True,
-                "holdReason": ipc_errors.LINK_WINDOW_FULL,
+                "reason": "target-not-visible",
             }
         ],
     }
@@ -235,14 +258,13 @@ async def test_send_keeps_the_daemon_verdict_for_every_target_kind(
     assert factory.calls[0]["params"]["to"] == [target]
 
 
-@pytest.mark.parametrize("reason", sorted(HOLD_REASONS))
-async def test_a_hold_is_a_successful_single_call_result(reason: str) -> None:
+async def test_a_queued_send_is_a_successful_single_call_result() -> None:
     payload = {
         "ok": True,
         "queued": True,
-        "holdReason": reason,
+        "reason": "target-not-visible",
         "deliveries": [
-            {"target": "agent:a", "accepted": True, "queued": True, "holdReason": reason}
+            {"target": "agent:a", "accepted": True, "queued": True, "reason": "target-not-visible"}
         ],
     }
     server, factory = _server(lambda _method, _params: payload)

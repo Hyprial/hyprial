@@ -16,7 +16,6 @@ from hyprial.daemon.impl.harnesses.pi.rpc_process import PiRpcProcess
 from hyprial.daemon.impl.harnesses.streaming import StreamingTurnProcess
 from hyprial.daemon.impl.harnesses.streaming import process as streaming_process
 from hyprial.daemon.impl.harnesses.streaming.protocol import _OBSERVER_STOP
-
 from ..support import (
     FAKE_PI,
     SlowQueryPiRpcClient,
@@ -102,8 +101,9 @@ def _owned_auxiliary_threads(
     )
     assert observer is not None and observer not in before
     assert relay not in before
-    assert runtime_actors
-    return (observer, relay, *runtime_actors)
+    # ABI engines run actors on the extension's threads, not Python ones.
+    assert not runtime_actors
+    return (observer, relay)
 
 
 def test_failed_native_stop_still_reclaims_every_auxiliary_thread() -> None:
@@ -114,7 +114,18 @@ def test_failed_native_stop_still_reclaims_every_auxiliary_thread() -> None:
         with pytest.raises(RuntimeError, match="did not stop after forced cleanup"):
             process.stop()
 
-        assert all(not thread.is_alive() for thread in owned)
+        # stop() signals observer shutdown, but joins it against the same 0.01s
+        # budget the failed stop already spent, so the observer can still be a
+        # few milliseconds from exiting when stop() raises. Assert the thread is
+        # reclaimed within a real deadline rather than on the very next
+        # instruction: a leaked observer never exits, a late one settles fast.
+        deadline = time.monotonic() + 2.0
+        while any(thread.is_alive() for thread in owned):
+            assert time.monotonic() < deadline, (
+                "auxiliary threads leaked after a failed stop: "
+                f"{[thread.name for thread in owned if thread.is_alive()]}"
+            )
+            time.sleep(0.005)
     finally:
         _cleanup_failed_stop(process, release)
 

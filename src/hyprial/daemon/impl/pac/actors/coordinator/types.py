@@ -95,7 +95,9 @@ class RuntimeObservation:
     interactive_online: bool = False
 
 
-class ActorRuntime(Protocol):
+class PacWorkerRuntime(Protocol):
+    """PAC worker control port (observe/start/stop one worker); not the actor engine."""
+
     def observe(self, actor_name: str) -> RuntimeObservation: ...
 
     def start(

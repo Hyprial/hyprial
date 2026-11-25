@@ -10,13 +10,16 @@ code is written. The corpus is deliberately language-neutral.
 
 | 目录 | 语料 | 钉住的产品面 |
 |---|---|---|
-| `wire/` | golden/（v1 信封 fixture + 声明式期望）、trajectory.md、trajectory.schema.json、message-sender-auth.md、send-links.md、send-links.json | kernel 的 wire 词汇表 + daemon 消息面（含 send links：summary/body、hold、link/outbox/top、载体与错误码） |
+| `wire/` | golden/（v1 信封 fixture + 声明式期望）、trajectory.md、trajectory.schema.json、message-sender-auth.md、daemon-bootstrap-auth.md、daemon-bootstrap-auth.schema.json、local-ipc-endpoint.md、local-ipc-endpoint-samples.json | kernel 的 wire 词汇表 + daemon 消息面 + GUI control 绑定/凭据签发与 catalog 门 + 本机 IPC 端点约定（POSIX socket / Windows pipe 端点文件与校验样例） |
 | `cli-blackbox/` | 调用已安装的 `hyprial`，断言 JSON/退出行为 | shell 命令面（`hyprial.cli:main` 对外契约） |
 | `mcp-tools/` | 经固定身份 server 调用全部公开 MCP 工具（官方 SDK + fake Unix-daemon） | daemon 的 MCP 工具面 |
 | `daemon-lifecycle/` | 证明干净启动与崩溃启动走同一 desired-state 恢复路径 | daemon 生命周期/恢复 |
-| `workers/` | python-worker、user-proxy、pi-attach-probe 的进程协议 schema + 帧校验 | daemon 的 harnesses（worker 进程协议） |
+| `workers/` | python-worker、pi-attach-probe 的进程协议 schema + 帧校验 | daemon 的 harnesses（worker 进程协议） |
+| `agent-teleport/` | README（key、帧、chunk 语义与错误码） | daemon 的 agent teleport wire（库，切片 2；未接入 daemon 面） |
 | `inbox-watch/` | cases/（双 lane 事件流黄金用例）、README（规格） | 各客户端 harness 共用的收件箱等待状态机（Python 核心 + TS 移植） |
 | `pac/` | context、events、remote——派单协议族 | daemon 的 PAC 派单域 |
+| `gui-session/` | README（规范）、gui-session.v1.json（路由/头/cookie/限额/封闭错误表/会话体 schema/版本协商） | GUI 浏览器会话契约：JS 客户端与同源 Python 会话 host（`src/hyprial/shell/impl/gui/host/`；Node host 已于 2026-11-16 删除）之间的 `/daemon/*`；双侧校验：`gui/tests/daemon-request-host/` 的 conformance 套件经 `gui/tests/support/python-host.ts` 启动 Python host 并把它与 JS 客户端对到该语料，`tests/shell/gui/host/` 把 host 常量对到该语料，不进 `run-all.sh` |
+| `cli/` | README、surface.json（命令面快照）、gui-startup-record.v1.json（`hyprial gui --json` 启动流的 schema、退出码与示例） | shell 命令面快照与 GUI 启动记录契约；由 `tests/shell/cli/surface/` 与 `tests/tooling/contracts/cli_startup/` 校验，启动记录不进 `run-all.sh` |
 | `e2e/` | 可执行端到端流程与证据闸门（E2E-001…，ROADMAP.md G1 的载体） | 全链路（跨模块验收） |
 | `migration/` | 迁移切换演练（drill） | daemon/identity 的迁移路径 |
 

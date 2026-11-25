@@ -1,4 +1,8 @@
-"""The ``hyprial message targets`` delivery-target overview command."""
+"""The ``hyprial message targets`` delivery-target overview command.
+
+Decision notes (I4b, 2026-11-24): the daemon no longer lists
+``channel_route`` rows; the filter vocabulary stays agent and user.
+"""
 
 from __future__ import annotations
 
@@ -7,14 +11,11 @@ from hyprial.shell.impl.cli.output import CliResult
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import typer
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.message import message_app
-# Allen/R2 (B9): the CLI filter vocabulary drops ``channel_route``; configured
-# outbound routes are managed through ``adapter route list``.  An unfiltered
-# ``message targets`` may still surface channel-route rows from the daemon.
 _TARGETS_KIND_OPTIONS = ("agent", "user")
 
 
@@ -22,8 +23,7 @@ def _render_targets(rows: list[JsonObject]) -> str:
     """Plain-text table in the ``hyprial agent top`` style: preamble, header, columns.
 
     targets lists delivery promises only (Allen's definition), so every row
-    is deliverable by construction; the KIND column stays because user and
-    channel_route rows join once their delivery paths are verified.
+    is deliverable by construction; the KIND column tells agents from users.
     """
 
     headers = ["TARGET", "KIND", "STATUS", "hosted", "hostedBy"]
@@ -65,10 +65,10 @@ def message_targets(
 ) -> None:
     """List live delivery targets.
 
-    A target is a delivery promise (Allen): connectors (``agent``) and owners
-    with a completed squire profile (``user``).  Configured outbound
-    ``channel_route`` entries are managed through ``adapter route list``.
-    Nodes are network peers, not targets — see ``hyprial host list``.
+    A target is a delivery promise (Allen): connectors (``agent``) and the
+    owner while a message to them is queued on this node (``user``).  Configured
+    adapter routes are managed through ``adapter route list``.  Nodes are network
+    peers, not targets — see ``hyprial host list``.
     """
     services = get_services()
 
@@ -76,7 +76,7 @@ def message_targets(
         services = get_services()
         if kind is not None and kind not in _TARGETS_KIND_OPTIONS:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "--kind must be agent or user",
             )
         params: JsonObject = {}

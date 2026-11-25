@@ -3,7 +3,7 @@
 基线：`4a51775186e3e6087bde7c5826980d195333ed65`。主设计见 [design.md](design.md)。
 
 2026-10-28：本表记录旧基线事实与当时的迁移提案，**不是 agent move 最终命令树**。
-`agent move`、`agent host-invite`、隐藏 transfer 入口及其拟新增方法须按[跨线协调记录](coordination-2026-10-28.md)
+`agent move`、隐藏 transfer 入口及其拟新增方法须按[跨线协调记录](coordination-2026-10-28.md)
 与 [A 提案的 R4 活动命令表](cli-surface.md) 对齐；用户已选择不可变单/八动作，
 本表的旧 `transfer.*` 拟议名不再是 move 目标契约，不能据此批量固化旧命名。
 本表 DR 编号仅保留首版任务索引；新的 A/B/C 归属与审批流程见 [A 提案](cli-surface.md)。
@@ -86,7 +86,6 @@ I 不表示迁移已经完成，仍须去掉间接业务调用和旧导入。全
 | 命令（省略 hyprial） | 标记 | 类别 | 已有 IPC 线索 | 目标 / 验收边界 | 来源 |
 | --- | --- | --- | --- | --- | --- |
 | `agent create` | — | I | `agent.create`, `agent.provider.login` | 已有 RPC；将默认 provider 选择等业务下沉到同一后端操作 | [agent_create](../../../src/hyprial/shell/impl/cli/commands/agent/create.py#L17) |
-| `agent host-invite` | — | I | `agent.host-invite` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染 | [agent_host_invite](../../../src/hyprial/shell/impl/cli/commands/agent/create.py#L106) |
 | `agent list` | — | I | `agent.list` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染 | [agent_list](../../../src/hyprial/shell/impl/cli/commands/agent/admin.py#L41) |
 | `agent readiness` | — | I | `agent.readiness` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染 | [agent_readiness](../../../src/hyprial/shell/impl/cli/commands/agent/home.py#L30) |
 | `agent ensure-home` | — | I | `agent.ensure-home`, `agent.home-census`, `agent.list` | 保留 ensure-home/census/list 的语义，业务选择在后端完成 | [agent_ensure_home](../../../src/hyprial/shell/impl/cli/commands/agent/home.py#L126) |
@@ -199,12 +198,7 @@ I 不表示迁移已经完成，仍须去掉间接业务调用和旧导入。全
 
 ## link
 
-| 命令（省略 hyprial） | 标记 | 类别 | 已有 IPC 线索 | 目标 / 验收边界 | 来源 |
-| --- | --- | --- | --- | --- | --- |
-| `link list` | — | I | `link.list` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染 | [link_list](../../../src/hyprial/shell/impl/cli/commands/link/commands.py#L40) |
-| `link stats` | — | I | `link.stats` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染 | [link_stats](../../../src/hyprial/shell/impl/cli/commands/link/commands.py#L65) |
-| `link add` | — | I | `link.add` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染 | [link_add](../../../src/hyprial/shell/impl/cli/commands/link/commands.py#L90) |
-| `link drop` | — | I | `link.drop` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染 | [link_drop](../../../src/hyprial/shell/impl/cli/commands/link/commands.py#L124) |
+`agent link` 已退役。当前 CLI 树不再登记 link 命令，`link.*` 仅作为历史迁移词汇，不是可调用的 IPC 方法。
 
 ## log
 

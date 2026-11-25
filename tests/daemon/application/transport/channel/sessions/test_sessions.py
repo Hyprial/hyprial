@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 import pytest
 from hyprial.daemon.impl.application import DaemonRequestError
@@ -10,7 +11,6 @@ from hyprial.daemon.impl.composition.views import AgentIdentityProjectionView
 from hyprial.daemon.impl.operations.session_ports import RefreshSessionCommand, RegisterSessionCommand
 
 from ..support import (
-    CANONICAL,
     FakeInbox,
     IPC_WAIT_SECONDS,
     ROUTE_PROGRESS_SECONDS,
@@ -20,9 +20,11 @@ from ..support import (
     _register_channel_session,
     _wire_real_presence,
     application,
+    official_address,
     pending_message,
     register,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_codex_session_register_persists_complete_process_fence(
@@ -242,8 +244,9 @@ def test_steady_heartbeat_skips_route_ensure_but_repairs_a_lost_route(
     routes = Routes()
     app._routes = routes  # type: ignore[assignment]
     register(app)
+    address = official_address(app)
     owner_lease = "session:session-1"
-    assert owner_lease in routes.owners(CANONICAL)
+    assert owner_lease in routes.owners(address)
     routes.ensures.clear()
 
     result = app.handle(
@@ -252,14 +255,14 @@ def test_steady_heartbeat_skips_route_ensure_but_repairs_a_lost_route(
     assert result["alive"] is True
     assert routes.ensures == []
 
-    routes.drop(CANONICAL, owner_lease=owner_lease)
-    assert owner_lease not in routes.owners(CANONICAL)
+    routes.drop(address, owner_lease=owner_lease)
+    assert owner_lease not in routes.owners(address)
     result = app.handle(
         "session.heartbeat", {"actor": "alice", "sessionRef": "session-1"}
     )
     assert result["alive"] is True
-    assert routes.ensures == [(CANONICAL, owner_lease)]
-    assert owner_lease in routes.owners(CANONICAL)
+    assert routes.ensures == [(address, owner_lease)]
+    assert owner_lease in routes.owners(address)
 
 
 def test_displaced_session_heartbeat_cannot_restore_liveness_or_route(
@@ -294,15 +297,16 @@ def test_displaced_session_heartbeat_cannot_restore_liveness_or_route(
     app._routes = routes  # type: ignore[assignment]
     app.handle("agent.create", {"name": "alice"})
     register(app)
+    address = official_address(app)
     owner_lease = "session:session-1"
-    app._agent_liveness.release(CANONICAL)
+    app._agent_liveness.release(address)
     app._agent_liveness.bind(
-        CANONICAL,
+        address,
         harness="codex",
         runtime="headless",
         session_id="other-session",
     )
-    routes.drop(CANONICAL, owner_lease=owner_lease)
+    routes.drop(address, owner_lease=owner_lease)
     routes.ensures.clear()
 
     with pytest.raises(DaemonRequestError) as captured:
@@ -311,7 +315,7 @@ def test_displaced_session_heartbeat_cannot_restore_liveness_or_route(
         )
 
     assert captured.value.code == "AGENT_ALREADY_RUNNING"
-    binding = app._agent_liveness.binding(CANONICAL)
+    binding = app._agent_liveness.binding(address)
     assert binding is not None
     assert (binding.harness, binding.runtime, binding.session_id) == (
         "codex",
@@ -319,7 +323,7 @@ def test_displaced_session_heartbeat_cannot_restore_liveness_or_route(
         "other-session",
     )
     assert routes.ensures == []
-    assert owner_lease not in routes.owners(CANONICAL)
+    assert owner_lease not in routes.owners(address)
 
 
 @pytest.mark.parametrize("takeover", [False, True], ids=["release", "takeover"])
@@ -355,8 +359,9 @@ def test_binding_change_after_heartbeat_observation_is_fenced_atomically(
     app._routes = routes  # type: ignore[assignment]
     app.handle("agent.create", {"name": "alice"})
     register(app)
+    address = official_address(app)
     owner_lease = "session:session-1"
-    routes.drop(CANONICAL, owner_lease=owner_lease)
+    routes.drop(address, owner_lease=owner_lease)
     routes.ensures.clear()
 
     binding_observed = threading.Event()
@@ -365,7 +370,7 @@ def test_binding_change_after_heartbeat_observation_is_fenced_atomically(
 
     def paused_binding_key(self, actor):  # type: ignore[no-untyped-def]
         result = real_binding_key(self, actor)
-        if actor == CANONICAL and not binding_observed.is_set():
+        if actor == address and not binding_observed.is_set():
             binding_observed.set()
             assert resume_heartbeat.wait(IPC_WAIT_SECONDS)
         return result
@@ -388,17 +393,17 @@ def test_binding_change_after_heartbeat_observation_is_fenced_atomically(
     worker = threading.Thread(target=heartbeat, name="racing-heartbeat", daemon=True)
     worker.start()
     assert binding_observed.wait(IPC_WAIT_SECONDS)
-    app._agent_liveness.release(CANONICAL)
+    app._agent_liveness.release(address)
     takeover_heartbeat = None
     if takeover:
         app._agent_liveness.bind(
-            CANONICAL,
+            address,
             harness="codex",
             runtime="headless",
             session_id="headless-1",
         )
         takeover_heartbeat = (
-            app._agent_session_domains.agent._liveness._heartbeats[CANONICAL]
+            app._agent_session_domains.agent._liveness._heartbeats[address]
         )
     try:
         resume_heartbeat.set()
@@ -407,7 +412,7 @@ def test_binding_change_after_heartbeat_observation_is_fenced_atomically(
         resume_heartbeat.set()
     assert not worker.is_alive()
 
-    binding = app._agent_liveness.binding(CANONICAL)
+    binding = app._agent_liveness.binding(address)
     assert binding is not None
     if takeover:
         assert result == []
@@ -420,9 +425,9 @@ def test_binding_change_after_heartbeat_observation_is_fenced_atomically(
             "headless-1",
         )
         assert routes.ensures == []
-        assert owner_lease not in routes.owners(CANONICAL)
+        assert owner_lease not in routes.owners(address)
         assert (
-            app._agent_session_domains.agent._liveness._heartbeats[CANONICAL]
+            app._agent_session_domains.agent._liveness._heartbeats[address]
             == takeover_heartbeat
         )
     else:
@@ -433,11 +438,11 @@ def test_binding_change_after_heartbeat_observation_is_fenced_atomically(
             "interactive",
             "session-1",
         )
-        assert routes.ensures == [(CANONICAL, owner_lease)]
-        assert owner_lease in routes.owners(CANONICAL)
+        assert routes.ensures == [(address, owner_lease)]
+        assert owner_lease in routes.owners(address)
         assert (
             app._agent_session_domains.agent.read_runtime(
-                CANONICAL
+                address
             ).heartbeat_age_seconds
             is not None
         )
@@ -514,12 +519,13 @@ def test_delayed_older_register_result_cannot_reopen_superseded_route(
     )
     first.start()
     assert first_result_ready.wait(IPC_WAIT_SECONDS)
+    address = official_address(app)
     second.start()
     assert second_finished.wait(ROUTE_PROGRESS_SECONDS)
     try:
         session_owners = {
             owner
-            for owner in route_owners.get(CANONICAL, set())
+            for owner in route_owners.get(address, set())
             if owner.startswith("session:")
         }
         assert session_owners == {"session:session-2"}
@@ -532,7 +538,7 @@ def test_delayed_older_register_result_cannot_reopen_superseded_route(
     assert not second.is_alive()
     session_owners = {
         owner
-        for owner in route_owners.get(CANONICAL, set())
+        for owner in route_owners.get(address, set())
         if owner.startswith("session:")
     }
     assert session_owners == {"session:session-2"}
@@ -589,9 +595,10 @@ def test_ipc_register_requests_execute_in_arrival_order_atomically(
     assert _finish_ipc_request(first, first_client)["id"] == "register-1"
     assert _finish_ipc_request(second, second_client)["id"] == "register-2"
     current = app.desired_state.load().interactive_sessions[0]
+    address = official_address(app)
     assert current.session_ref == "session-2"
-    assert app._channel_current_epoch(CANONICAL, "session-2") == app.epoch
-    assert app._agent_session_domains.session.read_runtime(CANONICAL).alive
+    assert app._channel_current_epoch(address, "session-2") == app.epoch
+    assert app._agent_session_domains.session.read_runtime(address).alive
 
 
 def test_ipc_unregister_then_register_preserves_new_session_state(
@@ -649,9 +656,10 @@ def test_ipc_unregister_then_register_preserves_new_session_state(
     assert _finish_ipc_request(first, first_client)["id"] == "unregister-old"
     assert _finish_ipc_request(second, second_client)["id"] == "register-new"
     current = app.desired_state.load().interactive_sessions[0]
+    address = official_address(app)
     assert current.session_ref == "new-session"
-    assert app._channel_current_epoch(CANONICAL, "new-session") == app.epoch
-    assert app._agent_session_domains.session.read_runtime(CANONICAL).alive
+    assert app._channel_current_epoch(address, "new-session") == app.epoch
+    assert app._agent_session_domains.session.read_runtime(address).alive
 
 
 def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
@@ -670,12 +678,14 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
             "channelConfirmed": True,
         },
     )
+    address = official_address(app)
+    app._inbox.pending = replace(app._inbox.pending, recipient=address)
     result = app.handle(
         "message.pending.list", {"actor": "alice", "sessionRef": "session-1"}
     )
 
     assert registered["registered"] is True
-    assert app.desired_state.load().interactive_sessions[0].actor == CANONICAL
+    assert app.desired_state.load().interactive_sessions[0].actor == address
     assert result == {
         "ok": True,
         "daemonEpoch": app.epoch,
@@ -684,8 +694,8 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
                 "messageId": "message-1",
                 "deliveryId": "message-1",
                 "conversationId": "conversation-1",
-                "from": "agent:bob",
-                    "to": CANONICAL,
+                "from": "agent:op:node-1:bob",
+                    "to": address,
                     "intent": "request",
                     "kind": "message",
                     "summary": None,
@@ -710,17 +720,17 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
     app._transport = transport  # type: ignore[assignment]
     from hyprial.daemon.impl.inbox.tracking.fetch_receipts import FetchReceiptPublisher
 
-    app._fetch_receipt_publisher = FetchReceiptPublisher(transport)
+    app._fetch_receipt_publisher = FetchReceiptPublisher(transport, actor_host=new_actor_host())
 
     fetched = app.handle(
         "message.pending.list",
         {"actor": "alice", "sessionRef": "session-1", "fetched": True},
     )
     assert fetched["messages"] == result["messages"]
-    assert app._inbox.fetches == [CANONICAL]
+    assert app._inbox.fetches == [address]
     assert app._fetch_receipt_publisher.close()
     assert transport.puts == [
-        ("hyprial/v1/fetch-receipt/agent:bob/message-1", b"ack")
+        ("hyprial/v1/fetch-receipt/agent:op:node-1:bob/message-1", b"ack")
     ]
 
     # The body is no longer a pending-row field; ``message.read_body`` carries
@@ -807,12 +817,12 @@ def test_non_channel_and_wrong_session_cannot_refresh_channel_generation(
     ]
     assert (
         "channelCurrentThisGeneration"
-        not in statuses["agent:op:node-1:pi-worker"]
+        not in statuses[official_address(app, "pi-worker")]
     )
-    assert statuses["agent:op:node-1:channel"][
+    assert statuses[official_address(app, "channel")][
         "channelCurrentThisGeneration"
     ] is False
-    assert statuses["agent:op:node-1:channel"]["channelCurrentEpoch"] is None
+    assert statuses[official_address(app, "channel")]["channelCurrentEpoch"] is None
 
 
 def test_actor_online_and_online_actors_agree_for_interactive_session(
@@ -836,21 +846,23 @@ def test_actor_online_and_online_actors_agree_for_interactive_session(
     clock = {"now": 0.0}
     app._clock = lambda: clock["now"]  # type: ignore[assignment]
 
+    _register_channel_session(app, directory)
+    address = official_address(app)
+
     def agrees() -> bool:
-        return presence.actor_online(CANONICAL) == (  # type: ignore[union-attr]
-            CANONICAL in presence.online_actors()  # type: ignore[union-attr]
+        return presence.actor_online(address) == (  # type: ignore[union-attr]
+            address in presence.online_actors()  # type: ignore[union-attr]
         )
 
-    _register_channel_session(app, directory)
-    assert presence.actor_online(CANONICAL) is True  # type: ignore[union-attr]
+    assert presence.actor_online(address) is True  # type: ignore[union-attr]
     assert agrees()
 
     clock["now"] += _INTERACTIVE_HEARTBEAT_TTL_SECONDS + 1.0
-    assert presence.actor_online(CANONICAL) is False  # type: ignore[union-attr]
+    assert presence.actor_online(address) is False  # type: ignore[union-attr]
     assert agrees()
 
     app.handle("session.refresh", {"actor": "alice", "sessionRef": "session-1"})
-    assert presence.actor_online(CANONICAL) is True  # type: ignore[union-attr]
+    assert presence.actor_online(address) is True  # type: ignore[union-attr]
     assert agrees()
 
 

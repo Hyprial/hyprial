@@ -1,23 +1,34 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Imports GUEST_WORKER_STATE from hyprial.kernel.impl.manysys.interface so the
+#   in-container POSIX runtime mount constant lives in the platform seam while
+#   preserving its exact protocol value.
 """Narrow IPC surface for one managed worker; no host administration paths."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import NAMESPACE_URL, uuid5
 
 from hyprial.kernel.impl.contracts.daemon import ipc_errors
+from hyprial.kernel.impl.manysys.interface import GUEST_WORKER_STATE
 from hyprial.kernel.impl.primitives.uri import parse_agent_uri
 
-GUEST_WORKER_STATE = "/run/hyprial-worker"
 GUEST_WORKER_SOCKET = GUEST_WORKER_STATE + "/daemon.sock"
 MAX_FRAME_BYTES = 8 * 1024 * 1024
+SUMMARY_MAX_BYTES = 512
+SUMMARY_REQUIRED_DATA_KEYS = ("summaryBytes", "maxBytes")
+IPC_MESSAGE_READ_BODY = "message.read_body"
+SettleHint = Literal["ack", "keep"]
+IPC_MESSAGE_SETTLE_HINT = "message.settle_hint"
 
-# Only the actual managed MCP/Pi tools, not the interactive registration loop.
 # targets retains today's visibility; AT09 owns filtering, not this boundary.
 METHOD_PARAMS = {
     "identity.whoami": frozenset(),
+    "routine.plan": frozenset({"yaml", "label"}),
+    "agent.grant.check": frozenset({"scenario"}),
+    "agent.grant.visibility": frozenset({"scenario"}),
     "targets": frozenset({"kind"}),
     "message.pending.list": frozenset({"fetched"}),
     # Coalesced batch read: cursor replay and successor capture.  There is
@@ -26,7 +37,7 @@ METHOD_PARAMS = {
     "message.pending.batch": frozenset({"cursor", "afterCursor"}),
     "progress.list": frozenset({"deliveryId", "sinceSeq"}),
     "message.send": frozenset({"to", "message", "summary"}),
-    "message.reply": frozenset({"messageId", "message", "summary"}),
+    "message.reply": frozenset({"messageId", "message", "summary", "mentions", "noMention"}),
     "message.ack": frozenset({"messageId"}),
     # Literal by necessity: kernel cannot import the daemon's ports module.
     # tests/daemon/application/transport/channel/summary pins these equal to

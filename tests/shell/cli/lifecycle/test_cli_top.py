@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import re
-
 import pytest
 from typer.testing import CliRunner
 
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
-from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
+import hyprial.daemon.impl.operations.top as daemon_top
 import hyprial.shell.impl.cli.commands.daemon.top as _cli_owner_1
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
@@ -96,8 +94,8 @@ _FAKE_PS = {
 def test_top_renders_verdicts_and_subtree_totals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: _snapshot())
-    monkeypatch.setattr(_cli_get_services(), "_sample_process_table", lambda: dict(_FAKE_PS))
+    monkeypatch.setattr(_cli_support, "_daemon_request", lambda method, *_a, **_k: daemon_top.inspect_snapshot(_snapshot()) if method == "top.inspect" else _snapshot())
+    monkeypatch.setattr(daemon_top, "_sample_process_table", lambda: dict(_FAKE_PS))
 
     result = CliRunner().invoke(_cli_root_app, ["agent", "top"], color=False)
 
@@ -120,12 +118,12 @@ def test_top_renders_verdicts_and_subtree_totals(
     # sit between Q and the verdict.
     stuck_line = next(line for line in out.splitlines() if "wk-stuck" in line)
     tokens = stuck_line.split()
-    assert tokens[tokens.index("\u26a0") - 4] == "1"
+    assert tokens[tokens.index("\u26a0") - 1] == "1"
 
 
 def test_top_wide_shows_cpu_percent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: _snapshot())
-    monkeypatch.setattr(_cli_get_services(), "_sample_process_table", lambda: dict(_FAKE_PS))
+    monkeypatch.setattr(_cli_support, "_daemon_request", lambda method, *_a, **_k: daemon_top.inspect_snapshot(_snapshot()) if method == "top.inspect" else _snapshot())
+    monkeypatch.setattr(daemon_top, "_sample_process_table", lambda: dict(_FAKE_PS))
 
     result = CliRunner().invoke(_cli_root_app, ["agent", "top", "--wide"], color=False)
 
@@ -213,8 +211,8 @@ _QUOTA = {
 def test_top_renders_quota_footer(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshot = _snapshot()
     snapshot["quota"] = _QUOTA
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: snapshot)
-    monkeypatch.setattr(_cli_get_services(), "_sample_process_table", lambda: dict(_FAKE_PS))
+    monkeypatch.setattr(_cli_support, "_daemon_request", lambda method, *_a, **_k: daemon_top.inspect_snapshot(snapshot) if method == "top.inspect" else snapshot)
+    monkeypatch.setattr(daemon_top, "_sample_process_table", lambda: dict(_FAKE_PS))
 
     result = CliRunner().invoke(_cli_root_app, ["agent", "top"], color=False)
 
@@ -270,7 +268,7 @@ def test_top_quota_marks_backoff_served_data() -> None:
 
 
 def test_top_json_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: _snapshot())
+    monkeypatch.setattr(_cli_support, "_daemon_request", lambda method, *_a, **_k: daemon_top.inspect_snapshot(_snapshot()) if method == "top.inspect" else _snapshot())
 
     result = CliRunner().invoke(_cli_root_app, ["agent", "top", "--json"], color=False)
 
@@ -290,8 +288,8 @@ def test_top_renders_with_zero_connectors(monkeypatch: pytest.MonkeyPatch) -> No
     snapshot = _snapshot()
     snapshot["actors"] = []
     snapshot["stranded"] = []
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: snapshot)
-    monkeypatch.setattr(_cli_get_services(), "_sample_process_table", lambda: dict(_FAKE_PS))
+    monkeypatch.setattr(_cli_support, "_daemon_request", lambda method, *_a, **_k: daemon_top.inspect_snapshot(snapshot) if method == "top.inspect" else snapshot)
+    monkeypatch.setattr(daemon_top, "_sample_process_table", lambda: dict(_FAKE_PS))
 
     result = CliRunner().invoke(_cli_root_app, ["agent", "top"], color=False)
 
@@ -300,69 +298,71 @@ def test_top_renders_with_zero_connectors(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_parse_ps_duration_formats() -> None:
-    assert _cli_owner_1._parse_ps_duration("0:02.65") == pytest.approx(2.65)
-    assert _cli_owner_1._parse_ps_duration("07:35:34") == pytest.approx(7 * 3600 + 35 * 60 + 34)
-    assert _cli_owner_1._parse_ps_duration("2-03:04:05") == pytest.approx(
+    assert daemon_top._parse_ps_duration("0:02.65") == pytest.approx(2.65)
+    assert daemon_top._parse_ps_duration("07:35:34") == pytest.approx(7 * 3600 + 35 * 60 + 34)
+    assert daemon_top._parse_ps_duration("2-03:04:05") == pytest.approx(
         2 * 86400 + 3 * 3600 + 4 * 60 + 5
     )
-    assert _cli_owner_1._parse_ps_duration("not-a-time") is None
+    assert daemon_top._parse_ps_duration("not-a-time") is None
 
 
-def test_top_renders_link_columns_and_dashes_when_absent(
+def test_top_omits_removed_link_columns_in_table_and_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: _snapshot())
-    monkeypatch.setattr(_cli_get_services(), "_sample_process_table", lambda: dict(_FAKE_PS))
+    monkeypatch.setattr(_cli_support, "_daemon_request", lambda method, *_a, **_k: daemon_top.inspect_snapshot(_snapshot()) if method == "top.inspect" else _snapshot())
+    monkeypatch.setattr(daemon_top, "_sample_process_table", lambda: dict(_FAKE_PS))
 
     result = CliRunner().invoke(_cli_root_app, ["agent", "top"], color=False)
 
     assert result.exit_code == 0, result.output
     header = next(line for line in result.output.splitlines() if "ACTOR" in line)
     tokens = header.split()
-    assert tokens[-7:] == ["Q", "W", "OUT", "INJQ", "LEGACY", "RUN", "STATE"]
-    # The fixture snapshot carries none of the three link fields: every row
-    # must dash them out instead of crashing or inventing a zero.
-    stuck_line = next(line for line in result.output.splitlines() if "wk-stuck" in line)
-    assert re.search("\u2014\\s+\u2014\\s+\u2014", stuck_line)
+    assert tokens[-4:] == ["Q", "LEGACY", "RUN", "STATE"]
+    for col in ("W", "OUT", "INJQ"):
+        assert col not in tokens
 
-
-def test_top_renders_link_counters_and_dashes_on_wrong_types(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    snapshot = _snapshot()
-    actors = snapshot["actors"]
-    assert isinstance(actors, list)
-    actors[0]["capacityW"] = 6
-    actors[0]["outboundInFlight"] = 2
-    actors[0]["inboundAwaitingInjection"] = 0
-    actors[1]["capacityW"] = None
-    actors[1]["outboundInFlight"] = "6"
-    actors[1]["inboundAwaitingInjection"] = True
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: snapshot)
-    monkeypatch.setattr(_cli_get_services(), "_sample_process_table", lambda: dict(_FAKE_PS))
-
-    result = CliRunner().invoke(_cli_root_app, ["agent", "top"], color=False)
-
-    assert result.exit_code == 0, result.output
-    stuck_line = next(line for line in result.output.splitlines() if "wk-stuck" in line)
-    # 0 is a real reading and must never render as a dash; a None, a string
-    # or a bool is not an int reading and must.
-    assert re.search(r"6\s+2\s+0", stuck_line)
-    ok_line = next(line for line in result.output.splitlines() if "wk-ok" in line)
-    assert re.search("\u2014\\s+\u2014\\s+\u2014", ok_line)
-
-
-def test_top_json_never_invents_link_counters(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     import json
 
-    monkeypatch.setattr(_cli_support, "_daemon_request", lambda *_a, **_k: _snapshot())
-
-    result = CliRunner().invoke(_cli_root_app, ["agent", "top", "--json"], color=False)
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    json_res = CliRunner().invoke(_cli_root_app, ["agent", "top", "--json"], color=False)
+    assert json_res.exit_code == 0, json_res.output
+    payload = json.loads(json_res.stdout)
     assert "capacityW" not in payload["actors"][0]
     assert "outboundInFlight" not in payload["actors"][0]
     assert "inboundAwaitingInjection" not in payload["actors"][0]
+
+
+def test_top_text_and_json_keep_distinct_methods_and_timeouts(monkeypatch):
+    calls = []
+    snapshot = _snapshot()
+
+    def request(method, *args, **kwargs):
+        calls.append((method, args, kwargs))
+        return snapshot
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", request)
+    runner = CliRunner()
+    assert runner.invoke(_cli_root_app, ["agent", "top"]).exit_code == 0
+    assert calls[-1][0] == "top.inspect"
+    assert calls[-1][2]["timeout_allowance"] == 5.0
+    assert "timeout" not in calls[-1][2]
+    assert runner.invoke(_cli_root_app, ["agent", "top", "--json"]).exit_code == 0
+    assert calls[-1][0] == "top.snapshot"
+    assert "timeout" not in calls[-1][2]
+    assert "timeout_allowance" not in calls[-1][2]
+
+
+def test_top_text_old_daemon_fails_without_local_sampling(monkeypatch):
+    from hyprial.kernel import RequestPortError
+
+    calls = []
+
+    def unavailable(method, *args, **kwargs):
+        calls.append(method)
+        raise RequestPortError("METHOD_NOT_FOUND", "unknown daemon method top.inspect")
+
+    monkeypatch.setattr(_cli_support, "_daemon_request", unavailable)
+    monkeypatch.setattr(daemon_top, "_sample_process_table", lambda: pytest.fail("local sample"))
+    result = CliRunner().invoke(_cli_root_app, ["agent", "top"])
+    assert result.exit_code == 1
+    assert "unknown daemon method top.inspect" in result.output
+    assert calls == ["top.inspect"]

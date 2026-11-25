@@ -1,17 +1,30 @@
-"""Caller identity, sender authentication and send/channel/org enforcement."""
+"""Caller identity, sender authentication and send/org enforcement.
+
+Decision notes (I4b, owner items Q0-a and Q0-d, 2026-11-23): the
+``route:<adapter>:<route>`` target is gone, so ``message.send`` has no
+channel entry point left and ``_enforce_channel`` is deleted; the send-to
+ledger no longer skips route targets because there are none.
+"""
 
 from __future__ import annotations
 
-from __future__ import annotations
+from collections.abc import Callable
 from dataclasses import dataclass
+import re
+import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import (
     lark_reply_adapter,
 )
-from hyprial.daemon.impl.api import visible_message_origin
+from hyprial.daemon.impl.api import (
+    ORIGIN_CHAT_KINDS,
+    ORIGIN_FIELD_MAX_CHARS,
+    origin_sender,
+    visible_message_origin,
+)
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
-from hyprial.daemon.impl.identity import IdentityResolverError
 from hyprial.daemon.impl.configuration.identity import (
     classify_target_identity,
     normalize_agent_recipient,
@@ -30,19 +43,18 @@ from hyprial.identity import (
     GRANTABLE_CAPABILITIES,
     CapabilityRecord,
     Principal,
-    check_channel,
     check_org_context,
 )
 from hyprial.kernel import (
     ADAPTER_URI_PREFIX,
     AGENT_URI_PREFIX,
-    CHANNEL_URI_PREFIX,
     RESERVED_AGENT_ACTOR_NAMES,
     TARGET_KIND_AGENT,
-    TARGET_KIND_CHANNEL_ROUTE,
     agent_uri_actor,
-    canonical_agent_uri,
+    is_agent_id_segment,
+    member_actor_parts,
     canonical_user_uri,
+    is_own_user_uri,
     parse_agent_uri,
 )
 if TYPE_CHECKING:
@@ -52,7 +64,7 @@ from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _actor,
 )
-from hyprial.daemon.impl.links.ports import (
+from hyprial.kernel.interface import (
     IPC_MESSAGE_READ_BODY,
     IPC_MESSAGE_SETTLE_HINT,
 )
@@ -63,6 +75,8 @@ from hyprial.daemon.impl.links.ports import (
 #: ``message.ack`` here (WP3): same identity rule, same read keys.
 _CONSUMER_METHODS = frozenset(
     {
+        "conversations.history",
+        "conversations.list",
         "message.ack",
         "message.history",
         "message.pending.batch",
@@ -86,46 +100,33 @@ _AUTH_LOG_IDENTITY_MAX_CHARS = 256
 
 _LOCAL_ADAPTER_IDENTITIES = frozenset({"lark-adapter"})
 
-_SENDER_TEXT_FIELDS = (
-    "kind",
-    "platformId",
-    "unionId",
-    "displayName",
-    "owner",
-    "standing",
-    "source",
-    "userKey",
-    "userKind",
-    "nickname",
-    "realName",
-)
-
-_SENDER_STANDINGS = frozenset({"verified", "observed", "ambiguous", "unresolved"})
-
-_SENDER_FIELD_MAX_CHARS = 256
 
 
 def _visible_message_origin(body: object, sender: str) -> JsonObject:
     return visible_message_origin(body, sender)
 
 
-def _message_origin(metadata: object) -> JsonObject | None:
+def _message_origin(
+    metadata: object, *, on_unparsable: Callable[[object], None] | None = None
+) -> JsonObject | None:
     """Carry a message's reported origin through to its reader.
 
     ``None`` means the adapter said nothing, which a reader must keep distinct
     from any particular answer: "unknown" and "a direct message" are different
-    facts, and only one of them is safe to act on.  The block stays
-    adapter-scoped rather than flattened into a generic key, because a bare
-    ``chatType`` would claim a meaning that the other adapters never agreed to.
+    facts.  Only the generic facts every adapter kind can state are carried:
+    the chat kind, the sender's platform account, the platform message id and
+    time.  Adapter-private metadata stays with the adapter.  The sender block
+    names the platform account and its observed display name, nothing more:
+    an IM sender is whoever owns that account, and no field judges who that is.
     """
 
     if not isinstance(metadata, dict):
         return None
     origin: JsonObject = {}
-    chat_type = metadata.get("chatType")
-    if isinstance(chat_type, str) and chat_type:
-        origin["chatType"] = chat_type
-    sender = _reported_sender(metadata.get("sender"))
+    chat_kind = metadata.get("chatKind")
+    if isinstance(chat_kind, str) and chat_kind in ORIGIN_CHAT_KINDS:
+        origin["chatKind"] = chat_kind
+    sender = origin_sender(metadata.get("sender"))
     if sender is not None:
         origin["sender"] = sender
     if not origin:
@@ -133,37 +134,146 @@ def _message_origin(metadata: object) -> JsonObject | None:
     reported_by = metadata.get("provider")
     if isinstance(reported_by, str) and reported_by:
         origin["provider"] = reported_by
+    platform_message_id = metadata.get("messageId")
+    if isinstance(platform_message_id, str) and platform_message_id:
+        origin["platformMessageId"] = platform_message_id[:ORIGIN_FIELD_MAX_CHARS]
+    created_at, state = _platform_created_at(metadata.get("createTime"))
+    if created_at is not None:
+        origin["platformCreatedAt"] = created_at
+    elif state == "unparsable" and on_unparsable is not None:
+        # "The platform said something we could not read" is an anomaly in the
+        # reporting adapter, not a property of this message: it stays out of the
+        # envelope (a reader must not see a fabricated timestamp) but it is
+        # reported once, so operators can see the third state at all.
+        on_unparsable(metadata.get("createTime"))
     return origin
 
-def _reported_sender(value: object) -> JsonObject | None:
-    if not isinstance(value, dict):
-        return None
-    standing = value.get("standing")
-    if standing not in _SENDER_STANDINGS:
-        # An answer without a known confidence cannot be acted on safely;
-        # dropping it keeps "no sender block" meaning "the adapter said
-        # nothing we can trust", never a silently upgraded standing.
-        return None
-    sender: JsonObject = {}
-    for field in _SENDER_TEXT_FIELDS:
-        text = value.get(field)
-        sender[field] = (
-            text[:_SENDER_FIELD_MAX_CHARS] if isinstance(text, str) and text else None
-        )
-    if standing != "verified":
-        # Only a person's confirmation names an owner.
-        sender["owner"] = None
-    for candidates_field in ("candidateOwners", "candidateUsers"):
-        candidates = value.get(candidates_field)
-        if standing == "ambiguous" and isinstance(candidates, list):
-            sender[candidates_field] = [
-                candidate[:_SENDER_FIELD_MAX_CHARS]
-                for candidate in candidates[:8]
-                if isinstance(candidate, str) and candidate
-            ]
-    if value.get("lookupFailed") is True:
-        sender["lookupFailed"] = True
-    return sender
+
+# An unreadable platform time is an anomaly in the reporting adapter, not a
+# property of one message: during a format change every message carries it. The
+# counter is monotonic (so the third state can be *quantified*, not merely seen in
+# a log), and the log line is throttled (so the anomaly cannot drown the log it
+# is reported in). Both are process-local and are not persisted on purpose: a
+# restart is the moment someone is looking anyway.
+UNPARSABLE_REPORT_WINDOW_MS = 300_000
+
+# The counter is per process, not per install: it resets on restart on purpose.
+# The name says so, and the log line carries the epoch it started counting from,
+# so a reader never has to guess which total they are looking at.
+# Not "process start" in the OS sense: this is the moment the module was imported.
+# The daemon imports it once per process, so in practice the two coincide; under a
+# reload (or a second import in one process) this value moves while the process
+# does not, which is why the log field is paired with the total rather than trusted
+# alone. A reader compares (since_ms, total) pairs, never totals across processes.
+_PROCESS_STARTED_MS = int(time.time() * 1000)
+
+_unparsable_totals: dict[str, int] = {"total": 0}
+_unparsable_last_report_ms: dict[str, int | None] = {"at": None}
+
+
+def platform_created_at_unparsable_total_per_process() -> int:
+    """How many platform times **this process** could not read.
+
+    Per process, not per install: it restarts at zero. "Monotonic" would be the
+    wrong word — a restart is a legitimate discontinuity, and a reader comparing
+    two numbers from different processes would be comparing different spans.
+    """
+
+    return _unparsable_totals["total"]
+
+
+def _reset_unparsable_report_state() -> None:
+    """Test hook: the counter and the throttle are process state."""
+
+    _unparsable_totals["total"] = 0
+    _unparsable_last_report_ms["at"] = None
+
+
+def _unparsable_preview(raw: object) -> str:
+    """A bounded diagnostic preview of an unreadable value that never raises.
+
+    Python 3.12 raises ``ValueError`` once an ``int``→``str`` conversion
+    exceeds the digit limit (default 4300), so a hostile epoch such as
+    ``10**5000`` must never reach ``str()``: ints are described by bit
+    length instead, and any other ``repr`` failure falls back to the bare
+    type name.  The anomaly log *is* the containment path, so it must not
+    be the thing that raises.
+    """
+
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return f"<int {raw.bit_length()} bits>"
+    try:
+        return repr(raw)[:32]
+    except Exception:
+        return type(raw).__name__
+
+
+def report_unparsable_platform_created_at(
+    raw: object, *, log: Callable[..., None], now_ms: int
+) -> bool:
+    """Count one unreadable platform time; log at most once per window.
+
+    Returns whether this call emitted a line. The first observation in a window
+    always emits (so a single anomaly is never silent); later ones inside the
+    window are counted and summarised by the next emission's ``total``.
+    """
+
+    _unparsable_totals["total"] += 1
+    total = _unparsable_totals["total"]
+    last = _unparsable_last_report_ms["at"]
+    if last is not None and now_ms - last < UNPARSABLE_REPORT_WINDOW_MS:
+        return False
+    _unparsable_last_report_ms["at"] = now_ms
+    log(
+        "warn",
+        "daemon",
+        "origin.platform_created_at.unparsable",
+        raw=_unparsable_preview(raw),
+        total=total,
+        since_ms=_PROCESS_STARTED_MS,
+    )
+    return True
+
+
+def _platform_created_at(value: object) -> tuple[str | None, str]:
+    """The platform's own creation time, as ISO-8601 in UTC.
+
+    Adapters hand over whatever the platform reported; Lark reports a millisecond
+    epoch as a decimal string.  Decisions pinned here:
+
+    * the value is **normalised**, never passed through raw: a bare ``"1793…"``
+      reads as a local millisecond count to a consumer that has not been told
+      otherwise, while ``…Z`` cannot be misread;
+    * a decimal string must be pure ASCII digits (``[0-9]{1,16}``), not
+      ``str.isdigit``: that accepts characters such as ``"²"`` that ``int()``
+      cannot read, and unbounded digits reach the int↔str conversion limit —
+      the 16-digit bound keeps ``int()`` exact and the division in float range;
+    * an absent or unparseable value yields ``None`` so the key is **omitted**
+      and the caller never sees an exception.  "The platform said nothing" and
+      "the platform said 1970" are different facts, and only one of them is
+      safe to act on (the same rule the sender block follows above).
+    """
+
+    if value is None:
+        return None, "absent"
+    if isinstance(value, bool):
+        return None, "unparsable"
+    if isinstance(value, int):
+        milliseconds = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r"[0-9]{1,16}", text):
+            return None, "unparsable"
+        milliseconds = int(text)
+    else:
+        return None, "unparsable"
+    if milliseconds <= 0:
+        return None, "unparsable"
+    try:
+        moment = datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None, "unparsable"
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z"), "ok"
 
 @dataclass(frozen=True, slots=True)
 class _MessageCaller:
@@ -188,9 +298,14 @@ class _VisibilityMixin:
         network presence; it is now structural — the resolver reads two local
         tables and nothing else, so no caller can readmit a remote candidate
         by forgetting a keyword.  Scheme-carrying senders — canonical agent
-        URIs, ``channel:lark:<adapter>`` inbound forwards, ``user:`` — pass
+        URIs, ``adapter:lark:<adapter>`` inbound forwards, ``user:`` — pass
         through untouched; ambiguity propagates as AMBIGUOUS_TARGET.  The
         error states facts only, no remediation instructions.
+
+        Integrator decision D8 (ruling U1): with id-form minting on, a sender
+        URI of this node and owner that names a live registered agent by name
+        is refused as the send boundary refuses such a target:
+        ``AGENT_ADDRESS_RETIRED`` with the id address, never mapped to it.
         """
 
         normalized = normalize_agent_recipient(actor)
@@ -219,13 +334,14 @@ class _VisibilityMixin:
             parsed_sender = parse_agent_uri(normalized)
             assert parsed_sender is not None  # classify proved four segments
             _owner, _machine, short = parsed_sender
-            if (
-                parsed_sender[0] == self.owner
-                and parsed_sender[1] == self.node_id
-                and self._resolve_agent_alias(short)
-                == normalized
-            ):
-                return normalized
+            if parsed_sender[0] == self.owner and parsed_sender[1] == self.node_id:
+                if self._resolve_agent_alias(short) == normalized:
+                    return normalized
+                if member_actor_parts(short) is not None:
+                    agent = self.agents.get(normalized)
+                    if agent is not None:
+                        return agent.uri
+                self._refuse_retired_local_address(normalized)
             raise DaemonRequestError(
                 ipc_errors.SENDER_UNRESOLVED,
                 (f"sender {actor!r} is not a registered agent on this "
@@ -263,7 +379,7 @@ class _VisibilityMixin:
             )
 
         if "sessionRef" in params:
-            actor = self._canonical_interactive_actor(raw)
+            actor = self._mcp_actor(params)
             self._refuse_reserved_interactive_actor(actor)
             try:
                 actor = self._fence_live_principal_session(actor, params)
@@ -294,7 +410,7 @@ class _VisibilityMixin:
                 on_behalf,
             )
         if normalized.startswith(
-            (CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX)
+            ADAPTER_URI_PREFIX
         ) or normalized in _LOCAL_ADAPTER_IDENTITIES:
             if on_behalf_raw is not None:
                 raise DaemonRequestError(
@@ -337,6 +453,15 @@ class _VisibilityMixin:
         return _MessageCaller(claimed, claimed, "daemon")
 
     def _resolve_on_behalf_actor(self, actor: str) -> str:
+        """The agent an operator acts for, at its official address.
+
+        A canonical agent URI keeps its spelling.  With id-form minting on, a
+        local name URI of a live registered agent is refused with
+        ``AGENT_ADDRESS_RETIRED`` and the id address (integrator decision D8,
+        ruling U1), as the send boundary refuses it; it is never rewritten
+        to the id address.  A bare name resolves like an unfenced sender.
+        """
+
         normalized = normalize_agent_recipient(actor)
         if normalized.startswith(AGENT_URI_PREFIX):
             if classify_target_identity(normalized) != TARGET_KIND_AGENT:
@@ -344,6 +469,7 @@ class _VisibilityMixin:
                     ipc_errors.INVALID_ARGUMENT,
                     "onBehalfOf must be an agent identity",
                 )
+            self._refuse_retired_local_address(normalized)
             return normalized
         return self._resolve_send_sender(actor)
 
@@ -382,42 +508,42 @@ class _VisibilityMixin:
             return normalized
         return self._resolve_agent_alias(normalized)
 
+    def _consumer_read_keys(self, address: str) -> tuple[str, ...]:
+        """Every inbox key a consumer at ``address`` reads: ``address`` alone.
+
+        The one helper behind every consumer read of an actor's rows: the
+        session fetch, the headless runtime pull and the dormant wake.  No
+        name-form alias is read (owner decision 2026-11-19): rows at a name
+        URI are never an id-minted agent's, so a new agent that reuses a name
+        never drains mail addressed to an earlier one.
+        """
+
+        return (address,)
+
+    def _harness_consumer_read_keys(self, name: str) -> tuple[str, ...]:
+        """The consumer read keys of a supervised worker, by its local name."""
+
+        return self._consumer_read_keys(self._canonical_harness_uri(name))
+
     def _reply_path_unavailable(self, sender: str) -> bool:
         """Best-effort verdict: is a reply to this sender certain to fail?
 
         Only the two provably-broken shapes return True (#60: 宁可漏报,
-        不误报): a ``user:<owner>`` sender whose squire profile or binding
-        is incomplete (delivery fails TARGET_SQUIRE_UNCONFIGURED), and a
-        ``channel:lark:<adapter>`` sender whose adapter is not configured
-        here (replies fail MESSAGE_REPLY_UNAVAILABLE).  Everything else
-        returns False — unsure means silent.
+        不误报): this node's ``user:<owner>`` when no composed agent cell
+        names a chat (R2, I3, I7a: nothing pushes a reply to the owner's IM;
+        it stays in GUI and CLI; which agent will reply is not known here, so
+        any bound agent cell counts, the user agent cell included), and an
+        ``adapter:lark:<adapter>`` sender whose adapter is not
+        configured here (replies fail MESSAGE_REPLY_UNAVAILABLE).  Everything
+        else, another owner included, returns False — unsure means silent.
         """
 
-        if sender.startswith("user:"):
-            owner = sender.removeprefix("user:")
-            # `resolve`, not `get_by_owner`: `user:<x>` carries either an owner
-            # key (what `resolve_node_owner()` mints) or an owner.
-            profile = self.user_profiles.resolve(owner)
-            if profile is None or profile.squire_adapter is None:
-                return True
-            try:
-                return (
-                    self._identity_resolver.profile_open_id(
-                        profile, profile.squire_adapter
-                    )
-                    is None
-                )
-            except IdentityResolverError as error:
-                # Evaluated after delivery: an identity fault must not turn a
-                # delivered send into an IPC error (a retry would duplicate).
-                # Unsure means silent (#60), and the operator hears about it.
-                self._log(
-                    "warn",
-                    "daemon",
-                    "send.reply_path_identity_unresolved",
-                    code=error.code,
-                )
-                return False
+        if is_own_user_uri(sender, self.owner):
+            from hyprial.daemon.impl.application.messaging.inbox_surface.send_targets.user import (
+                agent_cell_names_a_chat,
+            )
+
+            return not agent_cell_names_a_chat(self)
         adapter = lark_reply_adapter(sender)
         if adapter is not None:
             return (
@@ -429,13 +555,11 @@ class _VisibilityMixin:
     def _refuse_reserved_interactive_actor(self, actor: str) -> None:
         """Refuse a daemon mechanism name as a session identity (ruling 63).
 
-        ``link_governed`` exempts the reserved actor names as sender or
-        recipient on ANY node, so a session claiming one would send with the
-        exemption and bypass every link constraint.  ``session.register`` needs
-        no registry row, so the AgentRegistry creation guard alone does not
-        close this path: this boundary and the session-register entry point
-        both call this check.  The comparison is exact equality on the actor
-        segment of the canonical URI, never a prefix, so ``turn-hooks`` and
+        Reserved actor names belong to daemon-owned delivery identities, so a
+        session claiming one must be rejected even when it has no registry
+        row.  This boundary and the session-register entry point both call
+        this check.  The comparison is exact equality on the actor segment of
+        the canonical URI, never a prefix, so ``turn-hooks`` and
         ``dispatch-coordinator2`` stay ordinary agents.
         """
 
@@ -456,12 +580,18 @@ class _VisibilityMixin:
         is the authority that prevents those callers from creating a second,
         bare network registration beside the managed-harness four-segment
         form.  An already-canonical URI remains byte-for-byte unchanged for
-        compatibility with callers that supply the complete identity.
+        compatibility with callers that supply the complete identity, except
+        that a name-form URI of a registered local agent whose record is
+        minted under its ``a.`` id resolves to that official id address, so
+        the session never registers a route the agent is not reached at.
+        That holds for every agent this node hosts: the URI's owner segment
+        picks the record (this daemon's owner, or a hosted visitor's owner),
+        so a hosted carrier's name-form URI reaches its id address too.
         """
 
         if ":" not in actor:
             try:
-                return canonical_agent_uri(self.owner, self.node_id, actor)
+                return self._agent_address(actor)
             except ValueError as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
         short = agent_uri_actor(actor)
@@ -471,21 +601,82 @@ class _VisibilityMixin:
                 f"actor {actor!r} is neither a bare actor name nor a canonical "
                 "agent:<owner>:<machine>:<actor> URI",
             )
+        parsed = parse_agent_uri(actor)
+        if (
+            parsed is not None
+            and parsed[1] == self.node_id
+            and not is_agent_id_segment(short)
+        ):
+            official = self._agent_address(short, parsed[0])
+            if is_agent_id_segment(agent_uri_actor(official) or ""):
+                return official
         return actor
+
+    def _relocated_session_actor(self, actor: str, session_ref: object) -> str:
+        """The id address an owner migration moved this name-form session to.
+
+        An owner migration rewrites a session's stored address to the new
+        owner, and a carrier launched before it keeps announcing the old
+        owner's name-form URI.  Before id-form minting the session layer
+        accepted that as the same session because the two URIs differed only
+        in the owner segment.  Once the stored address is an ``a.`` id URI
+        the name segment differs too, so the same session is recognised
+        here, at the boundary: ``session_ref`` holds a session on this node
+        stored at a live record's id URI, under another owner, whose record
+        name is the name ``actor`` carries.  Anything else is returned
+        unchanged and stays a supersede or a stale session.  With minting off
+        no stored address is an id URI and this is the identity.
+        """
+
+        parsed = parse_agent_uri(actor)
+        if (
+            not isinstance(session_ref, str)
+            or parsed is None
+            or parsed[0] == self.owner
+            or parsed[1] != self.node_id
+            or is_agent_id_segment(parsed[2])
+        ):
+            return actor
+        try:
+            sessions = self._agent_session_domains.session.read_sessions()
+        except Exception:  # noqa: BLE001 - the session fence answers this caller
+            return actor
+        stored = next(
+            (item.actor for item in sessions if item.session_ref == session_ref),
+            None,
+        )
+        located = None if stored is None else parse_agent_uri(stored)
+        if (
+            located is None
+            or located[1] != parsed[1]
+            or located[0] == parsed[0]
+            or not is_agent_id_segment(located[2])
+        ):
+            return actor
+        try:
+            agent = self.agents.get(stored)
+        except Exception:  # noqa: BLE001 - an unreadable record is no proof
+            return actor
+        if agent is None or agent.uri != stored or agent.actor != parsed[2]:
+            return actor
+        return stored
 
     def _mcp_actor(self, params: JsonObject) -> str:
         """Canonicalize only actors carried by fenced MCP/session requests.
 
         The same message methods also back unfenced CLI operations such as
         ``hyprial message ack --from <node>``.  Those actors address durable inbox rows
-        verbatim and must not be rewritten as interactive-agent URIs.
+        verbatim and must not be rewritten as interactive-agent URIs.  This
+        is the one canonicalization every session-fenced call goes through:
+        the boundary name-to-address mapping, then an owner migration's
+        relocation of the same session (``_relocated_session_actor``).
         """
 
         actor = _actor(params)
-        return (
-            self._canonical_interactive_actor(actor)
-            if "sessionRef" in params
-            else actor
+        if "sessionRef" not in params:
+            return actor
+        return self._relocated_session_actor(
+            self._canonical_interactive_actor(actor), params.get("sessionRef")
         )
 
     def _visibility_identity(self, actor: str) -> CallerIdentity:
@@ -544,7 +735,9 @@ class _VisibilityMixin:
         Nothing here caches a verdict, which is what makes a withdrawal take
         effect on the next request.  A ledger row the decision cannot parse is
         logged and dropped: dropping can only narrow the answer, and the
-        warning keeps it from being silent.
+        warning keeps it from being silent.  A row whose capability is not in
+        the vocabulary never reaches this read: the registry skips it, and only
+        the actor's grant journal (``agent.grants`` with ``audit``) shows it.
 
         The ledger keys rows by the local actor NAME and ``read_capability_grants``
         already joins them to this actor's live incarnation, so every row it
@@ -583,19 +776,12 @@ class _VisibilityMixin:
         Only the host-local path is exempt: see ``_visibility_caller``.  This
         is deliberately separate from the ``targets`` filter -- filtering a
         list never stopped anyone from naming an address directly.
-
-        ``route:<adapter>:<route>`` targets are delivery exits, not
-        principals: a send-to scope is a principal list, so the ledger can
-        never name a route.  Those targets belong to the channel capability
-        and are decided by ``_enforce_channel`` instead (AT10, card 359).
         """
 
         if not caller.hosted:
             return
         grants = self._visibility_grants(caller.uri)
         for target in targets:
-            if classify_target_identity(target) == TARGET_KIND_CHANNEL_ROUTE:
-                continue
             decision = may_send(target, caller=caller, grants=grants)
             if decision.allowed:
                 continue
@@ -636,7 +822,8 @@ class _VisibilityMixin:
         withdrawal takes effect on the next request.  Rows for capabilities
         this layer does not decide (see-actors / send-to, which AT09 owns) or
         that fail to parse are logged and dropped -- dropping can only narrow
-        the answer.
+        the answer.  Rows of a capability outside the vocabulary are already
+        skipped by the registry and are not logged here.
         """
 
         records: list[CapabilityRecord] = []
@@ -661,43 +848,6 @@ class _VisibilityMixin:
                     capability=grant.capability,
                 )
         return records
-
-    def _enforce_channel(
-        self, caller: CallerIdentity, targets: tuple[str, ...]
-    ) -> None:
-        """Refuse an outbound adapter route the caller's channel ledger omits.
-
-        Only ``route:<adapter>:<route>`` targets are the channel entry point;
-        agent and user addresses are decided by the send-to ledger (AT09),
-        which cannot name a route at all.
-        Only a hosted caller is fenced -- the same rule as ``_enforce_send_to``
-        -- and the grant names the exact route, which is the minimum grant for
-        a channel rather than an adapter-wide allow.
-        """
-
-        if not caller.hosted:
-            return
-        principal = Principal(uri=caller.uri, hosted=True, verified=True)
-        records: list[CapabilityRecord] | None = None
-        for target in targets:
-            if classify_target_identity(target) != TARGET_KIND_CHANNEL_ROUTE:
-                continue
-            if records is None:
-                records = self._capability_records(caller.uri)
-            decision = check_channel(target, caller=principal, records=records)
-            if decision.allowed:
-                continue
-            raise DaemonRequestError(
-                ipc_errors.CHANNEL_NOT_AUTHORIZED,
-                f"{caller.uri} may not use channel {target}: {decision.reason}",
-                {
-                    "caller": caller.uri,
-                    "channel": target,
-                    "capability": decision.capability,
-                    "entryPoint": decision.entry_point,
-                    "reason": decision.reason,
-                },
-            )
 
     def _enforce_org_context(self, caller: Principal | None) -> None:
         """Refuse an org-shared-folder read the caller's org-context grant omits.

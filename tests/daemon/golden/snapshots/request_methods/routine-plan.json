@@ -1,0 +1,71 @@
+{
+ "schema": "hyprial-golden/v1",
+ "group": "request_methods",
+ "scenario": "routine-plan",
+ "steps": [
+  {
+   "step": 1,
+   "method": "routine.plan",
+   "label": "success",
+   "origin": "ipc",
+   "params": {
+    "yaml": "\nversion: 1\nname: cli-routine\nschedule: {interval: 15m}\nsource: {kind: taskwarrior, filter: \"+selfdrive -blocked\"}\npolicy:\n  routes: [{tag: \"route:self\", target: \"self\"}]\n  default: escalate\n  task_template: \"【{{nonce}}】{{task.description}}\"\nlimits: {max_in_flight: 3, circuit_breaker: {window_runs: 5, escalate_ratio: 1.0, action: \"pause+alarm\"}}\non_task_timeout: {action: escalate, escalate_to: \"user:allen\"}\n",
+    "label": "routine.yaml"
+   },
+   "result": {
+    "plan": {
+     "name": "cli-routine",
+     "mode": "source",
+     "role": "dispatch",
+     "actor": null,
+     "actorOwnership": "routine",
+     "launch": {
+      "tier": "fast",
+      "harness": "codex",
+      "provider": null,
+      "model": "gpt-5.6-luna",
+      "args": []
+     },
+     "overlap": null,
+     "missedPeriods": null,
+     "intervalSeconds": 900.0,
+     "source": {
+      "kind": "taskwarrior",
+      "filter": "+selfdrive -blocked"
+     },
+     "routes": [
+      {
+       "tag": "route:self",
+       "kind": "self",
+       "value": "self"
+      }
+     ],
+     "defaultRoute": "escalate",
+     "limits": {
+      "maxInFlight": 3,
+      "circuitBreaker": {
+       "windowRuns": 5,
+       "escalateRatio": 1.0,
+       "action": "pause+alarm"
+      }
+     },
+     "escalateTo": "user:allen"
+    }
+   }
+  },
+  {
+   "step": 2,
+   "method": "routine.plan",
+   "label": "schema-error",
+   "origin": "ipc",
+   "params": {
+    "yaml": "name: missing-version",
+    "label": "routine.yaml"
+   },
+   "error": {
+    "code": "ROUTINE_SCHEMA_ERROR",
+    "message": "routine schema error: routine.yaml.version must be 1 (stored source format) or 2"
+   }
+  }
+ ]
+}

@@ -39,6 +39,7 @@ from hyprial.daemon.impl.inbox.batch.render import (
 from hyprial.daemon.impl.inbox.batch.service import (
     BatchView,
     capture_batch,
+    empty_batch_response,
     item_json,
 )
 from hyprial.daemon.impl.inbox.batch.snapshot import build_snapshot
@@ -73,6 +74,7 @@ __all__ = [
     "cursor_digest",
     "cursor_key",
     "decode_cursor",
+    "empty_batch_response",
     "encode_cursor",
     "inline_limit_from_environment",
     "item_json",

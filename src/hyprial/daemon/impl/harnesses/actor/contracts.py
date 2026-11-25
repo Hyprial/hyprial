@@ -11,7 +11,6 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar, cast
 from hyprial.daemon.impl.api  import (
     HarnessResult,
@@ -217,6 +216,7 @@ class _SessionRefObservation:
     process_token: str | None
     harness: str
     name: str
+    member: str
     session_ref: str | None
 
 
@@ -303,6 +303,7 @@ class _Record:
     # for reconcile-kind restarts -- the restore ruling outranks it, so
     # this flag pins the verdict where the budget refuses to.
     restore_failed_terminal: bool = False
+    suppress_failure_alarm: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,8 +344,8 @@ class HarnessProjection:
         self._failed: frozenset[str] = frozenset()
         self._streaming: tuple[str, ...] = ()
         self._streaming_generations: tuple[tuple[str, int], ...] = ()
-        self._session_refs: dict[tuple[str, str], str] = {}
-        self._worker_session_refs: dict[tuple[str, str], str] = {}
+        self._session_refs: dict[tuple[str, str, str], str] = {}
+        self._worker_session_refs: dict[tuple[str, str, str], str] = {}
         # Compatibility-only error face.  Session-ref/streaming projections
         # never consult these mutable process handles.
         self._processes: dict[str, ManagedHarnessProcess] = {}
@@ -353,6 +354,7 @@ class HarnessProjection:
         self._observation_fences: dict[str, tuple[str | None, int | None, str]] = {}
         self._run_epochs: dict[str, str] = {}
         self._run_instances: dict[str, tuple[object, str]] = {}
+        self._launch_specs: dict[str, HarnessLaunchSpec] = {}
 
     def publish(
         self,
@@ -391,8 +393,8 @@ class HarnessProjection:
         failed: set[str] = set()
         streaming: list[str] = []
         streaming_generations: list[tuple[str, int]] = []
-        refs: dict[tuple[str, str], str] = {}
-        worker_refs: dict[tuple[str, str], str] = {}
+        refs: dict[tuple[str, str, str], str] = {}
+        worker_refs: dict[tuple[str, str, str], str] = {}
         processes: dict[str, ManagedHarnessProcess] = {}
         for key, record in sorted(records.items()):
             process = record.process
@@ -403,15 +405,6 @@ class HarnessProjection:
             error = record.last_error or (str(runtime_error) if runtime_error else None)
             pid = record.identity.pid if running and record.identity is not None else None
             endpoint = None
-            dsh_home = None
-            if record.spec.harness == "dsh":
-                # The endpoint is an OUTPUT of the generation that is alive now,
-                # never an input: it comes from the port the child's banner
-                # named.  A stale or absent process reports neither value.
-                endpoint = getattr(process, "endpoint", None)
-                home = getattr(process, "dsh_home", None)
-                if isinstance(home, Path):
-                    dsh_home = str(home)
             max_in_flight = getattr(process, "max_in_flight", None) if process else None
             in_flight = getattr(process, "in_flight", None) if process else None
             queue_depth = getattr(process, "queue_depth", None) if process else None
@@ -432,7 +425,6 @@ class HarnessProjection:
                     state=_state(record),
                     error=error,
                     endpoint=endpoint,
-                    dsh_home=dsh_home,
                     max_in_flight=(
                         max_in_flight if isinstance(max_in_flight, int) else None
                     ),
@@ -450,11 +442,11 @@ class HarnessProjection:
                 streaming_generations.append((record.spec.name, record.generation))
             ref = getattr(process, "session_ref", None) if process else None
             if isinstance(ref, str) and ref:
-                refs[(record.spec.harness, record.spec.name)] = ref
+                refs[(record.spec.harness, record.spec.name, record.spec.member or record.spec.name)] = ref
             worker_channel = getattr(process, "worker_channel", None)
             worker_ref = getattr(worker_channel, "session_ref", None)
             if isinstance(worker_ref, str) and worker_ref:
-                worker_refs[(record.spec.harness, record.spec.name)] = worker_ref
+                worker_refs[(record.spec.harness, record.spec.name, record.spec.member or record.spec.name)] = worker_ref
         rows_by_key = {row.harness_id: row for row in rows}
         with self._lock:
             for key, record in records.items():
@@ -504,6 +496,13 @@ class HarnessProjection:
                 for key, process in processes.items()
             }
             self._processes = processes
+            self._launch_specs = {key: record.spec for key, record in records.items()}
+
+    def read_launch_spec(self, harness_id: str) -> HarnessLaunchSpec | None:
+        """Read the immutable last published launch spec for *harness_id*."""
+
+        with self._lock:
+            return self._launch_specs.get(harness_id)
 
     def read_run_instance(self, key, entity_token, binding_revision):
         """Private composition fence; contains no process handle or I/O."""
@@ -591,9 +590,9 @@ class HarnessProjection:
                 version, self._streaming, self._streaming_generations
             )
 
-    def session_refs(self) -> dict[tuple[str, str], str]:
+    def session_refs(self) -> dict[tuple[str, str, str], str]:
         return {
-            (item.harness, item.name): item.session_ref
+            (item.harness, item.name, item.member or item.name): item.session_ref
             for item in self.read_session_refs().refs
         }
 
@@ -604,8 +603,8 @@ class HarnessProjection:
         return HarnessSessionRefsProjection(
             max((row.version for row in rows), default=0),
             tuple(
-                HarnessSessionRefProjection(harness, name, session_ref)
-                for (harness, name), session_ref in sorted(refs.items())
+                HarnessSessionRefProjection(harness, name, session_ref, member)
+                for (harness, name, member), session_ref in sorted(refs.items())
             ),
         )
 
@@ -616,8 +615,8 @@ class HarnessProjection:
         return HarnessSessionRefsProjection(
             max((row.version for row in rows), default=0),
             tuple(
-                HarnessSessionRefProjection(harness, name, session_ref)
-                for (harness, name), session_ref in sorted(refs.items())
+                HarnessSessionRefProjection(harness, name, session_ref, member)
+                for (harness, name, member), session_ref in sorted(refs.items())
             ),
         )
 
@@ -683,9 +682,9 @@ def _launch_projection(spec: HarnessLaunchSpec) -> HarnessLaunchProjection:
         containerized=spec.containerized,
         pinned_owner=spec.pinned_owner,
         container_image=spec.container_image,
-        execution_runtime=spec.execution_runtime,
         model_provider=spec.model_provider,
         model=spec.model,
+        member=spec.member,
     )
 
 
@@ -706,7 +705,7 @@ def _launch_spec(spec: HarnessLaunchProjection) -> HarnessLaunchSpec:
         containerized=spec.containerized,
         pinned_owner=spec.pinned_owner,
         container_image=spec.container_image,
-        execution_runtime=spec.execution_runtime,
         model_provider=spec.model_provider,
         model=spec.model,
+        member=spec.member,
     )

@@ -9,6 +9,7 @@ import time
 from collections import OrderedDict
 from typing import TypeVar, cast
 from hyprial.kernel import PortCommandRejected
+from hyprial.kernel import ipc_errors
 from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
     LifecycleReceiptCompleted,
 )
@@ -126,7 +127,7 @@ class CorrelatedDomainEvents:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise DomainCommandError(
-                        "DOMAIN_COMMAND_TIMEOUT",
+                        ipc_errors.DOMAIN_COMMAND_TIMEOUT,
                         f"domain command {correlation_id} did not settle",
                     )
                 self._condition.wait(remaining)

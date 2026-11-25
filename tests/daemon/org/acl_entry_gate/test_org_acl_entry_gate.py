@@ -2,7 +2,7 @@
 
 Design: ``docs/design/design-org-orgfs-usage-for-socialware-2026-10-06.md``
 §3.1 (owner 本人入口闸) and §8.3 (Allen's ruling: the ACL space admits the
-owner's terminal and user-proxy by default, plus explicit ``org.acl.grant``
+owner's terminal by default, plus explicit ``org.acl.grant``
 authorizations recorded in owner-node local state).  Interface frozen by the
 dispatching node: ``org.acl.grant <org> <agent> [--until <moment>]`` /
 ``org.acl.revoke <org> <agent>`` / ``org.acl.ls <org>`` with error codes
@@ -27,11 +27,9 @@ Identity model used here (the design's「已认证调用方」):
   (``agent.create`` + ``session.register``) or a daemon-managed worker
   (desired-state ``HarnessLaunchSpec`` + the harness supervisor's session
   projection — the only place the daemon itself registers a harness kind);
-- the real user-proxy is therefore simulated the way production registers
-  it: a desired-state harness spec with ``harness="user-proxy"``, and its
-  worker session ref.  The liar in ② is an interactive registration that
-  merely carries the NAME ``user-proxy`` — the daemon-registered kind stays
-  ``claude``, which is exactly the「不认自报名」rule.
+- the liar in ② is an interactive registration that merely carries the
+  NAME ``user-proxy``; there is no such harness kind (I7b-2), so the name
+  admits nothing.
 
 The ``--until`` deadline is itself the injected clock: absolute moments far
 in the past and far in the future make the expiry comparison deterministic
@@ -239,14 +237,17 @@ def gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own_daemon_application
         "root": root,
         "directory": created["spaceId"],
         "acl": created["aclSpaceId"],
-        "deputy_uri": f"agent:{OWNER}:{NODE}:gate-deputy",
-        "stale_uri": f"agent:{OWNER}:{NODE}:stale-deputy",
-        "lasting_uri": f"agent:{OWNER}:{NODE}:lasting-deputy",
         "runner_uri": f"agent:{OWNER}:{NODE}:runner",
     }
     gate["deputy"] = _interactive_agent(app, root, "gate-deputy", "session-deputy")
     gate["stale"] = _interactive_agent(app, root, "stale-deputy", "session-stale")
     gate["lasting"] = _interactive_agent(app, root, "lasting-deputy", "session-lasting")
+    for key, name in (
+        ("deputy_uri", "gate-deputy"),
+        ("stale_uri", "stale-deputy"),
+        ("lasting_uri", "lasting-deputy"),
+    ):
+        gate[key] = app.agents.require(name).uri
     # ②: the NAME says user-proxy; the daemon-registered kind says claude.
     gate["liar"] = _interactive_agent(app, root, "user-proxy", "session-liar")
     gate["runner"] = _managed_worker(
@@ -255,14 +256,6 @@ def gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own_daemon_application
         harness_kind="claude",
         name="runner",
         session_ref="runner-session",
-    )
-    # ③: the real user-proxy — registered by the daemon as a user-proxy harness.
-    gate["proxy"] = _managed_worker(
-        app,
-        harnesses,
-        harness_kind="user-proxy",
-        name="proxy",
-        session_ref="proxy-session",
     )
     return gate
 
@@ -310,24 +303,16 @@ def test_a_self_reported_user_proxy_name_does_not_open_the_gate(gate) -> None:
     _write_denied(gate, gate["liar"], node="liar-attempt.md")
 
 
-# -- ③ the owner terminal and the real user-proxy session pass --------------
-
-
-def test_owner_terminal_and_real_user_proxy_session_pass_the_gate(gate) -> None:
-    """③ The two identities equivalent to the owner themself — the local
-    operator terminal and the owner's user-proxy (identified by the
-    daemon-registered harness kind) — must be let through.
-
-    Red on base: both writes die with ORGFS_ACL_SPACE_EXTERNAL_MUTATION.
+def test_owner_terminal_passes_the_gate(gate) -> None:
+    """③ The local operator terminal is the identity equivalent to the owner
+    and is let through.
     """
 
     app = gate["app"]
     _acl_write(gate, _OPERATOR, node="terminal-note.md", text="from the terminal")
-    _acl_write(gate, gate["proxy"], node="relay-note.md", text="from the user proxy")
 
     fs = app._require_orgfs_runtime().facade
     assert fs.read_text(gate["acl"], "terminal-note.md")[0] == "from the terminal"
-    assert fs.read_text(gate["acl"], "relay-note.md")[0] == "from the user proxy"
 
 
 # -- ④ grant / revoke / ls and --until expiry drive the gate ----------------
@@ -352,11 +337,11 @@ def test_grant_revoke_ls_and_until_expiry_drive_the_gate(gate) -> None:
     _acl_write(gate, gate["deputy"], node="deputy-1.md")
 
     listing = json.dumps(_ipc(app, "org.acl.ls", {**_OPERATOR, "org": ORG}))
-    assert "gate-deputy" in listing
+    assert gate["deputy_uri"] in listing
 
     _ipc(app, "org.acl.revoke", {**_OPERATOR, "org": ORG, "agent": gate["deputy_uri"]})
     _write_denied(gate, gate["deputy"], node="deputy-2.md")
-    assert "gate-deputy" not in json.dumps(
+    assert gate["deputy_uri"] not in json.dumps(
         _ipc(app, "org.acl.ls", {**_OPERATOR, "org": ORG})
     )
 
@@ -394,8 +379,8 @@ def test_grant_revoke_ls_and_until_expiry_drive_the_gate(gate) -> None:
 
 
 def test_agent_sessions_cannot_grant_or_revoke(gate) -> None:
-    """⑤a grant/revoke are reserved for the owner terminal and the
-    user-proxy; an ordinary agent session gets ORG_ACL_GRANT_FORBIDDEN.
+    """⑤a grant/revoke are reserved for the owner terminal; an ordinary
+    agent session gets ORG_ACL_GRANT_FORBIDDEN.
 
     Red on base: METHOD_NOT_FOUND (the code never matches).
     """
@@ -428,18 +413,6 @@ def test_granting_an_agent_owned_by_someone_else_is_refused(gate) -> None:
             },
         )
     assert refused.value.code == GRANT_NOT_OWNED
-
-
-def test_the_user_proxy_session_may_grant(gate) -> None:
-    """⑤c The other admitted grant executor: the owner's user-proxy session
-    issues a grant and the grant takes effect.
-
-    Red on base: METHOD_NOT_FOUND at the grant call.
-    """
-
-    app = gate["app"]
-    _ipc(app, "org.acl.grant", {**gate["proxy"], "org": ORG, "agent": gate["deputy_uri"]})
-    _acl_write(gate, gate["deputy"], node="deputy-by-proxy.md")
 
 
 # -- ⑥ a non-owner node keeps refusing --------------------------------------
@@ -569,8 +542,11 @@ def test_grants_stay_in_owner_local_state_and_out_of_orgfs(gate) -> None:
     fs = app._require_orgfs_runtime().facade
     spaces = fs.spaces()
     assert {"group-acme", "group-acme-acl"} <= {space.name for space in spaces}
+    agent_id = gate["deputy_uri"].rsplit(":", 1)[1]
     for space in spaces:
         for path, blob in _walk_space(fs, space.space_id):
             assert b"gate-deputy" not in blob, (space.name, path)
+            assert agent_id.encode() not in blob, (space.name, path)
         for node in fs.trash(space.space_id, limit=1000):
             assert "gate-deputy" not in node.name, (space.name, node.name)
+            assert agent_id not in node.name, (space.name, node.name)

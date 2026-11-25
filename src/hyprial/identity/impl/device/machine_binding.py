@@ -1,3 +1,7 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Delegates OS machine identity lookup (Linux machine-id, macOS IOPlatformUUID,
+#   Windows winreg MachineGuid, and fallback node digest) to
+#   hyprial.kernel.host_machine_identifier.
 """Bind the local Tailcat identity to one physical machine.
 
 The fingerprint is a SHA-256 digest of an OS machine identifier, never key
@@ -11,15 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import json
-import os
 from pathlib import Path
-import platform
 import re
-import socket
-import subprocess
-import uuid
 
-from hyprial.kernel import atomic_json_write
+from hyprial.kernel import atomic_json_write, host_machine_identifier
 
 MACHINE_BINDING_RELPATH = "state/tailcat/machine-binding.json"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
@@ -136,44 +135,4 @@ def machine_fingerprint() -> str:
 
 
 def _machine_identifier() -> tuple[str, str]:
-    system = platform.system().lower()
-    if system == "linux":
-        for path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
-            try:
-                value = path.read_text("utf-8").strip()
-            except OSError:
-                continue
-            if value:
-                return "linux-machine-id", value
-    elif system == "darwin":
-        try:
-            completed = subprocess.run(
-                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-                capture_output=True,
-                check=False,
-                timeout=3,
-                text=True,
-            )
-        except (OSError, subprocess.SubprocessError):
-            completed = None
-        if completed is not None and completed.returncode == 0:
-            match = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', completed.stdout)
-            if match is not None:
-                return "darwin-platform-uuid", match.group(1)
-    elif system == "windows":
-        try:
-            import winreg  # type: ignore[import-not-found]
-
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SOFTWARE\Microsoft\Cryptography",
-            ) as key:
-                value, _kind = winreg.QueryValueEx(key, "MachineGuid")
-            if isinstance(value, str) and value:
-                return "windows-machine-guid", value
-        except (ImportError, OSError):
-            pass
-    return (
-        "fallback-host-node",
-        f"{socket.gethostname()}\0{uuid.getnode():012x}\0{os.name}",
-    )
+    return host_machine_identifier()

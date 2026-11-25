@@ -13,6 +13,11 @@
   未改 `src/hyprial`、`clients/native`、`.forgejo`/CI、登录协议、绑定规则或
   服务端真实事件定义。
 
+> 2026-11-18 更新：登录不再取得绑定证明（owner 决定：适配器的绑定不得阻塞任何主流程，也不得
+> 出现在登录代码里）。运行时不再发出 `binding-device` 与 `binding-proof-failed`；下文提到这两个事件的
+> 行、后文对 `binding-proof-failed` 的界面要求与待确认项保留为当时的记录，已被该决定取代。GUI 中对应的分支
+> 已在 2026-11-18 的 tier 1 清理中从 GUI 删除（`gui/src/platform/auth`、`AccountProgressPanel`）；下文提到它们的行均为历史记录。
+
 ## 真实事件来源与映射
 
 只读安装了 `runtime` 版本 `0.5.5.1`（HEAD
@@ -22,14 +27,14 @@
 | --- | --- | --- | --- |
 | `device` | 账号设备授权等待用户完成 | 可信 HTTPS `verificationUri`、`userCode`、`expiresIn`、`interval` | 请在浏览器完成账号授权 |
 | `authenticated` | 账号授权已确认，尚未完成登录提交 | `owner`（若有） | 账号授权已确认，正在等待后台结果 |
-| `binding-device` | 附加设备授权等待用户完成（可能 `restarted`） | 可信 URL、`userCode`、`expiresIn`、`interval`、`restarted` | 需要补充授权：请完成附加设备授权 |
-| `binding-proof-failed` | 附加设备绑定未确认；登录流程仍可能继续 | 仅安全错误码 `code` | 附加设备授权未确认，不自动重试、不绕过绑定 |
+| ~~`binding-device`~~（已移除 2026-11-18） | 附加设备授权等待用户完成（可能 `restarted`） | 可信 URL、`userCode`、`expiresIn`、`interval`、`restarted` | 需要补充授权：请完成附加设备授权 |
+| ~~`binding-proof-failed`~~（已移除 2026-11-18） | 附加设备绑定未确认；登录流程仍可能继续 | 仅安全错误码 `code` | 附加设备授权未确认，不自动重试、不绕过绑定 |
 | `committed` | 登录凭据提交已确认，仍需核验本机状态 | `owner`（若有） | 登录提交已确认，正在核验本机状态 |
 | 其他/未来事件 | GUI 不认识 | 仅稳定的 `unknown` 标记 | 未识别的登录进度，不视为成功 |
 
 `gui/server/auth/worker.py` 只把 `desktop_network.status()["profile"]["issuer"]` 附加到
 每个进度事件，供本地宿主校验授权 URL 主机；`issuer` 本身不是 token，但也不会被
-转发给浏览器（`public-data.mjs` 不在输出中保留它）。`device`/`binding-device` 的
+转发给浏览器（`public-data.mjs` 不在输出中保留它）。`device`/`binding-device`（后者已于 2026-11-18 移除）的
 `userCode`/`verificationUri`/`interval`/`expiresIn`/`restarted` 均进入 GUI 类型
 （`AuthProgress`、`AccountProgress`）和 server 安全映射，不会被白名单静默丢弃。
 
@@ -65,7 +70,7 @@ GUI 在 `gui/server/auth/public-data.mjs` 的本地中间件边界做白名单�
   等待显示为成功；等待 90 秒后提供明确的“重试登录”操作，但不会自动重复
   登录，也不会自动覆盖凭据；
 - 取消登录/取消授权只取消本 GUI 拥有的操作，保留已完成的账号/设备阶段；
-- `binding-proof-failed` 显示安全错误码、可操作的重试和“不会绕过绑定”说明；
+- ~~`binding-proof-failed` 显示安全错误码、可操作的重试和“不会绕过绑定”说明；~~（已移除 2026-11-18：事件不再发出，分支已删除）
 - 未知事件显示安全降级警告，不显示账号已登录，也不触发自动重试；
 - 最终账号状态只有收到 `AuthState.authenticated === true` 才显示“账号已登录”；
   设备状态只有收到 `deviceReady === true` 且无 sidecar 错误才显示
@@ -108,8 +113,8 @@ GUI 在 `gui/server/auth/public-data.mjs` 的本地中间件边界做白名单�
   `unknown` 安全降级。
 - 网络状态需要独立的真实探测 API 才能从“未检测”变为“已连接”；不得用
   `deviceReady` 或登录成功代替。
-- 若产品希望 `binding-proof-failed` 后禁止继续设备初始化，应先由登录/绑定 owner
-  确认规则；本 GUI 只展示失败和重试，不改变绑定规则。
+- ~~若产品希望 `binding-proof-failed` 后禁止继续设备初始化，应先由登录/绑定 owner
+  确认规则；本 GUI 只展示失败和重试，不改变绑定规则。~~（已移除 2026-11-18，事件不再存在）
 - 身份审批：当前工作树作者/提交者身份仍是 `Allen Woods
   <alicesmith@users.noreply.code.example.com>`，在收到明确 operator/用户审批前
   不提交、不 push、不创建 PR。

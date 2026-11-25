@@ -1,0 +1,1 @@
+{"schemaVersion":1,"platform":"telegram","variant":"bot","conversation":{"kind":"group","id":"tg_fixture","threadId":"topic_fixture"},"sender":{"id":"tg_user"},"native":{"messageId":"tg_msg"}}

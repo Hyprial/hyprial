@@ -132,7 +132,7 @@ def test_service_group_and_daemon_status_have_distinct_root_semantics(
     assert "daemon" not in retired.stdout
 
 
-def test_transfer_commands_moved_under_agent_and_stay_hidden():
+def test_agent_runtime_tools_stay_hidden_and_the_old_move_commands_are_gone():
     from typer.main import get_command
 
     from hyprial.shell.impl.cli.runtime import entry
@@ -141,25 +141,7 @@ def test_transfer_commands_moved_under_agent_and_stay_hidden():
     assert "transfer" not in root.commands
     assert "transfer-runtime" not in root.commands
     agent = root.commands["agent"]
-    assert agent.commands["move"].hidden is not True
-    transfer = agent.commands["transfer"]
-    assert transfer.hidden is True
-    assert {
-        "bundle-export",
-        "bundle-validate",
-        "bundle-receive",
-        "bundle-land",
-        "bundle-complete",
-        "credential-seal",
-        "credential-open",
-        "trust-source-add",
-        "trust-source-list",
-        "trust-source-retire",
-        "precheck",
-        "receive",
-        "cred-stage",
-        "container-home",
-        "session-path",
-        "recipient-key",
-        "runtime",
-    } <= set(transfer.commands)
+    assert "move" not in agent.commands
+    assert "transfer" not in agent.commands
+    assert "runtime" not in agent.commands
+    assert agent.commands["teleport"].hidden is not True

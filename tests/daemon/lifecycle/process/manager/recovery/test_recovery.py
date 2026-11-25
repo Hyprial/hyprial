@@ -27,7 +27,7 @@ from ..support import (
 
 
 @pytest.mark.parametrize("owner_kind", ("coordinator", "manager"))
-def test_settled_receipts_precede_next_admission_and_rebuild(tmp_path, owner_kind):
+def test_settled_receipts_precede_next_admission_and_rebuild(tmp_path, owner_kind, actor_host):
     """Opposite controls: receipts settle before timeout, queueing, and restart."""
     path = tmp_path / "settled-order.sqlite3"
     router = CorrelationEventRouter()
@@ -36,6 +36,7 @@ def test_settled_receipts_precede_next_admission_and_rebuild(tmp_path, owner_kin
         owner = LifecycleCoordinator(
             path, LifecyclePorts(ports, ports, ports, ports), router,
             completion_timeout=0.03, operation_deadline=0.15,
+            actor_host=actor_host,
         )
     else:
         owner = _manager(
@@ -306,7 +307,7 @@ def test_compensating_restart_retains_original_public_error_code(
 
 
 def test_restart_backfills_domain_attested_effect_and_compensates_it(
-    tmp_path: Path,
+    tmp_path: Path, actor_host
 ) -> None:
     """U0c rewrite of ``..._preserves_pre_dispatch_ownership_when_replay_is_noop``.
 
@@ -353,7 +354,7 @@ def test_restart_backfills_domain_attested_effect_and_compensates_it(
     ]
     state_db = StateDatabase(path)
     state = StatePersistenceAuthority(
-        DesiredStateStore(tmp_path / "desired.json", state_db)
+        DesiredStateStore(tmp_path / "desired.json", state_db), actor_host=actor_host
     )
     try:
         assert state.journal.backfill_domain_attested_effects(tuple(claims)) == (

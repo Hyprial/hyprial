@@ -18,7 +18,7 @@ it never carries the body.  The body is fetched by id through
 `message.read_body` (consuming, does not close the row).  The row key set is
 exactly `messageId, deliveryId, conversationId, from, to, intent, kind,
 summary, bodyBytes, origin`; a row written before the hard cut reports
-`summary: null`.  See `../wire/send-links.md` §2.
+`summary: null`.
 
 Two lanes run concurrently:
 

@@ -30,7 +30,7 @@ from types import MappingProxyType
 from typing import Protocol
 
 from hyprial.kernel.impl.actor_runtime import AdmissionResult
-from hyprial.kernel.impl.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel.impl.actor_runtime.effects import EffectCompleted, EffectRequest
 
 from hyprial.kernel.impl.hooks.events  import EVENT_NAMES, HookEvent
 
@@ -63,6 +63,7 @@ class _Lane:
         *,
         name: str,
         observer: ObserverHook,
+        actor_host,
         events: frozenset[str],
         queue: int,
         logger: Callable[..., None] | None,
@@ -78,7 +79,7 @@ class _Lane:
         self._accepted = self._overloaded = self._closed = 0
         self._delivered = self._failed = 0
         self._overflow_logged_at: float | None = None
-        self._effects: EffectLane[HookEvent, None] = EffectLane(
+        self._effects = actor_host.effect_lane(
             name=f"hook-lane-{name}",
             execute=self._observer.observe,
             complete=self._settle,
@@ -166,7 +167,9 @@ class HookBus:
         *,
         logger: Callable[..., None] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        actor_host=None,
     ) -> None:
+        self._host = actor_host
         self._logger = logger
         self._monotonic = monotonic
         self._lock = threading.Lock()
@@ -183,6 +186,8 @@ class HookBus:
         *,
         queue: int = DEFAULT_LANE_QUEUE,
     ) -> None:
+        if self._host is None:
+            raise RuntimeError("hook bus requires an actor host")
         subscribed = frozenset(events)
         if not name.strip():
             raise ValueError("hook lane name must not be blank")
@@ -201,6 +206,7 @@ class HookBus:
             lane = _Lane(
                 name=name,
                 observer=observer,
+                actor_host=self._host,
                 events=subscribed,
                 queue=queue,
                 logger=self._logger,

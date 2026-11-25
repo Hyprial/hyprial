@@ -1,4 +1,15 @@
-"""Daemon stop, teardown receipt, and process-exit proof helpers."""
+"""Daemon stop, teardown receipt, and process-exit proof helpers.
+
+Z-8 launchd acceptance fix D2 (2026-11-16): ``DAEMON_STOP_TIMEOUT`` used to say
+"daemon socket closed" as a constant, including when no shutdown had been sent
+and the socket was still up. The message now reports the control socket as
+observed at the timeout (gone, still present, or not checkable).
+
+Z-8 launchd acceptance fix N1 (2026-11-16): an operator stop that finds no
+attributable unit but an installed or loaded foreign one says so on stderr
+(KP-092); the stop answer itself is unchanged because a new field or error
+code would be a contract change.
+"""
 
 from __future__ import annotations
 
@@ -78,20 +89,27 @@ def _stop_daemon_for_operator(*, expected_epoch: str | None = None) -> JsonObjec
             require_exit=False, require_known_pid=False, expected_epoch=expected_epoch,
             supervisor=supervisor,
         )
-    return services._stop_daemon_gracefully(require_exit=False)
+    result = services._stop_daemon_gracefully(require_exit=False)
+    from hyprial.shell.impl.cli.commands.daemon.service import (
+        _unattributed_unit_status,
+        unattributed_unit_notice,
+    )
+    from hyprial.shell.impl.cli.commands.daemon.unit_observation import (
+        unattributed_unit_fields,
+    )
+    from hyprial.shell.impl.cli.output import notice
+
+    unit = _unattributed_unit_status()
+    warning = unattributed_unit_notice(unit)
+    if warning is not None:
+        notice(warning)
+    return {**result, **unattributed_unit_fields(unit)}
 
 
 def _stop_daemon_gracefully(*, require_exit: bool = True) -> JsonObject:
     """Stop for operator and upgrade callers using historical compatibility."""
 
     return _stop_daemon_with_proof(require_exit=require_exit, require_known_pid=False)
-
-
-def _stop_daemon_for_identity_switch() -> JsonObject:
-    """Stop only when the old PID is known and its exit can be proven."""
-
-    supervisor = _installed_supervisor()
-    return _stop_daemon_with_proof(require_exit=True, require_known_pid=True, supervisor=supervisor)
 
 
 def _stop_daemon_with_proof(
@@ -351,14 +369,25 @@ def _wait_daemon_teardown_receipt(
                 )
                 raise services.CliError(
                     "DAEMON_STOP_TIMEOUT",
-                    "daemon socket closed but teardown did not finish within "
-                    f"{waited:.1f}s ({detail})",
+                    f"daemon teardown did not finish within {waited:.1f}s "
+                    f"({detail}; {_observed_control_socket()})",
                     {"oldPid": old_pid, "teardownCompleted": False},
                 )
             services.time.sleep(0.05)
     finally:
         if stream is not None:
             stream.close()
+
+
+def _observed_control_socket() -> str:
+    """What the control socket looks like now; never an assumption."""
+
+    services = get_services()
+    try:
+        present = Path(services._socket_path()).exists()
+    except (OSError, RuntimeError):
+        return "the control socket could not be checked"
+    return "the control socket is still present" if present else "the control socket is gone"
 
 
 def _stopped_process(pid: int | None, identity: str | None) -> bool:

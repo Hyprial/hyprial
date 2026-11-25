@@ -72,7 +72,8 @@ def test_recipient_scheme_allowlist_matches_send_time_rule() -> None:
     # host-class rows (TARGET_IS_NODE) are dead since the gate rejects node
     # sends outright; the pre-migration reason to keep them is gone.
     assert _undeliverable_outbox_recipient("channel:hyprial")
-    assert not _undeliverable_outbox_recipient("channel:lark:squire")
+    assert _undeliverable_outbox_recipient("channel:lark:squire")
+    assert not _undeliverable_outbox_recipient("adapter:lark:squire")
     assert _undeliverable_outbox_recipient("lark:ops-bot")
     assert _undeliverable_outbox_recipient("adapter:lark-main")
     assert not _undeliverable_outbox_recipient("user:allen")

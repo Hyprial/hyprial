@@ -348,10 +348,6 @@ def test_create_makes_the_org_space_and_publishes_this_device(
     casdoor: list[tuple[str, str]] = []
 
     class _Casdoor:
-        # The CasdoorGroups contract grew a probe and a writer on 2026-10-20
-        # (see casdoor/client.py).  This org is reported as already a member,
-        # so the create path never asks for a write -- which is the behaviour
-        # this test is about.
         def member_state(self, group: str, user: str) -> str:
             casdoor.append((group, user))
             return "member"
@@ -367,9 +363,8 @@ def test_create_makes_the_org_space_and_publishes_this_device(
     assert result["org"] == "group-acme"
     assert result["existed"] is False
     assert result["devicePublished"] is True
-    # The probe answered "member", so there is one Casdoor call, not two.
-    assert casdoor == [("hyprial/group-acme", f"hyprial/{OWNER}")]
-    assert result["casdoorGroup"] == "verified"
+    assert casdoor == []
+    assert result["casdoorGroup"] == "not-configured"
     assert fs.space_ids == {
         "group-acme": "space-group-acme",
         "group-acme-acl": "space-group-acme-acl",
@@ -435,8 +430,13 @@ def test_create_after_isolated_creation_initializes_tailnet(home: Path) -> None:
 def test_create_is_idempotent_for_an_existing_space(home: Path) -> None:
     fs = FakeFs()
     service = _service(fs, home)
-    assert service.create("group-acme")["existed"] is False
-    assert service.create("group-acme")["existed"] is True
+    first = service.create("group-acme")
+    repeated = service.create("group-acme")
+
+    assert first["existed"] is False
+    assert first["published"] is first["devicePublished"] is True
+    assert repeated["existed"] is True
+    assert repeated["published"] is repeated["devicePublished"] is True
 
 
 def test_create_publish_failure_is_reported(home: Path, monkeypatch) -> None:

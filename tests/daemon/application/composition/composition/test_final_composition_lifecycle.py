@@ -405,8 +405,12 @@ def test_explicit_lifecycle_start_retires_same_entity_restore_aba(
         harnesses=harnesses,  # type: ignore[arg-type]
     )
 
-    spec_a = HarnessLaunchSpec("codex", "worker", True, args=("--episode-a",))
-    spec_b = HarnessLaunchSpec("codex", "worker", True, args=("--episode-b",))
+    spec_a = HarnessLaunchSpec(
+        "codex", "worker", True, args=("--sandbox", "read-only")
+    )
+    spec_b = HarnessLaunchSpec(
+        "codex", "worker", True, args=("--sandbox", "workspace-write")
+    )
     agent = app.agents.create("worker")
     app.desired_state.upsert_harness(spec_a)
     app.agents.suppress_restore(

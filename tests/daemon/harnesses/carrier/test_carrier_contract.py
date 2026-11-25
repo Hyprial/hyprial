@@ -142,18 +142,17 @@ def test_settle_injected_obeys_hint_and_is_idempotent() -> None:
 
 def test_settle_hint_for_matches_ipc_handler(tmp_path: Path) -> None:
     from tests.daemon.application.transport.channel.support import (
-        FakeLinkGate,
         durable_application,
+        official_address,
         register_actor,
     )
 
-    def run(root: Path, gate: object | None) -> None:
+    def run(root: Path) -> None:
         app = durable_application(root)
         register_actor(app, "reader")
-        if gate is not None:
-            app.link_admission.bind(gate)
+        reader = official_address(app, "reader")
 
-        def seed(message_id: str, intent: str, *, recipient: str = READER) -> None:
+        def seed(message_id: str, intent: str, *, recipient: str = reader) -> None:
             message = InboxMessage(
                 message_id=message_id,
                 conversation_id=f"c-{message_id}",
@@ -171,7 +170,7 @@ def test_settle_hint_for_matches_ipc_handler(tmp_path: Path) -> None:
             row = next(
                 (
                     item
-                    for item in app._inbox.pending_messages(READER)
+                    for item in app._inbox.pending_messages(reader)
                     if item.message_id == message_id
                 ),
                 None,
@@ -186,8 +185,7 @@ def test_settle_hint_for_matches_ipc_handler(tmp_path: Path) -> None:
             )["hint"]
             actual = settle_hint_for(
                 pending=row,
-                gate=app.link_admission.gate,
-                actor=READER,
+                actor=reader,
                 message_id=message_id,
             )
             assert actual == expected, message_id
@@ -204,12 +202,10 @@ def test_settle_hint_for_matches_ipc_handler(tmp_path: Path) -> None:
         for message_id in ("req", "rep", "evt", "acked", "theirs", "unknown"):
             compare(message_id)
 
-    run(tmp_path / "unbound", None)
-    run(tmp_path / "ack", FakeLinkGate(hint="ack"))
-    run(tmp_path / "invalid", FakeLinkGate(hint="banana"))
+    run(tmp_path / "fixed-rule")
 
 
-def test_settle_hint_for_reply_and_event_ack_without_a_gate() -> None:
+def test_settle_hint_for_reply_and_event_ack() -> None:
     for message_id, intent in (("rep", "reply"), ("evt", "event")):
         pending = InboxMessage(
             message_id=message_id,
@@ -223,38 +219,10 @@ def test_settle_hint_for_reply_and_event_ack_without_a_gate() -> None:
         )
         assert (
             settle_hint_for(
-                pending=pending, gate=None, actor=READER, message_id=message_id
+                pending=pending, actor=READER, message_id=message_id
             )
             == "ack"
         )
-
-
-def test_settle_hint_for_invalid_gate_answer_is_keep_and_logged() -> None:
-    logged: list[tuple[object, ...]] = []
-
-    class Gate:
-        def settle_hint(self, *, actor: str, message_id: str) -> object:
-            return "banana"
-
-    pending = InboxMessage(
-        message_id="req",
-        conversation_id="c",
-        sender=DRIVER,
-        recipient=READER,
-        payload=b"{}",
-        intent="request",
-        lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
-        created_at_ms=1,
-    )
-    hint = settle_hint_for(
-        pending=pending,
-        gate=Gate(),  # type: ignore[arg-type]
-        actor=READER,
-        message_id="req",
-        log=lambda *args, **kwargs: logged.append((args, kwargs)),
-    )
-    assert hint == "keep"
-    assert logged
 
 
 def test_carrier_port_has_no_reply_member() -> None:
@@ -266,3 +234,83 @@ def test_carrier_port_has_no_reply_member() -> None:
 def test_turn_ipc_names_match_router() -> None:
     assert IPC_SESSION_TURN_STARTED in _IPC_STATS_METHODS
     assert IPC_SESSION_TURN_ENDED in _IPC_STATS_METHODS
+
+
+def test_harness_result_defaults_to_done_for_streaming_and_turn_carriers() -> None:
+    from dataclasses import fields
+    import pytest
+
+    from hyprial.daemon.impl.api import HarnessResult, HarnessResultStatus
+    from hyprial.daemon.impl.harnesses.streaming.process import SequentialTurnProcess
+    from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_runtime import (
+        TurnDeliveryProjection,
+        TurnResultProjection,
+    )
+
+    result = HarnessResult("m-1", READER, HarnessResultStatus.COMPLETED, output="ok")
+    assert result.route_outcome == "done"
+    assert result.route_label is None
+
+    next_result = HarnessResult(
+        "m-next",
+        READER,
+        HarnessResultStatus.COMPLETED,
+        route_outcome="next",
+        route_label="code",
+    )
+    assert next_result.route_outcome == "next"
+    assert next_result.route_label == "code"
+
+    with pytest.raises(ValueError, match="route_outcome"):
+        HarnessResult(
+            "m-1",
+            READER,
+            HarnessResultStatus.COMPLETED,
+            route_outcome="invalid",
+        )
+    for bad_label in (None, "", "   "):
+        with pytest.raises(ValueError, match="route_label"):
+            HarnessResult(
+                "m-1",
+                READER,
+                HarnessResultStatus.COMPLETED,
+                route_outcome="next",
+                route_label=bad_label,
+            )
+    for closed_outcome in ("done", "refused"):
+        with pytest.raises(ValueError, match="route_label"):
+            HarnessResult(
+                "m-1",
+                READER,
+                HarnessResultStatus.COMPLETED,
+                route_outcome=closed_outcome,
+                route_label="code",
+            )
+
+    assert "route_label" not in SequentialTurnProcess.__dict__
+    assert "route_outcome" not in SequentialTurnProcess.__dict__
+    assert "route_label" not in {f.name for f in fields(TurnDeliveryProjection)}
+    assert "route_outcome" not in {f.name for f in fields(TurnDeliveryProjection)}
+    assert "route_label" not in {f.name for f in fields(TurnResultProjection)}
+    assert "route_outcome" not in {f.name for f in fields(TurnResultProjection)}
+
+
+def test_codex_carrier_store_hardens_parent_and_sqlite_file_via_manysys(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import hyprial.daemon.impl.harnesses.carrier.codex_carrier_store as store_module
+    from hyprial.kernel import harden_private_path as real_harden
+
+    hardened: list[tuple[Path, int]] = []
+
+    def record_harden(path: Path, *, mode: int) -> None:
+        hardened.append((Path(path), mode))
+        real_harden(path, mode=mode)
+
+    monkeypatch.setattr(store_module, "harden_private_path", record_harden, raising=False)
+    db_path = tmp_path / "nested-carrier" / "carrier.sqlite3"
+    store = store_module.CodexCarrierStore(db_path)
+    try:
+        assert hardened == [(db_path.parent, 0o700), (db_path, 0o600)]
+    finally:
+        store.close()

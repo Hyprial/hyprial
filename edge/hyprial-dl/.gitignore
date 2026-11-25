@@ -1,0 +1,3 @@
+# wrangler 的本地状态与依赖：⛔ 不进库（.wrangler 里会有 account id/name 与二进制缓存）
+.wrangler/
+node_modules/

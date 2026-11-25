@@ -32,7 +32,7 @@ def test_wire_delivery_carries_the_canonical_uri_recipient(tmp_path: Path) -> No
     (delivered,) = transport.frames
     assert delivered.recipient == "agent:op:node-1:kanban-sim"
     # The bare CLI sender canonicalizes at the daemon boundary (Allen A).
-    assert delivered.sender == "agent:op:node-1:requester"
+    assert delivered.sender == app.agents.require("requester").uri
 
 
 def test_wire_delivery_from_nickname_carries_the_canonical_uri_recipient(
@@ -55,4 +55,4 @@ def test_wire_delivery_from_nickname_carries_the_canonical_uri_recipient(
     (delivered,) = transport.frames
     assert delivered.recipient == "agent:op:node-1:kanban-sim"
     # The bare CLI sender canonicalizes at the daemon boundary (Allen A).
-    assert delivered.sender == "agent:op:node-1:requester"
+    assert delivered.sender == app.agents.require("requester").uri

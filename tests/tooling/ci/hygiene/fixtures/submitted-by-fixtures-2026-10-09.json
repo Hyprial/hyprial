@@ -1,0 +1,186 @@
+{
+  "scanned_utc": "2026-10-09T13:31:25Z",
+  "rule": "Submitted-by: agent:<full uri> on the first non-empty body line",
+  "prs": [
+    {
+      "number": 1157,
+      "verdict": "missing",
+      "first_line": "Allen: 「修复 resume 的问题，按道理所有 harness 模式都可以 resume」. This makes `--resume` work **strictly** in every ",
+      "title": "feat(resume): strict --resume for every harness mode that has a session",
+      "head": "a7ce580116b62edaf605a53cfecc1ea8d658d9e0",
+      "base": "intg/batch-1008",
+      "created_at": "2026-10-06T02:46:39"
+    },
+    {
+      "number": 1165,
+      "verdict": "ok",
+      "first_line": "Submitted-by: agent:owner@example.com:example-hq.example.net:hyprial-cli-developer",
+      "title": "fix(cli): worktrees won't suggest removing a tree in use; user-proxy reminder ca",
+      "head": "1a7d33d318fb545d2657cc28e3ff7768976ba2b2",
+      "base": "intg/batch-1008",
+      "created_at": "2026-10-06T10:49:30"
+    },
+    {
+      "number": 1290,
+      "verdict": "missing",
+      "first_line": "Skill-Impact: not-needed: agent 操作面不变（org invite/join/remove/delete 的 CLI/IPC 入口与键不变；N-A2 的请求 MAC 是传",
+      "title": "fix(org): join-org validates the invite token (N-A1)",
+      "head": "b8da07c41c3ebd8b84c27cf1565a510ab236075c",
+      "base": "intg/batch-1008",
+      "created_at": "2026-10-08T15:03:08"
+    },
+    {
+      "number": 1314,
+      "verdict": "missing",
+      "first_line": "定义 Windows 与移动 App 的最小聊天范围，采用共享 Core + 可选 Power Pack，并记录 WSL、Windows、Android 与远程 Mac 的实测环境缺口。",
+      "title": "docs: scope app core chat MVP and environment readiness",
+      "head": "a39f19a60c4be4b885f2a771e0e83b1647737a19",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T21:02:25"
+    },
+    {
+      "number": 1315,
+      "verdict": "missing",
+      "first_line": "明确 Core、本地 IPC、用户态 tailnet 和可选 Power Pack 的边界，提出多设备游标、发送去重、已读及推送语义，避免把尚未设计的能力当成现有实现。",
+      "title": "WIP: docs: define app connection and device sync proposal",
+      "head": "343392d21a8fdde76133952d4ccad9cf6fee3f86",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T21:05:56"
+    },
+    {
+      "number": 1316,
+      "verdict": "missing",
+      "first_line": "按 #1311 对照当前真实 CLI 注册树与 GUI 入口，列出全部 210 叶子以及最小聊天的 daemon API 缺口。#1126 初始计数已过时，不能将目标文档或 mock UI 当成已实现",
+      "title": "docs: audit app CLI coverage and identity dependencies",
+      "head": "12d93bed25d1c6d0b48fec69cf850bbbdfbb9350",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T21:13:00"
+    },
+    {
+      "number": 1317,
+      "verdict": "missing",
+      "first_line": "按 #1311 给出 src-tauri 的 Electron 残留与 GUI/desktop 的 DSH 依赖清单，逐项列文件行号和处理方式。",
+      "title": "docs: inventory Electron references and optional DSH integration",
+      "head": "defdfaf7981d41136b42c6543b8834117cfe957c",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T21:30:39"
+    },
+    {
+      "number": 1318,
+      "verdict": "missing",
+      "first_line": "Windows 原生构建在 Core 分层前即失败：缺 Windows ICO 资源，命名管道端点读取把 Result 直接交给字符串解析器，POSIX fixtures 无条件编译，以及进程权限常量",
+      "title": "fix(app): restore native Windows compilation and endpoint tests",
+      "head": "87f36de90a5c9e5293dd6eb0ea42267246009dbe",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T21:35:15"
+    },
+    {
+      "number": 1319,
+      "verdict": "missing",
+      "first_line": "按 #1311 将源码目录 desktop/ 机械改名为 app/，同步 CI 路径过滤、构建命令、结构门、测试和活动文档引用，方便后续 Core/Power Pack 分层。",
+      "title": "refactor(app): mechanically rename desktop source directory",
+      "head": "4798c114a4b3b9672eff4afd345bdb9cb491953c",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T21:47:31"
+    },
+    {
+      "number": 1320,
+      "verdict": "missing",
+      "first_line": "新增不依赖 Node/Python 运行时的静态 App Core 聊天入口，默认未连接，通过窄会话端口注入本地 IPC 或 tailnet 实现；演示必须显式选择且不能覆盖正式连接。既有 Node ",
+      "title": "feat(gui): introduce static app core chat and connection boundary",
+      "head": "63155eb44c2656cd6011eb35d3763c75bc150a4f",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T21:49:00"
+    },
+    {
+      "number": 1321,
+      "verdict": "missing",
+      "first_line": "默认 Tauri 构建现在只加载静态 Core 页面，不再要求 payload 或启动本地 Node/Python/daemon。现有本地启动、账户、更新和进程监督保留在显式 power-pack f",
+      "title": "WIP: feat(app): separate static Core shell and optional local runtime",
+      "head": "5048d0a99b30d77c8659ce807ac1cdfd4efdc21a",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T22:06:18"
+    },
+    {
+      "number": 1322,
+      "verdict": "missing",
+      "first_line": "App 开发前需要区分工具存在、平台就绪和真实构建。新增只读本机预检，按 desktop/android/ios 输出版本与 SDK/target/空间/签名数量摘要，缺工具或未知必需项明确 BLOC",
+      "title": "feat(tooling): add read-only app environment preflight",
+      "head": "7b24f4930204456ce32d7a5be36b66959ca13665",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-08T22:37:14"
+    },
+    {
+      "number": 1324,
+      "verdict": "missing",
+      "first_line": "Skill-Impact: not-needed: daemon-internal §3.3 join endpoint + joiner flow; no agent-facing command ",
+      "title": "feat(org): §3.3 join endpoint — transport admission for invited joiners (daemon ",
+      "head": "fb79532fc9f792e291837a83854408ed54bd25c7",
+      "base": "intg/sidecar-join-endpoint",
+      "created_at": "2026-10-09T00:21:51"
+    },
+    {
+      "number": 1325,
+      "verdict": "missing",
+      "first_line": "Power Pack 的菜单现在可以打开共用 Core 页面，查看本壳已拥有的 daemon 连接状态及已有 Agent。打开或刷新页面不会启动 runtime、执行 CLI 或提供生命周期写操作；聊",
+      "title": "feat(app): add read-only local Power Pack discovery",
+      "head": "e1ef7792850afabbc70e2e1fd5db7383dd6502a0",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-09T03:15:14"
+    },
+    {
+      "number": 1327,
+      "verdict": "missing",
+      "first_line": "# WIP: Chat/Adapter production closure",
+      "title": "WIP: Chat/Adapter cross-platform production implementation",
+      "head": "49035dbb789ebb7b259440a36cd614c17d13a60c",
+      "base": "dev",
+      "created_at": "2026-10-09T09:43:49"
+    },
+    {
+      "number": 1329,
+      "verdict": "missing",
+      "first_line": "## Summary",
+      "title": "docs: propose native model routing for agent startup",
+      "head": "fc877acd41ba829b6a2244bcaa0b89869f395b3f",
+      "base": "dev",
+      "created_at": "2026-10-09T11:07:56"
+    },
+    {
+      "number": 1337,
+      "verdict": "missing",
+      "first_line": "Scope note (2026-10-09, hq ruling): this PR lands as an independently verified narrow-face fix (boun",
+      "title": "fix(transport): re-establish presence a session rebuild replay missed",
+      "head": "2bcf1142538e078019813df6e797fe8b3c7623cd",
+      "base": "intg/batch-1008",
+      "created_at": "2026-10-09T16:21:36"
+    },
+    {
+      "number": 1338,
+      "verdict": "missing",
+      "first_line": "Core needs an embedded userspace Tailcat connection without starting the desktop sidecar or acceptin",
+      "title": "feat(app): add bounded native Tailcat service dial client",
+      "head": "db39513cbaee8a6ea9789ea7fcd7b9e46d79d28d",
+      "base": "intg/gui-app-core-20261008",
+      "created_at": "2026-10-09T16:38:05"
+    },
+    {
+      "number": 1341,
+      "verdict": "missing",
+      "first_line": "## 动机",
+      "title": "fix(orgfs): a token join survives a device row the supplier lacks (S1 unknown-de",
+      "head": "426555e56e76ad882e89814797bdcf84979d0269",
+      "base": "intg/batch-1008",
+      "created_at": "2026-10-09T18:49:58"
+    },
+    {
+      "number": 1344,
+      "verdict": "not-first-line",
+      "first_line": "The custody/notice deadlines were CI-flaky at the code default (1.0s, then 5.0s after #1343). Settin",
+      "title": "ci: declare HYPRIAL_TEST_WAIT_SECONDS in the test jobs",
+      "head": "0a97feb1be6465db850313945877761c6915b6bc",
+      "base": "intg/batch-1008",
+      "created_at": "2026-10-09T21:19:22"
+    }
+  ]
+}

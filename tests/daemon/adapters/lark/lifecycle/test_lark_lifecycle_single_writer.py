@@ -29,7 +29,7 @@ APPLICATION = SOURCE_ROOT / 'daemon/impl/application'
 
 _REVIEWED_NON_LARK_MUTATIONS: dict[str, tuple[str, ...]] = {
     "daemon/impl/application/actors/lifecycle_ops.py": (
-        "self.desired_state.remove_harness(spec.harness, spec.name)",
+        "self.desired_state.remove_harness(spec.harness, spec.name, member=spec.member)",
     ),
 }
 
@@ -111,7 +111,7 @@ def test_dynamic_non_lark_mutation_is_not_silently_ignored() -> None:
     assert _application_desired_mutations(mutated) == ("remove_harness",)
 
 
-def test_pykka_remains_private_to_actor_runtime_backend() -> None:
+def test_pykka_is_gone_from_the_source_tree() -> None:
     source_root = SOURCE_ROOT
     importers = tuple(
         sorted(
@@ -120,5 +120,5 @@ def test_pykka_remains_private_to_actor_runtime_backend() -> None:
             if "import pykka" in path.read_text(encoding="utf-8")
         )
     )
-    assert importers == ("kernel/impl/actor_runtime/backends/pykka.py",)
+    assert importers == ()
     assert "pykka" not in inspect.getsource(AdapterRuntime)

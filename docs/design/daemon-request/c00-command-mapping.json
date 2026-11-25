@@ -1,0 +1,5064 @@
+{
+  "schemaVersion": 1,
+  "generatedFrom": {
+    "inventory": "docs/reference/cli-command-inventory.json",
+    "inventorySha256": "e1ab379debd02ac9baae22b07cad19fd031d9d9e9e92446ec784aeb19fee9d41",
+    "refs": {
+      "dev": "6c38f71f9bf5bc5b10230b4c0351d4d1aa043eba",
+      "guiInit": "0fe92dda00123dd3eccca382547d6cb0cf1498ae",
+      "release": "ce871e33ac7de3dc45ebce8cb95b7fdd1450a3fe"
+    },
+    "generator": "C00 mapping projected from the committed CLI inventory; callbacks resolved from the registered Typer tree",
+    "callbackSource": "current registered Typer callbacks via inspect.unwrap: module, __name__, co_firstlineno"
+  },
+  "counts": {
+    "entries": 218,
+    "visible": 214,
+    "hidden": 4,
+    "leaves": 214,
+    "executableGroups": 4,
+    "families": 23,
+    "capabilities": {
+      "UNKNOWN": 31,
+      "bootstrap-exemption": 14,
+      "excluded": 59,
+      "legacy-ipc": 86,
+      "local-business": 22,
+      "method-spec": 5,
+      "presentation": 2
+    },
+    "callbackResolved": 218,
+    "callbackUnknown": 0,
+    "callbackEvidenceLines": 218
+  },
+  "methodSpecCatalog": [
+    {
+      "name": "agent.list",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/agent/__init__.py#L425"
+      ]
+    },
+    {
+      "name": "agent.provider.default",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/agent/provider.py#L255"
+      ]
+    },
+    {
+      "name": "agent.provider.login",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/agent/provider.py#L274"
+      ]
+    },
+    {
+      "name": "agent.provider.logout",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/agent/provider.py#L289"
+      ]
+    },
+    {
+      "name": "agent.secret.list",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/agent/__init__.py#L446"
+      ]
+    },
+    {
+      "name": "daemon.catalog",
+      "status": "declared in gui-init catalog; no direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/catalog.py#L182"
+      ]
+    },
+    {
+      "name": "link.add",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/link.py#L241"
+      ]
+    },
+    {
+      "name": "link.drop",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/link.py#L256"
+      ]
+    },
+    {
+      "name": "link.list",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/link.py#L203"
+      ]
+    },
+    {
+      "name": "link.stats",
+      "status": "declared in gui-init catalog; direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/link.py#L222"
+      ]
+    },
+    {
+      "name": "message.send.lookup",
+      "status": "declared in gui-init catalog; no direct CLI entry",
+      "sourceEvidence": [
+        "0fe92dda00123dd3eccca382547d6cb0cf1498ae:src/hyprial/daemon/impl/request_catalog/message_lookup.py#L61"
+      ]
+    }
+  ],
+  "entries": [
+    {
+      "path": "login",
+      "family": "login",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.login.commands",
+        "symbol": "login",
+        "line": 17
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/login/commands.py#L17"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "org.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "logout",
+      "family": "login",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.login.commands",
+        "symbol": "logout",
+        "line": 175
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/login/commands.py#L175"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "org.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "help",
+      "family": "meta",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.meta.commands",
+        "symbol": "help_command",
+        "line": 54
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/meta/commands.py#L54"
+      ],
+      "currentCapabilities": [
+        "presentation"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI output"
+      ],
+      "nextAction": "retain local presentation command"
+    },
+    {
+      "path": "version",
+      "family": "meta",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.meta.commands",
+        "symbol": "version",
+        "line": 68
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/meta/commands.py#L68"
+      ],
+      "currentCapabilities": [
+        "presentation"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI output"
+      ],
+      "nextAction": "retain local presentation command"
+    },
+    {
+      "path": "doctor",
+      "family": "doctor",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.doctor.commands",
+        "symbol": "doctor",
+        "line": 950
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/doctor/commands.py#L950"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "log",
+      "family": "log",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.log.log",
+        "symbol": "log_command",
+        "line": 87
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/log/log.py#L87"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local JSONL reader"
+      ],
+      "nextAction": "defer until offline visibility/shared-reader semantics are fixed"
+    },
+    {
+      "path": "gui",
+      "family": "gui",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.gui.commands",
+        "symbol": "gui_command",
+        "line": 97
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/gui/commands.py#L97"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "GUI implementation (excluded)",
+      "dependencies": [
+        "root gui UI"
+      ],
+      "nextAction": "keep GUI implementation out of daemon mapping"
+    },
+    {
+      "path": "adapter downgrade-state",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_downgrade_state",
+        "line": 25
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L25"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local callback/state authority"
+      ],
+      "nextAction": "deferred domain decision; retain verified local callback and do not infer daemon method"
+    },
+    {
+      "path": "adapter add",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_add",
+        "line": 392
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L392"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter remove",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_remove",
+        "line": 532
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L532"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter start",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_start",
+        "line": 594
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L594"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter stop",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_stop",
+        "line": 608
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L608"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter status",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_status",
+        "line": 621
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L621"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter reload",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_reload",
+        "line": 635
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L635"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter list",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_list",
+        "line": 645
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L645"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter pin",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.pins",
+        "symbol": "adapter_pin",
+        "line": 10
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/pins.py#L10"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.pin",
+        "adapter.unpin"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter unpin",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.pins",
+        "symbol": "adapter_unpin",
+        "line": 36
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/pins.py#L36"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.pin",
+        "adapter.unpin"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter route list",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.routes",
+        "symbol": "adapter_route_list",
+        "line": 85
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/routes.py#L85"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.reload"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter route candidates",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.routes",
+        "symbol": "adapter_route_candidates",
+        "line": 101
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/routes.py#L101"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.reload"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter route add",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.routes",
+        "symbol": "adapter_route_add",
+        "line": 121
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/routes.py#L121"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.reload"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter route remove",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.routes",
+        "symbol": "adapter_route_remove",
+        "line": 153
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/routes.py#L153"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.reload"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter identities sync",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.data",
+        "symbol": "adapter_identities_sync",
+        "line": 57
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/data.py#L57"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "adapter identities list",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.data",
+        "symbol": "adapter_identities_list",
+        "line": 94
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/data.py#L94"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "adapter identities find",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.data",
+        "symbol": "adapter_identities_find",
+        "line": 120
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/data.py#L120"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "adapter media get",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.data",
+        "symbol": "adapter_media_get",
+        "line": 164
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/data.py#L164"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "adapter scopes check",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.admin",
+        "symbol": "adapter_doctor",
+        "line": 655
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/admin.py#L655"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.list",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "management.adapter.remove"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter scopes authorize",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.authorize",
+        "symbol": "adapter_authorize",
+        "line": 137
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/authorize.py#L137"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "adapter user-auth check",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.lark_auth",
+        "symbol": "lark_auth_check",
+        "line": 111
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/lark_auth.py#L111"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "adapter user-auth complete",
+      "family": "adapter",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.adapter.lark_auth",
+        "symbol": "lark_auth_complete",
+        "line": 187
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/adapter/lark_auth.py#L187"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon status",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.commands",
+        "symbol": "daemon_status",
+        "line": 61
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/commands.py#L61"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon start",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.commands",
+        "symbol": "daemon_start",
+        "line": 111
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/commands.py#L111"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon run",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.commands",
+        "symbol": "daemon_run",
+        "line": 274
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/commands.py#L274"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon stop",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.commands",
+        "symbol": "daemon_stop",
+        "line": 440
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/commands.py#L440"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon restart",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.restart",
+        "symbol": "restart_command",
+        "line": 186
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/restart.py#L186"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon service status",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.service",
+        "symbol": "daemon_service_status",
+        "line": 264
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/service.py#L264"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local bootstrap/lifecycle"
+      ],
+      "nextAction": "retain local bootstrap/lifecycle path; map only after explicit domain contract"
+    },
+    {
+      "path": "daemon service install",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.service",
+        "symbol": "daemon_service_install",
+        "line": 285
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/service.py#L285"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local bootstrap/lifecycle"
+      ],
+      "nextAction": "retain local bootstrap/lifecycle path; map only after explicit domain contract"
+    },
+    {
+      "path": "daemon service uninstall",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.service",
+        "symbol": "daemon_service_uninstall",
+        "line": 304
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/service.py#L304"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local bootstrap/lifecycle"
+      ],
+      "nextAction": "retain local bootstrap/lifecycle path; map only after explicit domain contract"
+    },
+    {
+      "path": "daemon upgrade",
+      "family": "upgrade",
+      "hidden": false,
+      "kind": "group",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.upgrade.commands",
+        "symbol": "upgrade",
+        "line": 615
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/upgrade/commands.py#L615"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ping",
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon upgrade status",
+      "family": "upgrade",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.upgrade.autoupdate",
+        "symbol": "autoupdate_status",
+        "line": 26
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py#L26"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "autoupdate.status",
+        "autoupdate.trigger"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon upgrade apply",
+      "family": "upgrade",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.upgrade.autoupdate",
+        "symbol": "autoupdate_restart",
+        "line": 222
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py#L222"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "autoupdate.status",
+        "autoupdate.trigger"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "daemon upgrade run",
+      "family": "upgrade",
+      "hidden": true,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.upgrade.autoupdate",
+        "symbol": "autoupdate_run",
+        "line": 309
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/upgrade/autoupdate.py#L309"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "autoupdate.status",
+        "autoupdate.trigger"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "socialware install",
+      "family": "socialware",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.socialware.commands",
+        "symbol": "install",
+        "line": 20
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/socialware/commands.py#L20"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "message send",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.send",
+        "symbol": "send",
+        "line": 248
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/send.py#L248"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace message.send handler/schema/owner; lookup edge remains separate"
+    },
+    {
+      "path": "message probe-delivery-paths",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.send",
+        "symbol": "probe_delivery_paths",
+        "line": 403
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/send.py#L403"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "message ack",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.ack",
+        "symbol": "ack",
+        "line": 13
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/ack.py#L13"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.ack"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message reply",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.reply",
+        "symbol": "reply",
+        "line": 16
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/reply.py#L16"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.reply"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message read",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.read",
+        "symbol": "read_body",
+        "line": 33
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/read.py#L33"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "legacy IPC consumer"
+      ],
+      "nextAction": "trace real IPC method and assign MethodSpec/handler owner"
+    },
+    {
+      "path": "message history",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.threads.history",
+        "symbol": "message_history",
+        "line": 66
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/threads/history.py#L66"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "message batch",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.observe.batch",
+        "symbol": "message_batch",
+        "line": 34
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/observe/batch.py#L34"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.pending.batch"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message inbox",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.observe.inbox",
+        "symbol": "message_inbox",
+        "line": 14
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/observe/inbox.py#L14"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.query"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message status",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.observe.status",
+        "symbol": "message_status",
+        "line": 14
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/observe/status.py#L14"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message targets",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.observe.targets",
+        "symbol": "message_targets",
+        "line": 59
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/observe/targets.py#L59"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "targets"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message trajectory",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.observe.trajectory",
+        "symbol": "message_trajectory",
+        "line": 364
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/observe/trajectory.py#L364"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc",
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.status",
+        "local JSONL trajectory reader"
+      ],
+      "nextAction": "C01 dependency: preserve message.status lookup plus local log trajectory; resolve shared-reader/offline visibility semantics"
+    },
+    {
+      "path": "message outbox list",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.outbox",
+        "symbol": "outbox_list",
+        "line": 96
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/outbox.py#L96"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.query",
+        "outbox.list",
+        "outbox.prune"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message outbox prune",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.outbox",
+        "symbol": "outbox_prune",
+        "line": 123
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/outbox.py#L123"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.query",
+        "outbox.list",
+        "outbox.prune"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message delivery status",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.delivery",
+        "symbol": "delivery_status",
+        "line": 16
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/delivery.py#L16"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "message conversation list",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.threads.conversation",
+        "symbol": "conversation_list",
+        "line": 65
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/threads/conversation.py#L65"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "message group create",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.group.groups",
+        "symbol": "group_create",
+        "line": 46
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/group/groups.py#L46"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "message group show",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.group.groups",
+        "symbol": "group_show",
+        "line": 70
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/group/groups.py#L70"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "message group list",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.group.groups",
+        "symbol": "group_list",
+        "line": 88
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/group/groups.py#L88"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "message group members add",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.group.members",
+        "symbol": "members_add",
+        "line": 16
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/group/members.py#L16"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "message group members remove",
+      "family": "message",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.message.group.members",
+        "symbol": "members_remove",
+        "line": 41
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/message/group/members.py#L41"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "config set",
+      "family": "config",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.config.settings",
+        "symbol": "config_set",
+        "line": 15
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/config/settings.py#L15"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "agent create",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.create",
+        "symbol": "agent_create",
+        "line": 17
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/create.py#L17"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.create"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent attach",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.attach",
+        "symbol": "agent_attach",
+        "line": 70
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/attach/__init__.py#L70"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent detach",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.attach",
+        "symbol": "agent_detach",
+        "line": 97
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/attach/__init__.py#L97"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent list",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.admin",
+        "symbol": "agent_list",
+        "line": 43
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/admin.py#L43"
+      ],
+      "currentCapabilities": [
+        "method-spec"
+      ],
+      "implementationOwner": "C (existing MethodSpec)",
+      "dependencies": [
+        "agent.destroy",
+        "agent.destroy.preview",
+        "agent.list",
+        "agent.unblock"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent readiness",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.home",
+        "symbol": "agent_readiness",
+        "line": 32
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/home.py#L32"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.ensure-home",
+        "agent.home-census",
+        "agent.list",
+        "agent.migrate.execute",
+        "agent.migrate.preflight",
+        "agent.migrate.rollback",
+        "agent.readiness",
+        "routine.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent ensure-home",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.home",
+        "symbol": "agent_ensure_home",
+        "line": 128
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/home.py#L128"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.ensure-home",
+        "agent.home-census",
+        "agent.list",
+        "agent.migrate.execute",
+        "agent.migrate.preflight",
+        "agent.migrate.rollback",
+        "agent.readiness",
+        "routine.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent teleport",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.teleport",
+        "symbol": "agent_teleport",
+        "line": 70
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/teleport/__init__.py#L70"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent unblock",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.admin",
+        "symbol": "agent_unblock",
+        "line": 92
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/admin.py#L92"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.destroy",
+        "agent.destroy.preview",
+        "agent.list",
+        "agent.unblock"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent rename",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.admin",
+        "symbol": "agent_rename",
+        "line": 105
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/admin.py#L105"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent restore",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.restore",
+        "symbol": "agent_restore",
+        "line": 15
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/restore.py#L15"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.restore-policy",
+        "agent.restore-threshold"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent grant",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.grant",
+        "symbol": "agent_grant",
+        "line": 14
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/grant.py#L14"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.grant",
+        "agent.grants",
+        "agent.revoke"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent grants",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.grant",
+        "symbol": "agent_grants",
+        "line": 220
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/grant.py#L220"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.grant",
+        "agent.grants",
+        "agent.revoke"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent destroy",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.admin",
+        "symbol": "agent_destroy",
+        "line": 126
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/admin.py#L126"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.destroy",
+        "agent.destroy.preview",
+        "agent.list",
+        "agent.unblock"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent top",
+      "family": "daemon",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.daemon.top",
+        "symbol": "top_status",
+        "line": 353
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/daemon/top.py#L353"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "top.snapshot"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent start",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.runtime.start",
+        "symbol": "start",
+        "line": 74
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/runtime/start.py#L74"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C (CLI wiring); Allen (lifecycle authority deferred)",
+      "dependencies": [
+        "agent.resume.restore",
+        "dispatch.matrix.resolve",
+        "lifecycle.resume.preflight",
+        "ps"
+      ],
+      "nextAction": "existing callback/IPC wiring recorded; lifecycle authority remains deferred to Allen"
+    },
+    {
+      "path": "agent stop",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.runtime.down",
+        "symbol": "agent_stop",
+        "line": 15
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/runtime/down.py#L15"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C (CLI wiring); Allen (lifecycle authority deferred)",
+      "dependencies": [
+        "down"
+      ],
+      "nextAction": "existing callback/IPC wiring recorded; lifecycle authority remains deferred to Allen"
+    },
+    {
+      "path": "agent secret set",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_set",
+        "line": 471
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L471"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local callback/state authority"
+      ],
+      "nextAction": "deferred domain decision; retain verified local callback and do not infer daemon method"
+    },
+    {
+      "path": "agent secret rotate",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_rotate",
+        "line": 500
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L500"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local callback/state authority"
+      ],
+      "nextAction": "deferred domain decision; retain verified local callback and do not infer daemon method"
+    },
+    {
+      "path": "agent secret remove",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_remove",
+        "line": 527
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L527"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local callback/state authority"
+      ],
+      "nextAction": "deferred domain decision; retain verified local callback and do not infer daemon method"
+    },
+    {
+      "path": "agent secret history",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_history",
+        "line": 629
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L629"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local callback/state authority"
+      ],
+      "nextAction": "deferred domain decision; retain verified local callback and do not infer daemon method"
+    },
+    {
+      "path": "agent secret provider-write",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_entry_write",
+        "line": 669
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L669"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.secret.",
+        "agent.secret.grant",
+        "agent.secret.list",
+        "agent.secret.revoke"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent secret grant",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_grant",
+        "line": 701
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L701"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.secret.",
+        "agent.secret.grant",
+        "agent.secret.list",
+        "agent.secret.revoke"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent secret ls",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_grants",
+        "line": 736
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L736"
+      ],
+      "currentCapabilities": [
+        "method-spec"
+      ],
+      "implementationOwner": "C (existing MethodSpec)",
+      "dependencies": [
+        "agent.secret.",
+        "agent.secret.grant",
+        "agent.secret.list",
+        "agent.secret.revoke"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent secret list",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_list",
+        "line": 749
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L749"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "local callback/state authority"
+      ],
+      "nextAction": "deferred domain decision; retain verified local callback and do not infer daemon method"
+    },
+    {
+      "path": "agent secret revoke",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.secret",
+        "symbol": "agent_secret_revoke",
+        "line": 793
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/secret.py#L793"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.secret.",
+        "agent.secret.grant",
+        "agent.secret.list",
+        "agent.secret.revoke"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent home census",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.home",
+        "symbol": "agent_home_census",
+        "line": 20
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/home.py#L20"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.ensure-home",
+        "agent.home-census",
+        "agent.list",
+        "agent.migrate.execute",
+        "agent.migrate.preflight",
+        "agent.migrate.rollback",
+        "agent.readiness",
+        "routine.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent home migrate preflight",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.home",
+        "symbol": "agent_migrate_preflight",
+        "line": 401
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/home.py#L401"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.ensure-home",
+        "agent.home-census",
+        "agent.list",
+        "agent.migrate.execute",
+        "agent.migrate.preflight",
+        "agent.migrate.rollback",
+        "agent.readiness",
+        "routine.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent home migrate execute",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.home",
+        "symbol": "agent_migrate_execute",
+        "line": 433
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/home.py#L433"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.ensure-home",
+        "agent.home-census",
+        "agent.list",
+        "agent.migrate.execute",
+        "agent.migrate.preflight",
+        "agent.migrate.rollback",
+        "agent.readiness",
+        "routine.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent home migrate rollback",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.home",
+        "symbol": "agent_migrate_rollback",
+        "line": 460
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/home.py#L460"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.ensure-home",
+        "agent.home-census",
+        "agent.list",
+        "agent.migrate.execute",
+        "agent.migrate.preflight",
+        "agent.migrate.rollback",
+        "agent.readiness",
+        "routine.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent config rebind",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.config_rebind",
+        "symbol": "agent_config_rebind",
+        "line": 15
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/config_rebind/__init__.py#L15"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.config.rebind"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent tiers",
+      "family": "agent",
+      "hidden": false,
+      "kind": "group",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.runtime.tiers",
+        "symbol": "agent_tiers",
+        "line": 55
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/runtime/tiers.py#L55"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent tiers probe",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.runtime.tiers",
+        "symbol": "tiers_probe",
+        "line": 79
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/runtime/tiers.py#L79"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent provider login",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.provider.commands",
+        "symbol": "agent_provider_login",
+        "line": 236
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/provider/commands.py#L236"
+      ],
+      "currentCapabilities": [
+        "method-spec"
+      ],
+      "implementationOwner": "C (existing MethodSpec)",
+      "dependencies": [
+        "agent.provider.default",
+        "agent.provider.login",
+        "agent.provider.logout"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent provider default",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.provider.commands",
+        "symbol": "agent_provider_default",
+        "line": 387
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/provider/commands.py#L387"
+      ],
+      "currentCapabilities": [
+        "method-spec"
+      ],
+      "implementationOwner": "C (existing MethodSpec)",
+      "dependencies": [
+        "agent.provider.default",
+        "agent.provider.login",
+        "agent.provider.logout"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent provider logout",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.provider.commands",
+        "symbol": "agent_provider_logout",
+        "line": 417
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/provider/commands.py#L417"
+      ],
+      "currentCapabilities": [
+        "method-spec"
+      ],
+      "implementationOwner": "C (existing MethodSpec)",
+      "dependencies": [
+        "agent.provider.default",
+        "agent.provider.login",
+        "agent.provider.logout"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent provider allow",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.provider.access",
+        "symbol": "agent_provider_allow",
+        "line": 57
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/provider/access.py#L57"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent provider revoke",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.provider.access",
+        "symbol": "agent_provider_revoke",
+        "line": 91
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/provider/access.py#L91"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent provider status",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.provider.access",
+        "symbol": "agent_provider_status",
+        "line": 118
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/provider/access.py#L118"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent provider grant-key",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.provider.grant_key",
+        "symbol": "agent_provider_grant_key",
+        "line": 42
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/provider/grant_key.py#L42"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "agent.secret.grant",
+        "agent.secret.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "agent authority set",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.authority",
+        "symbol": "authority_set",
+        "line": 118
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/authority/__init__.py#L118"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent authority get",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.authority",
+        "symbol": "authority_get",
+        "line": 168
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/authority/__init__.py#L168"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent authority list",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.authority",
+        "symbol": "authority_list",
+        "line": 196
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/authority/__init__.py#L196"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent args show",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.harness_args",
+        "symbol": "show",
+        "line": 196
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/harness_args/__init__.py#L196"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent args validate",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.harness_args",
+        "symbol": "validate",
+        "line": 282
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/harness_args/__init__.py#L282"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent args set",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.harness_args",
+        "symbol": "set_group",
+        "line": 210
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/harness_args/__init__.py#L210"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "agent args clear",
+      "family": "agent",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.agent.harness_args",
+        "symbol": "clear",
+        "line": 304
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/agent/harness_args/__init__.py#L304"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "org repin",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.maintenance",
+        "symbol": "org_repin",
+        "line": 8
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/maintenance.py#L8"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "Allen (lifecycle/domain authority deferred)",
+      "dependencies": [
+        "TailnetMaintenance local authority"
+      ],
+      "nextAction": "deferred: preserve offline TailnetMaintenance behavior; define public lifecycle contract before migration"
+    },
+    {
+      "path": "org pin-authority",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.authority",
+        "symbol": "org_pin_authority",
+        "line": 25
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/authority.py#L25"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org migration-status",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.authority",
+        "symbol": "org_migration_status",
+        "line": 73
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/authority.py#L73"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org create",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.commands",
+        "symbol": "org_create",
+        "line": 111
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/commands.py#L111"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org repair",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.commands",
+        "symbol": "org_repair",
+        "line": 137
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/commands.py#L137"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org invite",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.member.commands",
+        "symbol": "org_invite",
+        "line": 36
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/member/commands.py#L36"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org join",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.member.commands",
+        "symbol": "org_join",
+        "line": 114
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/member/commands.py#L114"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org leave",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.member.commands",
+        "symbol": "org_leave",
+        "line": 128
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/member/commands.py#L128"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org remove",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.member.commands",
+        "symbol": "org_remove",
+        "line": 148
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/member/commands.py#L148"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org delete",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.commands",
+        "symbol": "org_delete",
+        "line": 189
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/commands.py#L189"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org use",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.commands",
+        "symbol": "org_use",
+        "line": 226
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/commands.py#L226"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "org list",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.commands",
+        "symbol": "org_list",
+        "line": 245
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/commands.py#L245"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org pending",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.member.commands",
+        "symbol": "org_pending",
+        "line": 192
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/member/commands.py#L192"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org network",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.commands",
+        "symbol": "org_network",
+        "line": 263
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/commands.py#L263"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org acl grant",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.acl",
+        "symbol": "acl_grant",
+        "line": 82
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/acl.py#L82"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org acl revoke",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.acl",
+        "symbol": "acl_revoke",
+        "line": 114
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/acl.py#L114"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org acl ls",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.acl",
+        "symbol": "acl_ls",
+        "line": 137
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/acl.py#L137"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org context validate",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.context.commands",
+        "symbol": "org_context_validate",
+        "line": 52
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/context/commands.py#L52"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org context show",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.context.commands",
+        "symbol": "org_show",
+        "line": 162
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/context/commands.py#L162"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org context status",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.context.commands",
+        "symbol": "org_status",
+        "line": 247
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/context/commands.py#L247"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org context fetch",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.context.commands",
+        "symbol": "org_fetch",
+        "line": 264
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/context/commands.py#L264"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org context import",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.context.commands",
+        "symbol": "org_import",
+        "line": 298
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/context/commands.py#L298"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org group invite",
+      "family": "org",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.org.member.commands",
+        "symbol": "org_invite",
+        "line": 36
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/org/member/commands.py#L36"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service connect",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.commands",
+        "symbol": "connect",
+        "line": 32
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/commands.py#L32"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service disconnect",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.commands",
+        "symbol": "disconnect",
+        "line": 47
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/commands.py#L47"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service list",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.commands",
+        "symbol": "list_services",
+        "line": 62
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/commands.py#L62"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service guide",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.commands",
+        "symbol": "guide",
+        "line": 76
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/commands.py#L76"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service expose",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.network",
+        "symbol": "service_expose",
+        "line": 23
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/network.py#L23"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service unexpose",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.network",
+        "symbol": "service_unexpose",
+        "line": 54
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/network.py#L54"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service exposures",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.network",
+        "symbol": "service_exposures",
+        "line": 72
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/network.py#L72"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org service whois",
+      "family": "service",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.service.network",
+        "symbol": "service_whois",
+        "line": 104
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/service/network.py#L104"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org work ls",
+      "family": "work",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.work.commands",
+        "symbol": "work_list",
+        "line": 26
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/work/commands.py#L26"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org work show",
+      "family": "work",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.work.commands",
+        "symbol": "work_show",
+        "line": 40
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/work/commands.py#L40"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs ls",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_ls",
+        "line": 68
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L68"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs resolve",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_resolve",
+        "line": 79
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L79"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs read",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_read",
+        "line": 107
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L107"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs write",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_write",
+        "line": 123
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L123"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs mkdir",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_mkdir",
+        "line": 142
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L142"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs mv",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_mv",
+        "line": 152
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L152"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs rm",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_rm",
+        "line": 167
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L167"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs history",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_history",
+        "line": 177
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L177"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs watch",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_watch",
+        "line": 192
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L192"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs import",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_import",
+        "line": 217
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L217"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs export",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_export",
+        "line": 237
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L237"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs space list",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_spaces",
+        "line": 51
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L51"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs space create",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_create",
+        "line": 58
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L58"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs space join",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_join",
+        "line": 342
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L342"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs space web",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_web",
+        "line": 351
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L351"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs space status",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_status",
+        "line": 456
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L456"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs space serve",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_serve",
+        "line": 465
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L465"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs space checkout",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_checkout",
+        "line": 479
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L479"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs member invite",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_invite",
+        "line": 261
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L261"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs member remove",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_remove_member",
+        "line": 323
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L323"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs member list",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_members",
+        "line": 333
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L333"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs trash list",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_trash",
+        "line": 430
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L430"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs trash restore",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_restore",
+        "line": 440
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L440"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs purge plan",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_purge_plan",
+        "line": 497
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L497"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs purge run",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_purge",
+        "line": 526
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L526"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs purge status",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_purge_status",
+        "line": 585
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L585"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "org fs purge unban",
+      "family": "fs",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.fs.commands",
+        "symbol": "fs_unban",
+        "line": 599
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/fs/commands.py#L599"
+      ],
+      "currentCapabilities": [
+        "excluded"
+      ],
+      "implementationOwner": "Allen (reserved domain)",
+      "dependencies": [
+        "org/lifecycle ownership"
+      ],
+      "nextAction": "hold for Allen domain contract and authority decision"
+    },
+    {
+      "path": "profile list",
+      "family": "profile",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.profile.commands",
+        "symbol": "profile_list",
+        "line": 75
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/profile/commands.py#L75"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "profile show",
+      "family": "profile",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.profile.commands",
+        "symbol": "profile_show",
+        "line": 103
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/profile/commands.py#L103"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "profile use",
+      "family": "profile",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.profile.commands",
+        "symbol": "profile_use",
+        "line": 127
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/profile/commands.py#L127"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "profile create",
+      "family": "profile",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.profile.commands",
+        "symbol": "profile_create",
+        "line": 171
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/profile/commands.py#L171"
+      ],
+      "currentCapabilities": [
+        "local-business"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "CLI-local implementation"
+      ],
+      "nextAction": "review for daemon ownership; do not infer a MethodSpec"
+    },
+    {
+      "path": "host list",
+      "family": "host",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.host.hosts",
+        "symbol": "host_list",
+        "line": 42
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/host/hosts.py#L42"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "hosts"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "host status",
+      "family": "host",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.host.hosts",
+        "symbol": "host_status",
+        "line": 89
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/host/hosts.py#L89"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "hosts"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "host create",
+      "family": "host",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.host.hosts",
+        "symbol": "host_create",
+        "line": 98
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/host/hosts.py#L98"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "hosts"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow plan",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.run",
+        "symbol": "plan",
+        "line": 101
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/run.py#L101"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.expansion.plan",
+        "workflow.plan",
+        "workflow.start"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow run",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.run",
+        "symbol": "run",
+        "line": 164
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/run.py#L164"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.expansion.plan",
+        "workflow.plan",
+        "workflow.start"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow list",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.inspect",
+        "symbol": "list_workflows",
+        "line": 25
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/inspect.py#L25"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow inspect",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.inspect",
+        "symbol": "inspect",
+        "line": 68
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/inspect.py#L68"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow cancel",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.inspect",
+        "symbol": "cancel",
+        "line": 119
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/inspect.py#L119"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow events",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.inspect",
+        "symbol": "events",
+        "line": 127
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/inspect.py#L127"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow reset",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.control",
+        "symbol": "reset",
+        "line": 63
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/control.py#L63"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow complete",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.control",
+        "symbol": "complete",
+        "line": 173
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/control.py#L173"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow fail",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.control",
+        "symbol": "fail",
+        "line": 221
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/control.py#L221"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow gc",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.misc",
+        "symbol": "workflow_gc",
+        "line": 22
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/misc.py#L22"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "pac.gc.preview"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow history list",
+      "family": "workflow",
+      "hidden": true,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.inspect",
+        "symbol": "history_list",
+        "line": 179
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/inspect.py#L179"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow history status",
+      "family": "workflow",
+      "hidden": true,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.inspect",
+        "symbol": "history_status",
+        "line": 187
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/inspect.py#L187"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "workflow.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow overview show",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.overview",
+        "symbol": "overview_show",
+        "line": 82
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/overview.py#L82"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow overview publish",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.overview",
+        "symbol": "overview_publish",
+        "line": 111
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/overview.py#L111"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow worker stop",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.control",
+        "symbol": "worker_stop",
+        "line": 100
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/control.py#L100"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow worker restart",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.control",
+        "symbol": "worker_restart",
+        "line": 109
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/control.py#L109"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow notify resend",
+      "family": "workflow",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.control",
+        "symbol": "notify_resend",
+        "line": 118
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/control.py#L118"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "workflow migration status",
+      "family": "workflow",
+      "hidden": true,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.workflow.control",
+        "symbol": "migration_status",
+        "line": 137
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/workflow/control.py#L137"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "message.send"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine plan",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "plan",
+        "line": 75
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L75"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine add",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "routine_add",
+        "line": 125
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L125"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine list",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "routine_list",
+        "line": 190
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L190"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine status",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "routine_status",
+        "line": 219
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L219"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine remove",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "routine_remove",
+        "line": 237
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L237"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine set",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "routine_set",
+        "line": 257
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L257"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine pause",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "routine_pause",
+        "line": 286
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L286"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine resume",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "routine_resume",
+        "line": 306
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L306"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine templates",
+      "family": "routine",
+      "hidden": false,
+      "kind": "group",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "templates",
+        "line": 37
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L37"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "routine templates show",
+      "family": "routine",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.routine.commands",
+        "symbol": "template_show",
+        "line": 57
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/routine/commands.py#L57"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "routine.add",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.set",
+        "routine.status"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "init",
+      "family": "init",
+      "hidden": false,
+      "kind": "group",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.init.init",
+        "symbol": "init",
+        "line": 188
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/init/init.py#L188"
+      ],
+      "currentCapabilities": [
+        "bootstrap-exemption"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "org.fetch"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "user list",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.commands",
+        "symbol": "user_list",
+        "line": 76
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/commands.py#L76"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "identity.bindings.list",
+        "identity.override.clear",
+        "identity.override.set",
+        "identity.resolve",
+        "identity.users.add",
+        "identity.users.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "user add",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.commands",
+        "symbol": "user_add",
+        "line": 92
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/commands.py#L92"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "identity.bindings.list",
+        "identity.override.clear",
+        "identity.override.set",
+        "identity.resolve",
+        "identity.users.add",
+        "identity.users.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "user show",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.commands",
+        "symbol": "user_show",
+        "line": 153
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/commands.py#L153"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "identity.bindings.list",
+        "identity.override.clear",
+        "identity.override.set",
+        "identity.resolve",
+        "identity.users.add",
+        "identity.users.list"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "user proxy status",
+      "family": "squire",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.squire.user_proxy",
+        "symbol": "user_proxy_status",
+        "line": 66
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/squire/user_proxy.py#L66"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.pin",
+        "adapter.pins",
+        "lifecycle.start",
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "user proxy setup",
+      "family": "squire",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.squire.user_proxy",
+        "symbol": "user_proxy_setup",
+        "line": 87
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/squire/user_proxy.py#L87"
+      ],
+      "currentCapabilities": [
+        "legacy-ipc"
+      ],
+      "implementationOwner": "C",
+      "dependencies": [
+        "adapter.pin",
+        "adapter.pins",
+        "lifecycle.start",
+        "ps"
+      ],
+      "nextAction": "UNRESOLVED method consumer: trace handler/schema/owner before assigning a MethodSpec"
+    },
+    {
+      "path": "user key status",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.key",
+        "symbol": "status",
+        "line": 35
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/key.py#L35"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "user key renew",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.key",
+        "symbol": "renew",
+        "line": 41
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/key.py#L41"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "user key rotate",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.key",
+        "symbol": "rotate",
+        "line": 47
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/key.py#L47"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "user key revoke",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.key",
+        "symbol": "revoke",
+        "line": 53
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/key.py#L53"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "user provider list",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.provider",
+        "symbol": "list_keys",
+        "line": 100
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/provider.py#L100"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "user provider logout",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.provider",
+        "symbol": "logout",
+        "line": 119
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/provider.py#L119"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "user provider login",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.provider",
+        "symbol": "login",
+        "line": 151
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/provider.py#L151"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    },
+    {
+      "path": "user provider rotate",
+      "family": "user",
+      "hidden": false,
+      "kind": "leaf",
+      "callback": {
+        "module": "hyprial.shell.impl.cli.commands.user.provider",
+        "symbol": "rotate",
+        "line": 181
+      },
+      "sourceEvidence": [
+        "3e507c63fe1ac4500b50a02c65795533ed526d44:src/hyprial/shell/impl/cli/commands/user/provider.py#L181"
+      ],
+      "currentCapabilities": [
+        "UNKNOWN"
+      ],
+      "implementationOwner": "UNKNOWN",
+      "dependencies": [],
+      "nextAction": "UNRESOLVED: inventory has no prior C00 semantic annotation"
+    }
+  ]
+}

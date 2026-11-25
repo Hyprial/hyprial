@@ -1,0 +1,69 @@
+{
+  "status": "PASS",
+  "actorKind": "controlled test actor (no model)",
+  "operations": [
+    "lark.adapters",
+    "sessions.create",
+    "sessions.history",
+    "sessions.pending",
+    "sessions.send",
+    "sessions.send.confirm",
+    "sessions.send.lookup",
+    "targets.list"
+  ],
+  "pageErrors": [],
+  "screenshots": [
+    "normal-1440.png",
+    "unknown-1440.png",
+    "recovered-unknown-1440.png",
+    "accepted-history-1440.png",
+    "accepted-history-375.png"
+  ],
+  "normalActor": {
+    "pendingCount": 1,
+    "reply": {
+      "ok": true,
+      "messageId": "c143778a-89db-5ea0-ae1d-4ee70fa86802",
+      "replyMessageId": "a3c3ce8e-46cd-5302-ad8f-8c0ca3cdbc18",
+      "replied": true,
+      "acknowledged": true,
+      "queued": true
+    }
+  },
+  "recovered": {
+    "sessionId": "0d0e7fdf-4b50-5ba8-9221-b798856cc914",
+    "targetUri": "agent:e2e:e2e-dev03:controlled-test-actor",
+    "request": {
+      "text": "DEV03_CONTROLLED_LOST_ACK_1793418862382",
+      "idempotencyKey": "e47b6e31-b430-403b-84f0-0ee18585f1f9"
+    },
+    "status": "unknown"
+  },
+  "resolved": {
+    "lookup": {
+      "status": "accepted",
+      "commandId": "e47b6e31-b430-403b-84f0-0ee18585f1f9",
+      "conversationId": "be301181-9d69-5c77-9a58-4de824a7966e",
+      "messageId": "724ee635-754e-5144-b030-b86c8abeeaf2"
+    },
+    "confirm": {
+      "status": "accepted",
+      "commandId": "e47b6e31-b430-403b-84f0-0ee18585f1f9",
+      "conversationId": "be301181-9d69-5c77-9a58-4de824a7966e",
+      "messageId": "724ee635-754e-5144-b030-b86c8abeeaf2"
+    }
+  },
+  "lostActor": {
+    "pendingCount": 1,
+    "reply": {
+      "ok": true,
+      "messageId": "724ee635-754e-5144-b030-b86c8abeeaf2",
+      "replyMessageId": "323948e3-e161-5f74-8ab1-aaa4c686d852",
+      "replied": true,
+      "acknowledged": true,
+      "queued": true
+    }
+  },
+  "originalDaemonMessageCount": 1,
+  "originalBrowserSendCount": 1
+}

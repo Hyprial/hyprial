@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.links.gate import PermissiveLinkGate
 
 from hyprial.daemon.impl.application import DaemonApplication, DaemonRequestError
 from hyprial.daemon.impl.inbox import (
@@ -38,13 +37,10 @@ from hyprial.shell.impl.daemon_wiring import (
 OWNER = "op"
 NODE = "node-1"
 ACTOR_NAME = "worker-b"
-ACTOR = f"agent:{OWNER}:{NODE}:{ACTOR_NAME}"
 SESSION = "session-worker-b"
 READER_NAME = "reader"
-READER = f"agent:{OWNER}:{NODE}:{READER_NAME}"
 READER_SESSION = "session-reader"
 OTHER_NAME = "other"
-OTHER = f"agent:{OWNER}:{NODE}:{OTHER_NAME}"
 OTHER_SESSION = "session-other"
 REMOTE_READER = f"agent:{OWNER}:node-2:{READER_NAME}"
 CONVERSATION = "conversation-history"
@@ -110,11 +106,35 @@ class _RemoteNodeTransport(MemoryDeliveryTransport):
 
 @dataclass
 class _HistoryHarness:
+    """The daemon under test, its inbox and the participants' addresses.
+
+    The participants are registered agents, so each is addressed at its
+    official address (the ``a.`` id URI its record stores), never at its
+    retired name URI.
+    """
+
     app: DaemonApplication
     inbox: InboxService
     transport: _LoopbackTransport
     database: Path
     peers: list[InboxService]
+
+    def address(self, name: str) -> str:
+        agent = self.app.agents.get(name)
+        assert agent is not None, name
+        return agent.uri
+
+    @property
+    def actor(self) -> str:
+        return self.address(ACTOR_NAME)
+
+    @property
+    def reader(self) -> str:
+        return self.address(READER_NAME)
+
+    @property
+    def other(self) -> str:
+        return self.address(OTHER_NAME)
 
 
 @pytest.fixture
@@ -133,8 +153,7 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _HistoryHarness:
     database = tmp_path / "inbox.sqlite3"
     transport = _LoopbackTransport()
     # History tests assume admitted peers; link policy is tested separately.
-    app.link_admission.bind(PermissiveLinkGate())
-    inbox = InboxService(database, transport, link_admission=app.link_admission)
+    inbox = InboxService(database, transport)
     transport.service = inbox
     app._inbox = inbox
     app._presence = _Presence()  # type: ignore[assignment]
@@ -175,8 +194,8 @@ def _deliver(
     harness: _HistoryHarness,
     message_id: str,
     *,
-    sender: str = READER,
-    recipient: str = ACTOR,
+    sender: str | None = None,
+    recipient: str | None = None,
     conversation: str = CONVERSATION,
     intent: str = "request",
     text: str | None = None,
@@ -185,8 +204,8 @@ def _deliver(
     message = InboxMessage(
         message_id=message_id,
         conversation_id=conversation,
-        sender=sender,
-        recipient=recipient,
+        sender=sender or harness.reader,
+        recipient=recipient or harness.actor,
         payload=json.dumps(
             {"message": text if text is not None else message_id},
             separators=(",", ":"),
@@ -203,13 +222,13 @@ def _deliver(
 def _history(
     harness: _HistoryHarness,
     *,
-    actor: str = ACTOR,
+    actor: str | None = None,
     session: str | None = SESSION,
     conversation: str = CONVERSATION,
     **params: object,
 ) -> dict:
     request: dict[str, object] = {
-        "from": actor,
+        "from": actor or harness.actor,
         "conversationId": conversation,
         **params,
     }
@@ -235,7 +254,6 @@ def _remote_delivery(
 
     peer = InboxService(
         tmp_path / "peer-inbox.sqlite3", MemoryDeliveryTransport(),
-        link_admission=harness.app.link_admission,
     )
     harness.peers.append(peer)
     transport = _RemoteNodeTransport(peer)
@@ -265,7 +283,7 @@ def _submit_remote(
     message = InboxMessage(
         message_id=message_id,
         conversation_id=CONVERSATION,
-        sender=ACTOR,
+        sender=harness.actor,
         recipient=REMOTE_READER,
         payload=json.dumps(
             {"message": text if text is not None else message_id},
@@ -290,7 +308,7 @@ def _send_remote(
     result = harness.app.handle(
         "message.send",
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
             "to": [to],
             "message": text,
@@ -304,11 +322,11 @@ def _send_remote(
     return result
 
 
-def _forge_cursor(**overrides: object) -> str:
+def _forge_cursor(participant: str, **overrides: object) -> str:
     payload = {
         "v": 1,
         "conversationId": CONVERSATION,
-        "participant": ACTOR,
+        "participant": participant,
         "createdAtMs": 2000,
         "messageId": "m-2",
     }
@@ -328,7 +346,7 @@ def test_history_keeps_consumed_requests_and_real_replies(
             message_id="n-1",
             conversation_id=CONVERSATION,
             sender=f"system:hyprial:{NODE}",
-            recipient=ACTOR,
+            recipient=harness.actor,
             payload=b'{"message":"system notice"}',
             intent="system",
             lifecycle=DeliveryLifecycle.ONLINE_ONLY,
@@ -338,13 +356,13 @@ def test_history_keeps_consumed_requests_and_real_replies(
 
     acknowledged = harness.app.handle(
         "message.ack",
-        {"from": ACTOR, "sessionRef": SESSION, "messageId": "m-acked"},
+        {"from": harness.actor, "sessionRef": SESSION, "messageId": "m-acked"},
     )
     assert acknowledged["acknowledged"] is True
     replied = harness.app.handle(
         "message.reply",
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
             "messageId": "m-request",
             "message": "the real reply",
@@ -355,7 +373,7 @@ def test_history_keeps_consumed_requests_and_real_replies(
     assert replied["acknowledged"] is True
     reply_id = replied["replyMessageId"]
 
-    pending_before = harness.inbox.pending_count(ACTOR)
+    pending_before = harness.inbox.pending_count(harness.actor)
     outbox_before = harness.inbox.outbox_count()
     page = _history(harness, limit=200)
 
@@ -365,19 +383,19 @@ def test_history_keeps_consumed_requests_and_real_replies(
     assert "n-1" not in by_id
     assert by_id["m-request"]["message"] == "please answer"
     assert by_id["m-request"]["intent"] == "request"
-    assert by_id["m-request"]["from"] == READER
-    assert by_id["m-request"]["to"] == ACTOR
+    assert by_id["m-request"]["from"] == harness.reader
+    assert by_id["m-request"]["to"] == harness.actor
     assert by_id[reply_id]["intent"] == "reply"
-    assert by_id[reply_id]["from"] == ACTOR
-    assert by_id[reply_id]["to"] == READER
+    assert by_id[reply_id]["from"] == harness.actor
+    assert by_id[reply_id]["to"] == harness.reader
     assert by_id[reply_id]["message"] == "the real reply"
     assert [entry["createdAtMs"] for entry in page["entries"]] == sorted(
         entry["createdAtMs"] for entry in page["entries"]
     )
     # Reading consumed nothing and drained nothing.
-    assert harness.inbox.pending_count(ACTOR) == pending_before
+    assert harness.inbox.pending_count(harness.actor) == pending_before
     assert harness.inbox.outbox_count() == outbox_before
-    assert [notice.message_id for notice in harness.inbox.system_notices(ACTOR)] == [
+    assert [notice.message_id for notice in harness.inbox.system_notices(harness.actor)] == [
         "n-1"
     ]
 
@@ -389,7 +407,7 @@ def test_history_is_scoped_to_the_authenticated_participant_and_conversation(
     _deliver(
         harness,
         "m-between-reader-and-other",
-        recipient=OTHER,
+        recipient=harness.other,
         created_at_ms=2000,
     )
     _deliver(
@@ -403,14 +421,14 @@ def test_history_is_scoped_to_the_authenticated_participant_and_conversation(
     assert _ids(actor_page) == ["m-for-actor"]
 
     reader_page = _history(
-        harness, actor=READER, session=READER_SESSION, limit=200
+        harness, actor=harness.reader, session=READER_SESSION, limit=200
     )
     # The sender's copy lives in the recipient's local inbox: a second client
     # in the same conversation sees the same two messages.
     assert set(_ids(reader_page)) == {"m-for-actor", "m-between-reader-and-other"}
 
     other_page = _history(
-        harness, actor=OTHER, session=OTHER_SESSION, limit=200
+        harness, actor=harness.other, session=OTHER_SESSION, limit=200
     )
     assert _ids(other_page) == ["m-between-reader-and-other"]
 
@@ -439,7 +457,7 @@ def test_history_cursor_is_opaque_and_bound_to_conversation_and_participant(
         harness.app.handle(
             "message.history",
             {
-                "from": ACTOR,
+                "from": harness.actor,
                 "sessionRef": SESSION,
                 "conversationId": OTHER_CONVERSATION,
                 "cursor": cursor,
@@ -455,7 +473,7 @@ def test_history_cursor_is_opaque_and_bound_to_conversation_and_participant(
             "message.history",
             {
                 "from": f"user:{OWNER}",
-                "onBehalfOf": READER,
+                "onBehalfOf": harness.reader,
                 "conversationId": CONVERSATION,
                 "cursor": cursor,
             },
@@ -464,11 +482,14 @@ def test_history_cursor_is_opaque_and_bound_to_conversation_and_participant(
     assert wrong_participant.value.code == "INVALID_ARGUMENT"
 
     for forged in (
-        _forge_cursor(participant=READER),
-        _forge_cursor(conversationId=OTHER_CONVERSATION),
-        _forge_cursor(v=2),
-        _forge_cursor(createdAtMs=0),
-        _forge_cursor(messageId=""),
+        _forge_cursor(harness.reader),
+        _forge_cursor(harness.actor, conversationId=OTHER_CONVERSATION),
+        _forge_cursor(harness.actor, v=2),
+        _forge_cursor(harness.actor, createdAtMs=0),
+        _forge_cursor(harness.actor, createdAtMs=2**63),
+        _forge_cursor(harness.actor, createdAtMs=-1),
+        _forge_cursor(harness.actor, createdAtMs=True),
+        _forge_cursor(harness.actor, messageId=""),
         "not-a-cursor",
         "",
     ):
@@ -530,23 +551,23 @@ def test_history_defaults_to_fifty_and_bounds_the_page(
         assert refused.value.code == "INVALID_ARGUMENT"
 
     for request in (
-        {"from": ACTOR, "sessionRef": SESSION},
-        {"from": ACTOR, "sessionRef": SESSION, "conversationId": ""},
-        {"from": ACTOR, "sessionRef": SESSION, "conversationId": 7},
+        {"from": harness.actor, "sessionRef": SESSION},
+        {"from": harness.actor, "sessionRef": SESSION, "conversationId": ""},
+        {"from": harness.actor, "sessionRef": SESSION, "conversationId": 7},
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
             "conversationId": CONVERSATION,
-            "participants": [READER],
+            "participants": [harness.reader],
         },
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
             "conversationId": CONVERSATION,
-            "sender": READER,
+            "sender": harness.reader,
         },
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
             "conversationId": CONVERSATION,
             "cursor": 7,
@@ -572,7 +593,7 @@ def test_history_requires_an_authenticated_ipc_caller_even_in_observe_mode(
     with pytest.raises(DaemonRequestError) as unauthenticated:
         harness.app.handle(
             "message.history",
-            {"from": ACTOR, "conversationId": CONVERSATION},
+            {"from": harness.actor, "conversationId": CONVERSATION},
             _trusted_message_origin="ipc",
         )
     assert unauthenticated.value.code == "SENDER_NOT_AUTHENTICATED"
@@ -586,7 +607,7 @@ def test_history_requires_an_authenticated_ipc_caller_even_in_observe_mode(
         harness.app.handle(
             "message.history",
             {
-                "from": ACTOR,
+                "from": harness.actor,
                 "sessionRef": READER_SESSION,
                 "conversationId": CONVERSATION,
             },
@@ -611,7 +632,7 @@ def test_history_requires_an_authenticated_ipc_caller_even_in_observe_mode(
         "message.history",
         {
             "from": f"user:{OWNER}",
-            "onBehalfOf": ACTOR,
+            "onBehalfOf": harness.actor,
             "conversationId": CONVERSATION,
         },
         _trusted_message_origin="ipc",
@@ -633,9 +654,9 @@ def test_history_projects_sent_and_undelivered_sender_rows(
     delivered = harness.app.handle(
         "message.send",
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
-            "to": [READER],
+            "to": [harness.reader],
             "message": "hello reader",
             "summary": "hello reader",
             "conversationId": CONVERSATION,
@@ -645,13 +666,13 @@ def test_history_projects_sent_and_undelivered_sender_rows(
     )
     assert delivered["ok"] is True
 
-    harness.transport.offline.add(READER)
+    harness.transport.offline.add(harness.reader)
     queued = harness.app.handle(
         "message.send",
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
-            "to": [READER],
+            "to": [harness.reader],
             "message": "still queued",
             "summary": "still queued",
             "conversationId": CONVERSATION,
@@ -665,22 +686,22 @@ def test_history_projects_sent_and_undelivered_sender_rows(
     page = _history(harness, limit=200)
 
     texts = {entry["message"]: entry for entry in page["entries"]}
-    assert texts["hello reader"]["from"] == ACTOR
-    assert texts["hello reader"]["to"] == READER
-    assert texts["still queued"]["from"] == ACTOR
+    assert texts["hello reader"]["from"] == harness.actor
+    assert texts["hello reader"]["to"] == harness.reader
+    assert texts["still queued"]["from"] == harness.actor
     assert harness.inbox.outbox_count() == 1
 
 
 def test_history_projects_one_copy_when_inbox_and_outbox_hold_the_same_id(
     harness: _HistoryHarness,
 ) -> None:
-    harness.transport.offline.add(READER)
+    harness.transport.offline.add(harness.reader)
     sent = harness.app.handle(
         "message.send",
         {
-            "from": ACTOR,
+            "from": harness.actor,
             "sessionRef": SESSION,
-            "to": [READER],
+            "to": [harness.reader],
             "message": "outbox copy",
             "summary": "outbox copy",
             "conversationId": CONVERSATION,
@@ -693,16 +714,16 @@ def test_history_projects_one_copy_when_inbox_and_outbox_hold_the_same_id(
     _deliver(
         harness,
         message_id,
-        sender=ACTOR,
-        recipient=READER,
+        sender=harness.actor,
+        recipient=harness.reader,
         text="inbox copy",
         created_at_ms=2000,
     )
-    harness.inbox.ack(READER, message_id)
+    harness.inbox.ack(harness.reader, message_id)
 
     actor_page = _history(harness, limit=200)
     reader_page = _history(
-        harness, actor=READER, session=READER_SESSION, limit=200
+        harness, actor=harness.reader, session=READER_SESSION, limit=200
     )
     for page in (actor_page, reader_page):
         matching = [
@@ -718,11 +739,11 @@ def test_history_reads_through_the_read_only_projection(
 ) -> None:
     _deliver(harness, "m-1", created_at_ms=1000)
     _deliver(harness, "m-2", created_at_ms=2000)
-    assert harness.inbox.ack(ACTOR, "m-1").acknowledged
+    assert harness.inbox.ack(harness.actor, "m-1").acknowledged
 
     projection = InboxReadProjection(harness.database)
     rows = projection.conversation_messages(
-        ACTOR, CONVERSATION, after=None, limit=50
+        harness.actor, CONVERSATION, after=None, limit=50
     )
 
     assert [row.message_id for row in rows] == ["m-1", "m-2"]
@@ -731,7 +752,7 @@ def test_history_reads_through_the_read_only_projection(
 
     after = (1000, "m-1")
     tail = projection.conversation_messages(
-        ACTOR, CONVERSATION, after=after, limit=50
+        harness.actor, CONVERSATION, after=after, limit=50
     )
     assert [row.message_id for row in tail] == ["m-2"]
 
@@ -756,7 +777,7 @@ def test_remote_delivered_send_stays_in_the_senders_history(
     page = _history(harness, limit=200)
     assert _ids(page) == [message_id]
     entry = page["entries"][0]
-    assert entry["from"] == ACTOR
+    assert entry["from"] == harness.actor
     assert entry["to"] == REMOTE_READER
     assert entry["message"] == "hello remote"
 
@@ -774,7 +795,7 @@ def test_remote_sender_copy_is_not_readable_by_other_participants(
     assert [
         message.message_id
         for message in projection.conversation_messages(
-            ACTOR, CONVERSATION, limit=50
+            harness.actor, CONVERSATION, limit=50
         )
     ] == [message_id]
     # The peer named as recipient, and an uninvolved local actor, read their
@@ -786,16 +807,16 @@ def test_remote_sender_copy_is_not_readable_by_other_participants(
         == ()
     )
     assert (
-        projection.conversation_messages(READER, CONVERSATION, limit=50) == ()
+        projection.conversation_messages(harness.reader, CONVERSATION, limit=50) == ()
     )
     assert (
         _history(
-            harness, actor=READER, session=READER_SESSION, limit=200
+            harness, actor=harness.reader, session=READER_SESSION, limit=200
         )["entries"]
         == []
     )
     assert (
-        _history(harness, actor=OTHER, session=OTHER_SESSION, limit=200)[
+        _history(harness, actor=harness.other, session=OTHER_SESSION, limit=200)[
             "entries"
         ]
         == []
@@ -843,7 +864,7 @@ def test_remote_sent_copies_paginate_in_order_with_received_replies(
         harness,
         "m-inbound-reply",
         sender=REMOTE_READER,
-        recipient=ACTOR,
+        recipient=harness.actor,
         intent="reply",
         text="answer",
         created_at_ms=2500,

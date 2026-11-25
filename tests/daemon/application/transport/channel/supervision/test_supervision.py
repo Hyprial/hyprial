@@ -9,7 +9,6 @@ from hyprial.daemon.impl.application import DaemonRequestError, _LocalPresence
 from hyprial.daemon.impl.application.actors.sessions.routes import _INTERACTIVE_HEARTBEAT_TTL_SECONDS
 
 from ..support import (
-    CANONICAL,
     FakeInbox,
     IPC_WAIT_SECONDS,
     ROUTE_PROGRESS_SECONDS,
@@ -18,6 +17,7 @@ from ..support import (
     _register_channel_session,
     _wire_real_presence,
     application,
+    official_address,
     pending_message,
     register,
 )
@@ -126,12 +126,13 @@ def test_dead_connector_stops_reporting_online_after_heartbeat_expires(
     app._clock = lambda: clock["now"]  # type: ignore[assignment]
 
     _register_channel_session(app, directory)
+    address = official_address(app)
 
     fresh_ps = app.handle("ps", {})["interactiveSessions"][0]
     assert fresh_ps["online"] is True
     assert fresh_ps["channelConfirmed"] is True
     fresh_targets = app.handle("targets", {"kind": "agent"})["targets"]
-    assert CANONICAL in [item["actor"] for item in fresh_targets]
+    assert address in [item["actor"] for item in fresh_targets]
 
     # Simulate the connector process dying: time passes, nothing ever calls
     # the daemon again (no poll, no refresh).
@@ -146,7 +147,7 @@ def test_dead_connector_stops_reporting_online_after_heartbeat_expires(
     assert stale_ps["channelConfirmed"] is True
     stale_targets = app.handle("targets", {"kind": "agent"})["targets"]
     (stale_actor,) = [
-        item for item in stale_targets if item["actor"] == CANONICAL
+        item for item in stale_targets if item["actor"] == address
     ]
     assert stale_actor["status"] == "offline"
 
@@ -172,6 +173,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
             "channelLeaseToken": lease_token,
         },
     )
+    address = official_address(app)
 
     class Runtime:
         def stop(self) -> None:
@@ -185,7 +187,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
             )()
 
     app._runtime = Runtime()  # type: ignore[assignment]
-    active_routes = {CANONICAL}
+    active_routes = {address}
 
     class Routes:
         def ensure(self, spec, *, owner_lease=None):  # type: ignore[no-untyped-def]
@@ -244,7 +246,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
         # The newer heartbeat completes while expiry still holds its stale
         # observation.  Its Session version then fences the delayed close.
         assert heartbeat_finished.wait(ROUTE_PROGRESS_SECONDS)
-        assert CANONICAL in active_routes
+        assert address in active_routes
     finally:
         release_expiry.set()
 
@@ -253,7 +255,7 @@ def test_periodic_expiry_cannot_revoke_a_route_after_heartbeat_returns_alive(
     assert not periodic.is_alive()
     assert not heartbeat_worker.is_alive()
     assert heartbeat_finished.is_set()
-    assert CANONICAL in active_routes
+    assert address in active_routes
 
 
 def test_explicit_heartbeat_keeps_connector_online_past_registration_ttl(
@@ -273,6 +275,7 @@ def test_explicit_heartbeat_keeps_connector_online_past_registration_ttl(
     app._clock = lambda: clock["now"]  # type: ignore[assignment]
 
     _register_channel_session(app, directory)
+    address = official_address(app)
 
     # Several poll cycles, each inside the TTL of the *previous* contact, but
     # together spanning far more wall-clock time than one TTL window alone.
@@ -285,7 +288,7 @@ def test_explicit_heartbeat_keeps_connector_online_past_registration_ttl(
     assert clock["now"] > _INTERACTIVE_HEARTBEAT_TTL_SECONDS
     still_online = app.handle("ps", {})["interactiveSessions"][0]
     assert still_online["online"] is True
-    assert CANONICAL in [
+    assert address in [
         item["actor"] for item in app.handle("targets", {"kind": "agent"})["targets"]
     ]
 

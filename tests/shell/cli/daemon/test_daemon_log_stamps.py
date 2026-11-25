@@ -25,6 +25,7 @@ import hyprial.identity
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 from hyprial.shell.impl.cli.commands.common.services import get_services as _cli_get_services
 import hyprial.shell.impl.cli.commands.daemon.commands as _daemon_commands
+import hyprial.daemon as _daemon_public
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 ISO_MILLISECONDS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -63,8 +64,9 @@ class _FakeRuntime:
         self.epoch = epoch
         self.owns_process = False
         self.ran = False
+        self.stop_reason = "shutdown"
 
-    def owns_process_exit(self) -> None:
+    def exit_unless_logout(self) -> None:
         self.owns_process = True
 
     def run(self, **_kwargs: object) -> None:
@@ -82,6 +84,7 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         hyprial.identity, "IdentityTransactionLock", _FakeIdentityTransactions
     )
+    monkeypatch.setattr(_daemon_public, "check_native_engine", lambda: None)
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, epoch: str) -> _FakeRuntime:

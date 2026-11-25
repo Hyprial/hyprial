@@ -17,7 +17,7 @@ from hyprial.shell.impl.request_http.config import (
 )
 
 OWNER = "h01-owner"
-ACTOR = "agent:h01-owner:h01-node:operator"
+ACTOR = "user:h01-owner"
 
 
 def _config(tmp_path: Path, **overrides: object) -> Path:
@@ -76,7 +76,7 @@ def test_minimal_config_fills_the_documented_defaults(tmp_path: Path) -> None:
         ({"security": {"allowedOrigins": ["http://x/path"], "allowedHosts": ["127.0.0.1"]}}, "path"),
         (
             {"principal": {"kind": "local-operator", "owner": OWNER, "actor": "agent:other:node:a"}},
-            "owner must equal",
+            "canonical user:<owner>",
         ),
         (
             {"principal": {"kind": "local-operator", "owner": OWNER, "actor": "operator"}},
@@ -97,6 +97,27 @@ def test_secret_keys_and_unknown_keys_are_rejected(tmp_path: Path) -> None:
         load_config(_config(tmp_path, clientToken="x"))
     with pytest.raises(ConfigFailure, match="unknown keys"):
         load_config(_config(tmp_path, unexpected=True))
+
+
+def _gui_config(tmp_path: Path, **overrides: object) -> Path:
+    return _config(
+        tmp_path,
+        principal={"kind": "local-gui", "owner": None, "actor": None},
+        home=str(tmp_path / "home"),
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize("gui", [True, False])
+def test_native_host_block_is_refused_as_an_unknown_key(tmp_path: Path, gui: bool) -> None:
+    block = {"promotion": "external", "contractVersion": 1}
+    path = (
+        _gui_config(tmp_path, nativeHost=block)
+        if gui
+        else _config(tmp_path, nativeHost=block)
+    )
+    with pytest.raises(ConfigFailure, match="unknown keys"):
+        load_config(path)
 
 
 def test_config_must_be_regular_private_and_not_a_symlink(tmp_path: Path) -> None:
@@ -139,3 +160,14 @@ def test_server_json_is_private_and_atomic(tmp_path: Path) -> None:
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert json.loads(target.read_text(encoding="utf-8"))["token"] == "x"
     assert not list(config.runtime_dir.glob(".server.json.*"))
+
+
+@pytest.mark.parametrize(
+    "block",
+    [{"bindingVersion": 1, "transportGeneration": "gen-1"}, {}, None, "stale"],
+)
+def test_transport_block_is_refused_as_an_unknown_key(tmp_path: Path, block: object) -> None:
+    with pytest.raises(ConfigFailure, match=r"unknown keys \['transport'\]") as raised:
+        load_config(_config(tmp_path, transport=block))
+    assert raised.value.code == "CONFIG_INVALID"
+    assert raised.value.exit_code == 2

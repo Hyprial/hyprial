@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from hyprial.daemon.impl.mcp import StatelessDaemonProxy, create_mcp_server  # noqa: E402
 
 
+GROUP_ID = "g.contractgroupaaaaaaaaaaaaa"
 BATCH_RESPONSE = {
     "ok": True,
     "schemaVersion": 1,
@@ -65,6 +66,9 @@ class Connection:
         self.calls.append(method)
         if method == "message.pending.batch":
             return BATCH_RESPONSE
+        if method == "conversations.history":
+            page = {key: params[key] for key in ("conversationId", "mode", "cursor", "limit")}
+            return {"ok": True, "method": method, "actor": params["actor"], **page}
         return {"ok": True, "method": method, "actor": params["actor"]}
 
 
@@ -203,6 +207,17 @@ async def main() -> None:
             result = await client.call_tool(name, arguments)
             assert result.is_error is not True
             results[name] = result.structured_content
+        history = await client.call_tool(
+            "harness_read",
+            {"conversationId": GROUP_ID, "mode": "older", "cursor": "page-1", "limit": 2},
+        )
+        paged_without_conversation = await client.call_tool("harness_read", {"limit": 2})
+    assert history.is_error is not True
+    assert history.structured_content == {
+        "ok": True, "method": "conversations.history", "actor": "contract-actor",
+        "conversationId": GROUP_ID, "mode": "older", "cursor": "page-1", "limit": 2,
+    }
+    assert paged_without_conversation.is_error is True
     assert results["harness_read"] == BATCH_RESPONSE
     assert set(results["harness_read"] or {}) == {
         "ok",
@@ -250,8 +265,9 @@ async def main() -> None:
         "orgfs.remove_member",
         "orgfs.members",
         "orgfs.join",
+        "conversations.history",
     ]
-    print("mcp-tools: PASS 32/32")
+    print("mcp-tools: PASS 33/33")
 
 
 if __name__ == "__main__":

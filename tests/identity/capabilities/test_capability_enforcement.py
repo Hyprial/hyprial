@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from tests.daemon.ipc.contracts.agent.grant_simulation.test_grant_simulation import online as online, server as server, app as app
+
 from hyprial.identity.impl.agents.runtime.enforcement import (
     CAPABILITY_ENTRY_POINTS,
     CapabilityRecord,
     EnforcementScopeError,
     Principal,
-    check_channel,
     check_isolation,
     check_org_context,
     check_shared_path,
@@ -27,14 +28,13 @@ def _record(capability: str, scope: str, *, revision: int = 1, actor: str = GUES
 
 
 def test_every_grantable_capability_names_an_entry_point() -> None:
-    for capability in ("tool-surface", "channel", "shared-path", "org-context", "isolation"):
+    for capability in ("tool-surface", "shared-path", "org-context", "isolation"):
         assert capability in CAPABILITY_ENTRY_POINTS
         assert CAPABILITY_ENTRY_POINTS[capability]
 
 
 def test_host_local_operator_is_allowed_everywhere() -> None:
     assert check_tool("shell").allowed is True
-    assert check_channel("lark:ops").allowed is True
     assert check_shared_path("/tmp/x", write=True).allowed is True
     assert check_org_context().allowed is True
     assert check_isolation("container").allowed is True
@@ -44,7 +44,6 @@ def test_unverified_identity_is_refused_everywhere() -> None:
     guest = Principal(GUEST, hosted=True, verified=False)
     for verdict in (
         check_tool("shell", caller=guest, records=[_record("tool-surface", '["shell"]')]),
-        check_channel("lark:ops", caller=guest),
         check_shared_path("/tmp/x", caller=guest),
         check_org_context(caller=guest),
         check_isolation("container", caller=guest),
@@ -72,12 +71,12 @@ def test_tool_surface_grant_is_a_named_allow_list() -> None:
     assert "but none covers write" in denied.reason
 
 
-def test_channel_grant_names_routes() -> None:
-    guest = Principal(GUEST, hosted=True)
-    records = [_record("channel", '["lark:ops"]')]
-
-    assert check_channel("lark:ops", caller=guest, records=records).allowed is True
-    assert check_channel("lark:sales", caller=guest, records=records).allowed is False
+def test_the_retired_channel_capability_is_unknown() -> None:
+    assert "channel" not in CAPABILITY_ENTRY_POINTS
+    with pytest.raises(EnforcementScopeError, match="unknown capability"):
+        _record("channel", '["lark:ops"]')
+    with pytest.raises(EnforcementScopeError, match="unknown capability"):
+        explain("channel", "lark:ops")
 
 
 def test_shared_path_read_and_write_need_different_modes() -> None:
@@ -174,7 +173,7 @@ def test_verdict_serialises_for_audit() -> None:
 # -- production entry points -------------------------------------------------
 
 
-def test_cli_grants_check_allowed_and_denied() -> None:
+def test_cli_grants_check_allowed_and_denied(online) -> None:
     import json
 
     from typer.testing import CliRunner
@@ -228,7 +227,7 @@ def test_cli_grants_check_allowed_and_denied() -> None:
     assert json.loads(allowed.stdout)["allowed"] is True
 
 
-def test_cli_grants_check_shared_path_write_and_operator() -> None:
+def test_cli_grants_check_shared_path_write_and_operator(online) -> None:
     import json
 
     from typer.testing import CliRunner
@@ -275,6 +274,26 @@ def test_cli_grants_check_shared_path_write_and_operator() -> None:
     )
     assert operator.exit_code == 0, operator.output
     assert json.loads(operator.stdout)["allowed"] is True
+
+
+def test_cli_grants_check_refuses_the_retired_channel_capability(online) -> None:
+    import json
+
+    from typer.testing import CliRunner
+
+    from hyprial.shell.impl.cli.runtime import entry as cli
+
+    for caller in ([], ["--caller", GUEST, "--hosted", "--scope", '["lark:ops"]']):
+        refused = CliRunner().invoke(
+            cli.app,
+            ["agent", "grant", "synthetic-caller", "check", "--capability", "channel",
+             "--resource", "lark:ops", *caller, "--json"],
+        )
+        assert refused.exit_code == 1, refused.output
+        body = json.loads(refused.stdout)
+        assert body["ok"] is False
+        assert body["code"] == "enforcement_scope_invalid", body
+        assert "unknown capability" in body["error"]
 
 
 def test_shared_path_refuses_traversal_out_of_the_granted_root() -> None:

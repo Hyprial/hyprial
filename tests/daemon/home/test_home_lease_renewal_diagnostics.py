@@ -6,7 +6,9 @@ from hyprial.daemon.impl.configuration.home_guard import ActiveDaemonHeartbeat
 from hyprial.daemon.impl.configuration.home_lease_actor import HomeLeaseAuthority
 
 
-def test_stalled_file_renewal_reports_io_stage_at_original_fence(tmp_path, monkeypatch):
+def test_stalled_file_renewal_reports_io_stage_at_original_fence(
+    tmp_path, monkeypatch, actor_host, generation_scheduler
+):
     entered, release, lost = threading.Event(), threading.Event(), threading.Event()
     original = ActiveDaemonHeartbeat._renew_record
 
@@ -20,6 +22,7 @@ def test_stalled_file_renewal_reports_io_stage_at_original_fence(tmp_path, monke
         tmp_path, keepalive_duration=0.03,
         self_fence_on_expiry=True,
         identity_reader=lambda _pid: "synthetic-identity", ownership_lost=lost.set,
+        actor_host=actor_host, scheduler=generation_scheduler,
     )
     try:
         owner.claim()

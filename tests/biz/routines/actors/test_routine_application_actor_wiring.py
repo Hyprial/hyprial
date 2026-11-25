@@ -23,7 +23,10 @@ def test_composed_routine_mutations_use_durable_coordinator(tmp_path: Path) -> N
         node_id="node",
         owner="owner",
     **_deep_module_daemon_dependencies())
-    service = RoutineService(pac=_IdlePac(), alarm=object(), state_dir=tmp_path)
+    service = RoutineService(
+        pac=_IdlePac(), alarm=object(), state_dir=tmp_path,
+        binding_key=app._routine_binding_key,
+    )
     coordinator = RoutineCoordinator(
         state_dir=tmp_path,
         routines=service,
@@ -54,10 +57,13 @@ def test_composed_routine_mutations_use_durable_coordinator(tmp_path: Path) -> N
         )
         assert added["enabled"] is True
         assert service.status(name="selfdrive")["enabled"] is True
-        app.agents.create("coordinator")
+        coordinator_agent = app.agents.create("coordinator")
+        assert coordinator_agent.uri == (
+            f"agent:owner:node:{coordinator_agent.agent_id}"
+        )
         replacement = render_template(
             "agent-home-setup",
-            owner="agent:owner:node:coordinator",
+            owner=coordinator_agent.uri,
             escalate_to="user:owner",
             name="replacement",
         )

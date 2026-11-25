@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,15 +44,15 @@ def test_console_children_are_hidden_only_on_windows(
 ) -> None:
     """A console child of the console-less daemon must not open a window."""
 
-    monkeypatch.setattr(binary_module.sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
-        binary_module.subprocess, "CREATE_NO_WINDOW", 0x0800_0000, raising=False
+        subprocess, "CREATE_NO_WINDOW", 0x0800_0000, raising=False
     )
     assert binary_module.no_console_window_kwargs() == {
         "creationflags": 0x0800_0000
     }
 
-    monkeypatch.setattr(binary_module.sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "linux")
     assert binary_module.no_console_window_kwargs() == {}
 
 

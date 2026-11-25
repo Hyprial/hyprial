@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from pathlib import Path
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import json
 import os
 from hyprial.kernel import parse_orgfs_uri
@@ -27,7 +27,9 @@ fs_app.add_typer(trash_app, name="trash")
 fs_app.add_typer(purge_app, name="purge")
 
 
-def _fs_run(method: str, params: JsonObject, *, json_output: bool) -> None:
+def _fs_run(
+    method: str, params: JsonObject | Callable[[], JsonObject], *, json_output: bool
+) -> None:
     services = get_services()
 
     def render(data: Mapping[str, Any]) -> str:
@@ -40,7 +42,8 @@ def _fs_run(method: str, params: JsonObject, *, json_output: bool) -> None:
         return render_generic(with_human_web_urls(dict(data), home))
 
     def operation() -> CliResult:
-        return CliResult(get_services().runtime.request(method, params), render=render)
+        values = params() if callable(params) else params
+        return CliResult(get_services().runtime.request(method, values), render=render)
 
     services.runtime.execute(operation, json_output=json_output)
 
@@ -505,13 +508,13 @@ def fs_purge_plan(
         targets = json.loads(targets_json)
     except json.JSONDecodeError as exc:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, "targets must be valid JSON"
+            codes.INVALID_ARGUMENT, "targets must be valid JSON"
         ) from exc
     if not isinstance(targets, list) or not all(
         isinstance(target, dict) for target in targets
     ):
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT, "targets must be a JSON array of objects"
+            codes.INVALID_ARGUMENT, "targets must be a JSON array of objects"
         )
     _fs_run(
         "orgfs.purge_plan",

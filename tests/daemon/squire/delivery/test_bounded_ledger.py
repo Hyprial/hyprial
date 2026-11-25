@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import threading
 
-from hyprial.daemon.impl.squire.addressing import (
+from hyprial.daemon.impl.adapters.user_delivery.receiver import (
     UserDeliveryLedger,
     UserDeliveryResult,
 )
-from hyprial.daemon.impl.squire.actors.ledger import (
+from hyprial.daemon.impl.adapters.user_delivery.ledger_actor import (
     LedgerCommandReceipt,
     LedgerOutcomeUnknown,
     UserDeliveryLedgerAuthority,
@@ -15,10 +15,10 @@ from tests.support.network_owner_context import OwnerContextTracer
 
 
 def test_ledger_timeout_keeps_one_command_and_recovers_its_durable_receipt(
-    tmp_path,
+    tmp_path, actor_host
 ) -> None:
     store = UserDeliveryLedger(tmp_path / "user-deliveries.json")
-    authority = UserDeliveryLedgerAuthority(store)
+    authority = UserDeliveryLedgerAuthority(store, actor_host=actor_host)
     authority._completion_timeout = 0.05
     result = UserDeliveryResult("message", True, native_message_id="native")
     entered = threading.Event()
@@ -60,7 +60,7 @@ def test_ledger_timeout_keeps_one_command_and_recovers_its_durable_receipt(
         caller.join(3.0)
         assert authority.close(3.0)
 
-        restarted = UserDeliveryLedgerAuthority(store)
+        restarted = UserDeliveryLedgerAuthority(store, actor_host=actor_host)
         try:
             assert restarted.recover(receipt) == result
             assert calls == ["stable-key"]
@@ -73,12 +73,12 @@ def test_ledger_timeout_keeps_one_command_and_recovers_its_durable_receipt(
 
 
 def test_mark_duplicate_recovery_does_not_accept_a_nonduplicate_projection(
-    tmp_path,
+    tmp_path, actor_host
 ) -> None:
     store = UserDeliveryLedger(tmp_path / "user-deliveries.json")
     original = UserDeliveryResult("message", True, native_message_id="native")
     store.record("stable-key", original)
-    authority = UserDeliveryLedgerAuthority(store)
+    authority = UserDeliveryLedgerAuthority(store, actor_host=actor_host)
     try:
         receipt = LedgerCommandReceipt(
             "unknown-mark-operation", "mark-duplicate", "stable-key"
@@ -93,12 +93,14 @@ def test_mark_duplicate_recovery_does_not_accept_a_nonduplicate_projection(
         assert authority.close(3.0)
 
 
-def test_record_recovery_requires_the_exact_intended_result(tmp_path) -> None:
+def test_record_recovery_requires_the_exact_intended_result(
+    tmp_path, actor_host
+) -> None:
     store = UserDeliveryLedger(tmp_path / "user-deliveries.json")
     existing = UserDeliveryResult("message", True, native_message_id="first")
     intended = UserDeliveryResult("message", True, native_message_id="second")
     store.record("stable-key", existing)
-    authority = UserDeliveryLedgerAuthority(store)
+    authority = UserDeliveryLedgerAuthority(store, actor_host=actor_host)
     try:
         receipt = LedgerCommandReceipt(
             "unknown-record-operation", "record", "stable-key", intended

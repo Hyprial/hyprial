@@ -1,3 +1,9 @@
+# Decision record (file header; no inline comments by repository rule):
+# - The actor engine keeps its mailbox across a restart (ABI v1 6.3.5), so a
+#   replacement shard receives every queued EnqueueTurnCommand again while it
+#   also seeds recovery from the admission gate. A delivery is therefore
+#   started at most once per shard: recovery and _enqueue de-duplicate by
+#   delivery_id against the current turn and the pending queue.
 """Actor-owned turn admission, FIFO ownership, and stable projections.
 
 The concrete harness clients remain I/O adapters.  This coordinator is the
@@ -19,6 +25,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 import logging
+from typing import TYPE_CHECKING
 from uuid import uuid4
 from .observation import read_turn_facts
 
@@ -26,13 +33,16 @@ from hyprial.kernel import (
     PROCESS_LIFECYCLE,
     ActorEvent,
     ActorEventKind,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult,
     ExpectedActorError,
 )
 from hyprial.kernel import PortAdmission, PortCommandRejected
+from hyprial.daemon.impl.actor_custody import ActorHostCustody
 from hyprial.daemon.impl.api import classify_harness_failure
+
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost
 
 from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports  import (
     CloseTurnPumpCommand,
@@ -394,12 +404,24 @@ class _TurnShard:
         if self._closing:
             self._reject(command.correlation_id, "TURN_RUNTIME_CLOSING")
             return
+        if self._holds(command.delivery.delivery_id):
+            return
         if self._recovering:
             self._pending.append(command)
         elif self._current is None:
             self._start(command)
         else:
             self._pending.append(command)
+
+    def _holds(self, delivery_id: str) -> bool:
+        if (
+            self._current is not None
+            and self._current.delivery.delivery_id == delivery_id
+        ):
+            return True
+        return any(
+            queued.delivery.delivery_id == delivery_id for queued in self._pending
+        )
 
     def _start(self, command: EnqueueTurnCommand) -> None:
         self._current = command
@@ -684,9 +706,11 @@ class _TurnShard:
                         result=result,
                     )
                 )
-            else:
+            elif not self._holds(queued.delivery.delivery_id):
                 self._pending.append(queued)
-        self._pending.extend(admitted_during_recovery)
+        for queued in admitted_during_recovery:
+            if not self._holds(queued.delivery.delivery_id):
+                self._pending.append(queued)
         if self._pending and not self._closing:
             self._start(self._pending.popleft())
 
@@ -719,6 +743,7 @@ class TurnRuntime:
         max_delivery_attempts: int = 5,
         event_sink: TurnEventSink | None = None,
         capacity: int = 128,
+        actor_host: ActorHost | None = None,
     ) -> None:
         if capacity < 1:
             raise ValueError("turn runtime capacity must be at least 1")
@@ -731,7 +756,7 @@ class TurnRuntime:
         self._generation = 0
         self._recovery_lock = threading.RLock()
         self._recovery_ready: tuple[int, str | None] | None = None
-        self._runtime = ActorRuntime(event_sink=self._on_actor_event)
+        self._hosts = ActorHostCustody(actor_host, owner="turn-runtime")
 
         def factory() -> _TurnShard:
             self._generation += 1
@@ -754,17 +779,16 @@ class TurnRuntime:
                 ),
             )
 
-        self._handle = self._runtime.start(
+        self._handle = self._hosts.host.spawn(
             ActorSpec(
                 name=f"turn:{name}",
                 handler_factory=factory,
                 mailbox_capacity=capacity,
                 supervision_profile=PROCESS_LIFECYCLE,
+                event_sink=self._on_actor_event,
             )
         )
-        self._relay = _CompletionRelay(
-            lambda completion: self._runtime.tell(self._handle, completion)
-        )
+        self._relay = _CompletionRelay(lambda completion: self._handle.tell(completion))
 
     def submit(self, command: TurnCommand) -> PortAdmission:
         reserved = False
@@ -793,7 +817,7 @@ class TurnRuntime:
             reserved = True
         elif isinstance(command, CloseTurnPumpCommand):
             self._admission.close()
-        result = self._runtime.tell(self._handle, command)
+        result = self._handle.tell(command)
         mapped = self._map_admission(result)
         if reserved and mapped is not PortAdmission.ACCEPTED:
             self._admission.release(command.delivery.delivery_id)
@@ -905,7 +929,8 @@ class TurnRuntime:
         if not self._relay.close(timeout):
             return False
         remaining = max(0.0, timeout - (time.monotonic() - started))
-        return self._runtime.drain(remaining).complete
+        complete = self._handle.drain(remaining).complete
+        return complete and self._hosts.shutdown(max(0.0, timeout - (time.monotonic() - started)))
 
     def _on_actor_event(self, event: ActorEvent) -> None:
         _LOGGER.info(

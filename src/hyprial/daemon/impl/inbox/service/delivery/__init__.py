@@ -4,6 +4,7 @@ from hyprial.daemon.impl.inbox.service.delivery.retry import InboxServiceRetryMi
 from hyprial.daemon.impl.inbox.service.delivery.outbox import InboxServiceOutboxMixin
 from hyprial.daemon.impl.inbox.service.delivery.notices import InboxServiceNoticesMixin
 from hyprial.daemon.impl.inbox.service.delivery.system_notices import InboxServiceSystemNoticesMixin
+from hyprial.daemon.impl.inbox.service.delivery.bodies import InboxServiceBodiesMixin
 
 
 class InboxServiceDeliveryMixin(
@@ -12,5 +13,6 @@ class InboxServiceDeliveryMixin(
     InboxServiceOutboxMixin,
     InboxServiceNoticesMixin,
     InboxServiceSystemNoticesMixin,
+    InboxServiceBodiesMixin,
 ):
     """Combined delivery behavior for InboxService."""

@@ -9,7 +9,7 @@ from hyprial.kernel import ipc_errors
 
 SRC = Path(__file__).resolve().parents[4] / 'src/hyprial'
 CONTRACT_SCENARIOS = Path(__file__).resolve().parents[4] / 'contract/e2e'
-REGISTRY_FILE = SRC / "kernel" / "impl" / "contracts" / "daemon" / "ipc_errors.py"
+REGISTRY_FILE = SRC / "error" / "codes.py"
 
 TRANSIENT_CODES = frozenset(ipc_errors.TRANSIENT_CODE_CLASSES)
 TRANSIENT_CONSTANT_NAMES = frozenset(TRANSIENT_CODES)  # constants are named like values
@@ -55,7 +55,7 @@ def test_no_transient_code_literal_outside_the_registry() -> None:
                 offenders.append(f"{path}: {node.lineno}: {node.value!r}")
     assert not offenders, (
         "registered transient codes must never be spelled as string "
-        "literals outside contracts/ipc_errors.py (use the registered "
+        "literals outside error/codes.py (use the registered "
         "class or the registry constant):\n" + "\n".join(offenders)
     )
 

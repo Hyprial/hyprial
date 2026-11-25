@@ -1,3 +1,7 @@
+# Decision record (W2B-1, 2026-11-21):
+# - Guards select.kqueue and select.kevent behind explicit capability checks
+#   (elif hasattr(select, "kqueue") and hasattr(select, "kevent")) so platforms
+#   with neither poll nor kqueue degrade cleanly without raising AttributeError.
 """Lifetime of a public CLI follow stream, independent of parent signal policy.
 
 No stdin is consumed: a subscriber launched with /dev/null stdin is valid. A
@@ -29,7 +33,7 @@ class OutputWatch:
         if hasattr(select, "poll"):
             self.poller = select.poll()
             self.poller.register(fd, select.POLLERR | select.POLLHUP)
-        else:  # macOS/BSD: kqueue exposes write-side EOF without emitting bytes
+        elif hasattr(select, "kqueue") and hasattr(select, "kevent"):
             self.queue = select.kqueue()
             try:
                 self.queue.control([select.kevent(fd, filter=select.KQ_FILTER_WRITE,

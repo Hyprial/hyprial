@@ -25,11 +25,12 @@ from hyprial.identity.impl.agents.runtime.context import (
     resolve_agent_runtime_context,
 )
 from hyprial.daemon.impl.application import DaemonRequestError
+from hyprial.daemon.impl.composition.cells import close_cell_runtime
 from hyprial.daemon.impl.transfer.archive.session_files import (
     claude_project_dir_name,
     pi_session_dir_name,
 )
-from tests.integration.transfer.lifecycle.test_transfer_daemon import _application, _StubLauncher
+from tests.integration.transfer.lifecycle.daemon_support import _application, _StubLauncher
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
 
 NODE = "server"
@@ -38,7 +39,11 @@ CWD = "/work"
 
 @pytest.fixture
 def make_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The transfer tests' application: real runtime + desired state, stub launcher."""
+    """The transfer tests' application: real runtime + desired state, stub launcher.
+
+    A claude ``lifecycle.start`` composes the cell runtime to seed the member's
+    launch rules (I6-5a), so teardown closes it and the OrgFS runtime too.
+    """
 
     apps = []
     workspace = tmp_path / "work"
@@ -56,6 +61,10 @@ def make_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "state").mkdir()
     yield factory
     for app in apps:
+        close_cell_runtime(app)
+        if app._orgfs_runtime is not None:
+            app._orgfs_runtime.close()
+            app._orgfs_runtime = None
         app.agents.close()
 
 
@@ -361,11 +370,11 @@ def test_without_a_session_ref_the_default_is_still_a_fresh_session(
 def test_resume_is_refused_for_a_harness_without_resumable_sessions(
     make_app, home: Path
 ) -> None:
-    """dsh has no resume by design (#190); interactive specs never reach here."""
+    """jev has no persistent session; interactive specs never reach here."""
 
     launcher = _StubLauncher()
     app = make_app(NODE, launcher)
     with pytest.raises(DaemonRequestError) as failure:
-        _start(app, "dsh", sessionRef="s")
+        _start(app, "jev", sessionRef="s")
     assert failure.value.code == "INVALID_ARGUMENT"
     assert launcher.started == []

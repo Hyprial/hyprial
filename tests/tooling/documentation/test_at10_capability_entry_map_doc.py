@@ -4,6 +4,9 @@
 先交 SPEC 改版给 cc-sw-review 评审。本守卫把 ``docs/design/design-at10-capability-entry-map.md``
 §1 的表钉在代码单一真相源上：枚举项、可授予集合、以及「哪几项真的接了执行入口」
 三者对不上就红。
+
+``WIRED`` 是唯一在 daemon 真实入口上有执行点的能力（#1074）；``channel`` 已于
+2026-11-24 退役。新增入口必须先改 SPEC。
 """
 
 from __future__ import annotations
@@ -15,8 +18,7 @@ from hyprial.identity.impl.agents.runtime.enforcement import CAPABILITY_ENTRY_PO
 ROOT = Path(__file__).resolve().parents[3]
 DOC = ROOT / "docs" / "design" / "design-at10-capability-entry-map.md"
 
-#: 只有这两项在 daemon 真实入口上有执行点（#1074）。第三项出现时必须先改 SPEC。
-WIRED = {"channel", "org-context"}
+WIRED = {"org-context"}
 
 
 def _table_rows() -> dict[str, list[str]]:
@@ -52,7 +54,7 @@ def test_only_the_wired_capabilities_claim_a_real_entry_point() -> None:
     rows = _table_rows()
     wired = {name for name, cells in rows.items() if cells[4].startswith("**已接线**")}
     assert wired == WIRED, (
-        "接了第三个执行入口就必须先改 SPEC（docs/design/design-at10-capability-entry-map.md）"
+        "接了新的执行入口就必须先改 SPEC（docs/design/design-at10-capability-entry-map.md）"
     )
     for name in WIRED:
         assert "无" not in rows[name][3], f"{name} 必须有真实入口，不能写「无」"

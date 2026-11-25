@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import queue
 import sys
 import threading
-from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 import pytest
 from hyprial.kernel.impl.actor_runtime import AdmissionResult, ActorState
-from hyprial.kernel.impl.actor_runtime.scheduler import GenerationScheduler
 from hyprial.kernel.impl.contracts.ports import PortAdmission, PortCommandRejected
 from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import LarkReplyBridgeTransport
 from hyprial.daemon.impl.inbox.actor import DeliveryCustodyCoordinator, DispatchIoCompleted, DispatchIoFailed, DispatchIoRequested, DispatchOutcome, DispatchOutcomeKind, InboxAuthorityTimeout
@@ -18,13 +15,13 @@ from hyprial.daemon.impl.inbox.contracts.ports import ReceiveMessageCommand, Ret
 
 from ..support import (
     _BlockingTransport,
-    _CompletionAdmissionRuntime,
+    _CompletionAdmissionHost,
     _Events,
     _OnlineTransport,
     _UNBUDGETED_RESTART_WAIT_SECONDS,
     _close,
     _message,
-    _runtime,
+    _actor_host,
     _wait_until,
 )
 
@@ -33,13 +30,13 @@ def test_completion_overload_retries_without_repeating_transport(
     tmp_path: Path,
 ) -> None:
     events = _Events()
-    runtime = _CompletionAdmissionRuntime(overloaded_before_accept=3)
+    runtime = _CompletionAdmissionHost(overloaded_before_accept=3)
     transport = _OnlineTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         completion_deadline=0.5,
         completion_backoff=(0.001,),
     )
@@ -70,36 +67,15 @@ def test_closed_completion_hands_back_durable_outbox_for_new_generation_retry(
     tmp_path: Path,
 ) -> None:
     # This tests durable generation takeover, not the wall-clock time taken
-    # by a Timer thread to reopen SQLite under CI load. Execute the real
-    # generation-fenced callback after observing its admission to the scheduler.
-    scheduled: queue.Queue[Callable[[], None]] = queue.Queue()
-
-    class RestartTimer:
-        def __init__(self, _delay, callback, args):
-            self.callback = callback
-            self.args = args
-            self.cancelled = False
-
-        def start(self):
-            scheduled.put(self.fire)
-
-        def cancel(self):
-            self.cancelled = True
-
-        def fire(self):
-            assert not self.cancelled, "restart was unexpectedly cancelled"
-            self.callback(*self.args)
-
+    # by the engine to reopen SQLite under CI load.
     events = _Events()
-    runtime = _CompletionAdmissionRuntime(
-        closed=True, scheduler=GenerationScheduler(timer_factory=RestartTimer),
-    )
+    runtime = _CompletionAdmissionHost(closed=True)
     transport = _OnlineTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         completion_deadline=0.05,
         completion_backoff=(0.001,),
     )
@@ -123,8 +99,9 @@ def test_closed_completion_hands_back_durable_outbox_for_new_generation_retry(
             for item in events.snapshot()
         )
 
-        assert runtime.tell(coordinator.handle, object()) is AdmissionResult.ACCEPTED
-        scheduled.get(timeout=5.0)()
+        assert coordinator._cell.tell(object()) is AdmissionResult.ACCEPTED
+        # The engine supervises the restart inside the ABI module, so there is
+        # no Python timer to fire -- the generation wait below covers it.
         # Record every (state, generation) the wait observes, so a timeout says
         # which of two identical-looking reds it was (#549 unit 11807): a slow
         # restart ends on RESTART_PENDING/2, a failed restart attempt moves past
@@ -132,14 +109,14 @@ def test_closed_completion_hands_back_durable_outbox_for_new_generation_retry(
         trace: list[tuple[str, int]] = []
 
         def restarted_as_generation_two() -> bool:
-            snapshot = runtime.snapshot(coordinator.handle)
+            snapshot = coordinator._cell.snapshot()
             cell = (snapshot.state.name, snapshot.generation)
             if not trace or trace[-1] != cell:
                 trace.append(cell)
             return snapshot.state is ActorState.RUNNING and snapshot.generation == 2
 
         def generation_trace() -> str:
-            snapshot = runtime.snapshot(coordinator.handle)
+            snapshot = coordinator._cell.snapshot()
             return (
                 f"last state={snapshot.state.name} generation={snapshot.generation}; "
                 f"observed={trace}"
@@ -197,13 +174,13 @@ def test_drain_waits_for_completion_admission_or_durable_handoff(
     tmp_path: Path,
 ) -> None:
     events = _Events()
-    runtime = _CompletionAdmissionRuntime(hold_overloaded=True)
+    runtime = _CompletionAdmissionHost(hold_overloaded=True)
     transport = _OnlineTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         completion_deadline=1.0,
         completion_backoff=(0.01,),
     )
@@ -237,13 +214,13 @@ def test_completion_deadline_requires_explicit_durable_handoff(
     tmp_path: Path,
 ) -> None:
     events = _Events()
-    runtime = _CompletionAdmissionRuntime(hold_overloaded=True)
+    runtime = _CompletionAdmissionHost(hold_overloaded=True)
     transport = _OnlineTransport()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         transport,
         events,
-        runtime=runtime,
+        actor_host=runtime,
         completion_deadline=0.02,
         completion_backoff=(0.001,),
     )
@@ -275,22 +252,22 @@ def test_crash_restart_reassociates_delivery_without_external_io_replay(
     tmp_path: Path,
 ) -> None:
     events = _Events()
-    runtime = _runtime()
+    host = _actor_host()
     transport = _BlockingTransport()
     coordinator = DeliveryCustodyCoordinator(
-        tmp_path / "inbox.sqlite3", transport, events, runtime=runtime
+        tmp_path / "inbox.sqlite3", transport, events, actor_host=host
     )
     assert coordinator.submit(
         SubmitMessageCommand("crash-submit", _message(), now_ms=10)
     ) is PortAdmission.ACCEPTED
     assert transport.entered.wait(1.0)
     assert coordinator.read_counts().outbox_count == 1
-    assert runtime.tell(coordinator.handle, object()).value == "accepted"
+    assert coordinator._cell.tell(object()).value == "accepted"
     # NONMONOTONIC-WAIT: the state can leave RUNNING and the generation can advance to 3 -- a supervision restart, not a monotone record
     _wait_until(
         lambda: (
-            runtime.snapshot(coordinator.handle).state is ActorState.RUNNING
-            and runtime.snapshot(coordinator.handle).generation == 2
+            coordinator._cell.snapshot().state is ActorState.RUNNING
+            and coordinator._cell.snapshot().generation == 2
         ),
         # Supervision restart, not a custody settle -- see the constant.
         timeout=_UNBUDGETED_RESTART_WAIT_SECONDS,
@@ -320,7 +297,7 @@ def test_submit_completion_reassociates_after_restart_and_records_terminal(
     """The E2E-009/E2E-013 shape: external delivery finishes after gen2 starts."""
 
     events = _Events()
-    runtime = _runtime()
+    host = _actor_host()
     class ReplyClient:
         def __init__(self) -> None:
             self.entered = threading.Event()
@@ -346,7 +323,7 @@ def test_submit_completion_reassociates_after_restart_and_records_terminal(
         database,
         transport,
         events,
-        runtime=runtime,
+        actor_host=host,
     )
     facade = DeliveryCustodyFacade(coordinator, database, timeout=1.0)
     message = replace(
@@ -367,12 +344,12 @@ def test_submit_completion_reassociates_after_restart_and_records_terminal(
     caller = threading.Thread(target=submit)
     caller.start()
     assert reply_client.entered.wait(1.0)
-    assert runtime.tell(coordinator.handle, object()) is AdmissionResult.ACCEPTED
+    assert coordinator._cell.tell(object()) is AdmissionResult.ACCEPTED
     # NONMONOTONIC-WAIT: the state can leave RUNNING and the generation can advance to 3 -- a supervision restart, not a monotone record
     _wait_until(
         lambda: (
-            runtime.snapshot(coordinator.handle).state is ActorState.RUNNING
-            and runtime.snapshot(coordinator.handle).generation == 2
+            coordinator._cell.snapshot().state is ActorState.RUNNING
+            and coordinator._cell.snapshot().generation == 2
         ),
         # Supervision restart, not a custody settle -- see the constant.
         timeout=_UNBUDGETED_RESTART_WAIT_SECONDS,
@@ -405,7 +382,7 @@ def test_reply_timeout_restart_retry_joins_receipt_without_duplicate_io(
     """A caller timeout never permits a second native reply or early ACK."""
 
     events = _Events()
-    runtime = _runtime()
+    host = _actor_host()
 
     class ReplyClient:
         def __init__(self) -> None:
@@ -428,7 +405,7 @@ def test_reply_timeout_restart_retry_joins_receipt_without_duplicate_io(
         database,
         LarkReplyBridgeTransport(MemoryDeliveryTransport(), client),
         events,
-        runtime=runtime,
+        actor_host=host,
     )
     facade = DeliveryCustodyFacade(coordinator, database)
     # The caller timeout under test is induced with a facade that gives up
@@ -465,12 +442,12 @@ def test_reply_timeout_restart_retry_joins_receipt_without_duplicate_io(
     caller = threading.Thread(target=first_submit)
     caller.start()
     assert client.entered.wait(1.0)
-    assert runtime.tell(coordinator.handle, object()) is AdmissionResult.ACCEPTED
+    assert coordinator._cell.tell(object()) is AdmissionResult.ACCEPTED
     # NONMONOTONIC-WAIT: the state can leave RUNNING and the generation can advance to 3 -- a supervision restart, not a monotone record
     _wait_until(
         lambda: (
-            runtime.snapshot(coordinator.handle).state is ActorState.RUNNING
-            and runtime.snapshot(coordinator.handle).generation == 2
+            coordinator._cell.snapshot().state is ActorState.RUNNING
+            and coordinator._cell.snapshot().generation == 2
         ),
         # Supervision restart, not a custody settle -- see the constant.
         timeout=_UNBUDGETED_RESTART_WAIT_SECONDS,
@@ -504,10 +481,10 @@ def test_stale_dispatch_completion_does_not_mutate_claimed_outbox(
     tmp_path: Path,
 ) -> None:
     events = _Events()
-    runtime = _runtime()
+    host = _actor_host()
     transport = _BlockingTransport()
     coordinator = DeliveryCustodyCoordinator(
-        tmp_path / "inbox.sqlite3", transport, events, runtime=runtime
+        tmp_path / "inbox.sqlite3", transport, events, actor_host=host
     )
     assert coordinator.submit(
         SubmitMessageCommand("dispatch", _message(), now_ms=10)
@@ -530,7 +507,7 @@ def test_stale_dispatch_completion_does_not_mutate_claimed_outbox(
         ),
         completed_at_ms=20,
     )
-    assert runtime.tell(coordinator.handle, stale).value == "accepted"
+    assert coordinator._cell.tell(stale).value == "accepted"
     _wait_until(
         lambda: any(
             isinstance(item, PortCommandRejected)
@@ -560,22 +537,22 @@ def test_restart_window_rejection_does_not_close_the_port(tmp_path: Path) -> Non
     """
 
     events = _Events()
+    host = _actor_host()
     coordinator = DeliveryCustodyCoordinator(
         tmp_path / "inbox.sqlite3",
         MemoryDeliveryTransport(),
         events,
-        runtime=_runtime(),
+        actor_host=host,
     )
-    live_tell = coordinator._runtime.tell
     attempts = {"count": 0}
 
-    def restarting_once(handle: object, command: object) -> AdmissionResult:
+    def restarting_once(_cell, _command: object) -> AdmissionResult | None:
         attempts["count"] += 1
         if attempts["count"] == 1:
             return AdmissionResult.CLOSED
-        return live_tell(handle, command)  # type: ignore[arg-type]
+        return None
 
-    coordinator._runtime.tell = restarting_once  # type: ignore[assignment]
+    host.intercept_tell(restarting_once)
 
     assert coordinator.submit(ReceiveMessageCommand("during", _message())) is (
         PortAdmission.CLOSING

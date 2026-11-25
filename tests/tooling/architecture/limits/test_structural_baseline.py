@@ -29,7 +29,7 @@ SPEC.loader.exec_module(GATE)
 TODAY = date(2026, 10, 16)
 FUTURE = "2099-01-01"
 PAST = "2026-01-01"
-STUDIO = "src/gui/studio"
+STUDIO = "src/hyprial/studio"
 ROOT = SCRIPT.resolve().parents[2]
 REGISTRY_OPS = "src/hyprial/daemon/impl/application/actors/agents_admin/registry_ops.py"
 OUTBOX = "tests/daemon/outbox"
@@ -137,7 +137,7 @@ class StructuralBaselineTests(unittest.TestCase):
 
     def test_new_violation_is_not_covered_by_the_baseline(self):
         root = self.tree()
-        oversized = root / "src/gui/oversized"
+        oversized = root / "src/hyprial/oversized"
         oversized.mkdir(parents=True)
         (oversized / "only.mjs").write_text("export {};\n" * 1001)
         self.write_baseline(root, [])

@@ -1,5 +1,4 @@
 """Resolved agent-home P2 roots and non-secret tool environment profiles.
-
 This shared boundary resolves one durable Agent identity into immutable launch roots.
 
 Decision (agent-git-identity, 2026-11-03): the built-in person tool profile
@@ -64,7 +63,7 @@ __all__ = [
     "validate_shared_credential_environment",
 ]
 
-_P2_HARNESSES = frozenset({"claude", "codex", "pi"})
+_P2_HARNESSES = frozenset({"claude", "codex", "pi", "agy"})
 _NATIVE_ROOT_ENV = {
     "claude": "CLAUDE_CONFIG_DIR",
     "codex": "CODEX_HOME",
@@ -74,6 +73,7 @@ _NATIVE_CREDENTIAL_NAME = {
     "claude": ".credentials.json",
     "codex": "auth.json",
     "pi": "auth.json",
+    "agy": "antigravity-oauth-token",
 }
 SHARED_CREDENTIAL_DIVERGED = "SHARED_CREDENTIAL_DIVERGED"
 SHARED_CREDENTIAL_CONFLICT = "SHARED_CREDENTIAL_CONFLICT"
@@ -259,175 +259,26 @@ def _raise_codex_credential_preflight(
 
 def validate_shared_credential_binding(binding: SharedCredentialBinding) -> None:
     """Fail closed unless the native path is the exact designated private link."""
+    from .context_parts.shared import validate_shared_credential_binding as validate
 
-    native = binding.native_path
-    target = binding.target_path
-    identity = f"agent {binding.actor} shared credential {native}"
-    if binding.harness == "claude":
-        raise AgentRuntimeError(
-            f"{identity} is unsupported on macOS because Claude Code uses a "
-            "config-scoped Keychain item; use the explicit OAuth-token grant",
-            code=SHARED_CREDENTIAL_UNSUPPORTED,
-        )
-    try:
-        native_metadata = native.lstat()
-    except OSError as error:
-        raise AgentRuntimeError(
-            f"{identity} cannot be inspected: {error}",
-            code=SHARED_CREDENTIAL_INVALID,
-        ) from error
-    if not stat.S_ISLNK(native_metadata.st_mode):
-        code = (
-            SHARED_CREDENTIAL_DIVERGED
-            if stat.S_ISREG(native_metadata.st_mode)
-            else SHARED_CREDENTIAL_INVALID
-        )
-        raise AgentRuntimeError(
-            f"{identity} is no longer the designated symbolic link",
-            code=code,
-        )
-    try:
-        raw_destination = Path(os.readlink(native))
-    except OSError as error:
-        raise AgentRuntimeError(
-            f"{identity} cannot be read: {error}",
-            code=SHARED_CREDENTIAL_INVALID,
-        ) from error
-    destination = (
-        raw_destination
-        if raw_destination.is_absolute()
-        else native.parent / raw_destination
-    ).resolve(strict=False)
-    designated = target.resolve(strict=False)
-    if destination != designated:
-        raise AgentRuntimeError(
-            f"{identity} points to {destination}, not designated target {target}",
-            code=SHARED_CREDENTIAL_DIVERGED,
-        )
-    try:
-        target_metadata = target.lstat()
-    except OSError as error:
-        raise AgentRuntimeError(
-            f"{identity} designated target {target} cannot be inspected: {error}",
-            code=SHARED_CREDENTIAL_INVALID,
-        ) from error
-    if stat.S_ISLNK(target_metadata.st_mode) or not stat.S_ISREG(
-        target_metadata.st_mode
-    ):
-        raise AgentRuntimeError(
-            f"{identity} designated target {target} must be a regular file",
-            code=SHARED_CREDENTIAL_INVALID,
-        )
-    try:
-        violation = private_metadata_violation(target, target_metadata, mode=0o600)
-    except OSError as error:
-        raise AgentRuntimeError(
-            f"{identity} designated target {target} privacy cannot be inspected: {error}",
-            code=SHARED_CREDENTIAL_INVALID,
-        ) from error
-    if violation is not None:
-        raise AgentRuntimeError(
-            f"{identity} designated target {target} must be account-private ({violation})",
-            code=SHARED_CREDENTIAL_INVALID,
-        )
-    if binding.agent_cwd is not None:
-        try:
-            designated.relative_to(binding.agent_cwd.resolve(strict=False))
-        except ValueError:
-            pass
-        else:
-            raise AgentRuntimeError(
-                f"{identity} designated target {target} must be outside the agent cwd",
-                code=SHARED_CREDENTIAL_INVALID,
-            )
+    validate(binding)
 
 
 def validate_shared_credential_environment(
     subject: AgentRuntimeContext | SharedCredentialBinding,
     credential_environment_names: Iterable[str],
 ) -> None:
-    """Keep grant-declared environment credentials exclusive with the link.
+    """Check only grant-declared credential names, not the complete environment."""
+    from .context_parts.shared import validate_shared_credential_environment as validate
 
-    The caller supplies only credential fields declared by grants. Runtime and
-    generated child-environment fields are not credentials and must never be
-    classified by inspecting the complete environment.
-    """
-
-    binding = (
-        subject.shared_credential
-        if isinstance(subject, AgentRuntimeContext)
-        else subject
-    )
-    if binding is None:
-        return
-    conflicting = sorted(set(credential_environment_names))
-    if conflicting:
-        raise AgentRuntimeError(
-            f"agent {binding.actor} native shared credential and explicit "
-            f"environment credential {conflicting[0]} may not coexist",
-            code=SHARED_CREDENTIAL_CONFLICT,
-        )
+    validate(subject, credential_environment_names)
 
 
 def shared_credential_status(*, registry: Any, agent: Any) -> list[dict[str, object]]:
     """Project configured link health for ``agent list`` without reading values."""
+    from .context_parts.shared import shared_credential_status as status
 
-    config = agent.config
-    if config is None or not config.shared_credentials:
-        return []
-    try:
-        agent_home = Path(registry.home_receipt(agent.actor).path)
-    except (OSError, RuntimeError, ValueError) as error:
-        return [
-            {
-                "harness": harness,
-                "authMode": "native-shared-link",
-                "targetPath": target,
-                "status": "error",
-                "code": SHARED_CREDENTIAL_INVALID,
-                "error": f"agent {agent.actor} shared credential home is unavailable: {error}",
-            }
-            for harness, target in config.shared_credentials
-        ]
-    rows: list[dict[str, object]] = []
-    for harness, target in config.shared_credentials:
-        native = (
-            agent_home
-            / "secrets"
-            / "native"
-            / harness
-            / _NATIVE_CREDENTIAL_NAME[harness]
-        )
-        binding = SharedCredentialBinding(
-            actor=agent.actor,
-            harness=harness,
-            native_path=native,
-            target_path=Path(target),
-            agent_cwd=None if agent.cwd is None else Path(agent.cwd),
-        )
-        row: dict[str, object] = {
-            "harness": harness,
-            "authMode": "native-shared-link",
-            "nativePath": str(native),
-            "targetPath": target,
-        }
-        try:
-            validate_shared_credential_binding(binding)
-        except AgentRuntimeError as error:
-            row.update(
-                status="error",
-                code=error.code or SHARED_CREDENTIAL_INVALID,
-                error=str(error),
-            )
-        else:
-            row["status"] = "warning" if harness == "pi" else "ready"
-            if harness == "pi":
-                row["warning"] = (
-                    "Pi 0.85.1 locks the per-agent link path, so concurrent "
-                    "refreshes are not mutually excluded"
-                )
-        rows.append(row)
-    return rows
+    return status(registry=registry, agent=agent)
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,7 +441,7 @@ def resolve_agent_runtime_context(
     """Resolve/materialize one P2 context, or return ``None`` for legacy mode.
 
     An explicit Agent config opts that identity into P2 for the three supported
-    harnesses.  DSH/residents without an explicit C stay untouched.  A P2
+    harnesses.  Residents without an explicit C stay untouched.  A P2
     context never silently falls back when its entry cannot carry the contract.
     A ``None`` tool profile resolves the agent's git author at launch time via
     runtime.tool_profile; an explicit profile pins it (tests, readiness).
@@ -692,15 +543,18 @@ def runtime_environment_for_roots(
 ) -> dict[str, str]:
     """The profile selectors that overlay the daemon environment for one launch."""
 
-    return {
+    environment = {
         "HOME": str(roots.tool_home),
         "XDG_CONFIG_HOME": str(roots.xdg_config_home),
         "XDG_CACHE_HOME": str(roots.xdg_cache_home),
         "XDG_DATA_HOME": str(roots.xdg_data_home),
         "XDG_STATE_HOME": str(roots.xdg_state_home),
-        _NATIVE_ROOT_ENV[harness]: str(roots.native_root),
         **tool_profile_environment(roots.tool_profile_root, profile),
     }
+    native_env = _NATIVE_ROOT_ENV.get(harness)
+    if native_env:
+        environment[native_env] = str(roots.native_root)
+    return environment
 
 
 def materialize_agent_runtime_context(

@@ -1,4 +1,12 @@
-"""Per-worker bounded dispatch effects with actor-acknowledged outcomes."""
+"""Per-worker bounded dispatch effects with actor-acknowledged outcomes.
+
+Decision record (cell model I5-2 part B): the offered work item is a cell
+dispatch envelope.  The worker key still names the offer lane and the
+per-worker active slot; the envelope's identity properties carry the
+delivery id, recipient and ordered settlement ids the outcome reports, so a
+bare delivery is not a valid payload of this coordinator's production
+seam (the bridge only offers what the composition builder stamped).
+"""
 
 from __future__ import annotations
 
@@ -7,11 +15,15 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from typing import TYPE_CHECKING, Any
 
-from hyprial.daemon.impl.api  import HarnessDelivery
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted, EffectRequest
+
 from hyprial.daemon.impl.inbox.contracts.api import InboxMessage
+
+if TYPE_CHECKING:
+    from hyprial.daemon.impl.cells.actor.contracts import CellDispatchEnvelope
 
 
 class DispatchAgentTimeout(RuntimeError):
@@ -28,7 +40,7 @@ class DispatchOffer:
     operation_id: str
     generation: int
     worker: str
-    delivery: HarnessDelivery
+    delivery: CellDispatchEnvelope
     original: InboxMessage
     retry: bool
     notice: bool
@@ -88,24 +100,26 @@ class _EffectLanes:
     def __init__(
         self,
         *,
+        actor_host,
         execute,
         complete,
         capacity: int,
         workers: int,
     ) -> None:
+        self._actor_host = actor_host
         self._execute = execute
         self._complete = complete
         self._capacity = capacity
         self._workers = max(1, workers)
         self._guard = threading.Lock()
-        self._lanes: dict[str, EffectLane[DispatchOffer, DispatchOfferOutcome]] = {}
+        self._lanes: dict[str, Any] = {}
         self._closed = False
 
-    def _lane(self, worker: str) -> EffectLane[DispatchOffer, DispatchOfferOutcome]:
+    def _lane(self, worker: str):
         with self._guard:
             lane = self._lanes.get(worker)
             if lane is None:
-                lane = EffectLane(
+                lane = self._actor_host.effect_lane(
                     name=f"dispatch-offer-io-{len(self._lanes)}",
                     execute=self._execute,
                     complete=self._complete,
@@ -161,10 +175,11 @@ class DispatchOfferCoordinator:
 
     def __init__(
         self, dispatch, *, capacity: int = 32, workers: int = 4,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
     ) -> None:
         self._dispatch = dispatch
-        self._runtime = runtime or ActorRuntime()
+        if actor_host is None:
+            raise ValueError("actor_host is required")
         self._guard = threading.Lock()
         self._replies: dict[str, _Reply] = {}
         self._active: dict[str, DispatchOffer] = {}
@@ -174,7 +189,7 @@ class DispatchOfferCoordinator:
         self._generation = 1
         self._overloaded = self._failed = 0
         self._closing = self._closed = False
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="dispatch-offers",
                 handler_factory=lambda: self._receive,
@@ -182,20 +197,21 @@ class DispatchOfferCoordinator:
             )
         )
         self._effects = _EffectLanes(
+            actor_host=actor_host,
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=lambda event: self._cell.tell(event),
             capacity=capacity,
             workers=workers,
         )
 
     def offer(
-        self, worker: str, delivery: HarnessDelivery, *,
+        self, worker: str, delivery: CellDispatchEnvelope, *,
         original: InboxMessage, retry: bool, notice: bool,
     ) -> bool:
         return self._offer(worker, delivery, original=original, retry=retry, notice=notice)
 
     def offer_sync(
-        self, worker: str, delivery: HarnessDelivery, *,
+        self, worker: str, delivery: CellDispatchEnvelope, *,
         original: InboxMessage, retry: bool, notice: bool, timeout_ms: int,
     ) -> bool:
         timeout = max(0.001, timeout_ms / 1000)
@@ -225,7 +241,7 @@ class DispatchOfferCoordinator:
             time.sleep(0.005)
 
     def _offer(
-        self, worker: str, delivery: HarnessDelivery, *,
+        self, worker: str, delivery: CellDispatchEnvelope, *,
         original: InboxMessage, retry: bool, notice: bool,
     ) -> bool:
         command = self._submit(
@@ -236,7 +252,7 @@ class DispatchOfferCoordinator:
         return command[1].value is True
 
     def _submit(
-        self, worker: str, delivery: HarnessDelivery, *,
+        self, worker: str, delivery: CellDispatchEnvelope, *,
         original: InboxMessage, retry: bool, notice: bool,
         wait_seconds: float = 1.0,
     ) -> tuple[DispatchOffer, _Reply] | None:
@@ -250,7 +266,7 @@ class DispatchOfferCoordinator:
                 self._overloaded += 1
                 return None
             self._replies[command.operation_id] = reply
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._replies.pop(command.operation_id)
                 self._overloaded += 1
@@ -278,7 +294,7 @@ class DispatchOfferCoordinator:
         reply = _Reply()
         with self._guard:
             self._replies[command.operation_id] = reply
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._replies.pop(command.operation_id)
                 return ()
@@ -398,7 +414,7 @@ class DispatchOfferCoordinator:
         reply = _Reply()
         with self._guard:
             self._replies[command.operation_id] = reply
-            admission = self._runtime.tell(self._handle, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._replies.pop(command.operation_id)
                 raise TimeoutError("dispatch offer projection unavailable")
@@ -426,8 +442,8 @@ class DispatchOfferCoordinator:
             return False
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        stopped = self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
+        stopped = self._cell.stop(
+            max(0.0, deadline - time.monotonic())
         )
         with self._guard:
             self._closed = stopped

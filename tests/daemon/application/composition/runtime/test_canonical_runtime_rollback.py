@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import ast
 import importlib.util
 import os
@@ -15,6 +17,7 @@ import pytest
 
 from hyprial.kernel.impl.contracts.ports import PortAdmission
 from hyprial.daemon.impl import application as application_module
+from hyprial.daemon.impl.application.actors.agents_admin.adapters import _AdapterAdminMixin
 from tests.daemon.startup.test_startup_event_reconciliation import _native_application_source
 
 
@@ -217,11 +220,13 @@ class Scenario:
             "_autoupdate", "_maintenance_scheduler",
             "_restore_policy", "_blocking_failures", "_restore_policy_finalizer",
             "_blocking_failures_finalizer", "user_adapters", "_route_gateway_cache",
-            "user_profiles", "_transfer_p2", "_state_persistence", "_maintenance_watchdog",
+            "_state_persistence", "_maintenance_watchdog",
             "_gateway_logger", "_logger", "_status_refresh",
         ):
             setattr(self.app, name, complete)
         self.app._registry_management_lock = threading.Lock()
+        _AdapterAdminMixin._init_adapter_operations(self.app)
+        self.app._close_adapter_operations = _AdapterAdminMixin._close_adapter_operations.__get__(self.app)
         self.app._degraded_workflow_handles = []
         self.app._lifecycle_domain_ports = ()
         self.app._outbound_gateway_owners = set()
@@ -234,7 +239,7 @@ class Scenario:
             setattr(self.app, name, None)
         for name in (
             "_arm_shutdown_stall_dump_if_owned", "_log_trace", "_join_restore_thread",
-            "_close_ipc_clients", "_flush_agent_activity",
+            "_close_ipc_clients", "_flush_agent_activity", "_close_home_lease",
         ):
             setattr(self.app, name, lambda *_args, **_kwargs: None)
         harness_close, _ = _method(self.source, "_close_harnesses_before_agent_domains")
@@ -316,7 +321,7 @@ def test_harness_incomplete_retains_wake_and_transport_until_retry() -> None:
     assert scenario.events.count("transport.close") == 1
 
 
-def test_partial_runtime_owner_allocation_is_drained_by_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_partial_runtime_owner_allocation_is_drained_by_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host) -> None:
     path = _runtime_path()
     spec = importlib.util.spec_from_file_location("hyprial.daemon.impl.runtime.runtime_candidate", path)
     assert spec is not None and spec.loader is not None
@@ -327,6 +332,9 @@ def test_partial_runtime_owner_allocation_is_drained_by_stop(tmp_path: Path, mon
         closed: list[bool] = []
 
         class DispatchState:
+            def __init__(self, **kwargs: object) -> None:
+                pass  # B1 constructs this with an injected actor_host.
+
             def close(self, _timeout: float) -> bool:
                 closed.append(True)
                 return True
@@ -338,7 +346,7 @@ def test_partial_runtime_owner_allocation_is_drained_by_stop(tmp_path: Path, mon
         monkeypatch.setattr(module, "DispatchStateAuthority", DispatchState)
         monkeypatch.setattr(module, "DispatchOwnedMap", lambda _owner, _table: {})
         monkeypatch.setattr(module, "DispatchOwnedSet", lambda _owner, _table: set())
-        def fail_offers(_dispatch):
+        def fail_offers(_dispatch, **_kwargs):
             raise RuntimeError("synthetic dispatch offer construction failure")
         monkeypatch.setattr(module, "DispatchOfferCoordinator", fail_offers)
         bridge = module.DaemonEventBridge(
@@ -349,6 +357,8 @@ def test_partial_runtime_owner_allocation_is_drained_by_stop(tmp_path: Path, mon
             inbox=SimpleNamespace(),
             harnesses=SimpleNamespace(dispatch=lambda *_args: None),
             actor_mode=True,
+            actor_host=actor_host,
+            cell_delivery=AdmittingCellDelivery(),
         )
         with pytest.raises(RuntimeError, match="synthetic dispatch offer construction failure"):
             bridge.start()
@@ -362,7 +372,7 @@ def test_partial_runtime_owner_allocation_is_drained_by_stop(tmp_path: Path, mon
 
 
 def test_partial_dispatch_state_failed_close_remains_retryable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host
 ) -> None:
     path = _runtime_path()
     spec = importlib.util.spec_from_file_location("hyprial.daemon.impl.runtime.runtime_candidate_retry", path)
@@ -374,6 +384,9 @@ def test_partial_dispatch_state_failed_close_remains_retryable(
         close_attempts: list[int] = []
 
         class DispatchState:
+            def __init__(self, **kwargs: object) -> None:
+                pass  # B1 constructs this with an injected actor_host.
+
             def close(self, _timeout: float) -> bool:
                 close_attempts.append(len(close_attempts) + 1)
                 return len(close_attempts) > 1
@@ -388,7 +401,7 @@ def test_partial_dispatch_state_failed_close_remains_retryable(
         monkeypatch.setattr(
             module,
             "DispatchOfferCoordinator",
-            lambda _dispatch: (_ for _ in ()).throw(
+            lambda _dispatch, **_kwargs: (_ for _ in ()).throw(
                 RuntimeError("synthetic dispatch offer construction failure")
             ),
         )
@@ -400,6 +413,8 @@ def test_partial_dispatch_state_failed_close_remains_retryable(
             inbox=SimpleNamespace(),
             harnesses=SimpleNamespace(dispatch=lambda *_args: None),
             actor_mode=True,
+            actor_host=actor_host,
+            cell_delivery=AdmittingCellDelivery(),
         )
         with pytest.raises(RuntimeError, match="synthetic dispatch offer construction failure"):
             bridge.start()
@@ -417,7 +432,7 @@ def test_partial_dispatch_state_failed_close_remains_retryable(
 
 
 def test_registration_close_failure_keeps_dispatch_state_for_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor_host
 ) -> None:
     path = _runtime_path()
     spec = importlib.util.spec_from_file_location("hyprial.daemon.impl.runtime.runtime_candidate_registration", path)
@@ -429,6 +444,9 @@ def test_registration_close_failure_keeps_dispatch_state_for_retry(
         closed: list[str] = []
 
         class DispatchState:
+            def __init__(self, **kwargs: object) -> None:
+                pass  # B1 constructs this with an injected actor_host.
+
             def close(self, _timeout: float) -> bool:
                 closed.append("dispatch-state")
                 return True
@@ -452,7 +470,7 @@ def test_registration_close_failure_keeps_dispatch_state_for_retry(
         monkeypatch.setattr(module, "DispatchOwnedMap", lambda _owner, _table: {})
         monkeypatch.setattr(module, "DispatchOwnedSet", lambda _owner, _table: set())
 
-        def fail_offers(_dispatch):
+        def fail_offers(_dispatch, **_kwargs):
             raise RuntimeError("synthetic dispatch offer construction failure")
 
         monkeypatch.setattr(module, "DispatchOfferCoordinator", fail_offers)
@@ -464,6 +482,8 @@ def test_registration_close_failure_keeps_dispatch_state_for_retry(
             inbox=SimpleNamespace(),
             harnesses=SimpleNamespace(dispatch=lambda *_args: None),
             actor_mode=True,
+            actor_host=actor_host,
+            cell_delivery=AdmittingCellDelivery(),
         )
         with pytest.raises(RuntimeError, match="synthetic dispatch offer construction failure"):
             bridge.start()
@@ -519,40 +539,3 @@ def test_directory_non_draining_close_still_closes_later_resources() -> None:
         "directory.close", "transport.close", "state-persistence.close",
         "gateway-logger.close", "logger.close",
     ]
-
-
-def test_source_effects_drain_before_lifecycle_and_journal_teardown() -> None:
-    scenario = Scenario(_candidate_source())
-    with pytest.raises(RuntimeError, match="synthetic runtime start failure"):
-        scenario.exercise()
-    scenario.prepare_close()
-    closes = iter((False, True))
-
-    def close_source(*, timeout):
-        assert timeout > 0
-        scenario.events.append("source.close")
-        return next(closes)
-
-    def drain_lifecycle(timeout):
-        assert timeout > 0
-        scenario.events.append("lifecycle.drain")
-        return True
-
-    source = SimpleNamespace(close=close_source)
-    lifecycle = SimpleNamespace(drain=drain_lifecycle)
-    journal = Owner("journal", scenario.events)
-    scenario.app._transfer_source = source
-    scenario.app._lifecycle_manager = lifecycle
-    scenario.app._transfer_p2 = journal
-    with pytest.raises(RuntimeError, match="P2 source effects did not drain"):
-        scenario.close()
-    assert scenario.app._transfer_source is source
-    assert scenario.app._lifecycle_manager is lifecycle
-    assert scenario.app._transfer_p2 is journal
-    assert "lifecycle.drain" not in scenario.events
-    assert "harnesses.stop.1" not in scenario.events
-    assert journal.close_count == 0
-    scenario.close()
-    assert scenario.app._transfer_source is None
-    assert scenario.events.index("lifecycle.drain") > scenario.events.index("source.close")
-    assert scenario.events.index("journal.close") > scenario.events.index("lifecycle.drain")

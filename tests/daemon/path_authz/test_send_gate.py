@@ -1,7 +1,7 @@
 """message.send resourcePaths go through path_authz for every caller kind.
 
 The gap this closes: any socket caller could name any file the daemon can
-read (``~/.hyprial/secrets`` included) and have it uploaded to a route.
+read (``~/.hyprial/secrets`` included) and have it uploaded to the owner's chat.
 """
 
 from __future__ import annotations
@@ -15,9 +15,11 @@ import pytest
 from hyprial.daemon.impl.adapters.lark import LarkSdkGateway
 from hyprial.daemon.impl.application import DaemonApplication, DaemonRequestError
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from hyprial.daemon.impl.user_agent import CREATED, PRESENT, run_user_agent_ensure
 from tests.daemon.routing.test_route_outbound import FakeChatGateway, FakeInbox, _home
+from tests.support.identity.cell_push import bind_user_agent
 
-ROUTE = "route:alicesmith-hyprial-e2e:py-test"
+OWNER_TARGET = "user:alice"
 ACTOR_NAME = "worker"
 ACTOR = f"agent:alice:sender-mac:{ACTOR_NAME}"
 SESSION = "session-worker"
@@ -53,6 +55,8 @@ def gated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         LarkSdkGateway, "from_credentials", lambda app_id, secret, **_: gateway
     )
+    assert run_user_agent_ensure(app) in (CREATED, PRESENT)
+    bind_user_agent(app, "alicesmith-hyprial-e2e", default_route="py-test")
     app.handle("agent.create", {"name": ACTOR_NAME})
     app.handle(
         "session.register",
@@ -108,7 +112,7 @@ def _ipc_send(app: DaemonApplication, sender: dict[str, str], path: Path):
         "message.send",
         {
             **sender,
-            "to": [ROUTE],
+            "to": [OWNER_TARGET],
             "summary": "see attachment",
             "message": "see attachment",
             "idempotencyKey": f"op-{path.name}",

@@ -1,4 +1,4 @@
-import { createWebHostTransport, HostSessionError, type WebHostTransport } from '../transport';
+import { publicErrorCode } from '../shared/public-error-code';
 
 /** GUI-host authentication capability. No OIDC tokens enter this interface. */
 export interface AuthState {
@@ -11,9 +11,7 @@ export interface AuthState {
 export interface AuthProgress {
   readonly event:
     | 'device'
-    | 'binding-device'
     | 'authenticated'
-    | 'binding-proof-failed'
     | 'committed'
     | 'unknown';
   readonly verificationUri?: string;
@@ -23,6 +21,10 @@ export interface AuthProgress {
   readonly restarted?: boolean;
   readonly code?: string;
   readonly owner?: string;
+  readonly openAvailable?: boolean;
+  readonly openOpened?: boolean;
+  readonly openError?: string;
+  readonly openRetryable?: boolean;
 }
 export interface AuthResult {
   readonly ok: boolean;
@@ -34,27 +36,91 @@ export interface AuthResult {
 export interface AuthCancelResult {
   readonly ok: boolean;
   readonly cancelled: boolean;
+  readonly refusal?: { readonly code: string; readonly source?: string };
+}
+/** Native-only acknowledgement; no URL or opener detail crosses this shape. */
+export interface AuthOpenResult {
+  readonly ok: boolean;
+  readonly opened: boolean;
+  readonly code?: string;
+  readonly retryable?: boolean;
+}
+export interface AuthLogoutResult {
+  readonly ok: boolean;
+  readonly status?: 'logged-out' | 'not-logged-in';
+  readonly localOnly?: true;
+  readonly code?: string;
 }
 export interface AuthClient {
   status(): Promise<AuthState>;
   login(onProgress?: (progress: AuthProgress) => void): Promise<AuthResult>;
   device(onProgress?: (progress: AuthProgress) => void): Promise<AuthResult>;
   cancel(): Promise<AuthCancelResult>;
+  open?(): Promise<AuthOpenResult>;
+  logout?(): Promise<AuthLogoutResult>;
 }
 export class AuthError extends Error {
   constructor(readonly code: string) { super(code); }
+}
+
+function logoutReceipt(value: unknown): AuthLogoutResult {
+  if (!value || typeof value !== 'object') throw new AuthError('AUTH_LOGOUT_UNKNOWN');
+  const receipt = value as Partial<AuthLogoutResult>;
+  if (receipt.ok !== true || receipt.localOnly !== true
+    || (receipt.status !== 'logged-out' && receipt.status !== 'not-logged-in')) {
+    throw new AuthError('AUTH_LOGOUT_UNKNOWN');
+  }
+  return { ok: true, status: receipt.status, localOnly: true };
 }
 
 function failedCancel(): AuthCancelResult {
   return { ok: false, cancelled: false };
 }
 
+function failedOpen(code?: string, retryable?: boolean): AuthOpenResult {
+  return {
+    ok: false,
+    opened: false,
+    ...(code ? { code } : {}),
+    ...(typeof retryable === 'boolean' ? { retryable } : {}),
+  };
+}
+
+function normalizeOpenAnswer(value: unknown): AuthOpenResult {
+  if (!value || typeof value !== 'object') return failedOpen();
+  const { ok, opened, code, retryable } =
+    value as { readonly ok?: unknown; readonly opened?: unknown;
+      readonly code?: unknown; readonly retryable?: unknown };
+  if (ok === true && opened === true) return { ok: true, opened: true };
+  if (ok !== false || opened !== false || typeof retryable !== 'boolean') {
+    return failedOpen();
+  }
+  const safe = publicErrorCode(code);
+  // A retryable failure must name a safe host code; otherwise the UI gets a
+  // non-retryable failure rather than trusting a partial native answer.
+  if (retryable && !safe) return failedOpen();
+  return failedOpen(safe, retryable);
+}
+
+function normalizeOpenError(error: unknown): AuthOpenResult {
+  if (!error || typeof error !== 'object') return failedOpen();
+  const { code, retryable } = error as { readonly code?: unknown; readonly retryable?: unknown };
+  const safe = publicErrorCode(code);
+  if (typeof retryable !== 'boolean' || (retryable && !safe)) return failedOpen();
+  return failedOpen(safe, retryable);
+}
+
 /**
  * Native hosts may inject this same narrow capability; absence is not success.
- * A missing, malformed or thrown cancel result cannot confirm an operation.
+ * A missing, malformed or thrown cancel/open result cannot confirm an action,
+ * and no raw opener message, URL or credential crosses this adapter.
  */
 export function createNativeAuthClient(capability: AuthClient): AuthClient {
-  return {
+  const logout = capability.logout;
+  const client: AuthClient = {
+    ...(typeof logout === 'function' ? {
+      async logout() { return logoutReceipt(await logout.call(capability)); },
+    } : {}),
     status: () => capability.status(),
     login: listener => capability.login(listener),
     device: listener => capability.device(listener),
@@ -72,74 +138,13 @@ export function createNativeAuthClient(capability: AuthClient): AuthClient {
       } catch { return failedCancel(); }
     },
   };
-}
-
-export function createWebAuthClient(
-  fetcher: typeof fetch = fetch,
-  transport: WebHostTransport = createWebHostTransport(fetcher),
-): AuthClient {
-  let statusInFlight: Promise<AuthState> | null = null;
-  async function request(action: string): Promise<Response> {
-    try { return await transport.request(action); }
-    catch (error) {
-      if (error instanceof HostSessionError) throw new AuthError(error.code ?? 'AUTH_UNAVAILABLE');
-      throw error;
-    }
-  }
-  async function operation(action: string, onProgress?: (progress: AuthProgress) => void): Promise<AuthResult> {
-    const response = await request(action);
-    if (!response.ok) {
-      const value = await response.json();
-      throw new AuthError(value.code ?? 'AUTH_FAILED');
-    }
-    if (!response.body) throw new AuthError('AUTH_PROTOCOL_ERROR');
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let bytes = 0;
-    let result: AuthResult | undefined;
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        bytes += value.byteLength;
-        if (bytes > 1_048_576) throw new AuthError('AUTH_PROTOCOL_ERROR');
-        buffer += decoder.decode(value, { stream: true });
-        let newline: number;
-        while ((newline = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-          if (!line.trim()) continue;
-          const frame = JSON.parse(line);
-          if (frame.type === 'progress' && !result) onProgress?.(frame.data as AuthProgress);
-          else if (frame.type === 'result' && !result) result = frame.data as AuthResult;
-          else throw new AuthError('AUTH_PROTOCOL_ERROR');
-        }
-      }
-      if (!result || buffer.trim()) throw new AuthError('AUTH_PROTOCOL_ERROR');
-      return result;
-    } catch (error) {
-      await reader.cancel().catch(() => {});
-      throw error;
-    } finally { reader.releaseLock(); }
-  }
+  const open = capability.open;
+  if (typeof open !== 'function') return client;
   return {
-    status() {
-      statusInFlight ??= (async () => {
-        const response = await request('status');
-        const result = await response.json() as AuthResult;
-        if (!response.ok || !result.ok || !result.state) throw new AuthError(result.code ?? 'AUTH_FAILED');
-        return result.state;
-      })().finally(() => { statusInFlight = null; });
-      return statusInFlight;
-    },
-    login: listener => operation('login', listener),
-    device: listener => operation('device', listener),
-    async cancel(): Promise<AuthCancelResult> {
-      const response = await request('cancel');
-      if (!response.ok) throw new AuthError('AUTH_CANCEL_FAILED');
-      // The host's success response is the web transport's acknowledgement;
-      // callers still refresh authoritative status before retrying login.
-      return { ok: true, cancelled: true };
+    ...client,
+    async open() {
+      try { return normalizeOpenAnswer(await open.call(capability)); }
+      catch (error) { return normalizeOpenError(error); }
     },
   };
 }

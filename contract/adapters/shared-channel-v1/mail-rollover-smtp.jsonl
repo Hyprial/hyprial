@@ -1,0 +1,1 @@
+{"schemaVersion":1,"caseId":"UA-259:uidvalidity-namespace","contract":"mail-rollover","expected":{"quarantineBoundary":true,"autoDeduplicate":false}}

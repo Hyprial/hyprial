@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import threading
+from dataclasses import replace
 from pathlib import Path
 import pytest
 import hyprial.daemon.impl.application as daemon_application
@@ -12,17 +13,18 @@ from hyprial.daemon.impl.operations.session_ports import (
 )
 
 from .support import (
-    CANONICAL,
     FakeInbox,
     IPC_WAIT_SECONDS,
     _close_application_domains as _close_application_domains,
     _finish_ipc_request,
     _ipc_session_request,
     application,
+    official_address,
     pending_message,
     register,
     system_notice,
 )
+from tests.support.actor_hosts import new_actor_host
 
 
 def test_codex_session_register_persists_complete_process_fence(
@@ -121,9 +123,10 @@ def test_ipc_register_requests_execute_in_arrival_order_atomically(
     assert _finish_ipc_request(first, first_client)["id"] == "register-1"
     assert _finish_ipc_request(second, second_client)["id"] == "register-2"
     current = app.desired_state.load().interactive_sessions[0]
+    address = official_address(app)
     assert current.session_ref == "session-2"
-    assert app._channel_current_epoch(CANONICAL, "session-2") == app.epoch
-    assert app._agent_session_domains.session.read_runtime(CANONICAL).alive
+    assert app._channel_current_epoch(address, "session-2") == app.epoch
+    assert app._agent_session_domains.session.read_runtime(address).alive
 
 
 def test_ipc_unregister_then_register_preserves_new_session_state(
@@ -173,9 +176,10 @@ def test_ipc_unregister_then_register_preserves_new_session_state(
     assert _finish_ipc_request(first, first_client)["id"] == "unregister-old"
     assert _finish_ipc_request(second, second_client)["id"] == "register-new"
     current = app.desired_state.load().interactive_sessions[0]
+    address = official_address(app)
     assert current.session_ref == "new-session"
-    assert app._channel_current_epoch(CANONICAL, "new-session") == app.epoch
-    assert app._agent_session_domains.session.read_runtime(CANONICAL).alive
+    assert app._channel_current_epoch(address, "new-session") == app.epoch
+    assert app._agent_session_domains.session.read_runtime(address).alive
 
 
 def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
@@ -194,12 +198,14 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
             "channelConfirmed": True,
         },
     )
+    address = official_address(app)
+    app._inbox.pending = replace(app._inbox.pending, recipient=address)
     result = app.handle(
         "message.pending.list", {"actor": "alice", "sessionRef": "session-1"}
     )
 
     assert registered["registered"] is True
-    assert app.desired_state.load().interactive_sessions[0].actor == CANONICAL
+    assert app.desired_state.load().interactive_sessions[0].actor == address
     assert result == {
         "ok": True,
         "daemonEpoch": app.epoch,
@@ -209,7 +215,7 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
                 "deliveryId": "message-1",
                 "conversationId": "conversation-1",
                 "from": "agent:bob",
-                "to": CANONICAL,
+                "to": address,
                 "intent": "request",
                 "kind": "message",
                 "summary": None,
@@ -228,7 +234,7 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
             self.published = threading.Event()
 
         def put(self, key: str, payload: bytes) -> None:
-            assert app._inbox.fetches == [CANONICAL]
+            assert app._inbox.fetches == [address]
             self.entered.set()
             assert self.release.wait(IPC_WAIT_SECONDS)
             self.puts.append((key, payload))
@@ -236,7 +242,7 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
 
     transport = RecordingTransport()
     app._transport = transport  # type: ignore[assignment]
-    app._fetch_receipt_publisher = daemon_application.FetchReceiptPublisher(transport)
+    app._fetch_receipt_publisher = daemon_application.FetchReceiptPublisher(transport, actor_host=new_actor_host())
 
     try:
         fetched = app.handle(
@@ -244,7 +250,7 @@ def test_channel_session_registration_and_pending_read_are_daemon_authoritative(
             {"actor": "alice", "sessionRef": "session-1", "fetched": True},
         )
         assert fetched["messages"] == result["messages"]
-        assert app._inbox.fetches == [CANONICAL]
+        assert app._inbox.fetches == [address]
         assert transport.entered.wait(IPC_WAIT_SECONDS)
         assert transport.puts == []  # fetch returned while native publication is blocked
     finally:

@@ -7,7 +7,9 @@ Decision record (M-03, 2026-10-31)
 - The rule is deliberately narrow and explicable: sensitive keys may only carry
   the synthetic sentinel, a ``contentBase64`` document must decode to that
   sentinel, and every string is checked for well-known credential prefixes,
-  PEM armour, long base64 blobs and absolute user-home paths.
+  PEM armour, long base64 blobs and absolute user-home paths. Seven exact
+  reproducible public fixture digests are permitted as non-credential values;
+  sensitive-key rules still apply without exceptions.
 - Findings name the JSON path and never echo the candidate value, so a failing
   gate cannot spread the secret it caught.
 """
@@ -16,11 +18,25 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import re
 from typing import Any
 
 SENTINEL = "example-not-a-credential"
 SENTINEL_B64 = base64.b64encode(SENTINEL.encode("utf-8")).decode("ascii")
+# Public preimages are recorded under daemon-request-examples-2026-11-03/
+# synthetic-digests. This is an exact value set, never a hex-pattern bypass.
+# The plan digest is SHA256(canonical JSON of the recorded synthetic plan).
+_SYNTHETIC_DIGESTS = frozenset({
+    hashlib.sha256(SENTINEL.encode("utf-8")).hexdigest(),
+    "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878",
+    "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
+    # RemovalJournal public alice/alex + repeated synthetic nodekey preimages.
+    "ff0c09a66b307adf9ec40813a6e4c8d67836af263c12da35b6096ec152dfe2a2",
+    "39dc5614918a3ca7b85bc3374a1350ca5f5f04fef5f3b412769bfee2ce45c553",
+    "6c3e7d35f1eb9c2a438420045de6c6aa636cceb6ad52e7ca4df3af0d9816d88f",
+    "35d8856a0dad8d8bef23ca0d9d9c83b1172c3eb5002ed169d22cf1045339e263",
+})
 _SENSITIVE_KEYS = frozenset(
     {"setuptoken", "token", "password", "secret", "apikey", "contentbase64"}
 )
@@ -51,7 +67,11 @@ def _check_string(value: str, path: str, findings: list[str]) -> None:
         findings.append(f"{path}: looks like a credential prefix")
     if "/Users/" in value or "HYPRIAL_HOME" in value or "~/." in value:
         findings.append(f"{path}: absolute user-home path is not allowed")
-    if _LONG_BASE64.fullmatch(value) and value != SENTINEL_B64:
+    if (
+        _LONG_BASE64.fullmatch(value)
+        and value != SENTINEL_B64
+        and value not in _SYNTHETIC_DIGESTS
+    ):
         findings.append(f"{path}: long base64 blob is not the synthetic sentinel")
 
 

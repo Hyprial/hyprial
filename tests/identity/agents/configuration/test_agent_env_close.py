@@ -1,16 +1,13 @@
 """P1b B2: every remaining spawn site replaces — never merges — the ambient env.
 
 Per-entry env equality (T04 parametrized), the codex provider path via the
-resolver, ambient provider keys default-denied, and the M04 broker mutation
-contract.
+resolver, and ambient provider keys default-denied.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-
-import pytest
 
 from hyprial.identity.impl.agents.home.environment import (
     ChildEnvironmentLaunch,
@@ -258,87 +255,6 @@ def test_agent_sdk_legacy_env_is_whitelist_filtered(tmp_path, monkeypatch):
     assert client._env["CUSTOM_DELTA"] == "kept"
 
 
-def test_pty_spawn_env_is_whitelist_filtered(monkeypatch):
-    """The PTY seam through the REAL pty pair.
-
-    A child that dumps its environment and exits is deliberately a
-    "startup failure" to the probe (it exited) — that verdict is not this
-    contract; the dump proves the env the exec consumer received.
-    """
-
-    from hyprial.daemon.impl.harnesses.protocol.common import HarnessStartError, PtyHarnessProcess
-
-    monkeypatch.setenv(AMBIENT, "leak")
-    monkeypatch.setenv("TERM", "xterm-256color")
-    monkeypatch.setenv("SSH_AUTH_SOCK", "/signed/sock")
-    import sys
-    import tempfile
-
-    dump = Path(tempfile.mkdtemp()) / "pty-env.json"
-    script = (
-        "import json,os;json.dump(dict(os.environ),open("
-        f"{str(dump)!r},'w'"
-        "))"
-    )
-    try:
-        PtyHarnessProcess.spawn(
-            "codex",
-            (sys.executable, "-c", script),
-            env={"CUSTOM_DELTA": "kept"},
-        )
-    except HarnessStartError:
-        pass  # the child exiting is the probe's verdict, not this contract's
-    observed = json.loads(dump.read_text(encoding="utf-8"))
-    assert AMBIENT not in observed
-    assert observed["TERM"] == "xterm-256color"  # BASE name passes
-    assert observed["SSH_AUTH_SOCK"] == "/signed/sock"
-    assert observed["CUSTOM_DELTA"] == "kept"
-
-
-def test_exec_env_socket_replaces_ambient(monkeypatch):
-    """The broker exec seam (M04's target): whitelist, never merge."""
-
-    from hyprial.daemon.impl.harnesses.python_worker import _exec_env_socket
-
-    monkeypatch.setenv(AMBIENT, "leak")
-    monkeypatch.setenv("HYPRIAL_OWNER", "daemon-owner")
-    env_seen: dict[str, str] = {}
-
-    def fake_execvpe(argv0, argv, env):
-        env_seen.update(env)
-        raise SystemExit(0)
-
-    monkeypatch.setattr(_exec_env_socket.os, "execvpe", fake_execvpe)
-
-    class FakeSocket:
-        sent = False
-
-        def connect(self, _path):
-            pass
-
-        def close(self):
-            pass
-
-        def recv(self, _n):
-            if not FakeSocket.sent:
-                FakeSocket.sent = True
-                return json.dumps(
-                    {"HYPRIAL_OWNER": "handoff-owner"}
-                ).encode() + b"\n"
-            return b""
-
-    monkeypatch.setattr(
-        _exec_env_socket.socket, "socket", lambda *a, **k: FakeSocket()
-    )
-    monkeypatch.setattr(
-        _exec_env_socket.sys, "argv", ["broker", "/sock", "--", "true"]
-    )
-    with pytest.raises(SystemExit):
-        _exec_env_socket.main()
-    assert AMBIENT not in env_seen
-    assert env_seen["HYPRIAL_OWNER"] == "handoff-owner"  # delta wins
-
-
 # ── codex provider path via the resolver ─────────────────────────────────────
 
 
@@ -421,11 +337,9 @@ def test_codex_app_server_spawn_env_carries_the_provider_key(tmp_path):
 
 def test_codex_env_carries_daemon_node_identity(tmp_path):
     """The codex worker's env carries the daemon-authority node id, so
-    ``pac/context.py`` reads it instead of the hostname fallback."""
+    ``pac/context.py`` reads it instead of the home's node-id file."""
 
     channel = _channel(tmp_path)
     child_env = _launch(channel).environment.for_exec()
-    import socket
 
     assert child_env["HYPRIAL_NODE_ID"] == "p1b-node"
-    assert "p1b-node" != socket.gethostname()  # sentinel distinct

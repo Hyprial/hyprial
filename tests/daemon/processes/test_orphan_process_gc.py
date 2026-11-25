@@ -20,7 +20,6 @@ from hyprial.daemon.impl.composition import HarnessPortClient
 from hyprial.daemon.impl.harnesses.actor.contracts import HarnessRuntimeClosed, _default_identity_reader
 from hyprial.daemon.impl.processes.orphan_processes import OrphanProcessRegistry
 from hyprial.daemon.impl.harnesses.codex.process import _OwnedProcessGroup
-from hyprial.daemon.impl.harnesses.protocol.common import PtyHarnessProcess
 
 
 def _observed_group(*, pid: int = 4242, marker: str | None) -> _OwnedProcessGroup:
@@ -226,20 +225,51 @@ def test_corrupt_persistent_registry_fails_loudly(tmp_path: Path) -> None:
         OrphanProcessRegistry(path, identity_reader=lambda _pid: None)
 
 
+class _RealChildProcess:
+    """One real OS child exposing the managed-process surface the runtime
+    touches: pid, running, liveness() and stop()."""
+
+    def __init__(self) -> None:
+        self._child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stderr=subprocess.PIPE,
+        )
+
+    @property
+    def pid(self) -> int:
+        return self._child.pid
+
+    @property
+    def running(self) -> bool:
+        return self._child.poll() is None
+
+    def liveness(self) -> ProcessLiveness:
+        state = (
+            ProcessLivenessState.ALIVE
+            if self.running
+            else ProcessLivenessState.DEAD
+        )
+        return ProcessLiveness(state, observed=True, pid=self._child.pid, marker=None)
+
+    def stop(self) -> None:
+        self._child.terminate()
+        try:
+            self._child.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            self._child.kill()
+            self._child.wait(timeout=3.0)
+
+
 def test_actor_takes_persistent_custody_before_real_process_stop_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    process = PtyHarnessProcess.spawn(
-        "test",
-        [sys.executable, "-c", "import time; time.sleep(30)"],
-        startup_probe_seconds=0.02,
-        stop_grace_seconds=0.2,
-    )
+    process = _RealChildProcess()
     original_stop = process.stop
 
     class Launcher:
-        def start(self, _spec: HarnessLaunchSpec) -> PtyHarnessProcess:
+        def start(self, _spec: HarnessLaunchSpec) -> _RealChildProcess:
             return process
 
     supervisor = ManagedHarnessRuntime(
@@ -545,6 +575,10 @@ def test_stored_marker_missing_a_component_matches_the_live_process(
 
     signals: list[tuple[int, signal.Signals]] = []
     monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(
+        "hyprial.kernel.impl.manysys.process.owned_process.scoped_process_birth_marker",
+        lambda _pid: _STORM_LIVE,
+    )
     events: list[tuple[str, str]] = []
 
     restarted = OrphanProcessRegistry(
@@ -623,3 +657,82 @@ def test_component_identity_match_semantics_and_the_second_tolerance() -> None:
         "darwin-starttime:1000:1;darwin-startsec:1000",
         "darwin-starttime:1000:2;darwin-startsec:1001",
     )
+
+
+def test_legacy_linux_darwin_win32_persisted_orphan_records_recover_and_clean_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persisted linux:/darwin:/win32: orphan records match live markers across restart."""
+
+    signals: list[tuple[int, signal.Signals]] = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+
+    live_by_pid = {
+        7001: "proc-starttime:555001",
+        7002: "darwin-starttime:1755490000:321;darwin-startsec:1755490000;ps-lstart:Tue Aug 18 03:56:43 2026",
+        7003: "proc-starttime:999999",
+    }
+    monkeypatch.setattr(
+        "hyprial.kernel.impl.manysys.process.owned_process.scoped_process_birth_marker",
+        lambda pid: live_by_pid.get(pid),
+    )
+
+    path = tmp_path / "orphan-legacy-schemes.json"
+    original = OrphanProcessRegistry(path, identity_reader=lambda pid: live_by_pid.get(pid))
+    original.observe_stop(
+        "codex:linux-worker",
+        _observed_group(pid=7001, marker="linux:555001"),
+        pid=7001,
+        marker="linux:555001",
+    )
+    original.observe_stop(
+        "claude:darwin-worker",
+        _observed_group(pid=7002, marker="darwin:1755490000:321"),
+        pid=7002,
+        marker="darwin:1755490000:321",
+    )
+    original.observe_stop(
+        "pi:reused-linux",
+        _observed_group(pid=7003, marker="linux:111111"),
+        pid=7003,
+        marker="linux:111111",
+    )
+
+    events: list[tuple[str, str]] = []
+    restarted = OrphanProcessRegistry(
+        path,
+        identity_reader=lambda pid: live_by_pid.get(pid),
+        logger=lambda level, _component, event, **_fields: events.append((level, event)),
+        cleanup_async=False,
+    )
+    retired = restarted.collect_once()
+    assert retired == 1
+    assert ("warn", "harness.orphan.identity_replaced") in events
+    assert not [event for _level, event in events if event == "harness.orphan.probe_failed"]
+    assert sorted(signals) == [(7001, signal.SIGTERM), (7002, signal.SIGTERM)]
+
+    win_path = tmp_path / "orphan-win32-scheme.json"
+    win_original = OrphanProcessRegistry(
+        win_path, identity_reader=lambda _pid: "win32:777888999"
+    )
+    win_original.observe_stop(
+        "codex:win-worker",
+        _observed_group(pid=8001, marker="win32:777888999"),
+        pid=8001,
+        marker="win32:777888999",
+    )
+    terminated_win: list[tuple[int, str | None, bool]] = []
+    monkeypatch.setattr(
+        "hyprial.daemon.impl.processes.orphan_processes.terminate_fenced_process",
+        lambda pid, *, birth_marker=None, process_group=False: (
+            terminated_win.append((pid, birth_marker, process_group)) or True
+        ),
+    )
+    win_restarted = OrphanProcessRegistry(
+        win_path,
+        identity_reader=lambda _pid: "win-filetime:777888999",
+        cleanup_async=False,
+    )
+    assert win_restarted.collect_once() == 0
+    assert terminated_win == [(8001, "win32:777888999", True)]

@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from hyprial.daemon.impl.transfer.archive.bundle import (
     BundleEpochMismatch,
@@ -23,8 +22,6 @@ from hyprial.daemon.impl.transfer.archive.bundle import (
     assert_bundle_identity,
     export_bundle)
 from hyprial.daemon.impl.transfer.landing.receive import receive_bundle
-from tests.support.transfer.rehearsal import UNSIGNED_REHEARSAL
-from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 OWNER = "owner@example.com"
@@ -73,7 +70,6 @@ def test_the_manifest_keeps_only_a_digest_of_the_source_incarnation(
         bundle_dir,
         tmp_path / "landed",
         dry_run=True,
-        signature=UNSIGNED_REHEARSAL,
     )
     assert receipt.manifest.source_epoch == manifest.source_epoch
 
@@ -95,13 +91,6 @@ def test_an_offline_export_never_matches_an_expected_epoch(tmp_path: Path) -> No
     with pytest.raises(BundleEpochMismatch) as refused:
         assert_bundle_identity(manifest, expect_epoch=TOKEN)
     assert "no source epoch" in str(refused.value)
-
-    via_cli = CliRunner().invoke(
-        _cli_root_app,
-        ["agent", "transfer", "bundle-validate", str(bundle_dir), "--expect-epoch", TOKEN, "--json"],
-    )
-    assert via_cli.exit_code != 0
-    assert "bundle_epoch_mismatch" in via_cli.output
 
 
 def test_an_identity_bag_may_not_contradict_the_manifest(tmp_path: Path) -> None:

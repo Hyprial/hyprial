@@ -1,0 +1,782 @@
+{
+  "schema": "hyprial-e2e-scenarios/v1",
+  "execution_status": "twenty documented scenarios with twenty standalone runners",
+  "scenarios": [
+    {
+      "id": "E2E-001",
+      "title": "two-machine send, reply, and ack",
+      "document": "01-two-machine-roundtrip.md",
+      "runner": "run-two-machine-roundtrip.py",
+      "executable": true,
+      "real_environment_required": true,
+      "assertions": [
+        "Docker automation uses real current-source Linux Tailcat sidecars and an owned relay on an internal bridge",
+        "DERP and STUN use only the relay IPv4 verified against its running owned container, internal bridge network ID and private IPAM subnet",
+        "managed join failures retain bounded public code/error and per-step diagnostics without invite links, bearers or private address credentials",
+        "private Unix backends dial reported sidecar slots without direct TCP Zenoh links",
+        "fresh task-owned device keys and normal org invite/join establish membership before traffic",
+        "each container initializes an independent persistent OS machine-id before device provisioning; restart preserves it without disabling copied-home identity protection",
+        "canonical target discovery",
+        "durable acceptance receipt",
+        "correlated replyTo",
+        "ack-only removes pending delivery",
+        "no automatic reply loop",
+        "private backend and sidecar slot mappings recover after container restart from launcher environment and durable node state",
+        "offline queueing delivers after recipient restart",
+        "daemon restart self-heals the mesh",
+        "advertised official agent a.<id> targetUri delivers verbatim",
+        "restart-window message delivers after self-heal",
+        "suspend/resume (docker pause) delivers exactly once",
+        "mesh partition heal (network disconnect/connect) delivers exactly once",
+        "a delivered message's terminal state is a durable fetched record the sender pulls after the fact",
+        "the verdict survives the sender's own restart and later phases",
+        "a container that never held the message pulls the same fetched verdict across namespaces",
+        "an undeliverable message reads pending with a hold deadline, then expired on its holder's TTL with no operator command",
+        "the expired verdict is pulled from a container holding no record of the message",
+        "a cross-host status pull collects every holder that answered, not one reply consolidated by key",
+        "the recipient's own record wins the merge over a sender's receipt mirror, independent of clock order",
+        "a status verdict reports the holder set and every known reply loss it was merged from",
+        "mailbox transfer starts only after public host online and all canonical peer-agent targets disappear and the owned recipient container is confirmed exited within the original shared 90s; a retained unknown host row is not an offline verdict",
+        "with a mailbox present an undeliverable message is taken by the mailbox and the sender holds nothing",
+        "a mailbox that is neither sender nor recipient records expired on its own TTL",
+        "the sender pulls the mailbox's expired verdict across containers with holder naming the mailbox",
+        "a mailbox delivers held custody when the recipient returns and appears in the sender's holder set",
+        "every exit removes owned daemon and relay containers, private network and labeled volumes"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/inbox/**",
+        "src/hyprial/daemon/impl/delivery/**",
+        "src/hyprial/daemon/impl/transport/**",
+        "src/hyprial/daemon/impl/harnesses/**",
+        "src/hyprial/identity/impl/agents/**",
+        "src/hyprial/shell/impl/cli/commands/message/**",
+        "src/hyprial/shell/impl/cli/commands/agent/**",
+        "contract/wire/**",
+        "contract/e2e/_two_machine/**",
+        "contract/e2e/_image_inputs.py",
+        "contract/e2e/run-two-machine-roundtrip.py",
+        "contract/e2e/docker/**",
+        "sidecar/hyprial-tailcat/**",
+        "src/hyprial/daemon/impl/network/tailcat/**",
+        "src/hyprial/daemon/impl/forwarding/**",
+        "src/hyprial/daemon/impl/forwarding_config.py",
+        "src/hyprial/daemon/impl/application/netendpoints/**",
+        "src/hyprial/daemon/impl/application/wiring/transport.py",
+        "src/hyprial/daemon/impl/org/network/**",
+        "src/hyprial/daemon/impl/orgfs/**",
+        "src/hyprial/daemon/impl/desired_state/**",
+        "src/hyprial/identity/impl/device/**",
+        "src/hyprial/identity/impl/org_directory/**",
+        "src/hyprial/shell/impl/cli/commands/org/**",
+        "pyproject.toml",
+        "uv.lock",
+        "VERSION"
+      ]
+    },
+    {
+      "id": "E2E-002",
+      "title": "pending message survives daemon restart",
+      "document": "02-daemon-restart-survival.md",
+      "runner": "run-daemon-restart-survival.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "stable messageId",
+        "fresh deliveryId",
+        "FIFO preserved",
+        "acknowledged history not replayed",
+        "system notice remains across list calls until recipient ACK, then disappears"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/inbox/**",
+        "src/hyprial/daemon/impl/delivery/**",
+        "src/hyprial/daemon/impl/lifecycle/**",
+        "src/hyprial/daemon/impl/session_actor/**",
+        "src/hyprial/kernel/impl/actor_runtime/**",
+        "src/hyprial/shell/impl/cli/commands/daemon/**",
+        "contract/daemon-lifecycle/**"
+      ]
+    },
+    {
+      "id": "E2E-003",
+      "title": "adapter cell binding survives daemon restart",
+      "document": "03-pin-restart-survival.md",
+      "runner": "run-pin-restart-survival.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "cell apply requires an existing agent",
+        "binding is visible in adapter list as the canonical agent URI",
+        "the same adapter on two cells fails closed",
+        "restart does not change the binding",
+        "agent destroy removes the binding",
+        "unbind via cell apply survives restart"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/adapters/**",
+        "src/hyprial/daemon/impl/cells/adapter_routing/**",
+        "src/hyprial/shell/impl/cli/commands/agent/cell/**",
+        "contract/adapter-pins/**",
+        "contract/e2e/_fake_lark*.py"
+      ]
+    },
+    {
+      "id": "E2E-004",
+      "title": "Feishu user and Python adapter roundtrip",
+      "document": "04-feishu-roundtrip.md",
+      "runner": "run-feishu-roundtrip.py",
+      "executable": true,
+      "real_environment_required": true,
+      "assertions": [
+        "user request reaches the expected actor before OnIt",
+        "adapter response is a native reply with routing headers",
+        "OnIt clears only after reply acceptance",
+        "native follow-up routes through the durable reply index",
+        "event replay is silent and plaintext-free",
+        "reply index survives an isolated gateway restart",
+        "provider failure rejects delivery and retains OnIt",
+        "no token or App secret is emitted",
+        "rich text post reaches the agent with its body intact",
+        "file and image messages reach the agent as readable stand-ins",
+        "merge forward normalizes and forwards instead of being discarded",
+        "unsupported, unreadable, and unparseable messages fail loudly into dead letters",
+        "a blocked run is loud, diagnosable, and exits non-zero"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/adapters/lark/**",
+        "src/hyprial/daemon/impl/route_registration/**",
+        "src/hyprial/daemon/impl/inbox/**",
+        "src/hyprial/shell/impl/cli/commands/adapter/**",
+        "contract/adapters/**",
+        "contract/wire/**",
+        "contract/e2e/feishu/**"
+      ]
+    },
+    {
+      "id": "E2E-005",
+      "title": "isolated uv install, upgrade, and uninstall flow",
+      "document": "05-uv-install-flow.md",
+      "runner": "run-uv-install-flow.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "isolated UV tool directories",
+        "installed package version 0.4.0.dev0",
+        "one-shot Forgejo commit install is followed by a plain official-source upgrade to the v0.4.0 tag",
+        "version reports the official persistent source and matching locked dependencies",
+        "explicit updateTrack resolves the movable stable tag as a no-op, forced track reinstall pins the exact commit in PEP 610",
+        "missing track tag fails UPGRADE_CHECK_FAILED without falling back to the highest version tag",
+        "uninstall removes executable and tool environment"
+      ],
+      "covers": [
+        "pyproject.toml",
+        "uv.lock",
+        "src/hyprial/gui_build_hook.py",
+        "src/hyprial/shell/impl/packaging/**",
+        "src/hyprial/shell/impl/upgrade_bootstrap.py",
+        "src/hyprial/shell/impl/cli/commands/init/**",
+        "src/hyprial/shell/impl/cli/commands/upgrade/**",
+        "src/hyprial/daemon/impl/updates/**",
+        "scripts/build/**",
+        "scripts/ci/ci-ensure-*.sh",
+        "crates/**",
+        "contract/cli-blackbox/**",
+        "scripts/ci/ci-ensure-rust.sh",
+        "scripts/ci/ci-rust-dist.py"
+      ]
+    },
+    {
+      "id": "E2E-006",
+      "title": "real resident providers launch, roundtrip, and recover",
+      "document": "06-resident-providers.md",
+      "runner": "run-resident-providers.py",
+      "executable": true,
+      "real_environment_required": true,
+      "assertions": [
+        "Pi model, skill, and approval passthrough",
+        "provider process visible as running",
+        "schema-v1 desired state exact",
+        "Harness message and correlated reply",
+        "daemon restart restores all desired providers",
+        "Claude restart generates a fresh session ID"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/harnesses/**",
+        "src/hyprial/daemon/impl/session_actor/**",
+        "src/hyprial/identity/impl/agents/**",
+        "src/hyprial/identity/impl/provider_auth/**",
+        "src/hyprial/shell/impl/cli/commands/agent/**",
+        "contract/workers/**",
+        "contract/e2e/_resident_evidence.py",
+        "contract/e2e/_deepseek.py"
+      ]
+    },
+    {
+      "id": "E2E-007",
+      "title": "four CLI-added Lark adapters recover online",
+      "document": "07-four-lark-adapters.md",
+      "runner": "run-four-lark-adapters.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "adapter add is secret-safe for all four configurations",
+        "four adapter start commands reach online",
+        "ps reports four online adapters",
+        "desired state records four Lark adapters",
+        "daemon restart restores all four online"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/adapters/**",
+        "src/hyprial/daemon/impl/desired_state/**",
+        "src/hyprial/daemon/impl/lifecycle/**",
+        "src/hyprial/shell/impl/cli/commands/adapter/**",
+        "contract/daemon-lifecycle/adapter-model.md",
+        "contract/e2e/_fake_lark*.py"
+      ]
+    },
+    {
+      "id": "E2E-008",
+      "title": "Claude Code TUI worker layer-2 smoke (gating)",
+      "document": "08-cc-tui-worker.md",
+      "runner": "run-cc-tui-worker.py",
+      "executable": true,
+      "real_environment_required": true,
+      "assertions": [
+        "layer-2 smoke (CI --smoke): real claude starts, attaches, registers with channelConfirmed=true, exits, and releases session visibility",
+        "layer 1 protocol coverage (not in the TUI runner): registration/supersede/generation-confirm/lease/ref-guarded unregister live in tests/daemon/sessions/test_session_carrier_protocol_contract.py; wake/reply/ack semantics in tests/test_mcp_channel*.py",
+        "full attended runner retains the deep protocol legs (reply/ack, explicit harness_ack, busy FIFO, restart re-signal) for manual forensics; they are not part of the release verdict",
+        "layer 3 human-experience items (rendering, interrupt/model-switch feel, trust-consent flow) are the manual checklist in docs/notes/tui-human-acceptance-checklist.md"
+      ],
+      "gate": "gating",
+      "layer": 2,
+      "covers": [
+        "src/hyprial/daemon/impl/harnesses/**",
+        "src/hyprial/daemon/impl/session_actor/**",
+        "src/hyprial/identity/impl/worker_session.py",
+        "src/hyprial/shell/impl/cli/commands/agent/**",
+        "contract/workers/**",
+        "contract/e2e/fixtures/cc-channel-contract-probe.py"
+      ]
+    },
+    {
+      "id": "E2E-009",
+      "title": "clean first run creates no agent",
+      "document": "09-first-run-no-agent.md",
+      "runner": "run-first-run-no-agent.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "init on a clean home creates no agent, adapter, route or pin",
+        "no fixed first-run name (squire, assistant, default, worker) exists",
+        "a repeated init and a daemon restart create nothing",
+        "every retired init onboarding command and old step id exits 2 with no business result"
+      ],
+      "covers": [
+        "src/hyprial/shell/impl/cli/commands/init/**",
+        "src/hyprial/shell/impl/cli/commands/login/**",
+        "src/hyprial/shell/impl/cli/runtime/registration.py"
+      ]
+    },
+    {
+      "id": "E2E-010",
+      "title": "upgrade a running deployment without losing continuity",
+      "document": "10-upgrade-continuity.md",
+      "runner": "run-upgrade-continuity.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "isolated uv install boots a live daemon from the complete v0.5.1 source tree, changing only its synthetic version stamp",
+        "the installed public registry retains each original agent_id across URI migration and supplies current canonical entity addresses independently of session telemetry",
+        "configured adapters online and recorded in desired state",
+        "interactive session registers and is visible",
+        "hyprial upgrade resolves the v0.4.0 tag, reports its exact commit, and automatically restarts the running deployment",
+        "on the upgraded deployment, explicit updateTrack resolves the movable stable tag as a daemon-quiet no-op and a missing track tag fails UPGRADE_CHECK_FAILED without fallback",
+        "upgrade reports the old and fresh daemon PID plus package version before and after restart",
+        "connectors recover online with fresh worker PIDs after the upgrade",
+        "interactive session re-registers as a fresh generation on the upgraded daemon",
+        "in-flight messages survive with stable messageId, fresh deliveryId, FIFO, and no replay after ack"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/updates/**",
+        "src/hyprial/daemon/impl/upgrade/**",
+        "src/hyprial/daemon/impl/desired_state/**",
+        "src/hyprial/daemon/impl/inbox/**",
+        "src/hyprial/daemon/impl/session_actor/**",
+        "src/hyprial/daemon/impl/application/actors/agents_registry.py",
+        "src/hyprial/daemon/impl/application/actors/address_admission.py",
+        "src/hyprial/daemon/impl/application/actors/sessions/registry.py",
+        "src/hyprial/daemon/impl/application/messaging/visibility.py",
+        "src/hyprial/daemon/impl/application/messaging/status/views.py",
+        "src/hyprial/daemon/impl/operations/session_ports.py",
+        "src/hyprial/daemon/impl/mcp/channel/**",
+        "src/hyprial/daemon/impl/mcp/server.py",
+        "src/hyprial/daemon/impl/inbox_watch.py",
+        "src/hyprial/daemon/impl/forwarding_config.py",
+        "src/hyprial/identity/impl/agents/registry/**",
+        "src/hyprial/identity/impl/agents/addressing.py",
+        "src/hyprial/identity/impl/identity_transaction.py",
+        "src/hyprial/identity/interface.py",
+        "src/hyprial/identity/__init__.py",
+        "src/hyprial/kernel/impl/manysys/fs/file_lock.py",
+        "src/hyprial/kernel/interface.py",
+        "src/hyprial/kernel/__init__.py",
+        "src/hyprial/shell/impl/cli/commands/upgrade/**",
+        "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+        "src/hyprial/shell/impl/cli/commands/common/pending_restart.py",
+        "src/hyprial/shell/impl/upgrade_bootstrap.py",
+        "scripts/build/**",
+        "pyproject.toml",
+        "uv.lock",
+        "contract/e2e/_upgrade_continuity/**",
+        "scripts/ci/ci-ensure-rust.sh",
+        "scripts/ci/ci-rust-dist.py"
+      ]
+    },
+    {
+      "id": "E2E-011",
+      "title": "Lark App onboarding and one-click scope authorization",
+      "document": "11-lark-app-onboarding.md",
+      "runner": "run-lark-app-onboarding.py",
+      "executable": true,
+      "real_environment_required": true,
+      "assertions": [
+        "environment credentials short-circuit onboarding with zero accounts-endpoint requests",
+        "non-interactive onboarding refuses with a structured USER_ACTION_REQUIRED action and writes no state",
+        "--new ignores environment credentials and requests createOnly; --app-id authorizes an existing App",
+        "the SDK-transformed verification URL is presented to the user on stderr",
+        "the URL-encoded addons declare exactly the required scopes and the im.message.receive_v1 event",
+        "the created credential is persisted with an empty route set and a 0600 secret",
+        "a taken or malformed adapter name fails before any device-authorization request, so no orphan App is created",
+        "adapter scopes authorize --interactive re-authorizes the adapter's existing App: clientID is sent, createOnly and the App-creation preset never are",
+        "the one-click link goes to stderr, so --json stdout stays exactly one JSON value",
+        "a plain interactive authorize declares only the required scopes; --capability group-history adds exactly im:message.group_msg and names it in the prompt",
+        "--capability without --interactive is refused instead of silently dropped by the scopes/apply endpoint",
+        "the daemon loads the onboarded route-less gateway at boot",
+        "no client_secret byte and no production App name appears in any output",
+        "real App creation requires a human device-authorization approval and is BLOCKED without one"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/adapters/lark/**",
+        "src/hyprial/daemon/impl/onboarding/**",
+        "src/hyprial/identity/impl/adapter_contracts/**",
+        "src/hyprial/shell/impl/cli/commands/adapter/**",
+        "contract/lark-authorization/**"
+      ]
+    },
+    {
+      "id": "E2E-012",
+      "title": "codex app-server worker launch, roundtrip, and recover",
+      "document": "12-codex-worker.md",
+      "runner": "run-codex-worker.py",
+      "executable": true,
+      "real_environment_required": true,
+      "assertions": [
+        "Codex model, approval, and sandbox passthrough",
+        "app-server worker process visible as running",
+        "schema-v1 desired state exact",
+        "Harness message and correlated reply",
+        "daemon restart restores the desired Codex worker",
+        "restart relaunches the app-server child with a fresh PID",
+        "post-restart roundtrip completes",
+        "Codex restart resumes the same app-server thread (persisted threadId; #147)"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/harnesses/codex/**",
+        "src/hyprial/daemon/impl/session_actor/**",
+        "src/hyprial/identity/impl/agents/**",
+        "src/hyprial/shell/impl/cli/commands/agent/**",
+        "contract/workers/**",
+        "contract/e2e/_runner_shared/**"
+      ]
+    },
+    {
+      "id": "E2E-013",
+      "title": "all-harness lifecycle roundtrip with mid-life harness and model switch",
+      "document": "13-all-harness-lifecycle.md",
+      "runner": "run-all-harness-lifecycle.py",
+      "executable": true,
+      "real_environment_required": true,
+      "assertions": [
+        "agent create persists provider, model, preferred harness, home config, and home workspace before any connector exists",
+        "claude, pi, and codex each launch managed headless, report running, register online in targets, and persist exact schema-v1 desired state",
+        "each managed worker's OS-level process cwd (lsof on the daemon-descendant worker PID) equals the agent's configured cwd",
+        "each harness completes a correlated marker-carrying roundtrip with acknowledgement",
+        "a runner-generated skill passed via pi --skill provably shapes behavior: a CFGPROBE roundtrip replies with the skill file's per-run nonce token (pi-only; claude and codex expose no skill launch-path mechanism)",
+        "headless busy FIFO on pi and codex: a second message delivered mid-turn is answered exactly once each, in delivery order, with no loss and no duplication",
+        "mid-life harness switch (A9) rebinds the same agent entity: canonical URI and creation time unchanged",
+        "the switch emits harnessHandover exactly once, naming the previous harness and recorded session clue, with contextCarriedOver false",
+        "lastHarness tracks the new binding after the switch",
+        "conversation context does not carry across the harness switch",
+        "the adapter cell binding maps to the same agent URI before and after the switch: cell documents bind the agent, not the harness",
+        "the switched agent completes a correlated roundtrip on the new harness",
+        "same-harness model switch records the new model verbatim in desired state, emits no handover, and roundtrips",
+        "kill -9 of a managed worker exposes one observable stopped interval, then desired-state recovery with a fresh child PID (#106)",
+        "the recovered worker completes a correlated roundtrip",
+        "an inbound Lark DM to the bound agent gains OnIt and demonstrably reaches the bound worker's own session",
+        "in that Lark turn the pinned agent proactively sends --image and --file through a configured route; the user receives both native attachments and downloads content byte-identical to the sources",
+        "attachment-bearing harness_reply remains explicitly unsupported: message.reply resourcePaths fails loudly with MESSAGE_REPLY_RESOURCES_UNSUPPORTED before lookup or acknowledgement and queues no reply",
+        "the user receives the agent's reply as a native Lark message in the same DM, correlated to the original inbound message",
+        "the bridged reply records terminal fetched/ACK_RECEIVED held by the sender daemon",
+        "hyprial agent stop terminates the worker, removes it from desired state, and withdraws its registration while the agent record persists offline",
+        "a downed worker stays down across a daemon restart while desired workers revive (no resurrection)",
+        "no App secret byte and no raw native identifier is emitted"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/harnesses/**",
+        "src/hyprial/daemon/impl/session_actor/**",
+        "src/hyprial/daemon/impl/desired_state/**",
+        "src/hyprial/daemon/impl/adapters/**",
+        "src/hyprial/identity/impl/agents/**",
+        "src/hyprial/shell/impl/cli/commands/agent/**",
+        "contract/workers/**",
+        "contract/e2e/_harness_lifecycle/**"
+      ]
+    },
+    {
+      "id": "E2E-015",
+      "title": "PAC declarative orchestration — nightly PR triage over an isolated daemon",
+      "document": "15-pac-workflow.md",
+      "runner": "run-pac-workflow.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "workflow plan validates the shipped YAML asset",
+        "isolated daemon plus scripted identities register",
+        "workflow run returns runId and mints a per-run nonce",
+        "per-target task override reaches the wire with templates expanded",
+        "fast worker completes done on attempt 1",
+        "daemon restart re-adopts the run by persisted state without replay",
+        "slow worker times out, backs off, retries, and completes done on attempt 2",
+        "silent worker exhausts the retry budget and escalates",
+        "aggregated report reaches report_to with per-target terminal states",
+        "workflow list contains the run; cancel on a finished run is a stable error"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/pac/**",
+        "src/hyprial/biz/impl/workflow/**",
+        "src/hyprial/daemon/impl/harnesses/**",
+        "src/hyprial/shell/impl/cli/commands/workflow/**",
+        "src/hyprial/shell/impl/cli/commands/work/**",
+        "contract/pac/**",
+        "contract/work-items/**",
+        "contract/e2e/run-pac-workflow-unified.py",
+        "contract/e2e/run-pac-cross-node.py"
+      ]
+    },
+    {
+      "id": "E2E-017",
+      "title": "outbox dead-letter defects C1/C2/C3 end to end",
+      "document": "17-outbox-deadletter.md",
+      "runner": "run-outbox-deadletter.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "remote canonical-but-unregistered ghost queues durably",
+        "offline holds consume zero retry attempts",
+        "C3 core: the ghost never appears in hyprial message targets after live retries",
+        "the retired attempt cap cannot terminalize mail; TTL_EXPIRED occurs once and stops work",
+        "prune clears bare host rows (UNDELIVERABLE_SCHEME) and local unregistered ghosts (TARGET_UNRESOLVABLE)",
+        "prune keeps a registered-but-offline agent's entry",
+        "targets stay ghost-free after retry-death and prune"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/inbox/**",
+        "src/hyprial/daemon/impl/delivery/**",
+        "src/hyprial/shell/impl/cli/commands/message/**",
+        "contract/inbox-watch/**",
+        "contract/daemon-request/**"
+      ]
+    },
+    {
+      "id": "E2E-016",
+      "title": "self-drive routine end to end — kanban-tagged task self-dispatch loop",
+      "document": "16-selfdrive-routine.md",
+      "runner": "run-selfdrive-routine.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "isolated TASKDATA and TASKRC seed tagged and untagged controls",
+        "explicit source-mode routine registers via CLI with a borrowed coordinator",
+        "route:self reaches the authenticated coordinator inbox",
+        "ordinary DONE replies never complete the graph",
+        "explicit owner/session/current-request completion records evidence",
+        "source UUID dedup prevents re-executing settled work",
+        "daemon restart preserves registration and outcome ledger",
+        "owned daemon cleanup precedes PASS"
+      ],
+      "covers": [
+        "src/hyprial/biz/impl/routine/**",
+        "src/hyprial/daemon/impl/pac/**",
+        "src/hyprial/shell/impl/cli/commands/routine/**",
+        "src/hyprial/shell/impl/cli/commands/workflow/**",
+        "contract/pac/**",
+        "contract/e2e/_pac_complete_codex.py"
+      ]
+    },
+    {
+      "id": "E2E-018",
+      "title": "Workflow v2 - Allen graph + flag reactor + read-only public projection (declarative validation, requested/withdrawn/back transitions, node context, pinned public journal narrative, reply-body tripwire)",
+      "document": "18-pac-graph-slice.md",
+      "runner": "run-pac-graph-slice.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "workflow plan/run publishes the 13-node/12-edge document; forward cycle and unknown owner are rejected without persistence; incremental expect-version CAS is explicitly retired",
+        "owner/session/current-request fences hold and the first dispatch carries brief reference plus request event id in conversation pac-<graph>",
+        "reset records workflow_changed withdrawn, fences the stale request, and never flips the downstream flag; the old seven-withdraw-notification count is explicitly retired",
+        "demo requests pm-confirm-2, pm's second confirmation node but that node's first requested round, without an early deploy-help request",
+        "pm-reject yields the explicit rework and fresh workflow request deliveries; node count is unchanged; flag_events counts pm-helper set #2; event/edge pairs are unique",
+        "workflow inspect <graph> --node <node> --context separates completedCount/currentActivation read-only (database bytes unchanged)",
+        "public events match 26 exact flag facts, 18 logical workflow requests, and seven explicit resets; pure flag fold and full drift retain unit gates",
+        "a poison reply body planted in an inbox changes no flag, notification, or projection"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/pac/**",
+        "src/hyprial/biz/impl/workflow/**",
+        "src/hyprial/shell/impl/cli/commands/workflow/**",
+        "contract/pac/**"
+      ]
+    },
+    {
+      "id": "E2E-020",
+      "title": "PAC v2 slice-2 FIRST WAVE: B1 references, B2 actor ABSENCE, C public subscriptions (positive actor info and A/D deferred)",
+      "document": "20-pac-slice-2.md",
+      "runner": "run-pac-slice-2.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "B1 demo notification yields pm-confirm-2 context with coherent brief/result refs and separated completedCount/currentActivation",
+        "B2-ABSENT registered agent owners do not fabricate actor/actorName/launchRef; back round 2 survives reset and explicit owner close preserves count",
+        "C independent public CLI consumer reconstructs every cursor suffix, tolerates duplicates/gaps and resynchronizes after invalidation",
+        "C daemon-down plan becomes an actual resend receipt without completing work; follow and teardown are bounded",
+        "FIRST_WAVE B1/B2-ABSENT/C only; positive actor information and A/D are NOT RUN, not stubbed"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/pac/**",
+        "src/hyprial/biz/impl/workflow/**",
+        "src/hyprial/shell/impl/cli/commands/workflow/**",
+        "contract/pac/**",
+        "contract/e2e/run-pac-public-events.py"
+      ]
+    },
+    {
+      "id": "E2E-021",
+      "title": "orgfs remains live across a slot-pool-growth redial",
+      "document": "21-orgfs-forwarding-redial.md",
+      "runner": "run-orgfs-forwarding-redial.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "two disposable daemons use only explicit loopback endpoints and no system discovery, Tailnet, or Headscale",
+        "A sees B actor liveliness, both users join one orgfs space, and an A-authored update reaches B before redial",
+        "a protocol-v5 fixture binds the first directory peer inside a one-slot pool without redialing",
+        "a second directory peer exhausts the pool, grows one fixed slot, and logs zenoh.forwarding.redialed with both slots",
+        "maintenance remains unstalled and the retry pump continues after redial",
+        "an A to B request and correlated B to A reply both deliver after redial",
+        "neither daemon logs zenoh.lock.wait_exceeded or daemon.maintenance.stalled and PID cleanup is clean"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/orgfs/**",
+        "src/hyprial/daemon/impl/forwarding/**",
+        "src/hyprial/daemon/impl/transport/**",
+        "src/hyprial/shell/impl/cli/commands/fs/**",
+        "contract/orgfs/**",
+        "contract/sidecar-tailcat/**",
+        "sidecar/hyprial-tailcat/internal/engine/**",
+        "sidecar/hyprial-tailcat/internal/outbound/**",
+        "contract/e2e/_orgfs_redial_fixture.py",
+        "contract/e2e/_tailcat_isolation.py"
+      ]
+    },
+    {
+      "id": "E2E-025",
+      "title": "org invite → join → orgfs communication over real Tailcat sidecars and a local labrelay DERP",
+      "document": "25-tailcat-org-invite-join.md",
+      "runner": "run-tailcat-org-invite-join.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "two disposable daemons use only loopback endpoints: no discovery, no gossip, no host tailscale, DERP pinned to the local labrelay",
+        "org create publishes the owner's device; org invite returns the https link; org join from stdin runs the full bootstrap and reports org=group-demo",
+        "both nodes' org network directories converge to exactly the two devices",
+        "orgfs documents replicate in both directions within bounded time",
+        "bob's forwarding endpoints are sidecar-mapped tcp/127.0.0.1 ports his session dials, and alice's Zenoh listener never appears in bob's connect set",
+        "teardown stops only the owned daemons, sidecars, and labrelay; missing HYPRIAL_TAILCAT_BINARY/LABRELAY is BLOCKED, not a skip"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/org/**",
+        "src/hyprial/identity/impl/org_membership/**",
+        "src/hyprial/daemon/impl/orgfs/**",
+        "src/hyprial/daemon/impl/forwarding/**",
+        "src/hyprial/shell/impl/cli/commands/org/**",
+        "contract/org-network/**",
+        "contract/sidecar-tailcat/**",
+        "contract/tailcat-admission/**",
+        "sidecar/hyprial-tailcat/internal/membership/**",
+        "sidecar/hyprial-tailcat/internal/engine/**"
+      ]
+    },
+    {
+      "id": "E2E-024",
+      "title": "a peer re-learns a slot-pool-growth zid change across lossy private Unix streams",
+      "document": "24-peer-restart-relearn.md",
+      "runner": "run-peer-restart-relearn.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "both nodes use E2E-021's narrow private-Unix forwarding isolation and validate owned effective endpoints at every start and restart",
+        "the protocol-v6 leased-roster fixture binds one peer inside the fixed pool without redial, then a second leased peer exhausts the pool and forces a real in-process rebuild",
+        "B genuinely restarts immediately before A's slot-pool-growth rebuild",
+        "swallow-close, blackhole, and 2 s / 10 s delayed resplice modes retain the 38 s relearn verdict, 114 s observation window and 300 s whole-scenario deadline with at most two independent case workers",
+        "the forwarding fixture swallows A's final bytes, preserves B's client Unix stream, and blackholes A's reverse leg without a direct-path escape",
+        "each mode records both zids, private stream legs, B's host and target view, Zenoh transport/link events, and both message directions",
+        "A and B each submit exactly one frozen command; only SUBMIT_OUTCOME_UNKNOWN permits read-only original-command lookup within the original 4 s submission budget, and both directions must still deliver and acknowledge that same message",
+        "foreign or missing command/conversation/message identities, terminal failures and unresolved lookup at the deadline remain failures without a replacement send",
+        "compact case summaries retain identity, phase and budget evidence while complete per-case JSON is saved outside the temporary worker root",
+        "only owned case worker, daemon and sidecar PIDs plus forwarder threads are stopped, with clean teardown on success, failure, timeout and interrupt"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/forwarding/**",
+        "src/hyprial/daemon/impl/transport/**",
+        "src/hyprial/daemon/impl/orgfs/**",
+        "contract/sidecar-tailcat/**",
+        "sidecar/hyprial-tailcat/internal/engine/**",
+        "sidecar/hyprial-tailcat/internal/outbound/**",
+        "contract/e2e/_tailcat_isolation.py",
+        "contract/e2e/_peer_restart_*.py"
+      ]
+    },
+    {
+      "id": "E2E-028",
+      "title": "a real Tailcat remote-slot drop returns without a Zenoh rebuild",
+      "document": "28-remote-drop-no-rebuild.md",
+      "runner": "run-remote-drop-no-rebuild.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "the runner builds hyprial-tailcat and the labrelay from this checkout and never uses a production sidecar binary",
+        "two disposable daemons converge one org directory and acknowledge a baseline message over real sidecars and the loopback labrelay",
+        "terminating the dialer's owned sidecar drops its remote slot and the supervisor restores a different sidecar PID on the same fixed endpoint set",
+        "the peer's OrgFS directory address remains byte-identical across the drop and return",
+        "post-baseline zenoh.forwarding.redialed and zenoh.forwarding.changed remain empty",
+        "no redial failure, session rebuild, or session close with reason=reconfigure occurs, proving the transport reconfigure path was not invoked",
+        "a message sent after the return is delivered and acknowledged, and owned process cleanup is clean"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/forwarding/**",
+        "src/hyprial/daemon/impl/transport/**",
+        "src/hyprial/daemon/impl/orgfs/**",
+        "contract/sidecar-tailcat/**",
+        "sidecar/hyprial-tailcat/internal/engine/**",
+        "sidecar/hyprial-tailcat/internal/outbound/**",
+        "contract/e2e/run-tailcat-org-invite-join.py"
+      ]
+    },
+    {
+      "id": "E2E-029",
+      "title": "v6 control invite refusal and inbound business-stream revocation",
+      "document": "29-tailcat-org-admission-deny.md",
+      "runner": "run-tailcat-org-admission-deny.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "real engine/control/business transport uses only a loopback labrelay and disposable keys/stores; CLI, Casdoor and OrgFS are not covered",
+        "honest InviteV2 redemption and echo traffic succeed before and after the negative probes",
+        "wrong tokens and forged peer-key claims receive correlated control refusals without changing the roster",
+        "a raw unjoined Tailcat client is closed at inbound admission and never reaches the private backend",
+        "revocation closes held and fresh business streams while control remains reachable; an old redeemed token cannot resurrect membership",
+        "the exact named test executes without skips and owned engines, clients, sockets and relay close"
+      ],
+      "covers": [
+        "sidecar/hyprial-tailcat/internal/membership/**",
+        "sidecar/hyprial-tailcat/internal/engine/**",
+        "sidecar/hyprial-tailcat/internal/proto/**",
+        "sidecar/hyprial-tailcat/internal/serve/**",
+        "contract/tailcat-admission/**",
+        "contract/e2e/_tailcat_join_scenarios.py"
+      ]
+    },
+    {
+      "id": "E2E-030",
+      "title": "v6 running joiner and durable recovery after a lost redemption reply",
+      "document": "30-tailcat-org-join-resume.md",
+      "runner": "run-tailcat-org-join-resume.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "the joiner remains control-only for 65 seconds before an invitation is issued, using disposable homes and real loopback transport",
+        "authority redemption commits while the client discards the reply and no backend socket exists",
+        "both engines and durable stores reopen; exact-operation retries return identical receipts without a second consume or revision change",
+        "recovery obtains a valid lease and supports bidirectional business echo before another refresh",
+        "a different device of the same owner gets INVITE_CONSUMED and remains member-not-ready",
+        "the exact test passes without skips; CLI workflow continuation and OrgFS publication remain outside this transport scenario"
+      ],
+      "covers": [
+        "sidecar/hyprial-tailcat/internal/membership/**",
+        "sidecar/hyprial-tailcat/internal/engine/**",
+        "sidecar/hyprial-tailcat/internal/proto/**",
+        "sidecar/hyprial-tailcat/internal/serve/**",
+        "contract/tailcat-admission/**",
+        "contract/e2e/_tailcat_join_scenarios.py"
+      ]
+    },
+    {
+      "id": "E2E-031",
+      "title": "group conversations on a single isolated node",
+      "document": "31-group-conversation.md",
+      "runner": "run-group-conversation.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "creating a group with two agents answers the owner and both agents as members and lists the group",
+        "an owner message reaches every agent member as exactly one row each and never the owner",
+        "an agent answers its row with an ordinary reply that lands in the group as a reply to the owner's entry and wakes nobody",
+        "an agent message mentioning another agent wakes only that agent, admitted with link bypass on",
+        "a reply to an agent's entry mentions and wakes that author by default; --no-mention omits it and wakes nobody",
+        "a member that is never mentioned gets no row",
+        "a removed member gets no row for later messages and can no longer read the group, and message reply --mention wakes the extra agent",
+        "a daemon restart between a send and the turn creates no second row and the turn writes one reply",
+        "the group never appears in 1:1 conversation or thread lists and group rows never enter a 1:1 history",
+        "group history lists every entry once in order",
+        "with --harness pi (mock-model-harness-e2e hosted job): two woken real Pi harnesses each take a mock-model turn and exactly one harness_reply of each lands in the group as the reply to the owner entry",
+        "teardown leaves no process behind"
+      ],
+      "covers": [
+        "src/hyprial/daemon/impl/application/messaging/inbox_surface/groups/**",
+        "src/hyprial/daemon/impl/conversations/groups/**",
+        "src/hyprial/daemon/impl/composition/conversations/group_delivery.py",
+        "src/hyprial/shell/impl/cli/commands/message/group/**",
+        "src/hyprial/shell/impl/cli/commands/message/send.py",
+        "src/hyprial/shell/impl/cli/commands/message/threads/**",
+        "contract/e2e/_group_conversation/**"
+      ]
+    },
+    {
+      "id": "E2E-032",
+      "title": "switching the viewed organization in hyprial gui with a real browser",
+      "document": "32-org-switch-browser.md",
+      "runner": "run-org-switch-browser.py",
+      "executable": true,
+      "real_environment_required": false,
+      "assertions": [
+        "a GUI-ready isolated home with a recorded first-run skip and two locally created orgs lists exactly those two orgs",
+        "hyprial gui opens through the one-time handoff and the org page offers both orgs in 查看组织",
+        "switching the viewed org sends org.network with the second org's id, every org.network of the switch carries that id, and no org.network names an id org.list did not list",
+        "the switch sends no org.list: it does not go through the overview refresh",
+        "the title and data-org-viewed show the second org, also in 成员 and after the refresh",
+        "the 成员 header keeps an enabled 刷新 button, no top-level 机器 tab exists, and 刷新 rereads org.list and the viewed org's org.network",
+        "no org.fetch is sent during the run",
+        "teardown leaves no started process group or reported pid alive, removes the throwaway root and leaves the launchd com.hyprial label count unchanged"
+      ],
+      "covers": [
+        "gui/src/features/org/**",
+        "src/hyprial/shell/impl/gui/**",
+        "tests/support/gui_home/**",
+        "gui/tests/support/browser.mjs",
+        "contract/e2e/_gui_browser/**",
+        "contract/e2e/_org_switch/**"
+      ]
+    }
+  ],
+  "coverage_schema": "hyprial-e2e-coverage/v1"
+}

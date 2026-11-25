@@ -1,46 +1,15 @@
-"""Tell the owner when an upgrade left the machine without a daemon.
+"""What an upgrade left behind when it could not bring the daemon back.
 
 On 2026-08-31 an autoupdate installed cleanly, stopped the running daemon, and
-never started a replacement. Production was down for 56 minutes, and **nothing
-told anyone**. It was found by a person happening to read `hyprial daemon upgrade
-status` afterwards.
+never started a replacement. Production was down for 56 minutes and nothing
+recorded why where a person would look. This module writes that fact to disk
+(``upgrade-restart-failed.json``) before anything else, renders the restart
+failure detail, and runs the installed build's self-check.
 
-⚠️ Why this does not use `deliver_alarm`
-----------------------------------------
-The daemon already has an alarm path -- `DaemonPortClient.deliver_alarm` ->
-lifecycle actor -> Lark adapter. It is tested, and it is the wrong one here:
-**every hop runs inside the daemon**, and the moment this alert exists for is
-the moment there is no daemon. An alert built on it would be silent exactly
-when it is needed, and green in every test, because tests have a live daemon.
-
-So this sends from the `hyprial daemon upgrade run` subprocess itself, reading the
-gateway credentials off disk. That subprocess is the one process guaranteed to
-still be alive: it is what performed the upgrade.
-
-⚠️ It costs one thing, stated plainly: a second process now reads the Lark app
-secret. Previously only the daemon did. Same machine, same user, same file --
-but it is a wider surface, and a wider surface is easy to miss in a diff.
-
-Never raises
-------------
-Every failure here is captured and returned. An alert that cannot be delivered
-must not replace, mask, or delay the upgrade error it is reporting -- the
-original failure is the more important message, and it is already on its way to
-the caller. The returned record is attached to that error, so the attempt (and
-its outcome) lands in the durable autoupdate log either way.
-
-The two control groups
-----------------------
-Both are required, and neither is sufficient alone:
-
-  success does not alert   asserted at the call site, not here: this module is
-                           only ever called from the failure branch. Without
-                           that test, "it fired" cannot distinguish "it fires
-                           on failure" from "it fires on everything".
-  delivery is verified     `messageId` is returned and recorded so a human can
-                           check the message actually arrived. Without it, "we
-                           sent it" and "it was received" are the same
-                           observation from in here.
+R2 (owner ruling 2026-11-19): nothing is sent to any IM any more -- no owner DM
+and no adapter default-route post.  The failure is in the upgrade result, its
+exit code, this marker file and the daemon log (``daemon.start.failed``).  An
+IM forward of daemon-log events may come later; it is not here.
 """
 
 from __future__ import annotations
@@ -54,11 +23,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
-from hyprial.kernel import PersistentConfigStore
 
-ALERT_TITLE = "⚠️ hyprial 升级后 daemon 未能重启"
 
 MARKER_FILENAME = "upgrade-restart-failed.json"
 
@@ -83,50 +50,6 @@ UPGRADE_UNCONFIRMED = "unconfirmed"
 UPGRADE_AWAITING_RESTART = "awaiting-restart"
 UPGRADE_FAILED = "failed"
 
-# ⛔⛔ A PLACEHOLDER, NOT A MEASUREMENT. The only timing anyone has measured is
-# a single restore of 161s on a six-adapter machine (2026-08-31). This number
-# was picked to be comfortably larger than that and nothing more -- no machine
-# has been observed taking anywhere near it, and none has been observed failing
-# after it either.
-#
-# It is stated in the owner's message as the line between "still recovering"
-# and "now it is a fault", so a reader will reasonably take it for something we
-# know. Calibrate it against real restores before it earns that reading, and
-# whoever does so should also decide whether a fixed number is right at all:
-# restore time scales with adapter count, which this does not.
-_UNCONFIRMED_ESCALATE_AFTER = "十分钟"
-
-
-class _OwnerSender(Protocol):
-    def send_owner_dm(
-        self, open_id: str, text: str, *, idempotency_key: str
-    ) -> str: ...
-
-
-@dataclass(frozen=True)
-class AlertOutcome:
-    """What the attempt did. Every field is meant to be read by a human later."""
-
-    attempted: bool
-    delivered: bool
-    reason: str | None = None
-    message_id: str | None = None
-    open_id: str | None = None
-
-    def to_json(self) -> dict[str, object]:
-        record: dict[str, object] = {
-            "attempted": self.attempted,
-            "delivered": self.delivered,
-        }
-        if self.reason is not None:
-            record["reason"] = self.reason
-        if self.message_id is not None:
-            # ⭐ Kept so delivery can be confirmed off-path. "We called send"
-            # is not evidence that anyone received anything.
-            record["messageId"] = self.message_id
-        if self.open_id is not None:
-            record["openId"] = self.open_id
-        return record
 
 
 @dataclass(frozen=True)
@@ -262,90 +185,6 @@ def restart_failure_detail(
     return f"daemon restart failed: {error}\n{failure_line}\n{process_line}"
 
 
-def prime_upgrade_alert_imports() -> None:
-    """Load alert-only dependencies before an in-place package replacement."""
-
-    from hyprial.daemon.impl.adapters.lark.outbound.sdk import LarkSdkGateway
-    from hyprial.kernel import parse_channel_uri
-
-    _ = (LarkSdkGateway, parse_channel_uri)
-
-
-def _gateway_for_channel(store: PersistentConfigStore, channel: str):
-    """Find the gateway a binding names -- by URI or by bare name.
-
-    ⚠️ These two spellings are the same channel, and the first version of this
-    file only understood the second:
-
-        users.json     "channel:bobadmin:node-hq-01.example-tailnet.ts.net:allen-squire"
-        channels.json  name = "allen-squire"
-
-    So every lookup missed, every alert reported "which is not configured", and
-    the alert never delivered anywhere. It stayed invisible because the failure
-    path had never once run in production -- the bug and its concealment were
-    the same fact.
-
-    ⚠️ The name segment comes from `parse_channel_uri`, not from splitting on
-    the last colon here. The first fix did split, and the address-parsing guard
-    refused it -- correctly. A second reader of a grammar it does not own can
-    drift from the writer, and when it drifts the symptom is a lookup that
-    silently never matches: precisely the bug this function exists to fix, in a
-    second copy.
-
-    The shared reader is also stricter than the split was. It requires the
-    `channel:`/`adapter:` prefix and four non-empty segments, so a malformed
-    binding now falls through to the exact-match branch instead of yielding
-    whatever followed the last colon -- which could have matched an unrelated
-    gateway and sent the owner's alert somewhere else.
-
-    ⚠️ The import remains inside the function because the upgrade path primes
-    every lazy dependency before `uv tool install --force` swaps the backing
-    distribution.  The parser now lives in the dependency-free ``hyprial.uri``
-    leaf module, so loading it never executes the eager daemon package.
-    """
-
-    from hyprial.kernel import parse_channel_uri
-
-    gateways = list(store.load().channels.gateways)
-    parsed = parse_channel_uri(channel)
-    name = parsed[2] if parsed is not None else channel
-    for item in gateways:
-        if item.name == channel or item.name == name:
-            return item
-    return None
-
-
-def _owner_binding(store: PersistentConfigStore) -> tuple[str, str] | None:
-    """Return (channel, openId) for the first owner that has one bound."""
-
-    for profile in store.load().users.users:
-        binding = profile.get("ownerOpenId")
-        if isinstance(binding, dict):
-            channel = binding.get("channel")
-            open_id = binding.get("openId")
-            if isinstance(channel, str) and isinstance(open_id, str):
-                if channel and open_id:
-                    return channel, open_id
-    return None
-
-
-def alert_text(*, summary: str, detail: str, host: str) -> str:
-    """One message that says what broke and where, without inventing state.
-
-    The restart-failure caller includes a PID-and-birth observation in
-    ``detail``.  A generic footer cannot do that job: the process may still be
-    shutting down, may have exited, or may be unobservable by send time.
-    """
-
-    return (
-        f"{ALERT_TITLE}\n"
-        f"主机: {host}\n"
-        f"{summary}\n"
-        f"\n"
-        f"{detail}"
-    )
-
-
 class _StartFailureNotApplicable:
     """Sentinel: this marker has no start-failure dimension at all.
 
@@ -385,21 +224,15 @@ def write_failure_marker(
         StartFailureRecord | None | _StartFailureNotApplicable
     ) = START_FAILURE_NOT_APPLICABLE,
 ) -> Path:
-    """Put the fact on disk **before** trying to send anything.
+    """Put the failure on disk where an operator looks for it.
 
-    ⚠️ The send can fail silently -- Feishu unreachable, token expired, network
-    down -- and at that moment there is no daemon left to observe that it
-    failed. So the durable record must not depend on the send having worked.
-
-    Ordering is the whole point: **write, then send**, never "send, and write if
-    it fails". On 2026-08-31 the fact *was* on disk the whole time
-    (`UPGRADE_RESTART_FAILED` sat in the autoupdate status for 56 minutes) --
-    what was missing was the notification. These are two halves, not two
-    options; this writes the half that cannot fail for network reasons.
+    On 2026-08-31 the fact sat in the autoupdate status for 56 minutes and
+    nobody looked; this file is the durable record the upgrade result and
+    ``hyprial daemon upgrade status`` point at.  R2: it is the record, nothing
+    is sent.
 
     Raising here is acceptable and deliberate: if we cannot even write a local
-    file, the caller should hear about it. The *send* is the part that must
-    never raise, not this.
+    file, the caller should hear about it.
     """
 
     path = Path(state_dir) / MARKER_FILENAME
@@ -411,14 +244,6 @@ def write_failure_marker(
         "detail": detail,
         "recordedAtEpoch": int(time.time()),
         "pid": os.getpid(),
-        # Filled in by `record_alert_outcome` once the send has been
-        # attempted. ⚠️ Its absence has **two** causes, and on its own it does
-        # not separate them: the process died mid-send, or the send finished
-        # and folding the result back in here failed. `record_alert_outcome`
-        # therefore prints the outcome to stderr before giving up, so the two
-        # are told apart by whether that line exists -- a null with no stderr
-        # line is a death, a null with one is a failed write-back.
-        "alert": None,
     }
     # ⭐ The diagnosis, not only the symptom. `detail` carries the same sentence
     # `start_failure_line` renders; this is the machine-readable half for a
@@ -450,201 +275,6 @@ def write_failure_marker(
         )
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
     return path
-
-
-def record_alert_outcome(marker: Path, outcome: "AlertOutcome") -> None:
-    """Fold the send result into the marker. Best effort, never raises.
-
-    ⚠️ Swallowing the write-back failure silently would make `alert: null`
-    ambiguous: it would mean either "the process died mid-send" or "the send
-    completed and writing it here failed", and whoever read the marker would go
-    looking for a crash that never happened. So the outcome goes to stderr
-    before giving up. That is not a second durable store -- it is the cheapest
-    way to make the two causes tell themselves apart.
-    """
-
-    try:
-        payload = json.loads(marker.read_text("utf-8"))
-        payload["alert"] = outcome.to_json()
-        marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
-    except Exception as error:  # noqa: BLE001 -- the marker already holds the failure
-        print(
-            f"hyprial: could not record the alert outcome in {marker}: "
-            f"{type(error).__name__}: {error}; "
-            f"outcome={json.dumps(outcome.to_json(), ensure_ascii=False)}",
-            file=sys.stderr,
-            flush=True,
-        )
-
-
-def notify_upgrade_failure(
-    *,
-    hyprial_home: Path,
-    state_dir: Path,
-    host: str,
-    summary: str,
-    detail: str,
-    idempotency_key: str,
-    sender_factory: Callable[[str, str], _OwnerSender] | None = None,
-) -> AlertOutcome:
-    """The failure-only path, kept for the restart-failed branch."""
-
-    return _send_owner_message(
-        hyprial_home=hyprial_home,
-        state_dir=state_dir,
-        text=alert_text(summary=summary, detail=detail, host=host),
-        idempotency_key=idempotency_key,
-        sender_factory=sender_factory,
-    )
-
-
-def notify_restore_followup(
-    *,
-    hyprial_home: Path,
-    state_dir: Path,
-    host: str,
-    recovered: bool,
-    pending_connectors: int | None,
-    upgrade_detail: str,
-    idempotency_key: str,
-    sender_factory: Callable[[str, str], _OwnerSender] | None = None,
-) -> AlertOutcome:
-    """The follow-up the unconfirmed notice owed: settled, or still starting.
-
-    The first notice (``notify_upgrade_outcome`` with UPGRADE_UNCONFIRMED)
-    says "not yet confirmed"; card 3c116ad2 requires the same CLI process to
-    close that state -- one message when ping reports ``reconciled`` (the
-    daemon itself considers restore settled), one message when the
-    fleet-derived poll budget runs out first.  Same channel, same
-    never-raises contract as every other owner notice here: a follow-up
-    that could fail the upgrade report would be worse than no follow-up.
-
-    ``pending_connectors`` is what ps already reports (connectors not
-    running); ``None`` when ps cannot answer mid-restore, and then the
-    message says so without inventing a count.  No duration is promised in
-    either wording -- the budget is derived per machine, not a constant the
-    text could state.
-    """
-
-    if recovered:
-        summary = "✅ hyprial 升级重启的 daemon 已恢复 —— restore 已落定(reconciled)"
-        detail = f"主机: {host}\n升级: {upgrade_detail}"
-    elif pending_connectors is not None:
-        summary = f"⚠️ hyprial 重启后仍在启动:{pending_connectors} 个 connector 未回"
-        detail = (
-            f"主机: {host}\n"
-            f"升级: {upgrade_detail}\n"
-            "重启后等待已到按本机规模派生的上限,restore 仍未落定。\n"
-            "⇒ 请运行 `hyprial daemon status` 查看 adapter 状态;升级已安装,不要重复执行升级。"
-        )
-    else:
-        summary = "⚠️ hyprial 重启后仍在启动 —— restore 仍未落定"
-        detail = (
-            f"主机: {host}\n"
-            f"升级: {upgrade_detail}\n"
-            "重启后等待已到按本机规模派生的上限,restore 仍未落定。\n"
-            "⇒ 请运行 `hyprial daemon status` 查看 adapter 状态;升级已安装,不要重复执行升级。"
-        )
-    return _send_owner_message(
-        hyprial_home=hyprial_home,
-        state_dir=state_dir,
-        text=f"{summary}\n{detail}",
-        idempotency_key=idempotency_key,
-        sender_factory=sender_factory,
-    )
-
-
-def notify_owner(
-    *,
-    hyprial_home: Path,
-    state_dir: Path,
-    text: str,
-    idempotency_key: str,
-    sender_factory: Callable[[str, str], _OwnerSender] | None = None,
-) -> AlertOutcome:
-    """The shared owner-DM entry point for alerts that are not upgrade news.
-
-    This is the same route ``notify_upgrade_failure`` uses -- owner binding,
-    channel-to-gateway resolution, Lark DM, never raises -- exposed as a
-    public function so other subsystems (provider-auth relogin alerts being
-    the first) reuse the path instead of growing a second copy of the
-    routing.  Callers compose their own text; this module owns the delivery.
-    """
-
-    return _send_owner_message(
-        hyprial_home=hyprial_home,
-        state_dir=state_dir,
-        text=text,
-        idempotency_key=idempotency_key,
-        sender_factory=sender_factory,
-    )
-
-
-def _send_owner_message(
-    *,
-    hyprial_home: Path,
-    state_dir: Path,
-    text: str,
-    idempotency_key: str,
-    sender_factory: Callable[[str, str], _OwnerSender] | None = None,
-) -> AlertOutcome:
-    """Try to DM the owner. Returns what happened; never raises.
-
-    `sender_factory` takes (app_id, app_secret) so tests can substitute a
-    recorder without reaching the network. Production passes None and gets the
-    real Lark gateway.
-    """
-
-    try:
-        store = PersistentConfigStore(hyprial_home, state_dir)
-        binding = _owner_binding(store)
-        if binding is None:
-            # Not an error: a machine with no owner bound has nobody to tell.
-            # Said out loud rather than returning a bare False, because
-            # "nobody to tell" and "sending failed" need different fixes.
-            return AlertOutcome(
-                attempted=False,
-                delivered=False,
-                reason="no owner openId is bound; nobody to notify",
-            )
-        channel, open_id = binding
-        gateway = _gateway_for_channel(store, channel)
-        if gateway is None:
-            return AlertOutcome(
-                attempted=False,
-                delivered=False,
-                reason=f"owner is bound to channel {channel!r}, which is not configured",
-                open_id=open_id,
-            )
-        secret = store.lark_app_secret(gateway.credential_ref)
-        if sender_factory is None:  # pragma: no cover - exercised in the drill
-            from hyprial.daemon.impl.adapters.lark.outbound.sdk import LarkSdkGateway
-
-            sender: _OwnerSender = LarkSdkGateway.from_credentials(
-                gateway.app_id, secret, gateway_name=gateway.name
-            )
-        else:
-            sender = sender_factory(gateway.app_id, secret)
-        message_id = sender.send_owner_dm(
-            open_id,
-            text,
-            idempotency_key=idempotency_key,
-        )
-        return AlertOutcome(
-            attempted=True,
-            delivered=True,
-            message_id=message_id,
-            open_id=open_id,
-        )
-    except Exception as error:  # noqa: BLE001 -- see the module docstring
-        # Deliberately broad. Anything raised here would otherwise surface
-        # instead of UPGRADE_RESTART_FAILED, and a swallowed upgrade error is
-        # strictly worse than an undelivered alert about it.
-        return AlertOutcome(
-            attempted=True,
-            delivered=False,
-            reason=f"{type(error).__name__}: {error}",
-        )
 
 
 @dataclass(frozen=True)
@@ -720,147 +350,3 @@ def run_self_check(
     return SelfCheckResult(True, f"hyprial {version} answers `version --json`")
 
 
-def notify_upgrade_outcome(
-    *,
-    hyprial_home: Path,
-    state_dir: Path,
-    host: str,
-    action: str,
-    upgrade_detail: str,
-    check: SelfCheckResult,
-    idempotency_key: str,
-    sender_factory: Callable[[str, str], _OwnerSender] | None = None,
-) -> AlertOutcome:
-    """Tell the owner what happened -- on every upgrade, not only the bad ones.
-
-    ⭐ Sending only on failure looks thrifty and is the reason this channel had
-    never delivered a single message: the one path that would exercise it is the
-    path where the machine is already in trouble. Twice on 2026-08-31 it was
-    needed and twice nothing arrived -- once because the process died before
-    reaching it, once because the owner's channel lookup had never been run and
-    was wrong. Both were invisible for the same reason: **nothing used this
-    code when things were fine.**
-
-    So it runs every time. A healthy run sends one short line; anything else
-    sends the detail. The short line is not noise -- it is the evidence that the
-    channel still works, arriving at the only moment we can afford to discover
-    that it does not.
-
-    ⚠️ `action` is four states, not a bool, and the reason is a bug this
-    signature used to have. The parameter was `upgraded: bool`, and the caller
-    passed a hardcoded `True` on the whole success path -- so "already current,
-    installed nothing" reported `✅ 升级完成`. `hyprial daemon upgrade` runs on a timer and
-    most runs install nothing, so the common case said something false.
-
-    ⛔ And the obvious repair -- forward the result's real `upgraded` -- is
-    worse: `not upgraded` fell to `⚠️ hyprial 升级失败`, which would have alarmed the
-    owner on every routine no-op until the channel became noise. That is the
-    outcome this whole module exists to prevent.
-
-    🔑 The root cause is that one boolean carried two questions -- "did anything
-    install?" and "did this succeed?" -- and the second is already carried by
-    whether the caller raised. Four named states keep them apart, and they give
-    the declined downgrade the one thing it lacked: somewhere to be said.
-    """
-
-    if action == UPGRADE_DECLINED_DOWNGRADE:
-        # ⭐ A refused rollback is not a failure and is not routine. `#323`
-        # added the guard with the complaint that "a guard leaving no trace is
-        # indistinguishable from a rollback that never happened" -- this is the
-        # trace. Reporting it as ✅ hides a real event behind a healthy tick;
-        # reporting it as 失败 sends someone to fix a machine that is fine.
-        summary = "⚠️ hyprial 拒绝降级 —— 上游轨道指向了更旧的版本"
-        detail = (
-            f"主机: {host}\n"
-            f"未安装: {upgrade_detail}\n"
-            f"自检: {'通过' if check.ok else '未通过'} — {check.detail}"
-        )
-    elif action == UPGRADE_AWAITING_RESTART:
-        # Installed; the running daemon is still the old code until a person
-        # (or an agent on their behalf) confirms.  Not "完成": nothing new is
-        # running yet.  Not "失败": nothing went wrong.
-        summary = f"hyprial 新版本已安装,等待确认后重启 · {upgrade_detail}"
-        detail = (
-            f"主机: {host}\n"
-            "daemon 仍在旧版本上运行,没有重启。\n"
-            "确认切换:运行 `hyprial daemon upgrade apply`(可自己运行,或让任一 agent 代为运行)。"
-            "重启期间消息会中断,恢复完成会再通知。\n"
-            f"自检: {'通过' if check.ok else '未通过'} — {check.detail}"
-        )
-    elif check.ok and action == UPGRADE_INSTALLED:
-        summary = f"✅ hyprial 升级完成 · {check.detail}"
-        detail = f"主机: {host}"
-    elif action == UPGRADE_UNCONFIRMED:
-        # ⭐ Installed fine; the daemon had not reported ready before the launch
-        # budget ran out. It is alive and still restoring adapters, so this is
-        # neither "完成" nor "失败" -- and both of those would state something
-        # nobody has checked.
-        #
-        # ⚠️ It carries ⚠️ rather than ✅ on purpose: nothing settles this state
-        # automatically yet, so the only thing that closes it is a person
-        # looking. A ✅ would ask nobody to look.
-        # ⚠️ Every clause below is something that was measured, and an earlier
-        # draft of it was wrong in a way worth recording. It said "the daemon is
-        # still starting" and "you can run `hyprial daemon status` right now", both inferred
-        # from `cli._wait_for_daemon`'s comment: the socket is published before
-        # adapter restore, and `ps` never reads `daemon.json`. The inference was
-        # that IPC therefore answers throughout. It does not -- measured
-        # 2026-08-31 19:43: `hyprial daemon status` failed twice during restore and succeeded
-        # at 19:44:25, the moment the daemon reported ready. The failures were
-        # not DAEMON_UNAVAILABLE (that returns a payload carrying a `daemon`
-        # key; these had none), so the daemon holds the socket and does not
-        # answer while it is busy restoring.
-        #
-        # ⭐ Telling someone to run a command that will time out is worse than
-        # saying nothing: a timeout reads exactly like "my daemon is dead",
-        # which is the conclusion this whole message exists to prevent.
-        summary = "⚠️ hyprial 已升级;daemon 进程已启动,而尚未确认完成 adapter 恢复"
-        detail = (
-            f"主机: {host}\n"
-            f"升级: {upgrade_detail}\n"
-            f"自检: {'通过' if check.ok else '未通过'} — {check.detail}\n"
-            "恢复期间 daemon 可能暂时答不上 `hyprial daemon status`"
-            "(Lark adapter restore 可能要一分钟以上)—— 那不代表它死了。\n"
-            "⇒ 过几分钟再跑一次 `hyprial daemon status`:\n"
-            # ⭐ "daemon 已恢复服务", never "恢复完成". The two are not the same
-            # state, and the second one may never arrive: restore is best
-            # effort, and an adapter can stay down indefinitely while the daemon
-            # runs perfectly well -- a production adapter on this very machine
-            # has been `quarantined` with `processRunning=False` for a long
-            # time, answering `hyprial daemon status` throughout.
-            #
-            # ⛔ The earlier wording said "恢复完成", which does not merely
-            # misname things: it tells the reader to stop looking at the one
-            # moment something may still be wrong. That quarantined adapter was
-            # found only because someone kept looking after `ps` started
-            # answering.
-            "   · 能答上来 ⇒ daemon 已恢复服务,无需处理\n"
-            "     (adapter 是否全部起来,另看 `hyprial daemon status` 的 adapter 列 ——\n"
-            "      恢复是 best effort,不是每次都会全起来)\n"
-            f"   · {_UNCONFIRMED_ESCALATE_AFTER}后仍答不上来 ⇒ 那才是故障,"
-            "把 `hyprial daemon status` 的输出发出来"
-        )
-    elif check.ok and action == UPGRADE_ALREADY_CURRENT:
-        # The heartbeat. Nothing was installed and nothing is wrong -- and this
-        # is the line that proves, on an ordinary day, that the channel through
-        # which bad news would arrive is still open.
-        summary = f"✅ hyprial 已是最新,未安装任何东西 · {check.detail}"
-        detail = f"主机: {host}"
-    else:
-        summary = (
-            "⚠️ hyprial 升级后自检未通过"
-            if action == UPGRADE_INSTALLED
-            else "⚠️ hyprial 升级失败"
-        )
-        detail = (
-            f"主机: {host}\n"
-            f"升级: {upgrade_detail}\n"
-            f"自检: {'通过' if check.ok else '未通过'} — {check.detail}"
-        )
-    return _send_owner_message(
-        hyprial_home=hyprial_home,
-        state_dir=state_dir,
-        text=f"{summary}\n{detail}",
-        idempotency_key=idempotency_key,
-        sender_factory=sender_factory,
-    )

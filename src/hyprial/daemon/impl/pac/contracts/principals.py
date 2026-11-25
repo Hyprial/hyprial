@@ -16,8 +16,8 @@ Rules (§3.1):
    into "unique".
 4. Auto-completion (``selected_uri``) requires a scope the port can declare
    COMPLETE.  Today the only declarable-complete scope is the graph being
-   edited: its node set is fully known to the writer.  The local registry,
-   local squire profiles, and live ``targets`` are all partial views --
+   edited: its node set is fully known to the writer.  The local registry
+   and live ``targets`` are partial views --
    "only one candidate visible" does not prove an offline or foreign
    same-named principal does not exist (P1 evidence: the targets port has
    no pagination/coverage contract and no global catalog exists), so a lone
@@ -26,14 +26,11 @@ Rules (§3.1):
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import time_ns
 from typing import Any
-
-from hyprial.kernel import canonical_user_uri
 
 from hyprial.identity import (
     PAC_OWNER_AMBIGUOUS,
@@ -50,7 +47,6 @@ SCOPE_LOCAL = "local"
 
 SOURCE_GRAPH = "graph"
 SOURCE_REGISTRY = "agents-registry"
-SOURCE_USER_PROFILES = "user-profiles"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,42 +122,6 @@ def _registry_candidates(state_dir: Path, short_name: str) -> list[Candidate]:
     ]
 
 
-def _user_profile_candidates(state_dir: Path, short_name: str) -> list[Candidate]:
-    """Local squire profiles whose owner matches exactly (people candidates).
-
-    Reads the real ``users.json`` shape (``{"version": 1, "users": [...]}``,
-    squire.profile.UserProfileStore); a malformed file is
-    resolution-unavailable, never an empty candidate set.
-    """
-
-    store_path = Path(state_dir) / "users.json"
-    if not store_path.is_file():
-        return []
-    try:
-        document = json.loads(store_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise PacError(
-            PAC_RESOLUTION_UNAVAILABLE,
-            f"cannot read the local user profiles at {store_path}: {error}",
-        ) from error
-    users = document.get("users") if isinstance(document, dict) else None
-    if not isinstance(users, list):
-        raise PacError(
-            PAC_RESOLUTION_UNAVAILABLE,
-            f"user profiles at {store_path} have an unsupported shape; "
-            "refusing to guess candidates",
-        )
-    return [
-        Candidate(
-            uri=canonical_user_uri(str(profile["owner"])),
-            kind="user",
-            source=SOURCE_USER_PROFILES,
-        )
-        for profile in users
-        if isinstance(profile, dict) and profile.get("owner") == short_name
-    ]
-
-
 def _graph_candidates(
     store: PacGraphStore, graph_id: str, short_name: str
 ) -> list[Candidate]:
@@ -224,7 +184,6 @@ def resolve_owner(
         graph_candidates = _graph_candidates(store, graph_id, short_name)
     local_candidates = [
         *_registry_candidates(state_dir, short_name),
-        *_user_profile_candidates(state_dir, short_name),
     ]
     if kind_hint == "human":
         graph_candidates = [c for c in graph_candidates if c.kind == "user"]

@@ -7,6 +7,8 @@ the retired v1 ``turn-hooks.json`` service; the bounded-exchange guarantees of
 
 from __future__ import annotations
 
+from tests.support.runtime.cell_delivery import AdmittingCellDelivery
+
 import json
 import threading
 import time
@@ -113,7 +115,9 @@ def test_timeout_ack_failure_preserves_timeout_and_still_sweeps_stale_reply() ->
     assert inbox.pending == []
 
 
-def test_foreign_machine_handler_does_not_abort_delivery(tmp_path: Path) -> None:
+def test_foreign_machine_handler_does_not_abort_delivery(
+    tmp_path: Path, *, actor_host
+) -> None:
     home = tmp_path / "home"
     foreign = "agent:owner:othermachine:handler"
     local_config = _write_hooks_config(home, handler=foreign, timeout_ms=5_000)
@@ -140,7 +144,7 @@ def test_foreign_machine_handler_does_not_abort_delivery(tmp_path: Path) -> None
 
     invoker = ForeignInvoker()
     hooks = DaemonHookService(
-        bus=HookBus(),
+        bus=HookBus(actor_host=actor_host),
         config_path_for_agent=config_path,
         consumers={},
         handler_notifier=lambda *_args, **_kwargs: None,
@@ -149,7 +153,7 @@ def test_foreign_machine_handler_does_not_abort_delivery(tmp_path: Path) -> None
         hooks=hooks,
         port=HookInterceptPort(invoke=invoker.invoke),
     )
-    runtime, harnesses = _runtime(tmp_path, service)
+    runtime, harnesses = _runtime(tmp_path, service, actor_host=actor_host)
 
     _dispatch_until_ready(runtime)
     assert len(harnesses.deliveries) == 1
@@ -161,7 +165,7 @@ def test_foreign_machine_handler_does_not_abort_delivery(tmp_path: Path) -> None
     "publication_order", ["before-observation", "after-observation"]
 )
 def test_injectable_clock_idle_handler_returns_context(
-    tmp_path: Path, publication_order: str
+    actor_host, tmp_path: Path, publication_order: str
 ) -> None:
     _write_hooks_config(tmp_path, timeout_ms=5_000)
     clock = [10.0]
@@ -174,7 +178,7 @@ def test_injectable_clock_idle_handler_returns_context(
         return "CTX"
 
     service = _delivery_hooks(
-        tmp_path, _Invoker(answer), port_monotonic=lambda: clock[0]
+        tmp_path, _Invoker(answer), port_monotonic=lambda: clock[0], actor_host=actor_host
     )
     delivery = HarnessDelivery("id", "conversation", "sender", RECIPIENT, "body")
 
@@ -204,7 +208,9 @@ def test_injectable_clock_idle_handler_returns_context(
     assert prepared.hook_text == "CTX"
 
 
-def test_hook_request_bypasses_older_held_handler_row(tmp_path: Path) -> None:
+def test_hook_request_bypasses_older_held_handler_row(
+    tmp_path: Path, *, actor_host
+) -> None:
     _write_hooks_config(tmp_path, timeout_ms=30_000)
     release = threading.Event()
     started = threading.Event()
@@ -225,7 +231,7 @@ def test_hook_request_bypasses_older_held_handler_row(tmp_path: Path) -> None:
         created_at_ms=2,
     )
     service = _delivery_hooks(
-        tmp_path, _Invoker(hold), port_monotonic=lambda: 0.0
+        tmp_path, _Invoker(hold), port_monotonic=lambda: 0.0, actor_host=actor_host
     )
     harnesses = _Harnesses()
     runtime = DaemonEventBridge(
@@ -235,7 +241,8 @@ def test_hook_request_bypasses_older_held_handler_row(tmp_path: Path) -> None:
         transport=_Transport(),  # type: ignore[arg-type]
         inbox=_ManyInbox((_message("older"), hook_request)),  # type: ignore[arg-type]
         harnesses=harnesses,  # type: ignore[arg-type]
-        delivery_hooks=service,
+        delivery_hooks=service, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     try:
         # The mechanism's own request reaches its handler on the very first
@@ -368,7 +375,9 @@ def test_cross_node_hook_reply_returns_through_origin_custody(
                 conversation_id=request.conversation_id,
                 sender=remote_handler,
                 recipient=callback,
-                payload=b'{"message":"CTX"}',
+                payload=json.dumps(
+                    {"message": "CTX", "replyTo": request.message_id}
+                ).encode(),
                 intent="reply",
                 lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
                 created_at_ms=2,
@@ -488,24 +497,27 @@ class _RetiringHarnesses(_Harnesses):
         self._inbox = inbox
         self._seen: set[str] = set()
 
-    def dispatch(self, actor: str, delivery: HarnessDelivery) -> bool:
+    def dispatch(self, envelope: object) -> bool:
+        delivery = envelope.input  # type: ignore[attr-defined]
         if delivery.delivery_id in self._seen:
             return False
-        if not super().dispatch(actor, delivery):
+        if not super().dispatch(envelope):
             return False
         self._seen.add(delivery.delivery_id)
         self._inbox.retire(delivery.delivery_id)
         return True
 
 
-def test_held_head_does_not_let_a_younger_delivery_pass(tmp_path: Path) -> None:
+def test_held_head_does_not_let_a_younger_delivery_pass(
+    tmp_path: Path, *, actor_host
+) -> None:
     """FIFO guard (review B1): a bounded intercept may hold the head, but no
     younger ordinary message may be dispatched past it; once the handler
     decides, the older delivery lands first, carrying its hook text."""
 
     _write_hooks_config(tmp_path, timeout_ms=30_000)
     invoker = _SlowForOlderInvoker()
-    service = _delivery_hooks(tmp_path, invoker, port_monotonic=lambda: 0.0)
+    service = _delivery_hooks(tmp_path, invoker, port_monotonic=lambda: 0.0, actor_host=actor_host)
     inbox = _RetiringInbox((_message("older"), _message("younger")))
     harnesses = _RetiringHarnesses(inbox)
     runtime = DaemonEventBridge(
@@ -515,7 +527,8 @@ def test_held_head_does_not_let_a_younger_delivery_pass(tmp_path: Path) -> None:
         transport=_Transport(),  # type: ignore[arg-type]
         inbox=inbox,  # type: ignore[arg-type]
         harnesses=harnesses,  # type: ignore[arg-type]
-        delivery_hooks=service,
+        delivery_hooks=service, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     try:
         # Phase 1: the head is held by its slow intercept (the first
@@ -555,7 +568,7 @@ def test_held_head_does_not_let_a_younger_delivery_pass(tmp_path: Path) -> None:
 
 
 def test_held_head_does_not_let_a_younger_delivery_pass_on_the_offer_path(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     """Same FIFO guard on the ``_dispatch_offers`` branch (actor mode).
 
@@ -566,7 +579,7 @@ def test_held_head_does_not_let_a_younger_delivery_pass_on_the_offer_path(
 
     _write_hooks_config(tmp_path, timeout_ms=30_000)
     invoker = _SlowForOlderInvoker()
-    service = _delivery_hooks(tmp_path, invoker, port_monotonic=lambda: 0.0)
+    service = _delivery_hooks(tmp_path, invoker, port_monotonic=lambda: 0.0, actor_host=actor_host)
     inbox = _RetiringInbox((_message("older"), _message("younger")))
     harnesses = _RetiringHarnesses(inbox)
     runtime = DaemonEventBridge(
@@ -577,7 +590,8 @@ def test_held_head_does_not_let_a_younger_delivery_pass_on_the_offer_path(
         inbox=inbox,  # type: ignore[arg-type]
         harnesses=harnesses,  # type: ignore[arg-type]
         delivery_hooks=service,
-        actor_mode=True,
+        actor_mode=True, actor_host=actor_host,
+        cell_delivery=AdmittingCellDelivery(),
     )
     runtime.start()
     try:

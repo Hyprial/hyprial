@@ -1,3 +1,6 @@
+# Decision record (W2B-2, 2026-11-21):
+# - _fsync_tree flushes directory entries through hyprial.kernel.fsync_directory
+#   instead of opening directories directly with os.open(..., os.O_RDONLY).
 """Private configuration-tree validation and exact snapshot helpers."""
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from hyprial.identity.impl.agents.home.config import (
     AgentConfig,
     build_native_projection,
 )
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import fsync_directory, ipc_errors
 
 
 class ConfigRebindError(RuntimeError):
@@ -251,8 +254,4 @@ def _fsync_tree(root: Path) -> None:
         *sorted((item for item in root.rglob("*") if item.is_dir()), reverse=True),
         root,
     ]:
-        fd = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        fsync_directory(path)

@@ -97,8 +97,7 @@ client and is used only to notice a turn boundary that the subscribed events did
 not deliver. The native turn id is the report id, so one native turn has one
 observation identity; turns the carrier injected keep their existing settlement
 receipt and are not re-reported here. A session that cannot subscribe declares
-`carrier-deliveries` instead. The detached tmux mode starts no carrier, declares
-nothing, and therefore stays partial/unsupported — never idle by omission.
+`carrier-deliveries` instead.
 Socket loss immediately clears the observer's subscription claim. Reconnection
 opens and initializes a new client socket, reinstalls listeners, resubscribes,
 and reconciles the native snapshot's complete current open set before restoring

@@ -1,4 +1,7 @@
 # Public Windows amd64 wheel installer. HYPRIAL_DL_BASE is for isolated tests.
+# Native wheels pin CPython 3.12 (`--python 3.12`).  A `cpython>=3.12` request
+# can resolve to a free-threaded 3.14t build, which rejects abi3 wheels; 3.12
+# has no free-threaded variant, so the module always gets a GIL interpreter.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $temp = $null
@@ -51,7 +54,7 @@ try {
     }
     $candidates = @(
         foreach ($line in (Get-Content -LiteralPath $sumsPath)) {
-            if ($line -cmatch '^([0-9a-fA-F]{64})\s+\*?(hyprial-[0-9][A-Za-z0-9.!+_]*-py3-none-win_amd64\.whl)\s*$') {
+            if ($line -cmatch '^([0-9a-fA-F]{64})\s+\*?(hyprial-[0-9][A-Za-z0-9.!+_]*-(?:py3-none|cp312-abi3)-win_amd64\.whl)\s*$') {
                 [PSCustomObject]@{ Hash = $Matches[1]; Name = $Matches[2] }
             }
         }
@@ -72,9 +75,13 @@ try {
         throw "SHA-256 mismatch: $wheel (nothing installed)"
     }
     Write-Output "Installing verified $wheel from track $track with uv tool install --force"
-    & uv tool install --force $wheelPath
+    if ($wheel -cmatch '-cp312-abi3-') {
+        & uv tool install --force --python 3.12 $wheelPath
+    } else {
+        & uv tool install --force $wheelPath
+    }
     if ($LASTEXITCODE -ne 0) { throw 'uv tool install failed' }
-    $version = $wheel -replace '^hyprial-', '' -replace '-py3-none-.*$', ''
+    $version = $wheel -replace '^hyprial-', '' -replace '-(?:py3-none|cp312-abi3)-.*$', ''
     $installedList = (& uv tool list) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read installed version with uv tool list' }
     $installed = ''
@@ -100,6 +107,7 @@ try {
     Write-Output "Installed hyprial $installed"
     Write-Output "Receipt: $receiptPath"
     Write-Output 'If hyprial is not on PATH, use uv tool update-shell, then open a new terminal.'
+    Write-Output 'Next: run "hyprial init", then "hyprial login".'
 } catch {
     Write-Error "hyprial install: $($_.Exception.Message)" -ErrorAction Continue
     exit 1

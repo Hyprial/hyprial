@@ -8,8 +8,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 from hyprial.daemon.impl.harnesses.runtime.ports  import ClaimedHarnessResult
 
@@ -53,27 +53,28 @@ class ResultSettlementCoordinator:
         *,
         capacity: int = 64,
         workers: int = 4,
-        runtime: ActorRuntime | None = None,
+        actor_host=None,
     ) -> None:
         if capacity < 1 or workers < 1:
             raise ValueError("settlement capacity and workers must be positive")
         self._settle = settle
         self._capacity = capacity
-        self._runtime = runtime or ActorRuntime()
+        if actor_host is None:
+            raise ValueError("actor_host is required")
         self._guard = threading.Lock()
         self._active: dict[str, SettleClaim] = {}
         self._generation = 1
         self._completed = self._failed = self._overloaded = 0
         self._closing = self._closed = False
-        self._handle = self._runtime.start(ActorSpec(
+        self._cell = actor_host.spawn(ActorSpec(
             name="harness-result-settlement",
             handler_factory=lambda: self._receive,
             mailbox_capacity=capacity,
         ))
-        self._effects: EffectLane[SettleClaim, SettleOutcome] = EffectLane(
+        self._effects = actor_host.effect_lane(
             name="harness-result-settlement-io",
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=lambda event: self._cell.tell(event),
             capacity=capacity,
             workers=workers,
         )
@@ -91,7 +92,7 @@ class ResultSettlementCoordinator:
                 return AdmissionResult.OVERLOADED
             command = SettleClaim(uuid.uuid4().hex, self._generation, claim)
             self._active[claim.result.delivery_id] = command
-            admitted = self._runtime.tell(self._handle, command)
+            admitted = self._cell.tell(command)
             if admitted is not AdmissionResult.ACCEPTED:
                 self._active.pop(claim.result.delivery_id, None)
                 self._overloaded += 1
@@ -116,8 +117,8 @@ class ResultSettlementCoordinator:
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        stopped = self._runtime.stop(
-            self._handle, max(0.0, deadline - time.monotonic())
+        stopped = self._cell.stop(
+            max(0.0, deadline - time.monotonic())
         )
         with self._guard:
             self._closed = stopped

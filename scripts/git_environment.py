@@ -38,6 +38,7 @@ _UNTRUSTED_CODE_ENVIRONMENT_ALLOWLIST = frozenset(
         "TMPDIR",
         "TZ",
         "UV_CACHE_DIR",
+        "UV_HTTP_RETRIES",
         "UV_HTTP_TIMEOUT",
         "UV_LINK_MODE",
         "UV_OFFLINE",

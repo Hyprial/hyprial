@@ -24,6 +24,7 @@ from hyprial.daemon.impl.pac.contracts.restore import PacRestoreFacts
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
+from tests.support.runtime.environment import UNIT_USER_ID
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 
 
@@ -133,6 +134,23 @@ class _CompletedLifecycle:
         )
 
 
+def _compensate_without_freezing(app, name: str) -> None:  # type: ignore[no-untyped-def]
+    """Roll the live incarnation of ``name`` back as a saga compensation does.
+
+    Ruling X freezes a name on every forward destroy, so once id-form
+    minting is on a same-name successor only ever follows a compensating
+    destroy, which leaves the name free.
+    """
+
+    current = app.agents.require(name)
+    settled = app.agents.settle_destroy(
+        f"test-compensation:{current.entity_token}",
+        name,
+        expected_entity_token=current.entity_token,
+    )
+    assert settled.disposition == "destroyed"
+
+
 def _app(
     tmp_path: Path, *, now_ms: int, age_ms: int, known_activity: bool = True
 ) -> tuple[DaemonApplication, HarnessLaunchSpec]:
@@ -141,7 +159,7 @@ def _app(
         state_dir=tmp_path,
         socket_path=tmp_path / "daemon.sock",
         node_id="node",
-        owner="alice",
+        owner="alice", user_id=UNIT_USER_ID,
         zenoh_listen=("tcp/127.0.0.1:0",),
         zenoh_connect=(),
     **_deep_module_daemon_dependencies())
@@ -224,7 +242,7 @@ def test_deferred_restore_eligibility_drops_old_entity_before_retry(
         assert pending.entity_token == original.entity_token
         submitted = len(harnesses.eligibility)
 
-        assert app.agents.destroy("worker")
+        _compensate_without_freezing(app, "worker")
         successor = app.agents.create("worker")
         assert successor.entity_token != original.entity_token
         harnesses.eligibility_admission = PortAdmission.ACCEPTED
@@ -236,9 +254,16 @@ def test_deferred_restore_eligibility_drops_old_entity_before_retry(
         _close(app)
 
 
-def test_restore_policy_corruption_publishes_fail_open_projection(tmp_path: Path) -> None:
+def test_restore_policy_requires_host(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="host"):
+        RestorePolicyAuthority(tmp_path / "policy.json", normalize=lambda value: value)
+
+
+def test_restore_policy_corruption_publishes_fail_open_projection(
+    tmp_path: Path, actor_host
+) -> None:
     path = tmp_path / "agent-restore-policy.json"
-    authority = RestorePolicyAuthority(path, normalize=lambda value: value)
+    authority = RestorePolicyAuthority(path, normalize=lambda value: value, actor_host=actor_host)
     try:
         path.write_text("not-json", encoding="utf-8")
         with pytest.raises(RestorePolicyError):
@@ -248,6 +273,13 @@ def test_restore_policy_corruption_publishes_fail_open_projection(tmp_path: Path
         assert projection.policy.threshold_ms == RESTORE_THRESHOLD_MS
     finally:
         assert authority.close(1.0)
+    successor = RestorePolicyAuthority(
+        tmp_path / "other-policy.json", normalize=lambda value: value, actor_host=actor_host
+    )
+    try:
+        successor.refresh(wait=True)
+    finally:
+        assert successor.close(1.0)
 
 
 def test_terminal_pac_skips_restore_and_unknown_activity_restores_once(
@@ -280,6 +312,53 @@ def test_terminal_pac_skips_restore_and_unknown_activity_restores_once(
         assert unknown_app.agents.require("worker").last_active_at_ms == now_ms
     finally:
         _close(unknown_app)
+
+
+def test_held_graph_without_requested_work_is_not_pre_spawned(
+    tmp_path: Path,
+) -> None:
+    """#1803 item 5: a held, idle graph restores no worker before a request."""
+
+    now_ms = 2_000_000_000_000
+    app, spec = _app(tmp_path, now_ms=now_ms, age_ms=1 * HOUR_MS)
+    try:
+        app._pac_graph_authority.facts = _Facts(held_idle=True)  # type: ignore[union-attr]
+        assert app._classify_restore_specs((spec,)) == ()
+        disposition = app.agents.projection("worker").restore_disposition
+        assert disposition is not None
+        assert disposition.restore_override == "pac-held-idle"
+        assert app._harnesses.eligibility[-1].suppressed is True  # type: ignore[union-attr]
+
+        # A node with an active request keeps today's behavior: it restores.
+        app._pac_graph_authority.facts = _Facts(  # type: ignore[union-attr]
+            held_idle=True, requested=True
+        )
+        assert app._classify_restore_specs((spec,)) == (spec,)
+    finally:
+        _close(app)
+
+
+def test_held_idle_blocked_worker_is_not_pre_spawned(tmp_path: Path) -> None:
+    """#1803 item 5 review: a block is not work, so it cannot defeat held_idle."""
+
+    now_ms = 2_000_000_000_000
+    app, spec = _app(tmp_path, now_ms=now_ms, age_ms=1 * HOUR_MS)
+    try:
+        app.agents.block_agent("worker", reason="provider-quota")
+        app._pac_graph_authority.facts = _Facts(held_idle=True)  # type: ignore[union-attr]
+        assert app._classify_restore_specs((spec,)) == ()
+        disposition = app.agents.projection("worker").restore_disposition
+        assert disposition is not None
+        assert disposition.restore_override == "pac-held-idle"
+        assert app._harnesses.eligibility[-1].suppressed is True  # type: ignore[union-attr]
+
+        # A real request outranks the suppression, blocked or not.
+        app._pac_graph_authority.facts = _Facts(  # type: ignore[union-attr]
+            held_idle=True, requested=True
+        )
+        assert app._classify_restore_specs((spec,)) == (spec,)
+    finally:
+        _close(app)
 
 
 def test_dormant_wake_retains_custody_across_lifecycle_overload_and_late_completion(
@@ -338,7 +417,7 @@ def test_completed_restore_wake_cannot_replay_for_new_incarnation_or_episode(
         assert app._wake_dormant_agent("worker", reason="pending-work")
         assert len(lifecycle.native_starts) == 1
 
-        assert app.agents.destroy("worker")
+        _compensate_without_freezing(app, "worker")
         successor = app.agents.create("worker")
         app.agents.suppress_restore(
             "worker",
@@ -419,18 +498,14 @@ def test_owner_alert_retries_after_committed_block_with_stable_key(
     notices = []
     release_delivery = threading.Event()
 
-    def notify_owner(**kwargs):
+    def agent_blocked_notifier(text, *, idempotency_key):
         projection = app.agents.projection("worker")
         assert projection is not None and projection.block is not None
         delivered = release_delivery.is_set()
-        notices.append(
-            (kwargs["text"], kwargs["idempotency_key"], delivered)
-        )
+        notices.append((text, idempotency_key, delivered))
         return SimpleNamespace(delivered=delivered)
 
-    monkeypatch.setattr(
-        "hyprial.daemon.impl.autoupdate.alert.notify_owner", notify_owner
-    )
+    monkeypatch.setattr(app, "_agent_blocked_notifier", agent_blocked_notifier)
     try:
         assert app._blocking_failures.submit(
             agent.uri, "PROVIDER_USAGE_LIMIT", agent.entity_token
@@ -491,7 +566,7 @@ def test_slow_blocking_observation_cannot_block_recreated_agent(
         ).value == "accepted"
         assert entered.wait(1.0)
 
-        assert app.agents.destroy("worker")
+        _compensate_without_freezing(app, "worker")
         successor = app.agents.create("worker")
         app.agents.suppress_restore(
             "worker",
@@ -520,7 +595,7 @@ def test_slow_blocking_observation_cannot_block_recreated_agent(
 
 
 def test_slow_policy_inbox_pac_effects_do_not_block_harness_or_maintenance_tick(
-    tmp_path: Path,
+    tmp_path: Path, *, actor_host
 ) -> None:
     app, _spec = _app(tmp_path, now_ms=2_000_000_000_000, age_ms=HOUR_MS)
     entered = threading.Event()
@@ -530,7 +605,7 @@ def test_slow_policy_inbox_pac_effects_do_not_block_harness_or_maintenance_tick(
         entered.set()
         assert release.wait(2)
 
-    cadence = BoundedCadence("slow-restore-test", slow_restore_scan)
+    cadence = BoundedCadence("slow-restore-test", slow_restore_scan, actor_host=actor_host)
     app._restore_wake_cadence = cadence
     app._flush_agent_activity = lambda: None  # type: ignore[method-assign]
     app._retry_restore_eligibility = lambda: None  # type: ignore[method-assign]

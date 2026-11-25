@@ -107,7 +107,10 @@ class RuntimeCheckout:
                 raise OrgFsError("unavailable", {"message": "checkouts are closing"})
             authority = self._checkouts.get(space_id)
             if authority is None:
-                authority = CheckoutAuthority(self.facade, self.blobs, space_id, root)
+                authority = CheckoutAuthority(
+                    self.facade, self.blobs, space_id, root,
+                    actor_host=self._actor_hosts.host,
+                )
                 if enabled:
                     self._checkouts[space_id] = authority
         if enabled:

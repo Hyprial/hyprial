@@ -14,19 +14,21 @@ import threading
 import time
 import uuid
 import weakref
-from typing import Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from pycrdt import Doc
 
 from hyprial.kernel import (
     ActorEvent,
     ActorEventKind,
-    ActorHandle,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 
+if TYPE_CHECKING:
+    from hyprial.kernel import ActorHost, EffectLane
+
+from hyprial.daemon.impl.orgfs.composition.vocabulary import OrgFsActorHostCustody
 from hyprial.daemon.impl.orgfs.storage.store  import ImportResult, StoreError
 
 
@@ -211,7 +213,10 @@ class _Waiter:
 class OrgSpaceAuthority:
     """Bounded per-space writer lane for CRDT journal transactions."""
 
-    def __init__(self, space_id: str, store: object) -> None:
+    def __init__(
+        self, space_id: str, store: object, *, actor_host: ActorHost | None = None
+    ) -> None:
+        self._actor_hosts = OrgFsActorHostCustody(actor_host)
         self.space_id = space_id
         self._store = store
         self._lock = threading.RLock()
@@ -252,18 +257,19 @@ class OrgSpaceAuthority:
             owner = owner_ref()
             if owner is None:
                 return AdmissionResult.CLOSED
-            return owner._runtime.tell(owner._actor, completion)
+            return owner._cell.tell(completion)
 
-        self._runtime = ActorRuntime(event_sink=actor_event)
-        self._actor: ActorHandle = self._runtime.start(
+        host = self._actor_hosts.host
+        self._cell = host.spawn(
             ActorSpec(
                 f"orgfs-space-{space_id[:12]}-authority",
                 lambda: handle_command,
                 mailbox_capacity=_SPACE_AUTHORITY_CAPACITY,
                 supervision_profile="state_authority",
+                event_sink=actor_event,
             )
         )
-        self._effects: EffectLane[_SpaceCommand, _SpaceOutcome] = EffectLane(
+        self._effects: EffectLane[_SpaceCommand, _SpaceOutcome] = host.effect_lane(
             name=f"orgfs-space-{space_id[:12]}-writer",
             execute=execute,
             complete=complete,
@@ -624,7 +630,7 @@ class OrgSpaceAuthority:
         for command in replay:
             if command.operation_id in deferred_ids:
                 continue
-            admission = self._runtime.tell(self._actor, command)
+            admission = self._cell.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 with self._lock:
                     if all(
@@ -655,7 +661,7 @@ class OrgSpaceAuthority:
             self._waiters[operation_id] = waiter
             self._commands[operation_id] = command
         while True:
-            admission = self._runtime.tell(self._actor, command)
+            admission = self._cell.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 break
             with self._lock:
@@ -788,7 +794,7 @@ class OrgSpaceAuthority:
             self._closing = True
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            snapshot = self._runtime.snapshot(self._actor)
+            snapshot = self._cell.snapshot()
             if snapshot.queued == 0 and snapshot.in_flight == 0 and not self._deferred:
                 break
             time.sleep(0.005)
@@ -796,7 +802,9 @@ class OrgSpaceAuthority:
             return False
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        if not self._runtime.stop(self._actor, max(0.0, deadline - time.monotonic())):
+        if not self._cell.stop(max(0.0, deadline - time.monotonic())):
+            return False
+        if not self._actor_hosts.shutdown(max(0.0, deadline - time.monotonic())):
             return False
         self._generation += 1
         return True

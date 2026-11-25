@@ -22,10 +22,8 @@ send or change its destination on behalf of the model.
 - Sends and replies carry a required `summary`; `harness_read` returns the
   daemon's complete `message.pending.batch` / `inbox-batch-v1` response with
   full bodies inline or one spill-file reference. Single-ID recovery remains
-  available through `harness_read_body` / `message.read_body`. A first send to
-  an agent without a link is held (`ok:true, queued:true, holdReason`); a send
-  is never a reply. See `../wire/send-links.md` §2, §4 and §8 and
-  `../wire/inbox-batch-v1.md`.
+  available through `harness_read_body` / `message.read_body`. A send
+  is never a reply. See `../wire/inbox-batch-v1.md`.
 
 ## Interactive completion
 

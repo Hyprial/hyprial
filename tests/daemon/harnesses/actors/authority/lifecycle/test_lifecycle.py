@@ -19,7 +19,7 @@ import inspect
 import pytest
 from hyprial.kernel.impl.actor_runtime import ActorState, AdmissionResult
 from hyprial.kernel.impl.contracts.ports import PortAdmission, PortCommandRejected
-from hyprial.kernel import HarnessLaunchSpec, LifecycleMutationRequest
+from hyprial.kernel import ActorSpec, HarnessLaunchSpec, LifecycleMutationRequest
 from hyprial.daemon.impl.api import HarnessDelivery, HarnessResult
 from hyprial.daemon.impl.desired_state import DesiredStateStore
 from hyprial.daemon.impl.harnesses.actor import HarnessProjection, HarnessRuntimeActor, HarnessRuntimeClosed, HarnessRuntimeFacade, ProcessIdentity, ProcessIoPort
@@ -33,6 +33,7 @@ from ..support import (
     _Launcher,
     _Process,
     _dead_pid,
+    _envelope,
     _safety_contract_errors,
     _spec,
     _stopping_port,
@@ -61,6 +62,32 @@ def test_missing_cwd_is_rejected_before_facade_submission(
         assert not missing.exists()
     finally:
         assert actor.close_runtime(2.0)
+
+
+def test_process_io_port_requires_an_actor_host() -> None:
+    with pytest.raises(ValueError, match="process I/O port requires an actor host"):
+        ProcessIoPort(
+            _Launcher(),
+            emit=lambda event: (PortAdmission.ACCEPTED, 0),
+            delivery_failed=lambda event, error: None,
+            generation_reader=lambda: 0,
+            identity_reader=lambda _pid: None,
+        )
+
+
+def test_borrowed_actor_host_survives_close_runtime(actor_host) -> None:
+    actor = HarnessRuntimeActor(_Launcher(), actor_host=actor_host)
+    assert actor.close_runtime(2.0)
+    cell = actor_host.spawn(ActorSpec("post-close-probe", lambda: lambda _command: None))
+    assert cell.stop(1.0)
+
+
+def test_managed_harness_runtime_forwards_an_optional_host(actor_host) -> None:
+    managed = ManagedHarnessRuntime(_Launcher(), actor_host=actor_host)  # type: ignore[arg-type]
+    try:
+        assert managed._actor._host is actor_host
+    finally:
+        assert managed._actor.close_runtime(2.0)
 
 
 def test_missing_cwd_lifecycle_fails_fast_with_code_and_path(tmp_path) -> None:
@@ -388,11 +415,11 @@ def test_pid_reuse_fence_refuses_to_stop_different_identity() -> None:
     supervisor.stop()
 
 
-def test_stop_after_dead_pid_is_not_pid_reuse() -> None:
+def test_stop_after_dead_pid_is_not_pid_reuse(actor_host) -> None:
     """A missing recorded PID is dead, not reused: stop must proceed."""
 
     process = _Process(running=True, pid=None)
-    port = _stopping_port(lambda _pid: None)
+    port = _stopping_port(lambda _pid: None, actor_host)
 
     stopped, detail = port._stop_checked(
         process,
@@ -404,7 +431,7 @@ def test_stop_after_dead_pid_is_not_pid_reuse() -> None:
     assert process.stops == 1
 
 
-def test_stop_uses_current_generation_identity_after_respawn() -> None:
+def test_stop_uses_current_generation_identity_after_respawn(actor_host) -> None:
     """A respawn's live child is stopped with its OWN identity, not refused."""
 
     live = subprocess.Popen(
@@ -413,7 +440,7 @@ def test_stop_uses_current_generation_identity_after_respawn() -> None:
     try:
         process = _Process(running=True, pid=live.pid)
         port = _stopping_port(
-            lambda pid: "new-marker" if pid == live.pid else None
+            lambda pid: "new-marker" if pid == live.pid else None, actor_host
         )
 
         stopped, detail = port._stop_checked(
@@ -429,12 +456,12 @@ def test_stop_uses_current_generation_identity_after_respawn() -> None:
         live.wait()
 
 
-def test_stop_still_refuses_live_pid_with_changed_marker() -> None:
+def test_stop_still_refuses_live_pid_with_changed_marker(actor_host) -> None:
     """Negative control: the fence is still there for a genuinely reused PID."""
 
     live_pid = os.getpid()
     process = _Process(running=True, pid=live_pid)
-    port = _stopping_port(lambda _pid: "different-marker")
+    port = _stopping_port(lambda _pid: "different-marker", actor_host)
 
     stopped, detail = port._stop_checked(
         process,
@@ -492,10 +519,10 @@ def test_guardian_restart_reassociates_inflight_io_completion() -> None:
     _wait_for(lambda: actor._handler_generation > first_handler_generation)
     assert actor._handler_token != first_handler_token
     _wait_for(
-        lambda: actor._runtime.snapshot(actor._handle).state
+        lambda: actor._cell.snapshot().state
         is ActorState.RUNNING
     )
-    assert actor._runtime.snapshot(actor._handle).state is ActorState.RUNNING
+    assert actor._cell.snapshot().state is ActorState.RUNNING
     assert waiter.is_alive()
     release_wait.set()
     waiter.join(1.0)
@@ -610,17 +637,20 @@ def test_close_retains_handle_and_dependents_until_actor_stop_confirms(
     actor._register_call(
         "pending-close-call", actor.generation, operation="test-close"
     )
-    real_stop = actor._runtime.stop
+    cell_type = type(actor._cell)
+    real_stop = cell_type.stop
     attempts = 0
 
-    def stop_once_unsettled(current, timeout):  # type: ignore[no-untyped-def]
+    def stop_once_unsettled(cell, timeout):  # type: ignore[no-untyped-def]
         nonlocal attempts
+        if cell is not actor._cell:
+            return real_stop(cell, timeout)
         attempts += 1
         if attempts == 1:
             return False
-        return real_stop(current, timeout)
+        return real_stop(cell, timeout)
 
-    monkeypatch.setattr(actor._runtime, "stop", stop_once_unsettled)
+    monkeypatch.setattr(cell_type, "stop", stop_once_unsettled)
     assert not actor.close_runtime(0.1)
     assert actor._handle is handle
     assert len(actor._calls) == 1
@@ -661,7 +691,7 @@ def test_stop_deadline_fails_pending_caller_and_reports_incomplete_drain() -> No
 
     def dispatch() -> None:
         try:
-            supervisor.dispatch("worker", delivery)
+            supervisor.dispatch(_envelope(delivery))
         except BaseException as error:
             caller_errors.append(error)
 

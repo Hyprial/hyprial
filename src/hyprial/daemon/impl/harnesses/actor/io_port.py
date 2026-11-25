@@ -22,7 +22,11 @@ from hyprial.daemon.impl.api  import (
 from hyprial.kernel  import (
     ManagedHarnessProcess,
 )
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import (
+    HarnessLaunchSpec,
+    managed_harness_args_supported,
+    validate_harness_launch_args,
+)
 from hyprial.daemon.impl.processes.orphan_processes  import OrphanProcessRegistry, OrphanProcessAuthority
 from hyprial.daemon.impl.harnesses.runtime.ports  import (
     HarnessCallIoCompleted,
@@ -66,7 +70,11 @@ class ProcessIoPort:
         orphan_processes: OrphanProcessRegistry | None = None,
         max_workers: int = 4,
         observe: Callable[[object], AdmissionResult] | None = None,
+        actor_host=None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("process I/O port requires an actor host")
+        self._actor_host = actor_host
         self._launcher = launcher
         self._emit = emit
         self._observe = observe or (lambda event: self._emit(event)[0])
@@ -75,7 +83,7 @@ class ProcessIoPort:
         self._identity_reader = identity_reader
         self._owns_orphan_processes = orphan_processes is None
         self._orphan_processes = orphan_processes or OrphanProcessAuthority(
-            identity_reader=identity_reader
+            identity_reader=identity_reader, actor_host=actor_host
         )
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
@@ -100,7 +108,17 @@ class ProcessIoPort:
     ) -> None:
         def operation() -> HarnessProcessStarted:
             try:
-                validate_harness_cwd(spec)
+                validated_args = (
+                    validate_harness_launch_args(spec.harness, spec.args)
+                    if managed_harness_args_supported(spec.harness)
+                    else spec.args
+                )
+                validated_spec = (
+                    spec
+                    if validated_args == spec.args
+                    else replace(spec, args=validated_args)
+                )
+                validate_harness_cwd(validated_spec)
             except BaseException as error:
                 return HarnessProcessStarted(
                     correlation_id=correlation_id,
@@ -127,7 +145,7 @@ class ProcessIoPort:
             try:
                 from hyprial.daemon.impl.processes.process_owner  import own_process, ProcessFactsObserved
 
-                raw_process = self._launcher.start(spec)
+                raw_process = self._launcher.start(validated_spec)
                 identity = self._capture_identity(raw_process)
                 self._orphan_processes.observe_start(
                     harness_id,
@@ -141,6 +159,7 @@ class ProcessIoPort:
                         observer=lambda token, facts: self._observe(
                             ProcessFactsObserved(harness_id, token, facts.running)
                         ),
+                        actor_host=self._actor_host,
                     )
                 except BaseException:
                     self._stop_checked(raw_process, identity, harness_id=harness_id)

@@ -108,5 +108,5 @@ def test_the_argument_is_a_harness_not_a_model_vendor() -> None:
     for command in ("login", "logout"):
         result = CliRunner().invoke(_cli_root_app, ["agent", "provider", command, "--help"])
         text = " ".join(result.stdout.split())
-        assert "Harness: claude, codex, or pi" in text
+        assert "Harness: claude, codex, pi, or agy" in text
         assert "Model vendor" not in text

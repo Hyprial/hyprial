@@ -11,7 +11,7 @@ harness-bridge 的 Python 全栈重写:zenoh 传输层 + IRC 语法层 + 去中�
 - MCP 无状态代理与 wake 契约:`p3-mcp.md`
 - 统一结构化日志 API、路由、脱敏与历史文件归档:`logging.md`
 - Squire v3 迁移与配置向导:`p4-squire.md`
-- `user:<owner>` 寻址经接收方自己的 Squire adapter 投递；接收 daemon 独占其
+- `user:<owner>` 寻址的**送达路径由接收侧决定**（本指南不再承诺具体通道）；接收 daemon 独占其
   app-scoped open_id，未配置侍从时明确提示改由协调者转达
 - 双机(真机 / 本地模拟)Zenoh 显式端点部署:`zenoh-two-machine.md`
 - 开发方式:TDD,契约测试红绿驱动;一次性完整开发,P0-P4 为内部里程碑
@@ -24,6 +24,9 @@ harness-bridge 的 Python 全栈重写:zenoh 传输层 + IRC 语法层 + 去中�
 ```sh
 uv tool install git+ssh://git@git.internal.example.com/HyprialOS/harness-bridge.git@<version-tag>
 ```
+
+源码安装在本机构建 wheel:除 Go 与 npm 外,携带 `crates/` 的版本还需要 Rust 1.93.1
+(`rustup toolchain install 1.93.1`,或以 `HYPRIAL_CARGO` 指定 cargo),否则构建明确报错。
 
 可执行文件 `hyprial` 落在 `~/.local/bin`,确保它在 PATH 上。daemon 启动必须
 显式配置 Zenoh 端点(否则起来的是一个孤立节点;
@@ -44,7 +47,7 @@ listen/connect 全空时 `hyprial init` 会告警、`hyprial doctor` 会报 fail
 
 当前验证版本为 Codex CLI **0.164.0**（2026-10-26）。已验证技能加载和离线线程创建；模型调用仍需有效凭据。
 
-- `hyprial init` 询问是否安装用户服务。仅试用时可选“否”；需要登录后自动启动 daemon 时选“是”。
+- `hyprial init` 询问是否安装用户服务（它不登录；之后运行 `hyprial login`）。仅试用时可选“否”；需要登录后自动启动 daemon 时选“是”。
 - Codex 安装器询问是否卸载已有 npm 版时，只有决定切换安装方式才选“是”。询问是否立即启动时，可选“否”，再继续登录步骤。
 - `hyprial agent provider login codex --actor squire` 只保存凭据。首次启动 Squire 时才验证凭据；保存成功不等于凭据有效。
 - 启动命令使用 `hyprial agent start`，不再使用 `hyprial start`。例如：`hyprial agent start codex --name squire --headless`。
@@ -53,11 +56,8 @@ listen/connect 全空时 `hyprial init` 会告警、`hyprial doctor` 会报 fail
 启动结果的 `warnings` 和 daemon 日志会保留脱敏后的错误原因，最多 4096 字节。
 非 JSON 启动命令也会向 stderr 显示提醒。
 
-已有 Squire 可运行 `hyprial squire setup --step create-squire` 补齐技能的 YAML frontmatter。
-只有与旧模板渲染结果逐字节相同的文件会自动更新。旧目录迁移也遵循此规则。
-如果文件已有自定义内容，setup 会保留内容并提示手工修复。
-可在文件开头添加 `docs/domains/squire/SKILL-template.md` 中的 frontmatter，
-或先把文件移到备份路径，再重跑 setup。
+Squire 技能缺少 YAML frontmatter 时，没有自动修复命令。请由用户手工补齐 frontmatter。
+自定义技能也须手工修复，可参考仓库中现有技能的 frontmatter 格式。
 
 ### 首次启动:放行 macOS 防火墙
 
@@ -160,6 +160,34 @@ harness 与数量，不输出消息内容。成功结果包含重启前后 PID�
 写入 autoupdate last-run；之后 `hyprial daemon upgrade status` 不再显示旧的
 “restart waits for confirmation”。
 
+### 关闭 GUI 不停 daemon
+
+daemon 是唯一常驻后端，GUI 只是它的客户端。`hyprial gui` 在 home 的每种状态下都先确保 daemon（前提：home 目录已存在且为私有，否则先报 `GUI_HOME_NOT_INITIALIZED` / `GUI_HOME_UNSAFE`）：
+没起就拉起，没有账号的 home 起 bootstrap daemon。关闭 GUI（Ctrl-C、SIGTERM、关掉原生壳窗口）只回收
+GUI 自己启动的进程，daemon 继续运行，消息投递不受影响。`hyprial gui` 不安装也不改动 OS 服务；要装服务单元用
+`hyprial init` 里的选择或 `hyprial daemon service install`。
+
+- 查看：`hyprial daemon status [--json]`。它只读、不会启动 daemon；daemon 没运行时 `daemon.running` 为 `false`，
+  没有账号的 bootstrap daemon 同样能查。
+- 停止：`hyprial daemon stop`。home 装了服务单元时，单元管理的 daemon 用 `hyprial daemon service status` 查看、
+  `hyprial daemon service uninstall` 移除；`daemon stop` 遇到已加载但不可归属的单元时，stderr 仍有提示，`--json` 应答保持 `ok: true`
+  与 `teardownCompleted`，并另带 `supervisorMayRestart: true` 与 `unattributedSupervisor`：监管者可能把 daemon 再拉起，
+  只读 `ok` 看不出来（KP-092 已缓解）；无此类单元时这两个键不出现。
+- 再次启动：`hyprial daemon start`，或再运行 `hyprial gui`（GUI 没在运行时）。
+
+GUI 开着的时候登录或登出：
+
+- 在 GUI 里登录、初始化或登出：GUI 进程、地址和浏览器 origin 不变，页面重新读取会话并清掉上一个账号的数据；
+  daemon 在同一进程内在 bootstrap 与 serving 之间切换。授权网站另开页面，不替换 GUI 窗口。
+- 在终端运行 `hyprial login`（没有账号的 home）：由 daemon 一个操作完成，daemon 的阶段变化时开着的 GUI 原地换到新
+  principal，不需要重启 GUI。
+- 在终端运行 `hyprial logout`：它只向 daemon 发一次 `auth.logout`（没有 daemon 时先启动），与 GUI 内的登出相同：
+  serving daemon 删除登录产物后在同一进程回到 bootstrap，开着的 GUI 原地换到新 principal。环境里仍有 owner
+  （`HYPRIAL_OWNER`）时 daemon 退出而不回到 bootstrap，此时 GUI 不退出、请求答 `DAEMON_UNAVAILABLE`，之后
+  `hyprial daemon start` 即原地恢复。`hyprial daemon stop` 与 daemon 崩溃同理。不要为恢复再开第二个
+  `hyprial gui`：同一 home 的前台 GUI 同时只能有一个。
+- 页面在 `DAEMON_UNAVAILABLE` 期间显示什么、macOS 与原生壳上的这些行为，未实测（UNKNOWN）。
+
 ### 自动更新 loop(每天两次，按轨道或最新 tag)
 
 ⭐ **默认关(2026-09-15 Allen 定案，spec autoupdate-isolated-home r1)**:
@@ -243,56 +271,62 @@ eval "$(hyprial profile use <name>)"  # 只为当前 shell 输出/设置 HYPRIAL
 
 `profile create` 对相同记录幂等，拒绝覆盖不同记录；它不启动 daemon，也不写
 settings。`profile use` 不持久化机器级选择指针。issuer/client id 等部署值由组织
-管理员提供；这里不记录生产值，未提供的配置为 UNKNOWN。network profile 与
-Squire 用户档案 `state/users.json` 是不同概念。
+管理员提供；这里不记录生产值，未提供的配置为 UNKNOWN。
 
 ## 用户登录（身份与设备 key）
 
-### 宿主改名与托管访客冲突
+### 单 home 单账号绑定与旧 home 迁移
 
-旧 owner=X 改为 Y 时，若任一托管 agent 的 owner 是 X 或 Y，迁移以
-`OWNER_MIGRATION_HOSTED_CONFLICT` 拒绝；不会自动改写访客或合并账号。
-正常 `hyprial login --switch-account`（含 `--no-daemon`）在配置 owner 和凭据
-提交前做相同检查，保留原配置；预览也会报告同一错误码。
+每个 `HYPRIAL_HOME` 永久绑定到一个账号身份 `(identityIssuer, userId)`，持久化在
+`settings.json` 的 `homeAccount`（`{issuer, userId, owner}`）中：
 
-- 访客 owner=X：先移走或迁出该托管 agent，再改宿主名。
-- 访客 owner=Y：选择不与访客碰撞的新 owner。
-- 若手工改配置绕过登录检查，daemon 会拒启。撤销那次手工配置改动，恢复
-  迁移前的登录配置（owner=X），再执行 `hyprial daemon run`，可按原身份启动。
-  不要直接改访客行、删数据库或把访客归到宿主名下。
-
-X→X 不触发此检查；非碰撞改名保留原行为。此拒绝在迁移写入之前发生，
-不引入跨库回滚或账号合并。它也不代替既有 secret custody 的独立检查。
+- 登录成功后首次写入 `settings.homeAccount`；后续同 `(issuer, userId)` 重新认证即使账号显示名
+  变更（如 `preferred_username` 改名），也只更新 `settings.username` 与 `homeAccount`，保留原
+  `owner` 不变，避免割裂既有 agent、OrgFS 主体与权限边界。
+- 若使用另一账号（不同 `issuer` 或 `userId`）登录已有 `homeAccount` 的 home，或在一个没有
+  `homeAccount` 却遗留了业务库 / 状态文件的旧 home 上登录，daemon 会在提交前拒绝并报
+  `IDENTITY_CONFLICT`（不写任何凭据或配置）；不要手工修改配置或搬运 secrets。
+- 切换其他账号请直接新建或选用独立的 `HYPRIAL_HOME`；仅当确需把旧 home 的离线快照搬迁或
+  清理为新绑定时，按 [账号绑定与单 home 迁移指南](migration-account-binding.md) 离线处理，
+  仓库不再提供自动 owner 改写。
 
 ### 登录与设备准备
 
-`hyprial login` 对当前 profile 的 issuer 做身份授权；成功后写入 owner 与
-refresh token，并调用 `hyprial-tailcat` 确保设备 key/公开设备记录存在。命令选项
-以当前 CLI 为准：
+`hyprial login` 对当前 profile 的 issuer 做身份授权；成功后写入 owner、身份字段与
+`homeAccount`，写入 refresh token，并调用 `hyprial-tailcat` 确保设备 key/公开设备记录存在。
+命令选项以当前 CLI 为准：
 
 ```sh
-hyprial login [--force] [--no-open] [--json] [--switch-account] [--dry-run] [--no-daemon]
+hyprial login [--no-open] [--json]
 hyprial logout [--yes] [--json]
 ```
 
-“已登录”是本地、离线判定：`secrets/login.json` 必须是有效凭据，
-`settings.json` 必须是 Casdoor 身份，凭据、持久化身份和当前 profile 的 issuer
-相同，并且当前 owner 与设备 ID 的 Tailcat device key/公开记录完整。全部满足时，
-普通 `login` 返回 `already-logged-in`，报告 owner、issuer、home、凭据取得时间，
-并且不写文件、不启动认证；存储格式没有 token 过期字段，因此 `expiresAt` 为 null。
-若凭据和身份完整但设备阶段未完成，普通 `login` 只重试设备阶段，不重新认证。
-需要重新认证时显式使用 `--force`。
+已有 `owner` 的 home 执行 `hyprial login` 时会由 serving daemon（未运行则先启动）
+驱动一次同 owner 的 `auth.relogin({operationKey, until: "serving"})` 直到 serving，
+并验证 `issuer`、`userId` 与绑定 `owner`，同时完成 device、user key 与 initialize 收尾；
+device 失败时不撤销已提交身份，而是报告 `device.ready: false`（`retry: serving-start`）。
 
 `logout` 只清除当前 `HYPRIAL_HOME` 的本地用户会话状态，包括登录凭据和登录写入的
-Casdoor 身份字段。它不会删除 agent 凭据、Tailcat device key 或无关设置。
-它不会撤销 issuer 已签发的 access token；这些 token 在过期前仍可能有效。存在登录状态时，命令在
-变更前要求交互确认；自动化和 `--json` 模式必须使用 `--yes`。重复执行返回
-`not-logged-in` 并成功。若 Casdoor 身份仍在使用，命令先停止 daemon 并证明旧进程
-退出，再清理身份；不要用手工删文件替代该流程。
+Casdoor 身份字段（保留不可变的 `settings.homeAccount`）。它不会删除 agent 凭据、
+Tailcat device key 或无关设置。它不会撤销 issuer 已签发的 access token；这些 token
+在过期前仍可能有效。命令只向 daemon 发一次 `auth.logout`（没有 daemon 时先启动），清理由
+daemon 完成：serving daemon 删除后请求自停并在同一进程回到 bootstrap；命令不等待、也不证明
+进程退出，`--json` 结果以 `daemon.stopRequested` 报告 daemon 是否请求了自停。发请求前
+要求交互确认；自动化和 `--json` 模式必须使用 `--yes`。没有登录状态时返回 `not-logged-in`
+并成功（home 目录不存在时不启动 daemon）。不要用手工删文件替代该流程。已知问题：环境里设置
+了 `HYPRIAL_OWNER` 且已没有登录时，重复执行答 `DAEMON_NOT_READY`（KP-120）。
 
-首次 home 初始化与已存在 home 的重登路径不同。更换现有账号需显式
-`--switch-account`，并遵循命令对 daemon 状态的检查；不要手工改 owner 或搬运
-secrets。daemon 会把 Tailcat identity 绑定到当前机器：Linux 使用 machine-id，
+没有账号的 home 的首次登录由 daemon 完成：`hyprial login` 在没有 daemon 时先启动
+bootstrap daemon，显示验证 URL 与用户码并打开浏览器（`--no-open` 不打开），然后只等待
+daemon 的一个操作——授权、登记设备、同一进程进入 serving 都在 daemon 里完成。设备登记失败
+不使登录失败：结果里 `device.ready` 为 `false`，daemon 在每次 serving 启动时尝试一次
+（含这次登录所导向的启动）。`hyprial init` 不再登录：在没有账号的 home 上只创建 home、启动
+bootstrap daemon 并提示下一步 `hyprial login`。`login` 的 `--no-daemon`、`--switch-account`
+与 `--dry-run` 选项已移除。
+
+每个 `HYPRIAL_HOME` 只绑定单一账号，更换账号请改用新的 `HYPRIAL_HOME`（旧 home 遗留数据
+的离线清理/盘点见 [账号绑定与单 home 迁移指南](migration-account-binding.md)）；不要手工改
+owner 或搬运 secrets。daemon 会把 Tailcat identity 绑定到当前机器：Linux 使用 machine-id，
 macOS 使用 IOPlatformUUID，Windows 使用 MachineGuid；取不到平台标识时，使用
 hostname、硬件 node id 与 OS 名的组合。只持久化带来源标签的 SHA-256 指纹，不保存
 原始机器标识或 key 材料。旧 identity 首次启动只补记指纹；复制到不同机器的 home
@@ -337,7 +371,7 @@ grant)失效时,daemon 自动处理,无需值守:
 - **B 类(账号/权限,重登录解决不了)**:如 `The '<model>' model is not
   supported when using Codex with a ChatGPT account` ⇒ 立即告警(附错误原文摘要),
   ⛔ 不发起登录;只标记出事的那个组合(标记仅用于诊断)。
-- **不可派标记**:写在 users.json 的 runtime capability(`reason:
+- **不可派标记**:写在 `state/runtime-capabilities.json` 的 runtime capability(`reason:
   provider-auth-invalid` / `provider-auth-account`),**仅用于诊断**:PAC 派发 /
   `requires.tier` **不再据它跳过**该 provider,标记也不参与排序或晋级;恢复后仍会解除。
 - **fail-loud(2026-09-21 裁定)**:harness/model 的可用性由**用户自己保证**,所以派发
@@ -365,38 +399,23 @@ grant)失效时,daemon 自动处理,无需值守:
 - ⛔ 告警正文永远不会包含 access/refresh token 或轮询用的 device_code;
   日志只记 provider、状态迁移与时间(事件名 `provider.auth.*`)。
 
-## Users(daemon identity resolver: `hyprial user`)
+## Users(person registry: `hyprial user`)
 
-`hyprial user` commands read the daemon's merged identity view. Binding rows
-include their row-level `source` (`casdoor-login`, `org-directory`,
-`local-override`, `legacy-user-bind`, or `legacy-identities`) and `confirmedBy`;
-the CLI does not read a local user database directly. `user list --json` keeps
-the CLI envelope `{"rows": [...]}` rather than exposing the daemon's
-`{"bindings": [...]}` envelope.
+`hyprial user` keeps the local, name-only registry of people through the
+daemon's `identity.users.add|list`. `user list --json` uses the CLI envelope
+`{"rows": [...]}`, one row per person (`userKey`, `kind`, `owner`, names).
+hyprial does not record who owns which IM account: an IM sender is the person
+who owns that account (see `docs/guides/migration-im-push-by-agent-binding.md`).
 
 ```sh
 hyprial user add --kind member --owner bob.smith@example.com --real-name 林懿伦 --confirmed-by allen
 hyprial user add --kind guest --display-name 王蒴 --confirmed-by hq-adjutant   # 用户 key 由 daemon 生成（成员 = slug(owner)，访客随机），输出里会显示
-hyprial user bind <user_key> --union-id on_xxx --confirmed-by allen
-hyprial user bind <user_key> --adapter cli-developer --open-id ou_xxx --confirmed-by allen
-hyprial user unbind --union-id on_xxx
-hyprial user unbind --adapter cli-developer --open-id ou_xxx
-hyprial user whois cli-developer ou_xxx
-hyprial user whois --union-id on_xxx
-hyprial user bindings audit
 hyprial user list|show <user_key> [--json]
 ```
 
 - 成员的 key 是 owner 的 slug;访客的 key 是 `guest-<8 位 hex>`,不从名字派生。
   访客**没有 owner**,消息永远不是任何人的授权。
-- `user bind` 只能选择一个目标：`--union-id`，或同时提供 `--adapter` 与
-  `--open-id`；`user unbind` 使用相同的两种目标形式且不接受用户或确认人参数。
-- `user whois` 查询“这是谁”；`user bindings audit` 只读检查旧的
-  `legacy-user-bind` 与 `legacy-identities` 两类行与合并视图的对应关系。
-- 一个 `(adapter, open_id)` 已绑给别人时 `bind` 拒绝(`IDENTITY_CONFLICT`),
-  ⛔ 不会悄悄改绑;先在原用户上 `unbind`。同一人重复 bind 不产生变化。
-- 授权白名单的键必须是经绑定核验的平台身份,绝不能是群或通道；访客没有 owner,
-  永远不是任何人的授权。
+- 没有 `user bind|unbind|whois|bindings`;人员登记不影响入站消息的说话人呈现。
 
 ## 契约测试
 

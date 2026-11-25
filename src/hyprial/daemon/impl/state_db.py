@@ -1,3 +1,6 @@
+# Decision record (W1E-2, 2026-11-21):
+# - StateDatabase lives inside the guarded daemon state directory and runs under
+#   apply_private_umask(0o077), removing per-connect os.chmod(0o600).
 """One shared SQLite database for desired state and the lifecycle journal.
 
 Step U0a-2 (architecture 丙): the desired-state tables and the lifecycle
@@ -21,7 +24,6 @@ never spans two descriptors.
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import threading
 import time
@@ -123,11 +125,6 @@ class StateDatabase:
         self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if not self._path.exists():
             self._path.touch(mode=0o600)
-        os.chmod(self._path, 0o600)
-        # SQLite can return BUSY from connection PRAGMAs without invoking its
-        # busy handler (including the journal-mode READ, CI tasks 22208/22209).
-        # Honor the existing 2s contention budget across fresh connections,
-        # rather than giving every retry another 2s or replaying business SQL.
         deadline = time.monotonic() + _BUSY_TIMEOUT_SECONDS
         while True:
             try:

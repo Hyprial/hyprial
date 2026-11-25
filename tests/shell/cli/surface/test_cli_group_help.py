@@ -32,7 +32,7 @@ NO_ARG_EXCEPTIONS: tuple[NoArgException, ...] = (
     NoArgException(
         path=("init",),
         why="bare `hyprial init` still runs initialization (invoke_without_command)",
-        owner="cli-survey item 5: onboarding moves under init",
+        owner="cli-survey item 5: init hosts initialization subcommands",
     ),
     NoArgException(
         path=("daemon", "upgrade"),

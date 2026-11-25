@@ -11,12 +11,10 @@ provider work can plug in without a daemon-to-provider implementation import.
 `DesiredStateStore` writes schema v1 at `desired-state.json.v1`. The v1 object
 contains managed providers, the `asMailbox` role, and the F4 expected
 interactive-session registry (`actor`, `cwd`, `command`, and `source`). A
-schema-v1 state also owns the deprecated shared-channel inventory and a
-`channelPins` map that is legacy staging only: adapter pins live in the agents
-database (`state/agents.sqlite3`, `pins` table), and entries left in
-`channelPins` are pins the startup migration could not resolve yet (reported
-at error level, never silently dropped). The TS-era `legacyConversationPins`
-field is retired and no longer written. A
+schema-v1 state also owns the deprecated shared-channel inventory. Adapter
+bindings live only in agent cell documents (`hyprial agent cell show|apply`,
+I6-4); the retired `channelPins` key and the TS-era `legacyConversationPins`
+key are neither read nor written (F1b). A
 legacy provider array is backed up once as `desired-state.json.pre-v1` and
 migrated atomically. The old path is then replaced with an invalid-provider
 rollback guard. An old daemon therefore fails loudly instead of silently

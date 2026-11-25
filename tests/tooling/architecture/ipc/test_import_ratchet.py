@@ -234,6 +234,41 @@ class ImportRatchetTests(unittest.TestCase):
         digest = GATE.check(self.root, self.baseline)
         self.assertIn("exception-digest-mismatch", self.kinds(digest), digest)
 
+    def test_cli_input_output_exception_remains_exact(self):
+        GATE.write_baseline(self.root, self.baseline)
+        self.cli.write_text(
+            "from hyprial.daemon import BusinessStore\n"
+            "from hyprial.biz import template_text\n"
+        )
+        entry = {
+            "path": "src/hyprial/shell/impl/cli/commands/demo.py",
+            "module": "hyprial.biz",
+            "symbol": "template_text",
+            "count": 1,
+            "category": "cli-input-output",
+            "condition": "synthetic packaged template display only",
+        }
+        self._write_exceptions([entry])
+        self.assertEqual(GATE.check(self.root, self.baseline)["status"], "PASS")
+
+        self.cli.write_text(self.cli.read_text() + "from hyprial.biz import render_template\n")
+        self.assertIn("new-cli-backend-import", self.kinds(GATE.check(self.root, self.baseline)))
+        self.cli.write_text(self.cli.read_text() + "from hyprial.biz import template_text\n")
+        self.assertIn("exception-count-mismatch", self.kinds(GATE.check(self.root, self.baseline)))
+
+        self.cli.write_text("from hyprial.daemon import BusinessStore\nfrom hyprial.biz import template_text\n")
+        entry["path"] = "src/hyprial/shell/impl/cli/commands/other.py"
+        self._write_exceptions([entry])
+        self.assertIn("exception-unused", self.kinds(GATE.check(self.root, self.baseline)))
+        self.assertIn("new-cli-backend-import", self.kinds(GATE.check(self.root, self.baseline)))
+
+        entry["path"] = "src/hyprial/shell/impl/cli/commands/demo.py"
+        path = self._write_exceptions([entry])
+        document = json.loads(path.read_text())
+        document["entries"].append({**entry, "symbol": "render_template"})
+        path.write_text(json.dumps(document) + "\n")
+        self.assertIn("exception-digest-mismatch", self.kinds(GATE.check(self.root, self.baseline)))
+
     def test_base_growth_still_fails_with_an_exact_exception(self):
         def git(*args):
             return subprocess.run(

@@ -45,7 +45,7 @@ def test_committed_surface_is_the_true_root_profile_projection(
         "module": "hyprial.shell.impl.cli.commands.upgrade.commands",
         "function": "_perform_upgrade",
         "swapCall": "_install_locked_requirement",
-        "continuationLine": 343,
+        "continuationLine": 327,
     }
     assert len(functions) == len(set(functions)) == data["functionCount"]
     assert len(modules) == len(set(modules)) == data["moduleCount"]
@@ -92,17 +92,9 @@ def test_branch_forcing_profile_stays_inside_committed_surface(
     assert observed <= set(functions)
     assert observed_modules <= set(modules)
     assert len(observed) == surface_data()["scenarios"][scenario]  # type: ignore[index]
-    if scenario in {"child-exited", "hard-cap", "old-daemon", "wrong-version"}:
-        assert payload["failed"] is True
-        # One restart-failure alert and one full-command outcome alert.
-        assert payload["alertCount"] == 2
-    elif scenario == "not-reconciled":
-        # One unconfirmed outcome and its restore follow-up.
-        assert payload["failed"] is False
-        assert payload["alertCount"] == 2
-    else:
-        assert payload["failed"] is False
-        assert payload["alertCount"] == 1
+    failing = scenario in {"child-exited", "hard-cap", "old-daemon", "wrong-version"}
+    assert payload["failed"] is failing
+    assert payload["markerWritten"] is failing
 
 
 @pytest.mark.parametrize(
@@ -192,7 +184,7 @@ def test_reviewer_mutations_fail_the_static_scan(
             "not-reconciled",
         ),
         (
-            "hyprial.daemon.impl.autoupdate.alert:notify_upgrade_outcome",
+            "hyprial.daemon.impl.autoupdate.alert:run_self_check",
             "reconciled",
         ),
     ),
@@ -257,7 +249,7 @@ def test_every_profiled_function_rejects_a_new_lazy_import_under_m2(
         "hyprial.shell.impl.gui.apps:upgrade",
         "hyprial.shell.impl.cli.commands.upgrade.commands:_unpack_paired_gui",
         "hyprial.shell.impl.gui.apps:_unavailable",
-        "hyprial.daemon.impl.upgrade.runner:run_upgrade_steps",
+        "hyprial.shell.impl.cli.commands.common.support:request_upgrade_steps",
         "hyprial.shell.impl.cli.output.errors:json_failure",
     ),
     ids=(
@@ -291,7 +283,7 @@ def test_true_root_mutations_fail_the_static_scan(
         ("hyprial.shell.impl.gui.apps:upgrade", "gui-present"),
         ("hyprial.shell.impl.cli.commands.upgrade.commands:_unpack_paired_gui", "gui-present"),
         ("hyprial.shell.impl.gui.apps:_unavailable", "gui-present"),
-        ("hyprial.daemon.impl.upgrade.runner:run_upgrade_steps", "steps-pending"),
+        ("hyprial.shell.impl.cli.commands.common.support:request_upgrade_steps", "steps-pending"),
         ("hyprial.shell.impl.cli.output.errors:json_failure", "child-exited"),
     ),
     ids=(
@@ -327,10 +319,10 @@ def test_profile_rejects_a_new_called_helper_until_data_is_updated(
     assert helper in set(payload["trace"]) - set(functions)
 
 
-def test_stale_old_package_runs_restart_alert_and_real_renderer(
+def test_stale_old_package_runs_restart_marker_and_real_renderer(
     tmp_path: Path,
 ) -> None:
-    """B3 swaps files after OLD imports, then runs restart, alert, and render."""
+    """B3 swaps files after OLD imports, then runs restart, marker, and render."""
 
     old_root = copy_package(tmp_path / "old")
     new_root = copy_package(tmp_path / "new")
@@ -341,18 +333,9 @@ def test_stale_old_package_runs_restart_alert_and_real_renderer(
         + f"\n{future_name} = 'new-files-only'\n",
         encoding="utf-8",
     )
-    new_sdk = (
-        new_root
-        / "hyprial"
-        / "daemon"
-        / "impl"
-        / "adapters"
-        / "lark"
-        / "outbound"
-        / "sdk.py"
-    )
-    new_sdk.write_text(
-        new_sdk.read_text(encoding="utf-8")
+    new_alert = new_root / "hyprial" / "daemon" / "impl" / "autoupdate" / "alert.py"
+    new_alert.write_text(
+        new_alert.read_text(encoding="utf-8")
         + f"\nfrom hyprial.kernel import {future_name}\n",
         encoding="utf-8",
     )
@@ -374,6 +357,6 @@ def test_stale_old_package_runs_restart_alert_and_real_renderer(
         pytest.fail(f"old modules imported new files after the swap: {expected}")
     payload = _payload(completed)
 
-    assert payload["alertCount"] >= 1
+    assert payload["markerWritten"] is True
     assert payload["failed"] is True
     assert '"resolvedTag":"v0.4.0.dev2"' in payload["rendered"]

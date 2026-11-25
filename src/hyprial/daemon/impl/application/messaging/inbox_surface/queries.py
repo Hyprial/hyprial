@@ -28,6 +28,7 @@ from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
 from hyprial.daemon.impl.inbox import batch as inbox_batch
 from hyprial.daemon.impl.inbox import AckResult
 from hyprial.daemon.impl.application.messaging.inbox_surface.lookup import _MessageSendLookupMixin
+from hyprial.daemon.impl.application.messaging.inbox_surface.origin_custody import _OriginCustodyMixin
 
 from hyprial.daemon.impl.application.messaging.delivery.sends import (
     _undeliverable_outbox_recipient,
@@ -82,7 +83,13 @@ def new_message_wait_slots() -> threading.BoundedSemaphore:
     return threading.BoundedSemaphore(MESSAGE_WAIT_CAPACITY)
 
 
-class _MessageQueriesMixin(_MessageSendLookupMixin):
+def _batch_cursor_error(error: inbox_batch.CursorError) -> DaemonRequestError:
+    if error.foreign_actor:
+        return DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, str(error))
+    return DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error))
+
+
+class _MessageQueriesMixin(_OriginCustodyMixin, _MessageSendLookupMixin):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _running_actor_uris(self) -> frozenset[str]:
@@ -140,7 +147,7 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
             return
         agent = result[0]
         try:
-            self._owner_alert_notifier(
+            self._agent_blocked_notifier(
                 f"Agent {agent.actor} is blocked and needs human action: {reason}.",
                 idempotency_key=f"agent-blocked:{agent.entity_token}:{reason}",
             )
@@ -228,6 +235,16 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
                 "session fence (sessionRef); an unfenced caller cannot "
                 "commit another session's fetch",
             )
+        fetch_pending = getattr(self._inbox, "fetch_pending", None)
+        claimant, is_interactive = self._classify_origin_claimant(caller, params)
+        if (
+            is_session_fetch(params)
+            and callable(fetch_pending)
+            and not self._admit_interactive_acquisition(
+                actor, is_interactive=is_interactive
+            )
+        ):
+            return {"ok": True, "messages": [], "daemonEpoch": self.epoch}
         keys = self._message_consumer_keys(params, actor=actor)
         messages: list[JsonObject] = []
         notices_reader = getattr(self._inbox, "system_notices", None)
@@ -239,7 +256,6 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
             for key in keys
             for notice in (notices_reader(key) if callable(notices_reader) else ())
         )
-        fetch_pending = getattr(self._inbox, "fetch_pending", None)
         admitted_pending = getattr(self._inbox, "admitted_pending", None)
         now_ms = time.time_ns() // 1_000_000
         if is_session_fetch(params) and callable(fetch_pending):
@@ -247,9 +263,23 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
             # The real facade accepts ``only`` (its actor re-reads and admits);
             # light test doubles expose today's single-argument signature.
             if "only" in inspect.signature(fetch_pending).parameters:
-                pending = fetch_pending(actor, only=frozenset(candidates))
+                pending = tuple(
+                    message
+                    for key in keys
+                    for message in self._fetch_pending_with_origin(
+                        fetch_pending,
+                        key,
+                        only=frozenset(candidates),
+                        origin_claim=claimant,
+                    )[0]
+                )
             else:
-                pending = fetch_pending(actor)
+                pending = self._fetch_pending_with_origin(
+                    fetch_pending,
+                    actor,
+                    only=None,
+                    origin_claim=claimant,
+                )[0]
         else:
             seen: set[str] = set()
             pending_list: list[Any] = []
@@ -325,6 +355,7 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
             trusted_origin=_trusted_message_origin,
         )
         actor = caller.subject
+        claimant, is_interactive = self._classify_origin_claimant(caller, params)
         keys = self._message_consumer_keys(params, actor=actor)
         raw_cursor = params.get("cursor")
         raw_after = params.get("afterCursor")
@@ -338,6 +369,18 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
                 raise DaemonRequestError(
                     ipc_errors.INVALID_ARGUMENT, f"{name} must be a string"
                 )
+        admitted, replay_only = self._admit_interactive_batch(
+            actor,
+            claimant=claimant,
+            is_interactive=is_interactive,
+            raw_cursor=raw_cursor,
+        )
+        if not admitted:
+            return inbox_batch.empty_batch_response(
+                actor,
+                epoch=self.epoch,
+                limit_bytes=self._inbox_batch_inline_limit(),
+            )
         try:
             view = inbox_batch.capture_batch(
                 self._inbox,
@@ -348,20 +391,49 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
                 limit_bytes=self._inbox_batch_inline_limit(),
                 actor_home=self._inbox_batch_actor_home(actor),
                 epoch=self.epoch,
+                origin_claim=claimant,
+                only=replay_only,
             )
         except inbox_batch.CursorError as error:
-            if error.foreign_actor:
-                raise DaemonRequestError(
-                    ipc_errors.CALLER_NOT_AUTHORIZED, str(error)
-                ) from error
-            raise DaemonRequestError(
-                ipc_errors.INVALID_ARGUMENT, str(error)
-            ) from error
+            raise _batch_cursor_error(error) from error
         except inbox_batch.SpillUnavailable as error:
             raise DaemonRequestError(
                 ipc_errors.INBOX_BATCH_SPILL_UNAVAILABLE, str(error)
             ) from error
         return view.response
+
+    def _admit_interactive_batch(
+        self,
+        actor: str,
+        *,
+        claimant: Any,
+        is_interactive: bool,
+        raw_cursor: str | None,
+    ) -> tuple[bool, tuple[str, ...] | None]:
+        if self._admit_interactive_acquisition(actor, is_interactive=is_interactive):
+            return True, None
+        if raw_cursor is None:
+            return False, None
+        key_reader = getattr(self._inbox, "batch_cursor_key", None)
+        key = bytes(key_reader()) if callable(key_reader) else b""
+        try:
+            cursor = inbox_batch.decode_cursor(raw_cursor, key, actor=actor)
+        except inbox_batch.CursorError as error:
+            raise _batch_cursor_error(error) from error
+        inbox_ids = tuple(
+            member.message_id
+            for member in cursor.members
+            if member.source == "inbox"
+        )
+        owned_ids = self._live_session_claimed_ids(claimant, inbox_ids)
+        if not owned_ids:
+            return False, None
+        notice_ids = tuple(
+            member.message_id
+            for member in cursor.members
+            if member.source == "notice"
+        )
+        return True, (*owned_ids, *notice_ids)
 
     def _inbox_batch_inline_limit(self) -> int:
         limit = getattr(self, "_inbox_batch_inline_bytes", None)
@@ -606,27 +678,32 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
                 break
         if pending is not None:
             message, key = pending
-            # Only a row that was never fetched needs admission.  A row that
-            # already carries the fetch stamp was admitted by the one gate at
-            # its first read (``fetch_pending_admitted`` stamps only what it
-            # admitted), so a repeated read is read-only: it neither asks the
-            # gate for a second W decision nor re-publishes the fetch receipt
-            # (review rework 4; ports' ``admit_dispatch`` stays idempotent for
-            # callers that do re-ask).
             if not self._read_body_already_fetched(message_id):
-                if not self._admit_read_body(message):
-                    # Held by the link gate (no mutual reference yet, W full,
-                    # or no gate bound): the row must not enter any reader's
-                    # context.  Stale held rows must not leak through the
-                    # retained-row fallback below either.
+                claimant, is_interactive = self._classify_origin_claimant(
+                    caller, params
+                )
+                if not self._admit_interactive_acquisition(
+                    actor, is_interactive=is_interactive
+                ):
                     raise DaemonRequestError(
                         ipc_errors.MESSAGE_BODY_UNAVAILABLE,
-                        "the message body is not available to this reader yet",
+                        "no message body is readable for this id",
                         {"messageId": message_id},
                     )
                 fetch_pending = getattr(self._inbox, "fetch_pending", None)
                 if callable(fetch_pending):
-                    fetch_pending(key, only=frozenset({message_id}))
+                    fetched_rows, passed_origin = self._fetch_pending_with_origin(
+                        fetch_pending,
+                        key,
+                        only=frozenset({message_id}),
+                        origin_claim=claimant,
+                    )
+                    if passed_origin and not fetched_rows:
+                        raise DaemonRequestError(
+                            ipc_errors.MESSAGE_BODY_UNAVAILABLE,
+                            "no message body is readable for this id",
+                            {"messageId": message_id},
+                        )
                 if self._fetch_receipt_publisher is not None:
                     admitted = self._fetch_receipt_publisher.submit(message)
                     if admitted is not AdmissionResult.ACCEPTED:
@@ -646,21 +723,11 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
                 pending=True,
             )
             return self._read_body_row(message, pending=True, fetched=True)
-        # Not pending for any of this caller's keys.  Only a retained row that
-        # was admitted while it was live may be read back read-only.  A
-        # governed row that was never admitted (a row acked out of hold, or an
-        # expired one) must not leak its body through this fallback (review
-        # R3): the gate answers idempotently for an id it admitted, and denies
-        # one it never admitted.
-        retained_reader = getattr(self._inbox, "harness_failure_original", None)
+        retained_reader = getattr(self._inbox, "retained_body", None)
+        if not callable(retained_reader):
+            retained_reader = getattr(self._inbox, "harness_failure_original", None)
         retained = retained_reader(message_id) if callable(retained_reader) else None
         if retained is None or retained.recipient not in keys:
-            raise DaemonRequestError(
-                ipc_errors.MESSAGE_BODY_UNAVAILABLE,
-                "no message body is readable for this id",
-                {"messageId": message_id},
-            )
-        if not self._admit_read_body(retained):
             raise DaemonRequestError(
                 ipc_errors.MESSAGE_BODY_UNAVAILABLE,
                 "no message body is readable for this id",
@@ -706,8 +773,8 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
     ) -> Any:
         """Answer a carrier whether an injected message still needs keeping.
 
-        Read-only: it never acks, never stamps and never publishes.  A link
-        gate, when bound, owns the reclaimed-residue verdict (design §4.4).
+        Read-only: it never acks, never stamps and never publishes.  The
+        rule is the single ``settle_hint_for`` the headless end also calls.
         """
 
         caller = self._authenticated_message_caller(
@@ -726,15 +793,10 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
                     break
             if pending_message is not None:
                 break
-        # README ruling 67: the one gate slot is ``link_admission.gate``;
-        # there is no second binding point to read here.  The decision itself
-        # is the single ``settle_hint_for`` the headless end also calls.
         hint = settle_hint_for(
             pending=pending_message,
-            gate=self.link_admission.gate,
             actor=caller.subject,
             message_id=message_id,
-            log=self._log,
         )
         return {
             "ok": True,
@@ -768,51 +830,6 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
             "reading a message body requires the session fence (sessionRef); "
             "an unfenced caller cannot commit another session's read",
         )
-
-    def _admit_read_body(self, message: Any) -> bool:
-        """Consumer admission for one pending agent-to-agent message.
-
-        Owner, adapter, system and self-send traffic is not link-governed and
-        passes.  A governed message needs the injected LinkGate to admit it;
-        with no gate bound it stays unreadable rather than leaking a held row
-        (README ruling 26).  Daemon-internal mechanism actors are exempt in
-        both directions by reserved actor name, judged by the one
-        ``LinkAdmission`` the composition owns (rulings 45/51/63).
-        """
-
-        if not self.link_admission.governs(message.sender, message.recipient):
-            return True
-        gate = self.link_admission.gate
-        if gate is None:
-            self._log(
-                "warn",
-                "daemon",
-                "link.gate_unbound",
-                recipient=message.recipient,
-            )
-            return False
-        try:
-            return bool(
-                gate.admit_dispatch(
-                    recipient=message.recipient,
-                    sender=message.sender,
-                    message_id=message.message_id,
-                    now_ms=time.time_ns() // 1_000_000,
-                    intent=message.intent,
-                    reply_to=_payload_reply_to(message.payload),
-                )
-            )
-        except Exception as error:  # noqa: BLE001 - a broken gate must fail closed
-            self._log(
-                "warn",
-                "daemon",
-                "link.gate_error",
-                stage="read_body",
-                sender=message.sender,
-                recipient=message.recipient,
-                errorType=type(error).__name__,
-            )
-            return False
 
     def _read_body_already_fetched(self, message_id: str) -> bool:
         """Does this live row already carry the one-way fetch stamp?
@@ -944,15 +961,19 @@ class _MessageQueriesMixin(_MessageSendLookupMixin):
         the one URI constructor, never a new identity — a transitional
         compatibility window, removable once that era's rows are drained.  Union all that
         apply, resolved first; losing sight of durable rows is not an
-        acceptable form of breaking compatibility.
+        acceptable form of breaking compatibility.  A session
+        (``sessionRef``) or on-behalf caller reads only its own consumer
+        read keys (``_consumer_read_keys``).
         """
 
         actor = actor or self._message_consumer_actor(params)
         if "sessionRef" in params or "onBehalfOf" in params:
-            return (actor,)
+            return self._consumer_read_keys(actor)
         raw = _actor(params)
         if actor != raw:
-            return (actor, raw)
-        if ":" not in raw:
-            return (actor, canonical_agent_uri(self.owner, self.node_id, raw))
-        return (actor,)
+            keys: tuple[str, ...] = (actor, raw)
+        elif ":" not in raw:
+            keys = (actor, canonical_agent_uri(self.owner, self.node_id, raw))
+        else:
+            keys = (actor,)
+        return tuple(dict.fromkeys((*keys, *self._consumer_read_keys(actor))))

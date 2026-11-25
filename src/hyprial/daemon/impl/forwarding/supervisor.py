@@ -20,8 +20,7 @@ from hyprial.kernel import (
     PROCESS_LIFECYCLE,
     SupervisionPolicy,
 )
-from hyprial.kernel import GenerationScheduler
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 from hyprial.daemon.impl.bootstrap.discovery  import ForwardingEndpoints
 
 from .controller import (
@@ -80,7 +79,10 @@ class ForwardingSupervisorState:
 
     def __init__(
         self, policy: SupervisionPolicy, jitter_source: Callable[[], float],
+        *, actor_host=None,
     ) -> None:
+        if actor_host is None:
+            raise ValueError("forwarding supervisor state requires an actor host")
         self._policy = policy
         self._jitter_source = jitter_source
         self._guard = threading.Lock()
@@ -93,8 +95,7 @@ class ForwardingSupervisorState:
         self._generation = 0
         self._first_happened = False
         self._closed = False
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="forwarding-supervisor-state",
                 handler_factory=lambda: self._receive,
@@ -116,7 +117,7 @@ class ForwardingSupervisorState:
             if len(self._pending) >= 64:
                 raise TimeoutError("forwarding supervisor state overloaded")
             self._pending[command.operation_id] = reply
-            admitted = self._runtime.tell(self._handle, command)
+            admitted = self._cell.tell(command)
             if admitted is not AdmissionResult.ACCEPTED:
                 self._pending.pop(command.operation_id)
                 raise TimeoutError(
@@ -244,7 +245,7 @@ class ForwardingSupervisorState:
         raise TypeError("unsupported forwarding state action")
 
     def close(self, timeout: float = 5.0) -> bool:
-        return self._runtime.stop(self._handle, timeout)
+        return self._cell.stop(timeout)
 
 
 def _environment_controller(
@@ -280,7 +281,8 @@ class ForwardingSidecarSupervisor:
         controller_factory: Callable[
             [Mapping[str, str], Callable[[int], None]], Any
         ] = _environment_controller,
-        scheduler: GenerationScheduler | None = None,
+        scheduler: Any | None = None,
+        actor_host=None,
         jitter_source: Callable[[], float] = random.random,
         own_io: bool = False,
         desired_exposures: Callable[[], Sequence[Mapping[str, object]]] | None = None,
@@ -295,12 +297,19 @@ class ForwardingSidecarSupervisor:
         self._policy: SupervisionPolicy = (
             DEFAULT_POLICIES[PROCESS_LIFECYCLE] if policy is None else policy
         )
+        if scheduler is None:
+            raise ValueError("forwarding supervisor requires a scheduler")
+        if own_io and actor_host is None:
+            raise ValueError("forwarding supervisor own_io requires an actor host")
         self._controller_factory = controller_factory
-        self._scheduler = scheduler if scheduler is not None else GenerationScheduler()
+        self._scheduler = scheduler
+        self._actor_host = actor_host
         self._jitter_source = jitter_source
         self._own_io = own_io
         self._state_owner = (
-            ForwardingSupervisorState(self._policy, self._jitter_source)
+            ForwardingSupervisorState(
+                self._policy, self._jitter_source, actor_host=actor_host
+            )
             if own_io else None
         )
         self._state_owner_closed = False
@@ -788,7 +797,9 @@ class ForwardingSidecarSupervisor:
             self._account_for_failure(reason="start-failed", exit_status=None)
             return
         if self._own_io:
-            controller = ForwardingControllerAuthority(controller)
+            controller = ForwardingControllerAuthority(
+                controller, actor_host=self._actor_host
+            )
         backend = ForwardingEndpoints(
             controller,
             on_failure=self._note_status_failure,

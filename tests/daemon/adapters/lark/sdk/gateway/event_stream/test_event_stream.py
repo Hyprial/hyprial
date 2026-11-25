@@ -51,9 +51,6 @@ def test_sdk_gateway_builds_generated_im_requests() -> None:
     gateway = LarkSdkGateway(client)
 
     gateway.add_reaction("om_in", "OnIt")
-    owner_dm_id = gateway.send_owner_dm(
-        "ou_owner", "relayed", idempotency_key="operation-user-1:bob"
-    )
     reply_id = gateway.reply(
         "om_in", "hello", idempotency_key="om_in:command:help"
     )
@@ -61,7 +58,6 @@ def test_sdk_gateway_builds_generated_im_requests() -> None:
     gateway.clear_reaction("om_in", "OnIt")
 
     assert reply_id == "om_reply"
-    assert owner_dm_id == "om_owner_dm"
     assert quote is not None and quote.text == "quoted"
     create = client.reaction.creates[0]
     assert create.message_id == "om_in"
@@ -72,13 +68,7 @@ def test_sdk_gateway_builds_generated_im_requests() -> None:
     assert reply.request_body.uuid == str(
         uuid5(NAMESPACE_URL, "hyprial:lark-reply:om_in:command:help")
     )
-    owner_dm = client.message.creates[0]
-    assert owner_dm.receive_id_type == "open_id"
-    assert owner_dm.request_body.receive_id == "ou_owner"
-    assert owner_dm.request_body.uuid == str(
-        uuid5(NAMESPACE_URL, "hyprial:lark-owner-dm:operation-user-1:bob")
-    )
-    assert json.loads(owner_dm.request_body.content) == {"text": "relayed"}
+    assert client.message.creates == []
     assert client.reaction.lists[0].reaction_type == "OnIt"
     assert [item.reaction_id for item in client.reaction.deletes] == ["reaction_app"]
 

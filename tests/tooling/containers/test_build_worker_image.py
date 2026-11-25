@@ -75,14 +75,20 @@ elif name != "docker" or not args or args[0] != "build":
 
 
 def _build_args(tmp_path: Path, proxies: dict[str, str], version: str = "0.4.4") -> list[str]:
+    """uv version -> docker build, nothing else.
+
+    The retired GUI payload had its own provenance stamp; the worker image no
+    longer stages it.  No host-side ``uv build``: the image compiles its own
+    wheel from ``COPY src``, and a host wheel build would need Rust 1.93.1 on
+    the source machine.
+    """
     result, calls = _run_script(tmp_path, proxies, version)
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"built hyprial-worker:{version.replace('+', '-')}\n"
     assert result.stderr == ""
     repo = tmp_path / "repo"
-    # uv build -> uv version -> docker build.  The retired GUI payload had its
-    # own provenance stamp; the worker image no longer stages it.
-    assert [call["name"] for call in calls] == ["uv", "uv", "docker"]
+    assert [call["name"] for call in calls] == ["uv", "docker"]
+    assert not any(call["args"][:1] == ["build"] for call in calls if call["name"] == "uv")
     assert all(call["cwd"] == str(repo) for call in calls)
     args = calls[-1]["args"]
     assert args[0] == "build"

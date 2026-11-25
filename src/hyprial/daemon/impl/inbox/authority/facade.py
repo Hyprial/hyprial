@@ -8,6 +8,7 @@ from hyprial.daemon import Alarm, AlarmResult
 from hyprial.kernel import PortAdmission
 from hyprial.daemon.impl.inbox.actor.coordinator  import DeliveryCustodyCoordinator
 from hyprial.daemon.impl.inbox.actor.errors  import InboxAuthorityTimeout
+from hyprial.daemon.impl.inbox.correlation import CorrelatedReply, CorrelatedRequest
 from hyprial.daemon.impl.inbox.contracts.api  import (
     AckResult,
     FailureResult,
@@ -15,14 +16,15 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     HarnessFailureSettlement,
     InboxMessage,
     InboxPruneItem,
-    LinkInboundRow,
-    LinkLedgerOpen,
-    LinkLedgerResult,
-    LinkLedgerRow,
     OutboxItem,
     OutboxPruneItem,
     ReceiveResult,
     SubmissionResult,
+)
+from hyprial.daemon.impl.inbox.contracts.origin import (
+    OriginClaim,
+    OriginClaimResult,
+    OriginClaimant,
 )
 from hyprial.daemon.impl.inbox.contracts.ports  import (
     AcceptCustodyCommand,
@@ -34,6 +36,7 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     AcknowledgeCompleted,
     AcknowledgeMessageCommand,
     BoolMutationCompleted,
+    ClaimOriginCommand,
     CloseInboxCommand,
     DismissSystemNoticeCommand,
     DrainSystemNoticesCommand,
@@ -42,9 +45,11 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     FailureMutationCompleted,
     HarnessFailureSettled,
     FetchPendingCommand,
+    GrantBodyReleaseCommand,
     InboxClosed,
     InboxPruneCompleted,
     MessagesMutationCompleted,
+    OriginClaimCompleted,
     OutboxPruneCompleted,
     PruneInboxCommand,
     PruneOutboxCommand,
@@ -53,6 +58,7 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     ReceiveProgressCommand,
     ReceiveSystemNoticeCommand,
     RefreshHoldCommand,
+    ReleaseOriginClaimsCommand,
     RetireOutboxReceiptCommand,
     RetryCustodyCommand,
     RetryDueCommand,
@@ -64,11 +70,14 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     SubmitMessageCommand,
     SubmitProgressCommand,
     WakeOutboxRecipientCommand,
-    LinkLedgerUpdated,
 )
 from hyprial.daemon.impl.inbox.tracking.progress  import ProgressEvent
 from hyprial.daemon.impl.inbox.links.pull  import DeliveryStatus
 from hyprial.daemon.impl.inbox.service.state  import ConsumptionState
+from hyprial.daemon.impl.inbox.history import (
+    ConversationGroup,
+    conversation_groups as _conversation_groups,
+)
 from hyprial.daemon.impl.inbox.authority.read import (
     InboxReadProjection,
     _REPLY_COMPLETION_HANDOFF_GRACE_SECONDS,
@@ -76,6 +85,15 @@ from hyprial.daemon.impl.inbox.authority.read import (
 from hyprial.daemon.impl.inbox.authority.status import DeliveryStatusProjection
 from hyprial.daemon.impl.inbox.authority.emitter import ActorAlarmEmitter
 from hyprial.daemon.impl.inbox.authority.errors import InboxSubmissionOutcomeUnknown
+from hyprial.daemon.impl.inbox.envelope.columns import stored_message
+from hyprial.daemon.impl.inbox.envelope.rules import message_class_of
+from hyprial.daemon.impl.delivery import (
+    BodyGrant,
+    DeliveryBodies,
+    InteractionPage,
+    InteractionRow,
+    grant_subject,
+)
 
 """Full inbox mutation authority facade and read-only projection seam."""
 DELIVERY_CUSTODY_CALL_TIMEOUT_SECONDS = 2.0
@@ -95,6 +113,7 @@ class DeliveryCustodyFacade:
         self._timeout = timeout
         self.delivery_status = DeliveryStatusProjection(self._reads)
         self.alarm_emitter = ActorAlarmEmitter(self)
+        self.bodies = DeliveryBodies(decode=stored_message, class_of=message_class_of)
 
     @property
     def generation(self) -> int:
@@ -136,9 +155,6 @@ class DeliveryCustodyFacade:
         now_ms: int | None = None,
         defer_direct: bool = False,
         correlation_id: str | None = None,
-        link_hold: str | None = None,
-        link_open: LinkLedgerOpen | None = None,
-        link_reply_close: bool = False,
     ) -> SubmissionResult:
         # Correlated reply messages retain the same message id across public
         # message.reply retries.  Use it as the durable command identity so a
@@ -160,9 +176,6 @@ class DeliveryCustodyFacade:
                     message,
                     now_ms,
                     defer_direct,
-                    link_hold,
-                    link_open,
-                    link_reply_close,
                 ),
                 SubmissionCompleted,
             )
@@ -417,6 +430,7 @@ class DeliveryCustodyFacade:
         include_notices: bool = True,
         only: tuple[str, ...] | None = None,
         mark_fetched: bool = True,
+        origin_claim: OriginClaimant | None = None,
     ) -> object:
         """One frozen batch selection, admitted on the inbox actor thread."""
 
@@ -432,6 +446,7 @@ class DeliveryCustodyFacade:
                 include_notices,
                 only,
                 mark_fetched,
+                origin_claim,
             ),
             BatchSnapshotCompleted,
         )
@@ -485,6 +500,7 @@ class DeliveryCustodyFacade:
         now_ms: int | None = None,
         only: frozenset[str] | None = None,
         completed_turn: bool = False,
+        origin_claim: OriginClaimant | None = None,
     ) -> tuple[InboxMessage, ...]:
         return self._messages(
             FetchPendingCommand(
@@ -493,6 +509,7 @@ class DeliveryCustodyFacade:
                 now_ms,
                 tuple(sorted(only)) if only is not None else None,
                 completed_turn,
+                origin_claim,
             )
         )
 
@@ -518,6 +535,7 @@ class DeliveryCustodyFacade:
         *,
         now_ms: int | None = None,
         exclude: frozenset[str] = frozenset(),
+        origin_claim: OriginClaimant | None = None,
     ) -> tuple[InboxMessage, ...]:
         return self._messages(
             AdmittedDispatchableCommand(
@@ -525,8 +543,55 @@ class DeliveryCustodyFacade:
                 recipient,
                 now_ms,
                 tuple(sorted(exclude)),
+                origin_claim,
             )
         )
+
+    def claim_origin(
+        self,
+        recipient: str,
+        message_ids: tuple[str, ...],
+        claimant: OriginClaimant,
+        *,
+        now_ms: int | None = None,
+    ) -> OriginClaimResult:
+        """Atomically admit and claim scalar origin rows on the inbox actor."""
+
+        event = self._call(
+            ClaimOriginCommand(
+                self._correlation("claim-origin"),
+                recipient,
+                tuple(message_ids),
+                claimant,
+                now_ms,
+            ),
+            OriginClaimCompleted,
+        )
+        assert isinstance(event, OriginClaimCompleted)
+        return event.result
+
+    def release_origin_claims(
+        self,
+        message_ids: tuple[str, ...],
+        *,
+        owner_actor: str,
+        claim_seq: int,
+    ) -> bool:
+        """CAS-release headless origin claims matching ``(owner_actor, claim_seq)``."""
+
+        return self._bool(
+            ReleaseOriginClaimsCommand(
+                self._correlation("release-origin-claims"),
+                tuple(message_ids),
+                owner_actor,
+                claim_seq,
+            )
+        )
+
+    def read_origin_claims(self) -> dict[str, OriginClaim]:
+        """Inspect active in-memory origin claims held by the coordinator."""
+
+        return self._coordinator.read_origin_claims()
 
     def prune_inbox(
         self, *, now_ms: int | None = None
@@ -669,6 +734,12 @@ class DeliveryCustodyFacade:
     def workflow_replies(self, recipient: str, conversation_id: str) -> tuple[InboxMessage, ...]:
         return self._reads.workflow_replies(recipient, conversation_id)
 
+    def correlated_request(self, **selectors: str) -> CorrelatedRequest | None:
+        return self._reads.correlated_request(**selectors)
+
+    def correlated_reply(self, **selectors: str) -> CorrelatedReply | None:
+        return self._reads.correlated_reply(**selectors)
+
     def conversation_messages(
         self,
         participant: str,
@@ -686,6 +757,62 @@ class DeliveryCustodyFacade:
             before=before,
             limit=limit,
             newest_first=newest_first,
+            hydrate=self.bodies.history_hydrator(),
+        )
+
+    def conversation_groups(self, participant: str) -> tuple[ConversationGroup, ...]:
+        """The participant's conversational groups (``inbox.history``)."""
+
+        return self._reads.read(
+            lambda connection: _conversation_groups(connection, participant=participant)
+        )
+
+    def bind_body_retention(self, **binding: object) -> None:
+        """Bind ``resolver=`` (a ``BodyResolver``) and/or ``retention_ms=``."""
+
+        self.bodies.bind_body_retention(**binding)  # type: ignore[arg-type]
+
+    def grant_body_release(self, grant: BodyGrant, *, now_ms: int | None = None) -> bool:
+        """Release one recorded body for the retention sweep (actor command)."""
+
+        subject = (
+            grant_subject(self.interaction_row_at(grant.source, grant.position))
+            if self.bodies.needs_subject(grant)
+            else None
+        )
+        event = self._call(
+            GrantBodyReleaseCommand(
+                self._correlation("grant-body-release"),
+                grant,
+                self.bodies.retention_ms(grant, subject),
+                now_ms,
+            ),
+            BoolMutationCompleted,
+        )
+        assert isinstance(event, BoolMutationCompleted)
+        return event.result
+
+    def interaction_rows_after(
+        self, source: str, after: int, *, limit: int = 64
+    ) -> InteractionPage:
+        return self._reads.read(
+            lambda connection: self.bodies.interaction_rows_after(
+                connection, source, after, limit=limit
+            )
+        )
+
+    def interaction_row_at(self, source: str, position: int) -> InteractionRow | None:
+        return self._reads.read(
+            lambda connection: self.bodies.interaction_row_at(
+                connection, source, position
+            )
+        )
+
+    def retained_body(self, message_id: str) -> InboxMessage | None:
+        """The retained inbox row with its original body, or None."""
+
+        return self._reads.read(  # type: ignore[return-value]
+            lambda connection: self.bodies.retained_body(connection, message_id)
         )
 
     def outbox_item(self, message_id: str) -> OutboxItem:
@@ -718,39 +845,6 @@ class DeliveryCustodyFacade:
     def custody_count(self) -> int:
         return self._reads.custody_count()
 
-    # -- send-link ledger (WP2 §3.9) ------------------------------------
-
-    def update_link_ledger(
-        self, command: object
-    ) -> LinkLedgerResult:
-        """Run one durable ledger update on the inbox actor thread."""
-
-        event = self._call(command, LinkLedgerUpdated)
-        assert isinstance(event, LinkLedgerUpdated)
-        return event.result
-
-    def link_ledger_snapshot(self, now_ms: int) -> tuple[LinkLedgerRow, ...]:
-        return self._reads.link_ledger_snapshot(now_ms)
-
-    def link_outbound_row(self, actor: str, message_id: str) -> LinkLedgerRow | None:
-        return self._reads.link_outbound_row(actor, message_id)
-
-    def link_held_outbox(self) -> tuple[OutboxItem, ...]:
-        return self._reads.link_held_outbox()
-
-    def link_inbound_live(
-        self, actor: str, peer: str | None = None
-    ) -> tuple[LinkInboundRow, ...]:
-        return self._reads.link_inbound_live(actor, peer)
-
-    def link_inbound_row(
-        self, actor: str, message_id: str
-    ) -> LinkInboundRow | None:
-        return self._reads.link_inbound_row(actor, message_id)
-
-    def link_task_bindings(self) -> tuple[tuple[str, str, str, int], ...]:
-        return self._reads.link_task_bindings()
-
     def outbox_item_for_message(self, message_id: str) -> OutboxItem | None:
         return self._reads.outbox_item_for_message(message_id)
 
@@ -761,6 +855,9 @@ class DeliveryCustodyFacade:
 
     def lookup_send(self, **selectors: str) -> dict[str, str]:
         return self._reads.lookup_send(**selectors)
+
+    def key_lookup_send(self, **selectors: str) -> dict[str, str]:
+        return self._reads.key_lookup_send(**selectors)
 
     def dlq_count(self) -> int:
         return self._reads.dlq_count()

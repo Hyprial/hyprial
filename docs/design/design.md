@@ -14,6 +14,8 @@
 > 入口另见 [README](../../README.md)、[AGENTS](../../AGENTS.md) 与
 > [GUI 退场恢复台账](gui-retirement-restore-ledger-2026-10-27.md)。新共享 UI 按
 > `gui/`、`clients/native/`、`packaging/clients/` 独立 PR 迁入，不恢复旧 `src/gui`。
+> 2026-11-14：`clients/native/` 与 `packaging/clients/` 已整体删除，见
+> `docs/design/gui-single-launch-2026-11-14.md`。
 
 ---
 

@@ -58,7 +58,7 @@ class AgentDirectoryEntry:
 
     name: str
     status: str
-    pinned_adapters: tuple[str, ...] = ()
+    bound_adapters: tuple[str, ...] = ()
     preferred_harness: str | None = None
 
 
@@ -262,10 +262,6 @@ class LarkApiPort(Protocol):
         self, message_id: str, text: str, *, idempotency_key: str
     ) -> str: ...
 
-    def send_owner_dm(
-        self, open_id: str, text: str, *, idempotency_key: str
-    ) -> str: ...
-
     def get_message(self, message_id: str) -> QuotedMessage | None: ...
 
     def get_inbound_message(
@@ -302,12 +298,13 @@ class RouteDirectory(Protocol):
     ``resolve_mention`` is gone: it matched mention display names against
     route names and returned the route's native chat id where an actor id
     belongs -- a TS-era leftover that could only misroute.  Mention routing
-    is now identity-based inside the adapter (bot open_id -> pinned agent).
+    is now identity-based inside the adapter (bot open_id -> the agent whose
+    cell binds this adapter).
     """
 
     def actor_by_key(self, actor_key: str) -> ActorTarget | None: ...
 
-    def pinned_actor(self, conversation_id: str) -> ActorTarget | None: ...
+    def routed_actor(self, conversation_id: str) -> ActorTarget | None: ...
 
     def list_runtime_targets(self) -> tuple[RuntimeTarget, ...]: ...
 

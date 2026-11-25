@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyprial.com/contracts/adapters/identity-authority-v1/schema.json",
+  "$defs": {
+    "claimRefusalExpected": {
+      "type": "object",
+      "required": ["wireCode", "reason", "disposition", "signature", "localCodeExcluded", "claimRows"],
+      "properties": {
+        "wireCode": {
+          "enum": [
+            "CLAIM_AUTHORIZATION_REQUIRED",
+            "CLAIM_AUTHORIZATION_INVALID",
+            "CLAIM_AUTHORIZATION_EXPIRED",
+            "CLAIM_AUTHORIZATION_REVOKED",
+            "CLAIM_AUTHORIZATION_ISSUER_UNAVAILABLE",
+            "CLAIM_AUTHORIZATION_USE_CONFLICT",
+            "CLAIM_OPERATION_CONFLICT",
+            "CLAIM_GENERATION_MISMATCH",
+            "CLAIM_REQUEST_INVALID"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "authorization-required",
+            "authorization-signature-invalid",
+            "authorization-coverage-mismatch",
+            "management-issuer-unknown",
+            "management-issuer-unavailable",
+            "management-issuer-mismatch",
+            "management-issuer-revoked",
+            "management-frontier-stale",
+            "management-time-invalid",
+            "management-authorization-expired",
+            "management-trust-rollback-held",
+            "service-issuer-unknown",
+            "service-issuer-unavailable",
+            "service-issuer-mismatch",
+            "service-domain-mismatch",
+            "service-issuer-revoked",
+            "service-frontier-stale",
+            "service-time-invalid",
+            "service-authorization-expired",
+            "trust-activation-unavailable",
+            "trust-activation-expired",
+            "trust-activation-challenge-mismatch",
+            "authorization-use-conflict",
+            "operation-conflict",
+            "generation-mismatch",
+            "request-schema-invalid"
+          ]
+        },
+        "disposition": {
+          "enum": [
+            "held-retry-after-trust",
+            "terminal-new-authorization",
+            "terminal-correct-request",
+            "terminal-conflict"
+          ]
+        },
+        "signature": {"type": "string", "minLength": 1},
+        "localCodeExcluded": {"const": true},
+        "claimRows": {"const": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["schemaVersion", "caseId", "authority", "expected"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "caseId": {"type": "string", "pattern": "^UA-[0-9]{3}:"},
+    "authority": {"enum": ["organization", "management", "service", "claim"]},
+    "expected": {"type": "object"}
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"properties": {"caseId": {"pattern": "^UA-4(67|68|69|70|71|72):"}}},
+      "then": {"properties": {"expected": {"$ref": "#/$defs/claimRefusalExpected"}}}
+    }
+  ]
+}

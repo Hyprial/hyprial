@@ -18,9 +18,8 @@ import threading
 from time import time_ns, monotonic, sleep
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import ActorSpec, AdmissionResult
 from hyprial.kernel import ipc_errors
-from hyprial.daemon.impl.dispatch.admission import dispatch_gate
 from hyprial.daemon.impl.dispatch.identity import dispatch_message_id
 from hyprial.identity import PacError
 from hyprial.daemon.impl.pac.graphs.reactor import PacReactor
@@ -37,6 +36,7 @@ from hyprial.daemon.impl.dispatch.remote.wire import (
     _RemoteStateCompleted,
     encoded,
 )
+from hyprial.daemon.impl.dispatch.remote.local_admission import admit_local_actor
 from hyprial.daemon.impl.dispatch.remote.expansion import (
     enqueue_outcome_row,
     expansion_outcome_fields,
@@ -62,7 +62,7 @@ class RemoteWorkflow:
         self.stopping = threading.Event()
         self._state_lock = threading.Lock()
         self._state_pending: dict[str, _PendingRemoteState] = {}
-        self._state_runtime = ActorRuntime()
+        actor_host = application._agent_session_domains.actor_hosts.host_for("remote-workflow")
         self._state_handle = None
         self._effect_queue: queue.Queue[_RemoteEffect] = queue.Queue(maxsize=8)
         self._effect_workers: tuple[threading.Thread, ...] = ()
@@ -83,7 +83,7 @@ class RemoteWorkflow:
                             "SELECT secret FROM remote_workflow_key"
                         ).fetchone()[0]
                 )
-            self._state_handle = self._state_runtime.start(
+            self._state_handle = actor_host.spawn(
                 ActorSpec(
                     name="remote-workflow-authority",
                     handler_factory=lambda: self._run_remote_state,
@@ -118,7 +118,7 @@ class RemoteWorkflow:
             for worker in self._effect_workers:
                 worker.join(1.0)
             if self._state_handle is not None:
-                self._state_runtime.drain(1.0)
+                self._state_handle.drain(1.0)
             raise
         finally:
             if store is not None:
@@ -134,7 +134,7 @@ class RemoteWorkflow:
         self.pump.join(max(0, deadline - monotonic()))
         for worker in self._effect_workers:
             worker.join(max(0, deadline - monotonic()))
-        state_drained = self._state_runtime.drain(max(0, deadline - monotonic()))
+        state_drained = self._state_handle.drain(max(0, deadline - monotonic()))
         return (
             drained and not self.pump.is_alive()
             and not any(worker.is_alive() for worker in self._effect_workers)
@@ -399,30 +399,7 @@ class RemoteWorkflow:
             )
 
     def admit_local(self, data):
-        actor = data.get("owner")
-        principal = parse_agent_uri(actor) if isinstance(actor, str) else None
-        if principal is None or principal[:2] != (self.app.owner, self.app.node_id):
-            raise PacError("WORKFLOW_NOT_OWNER", "actor is not local to this daemon")
-        recipient = self.app._resolve_send_sender(actor)
-        entity = self.app.agents.get(recipient)
-        if entity is None:
-            raise PacError(
-                "WORKFLOW_REMOTE_ACTOR_NOT_FOUND", "borrowed actor does not exist"
-            )
-        dispatch_gate(
-            target=actor,
-            capabilities=entity.capabilities,
-            role=data.get("role"),
-            first_output_eta=data.get("firstOutputEta"),
-            human_gates_declared=data.get("humanGatesDeclared") is True,
-            emit=self.app._log,
-            source="pac.remote.admission",
-        )
-        return {
-            "ok": True,
-            "owner": actor,
-            "features": ["pac-expansion-v1"],
-        }
+        return admit_local_actor(self.app, data)
 
     def admit(self, node):
         result = self.wire.call(
@@ -580,7 +557,7 @@ class RemoteWorkflow:
             if len(self._state_pending) >= 128 or self.stopping.is_set():
                 raise PacError("WORKFLOW_REMOTE_UNAVAILABLE", "remote state authority is overloaded")
             self._state_pending[correlation] = pending
-            admission = self._state_runtime.tell(handle, command)
+            admission = handle.tell(command)
             if admission is not AdmissionResult.ACCEPTED:
                 del self._state_pending[correlation]
                 raise PacError("WORKFLOW_REMOTE_UNAVAILABLE", f"remote state admission: {admission.value}")
@@ -611,7 +588,7 @@ class RemoteWorkflow:
             handle = self._state_handle
             if (
                 handle is not None
-                and command.generation == self._state_runtime.snapshot(handle).generation
+                and command.generation == handle.snapshot().generation
             ):
                 self._complete_remote_state(_RemoteStateCompleted(
                     command.correlation_id, command.result, command.error,
@@ -632,7 +609,7 @@ class RemoteWorkflow:
                 assert handle is not None
                 try:
                     self._effect_queue.put_nowait(_RemoteEffect(
-                        self._state_runtime.snapshot(handle).generation, command,
+                        handle.snapshot().generation, command,
                     ))
                 except queue.Full as error:
                     with self._state_lock:
@@ -670,7 +647,7 @@ class RemoteWorkflow:
                 )
             handle = self._state_handle
             while not self.stopping.is_set() and handle is not None:
-                admission = self._state_runtime.tell(handle, completion)
+                admission = handle.tell(completion)
                 if admission is AdmissionResult.ACCEPTED:
                     break
                 if admission is AdmissionResult.CLOSED:

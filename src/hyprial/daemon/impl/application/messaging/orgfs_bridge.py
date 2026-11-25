@@ -1,4 +1,9 @@
-"""OrgFs runtime bridge: the orgfs.* IPC family, owner notices and the org-context bridge."""
+"""OrgFs runtime bridge: the orgfs.* IPC family, owner notices and the org-context bridge.
+
+R2 (owner ruling 2026-11-19): an OrgFS owner notice to this node's owner is
+logged as ``orgfs.owner_notice`` with its text and idempotency key and sent
+nowhere; a notice to another space owner keeps the user-delivery transport.
+"""
 
 from __future__ import annotations
 import json
@@ -20,11 +25,10 @@ from hyprial.daemon.impl.org.network.state import (
     read_left_orgs,
     read_org_acl_grants,
 )
-from hyprial.daemon.impl.squire import (
+from hyprial.daemon.impl.adapters.user_delivery import (
     UserDeliveryRequest,
 )
 from hyprial.kernel import (
-    canonical_agent_uri,
     canonical_user_uri,
 )
 from hyprial.identity import (
@@ -35,9 +39,8 @@ from hyprial.identity import (
 if TYPE_CHECKING:
     pass
 
-from hyprial.daemon.impl.application.messaging.identity_binding import (
-    _IdentityBindingMixin,
-)
+from hyprial.daemon.impl.application.messaging.delivery.sends import _notice_fields, _notice_logged
+from hyprial.daemon.impl.application.messaging.delivery.wake import observe_user_request
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
@@ -151,7 +154,7 @@ def _authorized_or_refused(action: Callable[[], Any]) -> Any:
             ipc_errors.ATTACHMENT_PATH_REFUSED, str(refused), data
         ) from refused
 
-class _OrgFsBridgeMixin(_IdentityBindingMixin):
+class _OrgFsBridgeMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     @classmethod
@@ -229,6 +232,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                 announce_instrumentation_enabled=getattr(
                     self, "_trace_presence_enabled", False
                 ),
+                actor_host=self._actor_hosts.host_for("orgfs"),
             )
         return self._orgfs_runtime
 
@@ -239,7 +243,8 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
         """Deliver resident-replica integrity alarms to the space owner."""
 
         owner_name = owner.removeprefix("user:")
-        if self._user_delivery is None:
+        own = owner_name == self.owner
+        if not own and self._user_delivery is None:
             self._log(
                 "warn",
                 "orgfs",
@@ -254,19 +259,23 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
             uuid5(NAMESPACE_URL, f"hyprial:orgfs:{owner}:{event}:{stable}")
         )
         try:
-            outcome = self._user_delivery.deliver(
-                UserDeliveryRequest(
-                    message_id=message_id,
-                    idempotency_key=f"{_ORGFS_NOTICE_NAMESPACE}:{event}:{message_id}",
-                    owner=owner_name,
-                    sender=canonical_agent_uri(self.owner, self.node_id, "squire"),
-                    message=(
-                        f"orgfs resident replica reported {event}: "
-                        f"{stable}"
-                    ),
-                    conversation_id=f"{_ORGFS_NOTICE_NAMESPACE}:{details.get('spaceId', 'unknown')}",
-                )
+            request = UserDeliveryRequest(
+                message_id=message_id,
+                idempotency_key=f"{_ORGFS_NOTICE_NAMESPACE}:{event}:{message_id}",
+                owner=owner_name,
+                sender=self._dispatch_service_actor,
+                message=(
+                    f"orgfs resident replica reported {event}: "
+                    f"{stable}"
+                ),
+                conversation_id=f"{_ORGFS_NOTICE_NAMESPACE}:{details.get('spaceId', 'unknown')}",
             )
+            observe_user_request(self, "orgfs-owner-notice", request, daemon_notice=True)
+            if own:
+                self._log("warn", "daemon", "orgfs.owner_notice", **_notice_fields(request))
+                outcome = _notice_logged(request)
+            else:
+                outcome = self._user_delivery.deliver(request)
         except Exception as exc:  # noqa: BLE001 - integrity path must still reject
             self._log(
                 "warn",
@@ -383,7 +392,17 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                 return {"nodes": self._orgfs_json(fs.resolve(required("spaceId"), required("path")))}
             if method == "orgfs.ls":
                 node = str(params.get("path", params.get("node", "")))
-                return {"nodes": self._orgfs_json(fs.listdir(required("spaceId"), node))}
+                recursive = params.get("recursive", False)
+                if type(recursive) is not bool:
+                    raise OrgFsError(
+                        "invalid-argument",
+                        {"message": "recursive must be a boolean"},
+                    )
+                return {
+                    "nodes": self._orgfs_json(
+                        fs.listdir(required("spaceId"), node, recursive=recursive)
+                    )
+                }
             if method == "orgfs.stat":
                 node = str(params.get("node", params.get("path", "")))
                 return self._orgfs_json(fs.stat(required("spaceId"), node))
@@ -423,6 +442,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                         text,
                         base_version=params.get("baseVersion"),
                         expect_version=params.get("expectVersion"),
+                        create_only=params.get("createOnly") is True,
                     )
                 else:
                     import base64
@@ -614,8 +634,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
 
         Only content writes are gatable, and only on the owner node (the one
         whose daemon owner is the space owner): the default admits the owner's
-        terminal and the owner's user-proxy, plus agents the owner explicitly
-        granted via ``org.acl.grant``.  Everything else — membership and
+        terminal, plus agents the owner explicitly granted via ``org.acl.grant``.  Everything else — membership and
         lifecycle methods anywhere, any mutation on a member replica — keeps
         the flat external-mutation refusal from the daemon-owned ACL spaces
         ruling (a member replica could never get such a write admitted by the
@@ -649,12 +668,12 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
         if entry is None:
             raise DaemonRequestError(
                 ipc_errors.ORG_ACL_WRITE_DENIED,
-                "ACL-space writes need the owner's terminal, the owner's "
-                "user-proxy, or an agent session the owner granted",
+                "ACL-space writes need the owner's terminal or an agent "
+                "session the owner granted",
                 {"method": method, "org": org, "reason": "caller-not-authenticated"},
             )
         kind, subject = entry
-        if kind in ("terminal", "user-proxy"):
+        if kind == "terminal":
             return
         if self._org_acl_grant_active(org, subject):
             return
@@ -670,9 +689,8 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
         """Classify the authenticated caller for ACL entry decisions (#1166).
 
         ``("terminal", user)`` — the local operator speaking as itself;
-        ``("user-proxy", actor)`` — a caller whose actor THIS daemon launched
-        as a user-proxy harness; ``("agent", actor)`` — any other
-        authenticated agent identity (operator ``onBehalfOf`` included);
+        ``("agent", actor)`` — any authenticated agent identity (operator
+        ``onBehalfOf`` included);
         ``None`` — nothing authenticated.
         """
 
@@ -685,40 +703,16 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
         if caller.via == "operator":
             if caller.on_behalf_of is None:
                 return ("terminal", caller.sender)
-            return self._org_acl_agent_kind(caller.on_behalf_of)
+            return ("agent", caller.on_behalf_of)
         if caller.via == "session":
-            return self._org_acl_agent_kind(caller.subject)
+            return ("agent", caller.subject)
         if caller.via == "daemon" and trusted_origin in (None, "daemon"):
             # A genuine in-process call under an agent identity: judge the
             # agent it speaks for.  The unauthenticated observe-mode socket
             # claim shares this ``via`` but keeps trusted_origin == "ipc" and
             # falls through to None.
-            return self._org_acl_agent_kind(caller.subject)
+            return ("agent", caller.subject)
         return None
-
-    def _org_acl_agent_kind(self, actor: str) -> tuple[str, str]:
-        kind = "user-proxy" if self._org_acl_user_proxy_actor(actor) else "agent"
-        return (kind, actor)
-
-    def _org_acl_user_proxy_actor(self, actor: str) -> bool:
-        """Is ``actor`` a user-proxy THIS daemon launched for its own owner?
-
-        The judgement reads only the harness launch spec the daemon wrote at
-        worker launch.  A session's self-reported runtime string
-        (``session.register`` params) never reaches it, so claiming the
-        user-proxy name cannot mint the kind.
-        """
-
-        for spec in self.desired_state.load().harnesses:
-            if spec.harness != "user-proxy":
-                continue
-            if spec.pinned_owner not in (None, self.owner):
-                # A hosted worker keeps its admitted foreign owner; it is
-                # never "the owner's user-proxy" on this node.
-                continue
-            if self._canonical_harness_uri(spec.name, spec) == actor:
-                return True
-        return False
 
     def _org_acl_grant_active(self, org: str, actor: str) -> bool:
         now_ms = int(time.time() * 1000)

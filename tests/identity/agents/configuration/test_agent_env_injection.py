@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -18,6 +17,7 @@ from unittest.mock import Mock
 import pytest
 
 import hyprial.kernel.impl.primitives.node_identity as node_identity_module
+from hyprial.identity import AgentSecretStore
 from hyprial.identity.impl.agents import AgentRegistry, SecretSource
 from hyprial.identity.impl.agents.home.environment import (
     BASE_CHILD_ENVIRONMENT_NAMES,
@@ -54,11 +54,12 @@ def test_pac_local_identity_explicit_empty_node_id_never_returns_empty(
     from hyprial.daemon.impl.pac.views.context import _local_identity
 
     monkeypatch.setenv("HYPRIAL_NODE_ID", "   ")
-    monkeypatch.setattr(node_identity_module.socket, "gethostname", lambda: " pac-host ")
+    home = node_identity_module.configured_hyprial_home()[0]
+    node_identity_module.node_id_path(home).write_text(" pac-node \n", encoding="utf-8")
 
     _owner, machine = _local_identity()
 
-    assert machine == "pac-host"
+    assert machine == "pac-node"
 
 
 def _spec(**kwargs):
@@ -118,16 +119,17 @@ def test_l3_names_are_generated_and_channel_mints_daemon_values(tmp_path):
     assert identity["HYPRIAL_MANAGED_WORKER"] == "1"
 
 
-def test_worker_pac_context_reads_daemon_machine_not_hostname(monkeypatch):
+def test_worker_pac_context_reads_daemon_machine_not_home_file(monkeypatch):
     """The L3 consumer: machine comes from the injected value, not the
-    hostname fallback — a sentinel distinct from gethostname proves the
-    fallback was never taken."""
+    home's node-id file — a sentinel distinct from the file proves the
+    file was never read."""
 
     from hyprial.daemon.impl.pac.views.context import _local_identity
 
     monkeypatch.setenv("HYPRIAL_NODE_ID", "sentinel-node-id")
-    hostname = socket.gethostname()
-    assert "sentinel-node-id" != hostname  # otherwise the test proves nothing
+    home = node_identity_module.configured_hyprial_home()[0]
+    stored = node_identity_module.read_node_id(home)
+    assert "sentinel-node-id" != stored  # otherwise the test proves nothing
     _owner, machine = _local_identity()
     assert machine == "sentinel-node-id"
 
@@ -306,21 +308,24 @@ def _seeded_registry(tmp_path: Path, *, owner: str = NEW) -> AgentRegistry:
     )
     registry.create("alpha")
     registry.create("beta")
-    # Existing file-only entries remain readable, but have no product writer.
     for actor, entry, value in (
         ("alpha", "deepseek.json", "SENTINEL-ALPHA"),
         ("beta", "openai.json", "SENTINEL-BETA"),
     ):
-        path = Path(registry.home_receipt(actor).path) / "secrets" / entry
-        path.parent.mkdir(mode=0o700, exist_ok=True)
-        path.write_text(json.dumps({"key": value}), encoding="utf-8")
-        path.chmod(0o600)
+        AgentSecretStore(Path(registry.home_receipt(actor).path)).set(
+            service=entry,
+            field="KEY",
+            value=value,
+            actor=actor,
+            via="daemon",
+            at_ms=1,
+        )
     registry.grant_secret(
         "alpha",
         grant_id="deepseek",
         source=SecretSource.AGENT_PRIVATE,
         entry_id="deepseek.json",
-        field_name="key",
+        field_name="KEY",
         environment_names=("DEEPSEEK_API_KEY",),
         revision=1,
     )
@@ -329,7 +334,7 @@ def _seeded_registry(tmp_path: Path, *, owner: str = NEW) -> AgentRegistry:
         grant_id="openai",
         source=SecretSource.AGENT_PRIVATE,
         entry_id="openai.json",
-        field_name="key",
+        field_name="KEY",
         environment_names=("OPENAI_API_KEY",),
         revision=1,
     )

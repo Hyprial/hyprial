@@ -18,6 +18,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services as _cli
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
 from hyprial.identity import AgentToolProfile, resolve_agent_runtime_context
 from tests.support.identity.tool_profile import TEST_TOOL_PROFILE
+from tests.support.runtime.environment import UNIT_USER_ID
 
 _RETIRED_PROFILE = AgentToolProfile(
     profile_id="agent-home-p2-allen-v1",
@@ -50,7 +51,7 @@ def app(tmp_path: Path) -> DaemonApplication:
         state_dir=tmp_path / "state",
         socket_path=tmp_path / "daemon.sock",
         node_id="node-1",
-        owner="owner",
+        owner="owner", user_id=UNIT_USER_ID,
         hyprial_home=home,
     **_deep_module_daemon_dependencies())
     instance._inbox = object()  # type: ignore[assignment]
@@ -109,7 +110,7 @@ def test_home_census_reports_every_agent_without_mutating_state(
             "sources": [{"path": str(resident_config), "required": True}],
             "discovery": "explicit-only",
         },
-        preferred_harness="dsh",
+        preferred_harness="jev",
     )
     app.agents.create_transfer_hosted(
         "received", pinned_owner="remote-owner", preferred_harness="codex"
@@ -130,7 +131,7 @@ def test_home_census_reports_every_agent_without_mutating_state(
     assert set(rows) == {"legacy", "p2", "received", "resident"}
     assert rows["p2"] == {
         "actor": "p2",
-        "uri": "agent:owner:node-1:p2",
+        "uri": app.agents.require("p2").uri,
         "preferredHarness": "claude",
         "lastHarness": None,
         "harness": "claude",
@@ -146,7 +147,7 @@ def test_home_census_reports_every_agent_without_mutating_state(
     assert rows["legacy"]["mode"] == "legacy"
     assert rows["legacy"]["legacyReason"] == "no_config"
     assert rows["legacy"]["cwdInsideHome"] is False
-    assert rows["resident"]["residentOrDsh"] is True
+    assert rows["resident"]["residentOrDsh"] is False
     assert rows["resident"]["legacyReason"] == "harness_not_p2"
     assert rows["received"]["transferReceived"] is True
     assert rows["received"]["harness"] == "codex"
@@ -154,7 +155,7 @@ def test_home_census_reports_every_agent_without_mutating_state(
         "agents": 4,
         "byModeHarness": [
             {"mode": "legacy", "harness": "codex", "count": 1},
-            {"mode": "legacy", "harness": "dsh", "count": 1},
+            {"mode": "legacy", "harness": "jev", "count": 1},
             {"mode": "legacy", "harness": "pi", "count": 1},
             {"mode": "p2", "harness": "claude", "count": 1},
         ],
@@ -207,7 +208,10 @@ def test_ensure_home_provisions_the_official_p2_home_for_a_legacy_agent(
 
     assert result["ok"] is True
     assert result["actor"] == "migrate-me"
-    assert result["agent"] == "agent:owner:node-1:migrate-me"
+    assert result["agent"] == app.agents.require("migrate-me").uri
+    assert result["agent"] == (
+        f"agent:owner:node-1:{app.agents.require('migrate-me').agent_id}"
+    )
     receipt = result["home"]
     assert receipt["actor"] == "migrate-me"
     assert receipt["status"] == "ready"
@@ -236,6 +240,138 @@ def test_ensure_home_provisions_the_official_p2_home_for_a_legacy_agent(
     census = app.handle("agent.home-census", {})
     rows = {row["actor"]: row for row in census["agents"]}
     assert rows["migrate-me"]["homeProvisioned"] is True
+
+
+def _strip_home_and_row(app: DaemonApplication, home: Path, actor: str) -> None:
+    """Make ``actor`` a true legacy agent: no lifecycle row and no home tree."""
+
+    registry_db = app._agent_registry._db  # noqa: SLF001
+    with registry_db:
+        registry_db.execute(
+            "DELETE FROM lifecycle_resources WHERE resource_key = ?",
+            (f"agent-home:{actor}",),
+        )
+    shutil.rmtree(home / "agents" / actor)
+
+
+def test_ensure_home_creates_an_empty_readable_secret_store(
+    app: DaemonApplication, tmp_path: Path
+) -> None:
+    """``home status: ready`` must not coexist with a missing secret store.
+
+    The store is what ``agent secret set/list`` read, so ensure-home has to
+    leave one behind; a ready home without it reads as a broken grant.
+    """
+
+    from hyprial.identity import AgentSecretStore, agent_secret_store_exists
+
+    home = tmp_path / "home"
+    app.agents.create("store-me", cwd=str(tmp_path / "external"), preferred_harness="pi")
+    _strip_home_and_row(app, home, "store-me")
+
+    result = app.handle("agent.ensure-home", {"name": "store-me"})
+
+    assert result["ok"] is True
+    agent_root = Path(result["home"]["path"])
+    store_path = agent_root / "secrets.sqlite"
+    metadata = store_path.lstat()
+    assert stat.S_ISREG(metadata.st_mode)
+    assert not stat.S_ISLNK(metadata.st_mode)
+    assert stat.S_IMODE(metadata.st_mode) == 0o600
+    assert agent_secret_store_exists(home, "store-me") is True
+    store = AgentSecretStore(agent_root, read_only=True)
+    assert store.list() == ()
+    assert store.history() == ()
+
+
+def test_ensure_home_rerun_keeps_existing_secret_rows_and_events(
+    app: DaemonApplication, tmp_path: Path
+) -> None:
+    """A second ensure-home is a validation, never a store reset."""
+
+    from hyprial.identity import AgentSecretStore
+
+    home = tmp_path / "home"
+    app.agents.create("keeper", cwd=str(tmp_path / "external"), preferred_harness="pi")
+    _strip_home_and_row(app, home, "keeper")
+    first = app.handle("agent.ensure-home", {"name": "keeper"})
+    agent_root = Path(first["home"]["path"])
+    store = AgentSecretStore(agent_root)
+    store.set(
+        service="forgejo",
+        field="FORGEJO_TOKEN",
+        value="SYNTHETIC-TOKEN-0123456789abcdef",
+        actor="user:owner",
+        via="cli",
+        at_ms=1_000,
+    )
+    rows = store.list()
+    events = store.history()
+    assert rows and events
+
+    again = app.handle("agent.ensure-home", {"name": "keeper"})
+
+    assert again["ok"] is True
+    assert again["home"] == first["home"]
+    reopened = AgentSecretStore(agent_root, read_only=True)
+    assert reopened.list() == rows
+    assert reopened.history() == events
+
+
+def test_ensure_home_materialises_a_missing_store_on_an_active_home(
+    app: DaemonApplication, tmp_path: Path
+) -> None:
+    """An already-ready home is repaired, not just validated.
+
+    Homes provisioned before the store existed keep their active receipt;
+    ensure-home is the operator's repair path, so it must create the store
+    without re-provisioning or touching the home tree.
+    """
+
+    from hyprial.identity import agent_secret_store_exists
+
+    home = tmp_path / "home"
+    app.agents.create("active", cwd=str(tmp_path / "external"), preferred_harness="pi")
+    agent_root = Path(app._agent_registry.home_receipt("active").path)  # noqa: SLF001
+    assert not (agent_root / "secrets.sqlite").exists()
+    before = _tree_snapshot(agent_root)
+
+    result = app.handle("agent.ensure-home", {"name": "active"})
+
+    assert result["ok"] is True
+    assert agent_secret_store_exists(home, "active") is True
+    after = _tree_snapshot(agent_root)
+    assert set(after) - set(before) == {f"{agent_root.name}/secrets.sqlite"}
+
+
+def test_ensure_home_leaves_a_store_written_before_it_untouched(
+    app: DaemonApplication, tmp_path: Path
+) -> None:
+    """The repair path (active receipt) must not overwrite existing credentials."""
+
+    from hyprial.identity import AgentSecretStore
+
+    app.agents.create("early", cwd=str(tmp_path / "external"), preferred_harness="pi")
+    agent_root = Path(app._agent_registry.home_receipt("early").path)  # noqa: SLF001
+    assert not (agent_root / "secrets.sqlite").exists()
+    store = AgentSecretStore(agent_root)
+    store.set(
+        service="cloudflare-r2",
+        field="CLOUDFLARE_API_TOKEN",
+        value="SYNTHETIC-TOKEN-0123456789abcdef",
+        actor="user:owner",
+        via="cli",
+        at_ms=1_000,
+    )
+    rows = store.list()
+    events = store.history()
+
+    result = app.handle("agent.ensure-home", {"name": "early"})
+
+    assert result["ok"] is True
+    reopened = AgentSecretStore(agent_root, read_only=True)
+    assert reopened.list() == rows
+    assert reopened.history() == events
 
 
 def test_ensure_home_unknown_agent_fails_with_agent_not_found(
@@ -319,20 +455,20 @@ def test_legacy_path_log_is_once_per_actor_per_daemon(
             "warn",
             "daemon",
             "agent.home.legacy_path",
-            {"actor": "agent:owner:node-1:legacy", "reason": "no_config"},
+            {"actor": app.agents.require("legacy").uri, "reason": "no_config"},
         ),
         (
             "warn",
             "daemon",
             "agent.home.legacy_path",
-            {"actor": "agent:owner:node-1:other", "reason": "no_config"},
+            {"actor": app.agents.require("other").uri, "reason": "no_config"},
         ),
         (
             "warn",
             "daemon",
             "agent.home.legacy_path",
             {
-                "actor": "agent:owner:node-1:configured",
+                "actor": app.agents.require("configured").uri,
                 "reason": "harness_not_p2",
             },
         ),
@@ -588,7 +724,7 @@ def test_ensure_home_survives_a_daemon_rebuild(
             state_dir=tmp_path / "state",
             socket_path=tmp_path / "daemon.sock",
             node_id="node-1",
-            owner="owner",
+            owner="owner", user_id=UNIT_USER_ID,
             hyprial_home=home,
             **_deep_module_daemon_dependencies(),
         )

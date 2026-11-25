@@ -216,7 +216,9 @@ def test_harness_close_keeps_removed_spec_absent_and_preserves_replacement(
     tmp_path: Path,
 ) -> None:
     store = DesiredStateStore(tmp_path / "desired.json")
-    original = HarnessLaunchSpec("codex", "remove-close", True, args=("--old",))
+    original = HarnessLaunchSpec(
+        "codex", "remove-close", True, args=("--sandbox", "read-only")
+    )
     store.upsert_harness(original)
     events = _Events()
     launcher = _Launcher(stop_failures=100)

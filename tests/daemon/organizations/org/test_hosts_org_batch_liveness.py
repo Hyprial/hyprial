@@ -588,8 +588,23 @@ def test_dispatch_presence_enumeration_sits_under_a_request_snapshot() -> None:
     native = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
     handler = native["handle"]
     dispatch = Path(DaemonApplication.handle.__code__.co_filename).read_text(encoding="utf-8")
+    org_catalog = (
+        Path(__file__).resolve().parents[4]
+        / "src/hyprial/daemon/impl/request_catalog/org/__init__.py"
+    )
+    org_catalog_source = org_catalog.read_text(encoding="utf-8")
+    view_specs_source = (org_catalog.parent / "view_specs.py").read_text(encoding="utf-8")
     for method in ("_ipc_org_fetch", "_ipc_hosts"):
-        if f"self.{method}(" not in dispatch:
+        direct = f"self.{method}(" in dispatch
+        # org.fetch and hosts moved behind the daemon-request MethodRegistry;
+        # their bindings still call the same _ipc_org_fetch/_ipc_hosts
+        # handlers.  Keep each handler body in the AST scan while accepting
+        # the registered binding as proof of reachability.
+        registered = (
+            (method == "_ipc_org_fetch" and '"_ipc_org_fetch"' in org_catalog_source)
+            or (method == "_ipc_hosts" and '"_ipc_hosts"' in view_specs_source)
+        )
+        if not direct and not registered:
             raise AssertionError(f"Native IPC dispatch no longer calls {method}")
         handler.body.extend(native[method].body)
     methods = {

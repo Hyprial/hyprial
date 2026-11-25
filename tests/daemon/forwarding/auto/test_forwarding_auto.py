@@ -369,6 +369,36 @@ def test_an_explicit_listen_list_is_reused_never_appended(tmp_path, monkeypatch)
                           HYPRIAL_ZENOH_LISTEN='tcp/10.0.0.9:7447')
 
 
+def test_automatic_resolution_refuses_loopback_tcp_on_posix(tmp_path, monkeypatch) -> None:
+    _device_home(tmp_path / "home")
+    _verified(monkeypatch, tmp_path)
+
+    with pytest.raises(ForwardingConfigurationError):
+        _from_environment(
+            tmp_path, monkeypatch, HYPRIAL_FORWARDING='auto',
+            HYPRIAL_ZENOH_LISTEN='tcp/127.0.0.1:39111',
+        )
+
+
+def test_automatic_resolution_accepts_loopback_tcp_on_windows(tmp_path, monkeypatch) -> None:
+    import hyprial.daemon.impl.forwarding.policy as policy
+    gate_calls = []
+    monkeypatch.setattr(
+        policy, 'loopback_inbound_supported', lambda: gate_calls.append(True) or True
+    )
+    _device_home(tmp_path / "home")
+    _verified(monkeypatch, tmp_path)
+
+    app = _from_environment(
+        tmp_path, monkeypatch, HYPRIAL_FORWARDING='auto',
+        HYPRIAL_ZENOH_LISTEN='tcp/127.0.0.1:39111',
+    )
+
+    up = json.loads(app._forwarding_environment['HYPRIAL_FORWARDING_UP'])
+    assert up['inboundTarget'] == 'tcp:127.0.0.1:39111'
+    assert gate_calls
+
+
 # -- startup: listener composition, port ownership, first launch ------------
 
 
@@ -389,23 +419,17 @@ class _Plan:
         return {"HYPRIAL_FORWARDING_COMMAND": '["fake"]', "HYPRIAL_FORWARDING_UP": "{}"}
 
 
-def _started(tmp_path: Path, monkeypatch, derived: str | None, plan: _Plan) -> DaemonApplication:
+def _constructed(tmp_path: Path, monkeypatch, derived: str | None, plan: _Plan) -> DaemonApplication:
     home = tmp_path / "home"
     state_dir = home / "state"
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     monkeypatch.setenv("HYPRIAL_PEER_DISCOVERY", "0")
+    derive_calls = []
     monkeypatch.setattr(
-        DaemonApplication, "_derive_listen_endpoint", lambda self: derived
+        DaemonApplication,
+        "_derive_listen_endpoint",
+        lambda self: derive_calls.append(derived) or derived,
     )
-    launched: list[dict[str, str]] = []
-
-    def launch(self) -> None:
-        # Control/membership starts before the upper-layer session.
-        if not launched:
-            assert self._transport is None
-            launched.append(dict(self._forwarding_environment))
-
-    monkeypatch.setattr(DaemonApplication, "_start_forwarding_supervisor", launch)
     app = DaemonApplication(
         state_dir=state_dir,
         socket_path=state_dir / "daemon.sock",
@@ -415,7 +439,22 @@ def _started(tmp_path: Path, monkeypatch, derived: str | None, plan: _Plan) -> D
         forwarding_policy=ForwardingPolicy("auto", "env"),
         forwarding_automatic=plan,  # type: ignore[arg-type]
     **_deep_module_daemon_dependencies())
+    app.derive_calls = derive_calls  # type: ignore[attr-defined]
     _OPENED.append(app)
+    return app
+
+
+def _started(tmp_path: Path, monkeypatch, derived: str | None, plan: _Plan) -> DaemonApplication:
+    launched: list[dict[str, str]] = []
+
+    def launch(self) -> None:
+        # Control/membership starts before the upper-layer session.
+        if not launched:
+            assert self._transport is None
+            launched.append(dict(self._forwarding_environment))
+
+    monkeypatch.setattr(DaemonApplication, "_start_forwarding_supervisor", launch)
+    app = _constructed(tmp_path, monkeypatch, derived, plan)
     app._start_runtime()
     app.launched = launched  # type: ignore[attr-defined]
     return app
@@ -437,6 +476,7 @@ def test_the_loopback_listener_is_added_after_the_nodes_own_listener(
     assert private.startswith('unixsock-stream/')
     assert derived not in app.zenoh_listen
     assert plan.targets == ['unix:' + private.removeprefix('unixsock-stream/')]
+    assert app.derive_calls == [derived]  # type: ignore[attr-defined]
     assert app.launched == [  # type: ignore[attr-defined]
         {"HYPRIAL_FORWARDING_COMMAND": '["fake"]', "HYPRIAL_FORWARDING_UP": "{}"}
     ]
@@ -448,6 +488,10 @@ def test_a_derived_listener_collision_does_not_create_a_tcp_bypass(tmp_path, mon
         held.listen()
         derived = f'tcp/127.0.0.1:{held.getsockname()[1]}'
         app = _started(tmp_path, monkeypatch, derived, _Plan())
+    assert app.derive_calls == [derived]  # type: ignore[attr-defined]
+    assert app.launched == [  # type: ignore[attr-defined]
+        {"HYPRIAL_FORWARDING_COMMAND": '["fake"]', "HYPRIAL_FORWARDING_UP": "{}"}
+    ]
     assert len(app.zenoh_listen) == 1
     assert app.zenoh_listen[0].startswith('unixsock-stream/')
 
@@ -458,6 +502,75 @@ def test_private_listener_failure_does_not_fall_back_to_tcp(tmp_path, monkeypatc
     monkeypatch.setattr(netendpoints_module, 'ZenohTransport', fail)
     with pytest.raises(RuntimeError, match='private socket bind failed'):
         _started(tmp_path, monkeypatch, None, _Plan())
+
+
+class _RebindingPlan(_Plan):
+    def environment(self, target: str) -> dict[str, str]:
+        environment = super().environment(target)
+        from hyprial.daemon.impl.forwarding.policy import inbound_listener_from_target
+        environment.update({
+            'HYPRIAL_FORWARDING_INBOUND_TARGET': target,
+            'HYPRIAL_ZENOH_LISTEN': inbound_listener_from_target(target),
+        })
+        return environment
+
+
+def test_a_re_picked_port_rebuilds_the_sidecar_target_from_the_listener(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    import hyprial.daemon.impl.application.wiring.transport as transport_module
+    import hyprial.daemon.impl.forwarding.membership.migration as migration_module
+    import hyprial.daemon.impl.forwarding.membership.settings as settings_module
+
+    plan = _RebindingPlan()
+    app = _constructed(tmp_path, monkeypatch, None, plan)
+    monkeypatch.setattr(
+        settings_module,
+        'private_inbound',
+        lambda home: 'tcp:127.0.0.1:41001',
+    )
+    start_calls = []
+    monkeypatch.setattr(
+        migration_module,
+        'start_before_transport',
+        lambda app, **kwargs: start_calls.append(True) or None,
+    )
+    new_listener = 'tcp/127.0.0.1:41002'
+    opened = []
+    restarted = []
+
+    def open_transport(config, forwarding_listen, **kwargs):
+        opened.append((config.listen, forwarding_listen))
+        transport = SimpleNamespace(
+            config=SimpleNamespace(listen=(new_listener,)),
+            set_endpoint_peers=lambda peers: None,
+        )
+        return transport, (new_listener,), None
+
+    monkeypatch.setattr(transport_module, '_open_transport', open_transport)
+    monkeypatch.setattr(
+        DaemonApplication,
+        '_start_forwarding_supervisor',
+        lambda self: restarted.append(True),
+    )
+
+    app._startup_open_transport()
+
+    assert start_calls == [True]
+    assert restarted
+    assert opened == [
+        (('tcp/127.0.0.1:41001',), ('tcp/127.0.0.1:41001',)),
+    ]
+    assert plan.targets == ['tcp:127.0.0.1:41001', 'tcp:127.0.0.1:41002']
+    assert app.zenoh_listen == (new_listener,)
+    assert app._forwarding_environment == {
+        'HYPRIAL_FORWARDING_COMMAND': '["fake"]',
+        'HYPRIAL_FORWARDING_UP': '{}',
+        'HYPRIAL_FORWARDING_INBOUND_TARGET': 'tcp:127.0.0.1:41002',
+        'HYPRIAL_ZENOH_LISTEN': new_listener,
+    }
 
 
 def test_auto_end_to_end_launches_the_sidecar_at_the_bound_port_and_dials_its_peers(

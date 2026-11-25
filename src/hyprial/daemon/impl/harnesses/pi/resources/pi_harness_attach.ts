@@ -448,11 +448,6 @@ export default function (pi: ExtensionAPI) {
           ...(processIdentity
             ? { processPid: process.pid, processIdentity }
             : {}),
-          // Detached-tmux launches (`hyprial agent start pi --tmux`, #218): the daemon
-          // records the session name so `hyprial daemon status` shows where to attach. This
-          // carrier is in-process: its lifetime already equals the pane's, and
-          // session_shutdown unregisters best-effort (the TTL reclaims the rest).
-          ...(identity.tmuxSession ? { tmuxSession: identity.tmuxSession } : {}),
     });
   }
 

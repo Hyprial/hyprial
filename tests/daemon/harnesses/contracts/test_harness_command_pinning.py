@@ -142,16 +142,6 @@ def test_launcher_default_factory_resolves_the_pinned_command(
     assert seen == [("/Users/x/.local/bin/codex",)]
 
 
-def test_connector_build_argv_prefers_spec_command() -> None:
-    from hyprial.daemon.impl.harnesses.codex import CodexConnector
-
-    connector = CodexConnector()
-    spec = HarnessLaunchSpec(
-        "codex", "w", True, args=("--flag",), command=("/pinned/codex",)
-    )
-    assert connector.build_argv(spec) == ("/pinned/codex", "--flag")
-
-
 def test_cli_start_pins_the_absolute_binary_into_registration(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -174,9 +164,9 @@ def test_cli_start_pins_the_absolute_binary_into_registration(
     )
 
     assert result.exit_code == 0, result.output
-    start_calls = [(p, kwargs) for m, p, kwargs in calls if m == "lifecycle.start"]
+    start_calls = [(p, kwargs) for m, p, kwargs in calls if m == "agent.start"]
     assert len(start_calls) == 1
-    assert start_calls[0][0]["command"] == ["/fake/bin/codex"]
+    assert start_calls[0][0] == {"name": "w", "harness": "codex"}
     # The start wait is composed from the one lifecycle deadline (deadline +
     # daemon wait margin + IPC margin), exactly like `down` -- never a bare
     # literal that can drift shorter than the daemon's own budget.

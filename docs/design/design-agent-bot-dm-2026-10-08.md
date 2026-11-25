@@ -1,3 +1,4 @@
+> **SUPERSEDED (2026-10-27)**：本文描述的 pinned-bot DM 只是**接收侧可选的其中一条路径**，不构成投递契约。路径选择属 cell 机制；对外契约只说"结果里报告实际路径"。
 # Agent-owned bot delivery for user DMs
 
 ## Ruling and trigger

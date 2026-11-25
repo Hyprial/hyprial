@@ -71,7 +71,7 @@ def _close(application: DaemonApplication) -> None:
     if application._orgfs_runtime is not None:
         application._orgfs_runtime.close()
         application._orgfs_runtime = None
-    application._agent_session_domains.close()
+    application._agent_session_domains.close(shutdown_hosts=False)
 
 
 def test_checkout_cli_end_to_end(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

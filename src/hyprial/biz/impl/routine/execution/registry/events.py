@@ -20,7 +20,11 @@ from hyprial.biz.impl.routine.contracts.ports import (
     RoutineSourceQueryCompleted,
 )
 from hyprial.biz.impl.routine.contracts.schema import RoutineSpec
-from hyprial.biz.impl.routine.execution.source import SOURCE_ERROR_CAP, SourceTask, route_decision
+from hyprial.biz.impl.routine.execution.source import (
+    SOURCE_ERROR_CAP,
+    SourceTask,
+    route_decision,
+)
 from hyprial.biz.impl.routine.storage.store import (
     AddressMigrationRow,
     InFlightRow,
@@ -28,6 +32,7 @@ from hyprial.biz.impl.routine.storage.store import (
     RoutineEffectRow,
     RoutineRow,
 )
+from hyprial.biz.impl.routine.execution.registry.core import _SETTLED_GRAPH_STATES
 from hyprial.biz.impl.routine.execution.registry.effects import (
     DEFAULT_TASK_TIMEOUT_SECONDS,
     RoutineAlarmEffect,
@@ -36,6 +41,17 @@ from hyprial.biz.impl.routine.execution.registry.effects import (
     RoutineSourceQueryEffect,
     _ActiveRoutine,
 )
+
+
+
+def _alarm_sender(active: Any) -> str:
+    """The routine's agent: its actor, else what it produces, else its owner.
+
+    R2 (owner ruling 2026-11-19): a routine's report to the user is sent by
+    this agent; an owner that is not one of the node's agents is not sent.
+    """
+
+    return active.spec.actor or active.spec.produces or active.owner
 
 class _RegistryEvents:
     def _status_effects(
@@ -155,6 +171,15 @@ class _RegistryEvents:
     def _pac_completed(self, event: RoutinePacIoCompleted) -> None:
         effect_row = self._store.effect(event.correlation_id)
         if effect_row is None:
+            # The effect can be gone before its completion lands: pause, resume
+            # and re-add all discard a routine's work, and every failure branch
+            # deletes the effect it was working on.  Returning silently here
+            # stranded the ``in_flight`` row -- the durable proof that the task
+            # was open -- and nothing else ever removed it, so ``routine set``
+            # answered ROUTINE_BUSY forever (M-hq-adjutant-0012).
+            # A missing input is not a missing outcome: the event still names
+            # the routine and the task, so reclaim that row and say so out loud.
+            self._reclaim_completion_without_effect(event)
             return
         effect = self.decode_effect(effect_row.payload)
         if isinstance(effect, RoutineAlarmEffect):
@@ -180,6 +205,98 @@ class _RegistryEvents:
             self._status_completed(row, active, cycle, effect, event)
         elif effect.operation == "pac.start":
             self._start_completed(row, active, cycle, effect, event)
+
+    def _reclaim_completion_without_effect(self, event: RoutinePacIoCompleted) -> None:
+        """Reclaim the ``in_flight`` row only on the authoritative terminal proof.
+
+        A completion whose effect is gone still names its routine and task, but
+        an I/O completion is **not** a settlement: a ``running`` status, a read
+        error, a ``pac.start`` result or a stale event from an earlier run must
+        never delete the durable row that keeps ``routine set`` honest.  The
+        reclaim therefore reuses the same authority as ``_status_completed``:
+        ``pac.status`` with no error, a terminal state, and a persistent row
+        whose ``run_id`` is exactly the event's graph.  Everything else is a
+        diagnostic, and a diagnostic never writes.
+        """
+
+        routine, task_uuid = event.routine_name, event.task_uuid
+        row = None
+        if routine and task_uuid:
+            snapshot = self._store.snapshot(routine)
+            if snapshot is not None:
+                row = next(
+                    (
+                        item
+                        for item in snapshot.in_flight
+                        if item.task_uuid == task_uuid
+                    ),
+                    None,
+                )
+        if not routine or not task_uuid:
+            reason = "unidentified"
+        elif (
+            event.operation != "pac.status"
+            or event.code is not None
+            or event.state not in _SETTLED_GRAPH_STATES
+        ):
+            reason = "non-terminal"
+        elif row is None or row.run_id != event.graph_id:
+            reason = "run-mismatch"
+        else:
+            reason = None
+        if reason is not None:
+            self._log(
+                "warn",
+                "routine.pac.effect_missing_reclaimed",
+                routine=routine,
+                task_uuid=task_uuid,
+                correlation_id=event.correlation_id,
+                operation=event.operation,
+                state=event.state,
+                code=event.code,
+                graph_id=event.graph_id,
+                reclaimed=False,
+                reason=reason,
+            )
+            return
+        # The authoritative completion both records the sample and retires the
+        # row, in one transaction: whether a pause happened to drop the effect is
+        # not allowed to become an input of the circuit breaker.  Once the row is
+        # gone a replay finds nothing, so it is a no-op by construction.
+        row = self._store.get_routine(routine)
+        active = self._active.get(routine)
+        if row is not None and active is not None:
+            outcomes = list(json.loads(row.outcomes))
+            outcomes.append(event.state)
+            window = active.spec.limits.circuit_breaker.window_runs
+            self._store.apply(
+                routine=replace(
+                    row,
+                    outcomes=json.dumps(outcomes[-window:]),
+                    version=self._next_version(),
+                ),
+                remove_in_flight=((routine, task_uuid),),
+            )
+            outcome_recorded = True
+        else:
+            # No parsed spec (quarantine, missing row): retire the row, but never
+            # guess an outcome window.
+            self._store.apply(remove_in_flight=((routine, task_uuid),))
+            outcome_recorded = False
+        self._log(
+            "warn",
+            "routine.pac.effect_missing_reclaimed",
+            routine=routine,
+            task_uuid=task_uuid,
+            correlation_id=event.correlation_id,
+            operation=event.operation,
+            state=event.state,
+            code=event.code,
+            graph_id=event.graph_id,
+            reclaimed=True,
+            outcome_recorded=outcome_recorded,
+            **({"outcome": event.state} if outcome_recorded else {}),
+        )
 
     def _status_completed(
         self,
@@ -269,6 +386,7 @@ class _RegistryEvents:
                             f"routine-alarm:{row.name}:{cycle.correlation_id}:"
                             f"route:{task.uuid}"
                         ),
+                        sender=_alarm_sender(active),
                     )
                 )
                 outcomes.append("escalated")
@@ -276,9 +394,24 @@ class _RegistryEvents:
             if slots <= 0:
                 if active.spec.mode == "scheduled":
                     slot = int(task.uuid.split(":", 1)[1])
-                    self._store.apply(schedule_events=((row.name, slot, "skipped", 1, "previous-occurrence-active", self._clock_ms()),))
+                    self._store.apply(
+                        schedule_events=(
+                            (
+                                row.name,
+                                slot,
+                                "skipped",
+                                1,
+                                "previous-occurrence-active",
+                                self._clock_ms(),
+                            ),
+                        )
+                    )
                 continue
-            target = (active.spec.actor or active.spec.produces or active.owner) if kind == "self" else str(value)
+            target = (
+                (active.spec.actor or active.spec.produces or active.owner)
+                if kind == "self"
+                else str(value)
+            )
             effect_id = f"routine-io-{uuid4().hex}"
             effects.append(
                 RoutinePacEffect(
@@ -387,6 +520,7 @@ class _RegistryEvents:
                     f"routine-start-failed:{row.name}:{cycle.correlation_id}:"
                     f"{effect.task_uuid}"
                 ),
+                sender=_alarm_sender(active),
             )
             alarms = (alarm,)
             self._log(
@@ -546,12 +680,19 @@ class _RegistryEvents:
                     if not isinstance(item, dict):
                         continue
                     value = item.get("escalate_to")
-                    if isinstance(value, str) and delivery_address_error(value) is not None:
+                    if (
+                        isinstance(value, str)
+                        and delivery_address_error(value) is not None
+                    ):
                         resolved = self._migrate_address(value.strip())
                         if resolved is None:
                             return None
                         rewrites.append(
-                            (f"policy.routes[{index}].escalate_to", value.strip(), resolved)
+                            (
+                                f"policy.routes[{index}].escalate_to",
+                                value.strip(),
+                                resolved,
+                            )
                         )
                         item["escalate_to"] = resolved
         timeout = document.get("on_task_timeout")
@@ -561,7 +702,9 @@ class _RegistryEvents:
                 resolved = self._migrate_address(value.strip())
                 if resolved is None:
                     return None
-                rewrites.append(("on_task_timeout.escalate_to", value.strip(), resolved))
+                rewrites.append(
+                    ("on_task_timeout.escalate_to", value.strip(), resolved)
+                )
                 timeout["escalate_to"] = resolved
         if not rewrites:
             return None
@@ -603,6 +746,7 @@ class _RegistryEvents:
                 f"`hyprial routine resume {row.name}` after review."
             ),
             idempotency_key=f"routine-paused:{row.name}:{correlation_id}",
+            sender=_alarm_sender(active),
         )
 
     def _publish_mutation(
@@ -620,7 +764,9 @@ class _RegistryEvents:
     def _require(self, correlation_id: str, name: str) -> RoutineRow | None:
         row = self._store.get_routine(name)
         if row is None:
-            self._reject(correlation_id, "ROUTINE_NOT_FOUND", f"no such routine: {name}")
+            self._reject(
+                correlation_id, "ROUTINE_NOT_FOUND", f"no such routine: {name}"
+            )
         return row
 
     def _reject(
@@ -634,8 +780,12 @@ class _RegistryEvents:
         if data:
             self._publish(
                 RoutineMutationRejected(
-                    correlation_id, self._generation, self._epoch,
-                    code, detail, data,
+                    correlation_id,
+                    self._generation,
+                    self._epoch,
+                    code,
+                    detail,
+                    data,
                 )
             )
             return
@@ -692,7 +842,11 @@ class _RegistryEvents:
     def _encode_tasks(tasks: tuple[SourceTask, ...]) -> str:
         return json.dumps(
             [
-                {"uuid": item.uuid, "description": item.description, "tags": list(item.tags)}
+                {
+                    "uuid": item.uuid,
+                    "description": item.description,
+                    "tags": list(item.tags),
+                }
                 for item in tasks
             ],
             sort_keys=True,

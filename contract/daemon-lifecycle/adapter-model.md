@@ -52,6 +52,65 @@ level once per entry (fields: `adapter`, `nextRetryAt`, `retryAttempt`) and
 
 Regression: `tests/daemon/adapters/lark/lifecycle/quarantine/test_self_heal.py`.
 
+## Lark removal reservation
+
+Configuration deletion first reserves the existing adapter actor and waits for
+its stop/deactivation effect. The reservation remains held after stop until the
+configuration transaction explicitly commits or rolls back. Start, ordinary
+stop, reload and restore cannot replace it; reconcile cannot restart that
+adapter. Existing in-flight lifecycle effects reject a new reservation even
+when an ordinary start deadline has already expired.
+
+The reservation has no automatic expiry. A caller timeout or actor-generation
+restart does not release it. An unresolved stop cannot be settled; a confirmed
+stop failure permits rollback but not commit. Commit removes the actor's
+configuration/status projection and advances its version before releasing the
+reservation. Rollback retains configuration and permits an explicit start.
+The reservation is daemon-memory custody, not a second durable config store.
+
+If a completed effect cannot enter the actor mailbox within the bounded handoff
+window, its immutable receipt stays in the same generation-stable authority.
+The next admitted actor command reconciles retained receipts before admitting
+new lifecycle work, using the existing resource-version fence. Only after
+reconciliation is the receipt released. Caller timeout still reports failure;
+recovery does not resubmit the effect, infer a successful stop or expire an
+unresolved reservation. A failed stop remains abort-only. Actor restart keeps
+these receipts; daemon-process restart follows the existing startup recovery.
+
+Existing `lifecycleCorrelationId` and `lifecycleAgeSeconds` diagnostics remain
+present while removal is reserved, including after the worker stopped. The
+opaque settlement token is never returned in those diagnostics. This internal
+capability does not by itself expose an HTTP deletion method or migrate the
+legacy removal caller; the domain must still bind and claim its preview and
+settle the actual file/registry transaction.
+
+Regression: `tests/daemon/adapters/lark/lifecycle/removal/`.
+
+### Agent pin custody
+
+The Agent authority provides a separate bounded reservation for each adapter.
+One mailbox command checks unsettled pin/home effects and Agent destruction,
+reads the current pin (including absence), and reserves that exact snapshot.
+Reservations survive Agent actor generations, never expire, and remain held
+while a token-authorized pin effect is unsettled. Capacity and shutdown cannot
+evict them. Ordinary pin/unpin and destruction of the snapshotted Agent refuse
+with the existing `AGENT_PIN_PENDING` code. Agent migration and adapter removal
+also exclude each other for the affected Agent.
+
+The reservation owner may only unpin the snapshot or restore that same Agent,
+with a strict SQLite expected-value comparison. A stale/mismatched token cannot
+change or release another reservation. P2 receive keeps its landing registry
+but sends pin writes through the Agent authority, as other daemon pin callers do.
+
+These are internal command/facade capabilities. Management deletion has not yet
+claimed this reservation around its file/registry transaction; the HTTP/CLI
+delete path is not enabled by this foundation. Daemon-process restart does not
+preserve these memory reservations. The eventual deletion owner must reconcile
+persisted configuration, desired state, and pin facts before admitting writes;
+it cannot infer completion from an empty reservation map or a live adapter view.
+
+Regressions: `tests/identity/agents/registry/pins/test_removal.py`.
+
 ## Lark outage backfill
 
 The adapter SQLite store retains a per-adapter, per-chat `observed_ms` high-water
@@ -134,8 +193,10 @@ and `test_pending_progress.py` in the same directory.
 Both legacy `.v1` files and SQLite schemas 1/2 migrate atomically to schema 3.
 Legacy adapter rows are removed from the worker table and stored in `adapters`.
 Unknown kinds/versions, malformed arrays and duplicate adapter names fail loudly.
-Pins in the agents database remain unchanged. Unresolved `channelPins` remain
-staged; migration does not resolve or drop them.
+Pins in the agents database remain unchanged. The retired `channelPins` key is
+not read (F1b): migration neither resolves nor carries it, and rows left in an
+upgraded database's `channel_pins` table stay untouched. Downgrade does not
+restore `channelPins` either: the rebuilt schema-2 document omits the key.
 
 The first pre-migration document, original schema version and SHA256 are stored
 in `adapter_model_backup` in the same transaction before schema promotion.
@@ -152,13 +213,18 @@ inbox or lifecycle operation journal. Use it with the new binary after stopping
 the daemon, then install/start the older binary. Do not start the new binary
 between restoration and downgrade: that migrates again.
 
+The pre-adapter-model schema-2 binary reads the `channel_pins` table of
+`state/lifecycle-operations.sqlite3` at load and does not create it. The current
+version no longer creates that table, so a database first migrated from a legacy
+`.v1` document has none. Before starting that binary after a successful
+downgrade, the operator ensures the table exists with
+`CREATE TABLE IF NOT EXISTS channel_pins (channel TEXT PRIMARY KEY, agent TEXT NOT NULL);`
+and never drops it while a rollback to that binary remains possible.
+
 A new home without a legacy backup cannot use this command. If restoration is
 refused, retain the current binary, state and backup and ask an operator to
 reconcile the changed intent. Never edit schemaVersion or delete state to force
-a downgrade. Runtime-only downgrade refuses schema 3 with the stable code
-`RUNTIME_DOWNGRADE_REFUSED` and the two-step remedy; to reach a pre-schema2
-binary, first restore/install a schema2-capable binary, then use its existing
-runtime downgrade command after retiring runtime resources.
+a downgrade.
 
 ## Evidence boundaries
 

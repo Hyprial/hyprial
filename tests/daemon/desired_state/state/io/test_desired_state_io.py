@@ -20,6 +20,11 @@ from hyprial.daemon.impl.state_persistence import (
 )
 
 
+def test_port_requires_an_actor_host() -> None:
+    with pytest.raises(ValueError, match="desired-state I/O requires an actor host"):
+        DesiredStateIoPort(object(), complete=lambda event: AdmissionResult.ACCEPTED)
+
+
 def test_request_refuses_an_untyped_cost_origin() -> None:
     with pytest.raises(TypeError, match="cost_origin must be a StateCostOrigin"):
         DesiredStateIoRequest(
@@ -31,7 +36,7 @@ def test_request_refuses_an_untyped_cost_origin() -> None:
         )
 
 
-def test_completion_has_one_accepted_handoff_until_owner_releases_it() -> None:
+def test_completion_has_one_accepted_handoff_until_owner_releases_it(actor_host) -> None:
     class Store:
         supports_state_cost_origin = True
 
@@ -55,7 +60,8 @@ def test_completion_has_one_accepted_handoff_until_owner_releases_it() -> None:
         return AdmissionResult.ACCEPTED
 
     port = DesiredStateIoPort(
-        Store(), complete=complete, capacity=1, retry_seconds=0.001
+        Store(), complete=complete, capacity=1, retry_seconds=0.001,
+        actor_host=actor_host,
     )
     request = DesiredStateIoRequest(
         "one-handoff",
@@ -80,7 +86,7 @@ def test_completion_has_one_accepted_handoff_until_owner_releases_it() -> None:
         assert port.close(1.0)
 
 
-def test_late_state_completion_is_joined_without_readmission() -> None:
+def test_late_state_completion_is_joined_without_readmission(actor_host) -> None:
     class Store:
         supports_state_cost_origin = True
         calls = 0
@@ -120,6 +126,7 @@ def test_late_state_completion_is_joined_without_readmission() -> None:
         late_result=late_result,
         capacity=1,
         retry_seconds=0.001,
+        actor_host=actor_host,
     )
     request = DesiredStateIoRequest(
         "operation",

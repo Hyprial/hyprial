@@ -7,22 +7,19 @@ Agent/Harness ports; only the management actor releases the lease.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import EffectLane, EffectRequest, EffectCompleted
+from hyprial.kernel import ActorSpec, AdmissionResult
+from hyprial.kernel import EffectRequest, EffectCompleted
 from hyprial.daemon.impl.operations.management import (
     AdapterRegistrySnapshot,
     AdapterRemovalTransaction,
-    EnsureSquireRegistryCommand,
     ManagementError,
     RegistryManagementHandler,
-    SquireRegistryResult,
 )
 
 
@@ -30,6 +27,7 @@ from hyprial.daemon.impl.operations.management import (
 class BeginAdapterRemoval:
     lease: str
     name: str
+    recovery_snapshot: AdapterRegistrySnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +54,7 @@ class AbandonAdapterRemoval:
 class ManagementRequest:
     operation_id: str
     payload: (
-        EnsureSquireRegistryCommand
-        | BeginAdapterRemoval
+        BeginAdapterRemoval
         | CommitAdapterRemoval
         | RollbackAdapterRemoval
         | EndAdapterRemoval
@@ -67,7 +64,6 @@ class ManagementRequest:
 @dataclass(frozen=True, slots=True)
 class ManagementOutcome:
     snapshot: AdapterRegistrySnapshot | None = None
-    payload: bytes | None = None
     error: str | None = None
 
 
@@ -96,13 +92,17 @@ class _RemovalLease:
 
 class RegistryManagementAuthority:
     def __init__(
-        self, harnesses, agents, *, start_harness=None, capacity=64, timeout=30.0
+        self,
+        harnesses,
+        *,
+        capacity=64,
+        timeout=30.0,
+        actor_host=None,
     ):
+        if actor_host is None:
+            raise ValueError("registry management authority requires an actor host")
         self._harnesses = harnesses
-        self._agents = agents
-        self._handler = RegistryManagementHandler(
-            harnesses, agents, start_harness=start_harness
-        )
+        self._handler = RegistryManagementHandler(harnesses)
         self._transactions = {}  # only the effect executor may access these
         self._guard = threading.Lock()
         self._pending = {}
@@ -114,8 +114,7 @@ class RegistryManagementAuthority:
         self._closed = False
         self._capacity = capacity
         self._timeout = timeout
-        self._runtime = ActorRuntime()
-        self._handle = self._runtime.start(
+        self._cell = actor_host.spawn(
             ActorSpec(
                 name="registry-management",
                 handler_factory=lambda: self._receive,
@@ -124,10 +123,10 @@ class RegistryManagementAuthority:
         )
         # Control commands retain reserved room to commit/rollback/end a lease
         # even when unrelated requests fill the normal admission window.
-        self._effects = EffectLane(
+        self._effects = actor_host.effect_lane(
             name="registry-management-io",
             execute=self._execute,
-            complete=lambda event: self._runtime.tell(self._handle, event),
+            complete=self._cell.tell,
             capacity=capacity + 4,
         )
 
@@ -146,7 +145,7 @@ class RegistryManagementAuthority:
             if admission is not AdmissionResult.ACCEPTED:
                 raise ManagementError(f"management effects {admission.value}")
             self._pending[request.operation_id] = (request, reply)
-            admission = self._runtime.tell(self._handle, request)
+            admission = self._cell.tell(request)
             if admission is not AdmissionResult.ACCEPTED:
                 self._pending.pop(request.operation_id)
                 self._effects.cancel_reservation(request.operation_id, 1)
@@ -162,7 +161,7 @@ class RegistryManagementAuthority:
                         or self._active_lease == payload.lease
                     ):
                         self._abandoned.add(payload.lease)
-                self._runtime.tell(self._handle, AbandonAdapterRemoval(payload.lease))
+                self._cell.tell(AbandonAdapterRemoval(payload.lease))
             raise TimeoutError(
                 f"management operation {request.operation_id} remains accepted"
             )
@@ -197,11 +196,9 @@ class RegistryManagementAuthority:
             isinstance(request.payload, BeginAdapterRemoval)
             and result.error is not None
         ):
-            # A failed snapshot owns no file-mutation lease. Retire a timeout's
-            # cleanup marker even if its wake command could not be admitted.
             with self._guard:
                 self._abandoned.discard(request.payload.lease)
-        release = isinstance(request.payload, EndAdapterRemoval) or (
+        release = (isinstance(request.payload, EndAdapterRemoval) and result.error is None) or (
             isinstance(request.payload, BeginAdapterRemoval)
             and result.error is not None
         )
@@ -209,7 +206,7 @@ class RegistryManagementAuthority:
         if release:
             with self._guard:
                 self._active_lease = None
-        if isinstance(request.payload, EndAdapterRemoval):
+        if isinstance(request.payload, EndAdapterRemoval) and result.error is None:
             with self._guard:
                 self._abandoned.discard(request.payload.lease)
                 self._cleanup_leases.discard(request.payload.lease)
@@ -238,7 +235,7 @@ class RegistryManagementAuthority:
             )
             reply.ready.set()
             return
-        normal = isinstance(payload, (EnsureSquireRegistryCommand, BeginAdapterRemoval))
+        normal = isinstance(payload, BeginAdapterRemoval)
         if normal and self._active_lease is not None:
             self._deferred.append(request)
             return
@@ -292,21 +289,22 @@ class RegistryManagementAuthority:
     def _execute(self, request):
         payload = request.payload
         try:
-            if isinstance(payload, EnsureSquireRegistryCommand):
-                value = self._handler.ensure_squire(payload)
-                return ManagementOutcome(
-                    payload=json.dumps(value.to_payload()).encode()
-                )
             if isinstance(payload, BeginAdapterRemoval):
-                snapshot = AdapterRegistrySnapshot(
+                recovery = payload.recovery_snapshot
+                if recovery is not None and recovery.harness.name != payload.name:
+                    raise ManagementError("recovery preimage targets a different adapter")
+                snapshot = recovery or AdapterRegistrySnapshot(
                     self._harnesses.snapshot_adapter_registration(payload.name),
-                    self._agents.pins().get(payload.name),
+                    None,
                 )
                 self._transactions[payload.lease] = AdapterRemovalTransaction(
-                    self._harnesses, self._agents, snapshot
+                    self._harnesses, snapshot, recovery=recovery is not None,
                 )
                 return ManagementOutcome(snapshot=snapshot)
             if isinstance(payload, EndAdapterRemoval):
+                transaction = self._transactions.get(payload.lease)
+                if transaction is not None and transaction.unsettled:
+                    raise ManagementError("adapter registry compensation remains unsettled")
                 self._transactions.pop(payload.lease, None)
                 return ManagementOutcome()
             transaction = self._transactions[payload.lease]
@@ -320,14 +318,10 @@ class RegistryManagementAuthority:
                 self._errors[request.operation_id] = error
             return ManagementOutcome(error=type(error).__name__)
 
-    def ensure_squire(self, command):
-        result = self._call(command)
-        return SquireRegistryResult.from_payload(json.loads(result.payload))
-
     @contextmanager
-    def adapter_removal(self, name):
+    def adapter_removal(self, name, *, recovery_snapshot=None):
         token = uuid4().hex
-        snapshot = self._call(BeginAdapterRemoval(token, name)).snapshot
+        snapshot = self._call(BeginAdapterRemoval(token, name, recovery_snapshot)).snapshot
         lease = _RemovalLease(self, token, snapshot)
         try:
             yield lease
@@ -357,4 +351,4 @@ class RegistryManagementAuthority:
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
             return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        return self._cell.stop(max(0.0, deadline - time.monotonic()))

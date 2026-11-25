@@ -13,6 +13,7 @@ Sources are the harnesses' own documented locations, not guesses:
           2026-10-13 autodl failure was an empty pair).  When
           ``PI_CODING_AGENT_DIR`` names pi's own root, the two files are read
           from there instead.
+- agy     ``~/.gemini/antigravity-cli/antigravity-oauth-token``
 
 A provider may own more than one file; ``--source`` is therefore only accepted
 for single-file providers, where naming one path is unambiguous.
@@ -30,8 +31,8 @@ from typing import Any
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
-from hyprial.kernel import ipc_errors
-from hyprial.shell.impl.cli.output import warn
+from hyprial.error import codes
+from hyprial.shell.impl.cli.output import CliResult, warn
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 #: provider -> the files the harness reads, relative to the operator's HOME.
@@ -39,6 +40,7 @@ PROVIDER_SOURCE_FILES: dict[str, tuple[str, ...]] = {
     "claude": (".claude/.credentials.json",),
     "codex": (".codex/auth.json",),
     "pi": (".pi/agent/auth.json", ".pi/agent/models-store.json"),
+    "agy": (".gemini/antigravity-cli/antigravity-oauth-token",),
 }
 
 
@@ -74,14 +76,14 @@ def resolve_provider_sources(
     if relative is None:
         known = ", ".join(sorted(PROVIDER_SOURCE_FILES))
         raise ProviderSourceError(
-            ipc_errors.PROVIDER_UNSUPPORTED,
+            codes.PROVIDER_UNSUPPORTED,
             f"provider {provider!r} is not supported; supported: {known}",
         )
 
     if source is not None:
         if len(relative) > 1:
             raise ProviderSourceError(
-                ipc_errors.PROVIDER_SOURCE_AMBIGUOUS,
+                codes.PROVIDER_SOURCE_AMBIGUOUS,
                 f"provider {provider!r} reads {len(relative)} files "
                 f"({', '.join(relative)}); --source names one file",
             )
@@ -103,24 +105,24 @@ def resolve_provider_sources(
 def _require_readable_regular_file(path: Path, provider: str) -> None:
     if path.is_symlink():
         raise ProviderSourceError(
-            ipc_errors.PROVIDER_UNSAFE_PATH,
+            codes.PROVIDER_UNSAFE_PATH,
             f"{path} is a symlink; name the real file",
         )
     try:
         metadata = path.lstat()
     except OSError as error:
         raise ProviderSourceError(
-            ipc_errors.PROVIDER_SOURCE_MISSING,
+            codes.PROVIDER_SOURCE_MISSING,
             f"{provider} login not found at {path}: {error.strerror or error}",
         ) from error
     if not stat.S_ISREG(metadata.st_mode):
         raise ProviderSourceError(
-            ipc_errors.PROVIDER_UNSAFE_PATH,
+            codes.PROVIDER_UNSAFE_PATH,
             f"{path} is not a regular file",
         )
     if metadata.st_size == 0:
         raise ProviderSourceError(
-            ipc_errors.PROVIDER_SOURCE_MISSING,
+            codes.PROVIDER_SOURCE_MISSING,
             f"{path} is empty; log in with the {provider} CLI first",
         )
 
@@ -149,7 +151,7 @@ def _pi_agent_dir(provider: str) -> Path | None:
 def _refuse_in_worker_shell(services: Any) -> None:
     if _addressed_actor_or_none() is not None:
         raise services.CliError(
-            ipc_errors.CALLER_NOT_AUTHORIZED,
+            codes.CALLER_NOT_AUTHORIZED,
             "an agent shell may not change the machine's provider default; "
             "run this from the operator's own shell",
         )
@@ -165,16 +167,78 @@ def _addressed_actor(services: Any) -> str:
     actor = os.environ.get(_WORKER_ACTOR_ENV, "").strip()
     if not actor:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             "no agent is addressed by this shell; pass --actor <NAME>",
         )
     return actor
 
 
+OWNER_KEY_WORKER_ENV = (
+    "HYPRIAL_WORKER_ACTOR",
+    "HYPRIAL_WORKER_SESSION_REF",
+    "HYPRIAL_MANAGED_WORKER",
+)
+OWNER_SECRET_CAP_BYTES = 16384
+OWNER_KEY_NOT_LISTED_CODE = codes.PROVIDER_KEY_NOT_FOUND
+
+
+def refuse_owner_key_in_worker_shell(services: Any, *, command_label: str = "provider key") -> None:
+    """Refuse an owner-key command before any IPC when a worker owns this shell."""
+    if any(os.environ.get(name) for name in OWNER_KEY_WORKER_ENV):
+        raise services.CliError(
+            codes.CALLER_NOT_AUTHORIZED,
+            f"{command_label} commands require the operator's own shell",
+        )
+
+
+def read_owner_secret(services: Any, *, requested: bool, flag: str) -> str:
+    """Read one secret line from a non-TTY stdin (contract §6); never echo it."""
+    if not requested:
+        raise services.CliError(
+            codes.INVALID_ARGUMENT, f"the API key is read from stdin only; pass {flag}"
+        )
+    if services._stdin_isatty():
+        raise services.CliError(
+            codes.INVALID_ARGUMENT,
+            "the secret is read from stdin only and a terminal is refused; pipe it in",
+        )
+    stream = getattr(sys.stdin, "buffer", None)
+    if stream is not None:
+        raw = stream.read(OWNER_SECRET_CAP_BYTES + 2)
+    else:
+        raw = sys.stdin.read(OWNER_SECRET_CAP_BYTES + 2).encode("utf-8", "surrogatepass")
+    if raw.endswith(b"\n"):
+        raw = raw[:-1]
+    if not raw or len(raw) > OWNER_SECRET_CAP_BYTES or b"\n" in raw or b"\r" in raw:
+        raise services.CliError(
+            codes.INVALID_ARGUMENT,
+            f"stdin must hold exactly one non-empty line of at most {OWNER_SECRET_CAP_BYTES} bytes",
+        )
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise services.CliError(
+            codes.INVALID_ARGUMENT, "the secret on stdin must be UTF-8"
+        ) from None
+
+
+def run_owner_key_request(method: str, build: Any, render: Any, json_output: bool) -> None:
+    """Refuse worker shells, build params (may read stdin), call the daemon once."""
+    services = get_services()
+
+    def operation() -> CliResult:
+        refuse_owner_key_in_worker_shell(services)
+        params = build(services)
+        result = services.runtime.request(method, params)
+        return CliResult({"ok": True, **result}, render=render)
+
+    services.runtime.execute(operation, json_output=json_output)
+
+
 @provider_app.command("login")
 def agent_provider_login(
     provider: str = typer.Argument(
-        ..., help="Harness: claude, codex, or pi (the native login files are per harness)."
+        ..., help="Harness: claude, codex, pi, or agy (the native login files are per harness)."
     ),
     actor: str | None = typer.Option(
         None,
@@ -240,15 +304,15 @@ def agent_provider_login(
         if target is None and not make_default:
             target = _addressed_actor(services)
         if make_default and provider == "claude" and target is None:
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, "Claude defaults require --actor OWNER; re-run login --default --actor OWNER")
+            raise services.CliError(codes.INVALID_ARGUMENT, "Claude defaults require --actor OWNER; re-run login --default --actor OWNER")
         if setup_token:
             if provider != "claude" or source is not None or actor is None or sys.stdin.isatty():
-                raise services.CliError(ipc_errors.INVALID_ARGUMENT, "--setup-token requires claude, --actor, non-TTY stdin, and no --source")
+                raise services.CliError(codes.INVALID_ARGUMENT, "--setup-token requires claude, --actor, non-TTY stdin, and no --source")
             raw = sys.stdin.read(16386)
             token = raw.strip()
             if (len(raw) > 16385 or not token or len(token) > 16384
                     or "\x00" in token or any(char.isspace() for char in token)):
-                raise services.CliError(ipc_errors.INVALID_ARGUMENT, "stdin must contain one non-empty setup token")
+                raise services.CliError(codes.INVALID_ARGUMENT, "stdin must contain one non-empty setup token")
             return services.runtime.request("agent.provider.login", {
                 "actor": target, "provider": provider, "setupToken": token,
                 "force": force, "makeDefault": make_default,
@@ -288,7 +352,7 @@ def read_provider_documents(
             documents.append((path.name, path.read_bytes()))
         except OSError as error:
             raise services.CliError(
-                ipc_errors.PROVIDER_SOURCE_MISSING,
+                codes.PROVIDER_SOURCE_MISSING,
                 f"{provider} login at {path} could not be read: {error.strerror}",
             ) from error
     return documents
@@ -354,7 +418,7 @@ def agent_provider_default(
 
 @provider_app.command("logout")
 def agent_provider_logout(
-    provider: str = typer.Argument(..., help="Harness: claude, codex, or pi (the native login files are per harness)."),
+    provider: str = typer.Argument(..., help="Harness: claude, codex, pi, or agy (the native login files are per harness)."),
     actor: str | None = typer.Option(
         None,
         "--actor",

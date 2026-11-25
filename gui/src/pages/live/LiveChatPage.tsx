@@ -1,21 +1,46 @@
 import { useState, useSyncExternalStore } from 'react';
 import { Button } from '../../components/primitives';
 import { AgentChatSection } from '../../features/agent-chat';
+import { useAgentDirectory } from '../../features/agents';
+import { MessageSessionsSection } from '../../features/chat-channels';
+import { useGuiCapabilities } from '../../app/capabilities';
 import type { LiveRuntime } from './runtime';
+import { useChatTargetInfo } from '../chat-target-info';
 import './live.css';
-export type ChatPageRuntime = Pick<LiveRuntime, 'status' | 'error' | 'chat'> & { readonly sourceLabel?: string };
-export function LiveChatPage({ live }: { readonly live: ChatPageRuntime }) {
+export type ChatPageRuntime = Pick<LiveRuntime, 'status' | 'error' | 'chat'> & {
+  readonly sourceLabel?: string;
+  /** Data-source notes for the status row; isolated fixtures supply them, the real service does not. */
+  readonly sourceNote?: { readonly loading: string; readonly ready: string };
+};
+
+/** Composition input describing an isolated chat data source. */
+export interface ChatSourceDescriptor {
+  readonly label: string;
+  readonly loadingNote: string;
+  readonly readyNote: string;
+}
+
+export function LiveChatPage({ live, onManageTarget }: { readonly live: ChatPageRuntime; readonly onManageTarget?: (targetId: string) => void }) {
+  const { messageRead, agents } = useGuiCapabilities();
+  const agentDirectory = useAgentDirectory(agents);
   const state = useSyncExternalStore(live.chat.subscribe, live.chat.getSnapshot);
   const [infoExpanded, setInfoExpanded] = useState(false);
   const targetId = state.activeTargetId;
+  const targetInfo = useChatTargetInfo(state.targets.find(target => target.id === targetId),
+    agentDirectory.status === 'ready' ? agentDirectory.rows : []);
   const entry = targetId ? state.entries[targetId] : undefined;
   const ready = !entry?.operation?.confirmationPending && live.status === 'ready' && state.status === 'ready' && !!entry?.conversationId &&
     state.targets.some((target) => target.id === targetId && target.availability === 'available');
+  const loading = live.status === 'loading' || state.status === 'loading';
+  const statusCopy = live.status === 'error' || state.status === 'error'
+    ? live.error ?? state.error
+    : loading
+      ? live.sourceNote?.loading ?? '正在连接聊天服务…'
+      : live.sourceNote?.ready ?? '';
   return <div className="live-chat-page">
     <div className="live-status-row" role="status">
       {live.sourceLabel && <span>{live.sourceLabel}</span>}
-      {live.status === 'error' || state.status === 'error' ? live.error ?? state.error :
-        live.status === 'loading' || state.status === 'loading' ? import.meta.env.DEV && live.sourceLabel ? '正在加载隔离聊天场景…' : '正在连接真实聊天服务…' : import.meta.env.DEV && live.sourceLabel ? '以下为隔离契约演示数据。' : '聊天记录来自当前本机服务。'}
+      {statusCopy}
       {targetId && <><Button variant="ghost" onClick={() => { void live.chat.refresh(targetId); }}>刷新消息</Button>
         <Button variant="ghost" onClick={() => { void live.chat.reloadHistory(targetId); }}>重新加载历史</Button></>}
       {entry?.operation?.status === 'unknown' && targetId &&
@@ -26,7 +51,9 @@ export function LiveChatPage({ live }: { readonly live: ChatPageRuntime }) {
         <Button onClick={() => live.chat.resetFailure(targetId)}>修改后重新发送</Button>}
     </div>
     {entry?.partial && <p role="status">正在继续加载历史消息。<Button variant="ghost" onClick={() => { void live.chat.refresh(); }}>继续加载消息</Button></p>}
-    <AgentChatSection targets={state.targets} targetState={state.status} targetError={state.error} activeTargetId={targetId}
+    {messageRead !== undefined && <MessageSessionsSection api={messageRead} />}
+    <AgentChatSection targets={state.targets} targetInfo={targetInfo} localAgentUris={agentDirectory.status === 'ready' ? agentDirectory.rows.map((row) => row.uri) : undefined}
+      targetState={state.status} targetError={state.error} activeTargetId={targetId}
       messages={entry?.messages ?? []} draft={targetId ? state.drafts[targetId] ?? '' : ''}
       capability={ready ? 'ready' : live.status === 'error' ? 'unavailable' : 'unconfirmed'}
       operation={entry?.operation} successHint="消息已被服务接收，回复以聊天记录为准。"
@@ -35,6 +62,7 @@ export function LiveChatPage({ live }: { readonly live: ChatPageRuntime }) {
       onSelectTarget={(id) => { void live.chat.select(id); }}
       onDraftChange={(id, value) => live.chat.setDraft(id, value)}
       onSend={(id, text) => { void live.chat.send(id, text); }}
-      onRetry={(key) => { void live.chat.retry(key); }} />
+      onRetry={(key) => { void live.chat.retry(key); }}
+      onManageTarget={onManageTarget} />
   </div>;
 }

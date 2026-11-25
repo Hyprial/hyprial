@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 from hyprial.daemon.impl.autoupdate import (
     AUTOUPDATE_CHILD_ENV,
@@ -26,10 +25,8 @@ from hyprial.daemon.impl.autoupdate.actor import AutoUpdateAuthority
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.runtime import ReconcileSummary
 from hyprial.daemon.impl.inbox import InboxService, MemoryDeliveryTransport
-from hyprial.daemon.impl.squire import UserDeliveryRequest, UserDeliveryResult
 
 
-from hyprial.shell.impl.cli.commands.upgrade import commands as upgrade_commands
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _app_injections
 
 
@@ -158,19 +155,6 @@ class _FastRuntime:
         pass
 
 
-class _ConfirmingUserBus:
-    def __init__(self) -> None:
-        self.requests: list[UserDeliveryRequest] = []
-
-    def deliver(self, request: UserDeliveryRequest) -> UserDeliveryResult:
-        self.requests.append(request)
-        return UserDeliveryResult(
-            request.message_id,
-            True,
-            native_message_id="native-confirmation",
-        )
-
-
 def _request(socket_path: Path, method: str) -> dict[str, Any]:
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(1.5)
@@ -218,6 +202,8 @@ def test_never_finishing_update_does_not_block_accept() -> None:
         state_dir=state,
         runner=hung_runner,
         hyprial_home=_home_with_auto_upgrade(root),
+        actor_host=app._agent_session_domains.actor_hosts.host_for("autoupdate"),
+        scheduler=app._maintenance_scheduler,
     )
     app._autoupdate = scheduler
     scheduler.start()
@@ -242,123 +228,3 @@ def test_never_finishing_update_does_not_block_accept() -> None:
         dispatcher.join(timeout=2.0)
         app._close()
         shutil.rmtree(root, ignore_errors=True)
-
-
-def test_restart_notice_contains_recovery_facts_and_waits_for_bus_receipt() -> None:
-    root = Path(tempfile.mkdtemp(prefix="hyprial-au-notify-", dir=hyprial_test_tmp_root()))
-    state = root / "state"
-    state.mkdir()
-    app = DaemonApplication(
-        state_dir=state,
-        socket_path=state / "daemon.sock",
-        node_id="notify-node",
-        owner="allen",
-        hyprial_home=root / "home",
-        **_app_injections(),
-    )
-    bus = _ConfirmingUserBus()
-    app._user_delivery = bus  # type: ignore[assignment]
-    try:
-        result = app._deliver_autoupdate_restart_notification(
-            {
-                "oldVersion": "0.4.1",
-                "newVersion": "0.4.2",
-                "resolvedTag": "v0.4.2",
-                "resolvedCommit": "b" * 40,
-                "expectedInterruptionSeconds": 90,
-            }
-        )
-        assert result["deliveryConfirmed"] is True
-        assert result["nativeMessageId"] == "native-confirmation"
-        [request] = bus.requests
-        assert request.sender == "agent:allen:notify-node:squire"
-        assert "0.4.1 → 0.4.2" in request.message
-        # 3c116ad2 P3: no duration is promised any more -- fleet restores
-        # measured 2-10 minutes against the old "不超过 N 秒" wording, and
-        # the follow-up notice, not a number, closes the interruption.
-        assert "恢复完成会再通知" in request.message
-        assert "90" not in request.message and "不超过" not in request.message
-
-        def assert_read_only_restart_guidance(text: str) -> None:
-            assert "--connect" not in text
-            assert "hyprial init" not in text
-
-        # Non-empty control: this is the exact unsafe clause from dev@87f43cdc.
-        old_notice = (
-            "若长时间仍未恢复，请运行 hyprial daemon status --json 检查状态，并用 "
-            "hyprial init --connect '' --json 重新拉起"
-        )
-        with pytest.raises(AssertionError):
-            assert_read_only_restart_guidance(old_notice)
-        assert_read_only_restart_guidance(request.message)
-        assert "hyprial daemon status --json" in request.message
-        assert "daemon.jsonl" in request.message
-    finally:
-        app._close()
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_restart_notice_id_changes_for_same_version_new_commit() -> None:
-    """Moving track tags must not collapse every upgrade into one old receipt."""
-
-    root = Path(tempfile.mkdtemp(prefix="hyprial-au-notify-id-", dir=hyprial_test_tmp_root()))
-    state = root / "state"
-    state.mkdir()
-    app = DaemonApplication(
-        state_dir=state,
-        socket_path=state / "daemon.sock",
-        node_id="notify-node",
-        owner="allen",
-        hyprial_home=root / "home",
-        **_app_injections(),
-    )
-    bus = _ConfirmingUserBus()
-    app._user_delivery = bus  # type: ignore[assignment]
-    try:
-        base = {
-            "oldVersion": "0.4.2",
-            "newVersion": "0.4.2",
-            "resolvedTag": "dev",
-            "expectedInterruptionSeconds": 90,
-        }
-        app._deliver_autoupdate_restart_notification(
-            {**base, "resolvedCommit": "a" * 40}
-        )
-        app._deliver_autoupdate_restart_notification(
-            {**base, "resolvedCommit": "b" * 40}
-        )
-        first, second = bus.requests
-        assert first.message_id != second.message_id
-        assert first.idempotency_key != second.idempotency_key
-    finally:
-        app._close()
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_the_restart_notice_no_longer_promises_a_fixed_duration() -> None:
-    """3c116ad2 T5 (source scan): the notice wording promises no duration.
-
-    The old promise -- "预计服务中断不超过 N 秒" with N a CLI-side literal
-    90 -- was written against a wait that no longer exists: fleet restores
-    measured 2-10 minutes against it.  The daemon's fallback default for the
-    (still-validated) field stays, but neither side's notice text may state
-    a duration any more.
-    """
-
-    from tests.daemon.startup.test_startup_event_reconciliation import _native_application_source
-    cli_source = Path(upgrade_commands.__file__).read_text("utf-8")
-    app_source = _native_application_source()
-    assert '"expectedInterruptionSeconds": 90' not in cli_source, (
-        "the CLI sends a literal 90 as the interruption budget again; it "
-        "must send the fleet-derived value"
-    )
-    assert "不超过" not in app_source and "不超过" not in cli_source, (
-        "the notice promises an upper bound on interruption time again"
-    )
-    assert "预计服务中断" not in app_source, (
-        "the daemon's notice still speaks a specific interruption duration"
-    )
-    assert "恢复完成会再通知" in app_source, (
-        "the promised closure is the follow-up notice, and the wording that "
-        "carries it is gone"
-    )

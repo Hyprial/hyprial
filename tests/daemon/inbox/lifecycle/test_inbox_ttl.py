@@ -8,6 +8,10 @@ The fix aligns the inbox with the outbox/custody hold contract
 ``expires_at_ms`` counted from THIS node's clock (``received_at_ms``, section
 6 of docs/notes/design-delivery-pull-model.md), and the daemon's periodic
 reconcile evicts unconsumed rows past the deadline.
+
+Slice GC4 (group chat draft §4.7): a group row (its conversation id a group
+id) is one of the prune notice exclusions: there is one per woken member,
+so an expiry would tell the author N times; the group document is the copy.
 """
 
 from __future__ import annotations
@@ -356,6 +360,10 @@ def test_prune_notice_falls_back_to_canonical_sender_node(tmp_path: Path) -> Non
             False,
         ),
         (_message("workflow-request-delivery"), False),
+        (
+            replace(_message("group-row"), conversation_id="g.groupexampleaaaaaaaaaaaaaa"),
+            False,
+        ),
     ],
 )
 def test_prune_notice_exclusions(

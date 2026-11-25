@@ -5,10 +5,13 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, TYPE_CHECKING
 from uuid import uuid4
 
-from hyprial.kernel import AdmissionResult, EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import AdmissionResult, EffectCompleted, EffectRequest
+
+if TYPE_CHECKING:
+    from hyprial.kernel import EffectLane
 
 from .models import ServiceConnectError
 
@@ -58,10 +61,10 @@ def _safe_execute(execute, request: object):
 
 
 class _BoundedLane(Generic[T]):
-    def __init__(self, name: str, execute, *, capacity: int = 16) -> None:
+    def __init__(self, name: str, execute, *, actor_host, capacity: int = 16) -> None:
         self._lock = threading.Lock()
         self._waiters: dict[tuple[str, int], _Waiter[T]] = {}
-        self._lane: EffectLane[object, _Outcome[T]] = EffectLane(
+        self._lane: EffectLane[object, _Outcome[T]] = actor_host.effect_lane(
             name=name,
             execute=lambda request: _safe_execute(execute, request),
             complete=self._complete,
@@ -150,12 +153,18 @@ def _control(request: object):
 class ServiceIo:
     """Own the three external-effect lanes used by one service manager."""
 
-    def __init__(self, *, capacity: int = 16) -> None:
-        self._catalog = _BoundedLane("service-catalog", _read_catalog, capacity=capacity)
-        self._protected = _BoundedLane(
-            "service-protected", _read_protected, capacity=capacity
+    def __init__(self, *, capacity: int = 16, actor_host=None) -> None:
+        if actor_host is None:
+            raise ValueError("service I/O requires an actor host")
+        self._catalog = _BoundedLane(
+            "service-catalog", _read_catalog, capacity=capacity, actor_host=actor_host
         )
-        self._control = _BoundedLane("service-control", _control, capacity=capacity)
+        self._protected = _BoundedLane(
+            "service-protected", _read_protected, capacity=capacity, actor_host=actor_host
+        )
+        self._control = _BoundedLane(
+            "service-control", _control, capacity=capacity, actor_host=actor_host
+        )
 
     def read_catalog(self, registry: object, timeout: float):
         return self._catalog.call(CatalogRead(registry), timeout)

@@ -32,7 +32,7 @@
     },
     "GET /readyz": {
       "auth": true,
-      "body": "ready document; 503 when restoring/not-ready"
+      "body": "ready document; 503 when restoring/not-ready; a route that is not-ready only for the daemon phase (reason ACCOUNT_REQUIRED or BOOTSTRAP_ONLY) does not make the transport not ready"
     },
     "GET /daemon/request": {
       "auth": true,
@@ -100,7 +100,47 @@
       },
       "code": {
         "type": "string",
-        "pattern": "^[A-Z][A-Z0-9_]*$"
+        "anyOf": [
+          { "pattern": "^[A-Z][A-Z0-9_]*$" },
+          {
+            "enum": [
+              "already-exists",
+              "ambiguous-path",
+              "ambiguous-space",
+              "bad-cursor",
+              "blob-unavailable",
+              "checkout-io",
+              "closed",
+              "content-pending",
+              "cross-space-uri",
+              "invalid-argument",
+              "invalid-uri",
+              "log-key-conflict",
+              "no-holder-online",
+              "not-a-member",
+              "not-owner",
+              "out-of-range",
+              "pending-meta",
+              "projection-behind",
+              "protected-path",
+              "purged",
+              "resource-exhausted",
+              "snapshot-barrier",
+              "snapshot-unavailable",
+              "space-purge-incomplete",
+              "space-purge-refused",
+              "stale-plan",
+              "stale-write",
+              "sync-peer-incompatible",
+              "too-large",
+              "unavailable",
+              "unknown-blob",
+              "unknown-doc",
+              "unknown-space",
+              "unsafe-space-path"
+            ]
+          }
+        ]
       },
       "message": {
         "type": "string",
@@ -186,9 +226,10 @@
   "identity": {
     "modes": [
       "none",
-      "local-operator-selector"
+      "local-owner-selector",
+      "local-owner-user-selector"
     ],
-    "selectorInjection": "missing selector receives principal.actor",
+    "selectorInjection": "missing selector receives the verified user:<owner> identity",
     "selectorMismatch": "PRINCIPAL_MISMATCH (403), data only {field}",
     "nonStringSelector": "INVALID_ARGUMENT (400) before the selector comparison",
     "unsupportedMode": "method is excluded from the catalog and route"
@@ -197,10 +238,14 @@
     "INVALID_ARGUMENT": 400,
     "INVALID_REQUEST": 400,
     "INVALID_PARAMS": 400,
+    "MODEL_CONFIGURATION_INVALID": 400,
+    "MODEL_CONFIGURATION_CONFLICT": 409,
+    "MODEL_AUTH_UNAVAILABLE": 403,
     "HTTP_HOST_DENIED": 403,
     "HTTP_ORIGIN_DENIED": 403,
     "HTTP_UNAUTHORIZED": 401,
     "METHOD_NOT_FOUND": 404,
+    "ADAPTER_NOT_FOUND": 404,
     "HTTP_BODY_TOO_LARGE": 413,
     "HTTP_URI_TOO_LONG": 414,
     "HTTP_HEADERS_TOO_LARGE": 431,
@@ -228,7 +273,6 @@
     "SENDER_NOT_AUTHENTICATED": 403,
     "SENDER_UNRESOLVED": 403,
     "TARGET_NOT_AUTHORIZED": 403,
-    "CHANNEL_NOT_AUTHORIZED": 403,
     "ORG_CONTEXT_NOT_AUTHORIZED": 403,
     "STALE_SESSION": 403,
     "SESSION_SUPERSEDED": 403,

@@ -1,17 +1,19 @@
-"""The two migrated read-only ``agent`` methods: declarations and real handlers.
+"""Read-only ``agent`` request declarations and their real handlers.
 
 Decision record (M-01, 2026-10-31)
-- Scope is exactly ``agent.list`` and ``agent.secret.list``.  They are bound by
+- ``agent.list``, ``agent.secret.list`` and ``agent.resolve`` are bound by
   exact method name; the ``agent`` family is deliberately *not* in
   ``MIGRATED_FAMILIES`` because every other ``agent.*`` name must keep reaching
   the legacy router unchanged.  This module is therefore the minimal partial
   registration point, not a family migration.
-- Both handlers delegate to ``app._handle_agent`` so the existing business
+- The read handlers delegate to ``app._handle_agent`` so the existing business
   logic, return shape and authorization order stay the single implementation.
   The typed-error translation copied here is the router's own agent boundary
   (``AgentError``/``DomainCommandError``/``AgentHomeError`` to
   ``DaemonRequestError``); without it a declared read would surface as a generic
-  daemon error instead of the legacy code.
+  daemon error instead of the legacy code.  Since implBc round 2 the
+  translation is shared with the lifecycle bindings (the helper now lives in
+  ``entity.call_with_legacy_agent_errors``); this module only applies it.
 - ``agent secret ls`` is the grant inventory of one selected agent (or of every
   registered agent when ``actor`` is omitted), never the local secret-store list
   behind ``agent secret list --agent``.  The target agent is a business
@@ -23,7 +25,9 @@ Decision record (M-01, 2026-10-31)
   number, a string or null, so the handler keeps raising the legacy
   ``INVALID_ARGUMENT`` text for booleans, containers and non-positive values.
   ``excludeWf`` is read with ``is True`` by the handler, so any JSON value is
-  admitted and only ``true`` filters.  Unknown keys stay admitted too: the
+  admitted and only ``true`` filters.  ``includeUserAgent`` (UA1f) follows
+  the same rule: only ``true`` adds the user agent's row, so the default
+  result stays what it was before the user agent existed.  Unknown keys stay admitted too: the
   legacy handlers ignored them, and closing the object would silently reject
   callers that work today.  The MethodSpec ABI forbids a literal
   ``additionalProperties: true``, so the open allowance is spelled as an
@@ -33,7 +37,9 @@ Decision record (M-01, 2026-10-31)
   declaration change; nested bags that other producers already extend
   (``capabilities``, ``config.sharedCredentials`` values) stay permissive.
   ``runState``, ``config`` and ``sharedCredentials`` rows are declared from
-  their real producers because they are stable, closed shapes.
+  their real producers because they are stable, closed shapes.  Since
+  implBc round 2 the row shape is built by ``entity.agent_status_row`` so the
+  create result reuses the same producer-backed declaration.
 - ``http_exposed`` is declaration metadata only.  No HTTP server, binding or
   identity projection is imported here; the H line projects routes from this
   catalog after the shared ABI decision.
@@ -42,24 +48,36 @@ Decision record (M-01, 2026-10-31)
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, get_args
+from typing import Any
 
-from ...cells.observability.model import (
-    BaseRunState, ObservationHealth, RunCertainty, RunScope, RunState,
-)
-
-from hyprial.identity import AgentError, AgentHomeError, HOSTED_BY_VALUES, SecretSource
+from hyprial.identity import AgentError, SecretSource
 from hyprial.kernel import (
-    DaemonRequestError,
     IdempotencySpec,
     MethodError,
     MethodSpec,
     ipc_errors,
 )
 
+from .cell import CELL_BINDINGS
+from .entity import agent_status_row, translated_agent_errors
+from .harness_args import BINDINGS as HARNESS_ARGS_BINDINGS
+
 JsonObject = dict[str, Any]
 
-PARTIAL_MIGRATED_METHODS = frozenset({"agent.list", "agent.secret.list"})
+PARTIAL_MIGRATED_METHODS = frozenset(
+    {
+        "agent.list",
+        "agent.resolve",
+        "agent.secret.list",
+        "agent.home-census",
+        "agent.harness-args.get",
+        "agent.harness-args.validate",
+        "agent.harness-args.set",
+        "agent.harness-args.clear",
+        "agent.cell.get",
+        "agent.cell.update",
+    }
+)
 
 _AUDIENCE = ("local-operator", "bound-agent")
 
@@ -78,6 +96,16 @@ _AGENT_LIST_PARAMS = {
     "properties": {
         "inactiveSince": {"type": ["number", "string", "null"]},
         "excludeWf": _ANY_JSON,
+        "includeUserAgent": {
+            **_ANY_JSON,
+            "description": (
+                "Only true adds this machine's user agent (the owner's own "
+                "agent, no harness) to agents, marked userAgent: true and "
+                "userActor: user:<owner>; omitted or any other value hides "
+                "it. It is never in agentsWithoutRoutine nor in an "
+                "inactiveSince listing."
+            ),
+        },
     },
     "additionalProperties": _ANY_JSON,
 }
@@ -86,287 +114,30 @@ _AGENT_SECRET_LIST_PARAMS = {
     "type": "object",
     "properties": {
         "actor": {"type": ["string", "null"], "minLength": 1},
+        "expectedAgent": {
+            "anyOf": [
+                {"type": "null"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "uri": {"type": "string", "minLength": 1},
+                        "createdAtMs": {"type": "integer", "minimum": 0},
+                    },
+                    "required": ["uri", "createdAtMs"],
+                    "additionalProperties": False,
+                },
+            ],
+        },
     },
+    "allOf": [{
+        "type": "object",
+        "if": {"type": "object", "required": ["expectedAgent"], "properties": {"expectedAgent": {"type": "object"}}},
+        "then": {"type": "object", "required": ["actor"], "properties": {"actor": {"type": "string", "minLength": 1}}},
+    }],
     "additionalProperties": _ANY_JSON,
 }
 
-_CAPABILITIES = {"type": "object"}
-
-_CONFIG_SOURCE = {
-    "type": "object",
-    "properties": {
-        "path": {"type": "string", "minLength": 1},
-        "required": {"type": "boolean"},
-    },
-    "required": ["path", "required"],
-    "additionalProperties": False,
-}
-
-_CONFIG = {
-    "oneOf": [
-        {"type": "null"},
-        {
-            "type": "object",
-            "properties": {
-                "sources": {"type": "array", "items": _CONFIG_SOURCE},
-                "discovery": {"const": "explicit-only"},
-                "sharedCredentials": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
-            },
-            "required": ["sources", "discovery"],
-            "additionalProperties": False,
-        },
-    ]
-}
-
-_HARNESS_ARGS = {
-    "type": "object",
-    "additionalProperties": {"type": "array", "items": {"type": "string"}},
-}
-
-_ACTIVITY_HINTS = {
-    "type": "object",
-    "properties": {
-        "createdAtMs": {"type": "integer"},
-        "hasLastSessionId": {"type": "boolean"},
-        "agentHomeMtimeMs": {"type": ["integer", "null"]},
-    },
-    "required": ["createdAtMs", "hasLastSessionId", "agentHomeMtimeMs"],
-    "additionalProperties": False,
-}
-
-_RUN_COVERAGE = {
-    "type": "object",
-    "properties": {
-        "turnBoundaries": {"type": "boolean"},
-        "permissionWait": {"type": "boolean"},
-        "producerActivity": {"type": "boolean"},
-        "processExit": {"type": "boolean"},
-    },
-    "required": [
-        "turnBoundaries",
-        "permissionWait",
-        "producerActivity",
-        "processExit",
-    ],
-    "additionalProperties": False,
-}
-
-_RUN_THRESHOLDS = {
-    "type": "object",
-    "properties": {
-        "turnLongAfterMs": {"type": ["integer", "null"]},
-        "permissionLongAfterMs": {"type": ["integer", "null"]},
-        "quietAfterMs": {"type": ["integer", "null"]},
-    },
-    "required": ["turnLongAfterMs", "permissionLongAfterMs", "quietAfterMs"],
-    "additionalProperties": False,
-}
-
-_RUN_LAST_KNOWN = {
-    "type": "object",
-    "properties": {
-        "state": {"type": "string"},
-        "baseState": {"type": "string"},
-        "sinceMs": {"type": ["integer", "null"]},
-        "observedAtMs": {"type": "integer"},
-        "runtimeIncarnation": {"type": "string"},
-    },
-    "required": [
-        "state",
-        "baseState",
-        "sinceMs",
-        "observedAtMs",
-        "runtimeIncarnation",
-    ],
-    "additionalProperties": False,
-}
-
-_RUN_STATE = {
-    "type": "object",
-    "properties": {
-        "state": {"enum": list(get_args(RunState))},
-        "baseState": {"enum": list(get_args(BaseRunState))},
-        "reason": {"type": "string", "minLength": 1},
-        "certainty": {"enum": list(get_args(RunCertainty))},
-        "scope": {"enum": list(get_args(RunScope))},
-        "observedAtMs": {"type": "integer"},
-        "sinceMs": {"type": ["integer", "null"]},
-        "turnAgeMs": {"type": ["integer", "null"]},
-        "lastActivityAtMs": {"type": ["integer", "null"]},
-        "coverage": _RUN_COVERAGE,
-        "observationHealth": {"enum": list(get_args(ObservationHealth))},
-        "suspicions": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "policyRevision": {"type": "integer"},
-        "providerBlocked": {"type": "boolean"},
-        "thresholds": _RUN_THRESHOLDS,
-        "lastKnown": {"oneOf": [{"type": "null"}, _RUN_LAST_KNOWN]},
-        "runtimeIncarnation": {"type": "string", "minLength": 1},
-        "epoch": {"type": "string", "minLength": 1},
-        "revision": {"type": "integer"},
-    },
-    "required": [
-        "state",
-        "baseState",
-        "reason",
-        "certainty",
-        "scope",
-        "observedAtMs",
-        "sinceMs",
-        "turnAgeMs",
-        "lastActivityAtMs",
-        "coverage",
-        "observationHealth",
-        "suspicions",
-        "policyRevision",
-        "providerBlocked",
-        "thresholds",
-        "lastKnown",
-        "runtimeIncarnation",
-        "epoch",
-        "revision",
-    ],
-    "additionalProperties": False,
-}
-
-_SHARED_CREDENTIAL_ROW = {
-    "type": "object",
-    "properties": {
-        "harness": {"type": "string", "minLength": 1},
-        "authMode": {"const": "native-shared-link"},
-        "nativePath": {"type": "string", "minLength": 1},
-        "targetPath": {"type": "string", "minLength": 1},
-        "status": {"enum": ["error", "warning", "ready"]},
-        "code": {"type": "string", "minLength": 1},
-        "error": {"type": "string", "minLength": 1},
-        "warning": {"type": "string", "minLength": 1},
-    },
-    "required": ["harness", "authMode", "targetPath", "status"],
-    "additionalProperties": False,
-}
-
-_RECOVERY_ERROR = {
-    "type": "object",
-    "properties": {
-        "code": {"type": "string", "minLength": 1},
-        "errorType": {"type": "string", "minLength": 1},
-        "error": {"type": "string"},
-        "source": {"type": "string", "minLength": 1},
-        "harness": {"type": ["string", "null"]},
-        "runtime": {"type": ["string", "null"]},
-        "sessionId": {"type": ["string", "null"]},
-    },
-    "required": [
-        "code",
-        "errorType",
-        "error",
-        "source",
-        "harness",
-        "runtime",
-        "sessionId",
-    ],
-    "additionalProperties": False,
-}
-
-_RECOVERY_CLEANUP = {
-    "type": "object",
-    "properties": {
-        "source": {"type": "string", "minLength": 1},
-        "harness": {"type": ["string", "null"]},
-        "runtime": {"type": ["string", "null"]},
-        "sessionId": {"type": ["string", "null"]},
-        "processPid": {"type": ["integer", "null"]},
-        "liveness": {"type": ["string", "null"]},
-    },
-    "required": [
-        "source",
-        "harness",
-        "runtime",
-        "sessionId",
-        "processPid",
-        "liveness",
-    ],
-    "additionalProperties": False,
-}
-
-_AGENT_ROW = {
-    "type": "object",
-    "properties": {
-        "uri": {"type": "string", "minLength": 1},
-        "actor": {"type": "string", "minLength": 1},
-        "owner": {"type": "string", "minLength": 1},
-        "machine": {"type": "string", "minLength": 1},
-        "cwd": {"type": ["string", "null"]},
-        "config": _CONFIG,
-        "provider": {"type": ["string", "null"]},
-        "model": {"type": ["string", "null"]},
-        "capabilities": _CAPABILITIES,
-        "harnessArgs": _HARNESS_ARGS,
-        "preferredHarness": {"type": ["string", "null"]},
-        "lastHarness": {"type": ["string", "null"]},
-        "lastSessionId": {"type": ["string", "null"]},
-        "lastActiveAtMs": {"type": ["integer", "null"]},
-        "pinnedAdapters": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "createdAtMs": {"type": "integer"},
-        "hosted": {"type": "boolean"},
-        "hostedBy": {
-            "type": ["string", "null"],
-            "enum": [None, *HOSTED_BY_VALUES],
-        },
-        "activityHints": _ACTIVITY_HINTS,
-        "status": {"type": "string", "minLength": 1},
-        "harness": {"type": ["string", "null"]},
-        "runtime": {"type": ["string", "null"]},
-        "sessionId": {"type": ["string", "null"]},
-        "heartbeatAgeSeconds": {"type": ["number", "null"]},
-        "runState": _RUN_STATE,
-        "workerState": {"enum": ["blocked", "dormant"]},
-        "restoreStatus": {"type": "string", "minLength": 1},
-        "blockReason": {"type": "string", "minLength": 1},
-        "blockedAtMs": {"type": "integer"},
-        "blockedAgeMs": {"type": "integer"},
-        "idleAgeMs": {"type": ["integer", "null"]},
-        "restoreThresholdMs": {"type": "integer"},
-        "restoreOverride": {"type": "string", "minLength": 1},
-        "activityUnknown": {"type": "boolean"},
-        "sharedCredentials": {
-            "type": "array",
-            "items": _SHARED_CREDENTIAL_ROW,
-        },
-        "recoveryStatus": {"enum": ["failed", "cleaned"]},
-        "recoveryError": _RECOVERY_ERROR,
-        "recoveryCleanup": _RECOVERY_CLEANUP,
-    },
-    "required": [
-        "uri",
-        "actor",
-        "owner",
-        "machine",
-        "cwd",
-        "config",
-        "provider",
-        "model",
-        "capabilities",
-        "harnessArgs",
-        "preferredHarness",
-        "lastHarness",
-        "lastSessionId",
-        "lastActiveAtMs",
-        "pinnedAdapters",
-        "createdAtMs",
-        "hosted",
-        "hostedBy",
-        "activityHints",
-        "status",
-        "harness",
-        "runtime",
-        "sessionId",
-        "heartbeatAgeSeconds",
-    ],
-    "additionalProperties": False,
-}
+_AGENT_ROW = agent_status_row(with_activity=True)
 
 _AGENT_LIST_RESULT = {
     "type": "object",
@@ -456,6 +227,10 @@ AGENT_SECRET_LIST_SPEC = MethodSpec(
             ipc_errors.AGENT_NOT_FOUND,
             description="No agent with that name is registered on this machine; no data payload.",
         ),
+        MethodError(
+            ipc_errors.AGENT_INCARNATION_MISMATCH,
+            description="The target agent no longer matches expectedAgent; no data payload.",
+        ),
         _agent_error(),
     ),
     mode="unary",
@@ -468,18 +243,39 @@ AGENT_SECRET_LIST_SPEC = MethodSpec(
 )
 
 
+
+AGENT_RESOLVE_SPEC = MethodSpec(
+    name="agent.resolve", owner="daemon.agent",
+    params_schema={"type": "object", "properties": {"name": {"type": "string", "minLength": 1}},
+                   "required": ["name"], "additionalProperties": _ANY_JSON},
+    result_schema={"type": "object", "properties": {
+        "ok": {"const": True}, "input": {"type": "string"},
+        "resolved": {"type": "string"}, "known": {"type": "boolean"},
+        "reason": {"enum": ["alias", "node", "scheme", "unknown"]},
+    }, "required": ["ok", "input", "resolved", "known", "reason"], "additionalProperties": False},
+    errors=(
+        MethodError(ipc_errors.INVALID_ARGUMENT),
+        MethodError(ipc_errors.AMBIGUOUS_TARGET, {"type": "object", "properties": {
+            "target": {"type": "string"},
+            "candidates": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["target", "candidates"], "additionalProperties": False}),
+        _agent_error(),
+    ),
+    mode="unary", mutates=False, retry="safe", audience=("local-operator",),
+    http_exposed=False, confirmation="none", ipc_param_validation="handler",
+    idempotency=IdempotencySpec(mode="safe", scope="agent-resolution"),
+)
+
 def _legacy_agent_call(app: Any, method: str, params: Mapping[str, Any]) -> JsonObject:
-    from hyprial.daemon.impl.composition import DomainCommandError
+    from .entity import call_with_legacy_agent_errors
 
-    try:
-        return app._handle_agent(method, dict(params))
-    except (AgentError, DomainCommandError) as error:
-        raise DaemonRequestError(
-            error.code, str(error), data=getattr(error, "data", None)
-        ) from error
-    except AgentHomeError as error:
-        raise DaemonRequestError(AgentError.code, str(error)) from error
+    return call_with_legacy_agent_errors(
+        lambda: app._handle_agent(method, dict(params))
+    )
 
+
+def agent_resolve(app: Any, params: Mapping[str, Any], *, trusted_message_origin: str | None = None) -> JsonObject:
+    return _legacy_agent_call(app, "agent.resolve", params)
 
 def agent_list(
     app: Any,
@@ -528,7 +324,10 @@ def _generic_param_error(method: str, error: Any) -> str:
 
 AGENT_BINDINGS = (
     (AGENT_LIST_SPEC, agent_list, _list_param_error),
+    (AGENT_RESOLVE_SPEC, agent_resolve),
     (AGENT_SECRET_LIST_SPEC, agent_secret_list, _secret_list_param_error),
+    *HARNESS_ARGS_BINDINGS,
+    *CELL_BINDINGS,
 )
 
 __all__ = [
@@ -538,4 +337,5 @@ __all__ = [
     "PARTIAL_MIGRATED_METHODS",
     "agent_list",
     "agent_secret_list",
+    "translated_agent_errors",
 ]

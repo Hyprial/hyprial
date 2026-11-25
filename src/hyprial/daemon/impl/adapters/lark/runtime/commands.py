@@ -148,6 +148,33 @@ class _Remove:
 
 
 @dataclass(frozen=True, slots=True)
+class _BeginRemoval:
+    correlation_id: str
+    name: str
+    token: str
+    result: Future[bool]
+    expected_generation: int | None = None
+    expected_version: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _FinishRemoval:
+    name: str
+    token: str
+    committed: bool
+    result: Future[None]
+
+
+@dataclass(slots=True)
+class _RemovalReservation:
+    token: str
+    correlation_id: str
+    since: float
+    settled: bool = False
+    stopped: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class _Reload:
     channels: ChannelConfiguration
     result: Future[dict[str, list[str]]]

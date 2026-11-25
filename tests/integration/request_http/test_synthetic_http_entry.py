@@ -135,7 +135,7 @@ def _write_probe(root: Path) -> Path:
     return root
 
 
-def test_declaration_only_synthetic_read_is_callable_over_real_http(
+def test_declaration_only_synthetic_read_and_write_are_callable_over_real_http(
     isolation: Isolation, tmp_path: Path
 ) -> None:
     probe = _write_probe(tmp_path / "synthetic")
@@ -159,9 +159,14 @@ def test_declaration_only_synthetic_read_is_callable_over_real_http(
             assert echo["state"] == "available"
             assert echo["httpBinding"] == default_binding
             assert echo["paramsSchema"]["additionalProperties"] is False
-            assert set(methods).isdisjoint(
-                {"synthetic.internal", "synthetic.hidden", "synthetic.write"}
+            assert set(methods).isdisjoint({"synthetic.internal", "synthetic.hidden"})
+            write = methods["synthetic.write"]
+            assert write["mutates"] is True and write["retry"] == "never"
+            status, _, payload = http.request(
+                "POST", "/daemon/request/synthetic.write", body={"value": "write"}
             )
+            assert (status, payload["dispatch"]) == (200, "dispatched")
+            assert payload["result"] == {"ok": True, "value": "write", "seen": ["value"]}
 
             status, _, payload = http.request(
                 "POST", "/daemon/request/synthetic.echo", body={"value": "hello"}
@@ -188,25 +193,22 @@ def test_declaration_only_synthetic_read_is_callable_over_real_http(
                     "not-dispatched",
                 )
 
-            # Restricted audience, unexposed and write-profile declarations
-            # are visible to the daemon but never reach an H-01 route.
-            for name in ("synthetic.internal", "synthetic.hidden", "synthetic.write"):
+            for name in ("synthetic.internal", "synthetic.hidden"):
                 status, _, payload = http.request(
                     "POST", f"/daemon/request/{name}", body={}
                 )
                 assert (status, payload["code"]) == (404, "METHOD_NOT_FOUND")
 
-            # Explicit selector binding keeps its strict principal check.
             status, _, payload = http.request(
-                "POST", "/daemon/request/link.list", body={"from": OTHER}
+                "POST", "/daemon/request/conversations.list", body={"from": OTHER}
             )
             assert (status, payload["code"], payload["dispatch"]) == (
-                403,
-                "PRINCIPAL_MISMATCH",
+                400,
+                "INVALID_ARGUMENT",
                 "not-dispatched",
             )
             status, _, payload = http.request(
-                "POST", "/daemon/request/link.list", body={}
+                "POST", "/daemon/request/message.query", body={"view": "inbox", "from": OTHER}
             )
             assert status == 200 and payload["result"]["actor"] == ACTOR
 
@@ -214,16 +216,22 @@ def test_declaration_only_synthetic_read_is_callable_over_real_http(
             assert status == 200
             operation = document["paths"]["/daemon/request/synthetic.echo"]["post"]
             assert operation["x-hyprial-http-binding"] == default_binding
-            assert (
-                operation["requestBody"]["content"]["application/json"]["schema"]
-                == echo["paramsSchema"]
-            )
-            assert (
-                operation["responses"]["200"]["content"]["application/json"][
-                    "schema"
-                ]["properties"]["result"]
-                == echo["resultSchema"]
-            )
+            assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/params.synthetic.echo"
+            }
+            components = document["components"]["schemas"]
+            assert components["params.synthetic.echo"] == echo["paramsSchema"]
+            assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/success.synthetic.echo"
+            }
+            assert components["success.synthetic.echo"]["properties"]["result"] == {
+                "$ref": "#/components/schemas/result.synthetic.echo"
+            }
+            assert components["result.synthetic.echo"] == echo["resultSchema"]
+            write_operation = document["paths"]["/daemon/request/synthetic.write"]["post"]
+            assert write_operation["x-hyprial-call-profile"] == "write"
+            assert write_operation["x-hyprial-mutates"] is True
+            assert write_operation["x-hyprial-retry"] == "never"
             assert "/docs" not in document["paths"]
     finally:
         daemon.stop()

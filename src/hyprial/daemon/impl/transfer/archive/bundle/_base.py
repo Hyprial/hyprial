@@ -22,6 +22,18 @@ Split note (structural limits): this half carries the manifest model and the
 pre-receive validation; ``export_bundle`` and the source-unchanged witness
 live in ``._export``, and ``bundle/__init__.py`` re-exports both halves under
 the original ``archive.bundle`` import path.
+
+Custody note: the agent home's root-level secret store (``secrets.sqlite``,
+its SQLite sidecars, ``.secret-hmac-key`` and ``secret-metrics.jsonl``) holds
+plaintext credentials, and the landing topology refuses a root-level entry,
+so carrying one would both ship credentials to another host and break every
+transfer of a home ``agent ensure-home`` or the first secret write
+materialised (docs/design/agent-move-refactor-proposal-20261028.md).  Those
+names are matched at the home root only -- ``workspace/`` is the agent's own
+working tree, where they are ordinary user files.  The exclusion belongs to
+the export and its stop-write witness, not to the shared walker: a cleanup
+that reuses the walker still sees these files and reports them as uncovered,
+so the fallback fence cannot silently delete the only copy.
 """
 
 from __future__ import annotations
@@ -60,6 +72,17 @@ EXCLUDED_FILE_NAMES = frozenset(
         "user-provider.json",
         "providers.json",
         "login.keychain-db",
+    }
+)
+
+EXCLUDED_ROOT_FILE_NAMES = frozenset(
+    {
+        "secrets.sqlite",
+        "secrets.sqlite-journal",
+        "secrets.sqlite-wal",
+        "secrets.sqlite-shm",
+        ".secret-hmac-key",
+        "secret-metrics.jsonl",
     }
 )
 
@@ -221,8 +244,21 @@ def _excluded_relative(relative: str) -> bool:
     return False
 
 
-def _iter_payload_files(root: Path) -> Iterable[tuple[str, Path]]:
+def _iter_payload_files(
+    root: Path,
+    *,
+    exclude_root_names: frozenset[str] = frozenset(),
+) -> Iterable[tuple[str, Path]]:
+    """Yield payload candidates under ``root``; exclusions are the caller's.
+
+    ``exclude_root_names`` applies at the walk root only.  It defaults to no
+    exclusion so reuse of this walker (cleanup's home binding) still sees
+    every file a deletion would remove.
+    """
+
+    root_path = Path(root)
     for current, dirnames, filenames in os.walk(root):
+        at_root = Path(current) == root_path
         dirnames[:] = sorted(
             name
             for name in dirnames
@@ -233,6 +269,8 @@ def _iter_payload_files(root: Path) -> Iterable[tuple[str, Path]]:
         )
         for filename in sorted(filenames):
             if filename in EXCLUDED_FILE_NAMES:
+                continue
+            if at_root and filename in exclude_root_names:
                 continue
             absolute = Path(current) / filename
             relative = absolute.relative_to(root).as_posix()

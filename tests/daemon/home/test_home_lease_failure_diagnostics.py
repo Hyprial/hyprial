@@ -21,11 +21,14 @@ from hyprial.daemon.impl.configuration.home_lease_actor import HomeLeaseAuthorit
         ("mismatch", "record-mismatch"),
     ],
 )
-def test_file_fence_retains_failure_cause(tmp_path, monkeypatch, failure, detail):
+def test_file_fence_retains_failure_cause(
+    tmp_path, monkeypatch, failure, detail, actor_host, generation_scheduler
+):
     lost = threading.Event()
     owner = HomeLeaseAuthority(
         tmp_path, keepalive_duration=0.05,
         identity_reader=lambda _pid: "synthetic-identity", ownership_lost=lost.set,
+        actor_host=actor_host, scheduler=generation_scheduler,
     )
     try:
         owner.claim()
@@ -59,7 +62,9 @@ def test_file_fence_retains_failure_cause(tmp_path, monkeypatch, failure, detail
 
 
 @pytest.mark.parametrize("logger_raises", [False, True])
-def test_fence_warn_is_structured_and_cannot_prevent_stop(tmp_path, monkeypatch, logger_raises):
+def test_fence_warn_is_structured_and_cannot_prevent_stop(
+    tmp_path, monkeypatch, logger_raises, actor_host, generation_scheduler
+):
     lost = threading.Event()
     events = []
 
@@ -72,6 +77,7 @@ def test_fence_warn_is_structured_and_cannot_prevent_stop(tmp_path, monkeypatch,
         tmp_path, keepalive_duration=0.05,
         identity_reader=lambda _pid: "synthetic-identity", ownership_lost=lost.set,
         logger=log,
+        actor_host=actor_host, scheduler=generation_scheduler,
     )
     try:
         owner.claim()

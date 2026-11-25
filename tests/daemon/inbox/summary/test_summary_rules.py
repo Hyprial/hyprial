@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from hyprial.kernel import DaemonRequestError, ipc_errors
+from hyprial.kernel import DaemonRequestError, SUMMARY_MAX_BYTES, ipc_errors
 from hyprial.daemon.impl.inbox.contracts.summary import (
     body_bytes,
     body_text,
@@ -17,7 +17,6 @@ from hyprial.daemon.impl.inbox.contracts.summary import (
     summary_from_text,
 )
 from hyprial.daemon.impl.inbox import DeliveryLifecycle, InboxMessage
-from hyprial.daemon.impl.links.ports import SUMMARY_MAX_BYTES
 
 
 def _message(payload: bytes) -> InboxMessage:

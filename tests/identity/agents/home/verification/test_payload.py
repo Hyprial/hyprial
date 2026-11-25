@@ -122,3 +122,49 @@ def test_root_replacement_during_scan_is_partial(home_owner, tmp_path, monkeypat
     monkeypatch.setattr(module, "snapshot_home_payload", swap)
     assert verify(actor, agent, expected) == "partial"
     assert registry.require(agent.actor).entity_token == agent.entity_token
+
+
+def test_payload_snapshot_and_materialise_work_without_fwalk_and_reject_reparse(home_owner, tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from hyprial.identity.impl.agents.home import provisioner as module
+
+    _registry, actor, agent = home_owner(configured=False)
+    stage, expected = payload(tmp_path)
+    portable_os = SimpleNamespace(
+        walk=os.walk,
+        fstat=os.fstat,
+        open=os.open,
+        close=os.close,
+        fdopen=os.fdopen,
+        fsync=os.fsync,
+        chmod=os.chmod,
+        scandir=os.scandir,
+        path=os.path,
+        O_WRONLY=os.O_WRONLY,
+        O_CREAT=os.O_CREAT,
+        O_EXCL=os.O_EXCL,
+        supports_dir_fd=frozenset(),
+    )
+    monkeypatch.setattr(module, "os", portable_os)
+    assert module.snapshot_home_payload(stage) == expected
+    home = Path(actor.materialise_landing_home(agent.actor, str(stage), expected_entity_token=agent.entity_token, expected_files=expected))
+    assert verify(actor, agent, expected) == "present"
+
+    real_lstat = Path.lstat
+    target = home / "state/data"
+
+    def reparse_lstat(self: Path):
+        metadata = real_lstat(self)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_size=metadata.st_size,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino,
+                st_file_attributes=0x400,
+            )
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", reparse_lstat)
+    assert verify(actor, agent, expected) == "partial"

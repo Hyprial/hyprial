@@ -16,6 +16,7 @@ from hyprial.daemon.impl.orgfs.network.supplier_health import SupplierSyncHealth
 from hyprial.shell.impl.daemon_wiring import (
     daemon_dependencies as _deep_module_daemon_dependencies,
 )
+from tests.support.runtime.environment import UNIT_USER_ID
 
 
 class _FakeTransport:
@@ -50,7 +51,7 @@ def test_local_reads_stay_bounded_during_a_twenty_space_hold_storm(tmp_path) -> 
         socket_path=tmp_path / "daemon.sock",
         node_id="node-local",
         hyprial_home=tmp_path / "home",
-        owner="owner@example.com",
+        owner="owner@example.com", user_id=UNIT_USER_ID,
         **_deep_module_daemon_dependencies(),
     )
     app._transport = _FakeTransport()  # type: ignore[assignment]
@@ -89,7 +90,7 @@ def test_local_reads_stay_bounded_during_a_twenty_space_hold_storm(tmp_path) -> 
         assert started.wait(1.0)
         reads = (
             lambda: ipc_org_list(app, {}),
-            lambda: app._handle_work("work.ls", {"spaceId": target}),
+            lambda: app._handle_orgfs("orgfs.ls", {"spaceId": target, "path": "work"}),
             lambda: app._handle_orgfs(
                 "orgfs.ls", {"spaceId": target, "path": ""}
             ),

@@ -11,7 +11,7 @@ function Card({ className, asChild = false, ...props }: ComponentProps<'div'> & 
       {...props}
       data-slot="card"
       className={cn(
-        'tw:min-w-0 tw:rounded-md tw:border tw:border-solid tw:border-border tw:bg-card tw:p-4 tw:text-card-foreground tw:shadow-(--ui-shadow-card)',
+        'tw:min-w-0 tw:rounded-lg tw:border-0 tw:bg-card tw:p-4 tw:text-card-foreground tw:shadow-none',
         className,
       )}
     />

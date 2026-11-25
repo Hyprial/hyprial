@@ -35,11 +35,10 @@ import weakref
 from hyprial.kernel import (
     ActorEvent,
     ActorEventKind,
-    ActorRuntime,
     ActorSpec,
     AdmissionResult)
 
-from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
+from hyprial.kernel import EffectCompleted, EffectRequest
 
 
 
@@ -73,6 +72,10 @@ class RuntimeLifecycle:
 
     def _ensure_lifecycle_authority(self) -> _LifecycleAuthority:
         with self._lifecycle_lock:
+            if self._lifecycle_closing:
+                raise OrgFsError(
+                    "unavailable", {"message": "directory lifecycle is closing"}
+                )
             if self._lifecycle_authority is not None:
                 return self._lifecycle_authority
             owner_ref = weakref.ref(self)
@@ -97,13 +100,14 @@ class RuntimeLifecycle:
                     )
                 return owner._execute_lifecycle(command)
 
-            runtime = ActorRuntime(event_sink=actor_event)
-            actor = runtime.start(
+            host = self._actor_hosts.host
+            cell = host.spawn(
                 ActorSpec(
                     "orgfs-directory-lifecycle",
                     lambda: handle,
                     mailbox_capacity=64,
                     supervision_profile="state_authority",
+                    event_sink=actor_event,
                 )
             )
 
@@ -113,12 +117,11 @@ class RuntimeLifecycle:
                 owner = owner_ref()
                 if owner is None:
                     return AdmissionResult.CLOSED
-                return runtime.tell(actor, completion)
+                return cell.tell(completion)
 
             authority = _LifecycleAuthority(
-                runtime,
-                actor,
-                EffectLane(
+                cell,
+                host.effect_lane(
                     name="orgfs-directory-lifecycle-effects",
                     execute=execute,
                     complete=complete,
@@ -287,7 +290,7 @@ class RuntimeLifecycle:
             for call in replay:
                 authority.commands[call.operation_id] = call
         for call in replay:
-            admission = authority.runtime.tell(authority.actor, call)
+            admission = authority.runtime.tell(call)
             if admission is AdmissionResult.CLOSED:
                 return
 
@@ -315,7 +318,7 @@ class RuntimeLifecycle:
             authority.commands[operation_id] = command
             authority.waiters[operation_id] = waiter
         while True:
-            admission = authority.runtime.tell(authority.actor, command)
+            admission = authority.runtime.tell(command)
             if admission is AdmissionResult.ACCEPTED:
                 break
             with self._lifecycle_lock:
@@ -367,7 +370,7 @@ class RuntimeLifecycle:
             return True
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            snapshot = authority.runtime.snapshot(authority.actor)
+            snapshot = authority.runtime.snapshot()
             if (
                 snapshot.queued == 0
                 and snapshot.in_flight == 0
@@ -380,7 +383,7 @@ class RuntimeLifecycle:
         if not authority.effects.close(max(0.0, deadline - time.monotonic())):
             return False
         if not authority.runtime.stop(
-            authority.actor, timeout=max(0.0, deadline - time.monotonic())
+            timeout=max(0.0, deadline - time.monotonic())
         ):
             return False
         with self._lifecycle_lock:
@@ -472,6 +475,7 @@ class RuntimeLifecycle:
             logger=self.logger,
             announce_instrumentation_enabled=self._announce_instrumentation_enabled,
             supplier_sync_health=self._supplier_sync_health,
+            actor_host=self._actor_hosts.host,
             space_authority=self.facade.space_authority(
                 space_id, self.stores.get(space_id)
             ),
@@ -772,7 +776,10 @@ class RuntimeLifecycle:
             space_id, replica_backend, local_store,
             event_callback=conflict_event, owner_notifier=owner_notice,
         )
-        replica = ReplicaAuthority(replica_core, local_store, self.blobs)
+        replica = ReplicaAuthority(
+            replica_core, local_store, self.blobs,
+            actor_host=self._actor_hosts.host,
+        )
         with self._resource_lock:
             if self._closing:
                 replica.close(timeout=5.0)

@@ -39,7 +39,6 @@ from hyprial.daemon.impl.application.shutdown import (
     _TURN_HOOK_CLOSE_TIMEOUT,
 )
 from hyprial.daemon.impl.application.netendpoints.endpoints import _lock_wait_timeout
-from hyprial.daemon.impl.bootstrap.discovery import DISCOVERY_TIMEOUT_SECONDS
 from hyprial.daemon.impl.configuration.home_guard import (
     DEFAULT_DUPLICATE_OBSERVE_WINDOW,
     DUPLICATE_OBSERVE_MARGIN_SECONDS,
@@ -214,7 +213,7 @@ def test_every_close_budget_in_the_source_is_declared_in_the_guarantee() -> None
     per_port = 5.0
     spent_here = sum(found) + per_port * (declared_ports - 1)
 
-    # ⚠️ Seven declared budgets are deliberately not visible as literals here.
+    # ⚠️ Eight declared budgets are deliberately not visible as literals here.
     # `autoupdate` is looked up by name from the table in `_close`, so adding a
     # numeric literal there would defeat the registered-budget contract.
     # `harnesses` is spent by `HarnessRuntime.stop`, whose five seconds is a
@@ -222,7 +221,9 @@ def test_every_close_budget_in_the_source_is_declared_in_the_guarantee() -> None
     # `_close`.  `restore-thread` is spent by `_join_restore_thread`, whose
     # join timeout lives in `_RESTORE_THREAD_JOIN_TIMEOUT` -- a named
     # constant, which this scanner's literal-only reading cannot see.
-    # `hooks-consumers` likewise passes its named close timeout. Each invisible
+    # `hooks-consumers` likewise passes its named close timeout.  `home-lease`
+    # is spent inside `_close_home_lease` through the `attempt` wrapper, which
+    # the roster check below sees but this scanner does not.  Each invisible
     # budget is checked directly below, because a budget this scan cannot see
     # from the call site is exactly the kind that drifts.
     declared_here = sum(
@@ -236,8 +237,8 @@ def test_every_close_budget_in_the_source_is_declared_in_the_guarantee() -> None
             "hook-bus",
             "restore-thread",
             "hooks-consumers",
+            "home-lease",
             "operator-alarms",
-            "org-binding-cache",
             "service-connect",
         }
     )
@@ -278,6 +279,31 @@ def test_every_close_budget_in_the_source_is_declared_in_the_guarantee() -> None
         "_close must spend the registered service-connect budget by name"
     )
 
+    # `home-lease` is spent inside `_close_home_lease`; pin that exact call so
+    # a literal there cannot silently drift from the registered budget.
+    home_lease = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_close_home_lease"
+    )
+    home_lease_closes = [
+        node
+        for node in ast.walk(home_lease)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "_home_guard"
+        and node.func.attr == "close"
+    ]
+    assert len(home_lease_closes) == 1, "expected one home lease close call"
+    home_lease_arguments = list(home_lease_closes[0].args)
+    assert len(home_lease_arguments) == 1 and ast.dump(
+        home_lease_arguments[0], include_attributes=False
+    ) == ast.dump(
+        ast.parse('dict(_CLOSE_STEP_BUDGETS)["home-lease"]', mode="eval").body,
+        include_attributes=False,
+    ), "home lease close must receive its registered budget directly"
+
     composition = (ROOT / "src/hyprial/daemon/impl/composition/harness_ports.py").read_text("utf-8")
     harness_default = re.search(
         r"def stop\(self, timeout: float = (\d+\.\d+)\)", composition
@@ -299,9 +325,6 @@ def test_every_close_budget_in_the_source_is_declared_in_the_guarantee() -> None
     assert _TURN_HOOK_CLOSE_TIMEOUT == dict(_CLOSE_STEP_BUDGETS)["hooks-consumers"]
     # The delivery intercept port spends the same named close timeout.
     assert _TURN_HOOK_CLOSE_TIMEOUT == dict(_CLOSE_STEP_BUDGETS)["delivery-hooks"]
-    assert DISCOVERY_TIMEOUT_SECONDS == dict(_CLOSE_STEP_BUDGETS)[
-        "org-binding-cache"
-    ]
     assert 'dict(_CLOSE_STEP_BUDGETS)["hook-bus"]' in source
     assert 'dict(_CLOSE_STEP_BUDGETS)["autoupdate"]' in source
 

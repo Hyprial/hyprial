@@ -4,12 +4,21 @@ The network-visible identity of an agent is ``agent:<owner>:<machine>:<actor>``
 — the same shape the TS harness pins with ``parseActorId``.  This leaf module
 has no daemon, settings, owner, or filesystem dependencies so schema modules
 can import the canonical grammar without executing ``hyprial.daemon``.
+
+Decision notes (I4b, owner items Q0-a and Q0-d, 2026-11-23): the
+``route:<adapter>:<route>`` address family is retired: ``ROUTE_URI_PREFIX``,
+``parse_route_uri``, its ``ADDRESS_FAMILIES`` entry and the
+``channel_route`` target kind are deleted.
 """
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+import hashlib
 import re
+import secrets
+from urllib.parse import quote, unquote
 
 AGENT_URI_PREFIX = "agent:"
 _AGENT_URI_SEGMENTS = 4
@@ -30,6 +39,9 @@ _UUID_USER_ID_SEGMENT = re.compile(  # any UUID version
 )
 _DEVICE_ID_SEGMENT = re.compile(r"d\.[0-9a-f]{32}")
 _AGENT_ID_SEGMENT = re.compile(r"a\.[a-z2-7]{26}")
+_THREAD_ID_SEGMENT = re.compile(r"t\.[a-z2-7]{26}")
+_CELL_ID_SEGMENT = re.compile(r"c\.[a-z2-7]{26}")
+_GROUP_ID_SEGMENT = re.compile(r"g\.[a-z2-7]{26}")
 
 
 def is_user_id_segment(value: str) -> bool:
@@ -53,6 +65,24 @@ def is_agent_id_segment(value: str) -> bool:
     return _AGENT_ID_SEGMENT.fullmatch(value) is not None
 
 
+def is_thread_id_segment(value: str) -> bool:
+    """Whether *value* is an exact thread-id (``t.``) segment."""
+
+    return _THREAD_ID_SEGMENT.fullmatch(value) is not None
+
+
+def is_cell_id_segment(value: str) -> bool:
+    """Whether *value* is an exact cell-id (``c.``) segment."""
+
+    return _CELL_ID_SEGMENT.fullmatch(value) is not None
+
+
+def is_group_id_segment(value: str) -> bool:
+    """Whether *value* is an exact group conversation id (``g.``)."""
+
+    return _GROUP_ID_SEGMENT.fullmatch(value) is not None
+
+
 def is_identity_id_segment(value: str) -> bool:
     """Whether *value* has any exact immutable identity-id shape."""
 
@@ -60,7 +90,79 @@ def is_identity_id_segment(value: str) -> bool:
         is_user_id_segment(value)
         or is_device_id_segment(value)
         or is_agent_id_segment(value)
+        or is_thread_id_segment(value)
+        or is_cell_id_segment(value)
+        or is_group_id_segment(value)
     )
+
+
+def _mint_stable_id(prefix: str, domain: bytes, seed: bytes | None) -> str:
+    material = secrets.token_bytes(16) if seed is None else seed
+    digest = hashlib.sha256(domain + material).digest()[:16]
+    return prefix + base64.b32encode(digest).decode("ascii").rstrip("=").lower()
+
+
+def mint_thread_id(seed: bytes | None = None) -> str:
+    """A ``t.`` id; deterministic for one *seed*, random without one."""
+
+    return _mint_stable_id("t.", b"hyprial-thread-id-v1\0", seed)
+
+
+def mint_cell_id(seed: bytes | None = None) -> str:
+    """A ``c.`` id; deterministic for one *seed*, random without one."""
+
+    return _mint_stable_id("c.", b"hyprial-cell-id-v1\0", seed)
+
+
+def mint_group_id(seed: bytes | None = None) -> str:
+    """A group conversation ``g.`` id; deterministic for one *seed*, random without one."""
+
+    return _mint_stable_id("g.", b"hyprial-group-id-v1\0", seed)
+
+
+_CELL_KIND = re.compile(r"[a-z][a-z0-9-]{0,63}")
+
+
+def _framed_seed(tag: bytes, *parts: str) -> bytes:
+    framed = bytearray(tag)
+    for part in parts:
+        encoded = part.encode("utf-8")
+        framed += len(encoded).to_bytes(4, "big") + encoded
+    return bytes(framed)
+
+
+def _require_cell_kind(kind: str) -> None:
+    if not isinstance(kind, str) or _CELL_KIND.fullmatch(kind) is None:
+        raise ValueError(f"cell kind must match [a-z][a-z0-9-]{{0,63}}: {kind!r}")
+
+
+def keyed_cell_id(kind: str, authority: str, key: str) -> str:
+    """The ``c.`` id of the *kind* cell that *authority* binds to *key*.
+
+    Deterministic, so every node that knows (kind, authority, key) derives the
+    same id without coordination.  Fields are length-framed under a ``keyed``
+    tag, so no choice of key can collide with another kind, authority or a
+    :func:`subject_cell_id`.
+    """
+
+    _require_cell_kind(kind)
+    if not isinstance(authority, str) or not isinstance(key, str):
+        raise ValueError("cell authority and key must be strings")
+    return mint_cell_id(_framed_seed(b"keyed\0", kind, authority, key))
+
+
+def subject_cell_id(kind: str, subject: str) -> str:
+    """The ``c.`` id of the *kind* cell whose identity is one stable subject id.
+
+    Used where the subject id is already globally unique (an agent's ``a.``
+    id), so the cell id needs no authority: ``subject_cell_id('agent', a.x)``
+    is the agent cell on every node.
+    """
+
+    _require_cell_kind(kind)
+    if not isinstance(subject, str) or not subject:
+        raise ValueError("cell subject must be a non-empty string")
+    return mint_cell_id(_framed_seed(b"subject\0", kind, subject))
 
 
 def canonical_agent_uri(owner: str, machine: str, actor: str) -> str:
@@ -72,6 +174,41 @@ def canonical_agent_uri(owner: str, machine: str, actor: str) -> str:
         if ":" in value:
             raise ValueError(f"agent identity {label} must not contain ':'")
     return f"{AGENT_URI_PREFIX}{owner}:{machine}:{actor}"
+
+
+def member_actor_uri(name: str, member: str) -> str:
+    """Encode a member launch as a reversible public actor segment."""
+
+    if member == name:
+        return name
+    if not name or not member or ":" in name or ":" in member:
+        raise ValueError("member actor name and member must be non-empty and colon-free")
+    return f"{name}@{quote(member, safe='-._~')}"
+
+
+def member_actor_parts(value: str) -> tuple[str, str] | None:
+    """Decode a member actor segment, preserving legacy bare names."""
+
+    if "@" not in value:
+        return None
+    name, encoded_member = value.split("@", 1)
+    member = unquote(encoded_member)
+    if not name or not member or member == name or "@" in name or ":" in name or ":" in member:
+        return None
+    if member_actor_uri(name, member) != value:
+        return None
+    return name, member
+
+
+def member_actor_registry_key(value: str) -> str:
+    """Map a public member actor to one legal, reversible registry key."""
+
+    parts = member_actor_parts(value)
+    if parts is None:
+        return value
+    name, member = parts
+    payload = base64.urlsafe_b64encode(f"{name}\0{member}".encode()).decode().rstrip("=")
+    return f"m_{payload}"
 
 
 def parse_agent_uri(value: str) -> tuple[str, str, str] | None:
@@ -220,34 +357,19 @@ def orgfs_web_url(value: str, *, network: OrgfsWebNetwork) -> str | None:
     return f"https://{host}/{owner}/{space_id}/{node_id}"
 
 
-#: The legacy ``channel:<owner>:<machine>:<name>`` adapter-address prefix.
-#: Historical data only after the 2026-08-24 naming migration (PAC
-#: b8d2b52b6358 / NAMB efeeaf0a01ba) -- no writer mints this spelling
-#: anymore, but it must keep parsing: existing channels.json/desired-state/
-#: inbox records still carry it and are never rewritten.
-CHANNEL_URI_PREFIX = "channel:"
-
-#: The current ``adapter:<owner>:<machine>:<name>`` adapter-address prefix.
-#: Every new writer uses this spelling (Allen's channel=IRC / adapter=
-#: external-platform-adapter ruling).
 ADAPTER_URI_PREFIX = "adapter:"
 
-_CHANNEL_URI_PREFIXES = (CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX)
 
+def parse_adapter_uri(value: str) -> tuple[str, str, str] | None:
+    """Decompose an ``adapter:<owner>:<machine>:<name>`` adapter address.
 
-def parse_channel_uri(value: str) -> tuple[str, str, str] | None:
-    """Decompose a ``channel:``/``adapter:`` ``<owner>:<machine>:<name>`` adapter address.
-
-    Dual-read: accepts both the legacy ``channel:`` spelling and the current
-    ``adapter:`` spelling, and both parse to the identical (owner, machine,
-    name) tuple -- the prefix text itself carries no identity, only the
-    grammar delimiter differs.  Same one-reader rule as
-    :func:`parse_agent_uri`.  (The three-segment ``channel:lark:<adapter>``/
-    ``adapter:lark:<adapter>`` reply-bridge form is owned and parsed by
-    ``hyprial.adapters.lark.lark_reply_adapter``.)
+    The one reader of the four-segment adapter address; ``None`` for any
+    other shape, including the retired ``channel:`` spelling.  The
+    three-segment ``adapter:<platform>:<name>`` form belongs to
+    :func:`parse_adapter_short_uri`.
     """
 
-    if not value.startswith(_CHANNEL_URI_PREFIXES):
+    if not value.startswith(ADAPTER_URI_PREFIX):
         return None
     parts = value.split(":")
     if len(parts) != 4 or not all(parts[1:]):
@@ -255,15 +377,23 @@ def parse_channel_uri(value: str) -> tuple[str, str, str] | None:
     return parts[1], parts[2], parts[3]
 
 
-#: The ``route:<adapter>:<route>`` outbound channel-route prefix.  Grammar
-#: mirror of ``hyprial.daemon.impl.route_delivery.RouteTarget.parse`` — that
-#: module belongs to the daemon package, so schema validators use this leaf
-#: copy instead of importing the daemon.
-ROUTE_URI_PREFIX = "route:"
+def parse_adapter_short_uri(value: str) -> tuple[str, str] | None:
+    """Decompose the three-segment ``adapter:<platform>:<name>`` form.
 
-#: The ``user:<owner>`` human-recipient prefix.  Grammar mirror of
-#: ``hyprial.squire.addressing.UserDeliveryTarget.parse`` — same leaf-module
-#: reasoning as ``route:`` above.
+    The reply-bridge spelling a platform worker uses as a sender, for example
+    ``adapter:lark:<name>``.  The two forms never overlap: this one has
+    exactly three non-empty segments, the four-segment form belongs to
+    :func:`parse_adapter_uri`.
+    """
+
+    if not value.startswith(ADAPTER_URI_PREFIX):
+        return None
+    parts = value.split(":")
+    if len(parts) != 3 or not all(parts[1:]):
+        return None
+    return parts[1], parts[2]
+
+
 USER_URI_PREFIX = "user:"
 
 
@@ -282,37 +412,15 @@ ADDRESS_FAMILIES: dict[str, AddressFamily] = {
         "agent", "agent:<owner>:<machine>:<actor>", None, None, True, ()
     ),
     "user": AddressFamily("user", "user:<owner>", None, None, True, ()),
-    "route": AddressFamily(
-        "route",
-        "route:<adapter>:<route>",
-        "outbound chat sends via hyprial message send --to route:<adapter>:<route>",
-        "hyprial adapter route add <adapter> <route>=<native-chat-id>",
-        False,
-        ("a full agent URI (agent:<owner>:<machine>:<actor>)", "user:<owner>"),
-    ),
 }
-
-
-def parse_route_uri(value: str) -> tuple[str, str] | None:
-    """Decompose ``route:<adapter>:<route>``; ``None`` for any other shape."""
-
-    if not value.startswith(ROUTE_URI_PREFIX):
-        return None
-    parts = value.split(":")
-    if len(parts) != 3 or not parts[1] or not parts[2]:
-        return None
-    return parts[1], parts[2]
 
 
 def delivery_address_error(value: str) -> str | None:
     """``None`` when ``value`` is a deliverable address shape, else the reason.
 
     Deliverable shapes today: a canonical agent URI or ``user:<owner>``.
-    ``route:<adapter>:<route>`` is parsed but deliberately NOT accepted yet:
-    the alarm/report delivery path has no route: transport wired, so a route:
-    escalate_to / report_to would pass schema and then fail at delivery
-    (2026-09-14 B4).  It is rejected loud until route: delivery exists.
-    Bare names are NOT addresses either — they parse as nothing and land in
+    The ``route:<adapter>:<route>`` address is retired (I4b, 2026-11-24) and
+    gets the generic answer like any other shape.  Bare names are NOT addresses either — they parse as nothing and land in
     stores nobody reads.
     """
 
@@ -323,15 +431,6 @@ def delivery_address_error(value: str) -> str | None:
         return None
     if parse_user_uri(candidate) is not None:
         return None
-    if parse_route_uri(candidate) is not None:
-        family = ADDRESS_FAMILIES["route"]
-        assert family.usage is not None and family.setup is not None
-        return (
-            f"{candidate!r} is a {family.grammar} target for {family.usage}. "
-            f"Create one with `{family.setup}`. It is not a deliverable "
-            f"escalate_to/report_to address; those require "
-            f"{' or '.join(family.escalation_addresses)}."
-        )
     return (
         f"{candidate!r} is not a deliverable address; write a full agent URI "
         "(agent:<owner>:<machine>:<actor>) or user:<owner> — bare names are "
@@ -342,7 +441,7 @@ def delivery_address_error(value: str) -> str | None:
 def short_actor_name(value: str) -> str:
     """Display form: the actor segment of a canonical URI, else the value."""
 
-    parsed = parse_agent_uri(value) or parse_channel_uri(value)
+    parsed = parse_agent_uri(value) or parse_adapter_uri(value)
     return parsed[2] if parsed is not None else value
 
 
@@ -417,10 +516,24 @@ def parse_user_uri(value: str) -> str | None:
     return owner
 
 
+def is_own_user_uri(value: object, owner: str | None) -> bool:
+    """Whether *value* is the strict ``user:<owner>`` URI of *owner*.
+
+    The one test for "a message to this node's own person": a ``user:``
+    address of another owner, a malformed spelling or a missing owner is
+    not.  *owner* is the bare owner key, as ``canonical_user_uri`` takes it.
+    """
+
+    return (
+        isinstance(value, str)
+        and bool(owner)
+        and parse_user_uri(value) == owner
+    )
+
+
 TARGET_KIND_AGENT = "agent"
 TARGET_KIND_HOST = "host"
 TARGET_KIND_USER = "user"
-TARGET_KIND_CHANNEL_ROUTE = "channel_route"
 TARGET_KIND_UNKNOWN = "unknown"
 
 #: Every kind the classifier can return.  ``unknown`` is a real verdict, not
@@ -432,7 +545,6 @@ TARGET_KINDS = frozenset(
         TARGET_KIND_AGENT,
         TARGET_KIND_HOST,
         TARGET_KIND_USER,
-        TARGET_KIND_CHANNEL_ROUTE,
         TARGET_KIND_UNKNOWN,
     }
 )

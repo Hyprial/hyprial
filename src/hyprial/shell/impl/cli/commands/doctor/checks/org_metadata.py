@@ -34,6 +34,31 @@ def org_metadata_doctor_check() -> JsonObject | None:
             "status": "ok",
             "detail": "organization metadata and directory rows are readable",
         }
+    unbound = [
+        problem["org"]
+        for problem in problems
+        if problem.get("reason") == "org-cell-unbound"
+        and isinstance(problem.get("org"), str)
+    ]
+    if unbound:
+        names = ", ".join(sorted(unbound))
+        return {
+            "name": "org-metadata",
+            "status": "warn",
+            "detail": (
+                f"legacy organization(s) without an org cell: {names}; member "
+                "operations on them fail with ORG_CELL_UNBOUND"
+            ),
+            "action": {
+                "command": "hyprial org delete <org>",
+                "description": (
+                    "Inspect `hyprial org network --json`, then either delete "
+                    "the legacy org or rebuild it per "
+                    "docs/guides/migration-oc7-org-lifecycle.md."
+                ),
+            },
+            "metrics": {"dataProblems": problems, "unboundOrgs": sorted(unbound)},
+        }
     return {
         "name": "org-metadata",
         "status": "warn",

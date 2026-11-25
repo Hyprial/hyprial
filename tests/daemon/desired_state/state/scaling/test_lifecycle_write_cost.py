@@ -44,7 +44,9 @@ def _completed_receipt(resource: StoredLifecycleResource) -> StoredLifecycleRece
     )
 
 
-def _authority_with_resources(path: Path, count: int) -> StatePersistenceAuthority:
+def _authority_with_resources(
+    path: Path, count: int, actor_host
+) -> StatePersistenceAuthority:
     state_db = StateDatabase(path / "state.sqlite3")
     store = DesiredStateStore(path / "desired.json", state_db)
     resources = tuple(_resource(index) for index in range(count))
@@ -55,7 +57,7 @@ def _authority_with_resources(path: Path, count: int) -> StatePersistenceAuthori
             lifecycle_receipts=(_completed_receipt(resources[0]),),
         )
     )
-    return StatePersistenceAuthority(store)
+    return StatePersistenceAuthority(store, actor_host=actor_host)
 
 
 def _changed_rows(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -74,9 +76,9 @@ def _changed_rows(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 
 def _write_cost(
-    path: Path, monkeypatch: pytest.MonkeyPatch, resources: int
+    path: Path, monkeypatch: pytest.MonkeyPatch, resources: int, actor_host
 ) -> tuple[list[int], list[int]]:
-    authority = _authority_with_resources(path, resources)
+    authority = _authority_with_resources(path, resources, actor_host)
     loads: list[int] = []
     original_load = authority._desired_store.load
 
@@ -111,18 +113,18 @@ def _write_cost(
 
 
 def test_lifecycle_write_cost_is_bounded_by_changed_rows_not_retired_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, actor_host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    small_changes, small_loads = _write_cost(tmp_path / "small", monkeypatch, 100)
-    large_changes, large_loads = _write_cost(tmp_path / "large", monkeypatch, 2000)
+    small_changes, small_loads = _write_cost(tmp_path / "small", monkeypatch, 100, actor_host)
+    large_changes, large_loads = _write_cost(tmp_path / "large", monkeypatch, 2000, actor_host)
 
     assert len(small_changes) == len(large_changes) == 3
     assert max(large_changes) <= max(small_changes) * 3, (small_changes, large_changes)
     assert small_loads == large_loads == [], (small_loads, large_loads)
 
 
-def test_acknowledged_lifecycle_write_is_already_in_projection(tmp_path: Path) -> None:
-    authority = _authority_with_resources(tmp_path, 100)
+def test_acknowledged_lifecycle_write_is_already_in_projection(tmp_path: Path, actor_host) -> None:
+    authority = _authority_with_resources(tmp_path, 100, actor_host)
     request = LifecycleMutationRequest(
         "projection-correlation",
         "projection-attempt",

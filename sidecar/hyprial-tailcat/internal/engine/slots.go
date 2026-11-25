@@ -3,8 +3,8 @@ package engine
 // Fixed outbound slot pool (design branch
 // design/socialware-data-layer-2026-10-06:
 // docs/design/design-stable-zenoh-session-slots-2026-10-08.md §2, §4).
-// Slots are unix socket listeners opened at Up and never closed
-// while the engine runs: the local zenoh session's connect set points at
+// Slots are unix socket or loopback TCP listeners opened at Up and never
+// closed while the engine runs: the local zenoh session's connect set points at
 // them forever, so membership changes only rebind slots and the zenoh
 // session is never rebuilt.
 

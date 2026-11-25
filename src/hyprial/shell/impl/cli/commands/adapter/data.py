@@ -5,7 +5,7 @@ from __future__ import annotations
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
-from hyprial.kernel import ipc_errors
+from hyprial.error import codes
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
@@ -14,7 +14,7 @@ from hyprial.shell.impl.cli.output import CliResult
 identities_app = group(
     help=(
         "Record and query platform-identity mappings (who is who): "
-        "platform id ↔ display name ↔ hyprial owner, with provenance and "
+        "platform id ↔ display name, with provenance and "
         "confidence. Identity lookups run on recorded data, never on "
         "live-chat deduction."
     )
@@ -27,7 +27,6 @@ def _identity_json(identity: Any) -> JsonObject:
         "platformId": identity.platform_id,
         "displayName": identity.display_name,
         "unionId": identity.union_id,
-        "hyprialOwner": identity.hyprial_owner,
         "standing": identity.standing,
         "source": identity.source,
         "firstSeenMs": identity.first_seen_ms,
@@ -49,7 +48,7 @@ def _checked_identity_kind(kind: str | None) -> str | None:
 
     if kind is not None and kind not in IDENTITY_KINDS:
         raise services.CliError(
-            ipc_errors.INVALID_ARGUMENT,
+            codes.INVALID_ARGUMENT,
             f"--kind must be one of {', '.join(IDENTITY_KINDS)}",
         )
     return kind
@@ -81,7 +80,7 @@ def adapter_identities_sync(
                 services._hyprial_home(), services._state_dir(), name
             )
         except PersistentConfigError as error:
-            raise services.CliError(ipc_errors.ADAPTER_NOT_FOUND, str(error)) from error
+            raise services.CliError(codes.ADAPTER_NOT_FOUND, str(error)) from error
         store = open_identity_store(services._state_dir(), name)
         try:
             report = sync_identities(state=store, gateway=gateway, app_id=app_id)
@@ -138,7 +137,7 @@ def adapter_identities_find(
 
         if display_name is None and platform_id is None:
             raise services.CliError(
-                ipc_errors.INVALID_ARGUMENT,
+                codes.INVALID_ARGUMENT,
                 "identities find requires --name and/or --id",
             )
         store = open_identity_store(services._state_dir(), name)
@@ -194,7 +193,7 @@ def adapter_media_get(
         try:
             parsed = parse_media_ref(ref)
         except ValueError as error:
-            raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            raise services.CliError(codes.INVALID_ARGUMENT, str(error)) from error
         try:
             # The same credential-loading path as 'identities sync': the
             # adapter's own App secret, resolved locally, never printed.
@@ -202,7 +201,7 @@ def adapter_media_get(
                 services._hyprial_home(), services._state_dir(), name
             )
         except PersistentConfigError as error:
-            raise services.CliError(ipc_errors.ADAPTER_NOT_FOUND, str(error)) from error
+            raise services.CliError(codes.ADAPTER_NOT_FOUND, str(error)) from error
         try:
             result = fetch_media(
                 gateway,

@@ -20,14 +20,14 @@ Minimal B/C usage (registration happens in A's shared
     from hyprial.shell.impl.cli.output import CliResult
     from hyprial.shell.impl.cli.runtime.composition import CliRuntime
 
-    def register_links(app: typer.Typer, runtime: CliRuntime) -> None:
+    def register_conversations(app: typer.Typer, runtime: CliRuntime) -> None:
         @app.command("list")
-        def link_list(json_output: bool = typer.Option(False, "--json")) -> None:
-            operation = lambda: CliResult(runtime.request("link.list", {}))
+        def conversation_list(json_output: bool = typer.Option(False, "--json")) -> None:
+            operation = lambda: CliResult(runtime.request("conversations.list", {}))
             runtime.execute(operation, json_output=json_output)
 
     # A-owned shared wiring:
-    runtime.add_registrar(register_links, parent=link_app)
+    runtime.add_registrar(register_conversations, parent=conversation_app)
 
 No placeholder command is registered for an unimplemented family: the
 registrar is only called when the real handler exists.  The runtime does not
@@ -55,6 +55,7 @@ class RequestPort(Protocol):
         params: JsonObject | None = None,
         *,
         timeout: float | None = None,
+        timeout_allowance: float = 0.0,
         restore_wait: float | None = None,
     ) -> Any: ...
 
@@ -69,6 +70,7 @@ class ExecutePort(Protocol):
         json_output: bool,
         json_indent: int | None = None,
         allow_missing_home: bool = False,
+        ensure_daemon: bool = True,
     ) -> None: ...
 
 
@@ -99,6 +101,7 @@ class CliRuntime:
         params: JsonObject | None = None,
         *,
         timeout: float | None = None,
+        timeout_allowance: float = 0.0,
         restore_wait: float | None = None,
     ) -> Any:
         """Call the injected daemon request client."""
@@ -106,14 +109,30 @@ class CliRuntime:
         kwargs: dict[str, Any] = {}
         if timeout is not None:
             kwargs["timeout"] = timeout
+        if timeout_allowance:
+            kwargs["timeout_allowance"] = timeout_allowance
         if restore_wait is not None:
             kwargs["restore_wait"] = restore_wait
-        # Keep the historical injection shape: a request without params is
-        # called with only the method, so existing fake request ports keep
-        # their narrower signatures.
-        if params is None:
-            return self.request_resolver()(method, **kwargs)
-        return self.request_resolver()(method, params, **kwargs)
+        from hyprial.shell.impl.cli.output import notice
+
+        def show_notices(value: Any) -> None:
+            if method.startswith("org.") and isinstance(value, dict):
+                messages = value.get("notices", [])
+                if isinstance(messages, list):
+                    for message in messages:
+                        if isinstance(message, str):
+                            notice(message)
+
+        try:
+            result = (
+                self.request_resolver()(method, **kwargs) if params is None
+                else self.request_resolver()(method, params, **kwargs)
+            )
+        except Exception as error:
+            show_notices(getattr(error, "data", None))
+            raise
+        show_notices(result)
+        return result
 
     def worker_session_binding(self) -> Any:
         """Resolve the carrier binding lazily for this operation."""
@@ -129,14 +148,21 @@ class CliRuntime:
         json_output: bool,
         json_indent: int | None = None,
         allow_missing_home: bool = False,
+        ensure_daemon: bool = True,
     ) -> None:
-        """Run one operation through the only result/error output path."""
+        """Run one operation through the only result/error output path.
+
+        ``ensure_daemon=False`` marks a command that observes or controls the
+        daemon: a connect failure never starts it.
+        """
 
         kwargs: dict[str, Any] = {"json_output": json_output}
         if json_indent is not None:
             kwargs["json_indent"] = json_indent
         if allow_missing_home:
             kwargs["allow_missing_home"] = True
+        if not ensure_daemon:
+            kwargs["ensure_daemon"] = False
         self.execute_resolver()(operation, **kwargs)
 
     def add_family(
@@ -162,7 +188,7 @@ class CliRuntime:
 
         The returned mapping is the registrar's callback namespace.  It is
         intentionally not merged into the runtime or the entry: callers that
-        need named callbacks (the legacy transfer surface) own that mapping.
+        need named callbacks own that mapping.
         """
 
         return register(parent or self.app, self) or {}

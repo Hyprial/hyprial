@@ -1,3 +1,6 @@
+# Decision record (W1E-2, 2026-11-21):
+# - FsReplicaBackend._fsync_directory delegates to manysys.fsync_directory so
+#   Windows directory durability does not fail with PermissionError on os.open.
 """Resident replica backends and byte-preserving storage duties.
 
 This module deliberately has no transport or CRDT-store dependency.  A
@@ -23,7 +26,7 @@ import threading
 import time
 from typing import Final, Protocol
 
-from hyprial.kernel import configured_hyprial_home
+from hyprial.kernel import configured_hyprial_home, fsync_directory
 from hyprial.identity import parse_protected_directory_doc_id
 
 from hyprial.daemon.impl.orgfs.api  import OrgFsError
@@ -258,11 +261,7 @@ class FsReplicaBackend(DocumentDirectories):
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
-        descriptor = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(path)
 
     def put(self, key: str, data: bytes) -> PutOutcome:
         path = self._path(key)
@@ -653,7 +652,7 @@ class ReplicaStore:
         after: int | None = None,
         limit: int = 256,
     ) -> tuple[tuple[str, bytes], ...]:
-        doc_id = _segment(doc_id, name="doc_id")
+        doc_id = _document_segment(doc_id)
         writer = _segment(writer, name="writer")
         if after is not None and (type(after) is not int or after < 0):
             raise ValueError("after must be a non-negative sequence")
@@ -684,7 +683,7 @@ class ReplicaStore:
             raise ValueError("limit must be positive")
         selected = None
         if doc_ids is not None:
-            selected = {_segment(doc_id, name="doc_id") for doc_id in doc_ids}
+            selected = {_document_segment(doc_id) for doc_id in doc_ids}
             retired = {
                 doc_id: record
                 for doc_id in selected
@@ -738,7 +737,7 @@ class ReplicaStore:
     def apply_retention(self, doc_id: str) -> tuple[str, ...]:
         """Delete log records covered by the injected owner snapshot point."""
 
-        doc_id = _segment(doc_id, name="doc_id")
+        doc_id = _document_segment(doc_id)
         point = self.retirement_view.snapshot_point(doc_id)
         if point is None:
             return ()

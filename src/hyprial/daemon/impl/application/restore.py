@@ -22,7 +22,6 @@ from hyprial.identity import (
 from hyprial.kernel import DaemonStartupPhase
 from hyprial.kernel import PortAdmission
 from hyprial.kernel import HarnessLaunchSpec
-from hyprial.kernel import merge_harness_launch_args
 from hyprial.daemon.impl.composition  import (
     DomainCommandError,
 )
@@ -78,17 +77,23 @@ class _RestoreMixin:
         )
 
     def _pending_restore_work(self, agent: Agent) -> bool:
+        """Whether durable work waits for ``agent`` under any key it reads.
+
+        The keys are its official address (``_consumer_read_keys``, the key
+        the headless runtime pull and the session fetch drain) and its bare
+        name.
+        """
+
         inbox = self._inbox
         if inbox is None:
             return False
+        keys = (*self._consumer_read_keys(agent.uri), agent.actor)
         reader = getattr(inbox, "has_pending_work", None)
-        if callable(reader):
-            return bool(reader(agent.uri) or reader(agent.actor))
-        pending = getattr(inbox, "pending_messages", None)
-        return bool(
-            callable(pending)
-            and (pending(agent.uri) or pending(agent.actor))
-        )
+        if not callable(reader):
+            reader = getattr(inbox, "pending_messages", None)
+            if not callable(reader):
+                return False
+        return any(reader(key) for key in keys)
 
     def _pac_restore_fact(self, actor: str) -> PacRestoreFacts | None:
         authority = self._pac_graph_authority
@@ -139,10 +144,6 @@ class _RestoreMixin:
         with self._restore_eligibility_lock:
             self._restore_eligibility_version += 1
             version = self._restore_eligibility_version
-        # Activity/degraded policy cannot clear a migration custody guard.
-        if getattr(self, "_transfer_p2", None) is not None:
-            custody = self._transfer_source_state(spec.name, entity_token)
-            suppressed = suppressed or custody.blocks_start
         eligibility = RestoreEligibilityProjection(
             actor=spec.name,
             entity_token=entity_token,
@@ -272,8 +273,6 @@ class _RestoreMixin:
         self, specs: tuple[HarnessLaunchSpec, ...]
     ) -> tuple[HarnessLaunchSpec, ...]:
         specs = self._merge_stored_harness_args(specs)
-        if getattr(self, "_transfer_p2", None) is not None:
-            specs = self._filter_transfer_restore_specs(specs)
         return self._classify_activity_restore_specs(specs)
 
     def _merge_stored_harness_args(
@@ -291,13 +290,12 @@ class _RestoreMixin:
 
         merged: list[HarnessLaunchSpec] = []
         for spec in specs:
-            agent = self.agents.get(spec.name)
-            args = (
-                spec.args
-                if agent is None
-                else merge_harness_launch_args(
-                    agent.args_for(spec.harness), spec.args, harness=spec.harness
-                )
+            args, _agent, _stored = self._effective_harness_args(
+                spec.name,
+                spec.harness,
+                spec.args,
+                ignore_stored=False,
+                reject_invalid=False,
             )
             merged.append(spec if args == spec.args else replace(spec, args=args))
         return tuple(merged)
@@ -363,6 +361,13 @@ class _RestoreMixin:
                 getattr(pac, "pending_work", False)
             )
             blocked = projection.block is not None
+            # #1803 item 5: a held graph with no current requested work keeps
+            # its workers down, and a *block* is not work -- a blocked worker of
+            # an idle held graph is still pre-spawned work, so the suppression
+            # outranks it.  A request (pending above) or an explicit ``always``
+            # policy still restores; the coordinator starts the worker on demand
+            # through the normal up path.
+            held_idle = bool(getattr(pac, "held_idle", False)) and not pending
             override = (
                 "pending-work"
                 if pending
@@ -380,12 +385,14 @@ class _RestoreMixin:
                 now_ms=now_ms,
                 threshold_ms=policy.threshold_ms,
             )
-            should_restore = (
-                blocked
-                or override != "none"
-                or (
-                    agent_policy != "never"
-                    and (activity_unknown or not inactive)
+            should_restore = override != "none" or (
+                not held_idle
+                and (
+                    blocked
+                    or (
+                        agent_policy != "never"
+                        and (activity_unknown or not inactive)
+                    )
                 )
             )
             if should_restore:
@@ -410,7 +417,9 @@ class _RestoreMixin:
                 idle_age_ms=idle_age_ms,
                 restore_threshold_ms=policy.threshold_ms,
                 restore_override=(
-                    "per-agent" if agent_policy == "never" else "none"
+                    "per-agent"
+                    if agent_policy == "never"
+                    else ("pac-held-idle" if held_idle else "none")
                 ),
                 activity_unknown=False,
             )
@@ -494,13 +503,6 @@ class _RestoreMixin:
                     entity_token=agent.entity_token,
                     suppressed=False,
                 )
-        if getattr(self, "_transfer_p2", None) is not None:
-            custody = self._hydrate_transfer_source(agent.actor, agent.entity_token)
-            if custody is None or custody.blocks_start:
-                self._publish_restore_eligibility(
-                    spec=spec, entity_token=agent.entity_token, suppressed=True,
-                )
-                return False
         try:
             if self._lifecycle_manager is not None:
                 suffix = (f"{agent.actor}:{agent.entity_token}:"
@@ -548,8 +550,6 @@ class _RestoreMixin:
         return True
 
     def _restore_wake_scan(self, _observed_at_ms: int) -> None:
-        if getattr(self, "_transfer_p2", None) is not None:
-            self._retry_transfer_restore()
         policy = self._restore_policy.projection()
         with self._restore_wake_lock:
             requested = tuple(self._restore_wake_requests.items())[
@@ -804,11 +804,39 @@ class _RestoreMixin:
             # is not claimed for a daemon that is leaving.
             return
         self._restore_done.set()
+        for error in self._cell_reconcile_barrier.open():
+            self._log(
+                "warn",
+                "daemon",
+                "cell.reconcile.barrier.callback_failed",
+                errorType=type(error).__name__,
+                error=str(error)[:300],
+            )
         self._log("info", "daemon", "daemon.ready", nodeId=self.node_id)
         from hyprial.daemon.impl.application.start_backoff import reset_start_failures
 
         reset_start_failures(self.state_dir)
+        self._schedule_user_agent_ensure("startup")
         self._start_maintenance_scheduler()
+        # #1803: PAC is restored, so a held graph can be aged and reminded.
+        # Its own failure is logged and never undoes a finished restore.
+        self._start_held_reminder()
+
+    def _schedule_user_agent_ensure(self, reason: str) -> None:
+        """UA1b: ensure this machine's user agent off this thread; never fails restore.
+
+        UA2: an existing user agent first binds ``user:<owner>`` to local delivery.
+        """
+
+        try:
+            from hyprial.daemon.impl.user_agent.local_target import bind_local_user_target
+            from hyprial.daemon.impl.user_agent.runtime import schedule_user_agent_ensure
+
+            bind_local_user_target(self)
+            schedule_user_agent_ensure(self, reason)
+        except Exception as error:  # noqa: BLE001 - a finished restore stays finished
+            self._log("warn", "agents", "user_agent.schedule_failed",
+                      errorType=type(error).__name__)
 
     def _restore_provider_auth(self) -> None:
         """Re-open broken provider-auth episodes after a daemon restart.
@@ -851,5 +879,6 @@ class _RestoreMixin:
             self._restore_wake_cadence = BoundedCadence(
                 "restore-wake",
                 self._restore_wake_scan,
+                actor_host=self._agent_session_domains.actor_hosts.host_for("daemon-runtime"),
             )
         return self._restore_wake_cadence.submit(time.time_ns() // 1_000_000)

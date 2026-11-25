@@ -1,8 +1,6 @@
 import type { Dispatch } from 'react';
-import { unsupportedNotice } from '../runtime/unsupported';
 import type { GuiPage } from '../state/gui-view-model';
 import type { AppAction } from '../state/types';
-import type { DevModuleId } from '../dev-mode';
 import { AccountMenu } from './AccountMenu';
 import { NotificationCenter } from './NotificationCenter';
 import './notification.css';
@@ -14,12 +12,12 @@ function railPage(page: GuiPage): RailPage | null {
       return 'start';
     case 'chat':
       return 'chat';
-    case 'tasks':
-      return 'tasks';
     case 'contacts':
       return 'agents';
     case 'org':
       return 'org';
+    case 'device':
+      return 'device';
     case 'connections':
     case 'settings':
     case 'first-run':
@@ -32,11 +30,22 @@ function guiPage(page: RailPage): GuiPage {
   return page === 'agents' ? 'contacts' : page;
 }
 
+function railHiddenPages(hidden: ReadonlySet<GuiPage> | undefined): ReadonlySet<RailPage> | undefined {
+  if (hidden === undefined || hidden.size === 0) return undefined;
+  const pages = new Set<RailPage>();
+  for (const page of hidden) {
+    const target = railPage(page);
+    if (target !== null) pages.add(target);
+  }
+  return pages;
+}
+
 interface RailProps {
   readonly page: GuiPage;
   readonly accountMenuOpen: boolean;
+  readonly authenticated?: boolean;
+  readonly hiddenPages?: ReadonlySet<GuiPage>;
   readonly dispatch: Dispatch<AppAction>;
-  readonly devLabels?: Readonly<Record<GuiPage, DevModuleId>>;
   readonly notifications: {
     readonly open: boolean;
     readonly unread: number;
@@ -47,24 +56,15 @@ interface RailProps {
 export function Rail({
   page,
   accountMenuOpen,
+  authenticated = false,
+  hiddenPages,
   dispatch,
-  devLabels,
   notifications,
 }: RailProps) {
   return (
     <RailFrame
       active={railPage(page)}
-      devLabels={
-        devLabels
-          ? {
-              start: devLabels.start,
-              chat: devLabels.chat,
-              tasks: devLabels.tasks,
-              agents: devLabels.contacts,
-              org: devLabels.org,
-            }
-          : undefined
-      }
+      hiddenPages={railHiddenPages(hiddenPages)}
       onSelect={(target) =>
         dispatch({ type: 'navigate', page: guiPage(target) })
       }
@@ -78,16 +78,10 @@ export function Rail({
           onNavigateSettings={() =>
             dispatch({ type: 'navigate', page: 'settings' })
           }
-          onNavigateConnections={() =>
+          onNavigateConnections={hiddenPages?.has('connections') ? undefined : () =>
             dispatch({ type: 'navigate', page: 'connections' })
           }
-          onHelp={() =>
-            dispatch({
-              type: 'set-notice',
-              text: unsupportedNotice('帮助中心'),
-            })
-          }
-            onLogout={() => dispatch({ type: 'request-logout' })}
+            onLogout={authenticated ? () => dispatch({ type: 'request-logout' }) : undefined}
           />
           <NotificationCenter
             open={notifications.open}

@@ -1,0 +1,59 @@
+[
+  {
+    "path": "agents",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/hosted",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/hosted/config",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/hosted/secrets",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/hosted/state",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/hosted/state/home-receipt.json",
+    "mode": "0o600",
+    "kind": "file",
+    "text": "{\"actor\": \"hosted\", \"entityToken\": \"56104387eed34bd38cc2791a39a6cd38\", \"ownerUid\": __UID__, \"path\": \"__HOME__/agents/hosted\", \"resourceToken\": \"d9c6ee39a3f54fb69073ac1316b85fcb\", \"schemaVersion\": 1, \"status\": \"ready\"}\n"
+  },
+  {
+    "path": "agents/native",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/native/config",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/native/secrets",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/native/state",
+    "mode": "0o700",
+    "kind": "dir"
+  },
+  {
+    "path": "agents/native/state/home-receipt.json",
+    "mode": "0o600",
+    "kind": "file",
+    "text": "{\"actor\": \"native\", \"entityToken\": \"a00e2495edd24d38b44e60a29547209b\", \"ownerUid\": __UID__, \"path\": \"__HOME__/agents/native\", \"resourceToken\": \"23ebdd31e6344716b88c2cfc73383083\", \"schemaVersion\": 1, \"status\": \"ready\"}\n"
+  }
+]

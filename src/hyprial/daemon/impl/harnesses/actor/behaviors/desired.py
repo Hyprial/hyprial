@@ -23,6 +23,11 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
 from hyprial.kernel import PortCommandRejected
 
 from ..contracts import _launch_spec
+from hyprial.kernel import ipc_errors
+
+_PERMANENT_LIFECYCLE_CODES = frozenset(
+    {ipc_errors.HARNESS_ARGS_INVALID}
+)
 
 class _DesiredBehavior:
     """Desired-state persistence and event emission behaviour."""
@@ -227,12 +232,18 @@ class _DesiredBehavior:
         batch = self._restore_batches.get(batch_id)
         if batch is None or key not in batch.pending:
             return
-        harness, name = key.split(":", 1)
+        record = self._records.get(key)
+        expected_member = (
+            record.spec.member or record.spec.name if record is not None else None
+        )
+        expected_harness = record.spec.harness if record is not None else key.split(":", 1)[0]
+        expected_name = record.spec.name if record is not None else key.split(":", 1)[1]
         committed = (
             completion.result is True
             and any(
-                spec.harness == harness
-                and spec.name == name
+                spec.harness == expected_harness
+                and spec.name == expected_name
+                and (spec.member or spec.name) == expected_member
                 and spec.status == "failed"
                 for spec in completion.snapshot.harnesses
             )
@@ -245,14 +256,14 @@ class _DesiredBehavior:
                 f"Failed restore status was not committed for {key}",
             )
             return
-        record = self._records.get(key)
         if (
             record is not None
             and record.incarnation == record_incarnation
             and record.generation == record_generation
             and self._is_failed(record)
         ):
-            self._failed_events.append(key)
+            if not record.suppress_failure_alarm:
+                self._failed_events.append(key)
             self._report_readiness(key, "failed")
         self._settle_restore_key(batch_id, key, success=False)
         return
@@ -467,7 +478,7 @@ class _DesiredBehavior:
         if completion.result is not True:
             self._reject_correlation(
                 lifecycle_request.correlation_id,
-                "HARNESS_LIFECYCLE_RECEIPT_MISMATCH",
+                ipc_errors.HARNESS_LIFECYCLE_RECEIPT_MISMATCH,
                 "Harness lifecycle receipt could not settle",
             )
             return
@@ -503,7 +514,7 @@ class _DesiredBehavior:
         if completion.result is not True:
             self._reject_correlation(
                 lifecycle_request.correlation_id,
-                "HARNESS_LIFECYCLE_RECEIPT_MISMATCH",
+                ipc_errors.HARNESS_LIFECYCLE_RECEIPT_MISMATCH,
                 "Harness lifecycle receipt could not settle",
             )
             return
@@ -551,7 +562,11 @@ class _DesiredBehavior:
             raise TypeError("Harness lifecycle failure count must be an integer")
         correlation_id = event.correlation_id
         retry_budget = self._failure_budget or 3
-        if result < retry_budget and not self._closing:
+        if (
+            event.code not in _PERMANENT_LIFECYCLE_CODES
+            and result < retry_budget
+            and not self._closing
+        ):
             self._pop_lifecycle_pending(correlation_id)
             delay = min(
                 capped_exponential(
@@ -626,6 +641,9 @@ class _DesiredBehavior:
             request, provenance = pending
             assert isinstance(request, LifecycleMutationRequest)
             assert isinstance(provenance, MutationProvenance)
+            if event.code in _PERMANENT_LIFECYCLE_CODES:
+                self._continue_lifecycle_rejection(request, provenance, event, 0)
+                return
             self._persist_desired(
                 DesiredStateOperation.RECORD_HARNESS_LIFECYCLE_FAILURE,
                 request,

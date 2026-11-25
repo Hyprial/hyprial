@@ -1,6 +1,6 @@
 ---
 name: hyprial-e2e
-description: Run and assess release-grade Harness Bridge (hyprial) end-to-end scenarios across the pytest suite, the cross-implementation contract corpus, isolated daemon runners, the uv distribution flow, real resident providers, and live Feishu/Lark behavior. Use when preparing a hyprial release, reproducing an E2E failure, completing the E2E-001…E2E-014 acceptance matrix, or deciding whether E2E evidence is sufficient to pass a release gate.
+description: Run and assess release-grade Harness Bridge (hyprial) end-to-end scenarios across the pytest suite, the cross-implementation contract corpus, isolated daemon runners, the uv distribution flow, real resident providers, and live Feishu/Lark behavior. Use when preparing a hyprial release, reproducing an E2E failure, completing the E2E-001…E2E-013 acceptance matrix, or deciding whether E2E evidence is sufficient to pass a release gate.
 ---
 
 # Run Harness Bridge E2E
@@ -8,6 +8,27 @@ description: Run and assess release-grade Harness Bridge (hyprial) end-to-end sc
 Treat E2E as an evidence-producing release gate. Never infer a pass from a
 command exit code when a required scenario was blocked or skipped, and never
 count a gated or skipped run as E2E evidence.
+
+## Keep implementation changes and scenarios together
+
+Before changing CLI, daemon, provider, PAC, OrgFS, routing or protocol behavior,
+run the implementation impact plan on the full branch range:
+
+```sh
+uv run --no-project --python 3.12 python scripts/ci/check_e2e_impact.py \
+  --base origin/dev --head HEAD --plan-only
+```
+
+Address every reported scenario in a visible PR-body `E2E-Impact:` line as
+`updated`, `unchanged` with a concrete contract judgment and original-scenario
+validation record/plan, or `not-applicable` with a reason and `requires-review`.
+Unknown product/protocol paths need exact-path `E2E-Unknown:` review reasons.
+Keep `covers` in `contract/e2e/scenarios.json` current; shared and dedicated
+runner/helper changes also affect scenarios. Never mechanically change a test
+when its contract remains valid, or claim a declaration proves an E2E PASS.
+Real execution evidence must identify its fixed source SHA independently.
+The format, local body check and explicit first-adoption bootstrap boundary
+are in [the impact guide](../../../docs/guides/e2e-impact.md).
 
 ## Preflight environment and accounts first
 
@@ -126,9 +147,7 @@ credentials that are not needed in the report.
    authoritative preconditions; the runners re-verify them and classify
    missing prerequisites as `BLOCKED`. For an attended Codex TUI that must
    receive Harness Network messages, run foreground `hyprial agent start codex`
-   inside a tmux window you own. Do not use the launcher's Codex `--tmux` mode
-   for messaging acceptance: its detached pane has no durable inbox carrier and
-   reports `CODEX_TMUX_INBOX_UNAVAILABLE`.
+   inside a tmux window you own.
 
 Start testing only when the tooling, isolated home, and — for `[REAL ENV]`
 rows — account checks all pass.
@@ -152,10 +171,11 @@ acceptance.
 - Keep `HOME`, all `XDG_*` directories, `HYPRIAL_HOME`, and `HARNESS_STATE_DIR`
   inside the disposable test root. Remove inherited `DBUS_*` addresses. Pytest
   subprocess tests use `tests.support.runtime.environment.isolated_environment`.
-  Use `init --no-service`; changing HOME does not isolate the launchd UID domain
-  or systemd user manager. Product service mutations reject non-default homes,
-  and real supervisor commands reject a HOME that differs from the OS account
-  home. Doctor reports that refusal separately from the daemon/zenoh checks.
+  Use `init --no-service`; changing HOME does not isolate the launchd UID
+  domain or systemd user manager, but non-default homes now get derived unit
+  names (the default home keeps the fixed label) and real supervisor commands
+  still reject a HOME that differs from the OS account home; doctor reports
+  that refusal separately from the daemon/zenoh checks.
   Never call launchctl/systemctl to clean up a test: stop its isolated daemon and
   remove only its isolated unit files. The pytest session tripwire lists real
   user unit names and mtimes only; any change fails the session. Never inspect,
@@ -179,6 +199,109 @@ acceptance.
   daemons, adapters, providers, tmux sessions, and containers are gone.
   Report leaked test state instead of adopting or reusing it.
 
+## Login invitation confirmation (O2c)
+
+Login queries pending invitations after daemon verification, including first-time
+initialization. TTY users confirm each invite; non-TTY and `--json` runs report
+without joining. Bulk acceptance requires `hyprial org pending --accept-all`.
+Declining leaves the account invite unchanged. Pickup failures do not undo a
+committed login. Never print payloads or login credentials in evidence.
+A partial join stays pending with `status=partial` and `missingStep`; an org
+listing is not completion proof. Retry the same confirmed invite to resume its
+durable checkpoints. Do not delete `org-invites/` state to force re-redemption.
+Cover directory/ACL failure, binding/policy read-back, device publication,
+concurrent IPC accepts, and crashes between checkpoints in `test_recovery.py`.
+Also run `test_access.py`: real OrgFS invitation grants are directory `rw` and
+ACL `ro`. Read-back and resume must accept those grants and higher access,
+without promoting ACL access or accepting a missing/revoked member or a
+read-only directory grant. Transport and device stand-ins are not live E2E.
+
+Run `uv run pytest tests/daemon/org_membership/invites tests/shell/cli/org_membership`
+plus `tests/shell/invites`, `tests/shell/login/test_login_cli.py`, and
+`tests/shell/cli/installation/test_cli_onboarding.py` with disposable homes and
+`NO_PROXY=127.0.0.1,localhost,::1`. These prove local composition and contracts;
+real Casdoor/Tailcat and cross-device acceptance remain separate gates.
+
+## Org membership authority (O1a)
+
+For membership-storage changes, run
+`uv run pytest tests/daemon/org_membership tests/identity/org_membership`
+and the touched squire/startup tests with disposable homes.
+`tests/daemon/org_membership/rework` covers real protected OrgFS trees,
+durable replica reload, IPC dispatcher wire keys, unavailable projections,
+and fake-Casdoor concurrent binding. These tests do not prove live Casdoor
+or Lark operation.
+
+Personal ensure must probe `group-space`. Without that capability it reports
+pending and creates no competing space. With it, bind the reserved UUID before
+creating the local space. On conflict retain both IDs and never overwrite the
+local space. A reserved UUID must survive a restart.
+
+There is no receivers routing record any more (S3a): `org.receivers.*` and
+`receivers.json` are deleted, and `state/users.json` is not read at all (S3c;
+runtime capabilities live in `state/runtime-capabilities.json`). Owner-bound
+delivery goes through the user agent cell; do not repair routing by editing
+`state/users.json`. Administrative membership approval remains BLOCKED until the
+Casdoor role capability is separately integrated and tested.
+
+### Org-membership upgrade (O1b)
+
+`hyprial doctor --fix` and daemon upgrade request `upgrade.steps.run`; only the
+live daemon executes `org-membership-v1`. A missing daemon is pending, never a
+local migration fallback. Read `upgrade.steps.status` for per-step results.
+Each run writes a private per-entity report under
+`<target HYPRIAL_HOME>/state/org-membership-v1/`; the step's `data.reportPath`
+identifies it. Keep the journal and source files: do not delete checkpoints to
+force success after a source or membership conflict. Reconcile drift explicitly.
+
+Run `tests/daemon/org_membership/migration` plus upgrade/doctor tests in isolated
+homes. Inject interruption after every checkpoint and durable write, reopen the
+same replica, and preserve removed memberships. Use independent FileSpaceStore
+replicas in both upgrade/merge orders, not only a shared facade. Doctor shows
+`conflict` as a warning with an action hint; it is not completion. Other
+pending/failure conditions must still warn. The readback must use OrgFS, not a
+profile fallback. Context targets come
+from explicit containing-space org metadata; residents match unique name+node,
+not publishers or human members. Foreign owner writes remain pending until the
+authorized record syncs. Fake Casdoor and in-process runtime composition do not
+prove live multi-device or installer-upgrade acceptance; report those UNKNOWN.
+
+## Current organization defaults (O2a, 0.5.5.3)
+
+Run `tests/daemon/org_membership/context`, `tests/shell/cli/work`, and
+`tests/shell/cli/org_membership/test_defaults.py`.
+Use isolated homes. Set `org use group-b`; work defaults must target B and
+explicit `--org group-a` must target A. After `org use --clear`, two active
+orgs must return `ORG_REQUIRED` with candidates. Left/deleted/partial current
+orgs clear durably on the next context/work command and emit a stderr notice,
+including with `--json` and when fallback fails. Personal orgs may host work.
+The two work shortcuts resolve an org and call ordinary `orgfs.ls/read`; there
+are no legacy `work.*` requests or work-specific owner/session checks. Verify
+home isolation, unchanged OrgFS metadata, and the normal OrgFS permissions.
+These tests do not establish O2b member defaults or live release acceptance.
+
+## Work documents after #2214 simplification
+
+Use `contract/work-items/README.md` as the current behavior contract. In an
+isolated space, verify `org work ls` reads `work/` and `org work show <filename>`
+returns the same raw text/version as `org fs read` without adding `.md`, parsing
+tasks, or requiring journal replay or a local approval ledger. Include arbitrary
+filenames, malformed YAML, unknown frontmatter fields, and old `ownerActions`;
+the source text must remain readable and unchanged. No `work.*` IPC methods,
+specialized work writes, collect/finish commands, or asked/declined state machine
+should remain registered.
+
+Exercise a normal `org fs write --expect-version` edit and stale-version refusal,
+then re-read and reconcile. Same-name copies must be selectable by node ID and
+handled with ordinary resolve/move/trash operations. Check ordinary OrgFS history
+and retained-version recovery without a special last-valid-task rule. Parser and
+overview diagnostics are read-only projections; task status, owner fields and
+legacy verification markers must not become approval evidence. Keep PAC's own
+execution/approval/history tests separate. Verify that this simplification does
+not migrate or delete existing text, history, unknown CRDT roots, or ledger files;
+it does not execute the historical Yjs state-only cutover. A local fixture does
+not establish live multi-device convergence or signed cross-node approval.
+
 ## Lark quarantine recovery (0.5.5.1)
 
 For daemon-side adapter lifecycle changes, run
@@ -195,6 +318,47 @@ the delay; successful stop cancels retries. Check `lark.adapter.quarantined`
 and `lark.adapter.recovered` in the existing daemon log. Do not restart production
 or modify desired-state files to validate this behavior. Contract:
 `contract/daemon-lifecycle/adapter-model.md`.
+
+## User-key local verification (U2 prerequisite only)
+
+Run `uv run pytest tests/identity/provider_keys/user_key tests/identity/user_key
+ tests/daemon/user_key tests/daemon/identity/proofs
+ tests/integration/native_harnesses/test_native_resident_tripwires.py` as one command
+(that file merges the `resident_metadata/native_origins_*.py` parts into `NATIVE_ORIGINS`).
+These tests use synthetic issuers and isolated state. They prove local JWT/JWKS,
+lookup/cache/freshness, custody, unavailable lifecycle and reserved-partition
+behavior, not real Casdoor, provider access or cross-device acceptance.
+
+`hyprial user key renew|rotate|revoke` remains unavailable (`USER_KEY_UNBOUND`);
+workers cannot invoke these operator commands. Do not try renewal as a login
+repair or inject an issuer/activation setting to bypass the refusal. U2 adds no
+production issuance, revocation, publication, re-signing or signer activation.
+Use `contract/identity/user-key.md` for exact local verification limits, including
+in-process-only sequence memory. UK-CAS and actual cross-device behavior stay
+BLOCKED/UNKNOWN until their approved prerequisites exist. Never use production
+login credentials or an existing organization to make this local slice pass.
+
+## Provider-key integration and refusal checks
+
+Run `uv run pytest tests/daemon/provider_keys tests/identity/provider_keys
+ tests/integration/provider_keys tests/shell/cli/users/provider
+ tests/daemon/ipc/contracts/setup/test_internal_secret_fence.py` as one command.
+Keep the default provider authority `legacy`, HTTP exposure false and production
+signer disabled. A revoked grant refuses the whole owner-key launch. A corrupt
+legacy inventory returns `AGENT_ERROR`, never an empty successful list. Recheck
+trusted internal and public incarnation fences through grant and inventory reads,
+including foreign agents and an empty inventory after same-name replacement.
+Explicit allow/grant repair must verify the exact CAS snapshot and use a sequence
+above durable high-water; renew/revoke never repair implicitly. Test competing
+store/service instances, unavailable anchors, and a concurrently restored active
+slot with `replace=False`. Default daemon state-directory exclusivity limits the
+multi-instance trigger; local probes do not prove a default production exploit.
+
+The provider gate does not gate login's local UserKey initialization: login may
+create an unbound key in its selected isolated home/state after real device binding.
+Do not add a fabricated device identity, issuer, owner-home resolver or global gate
+just to satisfy these tests. Production issuance and cross-node signature/freshness
+acceptance remain unimplemented prerequisites, not established E2E results.
 
 ## Lark outage backfill
 
@@ -264,48 +428,60 @@ five Org-list latencies. A missing field, command timeout, inaccessible daemon,
 or absent deployment baseline is `BLOCKED` with the exact error. It is never a
 skip or inferred PASS.
 
-## Tailcat login, device provisioning, and account switching
+## Tailcat login and device provisioning
 
-On this tree, `hyprial login [--force] [--no-open] [--json]
-[--switch-account] [--dry-run] [--no-daemon]` handles OIDC identity and
+On this tree, `hyprial login [--no-open] [--json]` handles OIDC identity and
 device-key provisioning,
 not a Headscale/Tailscale control-plane join. Inspect the current CLI help;
-do not use retired `--skip-join`, `--preauthkey-file`, `--install-sidecar`,
+do not use retired `--switch-account`, `--dry-run`, `--no-daemon`,
+`--skip-join`, `--preauthkey-file`, `--install-sidecar`,
 `--only-install-sidecar` or `--join-timeout` instructions from old evidence.
 
-Identity commits `preferred_username` into settings and a refresh token into
-the isolated home's `secrets/login.json` at0600. A home counts as logged in
-only when that credential is valid, settings holds a Casdoor identity, the
-credential/settings/current-profile issuers match, and the current owner and
-device ID have both the Tailcat device key and public record. Plain `login`
-then reports `already-logged-in` without authentication or writes. If the
-credential and identity are coherent but the device stage is incomplete,
-plain `login` retries only that stage without authentication; use `--force`
-to reauthenticate. Stored credentials have no expiry field, so `expiresAt` is
-unknown/null. Device provisioning invokes
-the wheel's `hyprial-tailcat` genkey seam and writes the public device record.
-Identity success is not proof of device readiness: a missing/failing sidecar
-may leave login successful with `device.ready=false` and a next step. Require
-the device outcome separately; organization membership/traffic is tested by
-`org` scenarios, not inferred from login or a fake issuer.
+Each `HYPRIAL_HOME` binds permanently to one `(identityIssuer, userId)` pair
+stored in `settings.homeAccount` (`{issuer, userId, owner}`). First-time identity
+commit writes `settings.owner`, `settings.username`, `settings.userId`,
+`settings.identityIssuer`, `settings.homeAccount`, and the refresh token in the
+isolated home's `secrets/login.json` at 0600. A same-uid re-login with a renamed
+`preferred_username` updates `settings.username` and `homeAccount` while
+preserving `settings.owner`. A home that already has an
+owner starts the serving daemon if needed and runs one daemon-driven same-uid
+reauthentication (`auth.relogin({operationKey, until: "serving"})`) until
+serving, verifying `issuer`, `userId`, and bound `owner` while driving
+device/user-key/initialize recovery. Logging into another uid (or an unbound
+home with legacy business data) is refused before any write with
+`IDENTITY_CONFLICT`; switch accounts by creating/selecting a separate
+`HYPRIAL_HOME` (or following `docs/guides/migration-account-binding.md`).
+Device provisioning invokes the wheel's `hyprial-tailcat` genkey seam and
+writes the public device record. Identity success is not proof of device
+readiness: a missing/failing sidecar may leave login successful with
+`device.ready=false` and a next step. Require the device outcome separately;
+organization membership/traffic is tested by `org` scenarios, not inferred from
+login or a fake issuer.
 
-With `--switch-account`, the default CLI flow owns stopping the old generation,
-proving exit, migration classification, commit and verified replacement start.
-`--no-daemon` instead refuses an identity change while a daemon is live or
-cannot be proven stopped. `--dry-run` requires `--switch-account`, uses backup
-copies and writes no credential/settings/state or daemon lifecycle. First-time
-login uses the shared initialization path; `--no-daemon` preserves no-start.
+A first login on a home with no account is one daemon operation: `login` starts
+the bootstrap daemon when none runs, shows the URL and code, then makes one
+`auth.login.begin` (`until: serving`) and one `auth.operation.get` with
+`waitSeconds`; the daemon authorises, registers the device and serves in the
+same process, and a device that cannot be registered is exit 0 with
+`device.ready=false`. A real run needs a controlled issuer: `hyprial login` on an
+ownerless home reaches the configured issuer, so use the controlled daemon entry
+(`tests/integration/daemon_lifecycle/child_entry.py`), never a production one.
 
-`hyprial logout [--yes] [--json]` is scoped to the selected home. It removes
-only local session state: `secrets/login.json` and login-owned Casdoor settings
-fields. It stops and proves daemon exit before removing an active Casdoor
-identity, and preserves agent credentials, Tailcat device keys, and unrelated
-settings. It does not revoke already-issued access tokens at the issuer; those
-tokens can remain valid until expiry. It requires confirmation when state
-exists (`--yes` for noninteractive/JSON use) and is an idempotent
-`not-logged-in` success when state is absent. Test these behaviors only with
-synthetic sentinels in a disposable home. Do not apply any login, switch, or
-logout flow to a production home during testing.
+`hyprial logout [--yes] [--json]` is scoped to the selected home. It is one
+daemon `auth.logout` (the command starts the daemon when none runs): the daemon
+removes only local session state, `secrets/login.json` and login-owned Casdoor
+settings fields (preserving `settings.homeAccount`), and a serving daemon then
+returns to bootstrap in the same PID.
+The command takes no lock, stops no daemon and does not wait for an exit; its
+JSON reports `daemon.stopRequested`. It preserves agent credentials, Tailcat
+device keys, and unrelated settings. It does not revoke already-issued access tokens at the issuer; those
+tokens can remain valid until expiry. It requires confirmation before the
+request (`--yes` for noninteractive/JSON use) and is an idempotent
+`not-logged-in` success when state is absent (a missing home starts nothing).
+With `HYPRIAL_OWNER` set and no login left, a repeated logout answers
+`DAEMON_NOT_READY` (known-problems KP-120). Test these behaviors only with
+synthetic sentinels in a disposable home. Do not apply any login or logout flow
+to a production home during testing.
 
 Sidecars ship in platform wheels; separate tsnet release acquisition is retired.
 The `hyprial socialware install` command reports COMING_SOON (the old top-level `hyprial install` is retired: unknown command). Builtin GUI
@@ -327,7 +503,14 @@ Evidence rules for any scenario that touches login:
   carries exactly the final result object; progress events go to stderr.
 - A daemon must come up offline from `HYPRIAL_OWNER`/`settings.owner` alone —
   any scenario that needs the credential file to *start* a daemon is a
-  product regression, not an environment gap.
+  product regression, not an environment gap.  Its cell runtime (and with
+  it every headless delivery) additionally needs the uid: pair
+  `HYPRIAL_OWNER` with `HYPRIAL_USER_ID` (a Casdoor-shaped `sub`, so that
+  `u.<value>` is a user-id segment), or seed `settings.userId`.
+  `contract/e2e/_daemon_runner.py` derives one from the owner when the
+  runner sets none; a scenario that sets only `HYPRIAL_OWNER` gets
+  `cell.runtime_unavailable reason=authority-uid-missing` and pending
+  headless rows, which is the product behaviour, not an environment gap.
 
 The tsnet-era join harnesses retired with the sidecar (Tailcat cutover):
 the `tag:hyprial-ci` pre-auth key CI job, the self-hosted Headscale login
@@ -500,86 +683,6 @@ The backend is echo, not Zenoh; E2E-025 remains the full-daemon positive control
 Do not restore the old Python join host, temporary allow grants or directory-row
 continuation window to satisfy the retired v4 scenario wording.
 
-## dsh-tui interactive carrier (manual acceptance until a scenario number is assigned)
-
-This is the dsh-tui interactive path. It is not E2E-014: E2E-014 covers the
-daemon-managed DSH Web/API worker. Do not use one scenario's evidence for the
-other.
-
-A PTY-capable executor is mandatory; an executor that cannot allocate PTYs or
-fork tmux reports this layer as `BLOCKED`, not `PASS`.
-
-Runner (own `tmux -L` server, isolated daemon, no key): run all three, each must
-print `RESULT PASS`:
-
-```bash
-HYPRIAL_DSH_TUI_E2E_DSH_HOME_SEED=<seed DSH_HOME> uv run python scripts/verify/dsh_tui_e2e.py \
-  --mock-provider --crash-mode kill --evidence-dir <dir outside the checkout>
-... --mock-provider --crash-mode socket --evidence-dir <dir>
-... --mock-provider --crash-mode kill --fail-first-wake --evidence-dir <dir>
-```
-
-`--mock-provider` is `contract/e2e/_messages_tool_mock.py`: it really calls
-`mcp__harness-bridge__harness_read`/`harness_reply`, so `wake-read-reply` is a
-real PASS, not BLOCKED. The runner marks dsh-tui's first-run guide and one-shot
-workspace home as seen (neither has a root agent, so the plugin would never be
-ready).
-
-Preconditions:
-
-- isolated `HOME`, `HYPRIAL_HOME`, `HARNESS_STATE_DIR`, `HARNESS_SOCKET_PATH`
-  and `DSH_HOME`, all under one disposable temp root;
-- `HYPRIAL_NETWORK_ISOLATED=1`; loopback-only daemon; no production Zenoh;
-- run `env -u HYPRIAL_NODE_ID -u HYPRIAL_MANAGED_WORKER -u HYPRIAL_WORKER_ACTOR
-  -u HYPRIAL_WORKER_SESSION_REF -u HYPRIAL_TOOL_PROFILE_ID` before starting
-  the isolated daemon and TUI;
-- a mock/local model provider or an explicitly authorized test model key. Do
-  not copy the user's production DSH credentials into `DSH_HOME`;
-- installed `dsh-tui`, `dsh`, and `@deepseek-ai/dsh-mcp-client`; record their
-  exact versions.
-
-Required observations (each is PASS/FAIL/BLOCKED, never inferred):
-
-1. `hyprial agent start dsh --name <actor> --cwd <work>` launches a real TUI in a
-   PTY and returns/logs a canonical actor and `sessionRef`.
-2. The launch directory contains the generated `profile.patch.yml` and
-   `hyprial-bridge-plugin.mjs`; patch has the tool-only MCP row and the
-   absolute plugin row; permissions are 0600/0700.
-3. In the TUI, `/mcp` shows the `harness-bridge` server/tools.
-4. `hyprial agent list --json` shows the actor online; isolated daemon evidence
-   confirms `source=dsh-channel`, `runtime=dsh_interactive`, and the TUI process
-   `processPid/processIdentity`; the carrier process is separate and alive.
-5. From another isolated actor, send a message. The model must receive exactly
-   one synthetic user turn containing only the formal wake prompt (actor and
-   delivery id), call `harness_read`, then reply or ack. Do not inject preview,
-   summary or body.
-6. With a partial draft typed in the TUI input box, send another message.
-   The draft must remain untouched and must not be submitted; only the
-   synthetic plugin message may enter the model context.
-7. A second duplicate daemon list/wake while the first message is awaiting
-   read must not create duplicate model turns before custody.
-8. Kill the carrier process (`python -m hyprial.daemon.impl.mcp.entry dsh-carrier`). The launcher must
-   terminate the TUI, the session must go offline/unregistered, and the
-   launch directory must be removed. The launcher error must name the DSH
-   session id (from `dsh-session-id` in the launch directory) and print
-   `hyprial agent start dsh --resume <id>`.
-9. A wake whose model turn fails (`--fail-first-wake`: the mock answers HTTP
-   400) must be logged `wake.failed` with `TURN_ERROR` and retried, never
-   `wake.signalled`; the retried wake must then reach the reply.
-10. Remove/deny the plugin control socket. No new wake may be reported as
-   accepted; the carrier must not remain silently online indefinitely.
-   Repeat with the socket still present but the plugin answering
-   `ready=false` (for example start with `--resume <pinned id>` and switch
-   away in the TUI): the carrier must withdraw the registration within the
-   grace window instead of staying online.
-11. Normal TUI exit and abnormal TUI exit both remove the launch directory and
-    leave no carrier/TUI process.
-
-Evidence: sanitized command, commit SHA, versions, isolated-root shape, final
-`RESULT PASS|FAIL|BLOCKED`, per-observation classification, and log/tree
-references. Never include model keys, session tokens, or full environment
-dumps.
-
 ## Cell run-state projection (0.5.5.3 slice C)
 
 For owner/run-state/status changes, run
@@ -605,7 +708,7 @@ also runs in the isolated contract corpus. Require explicit partial scope and
 permission coverage; a legacy top heuristic must not supply run state. Preserve
 JSON `state/stateDetail` meanings and distinguish the human LEGACY column from
 RUN STATE. These are fixture/CLI checks only. Codex whole-TUI
-foreground/tmux coverage is E2, and each real permission adapter needs E3
+foreground coverage is E2, and each real permission adapter needs E3
 evidence; no D test may close those gates or native ractor acceptance.
 
 Slice E1 adds the interactive current-run refresh (`session.turn.refresh`, see
@@ -647,6 +750,44 @@ against a fake daemon socket here — that is protocol evidence only. An attende
 real Claude Code / Pi TUI run in an isolated home and socket is still required
 before claiming native refresh coverage; report it PASS, FAIL or BLOCKED, and do
 not treat a skip as a pass.
+
+## Message body retention (cell model phase A)
+
+Operator envs and defaults for local message bodies in `inbox.sqlite3`:
+
+- `HYPRIAL_CONVERSATION_RECORDER` (default ON). Unset, or any value other
+  than `0`/`off`/`false`/`no`, runs the conversation recorder: each
+  delivered INTERACTION message (agent to agent request or reply) is written
+  to its conversation cell in the owner-home OrgFS space, then its local
+  body is released. `0`/`off`/`false`/`no` keeps the body resolver bound but
+  records and releases no new INTERACTION body; bodies released by an
+  earlier run still read back. It does NOT stop SYSTEM residue (below):
+  that runs on every inbox prune with no runtime switch, and the only
+  rollback is reverting the slice T change. Set it in the daemon's
+  environment before start; it is read once at composition.
+- INTERACTION bodies are released only after a record exists, the row is
+  acked (inbox) or settled (sender copy), and `delivery.bodyRetentionMs`
+  has passed. That value comes from owner-authored agent cells
+  (min-combined, clamped 1 h..365 d), and defaults to 7 days.
+  `message.read_body` and `message.history` answer byte-identically after
+  the release, because they read the body back from the record.
+  `message.send.lookup` never reads the body: it compares the stored
+  `body_text_sha256`, which the release keeps, so it answers the same too.
+- SYSTEM bodies (daemon notices and alarms delivered as mail, `workflow-*`
+  dispatches, PAC worker replies) are never recorded. Their body becomes
+  residue (only `origin`/`replyTo` are kept) 7 days after ack or settle (the
+  code default; cell params do not apply). After that, `message.read_body`
+  answers `MESSAGE_BODY_UNAVAILABLE` and history shows an empty text. Pending
+  rows and `system_notices` (own 90 d / 10 k prune) are never touched. A row
+  the sweep cannot decode (for example a lifecycle written by a newer build)
+  is marked `body_class = 'undecodable'` and keeps its body; the rest of the
+  prune carries on.
+- E2E on these paths uses disposable homes and an isolated OrgFS. The
+  retention-time golden is
+  `uv run pytest tests/daemon/golden/test_retention_golden.py`, and the SYSTEM
+  residue tests are `tests/daemon/delivery/bodies/test_system_residue.py`.
+  Both run on a controlled clock. Never shorten retention on a production
+  home to observe a drop.
 
 ## Codex interactive settled-batch recovery (0.5.5.3)
 
@@ -692,10 +833,6 @@ coverage rather than imply lossless retention. Run these cross-path checks in
 `test_pending_order.py`, not only separate snapshot/live failure tests.
 The `codex.whole-terminal.coverage-gap` recovery diagnostic is a coverage
 interval, not proof that every short turn during disconnection was retained.
-Product Codex `--tmux` still has no observation producer: report
-`partial-turn-coverage`, and mark the design §5 E2 full-terminal release gate
-BLOCKED for that mode. Foreground execution inside an owned tmux window is not
-acceptance of the product `--tmux` path.
 
 ## Run the gate matrix
 
@@ -727,16 +864,14 @@ passing.
 | E2E-006 resident providers | `uv run python contract/e2e/run-resident-providers.py` | `[REAL ENV]` authenticated `pi`, `codex`, and `claude` with the documented models. Provider passthrough persisted, roundtrip and correlated reply per resident, desired-state recovery after each daemon restart, same established Claude session resumed. A missing target must fail worker startup. |
 | E2E-007 four Lark adapters | `uv run python contract/e2e/run-four-lark-adapters.py` | Isolated. Secret-safe migration dry-run/apply and desired-state recovery. The worker emits only a fake WebSocket-ready frame: the runner's daemon status projection proves migration, handshake, and supervisor recovery, not real Lark credentials, event delivery, stream health, or adapter usability. |
 | E2E-008 CC TUI worker | `uv run python contract/e2e/run-cc-tui-worker.py --attended --smoke` | `[REAL ENV]` controlled layer-2 smoke: a logged-in Claude Code CLI starts, attaches, registers with `channelConfirmed=true`, exits, and releases session visibility. **This row is gating** (promoted 2026-08-19 after the CC >=2.1.227 channel-contract break proved it catches real regressions; its CI form does not depend on reply delivery). If it ever goes red, a matching production signature means an incident gets filed — never waive it back to non-gating. The full `--attended` flow exercises wake/read/reply/ack/FIFO behavior for manual diagnostics and forensics; it is not the controlled release gate. |
-| E2E-009 Squire clean-machine setup | `uv run python contract/e2e/run-squire-setup.py` | Executable isolated local seam: ordered setup, rendered files, default agent, and idempotence. Real platform App/binding steps remain `[REAL ENV]` and report `BLOCKED` when their prerequisites are absent; do not collapse either part into “documentation only.” |
+| E2E-009 clean first run creates no agent | `uv run python contract/e2e/run-first-run-no-agent.py` | Isolated: init, a repeated init and a daemon restart create no agent, adapter, route or pin, and every retired `init onboarding` command and old step id exits 2. No App credential, model reply or human action is involved. CI gate: `run-isolated-gate.py` in the credential-free `e2e-macos-isolated.yml`; it is not part of the credentialed gate's verdict. |
 | E2E-010 same-interpreter upgrade continuity | `uv run python contract/e2e/run-upgrade-continuity.py` | Isolated deployment from `v0.5.1`, the oldest supported build with upgrade-safe channel logging; fetch read-only (`HYPRIAL_E2E_UPGRADE_FROM` overrides). Explicitly pin `UV_PYTHON` to the initial interpreter, assert its minor version is unchanged and the held-open old channel survives, then prove restart, adapter/session recovery, FIFO, fresh delivery IDs and no replay. Separate named pre-v0.5.1 and cross-minor known-limitation runners assert their expected failures and are not continuity passes. Follow `10-upgrade-continuity.md` for the forward-case/promotion triggers after the interpreter fix ships. |
 | E2E-011 Lark App onboarding | `uv run python contract/e2e/run-lark-app-onboarding.py` | Executable through the PTY, scope/event declaration, verification-URL, persistence, daemon-load, negative-name, and secret-safety seams. Real App creation stops at the human device-authorization boundary and is `BLOCKED` without attended approval. |
 | E2E-012 Codex app-server worker | `uv run python contract/e2e/run-codex-worker.py` | `[REAL ENV]` authenticated Codex. Public CLI launch, exact desired state, OS process visibility, correlated reply/ack, daemon recovery with a fresh child PID, post-restart roundtrip, and fresh app-server thread. |
 | E2E-013 all-harness lifecycle | `uv run python contract/e2e/run-all-harness-lifecycle.py` | `[REAL ENV]` authenticated Claude, Pi, and Codex plus the dedicated test App for the Lark leg. Cross-harness launch/roundtrip, effective config, busy FIFO, identity-preserving harness/model switch, crash recovery, native attachment/reply delivery, and down/no-resurrection lifecycle. |
-| E2E-014 DSH API worker | `uv run python contract/e2e/run-dsh-worker.py` | `[REAL ENV]` model-ready DSH endpoint. Cross-implementation CLI launch, desired state, correlated reply/ack, proactive Harness tools, interrupt/recovery, daemon recovery, and fresh fenced session identity. Keep DSH-internal setup and operational runbooks with the `dsh-hyprial-talk` owner; this skill owns only the hyprial acceptance contract. |
 | E2E-021 orgfs slot-pool-growth redial | `uv run python contract/e2e/run-orgfs-forwarding-redial.py` | Disposable closed-loopback topology; protocol-v6 leased-roster fixture reports daemon-selected private Unix slots but builds no tunnel. A one-slot pool binds the first leased fixture device without redial, then a second leased device forces legitimate pool growth and `reconfigure_connect`; owner-path fixtures, exact golden checks, 64-token replay and orgfs/request/reply/maintenance/PID checks must remain healthy. |
 | E2E-024 peer re-learn after pool growth | `uv run python contract/e2e/run-peer-restart-relearn.py` | Positive control paired with E2E-028: four lossy-loopback modes first bind inside a one-slot pool with zero redials, then exhaust the pool and require `zenoh.forwarding.redialed`, an in-process zid change, bounded peer re-learning, bidirectional delivery, and owned cleanup. |
-| E2E-026 send links (isolated) | `uv run python contract/e2e/run-send-links.py` | One disposable daemon, no provider. Summary required, first-send mint/hold, summary-only injection with on-demand `read`, top window columns, send-is-not-a-reply, reply closes, full-peer hold and reclaim drain, no carrier auto-reply, reserved names, restart survival, owner exemption. CI gate: `run-isolated-gate.py`. |
-| E2E-027 cross-node send links (controlled) | `uv run python contract/e2e/run-send-links-cross.py` | `[REAL ENV]` legs. Two-node mutual links and replica delay over the E2E-021/E2E-025 loopback topology; headless carrier never auto-replies; unjoined node refused LINK_UNKNOWN; attended claude/pi and codex `on-request` TUI. Missing preconditions are NOT-RUN/BLOCKED per stage, written to `wp8/blocked.txt` — never a skip. |
+| E2E-031 group conversations (isolated) | `uv run python contract/e2e/run-group-conversation.py` | One disposable daemon, no provider. Group create/show/list, an unmentioned owner message lands in history and wakes nobody, an owner message mentioning agents wakes only those mentioned agents with exactly one row each, an agent reply via `message reply` lands in the group and wakes nobody, an agent send with `--mention` wakes only the named agent, a reply with `--reply-to` without `--mention` wakes nobody while `--reply-to` with `--mention` wakes only the mentioned agent, removal stops delivery, a graceful restart between send and turn creates no second row, the group stays out of 1:1 lists, history is ordered. `--harness pi` adds a real headless Pi turn through the mock model (GC-11, owner mentions P1 and P2); without it that row is not run. Multi-machine, GUI and IM are out of scope. CI gates: `run-isolated-gate.py` (without the flag) and the `hosted` job of `mock-model-harness-e2e.yml` (`--harness pi`). |
 | E2E-028 remote drop without rebuild | `uv run python contract/e2e/run-remote-drop-no-rebuild.py` | Builds real Tailcat and labrelay executables from the current checkout. Two disposable nodes converge an OrgFS directory, then the dialer's owned sidecar is terminated to drop its remote slot. Require the same directory address and fixed endpoint set, zero forwarding changed/redialed events, zero transport reconfigure diagnostics, post-return delivery, and owned cleanup. |
 | E2E-025 Tailcat org invite/join | `uv run python contract/e2e/run-tailcat-org-invite-join.py` | Disposable homes, explicit pinned HYPRIAL_TAILCAT_BINARY and HYPRIAL_TAILCAT_LABRELAY. Real sidecars/DERP remain loopback; no production issuer, browser or infrastructure. Explicit forwarding opt-in must pass isolation assertions. Require bootstrap, both directory views, bidirectional OrgFS traffic, mapped-path proof and owned cleanup; missing binaries are BLOCKED. Old-head or dirty-source receipts do not certify the final source. |
 
@@ -857,12 +992,13 @@ or classify its import/collection errors as optional-environment skips.
 
 ## CLI regroup acceptance (0.5.5.2)
 
-Use `org service`, `org fs`, `user proxy`, `agent link`, and `init onboarding`.
+Use `org service` and `org fs` (`agent link`, `message thread` and `user proxy` are retired).
 Their old top-level paths exit 2 with one `moved: hyprial <old>  →  hyprial <new>`
 line on stderr and empty stdout, including under `--json`; they are not aliases.
 `host` remains top-level. Bare groups print help and exit 2 except `init`,
-`daemon upgrade`, `agent tiers`, and `routine templates`. Bare `init` initializes;
-`init onboarding` must not run the parent's initialization.
+`daemon upgrade`, `agent tiers`, and `routine templates`. Bare `init` initializes.
+`hyprial init onboarding` no longer exists: `init` has no `onboarding` group,
+so the old subcommands and step ids exit 2.
 Run `uv run pytest tests/shell/cli/surface tests/shell/cli/installation/test_cli_init.py`
 and `./contract/run-all.sh --isolated-only`. These do not prove live service or
 provider behavior. The surface snapshot and exact owned exception table must
@@ -922,13 +1058,16 @@ Record actual roster, Casdoor group, directory and ACL before/after reads in
 an approved disposable environment, including restart and error cases.
 
 Publication policy has one source: `docs/guides/release-rules.md` (Allen,
-2026-10-28; effective from 0.5.5.2). Prepare VERSION and CHANGELOG on dev,
-then merge dev into main; the main-push listener requests the immutable release
-anchor. Merging release/v* into dev does not advance stable. Do not replace this
-with a manual dev-tag dispatch or cancel an automatic publication without Allen's
-explicit approval. Verify GitHub Release assets, Forgejo registry files and all
-five anonymous R2 wheel downloads using that document's checklist; local policy
-tests do not prove live publication.
+2026-11-08 dev-first flow). Prepare VERSION and CHANGELOG on dev and pin a full
+candidate SHA from its history. `release-tag.yml` validates that candidate;
+main pushes no longer request a release. Internal publication and formal tag
+writes are held during 0.5.5.4 convergence; dry-run checks are not evidence that
+Python, GUI, migration E2E or all five native wheel builds passed. Complete the
+exact-SHA matrix and release decision before separately removing a hold.
+Verify GitHub Release assets, Forgejo registry files and all five anonymous R2
+wheel downloads using the release-rules checklist. Local policy tests do not
+prove live publication. Do not cancel an automatic publication without Allen's
+explicit approval.
 
 1. **Measure baseline and candidate repeatedly.** Before and after the release
    candidate change, capture gate/scenario outcomes against named SHAs by exact
