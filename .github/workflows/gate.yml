@@ -15,6 +15,8 @@
 # - The suite is split into four shards by position in the sorted list of test
 #   files, so a new test file is always in exactly one shard. Each shard runs
 #   every file given to it; collection errors do not hide the remaining tests.
+# - The Pi SDK is installed at the version the internal gate pinned (0.85.1):
+#   tests that need it report BLOCKED as a failure when it is absent.
 # - `gate` is the single job a branch rule requires. It fails unless every
 #   other job succeeded, so adding a job does not need a rule change.
 name: gate
@@ -79,6 +81,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24"
+      - name: Install the pinned Pi SDK
+        run: |
+          set -euo pipefail
+          npm install -g --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1
+          test "$(pi --version)" = "0.85.1"
+          echo "HYPRIAL_REQUIRE_PI_SDK=1" >> "${GITHUB_ENV}"
       - name: Install the locked environment
         run: |
           set -euo pipefail
