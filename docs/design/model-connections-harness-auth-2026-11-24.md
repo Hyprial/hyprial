@@ -598,7 +598,7 @@ messageId=`8a1ce56c-225b-5aed-8cab-9918fc470948`。
 
 当前开发入口为 GitHub `Hyprial/hyprial`：本设计 [#71](https://github.com/Hyprial/hyprial/pull/71)、Pi 实现 [#61](https://github.com/Hyprial/hyprial/pull/61)、Lark 修复 [#59](https://github.com/Hyprial/hyprial/pull/59)。内部旧 PR 编号与 SHA 仅为历史证据；迁移压缩历史并保留脱敏。逐文件 blob 核对：Pi 的 46 个改动文件和 Lark 的 2 个改动文件分别与原固定 e4d2d2ac、e25f726a 完全一致；这不替代 GitHub 新 SHA 的评审与正式 CI。
 
-迁移固定 base 为 `56ac0c77f5e88d1cf6bb6040a8c4d2b6f7252b4c`。#59 tree 为 `a1c3a6a18c6c4f92ece59a6add8363e240e19090`，#61 tree 为 `4e757a79e2f8ede6a4e34231cdb8e095bb3d554b`，均与旧仓评审树不同。GitHub dev 当前缺少正式 workflow；CI 接入由 [#78](https://github.com/Hyprial/hyprial/pull/78) 提供，保护规则见 [#79](https://github.com/Hyprial/hyprial/pull/79)。没有运行不算通过。
+迁移固定 base 为 `56ac0c77f5e88d1cf6bb6040a8c4d2b6f7252b4c`。#59 tree 为 `a1c3a6a18c6c4f92ece59a6add8363e240e19090`，#61 tree 为 `4e757a79e2f8ede6a4e34231cdb8e095bb3d554b`，均与旧仓评审树不同。GitHub dev 当前缺少正式 workflow；CI 接入由 [#78](https://github.com/Hyprial/hyprial/pull/78) 提供，保护规则见 [#79](https://github.com/Hyprial/hyprial/pull/79)。没有运行不算通过。 2026-11-26 +08，新仓固定 #59 的全量收集得到 30,817 项及 4 个错误（exit 2）：旧 wheel 发布测试读取已删除的 `.forgejo/workflows/wheel-release.yml`。GH base `56ac0c77` 对这四个文件同样报错，文件内容未被本片修改；#78 已记录同一迁移问题。收集失败不代表测试已执行，全量验收仍未完成。
 
 Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime 的收尾；GUI `adapter.stop({name})` 按名停一条接线走另一条路径，目前没有普通 GUI 启停故障的实测证据。
 
