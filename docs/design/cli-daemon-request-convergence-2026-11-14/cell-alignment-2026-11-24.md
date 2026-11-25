@@ -84,7 +84,7 @@ P02–P15 列全 60 个既有旧路由。对每个保留入口先明确调用者
 
 后台启动在 daemon 内直接准备运行环境，交互式 CLI 通过 `agent.runtime-context` 复用这项能力。`agent.start.preflight` 检查启动条件。P2 运行环境准备成功后返回的 `launchToken` 用来申请启动租约，防止同名 Agent 被删除重建后误用旧环境。
 
-GUI 调用 `agent.create` 成功时，受管 home 已在启动前建好。默认 `agent-home-setup` routine 随后指导 Agent 完善配置。`agent.ensure-home` 仍服务于旧 Agent 的 home 修复与受管 Claude 的旧版 PTY 启动。等这两处调用均有替代并通过回归后，再评估退役。隔离验证和实现见 [P02 #3154](https://code.hyprial.com/HyprialOS/hyprial/pulls/3154)。
+GUI 调用 `agent.create` 成功时，受管 home 已在启动前建好。默认 `agent-home-setup` routine 随后指导 Agent 完善配置。`agent.ensure-home` 仍服务于旧 Agent 的 home 修复与受管 Claude 的旧版 PTY 启动。等这两处调用均有替代并通过回归后，再评估退役。隔离验证和实现见 [P02 #60](https://github.com/Hyprial/hyprial/pull/60)。
 
 按 `ea728eebe4` 更新工作量：I4a 与 S3c 均已合入，原先的 3 个 S3c 功能单元已全部计入 #3137。余下 23 个收敛单元（含 P05a/P05b）、已在 #3136 开发的 3 个 I4b 单元、channel 收尾和未来的 tiers 方法，共 28 个。若另立 ps 退役片为 29 个；另算 #3120 的 4 片为 32–33 个。这是功能单元数。I4b 已有 PR，P18–P21 的新增接口也取决于消费者，不能按这个数字直接新开 PR。
 
