@@ -165,7 +165,7 @@ jobs:
         if: always()
         run: >
           uv run --locked --no-sync pytest -q -p no:cacheprovider
-          --basetemp="$env:RUNNER_TEMP\pytest-new"
+          --basetemp="$env:USERPROFILE\pytest-new"
           --junitxml="$env:RUNNER_TEMP\pytest-results\new.xml"
           tests/daemon/harnesses/pi/configuration/launch_trust/test_pi_sdk_package_root.py
           tests/kernel/manysys/test_stdin_stop_windows_branches.py
@@ -178,7 +178,7 @@ jobs:
           uv run --locked --no-sync pytest -q -p no:cacheprovider
           -n 4 --dist=loadfile --max-worker-restart=0
           --continue-on-collection-errors
-          --basetemp="$env:RUNNER_TEMP\pytest-dirs"
+          --basetemp="$env:USERPROFILE\pytest-dirs"
           --junitxml="$env:RUNNER_TEMP\pytest-results\dirs.xml"
           tests/daemon/harnesses/pi tests/shell/packaging tests/kernel/manysys
       - name: Upload the JUnit results
