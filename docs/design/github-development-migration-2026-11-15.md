@@ -1,6 +1,8 @@
 # GitHub 开发迁移规划
 
-状态：规划定稿，待评审（2026-11-24；D1–D13 已记录）。不是执行授权。本文件只规划，不改 workflow、不建 GitHub
+状态：切换已执行（2026-11-25）：内部仓库已归档，开发在 GitHub 上进行；切点与搬分支方法见
+[切换记录](../guides/github-migration-cutover.md)。6.0 节第 5 步（在 GitHub 上的修改）与 Phase 3、4 尚未完成。
+本文件其余部分保留为决策与规划记录：不改 workflow、不建 GitHub
 分支、不迁移 issue、不旋转 secret，也不触碰 0.5.5.4 的发布冻结。
 
 日期：2026-11-15（UTC）。起草：infra-ops。决策人：owner。
