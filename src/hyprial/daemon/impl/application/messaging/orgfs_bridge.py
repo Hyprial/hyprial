@@ -19,6 +19,9 @@
 #   bound on every runtime; there is no longer a second assembly branch.
 #   ``orgfs.create`` no longer asks the runtime to broadcast the journal
 #   outbox: the state runtime publishes every commit itself.
+# - Package F5 (2026-11-25, O report §4): the org-context bridge is built with
+#   the application's invalid-device quarantine, the one the network panel
+#   uses, so a bad directory row is logged once per quiet window daemon-wide.
 """OrgFs runtime bridge: the orgfs.* IPC family, owner notices and the org-context bridge.
 
 R2 (owner ruling 2026-11-19): an OrgFS owner notice to this node's owner is
@@ -386,6 +389,7 @@ class _OrgFsBridgeMixin:
                 logger=lambda level, event, **fields: self._log(
                     level, "org", event, **fields
                 ),
+                invalid_devices=self._org_directory_quarantine,
             )
         return self._org_context_bridge
 

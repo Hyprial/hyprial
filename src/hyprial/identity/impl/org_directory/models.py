@@ -5,10 +5,18 @@
 # legacy shape so those stores still open; nothing reads its content.  OrgFS
 # admission refuses this node's own writes to the legacy document and tree
 # row in every space and a peer's in org-directory spaces; peer history in
-# leftover non-org spaces still replicates (orgfs/storage/store/admission.py).
+# leftover non-org spaces still replicates (the journal store's admission
+# module, deleted since).
 # Package S (2026-11-25): that journal admission is deleted; a journal space is
-# refused as a whole (ORGFS_LAYOUT_UNSUPPORTED).  Whether the legacy-id
-# decoders are still needed is left for stage E to re-check.
+# refused as a whole (ORGFS_LAYOUT_UNSUPPORTED).
+# Package F5 (2026-11-25, S report §5): ``legacy_receivers_node_id`` had no
+# caller left and is deleted.  The parse functions still accept the legacy
+# receivers node leaf and doc section: the state runtime's protected-path
+# policy, tree, projection and sync frames decode every protected id through
+# them; a decoded receivers doc section is refused for every author by
+# ``protected_directory_author_allowed``.  Dropping that acceptance changes
+# how those callers answer such ids, a behaviour change left to its own
+# decision (F5 report).
 """Organization directory semantics: devices, org names, space naming.
 
 Pure model plus naming rules — no storage, no daemon imports.  The storage
@@ -335,20 +343,6 @@ def protected_directory_node_id(
     if not space_id or not path:
         raise ValueError("protected directory node identity is incomplete")
     values = (space_id, principal, path)
-    payload = "".join(f"{len(value)}:{value}" for value in values).encode("utf-8")
-    return _PROTECTED_NODE_ID_PREFIX + _encode_base32(payload)
-
-
-def legacy_receivers_node_id(space_id: str, space_owner: str) -> str:
-    """Return the tree-node id older builds gave the owner's ``receivers.json``.
-
-    Decode-only: this build never writes under it; admission uses it to look
-    up the one legacy row of a space without walking the tree.
-    """
-
-    if not space_id or not space_owner:
-        raise ValueError("legacy receivers node identity is incomplete")
-    values = (space_id, directory_owner_principal(space_owner), _LEGACY_RECEIVERS_LEAF)
     payload = "".join(f"{len(value)}:{value}" for value in values).encode("utf-8")
     return _PROTECTED_NODE_ID_PREFIX + _encode_base32(payload)
 

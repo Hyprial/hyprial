@@ -15,6 +15,9 @@
 # ``version``; ``orgfs.checkout`` joins the table: it passes the refusal and
 # its data through instead of wrapping it as ``checkout-io`` with empty data,
 # and creates no checkout directory in the refused space.
+# Decisions (phase D, package F5, 2026-11-25): ``orgfs.space_purge`` joins the
+# table: a refused space answers the declared refusal instead of the silent
+# ``purged: false`` of an unknown space, and its legacy directory stays put.
 from __future__ import annotations
 
 import uuid
@@ -77,6 +80,7 @@ LAYOUT_REFUSED = {
     "orgfs.invite": {"user": "user:bob", "mode": "rw"},
     "orgfs.remove_member": {"user": "user:bob"},
     "orgfs.checkout": {"enabled": True},
+    "orgfs.space_purge": {},
 }
 
 

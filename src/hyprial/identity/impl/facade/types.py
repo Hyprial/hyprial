@@ -163,7 +163,7 @@ if TYPE_CHECKING:
     )
     from hyprial.identity.impl.org_directory import (
         DirectoryDevice as DirectoryDevice, DirectoryStore as DirectoryStore, directory_device_path as directory_device_path, directory_owner_principal as
-        directory_owner_principal, ProtectedDocIdTooLongError as ProtectedDocIdTooLongError, legacy_receivers_node_id as legacy_receivers_node_id, parse_protected_directory_node_id as parse_protected_directory_node_id, parse_protected_directory_doc_id as
+        directory_owner_principal, ProtectedDocIdTooLongError as ProtectedDocIdTooLongError, parse_protected_directory_node_id as parse_protected_directory_node_id, parse_protected_directory_doc_id as
         parse_protected_directory_doc_id, protected_directory_node_id as protected_directory_node_id, protected_directory_doc_id as protected_directory_doc_id, protected_directory_author_allowed as
         protected_directory_author_allowed,
     )
@@ -424,7 +424,7 @@ __all__ = [
     'directory_device_path', 'directory_owner_principal', 'encode_invite', 'explain', 'explain_target', 'id_form_minting', 'identity_credential_path', 'identity_slug', 'inspect_logout_artifacts',
     'install_native_credential', 'install_native_credential_set', 'inspect_native_credentials', 'invite_deep_link', 'invite_https_url', 'is_inactive', 'is_org_acl_space', 'is_org_directory_space', 'JoinIdentityError', 'JoinTokenLedger', 'launch_worker_proxy_route',
     'load_packaged_support_matrix', 'machine_binding_path', 'machine_fingerprint', 'mark_first_published', 'may_send', 'migrate_legacy_agent_keep_list', 'name_taken_remedy', 'native_secrets_root', 'node_owner_or_none',
-    'home_account_conflict_message', 'legacy_business_data_present', 'legacy_receivers_node_id', 'normalize_capabilities', 'normalize_harness_args', 'normalize_issuer', 'official_agent_uri', 'option_value', 'org_from_space_name', 'org_space_name', 'parse_bootstrap_yaml', 'parse_principal', 'parse_protected_directory_doc_id',
+    'home_account_conflict_message', 'legacy_business_data_present', 'normalize_capabilities', 'normalize_harness_args', 'normalize_issuer', 'official_agent_uri', 'option_value', 'org_from_space_name', 'org_space_name', 'parse_bootstrap_yaml', 'parse_principal', 'parse_protected_directory_doc_id',
     'parse_protected_directory_node_id', 'parse_tool_declaration', 'preflight_codex_credential', 'prepare_legacy_claude_native_root', 'principal_kind', 'principal_matches_local_actor',
     'protected_directory_author_allowed', 'protected_directory_doc_id', 'protected_directory_node_id', 'read_device_record', 'read_home_binding', 'read_identity_admission', 'read_identity_credential',
     'read_identity_snapshot', 'read_login_generation', 'read_onboarding_identity', 'read_onboarding_subject', 'read_machine_binding', 'read_settings_identity', 'read_settings_identity_metadata', 'read_settings_username', 'read_worker_proxy', 'remove_logout_artifacts', 'remove_native_credentials',

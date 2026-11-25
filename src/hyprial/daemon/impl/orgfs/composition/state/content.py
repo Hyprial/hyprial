@@ -19,8 +19,9 @@
 #   ``fetch_blob`` stores one, the runtime calls ``facade.blob_arrived`` so
 #   watchers get one ``modified`` event when the bytes become readable; a
 #   failure to report is logged and does not fail the read.
-# - ``writer_attributions`` read the journal; until the device-record source
-#   of stage E exists the state runtime answers ``unavailable``.
+# - Package F5 (2026-11-25, O report §3-1): ``writer_attributions`` is gone.
+#   It only ever answered ``unavailable`` here; ``org.fetch`` resolves node
+#   sources from the org directory's device records and has no other caller.
 """Status, content provisioning and blob fetch of the state runtime."""
 
 from __future__ import annotations
@@ -55,12 +56,6 @@ class StateContent:
             tuple(sorted(online)),
             base.content_pending,
             base.rejected_updates,
-        )
-
-    def writer_attributions(self, space_id: str) -> dict[str, tuple[str, ...]]:
-        raise OrgFsError(
-            "unavailable",
-            {"spaceId": space_id, "message": "writer attributions need the journal"},
         )
 
     def _online_holders(self, space_id: str) -> tuple[str, ...]:

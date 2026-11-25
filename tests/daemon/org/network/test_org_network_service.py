@@ -217,7 +217,13 @@ class FakeFs:
         )
 
     def status(self, space_id: str) -> SpaceStatus:
-        return SpaceStatus(space_id, 0, (), ())
+        return SpaceStatus(
+            space_id=space_id,
+            synced=True,
+            holders_online=(),
+            content_pending=0,
+            rejected_updates=0,
+        )
 
     def read_text(self, space_id: str, node: str) -> tuple[str, str]:
         name = node.removeprefix("id:").rsplit("/", 1)[-1]

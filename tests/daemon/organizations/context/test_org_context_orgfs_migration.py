@@ -15,6 +15,7 @@ from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.org.document import parse_document, serialize_document, validate_document
 from hyprial.daemon.impl.org.mesh import OrgFetchResult
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.ipc import _invalid_device_diagnostics
 from hyprial.daemon.impl.org.orgfs_migration import (
     ORG_CONTEXT_SPACE_NAME,
     OrgMigrationError,
@@ -584,6 +585,46 @@ def test_node_source_fetches_log_an_invalid_directory_row_once(tmp_path: Path) -
             assert result["requestedSources"] == ["user:owner"]
 
         assert events.count("directory.device_invalid") == 1
+    finally:
+        _close(application)
+
+
+def test_the_bridge_shares_the_network_panel_invalid_device_quarantine(
+    tmp_path: Path,
+) -> None:
+    """A row the network panel already logged is not logged again by a fetch."""
+
+    application = _application(tmp_path)
+    events: list[str] = []
+    try:
+        space_id = _space(application)
+        runtime = application._require_orgfs_runtime()
+        runtime.facade.write_text(space_id, "candidates/owner.md", _document(2))
+        _enable_m1(application)
+        _publish_device(application, "group-acme", "node-b", "owner")
+        _publish_device(application, "group-acme", "broken", "owner")
+        org_space = next(
+            info.space_id for info in runtime.facade.spaces() if info.name == "group-acme"
+        )
+        runtime.facade.write_text(
+            org_space, directory_device_path("owner", "broken"), "not json"
+        )
+        quarantine = _invalid_device_diagnostics(application)
+        panel = OrgFsDirectoryStore(
+            runtime.facade,
+            invalid_devices=quarantine,
+            logger=lambda _level, _domain, event, **_fields: events.append(event),
+        )
+        panel.scan_devices("group-acme")
+        bridge = application._require_org_context_bridge()
+        bridge.logger = lambda _level, event, **_fields: events.append(event)
+
+        result = bridge.fetch(source="node-b", timeout=0.01)
+
+        assert result["requestedSources"] == ["user:owner"]
+        assert events.count("directory.device_invalid") == 1
+        assert bridge.invalid_devices is quarantine
+        assert quarantine is application._org_directory_quarantine
     finally:
         _close(application)
 

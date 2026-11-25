@@ -162,7 +162,7 @@ def test_uri_is_stable_across_move_trash_and_restore(tmp_path) -> None:
 
         restored = application._handle_orgfs(
             "orgfs.restore",
-            {"spaceId": space_id, "node": uri, "version": moved["version"]},
+            {"spaceId": space_id, "node": uri},
         )
         assert restored["uri"] == uri
         assert (

@@ -4,6 +4,8 @@
 # - ``orgfs.checkout`` declares ``ORGFS_LAYOUT_UNSUPPORTED`` with its data
 #   schema now that the bridge passes the refusal through (S report §9-3).
 # - The journal-only codes without a producer are no longer declared.
+# Decisions (phase D, package F5, 2026-11-25): ``orgfs.space_purge`` declares
+# the same refusal; a refused space no longer answers a silent no-op.
 """Batch 4: write ``orgfs.*`` MethodSpec declarations."""
 
 from __future__ import annotations
@@ -344,8 +346,9 @@ def test_restore_has_no_version() -> None:
     assert list(validator.iter_errors({**_PARAMS["orgfs.restore"], "version": "v1"}))
 
 
-def test_checkout_declares_the_layout_refusal_with_its_data() -> None:
-    errors = {error.code: error for error in _spec("orgfs.checkout").errors}
+@pytest.mark.parametrize("method", ["orgfs.checkout", "orgfs.space_purge"])
+def test_space_lookups_declare_the_layout_refusal_with_its_data(method: str) -> None:
+    errors = {error.code: error for error in _spec(method).errors}
     refusal = errors[ipc_errors.ORGFS_LAYOUT_UNSUPPORTED]
     assert refusal.data_schema is not None
     validator = Draft202012Validator(_plain(refusal.data_schema))

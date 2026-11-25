@@ -3,6 +3,7 @@
 # takes no ``version`` (unknown keys are refused by the schema);
 # ``orgfs.checkout`` declares ``ORGFS_LAYOUT_UNSUPPORTED`` and passes the
 # refusal through with its data instead of wrapping it as ``checkout-io``.
+# Package F5 (2026-11-25): ``orgfs.space_purge`` declares the same refusal.
 """Write ``orgfs.*`` MethodSpecs (batch 4).
 
 Handlers forward to ``DaemonApplication._handle_orgfs``.  Export/import are
@@ -309,7 +310,10 @@ ORGFS_MOVE_SPEC = _write_spec("orgfs.move", _MOVE_PARAMS, NODE, errors=_SPACE_WR
 ORGFS_REMOVE_SPEC = _write_spec("orgfs.remove", _REMOVE_PARAMS, _OK, errors=_SPACE_WRITE_ERRORS)
 ORGFS_RESTORE_SPEC = _write_spec("orgfs.restore", _RESTORE_PARAMS, NODE, errors=_SPACE_WRITE_ERRORS)
 ORGFS_SPACE_PURGE_SPEC = _write_spec(
-    "orgfs.space_purge", _SPACE_PARAMS, _SPACE_PURGE_RESULT, errors=PURGE_ERRORS
+    "orgfs.space_purge",
+    _SPACE_PARAMS,
+    _SPACE_PURGE_RESULT,
+    errors=PURGE_ERRORS + LAYOUT_UNSUPPORTED_ERRORS,
 )
 ORGFS_CHECKOUT_SPEC = _write_spec(
     "orgfs.checkout", _CHECKOUT_PARAMS, _CHECKOUT_RESULT, errors=_SPACE_WRITE_ERRORS
