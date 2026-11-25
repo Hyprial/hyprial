@@ -103,18 +103,20 @@ hyprial org fs mv "<space-id>" "id:<node-id>" "work/<distinct-filename>" --json
 ```
 
 When deletion or restoration is intended, use the standard soft-delete/trash
-commands. `restore` records a new operation for the chosen retained version;
-it does not certify a task state or find a special last-valid work version:
+commands. `restore` takes only the node: it brings back the node's last state
+before deletion together with the descendants removed in the same batch. It
+does not certify a task state or find a special last-valid work version:
 
 ```sh
 hyprial org fs rm "<space-id>" "id:<node-id>" --json
 hyprial org fs trash list "<space-id>" --json
-hyprial org fs trash restore "<space-id>" "id:<node-id>" "<retained-version>" --json
+hyprial org fs trash restore "<space-id>" "id:<node-id>" --json
 ```
 
 OrgFS no longer offers a node history: `hyprial org fs history` and
-`orgfs.history` were removed (orgfs-minimal-plan Q5). Soft delete, `trash list`
-and `trash restore` remain with their existing retention limits. Removing the
+`orgfs.history` were removed (orgfs-minimal-plan Q5), and text overwritten
+before deletion cannot be restored. Soft delete, `trash list` and
+`trash restore` remain. Removing the
 extra work audit graph does not remove those interfaces. This change neither changes the
 disk format nor migrates, rewrites, or deletes documents, journal data, unknown
 CRDT roots, or old local approval-ledger files. Do not run the historical Yjs

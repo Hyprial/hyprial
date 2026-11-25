@@ -24,7 +24,12 @@ target with `unsafe-space-path`. Once its durable intent exists, an interrupted
 attempt reports `space-purge-incomplete` with `resumable:true`; daemon startup
 or a later identical request resumes it.
 
-The CLI command is `hyprial fs purge <space-id> [--yes]`. Without `--yes`, it
+A space still in the old journal layout (a `journal.sqlite3` directory without a
+v3 `space.json`) is rejected with `ORGFS_LAYOUT_UNSUPPORTED`; its directory is
+left untouched. Old-layout directories are removed by hand, as described in
+`docs/guides/migration-orgfs-minimal.md`.
+
+The CLI command is `hyprial org fs purge run <space-id> [--yes]`. Without `--yes`, it
 requires interactive confirmation. `--json` without `--yes` returns the
 standard `USER_ACTION_REQUIRED` failure object. JSON success uses the standard
 single-object envelope and includes `ok:true` plus the fields above.

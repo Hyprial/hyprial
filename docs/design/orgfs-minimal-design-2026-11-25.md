@@ -162,7 +162,8 @@ vector 的规范编码共同取摘要，不含任何进程内计数。同一节�
 
 错误码：删除 `snapshot-barrier`、`log-key-conflict`、`purged`、`stale-plan`、
 `no-holder-online` 中只由被删路径产生的那些（逐个在 E 阶段按实际引用确认后删）；新增
-`ORGFS_LAYOUT_UNSUPPORTED`（§2.5）。
+`ORGFS_LAYOUT_UNSUPPORTED`（§2.5）。它只在线路层（请求方法的错误声明）声明，不进 `ORGFS_ERROR_CODES`：那张表只收小写的
+OrgFS 内部错误码。
 
 ### 1.2 请求方法、CLI、MCP
 
@@ -948,3 +949,11 @@ D2 的报告提出七个设计问题。已裁定的写在这里，待查证的�
 | 带 `base_version` 的写入，三方合并的回退分支把字符偏移套错位置，损坏文本 | 改为按行合并。在 base 中不重叠的行编辑都保留；重叠的行取后写者的文本。代价：同一行内两处不重叠的字符编辑也算冲突，先写者在该行的修改被丢弃且不报错。记入已知问题，是否改为报 `stale-write` 留给负责人 |
 | 远端二进制文件到达没有 watch 事件 | 取回入库后为引用该摘要的每个活节点发一次 `modified`（同一节点与摘要只发一次）。blob 仍然按需取回，没有人读就不会到达，也就没有事件；不做后台补齐 |
 | leave 之后成员资格未撤销 | 不是 OrgFS 的问题：org 层自 2026-10-27 起要求 owner 确认。验收改为包含 owner 确认这一步。待确认状态没有日志，属于 `org/**`，报负责人 |
+
+#### 切换之后的裁定
+
+| 问题 | 裁定 |
+| --- | --- |
+| 旧布局空间上的 `orgfs.space_purge` 与 `orgfs.checkout` | 两者都报 `ORGFS_LAYOUT_UNSUPPORTED`（与其他方法同一份错误数据），不改动旧目录的任何字节。`space_purge` 此前对旧布局空间静默返回成功而目录不动，现改为明确拒绝；旧目录按迁移指南手工删除。`checkout` 对不存在的空间仍报 `checkout-io`（已知问题，见 known-problems） |
+| `directory/user-keys/**` 的保护范围 | 只在 org 目录空间受保护：那里该分区在签名落地之前对任何作者都拒绝写入。其他空间里同名路径是普通路径；旧实现经 facade 在这些空间里同样生成普通节点，且没有任何代码从 OrgFS 读取 `directory/user-keys/**`，因此不构成回归 |
+| `org.fetch` 的节点来源 | 只认 org 目录空间里的 live 设备行；trash 历史里的设备行（已移除成员、已撤销设备）不作为可取用的节点来源 |

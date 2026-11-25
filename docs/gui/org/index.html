@@ -261,7 +261,7 @@
       <b>本页口径：未来完整 intg。</b> Contract Mock 覆盖按“当前 <code>intg/gui-v1</code> +
       <code>intg/daemon-request-examples</code>（PR #2297）merge-forward 后”的预期状态展示，即
       <b>60/60 路径、org 线 48/48</b>。功能状态仍按当前 daemon 实现：mock 覆盖完整
-      <b>不等于</b> 17 个无 daemon 方法动作、<code>org.delete</code>、OrgFS 目录恢复/条目级 purge、
+      <b>不等于</b> 17 个无 daemon 方法动作、<code>org.delete</code>、OrgFS 条目级 purge、
       live people/agents/config/routes/stats 已经可用。
     </div>
     <div class="meta">
@@ -380,7 +380,7 @@
         <h3>需要补产品/后端语义</h3>
         <ul>
           <li><b>org.delete</b>：固定 <code>LAST_AUTHORITY_REFUSED</code>，需要独立的确认关停维护流程；Contract Mock 只有拒绝场景。</li>
-          <li><b>OrgFS 目录恢复、条目级 purge</b>：GUI 明确返回 unsupported；需要 daemon 提供删除前快照/条目级 purge 语义。</li>
+          <li><b>OrgFS 条目级 purge</b>：GUI 明确返回 unsupported；需要 daemon 提供条目级 purge 语义。目录恢复已可用：一次只传节点的 <code>orgfs.restore</code>，带回同批删除的后代。</li>
           <li><b>live people/agents/config/routes/stats</b>：当前为 <code>null</code>，需要后端目录/配置/统计读模型；成员移除因此有 API 但入口不可达。</li>
         </ul>
       </div>
@@ -403,7 +403,7 @@
           <li><b>17 个 GUI 动作</b>没有 daemon 方法：待处理邀请、切换当前组织、改名、模板/导入/配置候选/采信、Agent-org、迁移全流程。</li>
           <li><b>org.delete</b> 有 MethodSpec/HTTP/GUI，但 daemon 固定 <code>LAST_AUTHORITY_REFUSED</code>，需要独立的确认关停维护流程。</li>
           <li><b>人员/Agent 目录、组织配置、统计</b>在 live detail 中为 <code>null</code>，目前只有 fixture 数据；成员移除因此有 API 但入口不可达。</li>
-          <li><b>OrgFS 目录恢复、条目级彻底清除</b>未实现；GUI 分别返回 <code>ORG_FOLDER_RESTORE_UNSUPPORTED</code> 与 <code>ORG_PURGE_UNSUPPORTED</code>。</li>
+          <li><b>OrgFS 条目级彻底清除</b>未实现；GUI 返回 <code>ORG_PURGE_UNSUPPORTED</code>。目录恢复 = 一次只传节点的 <code>orgfs.restore</code>，带回同批删除的后代。</li>
           <li><b>Contract Mock 不再是功能缺口</b>：未来完整 intg 预期 60/60；但 #2297 仍需 merge-forward。合并后剩余问题都是 daemon/产品语义，不是 mock 例子。</li>
         </ul>
         </ul>
@@ -1025,7 +1025,7 @@ const JOURNEYS = [
   },
   {
     id: 'j6', kicker: 'Journey 06', title: 'OrgFS 文件空间',
-    intro: 'OrgFS 是组织文件空间：读、写、建、移、删、历史与恢复。主路径已经接通；目录恢复与条目级彻底清除有明确语义缺口。高级空间管理/成员/诊断方法只暴露 HTTP，不进 GUI。',
+    intro: 'OrgFS 是组织文件空间：读、写、建、移、删与恢复（OrgFS 只保存当前状态，没有节点历史）。主路径已经接通；条目级彻底清除有明确语义缺口。高级空间管理/成员/诊断方法只暴露 HTTP，不进 GUI。',
     flowTitle: '空间 → 文件树 → 读写 → 回收站 / 历史',
     flow: [
       { type: 'start', title: '打开文件页' },
@@ -1047,7 +1047,7 @@ const JOURNEYS = [
       { type: 'decision', title: '恢复目录？' },
       { type: 'branches', branches: [
         { label: '文件', tone: 'ok', nodes: [{ type: 'method', title: '恢复文件', method: 'orgfs.restore' }] },
-        { label: '目录', tone: 'bad', nodes: [{ type: 'step', title: 'ORG_FOLDER_RESTORE_UNSUPPORTED', note: '缺少删除前快照' }] },
+        { label: '目录', tone: 'ok', nodes: [{ type: 'method', title: '恢复目录（只传节点，带回同批删除的后代）', method: 'orgfs.restore' }] },
       ]},
       { type: 'decision', title: '条目级彻底清除？' },
       { type: 'branches', branches: [
@@ -1072,14 +1072,14 @@ const JOURNEYS = [
       {
         id: 'f-status', title: '空间状态', status: 'ready',
         kicker: 'orgfs.status',
-        desc: '读取 durable holders、online holders、parked/unconfirmed commits；用于文件页健康状态。',
+        desc: '读取 synced、online holders、content_pending、rejected_updates；用于文件页健康状态。',
         gui: '文件页状态；异常时只读/未知。',
         spec: 'orgfs.status（read-only, unary）',
         api: 'POST /daemon/request/orgfs.status',
         daemonRequest: 'orgfs_status',
         daemonMethod: 'OrgFs.status',
         mock: { layers: ['browser', 'fixture'], source: 'Browser route mock · orgfs.status', sample: {
-          space_id: 'space-alpha', durable_holders_seen: 1, holders_online: 1, parked_commits: 0, unconfirmed_commits: 0
+          space_id: 'space-alpha', synced: true, holders_online: 1, content_pending: 0, rejected_updates: 0
         }},
         note: 'status 只说明空间就绪度，不说明文件内容已到达；正文仍以 read 结果为准。',
       },
@@ -1176,17 +1176,17 @@ const JOURNEYS = [
       {
         id: 'f-restore', title: '恢复文件', status: 'partial',
         kicker: 'orgfs.restore',
-        desc: '文件恢复可用；目录恢复被 GUI 明确拒绝，因为当前 daemon 只有删除后版本，缺少删除前快照，无法保证恢复全部内容。',
-        gui: '回收站 → 恢复；目录项显示不可用原因。',
+        desc: '文件与目录恢复都可用：目录恢复 = 一次只传节点的 orgfs.restore，带回同批删除的后代。被覆盖之前的旧正文无法恢复。',
+        gui: '回收站 → 恢复。',
         spec: 'orgfs.restore（mutates, unary）',
         api: 'POST /daemon/request/orgfs.restore',
         daemonRequest: 'orgfs_restore',
         daemonMethod: 'OrgFs.restore',
         mock: { layers: ['fixture'], source: 'org-all-methods.test.tsx · orgfs.restore / GUI fixture', sample: {
           file: { kind: 'ok', value: undefined },
-          folder: { code: 'ORG_FOLDER_RESTORE_UNSUPPORTED', message: '目录恢复需要删除前快照；当前 daemon 只提供删除后版本，无法保证恢复全部内容，暂不可用。' }
+          folder: { kind: 'ok', value: undefined }
         }},
-        note: '恢复文件时用回收站节点自己的 type/version，不额外调 orgfs.stat。未来 intg 的 Contract Mock 会覆盖文件恢复；目录恢复仍是功能缺口，不是 mock 缺口。',
+        note: '恢复时只传回收站节点，不传版本，不额外调 orgfs.stat。未来 intg 的 Contract Mock 会覆盖恢复。',
       },
       {
         id: 'f-purge', title: '彻底清除', status: 'partial',
