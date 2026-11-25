@@ -4,9 +4,11 @@
 # - A hosted runner is Windows Server under an administrator account with no
 #   desktop session. A pass here is recorded as "GitHub-hosted Windows runner",
 #   never as a Windows 11 real-machine pass. KP-136 depends on real terminal
-#   hosts, so its job only prints the handle facts and stays advisory. Starting
-#   the GUI needs a prepared home and a built frontend, which a source checkout
-#   on the runner does not have; that is left to a wheel-based run.
+#   hosts, so its job stays advisory: it prints the handle facts and closes a
+#   pipe and a pseudo console on a GUI started the way the wheel smoke script
+#   starts it (pre-created isolated directories, --no-open --json --port 0).
+# - KP-134 runs on three Node majors because the real-machine symptom (the
+#   worker starts, then exits at the random call) may depend on the version.
 # - KP-135 runs the exact reproduction on the base commit and on the head. The
 #   base leg is expected to fail; it is there so a pass on the head is known to
 #   come from the change and not from the runner.
@@ -88,9 +90,13 @@ jobs:
           uv run --locked --no-sync python -c "from hyprial._core import actors; print(actors.__file__); print('ENGINE_ABI_VERSION', actors.ENGINE_ABI_VERSION)"
 
   kp134-pi:
-    name: kp134 pi package root and worker environment
+    name: kp134 pi package root and worker environment (node ${{ matrix.node }})
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22", "24"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -100,7 +106,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node }}
       - name: Install the locked environment without the native engine
         run: uv sync --locked --python $env:PYTHON_VERSION --extra test
       - name: Install Pi the way a user does
@@ -121,7 +127,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: kp134-probe
+          name: kp134-probe-node${{ matrix.node }}
           path: ${{ runner.temp }}/kp134.json
           retention-days: 7
           if-no-files-found: warn
@@ -193,3 +199,28 @@ jobs:
       - name: Handle facts as the runner sees them
         if: always()
         run: uv run --locked --no-sync python scripts/verify/stdin_stop_windows_probe.py facts
+      - name: Prepare an isolated home
+        if: always()
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "g"
+          foreach ($name in @("u", "h", "s", "t")) { New-Item -ItemType Directory -Force -Path (Join-Path $root $name) | Out-Null }
+          "HOME=$root\u" >> $env:GITHUB_ENV
+          "USERPROFILE=$root\u" >> $env:GITHUB_ENV
+          "HYPRIAL_HOME=$root\h" >> $env:GITHUB_ENV
+          "HARNESS_STATE_DIR=$root\s" >> $env:GITHUB_ENV
+          "HYPRIAL_NETWORK_ISOLATED=1" >> $env:GITHUB_ENV
+          "HYPRIAL_USAGE_DISABLE=1" >> $env:GITHUB_ENV
+          "HYPRIAL_PEER_DISCOVERY=0" >> $env:GITHUB_ENV
+          "NO_PROXY=127.0.0.1,localhost,::1" >> $env:GITHUB_ENV
+      - name: Close a pipe on a running gui --stdin-stop
+        if: always()
+        run: >
+          uv run --locked --no-sync python scripts/verify/stdin_stop_windows_probe.py
+          run --via pipe --after 30 --timeout 120 --
+          "$env:GITHUB_WORKSPACE\.venv\Scripts\hyprial.exe" gui --no-open --json --port 0 --stdin-stop
+      - name: Close a pseudo console on a running gui --stdin-stop
+        if: always()
+        run: >
+          uv run --locked --no-sync python scripts/verify/stdin_stop_windows_probe.py
+          run --via conpty --after 30 --timeout 120 --
+          "$env:GITHUB_WORKSPACE\.venv\Scripts\hyprial.exe" gui --no-open --json --port 0 --stdin-stop
