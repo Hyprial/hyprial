@@ -10347,6 +10347,72 @@
       ]
     },
     {
+      "path": "org service grant",
+      "family": "service",
+      "kind": "leaf",
+      "hidden": false,
+      "directHidden": false,
+      "executable": true,
+      "callbackModule": "hyprial.shell.impl.cli.commands.service.commands",
+      "help": "Seal one stdin-sourced secret to the remote daemon serving a service.\n\nThe secret is read only from stdin.  A terminal is refused so the value\ncannot be typed into a shell history, and no option accepts it as argv.",
+      "params": [
+        {
+          "opts": [
+            "name"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Registered service name.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--recipient-key"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Remote daemon grant key, x25519:<64 lowercase hex>.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--json"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Emit JSON only.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        }
+      ]
+    },
+    {
       "path": "org service expose",
       "family": "service",
       "kind": "leaf",

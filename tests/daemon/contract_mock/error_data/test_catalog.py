@@ -65,7 +65,13 @@ class _AgentApp(_AgentRegistryOpsMixin):
 def _handler_app(method):
     if method == "agent.resolve":
         return _AgentApp()
-    if method in {"service.connect", "service.disconnect", "service.guide", "service.list"}:
+    if method in {
+        "service.connect",
+        "service.disconnect",
+        "service.grant",
+        "service.guide",
+        "service.list",
+    }:
         return _ServiceApp()
     if method in {"routine.pause", "routine.resume"}:
         return _RoutineApp()

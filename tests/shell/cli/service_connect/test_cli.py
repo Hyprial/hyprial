@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -34,10 +35,16 @@ class FakeServices:
         run_command(operation, json_output=json_output, require_home=None)
 
 
-def _invoke(monkeypatch: pytest.MonkeyPatch, response: Any, args: list[str]):
+def _invoke(
+    monkeypatch: pytest.MonkeyPatch,
+    response: Any,
+    args: list[str],
+    *,
+    input: str | None = None,
+):
     services = FakeServices(response)
     monkeypatch.setattr(commands, "get_services", lambda: services)
-    result = CliRunner().invoke(commands.service_app, args)
+    result = CliRunner().invoke(commands.service_app, args, input=input)
     return result, services
 
 
@@ -139,3 +146,64 @@ def test_daemon_service_error_is_json_error_with_failure_exit(
         "error": "service is not registered",
     }
     assert services.requests == [("service.connect", {"name": "missing"})]
+
+
+_GRANT = {
+    "grantId": "sg." + "a" * 26,
+    "service": "api",
+    "deviceId": "sub2api",
+    "recipientKeyId": "x25519:" + "b" * 32,
+    "createdAt": 1795443172228,
+}
+
+
+def test_grant_reads_the_secret_only_from_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    recipient = "x25519:" + "a" * 64
+    result, services = _invoke(
+        monkeypatch,
+        {"grant": _GRANT},
+        ["grant", "api", "--recipient-key", recipient, "--json"],
+        input="s3cret-value\n",
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert _json(result) == {"ok": True, "grant": _GRANT}
+    assert services.requests == [
+        (
+            "service.grant",
+            {
+                "name": "api",
+                "recipientKey": recipient,
+                "secretB64": base64.b64encode(b"s3cret-value").decode("ascii"),
+            },
+        )
+    ]
+    assert "s3cret-value" not in result.output
+
+
+def test_grant_never_accepts_the_secret_as_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipient = "x25519:" + "a" * 64
+    result, services = _invoke(
+        monkeypatch,
+        {"grant": _GRANT},
+        ["grant", "api", "s3cret-value", "--recipient-key", recipient],
+    )
+
+    assert result.exit_code == 2
+    assert services.requests == []
+
+
+def test_grant_refuses_an_empty_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    recipient = "x25519:" + "a" * 64
+    result, services = _invoke(
+        monkeypatch,
+        {"grant": _GRANT},
+        ["grant", "api", "--recipient-key", recipient, "--json"],
+        input="\n",
+    )
+
+    assert result.exit_code == 2
+    assert services.requests == []
+

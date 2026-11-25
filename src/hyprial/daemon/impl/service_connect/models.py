@@ -331,3 +331,29 @@ class RegistrySnapshot:
                 "service is not registered",
             )
         return entry
+
+
+def failed_row(
+    name: str,
+    entry: CatalogEntry | None,
+    *,
+    local_port: int | None,
+    code: str,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "deviceId": None if entry is None else entry.device_id,
+        "remotePort": None if entry is None else entry.remote_port,
+        "recordGeneration": None,
+        "localPort": local_port,
+        "activeConnections": 0,
+        "path": "unknown",
+        "pathDetail": None,
+        "observedAtMs": None,
+        "lastDialState": "unknown",
+        "lastDialMs": None,
+        "lastError": "service mapping is unavailable",
+        "lastErrorAtMs": None,
+        "state": "failed",
+        "errorCode": code,
+    }

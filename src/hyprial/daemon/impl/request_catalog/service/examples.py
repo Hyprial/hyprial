@@ -11,6 +11,9 @@ ROW = {"name": "subapi", "deviceId": "host", "remotePort": 8080,
        "lastDialState": "unknown", "lastDialMs": None, "lastError": None,
        "lastErrorAtMs": None, "state": "listening", "errorCode": None}
 REGISTRY = {"source": "discovery", "spaceId": None, "owner": None, "error": None}
+GRANT = {"grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa", "service": "subapi", "deviceId": "host",
+         "recipientKeyId": "x25519:" + "a" * 32, "createdAt": 1795443172228}
+GRANT_PARAMS = {"name": "subapi", "recipientKey": "x25519:" + "a" * 64, "secretB64": "c2VjcmV0"}
 
 
 def case(name, kind, params, result=None, error=None, reason=""):
@@ -43,6 +46,21 @@ SERVICE_EXAMPLES = (
     examples("service.disconnect", {"name": "subapi", "removed": True},
              empty={"name": "subapi", "removed": False},
              domain=("subapi", ipc_errors.SERVICE_UNAVAILABLE, "service teardown failed")),
+    MethodExampleSet(
+        method="service.grant",
+        cases=(
+            case("success", "success", GRANT_PARAMS, result={"grant": GRANT}),
+            case("invalid-params", "invalid-params", {},
+                 error=MethodExampleError(ipc_errors.INVALID_ARGUMENT,
+                                          "service request is invalid")),
+            case("domain-error", "domain-error",
+                 {**GRANT_PARAMS, "name": "missing"},
+                 error=MethodExampleError(ipc_errors.SERVICE_NOT_REGISTERED,
+                                          "service is not registered")),
+        ),
+        empty_not_applicable="A grant always names one registered service.",
+        domain_errors_not_applicable="",
+    ),
     examples("service.guide", {"entry": ENTRY, "source": "discovery"},
              domain=("missing", ipc_errors.SERVICE_NOT_REGISTERED, "service is not registered")),
     examples("service.list", {"services": [ROW], "registry": REGISTRY},
