@@ -7,6 +7,10 @@
 # - The journal-only codes ``log-key-conflict``, ``purged``,
 #   ``snapshot-barrier`` and ``stale-plan`` have no producer and are not
 #   registered; the frozen kernel vocabulary is left to the integrator.
+# - Package F7 (ruling 7): an error without an explanation shows only its
+#   code (``unknown-doc``, not ``unknown-doc: unknown-doc``); an explanation
+#   equal to the code counts as none, so a re-raise that forwards
+#   ``message`` keeps the short form.
 """Public API for the org shared-folder document store.
 
 The protocol in this module is deliberately dependency free.  The concrete
@@ -36,9 +40,8 @@ class OrgFsError(Exception):
     def __init__(self, code: str, details: dict[str, object] | None = None) -> None:
         self.code = code
         self.details = dict(details or {})
-        message = self.details.pop("message", None) or code
-        self.message = str(message)
-        super().__init__(f"{code}: {message}")
+        self.message = str(self.details.pop("message", None) or code)
+        super().__init__(code if self.message == code else f"{code}: {self.message}")
 
 
 def require_space_owner(author: str, space: SpaceInfo) -> None:
@@ -146,7 +149,13 @@ class ChangeEvent:
 
 @dataclass(frozen=True, slots=True)
 class SpaceStatus:
-    """Design §1.1 space status: sync state, online holders and held content."""
+    """Design §1.1 space status: sync state, online holders and held content.
+
+    ``synced`` is decided by observations of current members' online nodes.
+    ``rejected_updates`` counts updates this node refused (admission
+    rejections and broadcasts from a node whose owner is not a current
+    member), not updates it is missing.
+    """
 
     space_id: str
     synced: bool | None

@@ -7,6 +7,8 @@ and timestamps are normalized by the producer replay tests, never output fields.
 Package S (2026-11-25): an OrgFS version is an opaque digest over rows with
 random ids, so the replay binds each distinct version to ``orgfs-version-N`` in
 first-seen order; the examples use those placeholders.
+Package F7 (2026-11-25, ruling 7): an error without an explanation shows only
+its code, so the default message is the code alone.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ _REF = {"spaceId": _SPACE_ID, "node": _NODE["uri"]}
 _PATH = {"spaceId": _SPACE_ID, "path": "readme.txt"}
 _DOC = "daemon/impl/orgfs/document/"
 _BRIDGE = "daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json"
-_UNKNOWN = MethodExampleError("unknown-space", "unknown-space: unknown-space", {"spaceId": "missing-space"})
+_UNKNOWN = MethodExampleError("unknown-space", "unknown-space", {"spaceId": "missing-space"})
 _INVALID = MethodExampleError(ipc_errors.INVALID_ARGUMENT, "body must be a JSON object")
 
 
@@ -50,7 +52,7 @@ def _error(name, params, code, data, producer, *, message=None, kind="semantic-p
     return MethodExample(
         name=name, kind=kind, params=params,
         description=f"producer: {producer}; schema-valid input reaches the producer",
-        error=MethodExampleError(code, message or f"{code}: {code}", data),
+        error=MethodExampleError(code, message or code, data),
     )
 
 

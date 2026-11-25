@@ -11,6 +11,9 @@
 # - Package F6 (R3-8): a refused space keeps the store's explanation and
 #   migration guide in its message, and an error re-raised through the space
 #   command loop names its code once.
+# - Package F7 (ruling 7): an error raised without an explanation shows only
+#   its code, in ``message`` and in ``str()``; one with an explanation keeps
+#   ``code: explanation``.
 """Startup scan and crash recovery of ``OrgFsRuntime``."""
 
 from __future__ import annotations
@@ -125,8 +128,30 @@ def test_a_refused_space_and_a_failed_command_name_their_code_once_and_keep_the_
     assert "legacy-journal" in refused.value.message
     assert refused.value.details["guide"] == MIGRATION_GUIDE
     code = failed.value.code
-    assert str(failed.value).startswith(f"{code}: ")
+    assert str(failed.value).count(code) == 1
     assert not failed.value.message.startswith(f"{code}: ")
+
+
+def test_an_error_without_an_explanation_shows_only_its_code(tmp_path) -> None:
+    state_dir = tmp_path / "node"
+    kept = _seed(state_dir)
+    runtime = _runtime(state_dir)
+    try:
+        with pytest.raises(OrgFsError) as missing_space:
+            runtime.facade.stat("missing-space", "id:root")
+        with pytest.raises(OrgFsError) as missing_doc:
+            runtime.facade.read_text(kept, "id:not-a-node")
+    finally:
+        runtime.close()
+
+    for raised in (missing_space.value, missing_doc.value):
+        assert raised.message == raised.code
+        assert str(raised) == raised.code
+    assert str(OrgFsError("unknown-doc")) == "unknown-doc"
+    assert str(OrgFsError("unknown-doc", {"message": "unknown-doc"})) == "unknown-doc"
+    assert str(OrgFsError("unknown-doc", {"message": "gone"})) == "unknown-doc: gone"
+    assert str(StoreError("unknown-doc")) == "unknown-doc"
+    assert str(StoreError("unknown-doc", "gone")) == "unknown-doc: gone"
 
 
 def test_a_directory_not_named_by_a_uuid_refuses_startup(tmp_path) -> None:

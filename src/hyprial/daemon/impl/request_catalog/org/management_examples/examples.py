@@ -9,6 +9,8 @@ Decision record (daemon-request examples, 2026-11-03)
   journal operation, the confirmed case records the completed tombstone and
   tailnet shutdown, and the error cases pin the stale-confirmation and
   already-deleted refusals.
+- Package F7 (2026-11-25, ruling 7): an OrgFS error without an explanation
+  shows only its code, so ``org.network``'s unknown-space message is the code.
 """
 
 from __future__ import annotations
@@ -395,7 +397,7 @@ _ORG_NETWORK = MethodExampleSet(
             params={"org": _ORG},
             error=MethodExampleError(
                 "unknown-space",
-                "unknown-space: unknown-space",
+                "unknown-space",
                 {"org": _ORG, "space": _ORG},
             ),
         ),

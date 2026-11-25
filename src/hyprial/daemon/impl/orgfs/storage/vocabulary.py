@@ -9,6 +9,7 @@
 #   document id never becomes a path component.
 # - Package F6 (R3-8): ``StoreError.message`` keeps the explanation without
 #   the ``code: `` prefix ``str()`` adds, so a re-raise does not repeat it.
+# - Package F7 (ruling 7): without an explanation ``str()`` is the code alone.
 """Names shared by the OrgFS stores: the store error and the document file stem."""
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ class StoreError(RuntimeError):
         self.code = code
         self.details = details
         self.message = message or code
-        super().__init__(f"{code}: {self.message}")
+        super().__init__(code if self.message == code else f"{code}: {self.message}")
 
 
 def document_file_stem(doc_id: str) -> str:
