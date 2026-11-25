@@ -52,7 +52,10 @@ export function captureProcess(child) {
 }
 
 export function logsOf(capture) {
-  return `stdout:\n${capture.stdout}\nstderr:\n${capture.stderr}`.slice(-12_000);
+  const excerpt = (text) => text.length <= 5_900
+    ? text
+    : `${text.slice(0, 2_000)}\n[... truncated ...]\n${text.slice(-3_800)}`;
+  return `stdout:\n${excerpt(capture.stdout)}\nstderr:\n${excerpt(capture.stderr)}`;
 }
 
 export async function stopChild(child) {

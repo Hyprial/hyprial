@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .impl.facade.types import ModelConnection as ModelConnection
     from hyprial.identity.impl.provider_auth.helper import DeviceLoginRunner as DeviceLoginRunner
     from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAuthority as ProviderAuthAuthority
     from hyprial.identity.impl.agents.actor.ports import AgentHarnessArgsUpdated as AgentHarnessArgsUpdated
@@ -315,6 +316,7 @@ _FACADE_EXPORTS = {
     'SecretResolver': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolver'),
     'SecretResolutionError': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolutionError'),
     'SecretSource': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretSource'),
+    'ModelConnection': ('hyprial.identity.impl.agents.runtime.model_records.connections', 'ModelConnection'),
     'AgentSecretStore': ('hyprial.identity.impl.agents.secret_store', 'AgentSecretStore'),
     'FingerprintUnavailable': ('hyprial.identity.impl.agents.secret_store', 'FingerprintUnavailable'),
     'SecretEvent': ('hyprial.identity.impl.agents.secret_store', 'SecretEvent'),
@@ -532,6 +534,7 @@ __all__ = [
     'AgentRuntimeMigrationBindings',
     'AgentRuntimeNotice',
     'AgentSecretGrantCompleted',
+    'ModelConnection',
     'AgentSecretStore',
     'AgentToolProfile',
     'AllowAllPolicy',

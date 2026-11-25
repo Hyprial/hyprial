@@ -162,7 +162,7 @@
     "hyprial.shell.impl.gui.apps",
     "hyprial.shell.impl.gui.errors"
   ],
-  "primedModuleCount": 610,
+  "primedModuleCount": 614,
   "primedModules": [
     "hyprial",
     "hyprial.biz",
@@ -251,6 +251,9 @@
     "hyprial.daemon.impl.harnesses.codex.transport.connection",
     "hyprial.daemon.impl.harnesses.model_provider",
     "hyprial.daemon.impl.harnesses.pi",
+    "hyprial.daemon.impl.harnesses.pi.bindings",
+    "hyprial.daemon.impl.harnesses.pi.bindings.errors",
+    "hyprial.daemon.impl.harnesses.pi.bindings.launch",
     "hyprial.daemon.impl.harnesses.pi.loader",
     "hyprial.daemon.impl.harnesses.pi.messages",
     "hyprial.daemon.impl.harnesses.pi.rpc_client",
@@ -574,6 +577,7 @@
     "hyprial.kernel.impl.manysys.fs.durability",
     "hyprial.kernel.impl.manysys.fs.file_lock",
     "hyprial.kernel.impl.manysys.fs.links",
+    "hyprial.kernel.impl.manysys.fs.locality",
     "hyprial.kernel.impl.manysys.fs.private_access",
     "hyprial.kernel.impl.manysys.interface",
     "hyprial.kernel.impl.manysys.ipc",

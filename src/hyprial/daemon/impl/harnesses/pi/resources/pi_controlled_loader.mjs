@@ -26,6 +26,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { admitModelSession, guardModelSession, boundModelRuntime, modelFailure } from "./pi_model_binding.mjs";
+
 const RECEIPT_SCHEMA = "hyprial-pi-loader-v1";
 const CONTEXT_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
@@ -377,8 +379,9 @@ export async function createControlledPiResourceLoader(rawOptions) {
   return { loader, receipt, receiptForSystemPrompt, settingsManager, sdk, options };
 }
 
-async function openOrCreateSession(sdk, cwd, sessionRoot, sessionId, requireExisting) {
+async function openOrCreateSession(sdk, cwd, sessionRoot, sessionId, requireExisting, claim) {
   const existing = (await sdk.SessionManager.list(cwd, sessionRoot)).find((session) => session.id === sessionId);
+  claim?.checkExisting(existing !== undefined);
   if (existing) return sdk.SessionManager.open(existing.path, sessionRoot);
   if (requireExisting) fail(`Pi session not found: ${sessionId}`);
   return sdk.SessionManager.create(cwd, sessionRoot, { id: sessionId });
@@ -452,7 +455,7 @@ function warnSessionProviderRebound(sessionId, recorded, configuredProvider, con
   );
 }
 
-async function createControlledRuntime(rawOptions) {
+async function createControlledRuntime(rawOptions, claim) {
   const sessionRoot = canonicalDirectory(rawOptions.sessionRoot, "sessionRoot");
   const sessionId = requireString(rawOptions.sessionId, "sessionId");
   const requireExistingSession = rawOptions.requireExistingSession === true;
@@ -464,6 +467,7 @@ async function createControlledRuntime(rawOptions) {
   }
   let initial = true;
   const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
+    if (claim?.snapshot && sessionManager.getSessionId() !== sessionId) throw modelFailure("MODEL_RESUME_MISMATCH", "resume", "binding-changed");
     const controlled = await createControlledPiResourceLoader({ ...rawOptions, cwd });
     const sdk = controlled.sdk;
     const extensionErrors = controlled.loader.getExtensions().errors;
@@ -485,6 +489,7 @@ async function createControlledRuntime(rawOptions) {
       retry: { maxRetries: 0, provider: { maxRetries: 0 } },
     });
     registerModelDefinitions(modelRuntime, rawOptions.modelDefinitions);
+    if (claim?.snapshot) boundModelRuntime(modelRuntime, modelProvider, modelId, rawOptions.modelDefinitions[modelProvider]);
     // The agent's current configuration is the launch's explicit selection,
     // else the native root's settings default.  A resumed session may record
     // a different vendor (the production case: settings deepseek, session
@@ -499,6 +504,7 @@ async function createControlledRuntime(rawOptions) {
       configuredProvider !== undefined &&
       configuredModel !== undefined &&
       (recorded.provider !== configuredProvider || recorded.modelId !== configuredModel);
+    if (rebound && claim?.snapshot) throw modelFailure("MODEL_RESUME_MISMATCH", "resume", "binding-changed");
     if (rebound) {
       warnSessionProviderRebound(sessionId, recorded, configuredProvider, configuredModel);
     }
@@ -528,19 +534,28 @@ async function createControlledRuntime(rawOptions) {
       sessionStartEvent,
       model,
     });
-    atomicWriteReceipt(
-      receiptPath,
-      sessionRoot,
-      controlled.receiptForSystemPrompt(created.session.systemPrompt),
-    );
-    if (rebound) {
-      // Make the rebind durable: the next resume must not see the stale vendor.
-      sessionManager.appendModelChange(configuredProvider, configuredModel);
-    }
-    if (initial) {
-      const sessionName = optionalString(rawOptions.sessionName, "sessionName");
-      if (sessionName !== undefined) sessionManager.appendSessionInfo(sessionName);
-      initial = false;
+    try {
+      const receipt = controlled.receiptForSystemPrompt(created.session.systemPrompt);
+      if (claim?.snapshot) claim.writeReceipt(receipt);
+      else {
+        atomicWriteReceipt(receiptPath, sessionRoot, receipt);
+        claim?.writeReceipt(receipt);
+      }
+      if (rebound) sessionManager.appendModelChange(configuredProvider, configuredModel);
+      if (initial) {
+        const sessionName = optionalString(rawOptions.sessionName, "sessionName");
+        if (sessionName !== undefined) sessionManager.appendSessionInfo(sessionName);
+        initial = false;
+      }
+    } catch (error) {
+      try {
+        await created.session.abort();
+        await created.session.dispose();
+      } catch (cleanupError) {
+        claim?.retain();
+        throw cleanupError;
+      }
+      throw error;
     }
     return { ...created, services, diagnostics: [] };
   };
@@ -552,6 +567,7 @@ async function createControlledRuntime(rawOptions) {
     sessionRoot,
     sessionId,
     requireExistingSession,
+    claim,
   );
   return sdk.createAgentSessionRuntime(createRuntime, {
     cwd: options.cwd,
@@ -561,19 +577,25 @@ async function createControlledRuntime(rawOptions) {
 }
 
 async function runControlledMode(command, options) {
-  const runtime = await createControlledRuntime(options);
-  const sdk = await import(pathToFileURL(join(canonicalDirectory(options.piPackageRoot, "piPackageRoot"), "dist", "index.js")).href);
-  if (command === "run-rpc") {
-    await sdk.runRpcMode(runtime);
-    return;
-  }
-  const interactive = new sdk.InteractiveMode(runtime, {
-    initialMessage: optionalString(options.initialMessage, "initialMessage"),
-  });
+  const claim = admitModelSession(command, options);
+  const lifetime = guardModelSession(claim);
+  let runtime;
   try {
-    await interactive.run();
+    runtime = await createControlledRuntime(options, claim);
+    await lifetime.attach(runtime);
+    const sdk = await import(pathToFileURL(join(canonicalDirectory(options.piPackageRoot, "piPackageRoot"), "dist", "index.js")).href);
+    if (command === "run-rpc") await sdk.runRpcMode(runtime);
+    else {
+      const interactive = new sdk.InteractiveMode(runtime, {
+        initialMessage: optionalString(options.initialMessage, "initialMessage"),
+      });
+      await interactive.run();
+    }
   } finally {
-    await runtime.dispose();
+    try {
+      if (runtime) await runtime.dispose();
+      else claim?.release();
+    } finally { lifetime.close(); }
   }
 }
 
@@ -610,8 +632,11 @@ function isMainModule() {
 
 if (isMainModule()) {
   main().catch((error) => {
-    if (error.code === "MODEL_UNAVAILABLE") {
-      process.stderr.write("HYPRIAL_PI_START_FAILURE:MODEL_UNAVAILABLE\n");
+    if (new Set(["MODEL_UNAVAILABLE", "MODEL_RESUME_MISMATCH", "MODEL_SESSION_BUSY", "MODEL_COMBINATION_UNSUPPORTED", "MODEL_AUTH_UNAVAILABLE"]).has(error.code)) {
+      process.stderr.write(`HYPRIAL_PI_START_FAILURE:${error.code}\n`);
+      if (error.phase && error.reason) process.stderr.write(`${error.phase}/${error.reason}\n`);
+      process.exitCode = 1;
+      return;
     }
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;

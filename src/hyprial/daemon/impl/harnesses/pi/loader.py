@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from hyprial.daemon.impl.harnesses.model_provider import pi_model_definitions
+from .bindings import PiModelBinding, validated_snapshot
+from .bindings.launch import bind_launch
 from hyprial.kernel import git_subprocess_environment
 from hyprial.kernel import ipc_errors
 
@@ -208,6 +210,7 @@ class PiLoaderReceipt:
     skills: tuple[PiLoadedSkill, ...]
     effective_settings: PiEffectiveSettings
     session_proof: PiSessionLoadProof
+    model_binding: Mapping[str, object] | None = None
 
     @classmethod
     def from_json(cls, value: object) -> "PiLoaderReceipt":
@@ -228,7 +231,7 @@ class PiLoaderReceipt:
                 "skills",
                 "effectiveSettings",
                 "sessionProof",
-            },
+            } | ({"modelBinding"} if "modelBinding" in value else set()),
             "pi loader receipt",
         )
         if value["schema"] != PI_LOADER_RECEIPT_SCHEMA:
@@ -260,6 +263,7 @@ class PiLoaderReceipt:
                 value["effectiveSettings"]
             ),
             session_proof=PiSessionLoadProof.from_json(value["sessionProof"]),
+            model_binding=validated_snapshot(value["modelBinding"]) if "modelBinding" in value else None,
         )
 
     @classmethod
@@ -658,6 +662,7 @@ def pi_sdk_launch_from_runtime_context(
     session_name: str | None = None,
     initial_message: str | None = None,
     containerized: bool = False,
+    model_binding: PiModelBinding | None = None,
 ) -> PiSdkLaunch:
     """Consume P22's context without deriving or rewriting any agent root."""
 
@@ -681,6 +686,8 @@ def pi_sdk_launch_from_runtime_context(
         session_name=session_name,
         initial_message=initial_message,
         containerized=containerized,
+        model_binding=model_binding,
+        agent_home=context.roots.agent_home,
     )
 
 
@@ -756,6 +763,8 @@ def _pi_sdk_launch(
     session_name: str | None,
     initial_message: str | None,
     containerized: bool,
+    model_binding: PiModelBinding | None = None,
+    agent_home: Path | None = None,
 ) -> PiSdkLaunch:
     if containerized:
         raise ValueError("Pi controlled SDK bridge is not supported in containers")
@@ -763,6 +772,7 @@ def _pi_sdk_launch(
         raise ValueError("Pi session id must be non-empty")
     if (model_provider is None) != (model is None):
         raise ValueError("Pi model provider and model must be supplied together")
+    lexical_session_root = session_root
     projection_root = _runtime_root(projection_root, "Pi projection root")
     native_root = _runtime_root(native_root, "Pi native root")
     session_root = _runtime_root(session_root, "Pi session root")
@@ -813,6 +823,11 @@ def _pi_sdk_launch(
         payload["sessionName"] = session_name
     if initial_message is not None:
         payload["initialMessage"] = initial_message
+    if model_binding is not None:
+        if agent_home is None:
+            raise ValueError("model binding requires the trusted agent home")
+        bind_launch(payload, environment, binding=model_binding, agent_home=agent_home, mode=mode,
+                    session_root=lexical_session_root)
     return PiSdkLaunch(
         argv=(
             node,
