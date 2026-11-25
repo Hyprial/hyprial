@@ -920,11 +920,34 @@ class FacadeProjection:
         )
         space.nodes[node_id] = node
         if doc_id and doc_id not in space.contents:
-            client_id = int.from_bytes(
-                hashlib.sha256(node_id.encode()).digest()[:8], "big"
-            ) & ((1 << 53) - 1)
-            space.contents[doc_id] = _ContentDocument(client_id=client_id)
+            space.contents[doc_id] = _ContentDocument(
+                client_id=self._content_client_id(
+                    space, node_id, protected=protected_node is not None
+                )
+            )
         return node
+
+
+    def _content_client_id(
+        self, space: _Space, node_id: str, *, protected: bool
+    ) -> int:
+        """Return the client id a newly created content document is authored under.
+
+        An ordinary document uses the store's one facade client id, so creating
+        it registers nothing new on the writer row.  That id differs from every
+        writer id, which the store itself authors its commit clock under.  A
+        protected directory document keeps the id derived from its node id, as
+        does any document created without a store that offers a facade id.
+        """
+
+        shared = getattr(
+            self._store(space.info.space_id), "facade_client_id", None
+        )
+        if not protected and callable(shared):
+            return int(shared())
+        return int.from_bytes(
+            hashlib.sha256(node_id.encode()).digest()[:8], "big"
+        ) & ((1 << 53) - 1)
 
 
     def _write_tree(
