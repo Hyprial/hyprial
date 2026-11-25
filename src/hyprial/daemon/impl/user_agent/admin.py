@@ -15,7 +15,7 @@
 # - Legacy router ``agent.*`` methods never reach the catalog dispatcher, so
 #   the router's one legacy ``agent.*`` branch asks ``refuse_legacy_agent_method``
 #   with the literal ``LEGACY_TARGET_PARAMS`` (config rebind, migrate, capability
-#   grant, ensure-home, resume restore, runtime context, unblock and the
+#   grant, resume restore, unblock and the
 #   restore policy).  The legacy family is frozen by the method
 #   registration gate, so a literal list cannot silently miss a new method.
 #   ``agent.restore-policy`` with ``list`` exactly ``true`` is the handler's
@@ -88,14 +88,12 @@ HANDLER_REFUSED = frozenset({
 
 LEGACY_TARGET_PARAMS: Mapping[str, str] = {
     "agent.config.rebind": "name",
-    "agent.ensure-home": "name",
     "agent.grant": "actor",
     "agent.migrate.execute": "agent",
     "agent.migrate.preflight": "agent",
     "agent.migrate.rollback": "agent",
     "agent.restore-policy": "name",
     "agent.resume.restore": "name",
-    "agent.runtime-context": "name",
     "agent.unblock": "name",
 }
 """Legacy router methods refused for the user agent, and the param naming it."""

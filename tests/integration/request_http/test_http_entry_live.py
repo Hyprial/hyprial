@@ -259,10 +259,16 @@ def test_rejection_matrix_distinguishes_local_and_daemon_sources(http_server) ->
     status, _, body = http_server.request("POST", "/daemon/request/unknown.method", body={})
     assert (status, body["code"]) == (404, "METHOD_NOT_FOUND")
 
-    status, _, body = http_server.request(
-        "POST", "/daemon/request/daemon.catalog", body={}
-    )
-    assert (status, body["code"]) == (404, "METHOD_NOT_FOUND")
+    for local_method in (
+        "daemon.catalog", "agent.get", "agent.readiness",
+        "agent.runtime-context", "agent.ensure-home",
+    ):
+        status, _, body = http_server.request(
+            "POST", f"/daemon/request/{local_method}", body={}
+        )
+        assert (status, body["code"], body["dispatch"]) == (
+            404, "METHOD_NOT_FOUND", "not-dispatched"
+        ), local_method
 
     status, _, body = http_server.request(
         "POST",

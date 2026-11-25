@@ -54,12 +54,12 @@ REFUSED_CATALOG = frozenset({
     "agent.detach", "agent.harness-args.clear",
     "agent.harness-args.set", "agent.provider.allow", "agent.provider.login",
     "agent.provider.logout", "agent.rename", "agent.secret.grant",
-    "agent.start", "agent.stop",
+    "agent.start", "agent.stop", "agent.ensure-home", "agent.runtime-context",
 })
 REFUSED_LEGACY = frozenset({
-    "agent.config.rebind", "agent.ensure-home", "agent.grant", "agent.migrate.execute",
+    "agent.config.rebind", "agent.grant", "agent.migrate.execute",
     "agent.migrate.preflight", "agent.migrate.rollback", "agent.restore-policy",
-    "agent.resume.restore", "agent.runtime-context", "agent.unblock",
+    "agent.resume.restore", "agent.unblock",
 })
 REVOKES = frozenset({"agent.provider.revoke", "agent.revoke", "agent.secret.revoke"})
 """Allowed on purpose: revocation only removes (``test_revoke_allowed``)."""

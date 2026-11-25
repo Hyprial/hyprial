@@ -221,6 +221,10 @@ def test_the_four_reads_are_declared_bound_and_read_only() -> None:
     assert "agent" not in MIGRATED_FAMILIES
     assert agent_catalog.PARTIAL_MIGRATED_METHODS == frozenset(
         {
+            "agent.ensure-home",
+            "agent.get",
+            "agent.readiness",
+            "agent.runtime-context",
             "agent.home-census",
             "agent.harness-args.clear",
             "agent.harness-args.get",

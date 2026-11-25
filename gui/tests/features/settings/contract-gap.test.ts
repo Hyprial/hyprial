@@ -138,11 +138,15 @@ describe('daemon request HTTP projection gap', () => {
     ]) {
       expect(ids.has(method), method).toBe(false);
     }
-    expect(document['x-hyprial-methods']).toHaveLength(175);
+    expect(document['x-hyprial-methods']).toHaveLength(179);
     expect(declared.size).toBe(document['x-hyprial-methods'].length);
     expect(declared.has('org.personal.ensure')).toBe(false);
     expect(declared.has('agent.rename')).toBe(true);
     expect(declared.has('teleport.run')).toBe(true);
+    for (const method of ['agent.get', 'agent.readiness', 'agent.runtime-context', 'agent.ensure-home']) {
+      expect(declared.has(method), method).toBe(true);
+      expect(ids.has(method), method).toBe(false);
+    }
     for (const id of ids) expect(declared.has(id), id).toBe(true);
     for (const method of [
       'conversations.list', 'conversations.history',

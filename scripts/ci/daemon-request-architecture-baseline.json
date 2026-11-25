@@ -1877,12 +1877,6 @@
     {
       "kind": "undeclared-method",
       "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
-      "subject": "agent_ensure_home.operation:agent.ensure-home",
-      "count": 1
-    },
-    {
-      "kind": "undeclared-method",
-      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
       "subject": "agent_migrate_execute.operation:agent.migrate.execute",
       "count": 1
     },
@@ -1900,12 +1894,6 @@
     },
     {
       "kind": "undeclared-method",
-      "path": "src/hyprial/shell/impl/cli/commands/agent/home.py",
-      "subject": "agent_readiness.operation:agent.readiness",
-      "count": 1
-    },
-    {
-      "kind": "undeclared-method",
       "path": "src/hyprial/shell/impl/cli/commands/agent/restore.py",
       "subject": "agent_restore.<lambda>:agent.restore-policy",
       "count": 2
@@ -1919,12 +1907,6 @@
     {
       "kind": "undeclared-method",
       "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
-      "subject": "_legacy_pty_admission:agent.ensure-home",
-      "count": 1
-    },
-    {
-      "kind": "undeclared-method",
-      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/claude.py",
       "subject": "_start_interactive_claude:ps",
       "count": 2
     },
@@ -1932,12 +1914,6 @@
       "kind": "undeclared-method",
       "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/down.py",
       "subject": "agent_stop.operation:down",
-      "count": 1
-    },
-    {
-      "kind": "undeclared-method",
-      "path": "src/hyprial/shell/impl/cli/commands/agent/runtime/interactive.py",
-      "subject": "_runtime_context_projection:agent.runtime-context",
       "count": 1
     },
     {
@@ -2010,12 +1986,6 @@
       "kind": "undeclared-method",
       "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
       "subject": "_daemon_probe:ps",
-      "count": 1
-    },
-    {
-      "kind": "undeclared-method",
-      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
-      "subject": "_resolved_interactive_resume_cwd:agent.get",
       "count": 1
     },
     {

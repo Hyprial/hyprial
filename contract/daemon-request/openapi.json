@@ -102996,6 +102996,849 @@
     },
     {
       "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_NOT_FOUND",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "INVALID_AGENT_NAME",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_ERROR",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "USER_AGENT_IMMUTABLE",
+          "dataSchema": null,
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "never",
+        "scope": "agent-home"
+      },
+      "ipcParamValidation": "handler",
+      "mode": "unary",
+      "mutates": true,
+      "name": "agent.ensure-home",
+      "owner": "daemon.agent",
+      "paramsSchema": {
+        "additionalProperties": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "agent": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "home": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "entityToken": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "ownerUid": {
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "resourceToken": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "schemaVersion": {
+                "const": 1
+              },
+              "status": {
+                "const": "ready"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "actor",
+              "entityToken",
+              "resourceToken",
+              "path",
+              "ownerUid",
+              "status"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "const": true
+          }
+        },
+        "required": [
+          "ok",
+          "actor",
+          "agent",
+          "home"
+        ],
+        "type": "object"
+      },
+      "retry": "never"
+    },
+    {
+      "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_NOT_FOUND",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "INVALID_AGENT_NAME",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_ERROR",
+          "dataSchema": null,
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "safe",
+        "scope": "agent-lookup"
+      },
+      "ipcParamValidation": "handler",
+      "mode": "unary",
+      "mutates": false,
+      "name": "agent.get",
+      "owner": "daemon.agent",
+      "paramsSchema": {
+        "additionalProperties": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "additionalProperties": false,
+            "properties": {
+              "activityUnknown": {
+                "type": "boolean"
+              },
+              "actor": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "agentId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "blockReason": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "blockedAgeMs": {
+                "type": "integer"
+              },
+              "blockedAtMs": {
+                "type": "integer"
+              },
+              "capabilities": {
+                "type": "object"
+              },
+              "config": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "discovery": {
+                        "const": "explicit-only"
+                      },
+                      "sharedCredentials": {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      },
+                      "sources": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "path": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "required": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "path",
+                            "required"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "sources",
+                      "discovery"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "createdAtMs": {
+                "type": "integer"
+              },
+              "cwd": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "displayName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "harness": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "harnessArgs": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              "heartbeatAgeSeconds": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "hosted": {
+                "type": "boolean"
+              },
+              "hostedBy": {
+                "enum": [
+                  null,
+                  "transfer-receive",
+                  "host-invite"
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "idleAgeMs": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "lastActiveAtMs": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "lastHarness": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastSessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "machine": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "preferredHarness": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "recoveryCleanup": {
+                "additionalProperties": false,
+                "properties": {
+                  "harness": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "liveness": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "processPid": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "runtime": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "sessionId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source",
+                  "harness",
+                  "runtime",
+                  "sessionId",
+                  "processPid",
+                  "liveness"
+                ],
+                "type": "object"
+              },
+              "recoveryError": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "errorType": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "harness": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "runtime": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "sessionId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "errorType",
+                  "error",
+                  "source",
+                  "harness",
+                  "runtime",
+                  "sessionId"
+                ],
+                "type": "object"
+              },
+              "recoveryStatus": {
+                "enum": [
+                  "failed",
+                  "cleaned"
+                ]
+              },
+              "restoreOverride": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "restoreStatus": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "restoreThresholdMs": {
+                "type": "integer"
+              },
+              "runState": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseState": {
+                    "enum": [
+                      "unknown",
+                      "starting",
+                      "idle",
+                      "in-turn",
+                      "stopping",
+                      "not-running"
+                    ]
+                  },
+                  "certainty": {
+                    "enum": [
+                      "observed",
+                      "inferred",
+                      "unknown"
+                    ]
+                  },
+                  "coverage": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "permissionWait": {
+                        "type": "boolean"
+                      },
+                      "processExit": {
+                        "type": "boolean"
+                      },
+                      "producerActivity": {
+                        "type": "boolean"
+                      },
+                      "turnBoundaries": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "turnBoundaries",
+                      "permissionWait",
+                      "producerActivity",
+                      "processExit"
+                    ],
+                    "type": "object"
+                  },
+                  "epoch": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "lastActivityAtMs": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "lastKnown": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "baseState": {
+                            "type": "string"
+                          },
+                          "observedAtMs": {
+                            "type": "integer"
+                          },
+                          "runtimeIncarnation": {
+                            "type": "string"
+                          },
+                          "sinceMs": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "state": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "state",
+                          "baseState",
+                          "sinceMs",
+                          "observedAtMs",
+                          "runtimeIncarnation"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "observationHealth": {
+                    "enum": [
+                      "current",
+                      "stale",
+                      "unavailable",
+                      "partial",
+                      "resync-required"
+                    ]
+                  },
+                  "observedAtMs": {
+                    "type": "integer"
+                  },
+                  "policyRevision": {
+                    "type": "integer"
+                  },
+                  "providerBlocked": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "runtimeIncarnation": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "scope": {
+                    "enum": [
+                      "whole-session",
+                      "carrier-deliveries"
+                    ]
+                  },
+                  "sinceMs": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "state": {
+                    "enum": [
+                      "unknown",
+                      "starting",
+                      "idle",
+                      "in-turn",
+                      "stopping",
+                      "not-running",
+                      "blocked",
+                      "suspected-stuck"
+                    ]
+                  },
+                  "suspicions": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "thresholds": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "permissionLongAfterMs": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "quietAfterMs": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "turnLongAfterMs": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "turnLongAfterMs",
+                      "permissionLongAfterMs",
+                      "quietAfterMs"
+                    ],
+                    "type": "object"
+                  },
+                  "turnAgeMs": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "state",
+                  "baseState",
+                  "reason",
+                  "certainty",
+                  "scope",
+                  "observedAtMs",
+                  "sinceMs",
+                  "turnAgeMs",
+                  "lastActivityAtMs",
+                  "coverage",
+                  "observationHealth",
+                  "suspicions",
+                  "policyRevision",
+                  "providerBlocked",
+                  "thresholds",
+                  "lastKnown",
+                  "runtimeIncarnation",
+                  "epoch",
+                  "revision"
+                ],
+                "type": "object"
+              },
+              "runtime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "sessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "sharedCredentials": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "authMode": {
+                      "const": "native-shared-link"
+                    },
+                    "code": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "error": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "harness": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "nativePath": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "error",
+                        "warning",
+                        "ready"
+                      ]
+                    },
+                    "targetPath": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "warning": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "harness",
+                    "authMode",
+                    "targetPath",
+                    "status"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "startupFailure": {
+                "additionalProperties": false,
+                "description": "Latest compensated startup failure for this incarnation and configuration. Cleared by a later lifecycle operation; not process-liveness evidence.",
+                "properties": {
+                  "code": {
+                    "const": "HARNESS_START_FAILED"
+                  },
+                  "failedAtMs": {
+                    "type": "integer"
+                  },
+                  "message": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "operationId": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "operationId",
+                  "code",
+                  "message",
+                  "failedAtMs"
+                ],
+                "type": "object"
+              },
+              "status": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "uri": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "userActor": {
+                "description": "Present only on a user agent: the user:<owner> every machine's instance shares.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "userAgent": {
+                "const": true,
+                "description": "Present only on the owner's user agent: no harness; lifecycle and credential methods are refused."
+              },
+              "workerState": {
+                "enum": [
+                  "blocked",
+                  "dormant"
+                ]
+              }
+            },
+            "required": [
+              "uri",
+              "actor",
+              "owner",
+              "machine",
+              "cwd",
+              "config",
+              "provider",
+              "model",
+              "capabilities",
+              "harnessArgs",
+              "preferredHarness",
+              "lastHarness",
+              "lastSessionId",
+              "createdAtMs",
+              "hosted",
+              "hostedBy",
+              "status",
+              "harness",
+              "runtime",
+              "sessionId",
+              "heartbeatAgeSeconds"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "const": true
+          }
+        },
+        "required": [
+          "ok",
+          "agent"
+        ],
+        "type": "object"
+      },
+      "retry": "safe"
+    },
+    {
+      "audience": [
         "local-operator",
         "bound-agent"
       ],
@@ -109503,6 +110346,242 @@
     },
     {
       "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_NOT_FOUND",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "INVALID_AGENT_NAME",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_ERROR",
+          "dataSchema": null,
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "safe",
+        "scope": "agent-readiness"
+      },
+      "ipcParamValidation": "handler",
+      "mode": "unary",
+      "mutates": false,
+      "name": "agent.readiness",
+      "owner": "daemon.agent",
+      "paramsSchema": {
+        "additionalProperties": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectLogin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "forgejoHost": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "forgejoIdentity": {
+            "type": "boolean"
+          },
+          "harness": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "role": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeoutSeconds": {
+            "exclusiveMinimum": 0,
+            "maximum": 60,
+            "type": "number"
+          },
+          "tools": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "workPaths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "role"
+        ],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "checks": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "pass",
+                    "blocked",
+                    "unknown"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "status",
+                "detail"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "configRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness": {
+            "type": "string"
+          },
+          "identity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limits": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "modeReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "const": true
+          },
+          "publishedRevisions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "reloadRequired": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "not-ready"
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "ready",
+          "status",
+          "actor",
+          "harness",
+          "role",
+          "mode",
+          "modeReason",
+          "running",
+          "configRevision",
+          "publishedRevisions",
+          "reloadRequired",
+          "identity",
+          "checks",
+          "limits"
+        ],
+        "type": "object"
+      },
+      "retry": "safe"
+    },
+    {
+      "audience": [
         "local-operator",
         "bound-agent"
       ],
@@ -110499,6 +111578,337 @@
           }
         }
       ]
+    },
+    {
+      "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_NOT_FOUND",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "INVALID_AGENT_NAME",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_ERROR",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "USER_AGENT_IMMUTABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_HOME_ACCESS_FAILED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_RUNTIME_CONTEXT_STALE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_MIGRATION_BUSY",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_LAUNCH_IN_PROGRESS",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_VERSION_CONFLICT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "GIT_AUTHOR_UNRESOLVED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "CODEX_CREDENTIAL_MISSING",
+          "dataSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "remediation": {
+                "additionalProperties": {
+                  "type": [
+                    "object",
+                    "array",
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "reason",
+              "path",
+              "remediation"
+            ],
+            "type": "object"
+          },
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "never",
+        "scope": "agent-launch-preparation"
+      },
+      "ipcParamValidation": "handler",
+      "mode": "unary",
+      "mutates": true,
+      "name": "agent.runtime-context",
+      "owner": "daemon.agent",
+      "paramsSchema": {
+        "additionalProperties": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "properties": {
+          "credentialPreflight": {
+            "type": "boolean"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "modelProvider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "harness"
+        ],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "maxProperties": 3,
+            "properties": {
+              "environment": {
+                "maxProperties": 0,
+                "type": "object"
+              },
+              "mode": {
+                "const": "legacy"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "properties": {
+              "mode": {
+                "const": "agent-home-p2"
+              }
+            },
+            "required": [
+              "authorityPrepared",
+              "actor",
+              "harness",
+              "configRevision",
+              "mappingVersion",
+              "projectionRoot",
+              "nativeRoot",
+              "sessionRoot",
+              "toolProfileId",
+              "notices",
+              "auth",
+              "sharedCredential"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "actor": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "auth": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "method": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "method",
+                  "revision"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "authorityPrepared": {
+            "type": "boolean"
+          },
+          "configRevision": {
+            "type": "string"
+          },
+          "environment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "harness": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "launchToken": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "mappingVersion": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "legacy",
+              "agent-home-p2"
+            ]
+          },
+          "nativeRoot": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "notices": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "actor": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "actor",
+                "message",
+                "path"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "ok": {
+            "const": true
+          },
+          "projectionRoot": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sessionRoot": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sharedCredential": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "authMode": {
+                    "const": "native-shared-link"
+                  },
+                  "nativePath": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "targetPath": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "authMode",
+                  "nativePath",
+                  "targetPath"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "toolProfileId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "mode",
+          "environment"
+        ],
+        "type": "object"
+      },
+      "retry": "never"
     },
     {
       "audience": [

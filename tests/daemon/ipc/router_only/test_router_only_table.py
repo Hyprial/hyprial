@@ -27,7 +27,7 @@ MIGRATION_SOURCE = inspect.getsource(agents_migration)
 
 def test_the_table_names_are_not_declarations() -> None:
     assert ROUTER_ONLY_METHODS.isdisjoint(REGISTERED)
-    assert len(ROUTER_ONLY_METHODS) == 60
+    assert len(ROUTER_ONLY_METHODS) == 56
 
 
 def test_the_table_equals_the_branches_of_the_router() -> None:
