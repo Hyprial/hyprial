@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any, TypeVar
 
 
@@ -19,6 +19,47 @@ def assert_flat(at_n: T, at_4n: T) -> None:
     """Require identical deterministic work at N and 4N."""
 
     assert at_n == at_4n, (at_n, at_4n)
+
+
+def classify_growth(sizes: Sequence[int], values: Sequence[int]) -> str:
+    """Name deterministic work growth over at least three fixture sizes.
+
+    The classification exists to reject work proportional to the fixture.
+    Tests assert the expected class instead of comparing a fixed number.
+    """
+
+    if len(sizes) != len(values) or len(sizes) < 3:
+        raise ValueError("growth needs at least three paired sizes and values")
+    if any(size <= 0 for size in sizes):
+        raise ValueError("sizes must be positive")
+    if all(value == values[0] for value in values):
+        return "constant"
+    if any(later < earlier for earlier, later in zip(values, values[1:])):
+        return "other"
+    increments = [later - earlier for earlier, later in zip(values, values[1:])]
+    if all(later <= earlier for earlier, later in zip(increments, increments[1:])):
+        return "logarithmic"
+    ratios = [value / size for value, size in zip(values, sizes)]
+    spread = max(ratios) - min(ratios)
+    reference = max(abs(max(ratios)), abs(min(ratios)), 1e-12)
+    if spread <= reference * 0.25:
+        return "linear"
+    return "other"
+
+
+def assert_work_growth(
+    measure: Callable[[int], int],
+    sizes: Sequence[int] = (40, 160, 640),
+    *,
+    expected: str = "constant",
+    label: str = "work",
+) -> tuple[int, ...]:
+    """Measure deterministic work at each size and assert its growth class."""
+
+    values = tuple(int(measure(size)) for size in sizes)
+    observed = classify_growth(sizes, values)
+    assert observed == expected, (label, tuple(sizes), values, observed)
+    return values
 
 
 class CountingCursor:
@@ -57,11 +98,13 @@ class CountingConnection:
     def __init__(self, connection: Any) -> None:
         self._connection = connection
         self.rows_fetched = 0
+        self.statements = 0
 
     def _add(self, amount: int) -> None:
         self.rows_fetched += amount
 
     def execute(self, *args: Any, **kwargs: Any) -> CountingCursor:
+        self.statements += 1
         return CountingCursor(
             self._connection.execute(*args, **kwargs), self._add
         )

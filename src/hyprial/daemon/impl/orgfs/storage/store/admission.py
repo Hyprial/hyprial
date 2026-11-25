@@ -691,13 +691,19 @@ class StoreAdmission(StorePending, StoreLegacyReceivers):
             # predecessor advances this document instead.
             self._import_docs.pop(doc_id, None)
             return ImportResult("pending", "pending-dependency")
+        origin_node = str(value["origin"]["node"])
         member_add_candidates = self._member_add_candidates(value)
         try:
             with self._db:
                 self._db.execute(
-                    "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, committed_at, broadcast_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (writer, seq, doc_id, envelope, version, _now(), _now()),
+                    "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, origin_node, committed_at, broadcast_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (writer, seq, doc_id, envelope, version, origin_node, _now(), _now()),
                 )
+                if origin_node == self.node_id:
+                    self._db.execute(
+                        "UPDATE commit_stats SET local_total = local_total + 1 "
+                        "WHERE singleton = 1"
+                    )
                 self._write_member_add_candidates(member_add_candidates)
         except sqlite3.IntegrityError:
             self._import_docs.pop(doc_id, None)
@@ -705,6 +711,8 @@ class StoreAdmission(StorePending, StoreLegacyReceivers):
         except BaseException:
             self._import_docs.pop(doc_id, None)
             raise
+        if origin_node == self.node_id:
+            self._note_covered_insert(doc_id, version)
         doc.apply_update(update)
         self._sync_doc_caches(doc_id, update, import_doc=working)
         self._mark_persist((doc_id,))
