@@ -125,9 +125,11 @@ HYPRIAL_NETWORK_ISOLATED=1 uv run --python 3.12 pytest -q \
 ## G4 · dev CI 稳定性闭环与残余问题归属
 
 **状态：执行中，尚未验收（2026-11-14）。** 用户已批准本任务方案并要求持续推进；
-[#2727](https://code.hyprial.com/HyprialOS/hyprial/pulls/2727) 已进入 dev，当前整合基线为
+[#2727](https://code.hyprial.com/HyprialOS/hyprial/pulls/2727) 已进入 dev，目标建立时整合基线为
 `2a494edccdee0135b0a4dbb6fd7f7cf755b803f0`。旧基线的红绿证据保留其原 SHA，
-不能改写为新基线实测。设计见 [WIP #2764](https://code.hyprial.com/HyprialOS/hyprial/pulls/2764)
+不能改写为新基线实测。随后[#2761](https://code.hyprial.com/HyprialOS/hyprial/pulls/2761)使dev前进到
+`28d75429e671ae95f7643315b384b56904bcdd58`，后续接手时继续读取最新head。
+设计见 [#2764](https://code.hyprial.com/HyprialOS/hyprial/pulls/2764)
 与 [CI 稳定化设计](docs/design/dev-ci-stability-2026-11-14.md)；
 原始现场与后续追加记录见 [本轮证据](docs/notes/dev-ci-stability-2026-11-14/README.md)。
 
@@ -151,7 +153,7 @@ teardown、freshness/Git 环境依赖、isolated contracts、原生引擎及 3.1
    uv run --no-project --python 3.12 python scripts/ci/check_module_boundaries.py
    ```
 
-   任何代码变更先跑精确焦点；`src/hyprial/` 变化按 AGENTS 追加：
+   任何代码变更先跑精确焦点；本地验证纪律仍按未变的AGENTS，`src/hyprial/` 变化追加：
 
    ```bash
    uv run --with libcst==1.9.0 pytest tests/
@@ -163,6 +165,11 @@ teardown、freshness/Git 环境依赖、isolated contracts、原生引擎及 3.1
    ```bash
    ./contract/run-all.sh --isolated-only
    ```
+
+   本地AGENTS与实际CI选路须分开记录：#2761已使`tests/**/*.py`、`pyproject.toml`、`uv.lock`、
+   `pytest_impact.py`、`pytest-durations.json`及`gate-python.yml`变化也选择Python；
+   变更测试模块若无其他测试引用，PR可只跑该模块。此前#2757的pytest全skip不能算验证。
+   判断每次覆盖范围要读实际plan/selection与终态；最终五次仍显式full，不沿用PR子集。
 
 3. Sol 独立检查最终 diff/精确 head、关键红绿、负例和禁区；Astra协调跨模块权威边界与
    共享 fixture 的唯一 owner；Terra完成小 PR施工。相关失败必须修复或明确 BLOCKED，
