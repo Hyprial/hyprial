@@ -11204,7 +11204,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Soft-delete a node.",
+      "help": "Move a node to the trash, or delete it for good with --permanent.",
       "params": [
         {
           "opts": [
@@ -11238,6 +11238,24 @@
           "nargs": 1,
           "metavar": null,
           "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--permanent"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Delete for good instead of moving the node to the trash.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
           "choices": [],
           "min": null,
           "max": null
@@ -11869,7 +11887,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Show online holders and unconfirmed local commits.",
+      "help": "Show whether the space is synced, online holders, pending content and rejected updates.",
       "params": [
         {
           "opts": [
@@ -12289,7 +12307,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Restore a node as a new operation.",
+      "help": "Restore a removed node from the trash as a new operation.",
       "params": [
         {
           "opts": [
@@ -12320,24 +12338,6 @@
           "hidden": false,
           "type": "str",
           "help": "Path, id:<nodeId>, or orgfs: URI.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "version"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Version to restore.",
           "nargs": 1,
           "metavar": null,
           "default": null,

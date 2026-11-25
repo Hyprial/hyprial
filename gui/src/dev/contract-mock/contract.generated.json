@@ -11446,8 +11446,7 @@
             },
             "directoryPending": {
               "group-hyprial-dev": {
-                "contentPending": [],
-                "parkedCommits": null
+                "contentPending": []
               }
             },
             "mappedPeers": [
@@ -12141,7 +12140,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12204,7 +12203,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12300,7 +12299,7 @@
             "size": 24,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12490,7 +12489,7 @@
       "echo": {},
       "mutates": true,
       "gaps": {
-        "empty": "A local/remote join returns SpaceInfo; no holder is a typed error, not an empty success."
+        "empty": "A local/remote join returns SpaceInfo; an unknown space is a typed error, not an empty success."
       },
       "examples": [
         {
@@ -12510,11 +12509,12 @@
         {
           "description": "The producer handles a nonexistent local space according to its actual lookup path.",
           "error": {
-            "code": "no-holder-online",
+            "code": "unknown-space",
             "data": {
+              "reason": "not-a-uuid",
               "spaceId": "missing-space"
             },
-            "message": "no-holder-online: no-holder-online"
+            "message": "unknown-space: unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12608,7 +12608,7 @@
                 "size": 12,
                 "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                 "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+                "version": "orgfs-version-1"
               }
             ]
           }
@@ -12810,7 +12810,7 @@
             "size": null,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12973,7 +12973,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6Mn0"
+            "version": "orgfs-version-2"
           }
         },
         {
@@ -13033,7 +13033,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6Mn0"
+            "version": "orgfs-version-2"
           }
         },
         {
@@ -13128,10 +13128,10 @@
               "size": 12,
               "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
               "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-              "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+              "version": "orgfs-version-1"
             },
             "text": "hello world!",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -13170,10 +13170,10 @@
               "size": 0,
               "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
               "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-              "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+              "version": "orgfs-version-1"
             },
             "text": "",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -13220,6 +13220,11 @@
           },
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
+            "permanent": true,
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
+          },
+          {
+            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
             "spaceId": "missing-space"
           },
           {
@@ -13233,6 +13238,9 @@
           },
           "path": {
             "type": "string"
+          },
+          "permanent": {
+            "type": "boolean"
           },
           "spaceId": {
             "minLength": 1,
@@ -13257,6 +13265,19 @@
           "name": "producer-success",
           "params": {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
+          },
+          "result": {
+            "ok": true
+          }
+        },
+        {
+          "description": "A permanent removal deletes the node instead of moving it to the trash.",
+          "kind": "success",
+          "name": "permanent",
+          "params": {
+            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
+            "permanent": true,
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "result": {
@@ -13468,7 +13489,7 @@
                 "size": 12,
                 "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                 "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+                "version": "orgfs-version-1"
               }
             ]
           }
@@ -13522,23 +13543,15 @@
         "examples": [
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "missing-space"
           },
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "missing-version"
-          },
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           }
         ],
         "properties": {
@@ -13552,22 +13565,15 @@
           "spaceId": {
             "minLength": 1,
             "type": "string"
-          },
-          "version": {
-            "minLength": 1,
-            "type": "string"
           }
         },
         "required": [
           "spaceId",
-          "node",
-          "version"
+          "node"
         ],
         "type": "object"
       },
-      "selectors": [
-        "version"
-      ],
+      "selectors": [],
       "echo": {},
       "mutates": true,
       "gaps": {},
@@ -13578,8 +13584,7 @@
           "name": "producer-success",
           "params": {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "result": {
             "blob_hash": null,
@@ -13596,7 +13601,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6M30"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -13612,25 +13617,7 @@
           "name": "missing-space",
           "params": {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          }
-        },
-        {
-          "description": "The selected node has no snapshot at this version.",
-          "error": {
-            "code": "unknown-doc",
-            "data": {
-              "version": "missing-version"
-            },
-            "message": "unknown-doc: unknown-doc: unknown-doc"
-          },
-          "kind": "domain-error",
-          "name": "missing-version",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "missing-version"
+            "spaceId": "missing-space"
           }
         },
         {
@@ -13639,8 +13626,7 @@
           "name": "empty-document",
           "params": {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "reason": "A zero-byte text document remains legal when moved or restored; NodeInfo reports size=0.",
           "result": {
@@ -13658,7 +13644,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6M30"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -13907,7 +13893,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -13983,18 +13969,18 @@
       },
       "examples": [
         {
-          "description": "producer: daemon/impl/orgfs/composition/content.py:RuntimeContent.status -> FacadeContent.status (fresh durable space plus one write, no remote holders); serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
+          "description": "producer: daemon/impl/orgfs/composition/state/content.py:StateContent.status -> StateSpaces.status (fresh durable space plus one write, no remote holders); serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
           "kind": "success",
           "name": "producer-success",
           "params": {
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "result": {
-            "durable_holders_seen": [],
+            "content_pending": 0,
             "holders_online": [],
-            "parked_commits": [],
+            "rejected_updates": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "unconfirmed_commits": 5
+            "synced": null
           }
         },
         {
@@ -14087,7 +14073,7 @@
                 "size": 12,
                 "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                 "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                "version": "eyJjb250ZW50RnJvbnRpZXIiOjIsInRyZWVGcm9udGllciI6Mn0"
+                "version": "orgfs-version-2"
               }
             ]
           }
@@ -14144,7 +14130,7 @@
           },
           {
             "glob": "*",
-            "sinceVersion": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
+            "sinceVersion": "orgfs-version-1",
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           {
@@ -14203,7 +14189,7 @@
                   "size": 12,
                   "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                   "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                  "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+                  "version": "orgfs-version-1"
                 },
                 "oldPath": null,
                 "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
@@ -14227,7 +14213,7 @@
           "name": "producer-empty",
           "params": {
             "glob": "*",
-            "sinceVersion": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
+            "sinceVersion": "orgfs-version-1",
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "reason": "the cursor already includes the sole creation event",
@@ -14374,7 +14360,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -14434,7 +14420,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -14461,7 +14447,7 @@
             "size": 24,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {

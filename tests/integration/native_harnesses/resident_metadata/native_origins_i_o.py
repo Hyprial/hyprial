@@ -398,4 +398,5 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/orgfs/composition/state/runtime.py": ("resident", ("new-module: OrgFS state runtime (orgfs-minimal D2)",)),
     "daemon/impl/orgfs/composition/state/stores.py": ("resident", ("new-module: OrgFS state runtime (orgfs-minimal D2)",)),
     "daemon/impl/orgfs/composition/state/sync.py": ("resident", ("new-module: OrgFS state runtime (orgfs-minimal D2)",)),
+    "daemon/impl/orgfs/storage/vocabulary.py": ("resident", ("new-module: OrgFS storage vocabulary moved out of the deleted journal store (orgfs-minimal S)",)),
 }
