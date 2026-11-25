@@ -4,7 +4,9 @@
 > hyprial 不读旧格式的 OrgFS 空间，也不改动它们。旧数据要带过来，只能按本指南在升级**前**
 > 用旧版本导出、升级**后**用新版本重新写入。CHANGELOG 中 OrgFS 精简实现一条链接到这里。
 >
-> 标注“未验证”的地方没有经过实测，执行时以实际输出为准，结果与本文不符时停下来记录，不要猜。
+> 本指南的步骤在三台隔离的测试节点上按原文实际走过一遍（旧版本导出、升级、新建并写入、校验、
+> 重新邀请、checkout、删除旧目录、回退）。仍标注“未验证”的地方没有经过实测，执行时以实际输出
+> 为准，结果与本文不符时停下来记录，不要猜。
 
 ## 1. 先弄清几个词
 
@@ -60,7 +62,7 @@ ls "$STATE"/orgfs/spaces/*/journal.sqlite3 2>/dev/null
     `content_pending`、`rejected_updates`；原来的 `unconfirmed_commits`、`durable_holders_seen`
     等字段删除。`org network` 结果里 `directoryPending` 的 `parkedCommits` 字段删除。
 - **保留的**：本机空间清除 `org fs purge run SPACE [--yes]` 保留（但它对旧格式空间同样返回
-  `ORGFS_LAYOUT_UNSUPPORTED`，不能用来删旧目录，见第 8 节）。
+  `ORGFS_LAYOUT_UNSUPPORTED`，不能用来删旧目录，见第 10 节）。
 
 ## 4. 不会带过来的东西
 
@@ -80,7 +82,8 @@ ls "$STATE"/orgfs/spaces/*/journal.sqlite3 2>/dev/null
 
 在一份约 2.6 万个文件的真实数据克隆上演练过这一流程（进程内调用与 CLI 相同的 daemon 请求，
 不是逐条运行 CLI）：普通空间的全部可导出文件逐字节一致、路径与目录集合一致；新进程打开 20 个
-空间不到 1 秒。逐条运行 CLI 的耗时**未验证**，大空间请按批量脚本估算。
+空间不到 1 秒。逐条运行 CLI 时每条命令约 0.18 秒（主要是进程启动），2.6 万个小文件仅导出一项就
+要一个多小时，写入另计；大空间请预留小时级的窗口。
 
 ## 5. 升级前：用旧版本导出
 
@@ -100,6 +103,7 @@ jq -r '.spaces[] | "\(.space_id)\t\(.name)\t\(.owner)"' spaces.json
 升级前还要整体备份 OrgFS 数据目录，它是回退（第 9 节）的唯一依据。先停 daemon，再复制：
 
 ```sh
+STATE="${HARNESS_STATE_DIR:-$HYPRIAL_HOME/state}"; : "${STATE:?}"
 hyprial daemon stop
 cp -a "$STATE/orgfs" "$HOME/orgfs-backup-$(date +%Y%m%d)"
 hyprial daemon start
@@ -119,8 +123,9 @@ hyprial org fs trash list "$SPACE" --json > "trash-$SPACE.json"
 
 `org fs ls` 只列一层，需要脚本逐层遍历。下面的脚本把每个节点记进 `nodes-<SPACE>.tsv`（种类、
 路径、节点 ID），并把每个文件导出到 `export/<SPACE>/<路径>`。字段名 `.nodes[]`、`.kind`、
-`.path`、`.node_id` 按旧版本的请求契约写出，脚本本身**未验证**：先对一个小空间运行，核对输出
-再处理大空间。本指南的脚本都按 bash 写。
+`.path`、`.node_id` 在旧版本与新版本上都已实测可用。先对一个小空间运行，核对输出再处理大空间。
+脚本只导出文件，不在 `export/` 下建空目录；空目录记录在 `nodes-<SPACE>.tsv` 的 `dir` 行里，由
+第 6.2 节重建。本指南的脚本都按 bash 写。
 
 ```sh
 SPACE=<旧空间 ID>
@@ -157,14 +162,16 @@ walk ""
 ## 6. 升级后：新建空间并写入
 
 同一组织的所有节点都升级完成后再做。对旧空间的读写都返回 `ORGFS_LAYOUT_UNSUPPORTED`，这是
-预期的。旧空间是否还出现在 `org fs space list` 里，**未验证**；以第 5.1 节的 `spaces.json`
-为准。
+预期的。升级后旧空间**不再出现**在 `org fs space list` 里，旧组织也不出现在 `org list` 里；
+要处理哪些空间以第 5.1 节的 `spaces.json` 为准。升级后如果看到一个名为 `hyprial-home` 的新空间，
+它是本机收件通知用的，不是遗漏的旧空间。
 
 ### 6.1 确认旧空间被拒绝
 
 ```sh
 hyprial org fs ls <旧空间 ID> --json
-# 预期：ok:false，code ORGFS_LAYOUT_UNSUPPORTED，data.reason legacy-journal
+# 预期：退出码 1，ok:false，code ORGFS_LAYOUT_UNSUPPORTED，data.reason legacy-journal，
+# data.guide 指向本指南。不带 --json 时输出一行以 "hyprial: ORGFS_LAYOUT_UNSUPPORTED:" 开头的说明。
 ```
 
 ### 6.2 新建空间与目录
@@ -179,7 +186,7 @@ awk -F'\t' '$1=="dir"{print $2}' "nodes-$OLD.tsv" | sort |
   while IFS= read -r dir; do hyprial org fs mkdir "$NEW" "$dir" --json < /dev/null > /dev/null; done
 ```
 
-`space create --json` 输出中新空间 ID 的字段名按旧版本代码推断为 `space_id`，**未验证**。
+`space create --json` 输出中新空间 ID 的字段名是 `space_id`。
 `sort` 让父目录排在子目录之前。
 
 ### 6.3 写入文件：文本用 `write`，二进制用 `import`
@@ -208,30 +215,38 @@ done < "nodes-$OLD.tsv"
 注意命令行参数的长度限制：
 
 - 单个文本文档的上限是 4 MiB。
-- macOS 上全部参数与环境变量合计不能超过 1 MiB；Linux 上**单个参数**不能超过 128 KiB。
-  超过的文本无法这样经命令行写入。本指南没有经过验证的替代办法；这类文件可以先用
-  `org fs import` 存成二进制（内容不丢，但不可编辑），并在迁移记录里列出。
+- macOS 上全部参数与环境变量合计不能超过 1 MiB；Linux 上**单个参数**不能超过 128 KiB
+  （131071 字节可以，131072 字节报 `Argument list too long`）。超过的文本无法这样经命令行
+  写入。`org fs write` 不读标准输入，也没有从文件读正文的参数（把 `-` 当正文传会写出一个
+  内容为 `-` 的文档）。这类文件只能先用 `org fs import` 存成二进制（内容不丢，但不可编辑），
+  并在迁移记录里列出。
 - 二进制文件的导入上限是 64 MiB。
 
 ### 6.4 重新邀请成员
 
-按留底的成员表逐个邀请（跳过你自己）。默认会给对方发一条邀请消息；对方在自己的节点上加入：
+按留底的成员表逐个邀请，跳过你自己（新空间此时只有创建者一个成员）。成员表里的 `user` 带
+`user:` 前缀，原样传给邀请命令。对方在自己的节点上加入：
 
 ```sh
-jq -r '.members[] | "\(.user)\t\(.mode)"' "members-$OLD.json" |
+ME=$(hyprial org fs member list "$NEW" --json | jq -r '.members[0].user')
+jq -r --arg me "$ME" '.members[] | select(.user != $me) | "\(.user)\t\(.mode)"' "members-$OLD.json" |
   while IFS=$'\t' read -r user mode; do
-    hyprial org fs member invite "$NEW" "$user" --mode "$mode" --json < /dev/null
+    hyprial org fs member invite "$NEW" "$user" --mode "$mode" --no-notify --json < /dev/null
   done
+hyprial org fs member list "$NEW" --json      # 以成员表为准，核对每个人与模式
 # 在成员自己的节点上：
 hyprial org fs space join <新空间 ID>
 ```
 
-成员重建没有经过实测（**未验证**）。原来的加入时间不会保留。
+这里用 `--no-notify`，新空间 ID 由你另行告知成员。不加它时，邀请命令会等对方节点的回执，实测
+在对方在线的情况下也可能返回 `ok:false`、`USER_DELIVERY_TIMEOUT` 和非零退出码，而成员其实已经
+加上（已知问题 KP-152）；所以无论哪种写法，都以 `member list` 的结果判断成功与否，不要以邀请
+命令的退出码判断。原来的加入时间不会保留。
 
 ### 6.5 重建 checkout 与更新引用
 
 - 原来开启过 checkout 的空间，按新空间 ID 重新开启：`hyprial org fs space checkout <新空间 ID> --enable`
-  （在新 ID 上重建 checkout 未经实测，**未验证**）。
+  。投影在 `<state>/orgfs/spaces/<新空间 ID>/checkout`，其中的文件与目录都是只读的。
 - 把 `space-map.tsv` 发给使用这些空间的人与 agent。凡是写着旧空间 ID 或旧 `orgfs:` URI 的
   地方（文档里的链接、脚本、agent 的配置）都要改成新 ID；节点 ID 也都变了，按路径重新解析：
   `hyprial org fs resolve <新空间 ID> "<路径>" --json`。
@@ -244,11 +259,11 @@ hyprial org fs space join <新空间 ID>
   `ORGFS_ACL_SPACE_EXTERNAL_MUTATION`；它们只由组织流程生成。迁移它们的内容**不受支持**。导出的
   文件只作留底。
 - **org 目录空间**（名字就是组织名）不导入。设计上的做法是组织的各节点在升级后重新加入组织，
-  由组织流程重新生成目录空间。本指南**没有经过验证的组织重建步骤**。可能的做法（**未验证**）：
-  owner 在升级后的节点上重新建立组织（`hyprial org create <组织名>`），再给每个成员生成邀请
-  （`hyprial org invite <组织名> --user <用户>`），成员用 `hyprial org join <邀请链接>` 加入。
-  旧目录空间仍在磁盘上时同名组织能否重建，未验证；不能时改用新的组织名。执行前与组织 owner
-  确认窗口，并把实际结果记下来。
+  由组织流程重新生成目录空间。做法：owner 在升级后的节点上重新建立组织
+  （`hyprial org create <组织名>`），再给每个成员生成邀请（`hyprial org invite <组织名> --user <用户>`），
+  成员用 `hyprial org join <邀请链接>` 加入。旧目录空间仍在磁盘上时可以用同一个组织名重建，
+  得到新的目录空间与 ACL 空间。这一步在测试节点上走通过，但测试环境的登录身份是测试替身；
+  在真实登录身份下执行前与组织 owner 确认窗口，并把实际结果记下来。
 
 ## 8. 校验
 
@@ -268,7 +283,16 @@ done < "nodes-$OLD.tsv"
 diff "sha256-old-$OLD.txt" "sha256-new-$OLD.txt" && echo "PASS $OLD"
 ```
 
-`diff` 没有输出即哈希与路径集合都一致。另外用 `org fs space status <新空间 ID> --json` 看
+`diff` 没有输出即文件的哈希与路径集合都一致。这一步只比较文件；空目录另行核对（这段核对脚本
+**未验证**，`resolve` 对目录路径的返回以实际输出为准）：
+
+```sh
+awk -F'\t' '$1=="dir"{print $2}' "nodes-$OLD.tsv" | while IFS= read -r path; do
+  hyprial org fs resolve "$NEW" "$path" --json < /dev/null > /dev/null || echo "missing dir: $path"
+done
+```
+
+另外用 `org fs space status <新空间 ID> --json` 看
 `content_pending` 为 0；有其他 holder 在线时 `synced` 应为 `true`，没有任何 holder 在线时为
 `null`。
 
@@ -281,6 +305,7 @@ diff "sha256-old-$OLD.txt" "sha256-new-$OLD.txt" && echo "PASS $OLD"
   3. 把当前的 OrgFS 目录移开，换回升级前的备份：
 
      ```sh
+     STATE="${HARNESS_STATE_DIR:-$HYPRIAL_HOME/state}"; : "${STATE:?}"
      mv "$STATE/orgfs" "$STATE/orgfs.after-upgrade-$(date +%Y%m%d)"
      cp -a "$HOME/orgfs-backup-<日期>" "$STATE/orgfs"
      ```
@@ -288,8 +313,10 @@ diff "sha256-old-$OLD.txt" "sha256-new-$OLD.txt" && echo "PASS $OLD"
   4. 按原来的安装方式装回升级前的版本，再 `hyprial daemon start`。
   5. 同一组织的其他节点也要一起回退，否则新旧节点之间不同步。
 
-  旧版本能否直接打开同时含有新格式空间目录的 `orgfs` 目录，**未验证**，所以这里整体换回备份，
-  不要把新旧目录混放。
+  在测试数据上，旧版本能启动并忽略混放其中的新格式空间目录；但二进制内容的存储与引用计数是
+  新旧共用的，混放后的引用计数没有评估，所以这里仍然整体换回备份，不要把新旧目录混放。
+  移开的 `orgfs.after-upgrade-<日期>` 里如果有开过 checkout 的空间，其中的目录是只读的，删除
+  前先对这一个目录执行 `chmod -R u+w`。
 
 ## 10. 什么时候可以手工删除旧目录
 
@@ -301,16 +328,22 @@ diff "sha256-old-$OLD.txt" "sha256-new-$OLD.txt" && echo "PASS $OLD"
 3. 确定不再回退，且第 5.1 节的备份已另存到别处。
 
 ```sh
+STATE="${HARNESS_STATE_DIR:-$HYPRIAL_HOME/state}"; : "${STATE:?}"
 hyprial daemon stop
 for d in "$STATE"/orgfs/spaces/*/; do
   [ -f "$d/journal.sqlite3" ] && echo "$d"
 done
 # 逐个核对上面列出的目录确实是要删的旧空间，再用字面路径删除：
-rm -rf "$STATE/orgfs/spaces/<旧空间 ID>"
+rm -rf "${STATE:?}/orgfs/spaces/<旧空间 ID>"
 hyprial daemon start
 ```
 
 只删 `spaces/` 下的旧空间目录。`$STATE/orgfs/blobs/` 与 `blob-refs.sqlite3` 由新空间共用，
-不要删。删掉旧空间目录后，只被旧空间引用的二进制内容是否会被回收，**未验证**。
+不要删。删除之后，旧空间 ID 返回 `unknown-space`，不再是 `ORGFS_LAYOUT_UNSUPPORTED`，这是预期的。
+开过 checkout 的旧空间目录里有只读的目录，`rm -rf` 报 `Permission denied` 时先对这一个目录
+执行 `chmod -R u+w "${STATE:?}/orgfs/spaces/<旧空间 ID>"` 再删。
+
+删掉旧空间目录后，只被旧空间引用的二进制内容**不会被回收**：它们留在 `blobs/` 里，
+`blob-refs.sqlite3` 里也留着已删空间的记录，目前没有命令可以清理。这只占磁盘空间，不影响使用。
 `$STATE/orgfs/` 下的 `replica/`、`purge-intents/`、`deleted-orgs/` 新版本不再使用，删除它们
-是否安全没有评估，**未验证**，留着不影响新版本运行。
+是否安全没有评估，**未验证**（测试数据里没有这些目录），留着不影响新版本运行。
