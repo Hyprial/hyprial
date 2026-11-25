@@ -51,6 +51,9 @@
  *   AUTHORITY_REQUIRED 不断言删除结果：竞争或续删时组织可能已经删除，只提示列表已刷新、仍在列表中再删。
  * - OrgFS 文件动作走 orgfs.write/mkdir/move/remove/stat/restore（内容清除 2026-11-25 D4a 退场）；
  *   保存使用 orgfs.ls 学到的原始版本串，版本未知或已变化时拒绝保存。
+ * - 2026-11-25（orgfs-minimal G）：恢复只发一次 `orgfs.restore(spaceId, node)`，文件与文件夹相同；
+ *   文件夹的后代由 daemon 按删除批次带回（设计 §6），更早单独删除的子项留在回收站。
+ *   回收站快照只记录节点 id，用来在发请求前拒绝已不在列表里的条目（ORG_TRASH_UNKNOWN）。
  * - 2026-11-22（G1）：移除 link.*（link.add/link.drop/link.list）调用及 addLink/revokeLink 网关成员。
  * - claimInvite / renameOrg / 模板 / 配置采信 / 迁移 / Agent-org 等
  *   没有 daemon 方法的动作不在网关里定义，对应控件不渲染。
@@ -250,14 +253,6 @@ interface LoadedContent {
   readonly version: string;
 }
 
-interface TrashMeta {
-  readonly version: string;
-  readonly kind: 'blob' | 'dir' | 'doc';
-  readonly blobHash: string | null;
-  /** 目录恢复时用路径找出同次删除的子项，选择删除前快照。 */
-  readonly path: string;
-}
-
 function fileEntry(node: OrgfsNodeView, loaded?: LoadedContent): OrgFileEntry {
   return {
     path: node.path,
@@ -393,7 +388,7 @@ export function createOrgLiveSource(client: OrgBackendClient, access?: MethodAcc
       const orgfs = createOrgfsRequestApi(client);
       const spaceByOrg = new Map<string, string>();
       const rawVersions = new Map<string, string>();
-      const trashMeta = new Map<string, TrashMeta>();
+      const trashKeys = new Set<string>();
       const agentsByOrg = new Map<string, readonly OrgAgentRecord[] | null>();
       // Per-org generation for switch-triggered detail reads; a late response
       // from an older selection must not overwrite a newer one.
@@ -402,16 +397,16 @@ export function createOrgLiveSource(client: OrgBackendClient, access?: MethodAcc
       interface DetailRead {
         readonly detail: OrgDetail;
         readonly versions: ReadonlyMap<string, string>;
-        readonly trash: ReadonlyMap<string, TrashMeta>;
+        readonly trash: ReadonlySet<string>;
       }
 
       /** 只提交被接受的那次读取，避免旧响应污染版本/回收站元数据。 */
       function commitAux(spaceId: string | null, read: DetailRead): void {
         if (spaceId !== null) {
-          for (const key of [...trashMeta.keys()]) {
-            if (key.startsWith(`${spaceId}:`)) trashMeta.delete(key);
+          for (const key of [...trashKeys]) {
+            if (key.startsWith(`${spaceId}:`)) trashKeys.delete(key);
           }
-          for (const [key, value] of read.trash) trashMeta.set(key, value);
+          for (const key of read.trash) trashKeys.add(key);
         }
         for (const [key, value] of read.versions) rawVersions.set(key, value);
       }
@@ -420,7 +415,7 @@ export function createOrgLiveSource(client: OrgBackendClient, access?: MethodAcc
       async function loadDetail(org: string, agents: readonly OrgAgentRecord[] | null): Promise<DetailRead> {
         const spaceId = spaceByOrg.get(org) ?? null;
         const versions = new Map<string, string>();
-        const trashEntries = new Map<string, TrashMeta>();
+        const trashEntries = new Set<string>();
         const [networkR, hostsR, spacesR, membersR, statusR, nodesR, trashR] =
           await Promise.allSettled([
             api.network(org),
@@ -442,14 +437,7 @@ export function createOrgLiveSource(client: OrgBackendClient, access?: MethodAcc
           for (const node of nodes) {
             versions.set(`${spaceId}:${node.path}`, node.version);
           }
-          for (const node of trash) {
-            trashEntries.set(`${spaceId}:${node.node_id}`, {
-              version: node.version,
-              kind: node.kind,
-              blobHash: node.blob_hash,
-              path: node.path,
-            });
-          }
+          for (const node of trash) trashEntries.add(`${spaceId}:${node.node_id}`);
           // Bound the eager text load; later entries stay unloaded and the
           // editor refuses to save them until a refresh/read succeeds.
           await Promise.all(
@@ -860,23 +848,15 @@ export function createOrgLiveSource(client: OrgBackendClient, access?: MethodAcc
           return { kind: 'ok', value: undefined };
         },
         async restoreEntry(orgId, spaceId, trashId) {
-          const meta = trashMeta.get(`${spaceId}:${trashId}`);
-          if (meta === undefined) {
+          if (!trashKeys.has(`${spaceId}:${trashId}`)) {
             return {
               kind: 'failed',
               code: 'ORG_TRASH_UNKNOWN',
               message: '回收站信息已变化，请刷新后再恢复。',
             };
           }
-          if (meta.kind === 'dir') {
-            return {
-              kind: 'failed',
-              code: 'ORG_FOLDER_RESTORE_UNSUPPORTED',
-              message: ORG_COPY.folderRestoreUnsupported,
-            };
-          }
           try {
-            await orgfs.restore(spaceId, nodeRef(trashId), meta.version, false);
+            await orgfs.restore(spaceId, nodeRef(trashId));
           } catch (error) {
             return writeFailure(error);
           }

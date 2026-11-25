@@ -3,7 +3,6 @@ import userEvent from '@testing-library/user-event';
 import { FixtureApp } from '../../../src/dev/FixtureApp';
 import { OrgDomainProvider } from '../../../src/features/org/impl/domain/context';
 import type { OrgRequestPort } from '../../../src/features/org/impl/api/org-request-api';
-import { ORG_COPY } from '../../../src/features/org/impl/domain/copy';
 import { createOrgLiveSourceForPort } from '../../support/org-backend';
 import { openOrgTab, openRail, orgLive, renderOrgScenario, stubRadixPointerApis } from './org-render';
 
@@ -35,20 +34,24 @@ function folderNode(id: string, path: string, kind: 'dir' | 'doc', version = 'de
 }
 
 /**
- * 目录恢复的可见点击场景：d1 是文件夹，c1 是同一删除批次的子项。
- * OrgFS 不再保留版本历史，无法确认删除前哪些子项仍存在，目录恢复不发出写请求。
+ * 目录恢复的可见点击场景：d1 是文件夹，c1 与它同一删除批次，e1 在文件夹之前已单独删除。
+ * 假 daemon 按设计 §6 的 `restore(node, recursive=True)` 恢复同批次的后代；GUI 只发出一次
+ * 只带节点的 `orgfs.restore`，不自己挑选子项。
  */
 function folderRestorePort() {
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const folder = folderNode('d1', 'dir', 'dir');
   const keep = folderNode('c1', 'dir/keep.md', 'doc');
-  const nodes = new Map([folder, keep].map((item) => [item.node_id, item]));
+  const early = folderNode('e1', 'dir/early.md', 'doc', 'earlier-batch');
+  const nodes = new Map([folder, keep, early].map((item) => [item.node_id, item]));
   const deleted = new Map([
     ['d1', true],
     ['c1', true],
+    ['e1', true],
   ]);
   const contents = new Map([
     ['dir/keep.md', 'keep'],
+    ['dir/early.md', 'early'],
   ]);
   const base: Record<string, unknown> = {
     'org.list': () => {
@@ -79,10 +82,10 @@ function folderRestorePort() {
     },
     'orgfs.status': {
       space_id: SPACE,
-      durable_holders_seen: 1,
-      holders_online: 1,
-      parked_commits: 0,
-      unconfirmed_commits: 0,
+      synced: true,
+      holders_online: ['dev-1'],
+      content_pending: 0,
+      rejected_updates: 0,
     },
     'orgfs.ls': () => ({
       nodes: [...nodes.values()]
@@ -103,7 +106,14 @@ function folderRestorePort() {
       const item = nodes.get(id);
       if (!item) throw new Error(`unexpected restore ${id}`);
       deleted.set(id, false);
-      return { ...item, deleted: false, version: params.version };
+      if (item.kind === 'dir' && params.recursive !== false) {
+        for (const child of nodes.values()) {
+          if (child.path.startsWith(`${item.path}/`) && child.version === item.version) {
+            deleted.set(child.node_id, false);
+          }
+        }
+      }
+      return { ...item, deleted: false, version: 'after-restore' };
     },
   };
   const port: OrgRequestPort = {
@@ -339,7 +349,7 @@ describe('文件：文件与文件夹', () => {
     ).toBe('guides/');
   });
 
-  it('删除带子项的文件夹：确认说明连同子项进回收站；恢复文件夹时说明原因且不恢复', async () => {
+  it('删除带子项的文件夹：确认说明连同子项进回收站；恢复文件夹后子项一起回到原位置', async () => {
     const { user } = renderOrgScenario('owner');
     await openRail(user, '组织');
     await openOrgTab(user, '文件');
@@ -365,21 +375,30 @@ describe('文件：文件与文件夹', () => {
     await user.click(restore);
     const dialog = screen.getByRole('dialog', { name: '恢复 guides？' });
     await user.click(within(dialog).getByRole('button', { name: '恢复' }));
-    expect(await within(dialog).findByText(ORG_COPY.folderRestoreUnsupported)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'onboarding.md' })).not.toBeInTheDocument();
+    await vi.waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await user.click(within(groups).getByRole('tab', { name: '文件' }));
+    await user.click(await screen.findByRole('button', { name: /guides\/$/ }));
+    expect(screen.getByRole('region', { name: '文件夹 guides' })).toHaveTextContent('包含 1 项');
+    expect(screen.getByRole('button', { name: 'onboarding.md' })).toBeInTheDocument();
   });
 });
 
-describe('目录恢复：不再提供', () => {
-  it('恢复文件夹：说明无法确认删除前的子项，不发出恢复请求，回收站保持原样', async () => {
+describe('目录恢复', () => {
+  it('恢复文件夹：只发出一次带文件夹节点的 orgfs.restore；同批删除的子项回来，更早删除的留在回收站', async () => {
     const { port, calls, deleted } = folderRestorePort();
     const { user } = renderLiveOrg(port);
     const dialog = await confirmFolderRestore(user);
 
-    expect(await within(dialog).findByText(ORG_COPY.folderRestoreUnsupported)).toBeInTheDocument();
-    expect(restoreCalls(calls)).toHaveLength(0);
-    expect(deleted.get('d1')).toBe(true);
-    expect(deleted.get('c1')).toBe(true);
-    expect(screen.getByText('dir/keep.md')).toBeInTheDocument();
+    await vi.waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(restoreCalls(calls)).toEqual([
+      { method: 'orgfs.restore', params: { spaceId: SPACE, node: 'id:d1' } },
+    ]);
+    expect(calls.some((call) => call.method === 'orgfs.stat')).toBe(false);
+    expect(deleted.get('d1')).toBe(false);
+    expect(deleted.get('c1')).toBe(false);
+    expect(deleted.get('e1')).toBe(true);
+    const trash = screen.getByRole('list', { name: '回收站' });
+    await vi.waitFor(() => expect(within(trash).queryByText('dir/keep.md')).not.toBeInTheDocument());
+    expect(within(trash).getByText('dir/early.md')).toBeInTheDocument();
   });
 });

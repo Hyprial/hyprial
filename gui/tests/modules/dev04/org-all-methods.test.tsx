@@ -106,10 +106,10 @@ function fakePort(
     },
     'orgfs.status': {
       space_id: SPACE,
-      durable_holders_seen: 1,
-      holders_online: 1,
-      parked_commits: 0,
-      unconfirmed_commits: 0,
+      synced: true,
+      holders_online: ['dev-1'],
+      content_pending: 0,
+      rejected_updates: 0,
     },
     'orgfs.ls': { nodes: [node(V3)] },
     'orgfs.read': { text: 'hello', node: node(V3), version: V3 },
@@ -316,7 +316,7 @@ describe('org all-method gateway', () => {
     });
   });
 
-  it('restores a trash node with its own type and version, without stat', async () => {
+  it('restores a trash file by node only, without stat or a version', async () => {
     const version = 'dGVzdC12ZXJzaW9uLTc=';
     const port = fakePort({
       'orgfs.trash': { nodes: [{ ...node(version), deleted: true }] },
@@ -329,24 +329,39 @@ describe('org all-method gateway', () => {
       value: undefined,
     });
     expect(port.calls.some((call) => call.method === 'orgfs.stat')).toBe(false);
-    expect(port.calls).toContainEqual({
-      method: 'orgfs.restore',
-      params: { spaceId: SPACE, node: 'id:n1', version, recursive: false },
-    });
+    expect(port.calls.filter((call) => call.method === 'orgfs.restore')).toEqual([
+      { method: 'orgfs.restore', params: { spaceId: SPACE, node: 'id:n1' } },
+    ]);
   });
 
-  it('refuses a folder restore without calling orgfs.restore', async () => {
+  it('restores a folder with one orgfs.restore of the folder node; the daemon picks the children', async () => {
     const post = 'post-delete';
     const folder = trashNode(post, 'd1', 'dir', 'dir');
     const child = trashNode(post, 'c1', 'dir/keep.md', 'doc');
+    const earlier = trashNode('earlier-delete', 'e1', 'dir/early.md', 'doc');
     const port = fakePort({
-      'orgfs.trash': { nodes: [folder, child] },
+      'orgfs.trash': { nodes: [folder, child, earlier] },
+      'orgfs.restore': { ...folder, deleted: false, version: 'after-restore' },
     });
     const { gateway } = storeAndGateway(port);
     await gateway.refresh(ORG);
-    await expect(gateway.restoreEntry(ORG, SPACE, 'd1')).resolves.toMatchObject({
+    await expect(gateway.restoreEntry(ORG, SPACE, 'd1')).resolves.toEqual({
+      kind: 'ok',
+      value: undefined,
+    });
+    expect(port.calls.some((call) => call.method === 'orgfs.stat')).toBe(false);
+    expect(port.calls.filter((call) => call.method === 'orgfs.restore')).toEqual([
+      { method: 'orgfs.restore', params: { spaceId: SPACE, node: 'id:d1' } },
+    ]);
+  });
+
+  it('does not call orgfs.restore for a trash id it has not listed', async () => {
+    const port = fakePort({});
+    const { gateway } = storeAndGateway(port);
+    await gateway.refresh(ORG);
+    await expect(gateway.restoreEntry(ORG, SPACE, 'gone')).resolves.toMatchObject({
       kind: 'failed',
-      code: 'ORG_FOLDER_RESTORE_UNSUPPORTED',
+      code: 'ORG_TRASH_UNKNOWN',
     });
     expect(port.calls.some((call) => call.method === 'orgfs.restore')).toBe(false);
   });

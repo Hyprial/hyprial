@@ -38,8 +38,7 @@
 | `createEntry`（文件/文件夹） | `orgfs.write` / `orgfs.mkdir` |
 | `moveEntry` | `orgfs.move` |
 | `deleteEntry` | `orgfs.remove` |
-| `restoreEntry` | `orgfs.stat`（取版本）+ `orgfs.restore` |
-| `purgeEntry` | `orgfs.purge_plan` + `orgfs.purge` |
+| `restoreEntry`（文件/文件夹） | `orgfs.restore`（只传节点；文件夹由 daemon 带回同批删除的后代） |
 | 空间/目录/回收站快照 | `orgfs.spaces` / `orgfs.ls` / `orgfs.trash` |
 
 `read`、`watch`、`status`、`serve`、`checkout`、`members`、`invite`、

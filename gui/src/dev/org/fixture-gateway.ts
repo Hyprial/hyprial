@@ -655,22 +655,18 @@ export function createFixtureGateway(
       const detail = snapshot().details[orgId];
       const item = detail?.trash[spaceId]?.find((entry) => entry.id === trashId);
       if (!item) return { kind: 'failed', message: '回收站中已没有这一项，请刷新' };
-      if (item.kind === 'folder') {
-        return { kind: 'failed', code: 'ORG_FOLDER_RESTORE_UNSUPPORTED', message: ORG_COPY.folderRestoreUnsupported };
-      }
       if (detail?.files[spaceId]?.some((entry) => entry.path === item.path)) {
         return { kind: 'failed', message: '原位置已有同名文件，先移动或改名后再恢复。' };
       }
+      const base = {
+        path: item.path,
+        name: item.path.split('/').at(-1) ?? item.path,
+        modifiedBy: item.deletedBy,
+        modifiedAt: item.deletedAt,
+        version: 1,
+      };
       const restored = trashed.get(trashId) ?? [
-        {
-          path: item.path,
-          name: item.path.split('/').at(-1) ?? item.path,
-          kind: 'file' as const,
-          modifiedBy: item.deletedBy,
-          modifiedAt: item.deletedAt,
-          version: 1,
-          content: '',
-        },
+        item.kind === 'folder' ? { ...base, kind: 'folder' as const } : { ...base, kind: 'file' as const, content: '' },
       ];
       updateFiles(orgId, spaceId, (current) => [...current, ...restored]);
       updateDetail(orgId, (current) => ({

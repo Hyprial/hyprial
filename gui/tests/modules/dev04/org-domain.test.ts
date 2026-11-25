@@ -84,7 +84,7 @@ describe('组织领域：校验与选择器', () => {
   it('空间写操作按空间状态给出禁用原因', () => {
     expect(spaceWriteBlock(null)).toBe('该空间状态未确认，刷新后再操作。');
     expect(spaceWriteBlock({ id: 's', name: 's', health: 'history-anomaly', writable: true })).toBe(
-      '该空间的历史记录异常，写操作和历史暂不可用。',
+      '该空间的历史记录异常，等待空间所有者修复后才能写入。',
     );
     expect(spaceWriteBlock({ id: 's', name: 's', health: 'healthy', writable: false })).toBe(
       '你没有该空间的写权限。',
@@ -235,7 +235,7 @@ describe('组织开发数据网关（内存）', () => {
     expect(saved).toMatchObject({ version: 5, content: '我的修改' });
   });
 
-  it('文件：新建补齐上级目录，删除进回收站后文件可以恢复原位置，文件夹不恢复', async () => {
+  it('文件：新建补齐上级目录，删除进回收站后文件夹连同子项、文件都可以恢复原位置', async () => {
     const { store, gateway } = fixture();
     await gateway.createEntry(ORG_TEAM, 'space-docs', 'plans/q4/roadmap.md', 'file');
     const paths = () => store.get().details[ORG_TEAM].files['space-docs'].map((item) => item.path);
@@ -246,12 +246,12 @@ describe('组织开发数据网关（内存）', () => {
     const trashIds = store.get().details[ORG_TEAM].trash['space-docs'].map((item) => item.id);
     expect(new Set(trashIds).size).toBe(trashIds.length);
     const trashId = store.get().details[ORG_TEAM].trash['space-docs'][0].id;
-    await expect(gateway.restoreEntry(ORG_TEAM, 'space-docs', trashId)).resolves.toMatchObject({
-      kind: 'failed',
-      code: 'ORG_FOLDER_RESTORE_UNSUPPORTED',
+    await expect(gateway.restoreEntry(ORG_TEAM, 'space-docs', trashId)).resolves.toEqual({
+      kind: 'ok',
+      value: undefined,
     });
-    expect(paths()).not.toContain('plans');
-    expect(store.get().details[ORG_TEAM].trash['space-docs'][0].id).toBe(trashId);
+    expect(paths()).toEqual(expect.arrayContaining(['plans', 'plans/q4', 'plans/q4/roadmap.md']));
+    expect(store.get().details[ORG_TEAM].trash['space-docs'].map((item) => item.id)).not.toContain(trashId);
     await gateway.createEntry(ORG_TEAM, 'space-docs', 'notes.md', 'file');
     await gateway.deleteEntry(ORG_TEAM, 'space-docs', 'notes.md');
     const fileTrashId = store.get().details[ORG_TEAM].trash['space-docs'][0].id;
