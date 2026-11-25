@@ -23,6 +23,9 @@
 # - ``pending_content`` first verifies a bounded batch of unverified documents
 #   (§9 R4) and, outside the lock, submits the frontier repairs that
 #   verification found (§4.2).
+# - Package F6 (R3-1): ``local_member`` is this facade's author being a
+#   current member of the space, read from the same member cache as
+#   ``requester_allowed``; a space not (or no longer) held answers false.
 """Command-loop plumbing, admission view and ``SyncHost`` of the state host."""
 
 from __future__ import annotations
@@ -263,6 +266,10 @@ class SpaceSyncHost:
 
     def supplier_allowed(self, node: str) -> bool:
         return bool(self._node_gate(node))
+
+    def local_member(self) -> bool:
+        space = self._facade._existing_space(self.space_id)
+        return space is not None and self._facade.author in space.members
 
     def local_generation(self) -> int:
         return self._facade._registry(self.space_id).generation

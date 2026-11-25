@@ -22,6 +22,9 @@
 #   assembly's bootstrap source for the node gate; ``bind_device_owner_hint``
 #   sets it after construction for an assembly that builds the runtime class
 #   chosen by the rehearsal switch.
+# - Package F6 (R3-8): a refused space records the store's explanation (with
+#   the migration guide) as the error ``message``, so every later lookup
+#   says why and where to look, not only the code.
 """``OrgFsRuntime``: the OrgFS runtime over the state store and protocol 3 sync."""
 
 from __future__ import annotations
@@ -228,7 +231,9 @@ class OrgFsRuntime(
                 if exc.code != ipc_errors.ORGFS_LAYOUT_UNSUPPORTED:
                     raise
                 self.stores.detach(space_id)
-                self.facade.refuse_space(space_id, exc.code, dict(exc.details))
+                self.facade.refuse_space(
+                    space_id, exc.code, {**exc.details, "message": exc.message}
+                )
                 self._log(
                     "warn",
                     "orgfs.space.layout-unsupported",

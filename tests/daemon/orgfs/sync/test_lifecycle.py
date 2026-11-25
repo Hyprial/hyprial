@@ -1,3 +1,8 @@
+# Decisions:
+# - Package F6 (R3-1): a blob supplier serves only requesters whose author is
+#   a current member (``not-a-member`` otherwise, for a removed and for a
+#   never-invited author alike); a node that is not a current member itself
+#   requests no blob and asks for no content.
 """Close, rebuild, legacy keys, scheduling, maintain, announce, read-first, blobs."""
 
 from __future__ import annotations
@@ -139,7 +144,9 @@ def test_blob_handler_answers_only_for_its_own_space(bus: Bus, tmp_path) -> None
     from hyprial.daemon.impl.orgfs.storage.blobs import encode_request
 
     probe = bus.session("node-probe")
-    [reply] = probe.query(KeySpace().orgfs_blob(digest), encode_request("space-other", digest))
+    [reply] = probe.query(KeySpace().orgfs_blob(digest), encode_request(
+        "space-other", digest, requester_node="node-probe", requester_author="user:a"
+    ))
     assert json.loads(reply.payload)["code"] == "unknown-space"
     a.close()
 
@@ -279,6 +286,55 @@ def test_fetch_blob_refuses_offline_and_non_member_holders(bus: Bus, tmp_path) -
         b.sync.fetch_blob("node-a", digest)
     assert raised.value.code == "not-a-member"
     assert bus.queries == []
+
+
+@pytest.mark.parametrize("removed", [True, False])
+def test_blob_supplier_refuses_a_requester_that_is_not_a_current_member(
+    bus: Bus, tmp_path, removed: bool
+) -> None:
+    store_a = BlobStore(tmp_path / "a")
+    a = make_node(bus, "node-a", blobs=store_a)
+    b = make_node(bus, "node-b", blobs=BlobStore(tmp_path / "b"), holders={"node-a"})
+    digest = store_a.put(SPACE, b"secret", reason="ref")
+    a.host.members.discard("user:b")
+    if removed:
+        a.host.removed.add("user:b")
+
+    with pytest.raises(SyncError) as raised:
+        b.sync.fetch_blob("node-a", digest)
+    b.sync.request_blob(digest).wait(5.0)
+
+    assert raised.value.code == "not-a-member"
+    assert not b.blobs.contains(digest)
+    (_sent, replies), *_rest = bus.requests("/org/fs/blob")
+    reasons = {
+        answer["details"].get("reason")
+        for answer in map(json.loads, replies)
+        if answer.get("code") == "not-a-member"
+    }
+    assert reasons == {"requester-removed" if removed else "requester-not-member"}
+    _close(a, b)
+
+
+def test_a_node_that_is_not_a_member_requests_no_blob_and_no_content(bus: Bus, tmp_path) -> None:
+    store_a = BlobStore(tmp_path / "a")
+    a = make_node(bus, "node-a", blobs=store_a)
+    b = make_node(bus, "node-b", blobs=BlobStore(tmp_path / "b"), holders={"node-a"})
+    digest = store_a.put(SPACE, b"secret", reason="ref")
+    b.host.members.discard("user:b")
+    bus.queries.clear()
+
+    assert b.sync.request_blob(digest).is_set()
+    with pytest.raises(SyncError) as raised:
+        b.sync.fetch_blob("node-a", digest)
+    b.sync.request_content("doc-1")
+    b.sync.maintain(time.monotonic())
+    settle(a, b)
+
+    assert raised.value.details["reason"] == "local-not-member"
+    assert bus.queries == []
+    assert not b.blobs.contains(digest)
+    _close(a, b)
 
 
 def test_fetch_blob_absence_answers_never_decide(bus: Bus, tmp_path) -> None:

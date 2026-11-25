@@ -24,6 +24,10 @@
 #   is observed ahead of the local catalog (e.g. a joined tree that has not
 #   arrived) ``synced`` is ``False``.  Observations come from the
 #   attached sync (``attach_sync``); D1 tests attach a fake.
+#   Package F6 (R3-2): ``rejected_updates`` is the admission rejections
+#   counted here plus the broadcasts the attached sync's receive gate refused
+#   (its ``rejected_updates``, absent on a fake), so a removed member's pushes
+#   are visible to the owner.
 # - D2, design §9 R5: a join first opens a temporary space (``begin_join``):
 #   a v3 directory, an empty registry and a placeholder root, hidden from
 #   ``spaces()`` and from ``join``'s early return.  Accepted meta adopts the
@@ -84,6 +88,13 @@ def timestamp() -> str:
     """Microsecond ISO-8601 UTC timestamp ending in ``Z``."""
 
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _gate_rejections(sync: object) -> int:
+    """Broadcasts the attached sync's receive gate refused (F6, R3-2)."""
+
+    value = getattr(sync, "rejected_updates", 0)
+    return value if type(value) is int and value > 0 else 0
 
 
 class MemoryStores:
@@ -468,7 +479,7 @@ class StateSpaces:
             synced,
             tuple(sorted({observation.node for observation in observations})),
             pending,
-            registry.rejected_updates,
+            registry.rejected_updates + _gate_rejections(sync),
         )
 
     def _ensure_writable(self, space: _Space) -> None:

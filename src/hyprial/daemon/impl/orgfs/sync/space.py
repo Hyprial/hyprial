@@ -31,6 +31,17 @@
 # - announce() publishes announcement_source() when given (node-level list,
 #   same shape and oversize fallback to bare space ids as the journal mesh),
 #   otherwise this space alone; both carry "protocol": 3.
+# - Package F6 (real-node finding R3-1): broadcasts reach every subscriber,
+#   so the receiver enforces "a removed member holds meta only".  While
+#   SyncHost.local_member() is false, a broadcast that passed the node gate is
+#   applied only when it is the meta document; tree and content frames are
+#   dropped (logged at debug, not counted against the sender), and no content
+#   is requested.  A meta update that makes this node a member again schedules
+#   a pull from its sender so the space catches up without waiting for a tick.
+# - Package F6 (R3-2): a broadcast the receive gate refuses because the
+#   sender's device owner is not a current member is counted in
+#   ``rejected_updates``, which the coordinator adds to the space status.
+#   Offline senders and undecodable frames are logged, not counted.
 """StateSpaceSync: the protocol 3 SpaceSync implementation for one space."""
 
 from __future__ import annotations
@@ -138,6 +149,7 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
         self._ingress_guard = Condition(Lock())
         self._ingress_pending = 0
         self._ingress_dropped = 0
+        self._rejected_updates = 0
         self._ingress_closing = False
         self._handlers_active = 0
         self._registrations: list[Registration] = []
@@ -159,6 +171,17 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
     def ingress_dropped(self) -> int:
         with self._ingress_guard:
             return self._ingress_dropped
+
+    @property
+    def rejected_updates(self) -> int:
+        with self._ingress_guard:
+            return self._rejected_updates
+
+    def _local_member(self) -> bool:
+        try:
+            return bool(self.host.local_member())
+        except Exception:  # noqa: BLE001 - an unreadable membership fails closed
+            return False
 
     def idle(self) -> bool:
         """True when no broadcast, handler or worker job is outstanding."""
@@ -336,10 +359,17 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
             self._log("warn", "orgfs.update.rejected", reason="supplier-offline", peer=peer)
             return
         if not self.host.supplier_allowed(peer):
+            with self._ingress_guard:
+                self._rejected_updates += 1
             self._log("warn", "orgfs.update.rejected", reason="supplier-not-member", peer=peer)
             return
         with self._worker_lock:
             self._remember_peer(peer)
+        member = self._local_member()
+        if not member and frame.doc_id != "meta":
+            self._log("debug", "orgfs.update.dropped", reason="local-not-member",
+                      spaceId=self.space_id, docId=frame.doc_id, peer=peer)
+            return
         if frame.update is None:
             local = self.host.read_vectors((frame.doc_id,)).get(frame.doc_id) or EMPTY_VECTOR
             if not covers(local, frame.vector):
@@ -348,6 +378,8 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
         outcome = self.host.apply_remote(frame.doc_id, frame.update, frame.vector, peer)
         kind = outcome_kind(outcome)
         if kind == "pending":
+            self.schedule_sync_from(peer)
+        elif kind == "accepted" and not member and self._local_member():
             self.schedule_sync_from(peer)
         elif kind == "rejected":
             self._log("warn", "orgfs.update.rejected", docId=frame.doc_id,
@@ -366,6 +398,8 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
         return [peer for peer in dict.fromkeys([*discovered, *seen]) if self._supplier_allowed(peer)]
 
     def request_content(self, doc_id: str) -> None:
+        if self._closed or not self._local_member():
+            return
         with self._worker_lock:
             if self._closed:
                 return
@@ -384,6 +418,7 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
             nodes = list(self._observations)
             self._dependency_retries.clear()
             wanted = bool(self._priority)
+        wanted = wanted and self._local_member()
         for node in nodes:
             if not self._supplier_allowed(node):
                 with self._worker_lock:

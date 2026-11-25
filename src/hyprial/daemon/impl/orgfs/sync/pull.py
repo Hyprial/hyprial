@@ -30,6 +30,12 @@
 #   SYNC_BLOB_FETCH_TIMEOUT_SECONDS for every chunk, not with the round's query
 #   timeout: a scheduled round's query timeout is the remainder of a few-second
 #   budget, which a multi-chunk tree blob from a busy supplier cannot meet.
+# - Package F6 (real-node finding R3-1): while SyncHost.local_member() is
+#   false a round asks for no content document and applies only the meta
+#   entry of the reply (membership is read again before each entry, so a meta
+#   entry that re-admits this node lets the rest of the same reply through);
+#   it reruns only when that meta made this node a member again, and never
+#   for leftovers it was not allowed to take.
 """Requester rounds and the supplier's sync query handler."""
 
 from __future__ import annotations
@@ -151,7 +157,8 @@ class SyncPullMixin:
                 reason="supplier-not-member",
             )
         generation = self.host.local_generation()
-        content = self._content_targets()
+        member = self._local_member()
+        content = self._content_targets() if member else []
         priority = [doc_id for doc_id in content]
         ids = ordered_ids([*CATALOG_DOC_IDS, *content])
         local = self.host.read_vectors(ids)
@@ -209,8 +216,11 @@ class SyncPullMixin:
             self._dependency_retries[supplier] = retries
         if self._closed:
             return accepted, False, metrics
-        leftovers = bool(reply.omitted) or incomplete or bool(self.host.pending_content(1))
-        rerun = (accepted > 0 and leftovers) or (
+        member_now = self._local_member()
+        leftovers = member_now and (
+            bool(reply.omitted) or incomplete or bool(self.host.pending_content(1))
+        )
+        rerun = (accepted > 0 and leftovers) or (member_now and not member) or (
             dependency and retries <= SYNC_DEPENDENCY_RETRY_LIMIT
         )
         if dependency and retries > SYNC_DEPENDENCY_RETRY_LIMIT:
@@ -226,6 +236,8 @@ class SyncPullMixin:
         for entry in sorted(reply.entries, key=lambda item: order[item.doc_id]):
             if self._closed:
                 break
+            if entry.doc_id != "meta" and not self._local_member():
+                continue
             update = entry.update
             if update is None:
                 try:

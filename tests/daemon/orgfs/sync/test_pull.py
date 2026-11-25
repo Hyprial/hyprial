@@ -1,3 +1,8 @@
+# Decisions:
+# - Package F6 (R3-1): a requester that is not a current member itself asks
+#   for no content and applies only the meta entry of a reply, even when the
+#   supplier still sends tree and content; a reply whose meta re-admits it
+#   lets the rest of the same reply through.
 """Pull rounds: catalog first, paged content, blob fallback, supplier gates."""
 
 from __future__ import annotations
@@ -207,6 +212,28 @@ def test_supplier_refuses_a_requester_that_is_not_a_member(bus: Bus) -> None:
     assert raised.value.code == "not-a-member"
     assert b.host.applied == []
     assert ("read_update", "meta") not in a.host.calls
+    _close(a, b)
+
+
+def test_a_requester_that_is_not_a_member_applies_reply_meta_only(bus: Bus) -> None:
+    a = make_node(bus, "node-a")
+    b = make_node(bus, "node-b")
+    a.host.write_text("doc-1", "before", publish=False)
+    converge([a, b])
+    b.host.members.discard("user:b")
+    a.host.write_text("doc-1", "after", publish=False)
+    a.host.set_meta("user:e", "rw", publish=False)
+    b.host.applied.clear()
+    earlier = len(bus.requests("/org/fs3/sync/"))
+
+    b.sync.request_content("doc-1")
+    b.sync.sync_from("node-a")
+    settle(a, b)
+
+    assert [doc_id for doc_id, _kind, _peer in b.host.applied] == ["meta"]
+    assert b.host.text("doc-1") == "before"
+    sent = [json.loads(q) for q, _rs in bus.requests("/org/fs3/sync/")[earlier:]]
+    assert sent and all(set(q["vectors"]) <= {"meta", "tree"} for q in sent)
     _close(a, b)
 
 

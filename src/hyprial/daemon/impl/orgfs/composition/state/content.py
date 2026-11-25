@@ -22,6 +22,10 @@
 # - Package F5 (2026-11-25, O report §3-1): ``writer_attributions`` is gone.
 #   It only ever answered ``unavailable`` here; ``org.fetch`` resolves node
 #   sources from the org directory's device records and has no other caller.
+# - Package F6 (real-node finding R3-3): ``holders_online`` lists only nodes
+#   that pass the space's node gate (``_node_gate``, the same rule the sync
+#   applies to suppliers), so a removed member's node drops out at once even
+#   while it stays online and its old pull observation is still held.
 """Status, content provisioning and blob fetch of the state runtime."""
 
 from __future__ import annotations
@@ -44,11 +48,13 @@ class StateContent:
             announced = set(self._holders.get(space_id, ()))
             lively = set(self._lively_peers)
         observes_liveliness = self._liveliness_registration is not None
+        gate = self._node_gate(space_id)
         online = {
             node
             for node in announced | set(base.holders_online)
             if node != self.node_id
             and (node in lively if observes_liveliness else self._supplier_online(node))
+            and gate(node)
         }
         return SpaceStatus(
             base.space_id,

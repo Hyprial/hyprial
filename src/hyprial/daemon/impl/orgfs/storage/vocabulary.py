@@ -7,6 +7,8 @@
 #   exception types later; that move is a separate change.
 # - The file stem is a fixed-length one-way hash of the document id, so a
 #   document id never becomes a path component.
+# - Package F6 (R3-8): ``StoreError.message`` keeps the explanation without
+#   the ``code: `` prefix ``str()`` adds, so a re-raise does not repeat it.
 """Names shared by the OrgFS stores: the store error and the document file stem."""
 
 from __future__ import annotations
@@ -24,7 +26,8 @@ class StoreError(RuntimeError):
     def __init__(self, code: str, message: str | None = None, **details: Any) -> None:
         self.code = code
         self.details = details
-        super().__init__(f"{code}: {message or code}")
+        self.message = message or code
+        super().__init__(f"{code}: {self.message}")
 
 
 def document_file_stem(doc_id: str) -> str:

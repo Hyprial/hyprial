@@ -1,3 +1,8 @@
+# Decisions:
+# - Package F6 (R3-1, R3-2): a receiver whose own author is not a current
+#   member applies broadcast meta only and never counts the dropped frames;
+#   frames the receive gate refuses as ``supplier-not-member`` are counted in
+#   ``rejected_updates``, offline senders are not.
 """Broadcast publish / receive, bounded ingress, Pending outcomes."""
 
 from __future__ import annotations
@@ -8,7 +13,7 @@ import threading
 import pytest
 
 from hyprial.daemon.impl.orgfs.storage.blobs import BlobStore
-from hyprial.daemon.impl.orgfs.sync import UpdateFrame, encode_update
+from hyprial.daemon.impl.orgfs.sync import UpdateFrame, encode_update, encode_vector
 from hyprial.daemon.impl.orgfs.sync.interface import SYNC_ENVELOPE_BYTES, SYNC_INGRESS_CAPACITY
 from hyprial.daemon.impl.transport import KeySpace
 
@@ -139,6 +144,34 @@ def test_node_gate_drops_frames_from_offline_or_non_member_nodes(bus: Bus) -> No
     assert [c for c in b.host.calls if c[0] == "apply_remote"] == []
     reasons = [f["reason"] for _l, e, f in b.events if e == "orgfs.update.rejected"]
     assert reasons == ["supplier-offline", "supplier-offline", "supplier-not-member", "supplier-not-member"]
+    assert b.sync.rejected_updates == 2
+    _close(a, b)
+
+
+def test_a_receiver_that_is_not_a_member_applies_broadcast_meta_only(bus: Bus) -> None:
+    a = make_node(bus, "node-a")
+    b = make_node(bus, "node-b")
+    a.host.write_text("doc-1", "before")
+    settle(a, b)
+    b.host.members.discard("user:b")
+    b.host.applied.clear()
+    bus.queries.clear()
+
+    a.host.write_text("doc-1", "after")
+    a.host.write_text("doc-2", "new")
+    a.host.set_meta("user:e", "rw")
+    ahead = encode_vector({a.host.client_id: 1_000})
+    bus.deliver("node-a", KeySpace().orgfs3_update(SPACE),
+                encode_update(UpdateFrame(SPACE, "node-a", "doc-1", ahead, None)))
+    settle(a, b)
+
+    assert [doc_id for doc_id, _kind, _peer in b.host.applied] == ["meta"]
+    assert b.host.meta().get("user:e") == "rw"
+    assert b.host.text("doc-1") == "before"
+    assert b.host.text("doc-2") is None
+    assert bus.queries == []
+    assert b.sync.rejected_updates == 0
+    assert not any(event == "orgfs.update.rejected" for _l, event, _f in b.events)
     _close(a, b)
 
 

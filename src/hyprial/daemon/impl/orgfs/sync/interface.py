@@ -23,6 +23,11 @@
 # - Design §9.2 (F1, 2026-11-25): SyncHost.requester_removed(author) is true
 #   when the author's member row is still present with ``removedAt``; the
 #   supplier then answers that requester with the meta document only.
+# - Package F6 (real-node finding R3-1): SyncHost.local_member() is true when
+#   this node's own author is a current member of the space (a row without
+#   ``removedAt``).  While it is false the sync applies the meta document only
+#   and asks for no tree, content or blob; a blob supplier applies the pull
+#   rule to the requester named in the blob request.
 """Frozen protocols and bounds of the OrgFS protocol 3 sync package."""
 
 from __future__ import annotations
@@ -77,6 +82,8 @@ class SyncHost(Protocol):
     def requester_removed(self, author: str) -> bool: ...
 
     def supplier_allowed(self, node: str) -> bool: ...
+
+    def local_member(self) -> bool: ...
 
     def local_generation(self) -> int: ...
 

@@ -51,6 +51,13 @@
 #   the backoff is forgotten once no online observation is ahead.  A round
 #   that fails outright records no observation and stays under the rule above
 #   and the shared supplier hold, which already backs off failures.
+# - Package F6 (real-node finding R3-6): a space whose local author is not a
+#   current member (``SyncHost.local_member`` false) only ever holds meta, so
+#   the due tick compares the meta vector alone: it pulls when no current
+#   observation covers the local meta or an online holder's observed meta is
+#   ahead, and never for pending content or a tree it will not receive.  A
+#   space this node was removed from therefore stops being "behind" after one
+#   meta-only round and no longer takes the shared supplier's single probe.
 # - Design §9 R5 join: a temporary space (``facade.begin_join``) is filled by
 #   a temporary ``StateSpaceSync`` whose node gate is presence only, from each
 #   candidate holder in turn; the space is kept only when its meta names an
@@ -98,6 +105,15 @@ VERIFY_BATCH = 256
 JOIN_ROUND_TIMEOUT_SECONDS = 10.0
 CATALOG_RETRY_BASE_SECONDS = 60.0
 CATALOG_RETRY_MAX_SECONDS = 960.0
+
+
+def _catalog_vectors(vectors: Any, catalog: tuple[str, ...]) -> tuple[bytes, ...]:
+    return tuple(vectors.get(doc_id) or b"\x00" for doc_id in catalog)
+
+
+def _observed_vectors(item: Any, catalog: tuple[str, ...]) -> tuple[bytes, ...]:
+    values = {"meta": item.meta_vector, "tree": item.tree_vector}
+    return tuple(values[doc_id] for doc_id in catalog)
 
 
 def _join_error_rank(error: OrgFsError) -> int:
@@ -317,9 +333,10 @@ class StateLifecycle:
             try:
                 sync.maintain(now)
                 host = self.facade.sync_host(space_id)
-                pending = host.pending_content(VERIFY_BATCH)
-                behind = bool(pending) or not self._observed(host, sync)
-                ahead = self._ahead_holders(host, sync)
+                catalog = CATALOG_DOC_IDS if host.local_member() else ("meta",)
+                pending = host.pending_content(VERIFY_BATCH) if len(catalog) > 1 else ()
+                behind = bool(pending) or not self._observed(host, sync, catalog)
+                ahead = self._ahead_holders(host, sync, catalog)
             except Exception as exc:
                 self._log("warn", "orgfs.sync.maintain-failed", spaceId=space_id, detail=str(exc))
                 continue
@@ -337,29 +354,27 @@ class StateLifecycle:
                 sync.schedule_sync_from(ahead[0])
 
     @staticmethod
-    def _observed(host: Any, sync: Any) -> bool:
-        """Whether a current observation covers the local meta and tree vectors."""
+    def _observed(host: Any, sync: Any, catalog: tuple[str, ...] = CATALOG_DOC_IDS) -> bool:
+        """Whether a current observation covers the local ``catalog`` vectors."""
 
-        vectors = host.read_vectors(CATALOG_DOC_IDS)
-        meta = vectors.get("meta") or b"\x00"
-        tree = vectors.get("tree") or b"\x00"
+        local = _catalog_vectors(host.read_vectors(catalog), catalog)
         return any(
-            covers(item.meta_vector, meta) and covers(item.tree_vector, tree)
+            all(covers(seen, mine) for seen, mine in zip(_observed_vectors(item, catalog), local))
             for item in sync.observations()
         )
 
-    def _ahead_holders(self, host: Any, sync: Any) -> list[str]:
-        """Online holders whose observed meta or tree the local vectors do not cover."""
+    def _ahead_holders(
+        self, host: Any, sync: Any, catalog: tuple[str, ...] = CATALOG_DOC_IDS
+    ) -> list[str]:
+        """Online holders with an observed ``catalog`` vector the local ones do not cover."""
 
-        vectors = host.read_vectors(CATALOG_DOC_IDS)
-        meta = vectors.get("meta") or b"\x00"
-        tree = vectors.get("tree") or b"\x00"
+        local = _catalog_vectors(host.read_vectors(catalog), catalog)
         return sorted(
             item.node
             for item in sync.observations()
             if item.node != self.node_id
             and self._supplier_online(item.node)
-            and not (covers(meta, item.meta_vector) and covers(tree, item.tree_vector))
+            and not all(covers(mine, seen) for seen, mine in zip(_observed_vectors(item, catalog), local))
         )
 
     def _catalog_retry_due(self, space_id: str, holder: str, now: float) -> bool:

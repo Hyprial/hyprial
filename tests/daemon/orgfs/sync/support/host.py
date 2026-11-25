@@ -1,3 +1,7 @@
+# Decisions:
+# - Package F6 (R3-1): ``local_member`` answers whether the host's own author
+#   (``user:<node without "node-">``, the author ``make_node`` gives the sync)
+#   is a current member; ``left`` makes it false, as it does every other gate.
 """In-memory SyncHost: one pycrdt Doc per document, one client id per host.
 
 It plays the facade coordinator of design §2.5 / §3.6 closely enough for the
@@ -293,6 +297,11 @@ class MemoryHost:
         with self.lock:
             self._call("supplier_allowed")
             return not self.left and node not in self.denied_suppliers
+
+    def local_member(self) -> bool:
+        with self.lock:
+            self._call("local_member")
+            return not self.left and "user:" + self.node.removeprefix("node-") in self.members
 
     def local_generation(self) -> int:
         with self.lock:

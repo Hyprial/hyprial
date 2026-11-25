@@ -68,6 +68,7 @@ def test_review_fix_14_integrity_failure_uses_frozen_wire_code(tmp_path: Path) -
                     "type": "orgfs-blob",
                     "spaceId": "space",
                     "digest": digest,
+                    "requester": {"node": "node-a", "author": "user:a"},
                 }
             )
         )

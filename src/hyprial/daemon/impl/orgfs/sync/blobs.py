@@ -23,6 +23,14 @@
 #   when no space references the digest any more.
 # - The handler answers only for its own space; other spaces' answers are
 #   "unknown-space", an absence code, matching the old replica path.
+# - Package F6 (real-node finding R3-1): every blob request names its
+#   requester (node and author, the same self-reported source as the sync
+#   request) and the handler applies the pull rule to the author: a requester
+#   that is not a current member, removed or never invited, gets
+#   ``not-a-member`` and no chunk.  That code is not an absence answer, so it
+#   decides the fetch.  A node that is not a current member itself requests
+#   no blob: request_blob ends at once and fetch_blob raises ``not-a-member``
+#   with reason ``local-not-member``.
 """Temporary sync blobs: serve chunks, fetch and verify, expire."""
 
 from __future__ import annotations
@@ -95,6 +103,11 @@ class SyncBlobMixin:
                 value = decode_blob_request(payload or b"")
                 if value["spaceId"] != self.space_id:
                     return ((selector, self._blob_error("unknown-space", "blob requested another space")),)
+                author = value["requester"]["author"]
+                if not self.host.requester_allowed(author):
+                    reason = "requester-removed" if self.host.requester_removed(author) else "requester-not-member"
+                    return ((selector, self._blob_error("not-a-member", "requester is not a current member",
+                                                        {"reason": reason})),)
                 return ((selector, self.blob_store.get_chunk(value)),)
             except BlobError as exc:
                 return ((selector, self._blob_error(exc.code, str(exc), exc.details)),)
@@ -130,6 +143,9 @@ class SyncBlobMixin:
     def fetch_blob(self, holder: str, digest: str, *, size_hint: int | None = None) -> bytes:
         """Fetch one blob through the blob channel and verify its sha256."""
 
+        if not self._local_member():
+            raise SyncError("not-a-member", "this node is not a current member of the space",
+                            reason="local-not-member")
         if not self._supplier_allowed(holder):
             raise SyncError("not-a-member", "blob supplier is not an online host")
         if not self.host.supplier_allowed(holder):
@@ -142,7 +158,7 @@ class SyncBlobMixin:
 
         completed = Event()
         store = self.blob_store
-        if store is None or store.contains(digest):
+        if store is None or store.contains(digest) or self._closed or not self._local_member():
             completed.set()
             return completed
         rejected: str | None = None
@@ -176,7 +192,7 @@ class SyncBlobMixin:
     def _run_blob_request(self, digest: str) -> None:
         try:
             for holder in self._candidate_peers():
-                if self._closed:
+                if self._closed or not self._local_member():
                     break
                 try:
                     if not self.host.supplier_allowed(holder):
@@ -204,7 +220,8 @@ class SyncBlobMixin:
             length = min(ORGFS_BLOB_CHUNK_BYTES, hint - offset) if type(hint) is int and hint > offset else None
             replies = self.session.query(
                 self._keys.orgfs_blob(digest),
-                encode_request(self.space_id, digest, offset, length),
+                encode_request(self.space_id, digest, offset, length,
+                               requester_node=self.node_id, requester_author=self.author),
                 timeout=timeout,
                 all_replies=True,
             )

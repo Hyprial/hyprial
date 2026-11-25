@@ -1,5 +1,10 @@
 # Decision record (phase D, package D4b, 2026-11-25): ``restore`` and its
 # frozen ``_Restore`` command carry no ``version`` (design §1.1).
+# Decision record (package F6, real-node finding R3-8, 2026-11-25): a failed
+# command freezes the error's own ``message`` (``OrgFsError`` / ``StoreError``)
+# rather than ``str(error)``, which already starts with ``code: ``; the waiter
+# re-raises with that message, so each hop through the command loop no longer
+# adds another code prefix.
 from __future__ import annotations
 
 
@@ -211,7 +216,11 @@ class FacadeSpaceState:
                         error=_SpaceStateFailure(
                             type(error).__name__,
                             str(getattr(error, "code", "internal")),
-                            str(error),
+                            str(
+                                error.message
+                                if isinstance(error, (OrgFsError, StoreError))
+                                else error
+                            ),
                             tuple(
                                 sorted(
                                     (str(key), self._freeze_space_value(item))

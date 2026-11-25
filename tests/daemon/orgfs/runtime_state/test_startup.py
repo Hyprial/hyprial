@@ -8,6 +8,9 @@
 #   after ``batch.pending`` became durable is redone at the next start
 #   (``orgfs.state.batch-recovered``); a torn ``batch.pending`` is discarded
 #   (``orgfs.state.batch-discarded``); the space stays usable either way.
+# - Package F6 (R3-8): a refused space keeps the store's explanation and
+#   migration guide in its message, and an error re-raised through the space
+#   command loop names its code once.
 """Startup scan and crash recovery of ``OrgFsRuntime``."""
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import pytest
 
 from hyprial.daemon.impl.orgfs import OrgFsError
 from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.state import FileStateStore
+from hyprial.daemon.impl.orgfs.state import MIGRATION_GUIDE, FileStateStore
 from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError
 from hyprial.kernel import ipc_errors
 
@@ -99,6 +102,31 @@ def test_startup_opens_v3_refuses_other_layouts_per_space_and_discards_unfinishe
         runtime.close()
     for path in refused:
         assert snapshot(path) == before[path]
+
+
+def test_a_refused_space_and_a_failed_command_name_their_code_once_and_keep_the_reason(tmp_path) -> None:
+    state_dir = tmp_path / "node"
+    kept = _seed(state_dir)
+    legacy = _new_dir(state_dir / "orgfs" / "spaces")
+    (legacy / "journal.sqlite3").write_bytes(b"SQLite format 3\x00" + bytes(range(64)))
+
+    runtime = _runtime(state_dir)
+    try:
+        with pytest.raises(OrgFsError) as refused:
+            runtime.facade.stat(legacy.name, "id:root")
+        with pytest.raises(OrgFsError) as failed:
+            runtime.facade.write_text(kept, "missing-dir/a.md", "alpha")
+    finally:
+        runtime.close()
+
+    assert refused.value.code == UNSUPPORTED
+    assert str(refused.value).count(UNSUPPORTED) == 1
+    assert MIGRATION_GUIDE in refused.value.message
+    assert "legacy-journal" in refused.value.message
+    assert refused.value.details["guide"] == MIGRATION_GUIDE
+    code = failed.value.code
+    assert str(failed.value).startswith(f"{code}: ")
+    assert not failed.value.message.startswith(f"{code}: ")
 
 
 def test_a_directory_not_named_by_a_uuid_refuses_startup(tmp_path) -> None:

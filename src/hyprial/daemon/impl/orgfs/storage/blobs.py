@@ -7,6 +7,12 @@
 # - 2026-11-25 (phase D package S, plan §1.5/§1.6, Q4): content purge is gone,
 #   so the per-space purge projections, the purge checker and ``BlobPurged``
 #   are deleted; a read never answers ``purged`` any more.
+# - 2026-11-25 (package F6, real-node finding R3-1): an ``orgfs-blob``
+#   request names its requester as ``{"node", "author"}``, the same
+#   self-reported source as the protocol 3 sync request, so a supplier can
+#   apply the pull rule (``requester_allowed`` / ``requester_removed``) before
+#   serving a chunk.  Protocol 3 is unreleased: the field is required and the
+#   request without it is gone.
 """Content-addressed storage and wire helpers for the orgfs blob plane.
 
 The blob plane deliberately has no transport dependency.  ``BlobStore`` owns
@@ -123,6 +129,13 @@ def _request_values(
         raise ValueError("invalid orgfs-blob request")
     if not isinstance(value.get("spaceId"), str) or not value["spaceId"]:
         raise ValueError("orgfs-blob request requires spaceId")
+    requester = value.get("requester")
+    if (
+        not isinstance(requester, dict)
+        or set(requester) != {"node", "author"}
+        or not all(isinstance(item, str) and item for item in requester.values())
+    ):
+        raise ValueError("orgfs-blob request requires requester.node and requester.author")
     _require_digest(value.get("digest"))
     offset = value.get("offset", 0)
     length = value.get("length", ORGFS_BLOB_CHUNK_BYTES)
@@ -140,6 +153,9 @@ def encode_request(
     digest: str,
     offset: int = 0,
     length: int | None = None,
+    *,
+    requester_node: str,
+    requester_author: str,
 ) -> bytes:
     """Encode an ``orgfs-blob`` request as canonical UTF-8 JSON bytes."""
 
@@ -151,6 +167,7 @@ def encode_request(
         "type": "orgfs-blob",
         "spaceId": space_id,
         "digest": digest,
+        "requester": {"node": requester_node, "author": requester_author},
     }
     if offset != 0:
         request["offset"] = offset
