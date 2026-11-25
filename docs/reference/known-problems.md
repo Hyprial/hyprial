@@ -70,7 +70,7 @@
 | KP-077 | external promotion 用例在应答与服务端计数之间存在竞争，`dev` push 间歇变红 | 不修（owner 2026-11-14 裁定）；已随 external promotion 的删除关闭（Z-7 A1，#2963） |
 | KP-078 | `native-conformance` 的 PR lane：Linux arm64 单 runner 排队，Darwin arm64 工具链下载超时 | 待修（Darwin）；Linux arm64 只调查（owner 平台决定） |
 | KP-079 | `kill -9` 后陈旧的 `state/bootstrap.json` 使下一次 bootstrap 准入失败（“record belongs to another bootstrap instance”） | 已修复（Z-2：已退出或 pid 已被复用的实例的 `bootstrap.json` 与 bootstrap 形态的 `daemon.json` 一并清理；native 引擎、隔离 home 上 kill -9 与复用 pid 标记 → `daemon start` 已实测通过；缺少出生标识的标记、或平台无法读取出生标识的情形仍需手工清理） |
-| KP-080 | 安装态 `hyprial gui` 在 Windows 上返回 `GUI_RUNTIME_UNAVAILABLE`（POSIX 文件锁） | 代码已修、待 Windows 真机验收（owner 2026-11-21 解除「Windows 不排期」；锁改 `kernel.ProcessFileLock`，`--stdin-stop` 跨平台） |
+| KP-080 | 安装态 `hyprial gui` 在 Windows 上返回 `GUI_RUNTIME_UNAVAILABLE`（POSIX 文件锁） | 已修复（Windows 11 第二轮真机验收 dev @ 14d37d8142 通过：启动记录、Windows 绝对 `handoff_path`、第二实例 `GUI_RUNTIME_BUSY`、管道单独关 stdin 退出码 0；PTY 关闭方式下 `--stdin-stop` 复现不稳定见 KP-136） |
 | KP-081 | 非默认 home 的 per-user 服务单元以 0644 写入代理变量（可含 userinfo） | 接受（owner 2026-11-15，OD-Z7 选项 a）；发布说明列为已知问题 |
 | KP-082 | per-user 服务单元的 `PATH` 以 `~/.local/bin` 开头，非默认 home 的 daemon 按名字查找 `hyprial` 或 harness 时先命中该处的另一个安装 | 待修（登记；launchd 验收 F1，读代码所得；负责人 per-home service line） |
 | KP-083 | ownerless home 上显式 `hyprial daemon start` 留下持有锁的 bootstrap daemon，之后 `hyprial gui` 约 24 秒后以 `GUI_START_FAILED` 失败 | 已修复（#2916 Z-6a：`local-gui` 子进程转发到应答 bootstrap 的 daemon，`hyprial gui` 在任何状态都先确保 daemon；#2927 Z-6pre、#2933 Z-6b、#2946 Z-6c、#2963 Z-7 A1 已合入 dev；Z-6b 删除 GUI 托管路径后，下方“已知限制”不再成立，见该条；浏览器侧、真实 OIDC、macOS 与原生壳 UNKNOWN） |
@@ -119,6 +119,9 @@
 | KP-129 | cell 运行时组合失败期间，本机每个 agent 发给 `user:<owner>` 的消息都以 `USER_DELIVERY_UNAVAILABLE` 被拒绝、不入队；`cache-identity-mismatch` 等原因下一直持续到人工修复 | 接受（I3 契约 §3.2 第 6 行：读不到 cell 不选聊天；按 cell authority 迁移说明手工修复 cache 恢复） |
 | KP-130 | 「本机运维者」不是硬边界：agent 自己的 shell 运行 CLI 时也算未验证的运维者，可读写 user agent cell，改变 owner 副本推往哪些聊天 | 接受（I7a critic P2-4；与 I7a 之前普通 agent cell 的 `agent.cell.update` 同等强度；cm 线） |
 | KP-131 | 成员 reconcile 重启时新旧配置都起不来，agent 停到下次启动或 `hyprial agent start` | 接受（I6-5 critic V3 P1-1 裁定；cm 线） |
+| KP-134 | Windows 上 Pi agent 起不来：npm 全局布局下找不到 Pi SDK 包根；绕过探测后 SDK worker 在 Node `Crypto.getRandomValues` 生成 session ID 时退出 | 部分代码已修、待 Windows 验收（包根探测已修，#3139；worker 退出原因未定位，待修；负责人 Windows 可移植性线） |
+| KP-135 | Windows 源码开发构建：PowerShell 中 `HYPRIAL_BUILD_NATIVE=1 uv sync` 直接执行 `.sh` 报 WinError 193；editable 安装跳过 `_stage_tailcat()`，没有 `hyprial-tailcat.exe` | 部分代码已修、待 Windows 验收（native 构建不再执行 `.sh`，#3139；editable 缺 sidecar 待 owner 裁定；负责人 Windows 可移植性线） |
+| KP-136 | Windows 上 `hyprial gui --stdin-stop` 在 PTY 关闭方式下退出复现不稳定；管道单独关闭 stdin 正常退出（退出码 0、无残留进程） | 待测（#3139 加了控制台句柄失效即停止的检查，针对的是推断的机制，真机未证实；附复现矩阵与诊断脚本；负责人 GUI 启动维护者 / Windows 可移植性线） |
 
 ## KP-001 tailscale.com derphttp 经 HTTP 代理时被拒区域慢失败
 
@@ -916,6 +919,13 @@
   测试改为钉住「无 `fcntl`/`getuid`/`pthread_kill` 时不拒绝」（`tests/shell/gui/backend/test_source_platform_import.py`、`tests/shell/gui/installed/test_installed_admission.py`、`tests/shell/gui/startup/`）。
   Windows 真机结果：UNKNOWN，按 `scripts/verify/test-wheel-on-windows.ps1` 的 GUI 段验收（启动记录、`--stdin-stop` 退出且无残留子进程、第二实例被锁拒绝）；真机通过后再把本条改为已修复。
 
+- 状态更新（2026-11-24，第二轮 Windows 11 真机验收，dev @ 14d37d8142，PR #3106 评论）：已修复。实机通过的项：
+  `hyprial init`、home/state 的 DACL（未出现 `unsafe-acl`）、198 字符深路径下 init/start/status/stop、`state\daemon.sock` 为 `windows-pipe-v1` 端点且 daemon 重启后 Named Pipe 名称轮换；
+  GUI v1 启动 JSON、`url`、Windows 绝对 `handoff_path`、daemon 连接、第二实例 `GUI_RUNTIME_BUSY`，`--stdin-stop` 在管道单独关闭 stdin 时退出码 0 且无残留进程；
+  `hyprial login` 在进程内完成提交（辅助完成登录后 identity 为 authenticated，`daemon status --json` 退出码 0，无 `auth.login.begin failed`；首次无人辅助登录因超时得 `DEVICE_CODE_EXPIRED`），放入 sidecar 后设备注册生成 device identity、device、machine binding 与 device key；
+  `tests/kernel/ipc/local_ipc` 25 passed / 21 skipped，`test_win32_pipe.py` 4 passed，无 `No module named 'pwd'`；Rust native launcher `cargo test` 52 passed / 0 failed。
+  尾部问题另行登记：PTY 关闭方式下的 `--stdin-stop` 见 KP-136；Pi agent 见 KP-134；源码开发构建与 sidecar 见 KP-135。
+
 ## KP-081 非默认 home 的 per-user 服务单元以 0644 写入代理变量（可含 userinfo）
 
 - 现象：Z-8b 把 HTTP_PROXY / HTTPS_PROXY / NO_PROXY（含 URL userinfo）渲染进每-home
@@ -1442,3 +1452,38 @@
 - 决定：暂留为债。退出条件：新增 daemon 方法 `agent.tiers.probe`（探测可能持续 `timeout × 组合数` 秒，需流式或作业形态；记录视图由读方法提供），daemon 成为缓存唯一写者，届时删除这两行例外及 `dispatch.py` 余下的后端行。新增方法是新的已发布面，需 owner 批准。
 - 依据：S3c critic（cm-coord3，P1-1 / P2-4）。
 - 负责人：cell model（cm）线。
+
+## KP-134 Windows 上 Pi agent 起不来：SDK 包根探测失败，绕过后 worker 在生成 session ID 时退出
+
+- 现象：Windows 11 第二轮真机验收（dev @ 14d37d8142，PR #3106 评论）中，DeepSeek key 已写入 agent secret store 并授权，worker environment receipt 显示 grant 已投影；未带 `--approve` 时按预期返回 `PI_P2_LAUNCH_UNTRUSTED`。带上批准后有两处失败：
+  1. SDK 包根探测：npm 全局安装在 Windows 上把 `pi` 装成 `%APPDATA%\npm\pi.cmd` 一类的 shim，SDK 包在旁边的 `node_modules\@earendil-works\pi-coding-agent`。`find_pi_package_root`（`src/hyprial/daemon/impl/harnesses/pi/loader.py`）只沿 `shutil.which` 结果的父目录向上找 `package.json`，shim 的父目录链上没有该包，于是报「Pi SDK package root not found」。此原因按阅读代码推断，真机只观察到探测失败，未逐步核对。
+  2. 用临时 shim 绕过探测后，Pi SDK worker 实际启动，但在 Node `Crypto.getRandomValues` 生成 session ID 时退出，未进入模型请求。具体原因未定位（UNKNOWN）；Hyprial 的 Pi 资源（`resources/*.ts`、`pi_controlled_loader.mjs`）使用 `node:crypto` 的 `randomUUID`，失败点可能在 SDK 自身或 worker 的 Node 运行环境。
+- 影响：只有 Windows。登录后无法在 Windows 上运行 Pi agent；Linux 与 macOS 不受影响。
+- 规避：无可用规避（绕过探测后仍在第 2 步失败）。
+- 决定：待修。复现线索：Windows 11、npm 全局安装 `@earendil-works/pi-coding-agent`，`hyprial agent start` 一个 Pi agent（带 `--approve`）；worker 日志见 `<HYPRIAL_HOME>\state\logs\workers\<agent>.jsonl`。修复方向：探测时识别 npm `.cmd`/`.ps1` shim 并解析到 `node_modules` 下的包根；再按 worker 日志定位 `getRandomValues` 失败的调用栈与 Node 版本。
+- 状态更新（2026-11-24，PR #3139）：第 1 点代码已修，Windows 未实测（UNKNOWN）。`find_pi_package_root` 在父目录链之后再检查命令所在目录下的 `node_modules/@earendil-works/pi-coding-agent`（仍校验包名，不做更大范围搜索，不读 npm 配置）；回归测试 `tests/daemon/harnesses/pi/configuration/launch_trust/test_pi_sdk_package_root.py` 在 Linux 上修复前红、修复后绿。第 2 点未处理：读代码发现 worker 子进程环境词表 `BASE_CHILD_ENVIRONMENT_NAMES`（`src/hyprial/identity/impl/agents/home/environment.py`）不含 `SYSTEMROOT` 等 Windows 系统变量，可能是 Node 取随机数失败的原因（推断，未验证）；是否扩充该词表待 owner 裁定。
+  读代码另发现两处同类问题，均未改、未实测：`src/hyprial/identity/impl/provider_auth/helper.py` 的 `find_pi_package_root` 假设 `<root>/dist/bundle/cli.js`，在 shim 布局下返回 `None`，Pi OAuth 类 provider 的重新登录会得到 spawn error；`loader.py` 中 workspace 信任根的 `st_mode & 0o077` 检查在 Windows 上恒为非零，不带 `--approve` 的 workspace 范围启动会被拒绝。
+- 依据：PR #3106 第二轮真机验收评论（2026-11-24）第 4 项；跟进 WIP PR `fix/windows-followup-pi-and-dev-build`。
+- 负责人：Windows 可移植性线。
+
+## KP-135 Windows 源码开发构建：PowerShell 下 native 构建报 WinError 193，editable 安装缺 `hyprial-tailcat.exe`
+
+- 现象：Windows 11 第二轮真机验收（dev @ 14d37d8142）中，源码树上的开发安装有两个问题：
+  1. 在 PowerShell 中执行 `HYPRIAL_BUILD_NATIVE=1 uv sync --extra test --reinstall-package hyprial` 报 `WinError 193`。构建钩子 `_build_editable_native`（`src/hyprial/gui_build_hook.py:331`）以 `subprocess.run([str(script)])` 直接执行 `scripts/build/build_native_engine.sh`，Windows 不能把 `.sh` 当可执行文件启动。
+  2. editable 构建在 `CustomBuildHook.initialize` 里走 `_verify_editable_native` 后直接返回，不调用 `_stage_tailcat()`，所以 `uv sync --reinstall-package hyprial` 之后源码树里没有 `_bin\hyprial-tailcat.exe`。`locate_tailcat_sidecar`（`src/hyprial/daemon/impl/network/tailcat/binary.py:103`）只查 `HYPRIAL_TAILCAT_BINARY`、wheel 内 `hyprial\_bin` 与 `<HYPRIAL_HOME>\bin`，有意不查 `PATH`；首次设备注册因此返回 `DEVICE_ENSURE_FAILED`。
+- 影响：只影响 Windows 上从源码做 editable 开发安装；wheel 安装不受影响（wheel 构建会 stage sidecar）。第 2 点的 editable 跳过 sidecar 与平台无关，但 POSIX 开发者通常另有 sidecar 来源，本次只在 Windows 真机上观察到。
+- 规避：在 Git Bash 中执行 native 构建；把版本校验通过的 Windows sidecar 放进 `<HYPRIAL_HOME>\bin`，或用 `HYPRIAL_TAILCAT_BINARY` 指定。真机验收以此完成了 device provisioning。
+- 决定：待修。修复方向：Windows 上经 `bash` 调用构建脚本（或提供 PowerShell 等价脚本），并在 editable 构建时给出 sidecar 的来源或明确提示。
+- 状态更新（2026-11-24，PR #3139）：第 1 点代码已修，Windows 未实测（UNKNOWN）。editable 的 native 构建改为构建钩子在进程内调用 `src/hyprial/shell/impl/packaging/native_editable.py` 的 `build_editable`，不再执行 `.sh`；暂存文件名取自解释器的扩展后缀（Windows 为 `actors.pyd`）；`scripts/build/build_native_engine.sh` 的默认路径委托给同一入口。Linux 实测（[redacted]，x86_64，提交 cf3741dcc2，2026-11-24）：`HYPRIAL_BUILD_NATIVE=1 uv sync --extra test --reinstall-package hyprial` 退出码 0，随后 `from hyprial._core import actors` 导入 `src/hyprial/_core/actors.abi3.so`、`ENGINE_ABI_VERSION` 为 1；切片提交 f829121fa9 上直接运行该脚本同样通过（输出未入库）。预计的限制（推断，未实测）：Windows 上 daemon 正加载 `actors.pyd` 时重建会因文件占用失败，需先停 daemon。第 2 点（editable 不 stage sidecar）未处理，待 owner 裁定。
+- 依据：PR #3106 第二轮真机验收评论（2026-11-24）的「sidecar 调查结论」与「其他环境问题」；跟进 WIP PR `fix/windows-followup-pi-and-dev-build`。
+- 负责人：Windows 可移植性线（构建与打包）。
+
+## KP-136 Windows 上 `hyprial gui --stdin-stop` 在 PTY 关闭方式下退出复现不稳定
+
+- 现象：Windows 11 第二轮真机验收（dev @ 14d37d8142）中，`hyprial gui --no-open --json --port 0 --stdin-stop` 以管道启动、单独关闭 stdin 时正常退出（退出码 0、无残留子进程）；在 PTY（终端会话）关闭方式下，退出行为复现不稳定。哪种 PTY 宿主、关闭方式与失败表现（不退出、退出码异常或残留进程）评论里没有写明（UNKNOWN）。
+- 影响：只有 Windows，只涉及由终端/PTY 宿主托管、靠关闭 stdin 让 GUI 退出的调用方。launcher 等经管道托管的调用方不受影响（已实机通过）。
+- 规避：用管道托管 `--stdin-stop`，或用 Ctrl-C 结束前台 GUI。
+- 决定：待测。先在 Windows 真机上固定 PTY 宿主（ConPTY / Windows Terminal / Git Bash mintty）与关闭方式，记录 `StdinStopWatcher` 是否读到 EOF 以及 `deliver_main_termination` 的投递路径（无 `pthread_kill` 时为 `_thread.interrupt_main(SIGTERM)`）。
+- 状态更新（2026-11-24，PR #3139）：状态仍为待测。读代码认为 PTY 关闭方式对应三种机制（均为推断）：优雅关闭控制台或 ConPTY 时系统发 `CTRL_CLOSE_EVENT`，默认处理器以 `0xC000013A` 结束进程，`--stdin-stop` 不参与，退出码不是 0；控制台宿主被硬杀时 watcher 原先只轮询 `kbhit`，GUI 不退出；mintty 的管道写端仍被其他进程持有时 `PeekNamedPipe` 一直返回 0，GUI 不退出。本 PR 只针对第二种加了检查：控制台分支每轮复查 `GetConsoleMode`，失败即按 EOF 停止（伪造 kernel32 的单元测试 `tests/kernel/manysys/test_stdin_stop_windows_branches.py` 证明；真机上宿主消失后 `GetConsoleMode` 是否失败 UNKNOWN）。诊断脚本 `scripts/verify/stdin_stop_windows_probe.py` 打印 stdin 句柄事实并跟踪进程树退出码。是否加 `CTRL_CLOSE_EVENT` 处理器待真机结果后由 owner 决定。
+- 依据：PR #3106 第二轮真机验收评论（2026-11-24）第 2 项；KP-080 的 2026-11-21 状态更新；跟进 WIP PR `fix/windows-followup-pi-and-dev-build`。
+- 负责人：GUI 启动维护者；Windows 可移植性线。
