@@ -1,35 +1,16 @@
 """Facade projection and committed state."""
 from __future__ import annotations
 
-
 from dataclasses import replace
-
-
-
-
 import fnmatch
-
-
 import hashlib
-
-
-
-
-
-
 import uuid
-
-
 from typing import Any, Callable, Iterable, Mapping
 
 from pycrdt import Doc
 
-
-
 from hyprial.kernel import ipc_errors
-
 from hyprial.kernel import ORGFS_CONTENT_PENDING
-
 from hyprial.kernel import (
     ORGFS_URI_PREFIX,
     parse_orgfs_uri,
@@ -49,21 +30,11 @@ from hyprial.daemon.impl.orgfs.api  import (
     NodeKind,
     NodeRef,
     OrgFsError)
+from hyprial.daemon.impl.orgfs.storage.space_authority import _CommittedDelta
+from hyprial.daemon.impl.orgfs.storage.store import _EMPTY_UPDATE, CommitRecord, state_covers
+from hyprial.daemon.impl.orgfs.document.model import TreeDocument, _ABSENT_NODE, _ContentDocument, _History, _MetaWatchNotification, _Node, _NodeSnapshot, _Space, _SpaceSnapshot, _content_fingerprint, _WatchNotification, _encode_content_frontier, _facade_locked, _node_uri, _now, _raise_invalid, _version
 
-
-
-
-from hyprial.daemon.impl.orgfs.storage.space_authority  import (
-    _CommittedDelta)
-
-from hyprial.daemon.impl.orgfs.storage.store  import _EMPTY_UPDATE, state_covers
-
-
-from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
-
-
-from hyprial.daemon.impl.orgfs.document.model import TreeDocument, _ABSENT_NODE, _BroadcastPending, _ContentDocument, _History, _MetaWatchNotification, _Node, _NodeSnapshot, _ReconcileReplicaBlobs, _Space, _SpaceSnapshot, _content_fingerprint, _WatchNotification, _encode_content_frontier, _facade_locked, _node_uri, _now, _raise_invalid, _version
-
+_REQUIRED: Any = object()
 
 def _snapshot_matches(entry: _NodeSnapshot, node: _Node) -> bool:
     """Whether ``entry`` still describes ``node``'s metadata exactly."""
@@ -115,7 +86,7 @@ class FacadeProjection:
             elif doc_id == space.tree_doc_id:
                 before_state = space.tree.doc.get_state()
             else:
-                before_state = space.contents[doc_id].doc.get_state()
+                before_state = self._content_doc(space, doc_id).doc.get_state()
             rollback = (
                 space.tree.get_update(),
                 space.meta.get_update(),
@@ -124,7 +95,7 @@ class FacadeProjection:
                 # Tree/meta operations do not mutate content CRDTs. Keep the
                 # mapping separately so rollback also preserves untouched handles.
                 (
-                    {doc_id: space.contents[doc_id].export()}
+                    {doc_id: self._content_doc(space, doc_id).export()}
                     if doc_id not in ("meta", space.tree_doc_id)
                     else {}
                 ),
@@ -140,8 +111,8 @@ class FacadeProjection:
                 update = space.tree.get_update(before_state)
                 full_update = space.tree.get_update()
             else:
-                update = space.contents[doc_id].doc.get_update(before_state)
-                full_update = space.contents[doc_id].export()
+                update = self._content_doc(space, doc_id).doc.get_update(before_state)
+                full_update = self._content_doc(space, doc_id).export()
 
             def mutate(doc: Any) -> None:
                 # Lightweight facade tests use a commit recorder with no CRDT
@@ -166,7 +137,7 @@ class FacadeProjection:
                         absorb_since=(
                             None
                             if doc_id in ("meta", space.tree_doc_id)
-                            else space.contents[doc_id].doc.get_state()
+                            else self._content_doc(space, doc_id).doc.get_state()
                         ),
                     )
                 elif hasattr(store, "commit_with_outbox"):
@@ -203,32 +174,21 @@ class FacadeProjection:
             if hasattr(store, "take_drained"):
                 for envelope in store.take_drained():
                     self.apply_envelope(space.info.space_id, envelope)
-            space_id = space.info.space_id
             current_records = (
                 outbox_records
                 if outbox_records
                 else ((record,) if isinstance(record, CommitRecord) else ())
             )
-            records = self._publication_records(
-                space_id, current_records, broadcast=broadcast
+            self._publish_effects(
+                space, (doc_id,), current_records, broadcast=broadcast
             )
-            if doc_id == space.tree_doc_id:
-                self._defer_effect(_ReconcileReplicaBlobs(space_id))
-            if records or (
-                not current_records
-                and broadcast
-                and self._broadcast_is_enabled()
-            ):
-                self._defer_effect(_BroadcastPending(space_id, records))
             if doc_id == "meta":
                 self._notify_meta_watchers(space)
-
 
     def _notify_meta_watchers(self, space: _Space) -> None:
         for watcher in tuple(space.meta_watches):
             if not watcher.closed:
                 self._defer_effect(_MetaWatchNotification(watcher.watch_id))
-
 
     def _commit_many(
         self, space: _Space, operations: Iterable[tuple[str, Callable[[], None]]]
@@ -251,7 +211,7 @@ class FacadeProjection:
                 else (
                     space.meta.get_state()
                     if doc_id == "meta"
-                    else space.contents[doc_id].doc.get_state()
+                    else self._content_doc(space, doc_id).doc.get_state()
                 )
             )
             for doc_id, _operation in items
@@ -263,7 +223,7 @@ class FacadeProjection:
             # Each content mutation must declare its doc ID in items. Restore
             # can declare several; a text/structured write declares just one.
             {
-                doc_id: space.contents[doc_id].export()
+                doc_id: self._content_doc(space, doc_id).export()
                 for doc_id in before_states
                 if doc_id not in ("meta", space.tree_doc_id)
             },
@@ -284,10 +244,10 @@ class FacadeProjection:
                     update = space.meta.get_update(before_states[doc_id])
                     full_update = space.meta.get_update()
                 else:
-                    update = space.contents[doc_id].doc.get_update(
+                    update = self._content_doc(space, doc_id).doc.get_update(
                         before_states[doc_id]
                     )
-                    full_update = space.contents[doc_id].export()
+                    full_update = self._content_doc(space, doc_id).export()
 
                 def mutate(
                     doc: Any,
@@ -313,7 +273,7 @@ class FacadeProjection:
                     author=self.author,
                     actor=self.actor,
                     absorb_since={
-                        doc_id: space.contents[doc_id].doc.get_state()
+                        doc_id: self._content_doc(space, doc_id).doc.get_state()
                         for doc_id, _operation in items
                         if doc_id not in ("meta", space.tree_doc_id)
                     },
@@ -361,26 +321,22 @@ class FacadeProjection:
         if hasattr(store, "take_drained"):
             for envelope in store.take_drained():
                 self.apply_envelope(space.info.space_id, envelope)
-        space_id = space.info.space_id
         current_records = (
             outbox_records
             if outbox_records
             else tuple(record for record in records if isinstance(record, CommitRecord))
         )
-        exact_records = self._publication_records(
-            space_id, current_records, broadcast=True
+        self._publish_effects(
+            space,
+            tuple(doc_id for doc_id, _operation in items),
+            current_records,
+            broadcast=True,
         )
-        if any(doc_id == space.tree_doc_id for doc_id, _operation in items):
-            self._defer_effect(_ReconcileReplicaBlobs(space_id))
-        if exact_records or (not current_records and self._broadcast_is_enabled()):
-            self._defer_effect(_BroadcastPending(space_id, exact_records))
         if any(doc_id == "meta" for doc_id, _operation in items):
             self._notify_meta_watchers(space)
 
-
-    @staticmethod
     def _absorb_committed_deltas(
-        space: _Space, absorbs: Iterable[_CommittedDelta]
+        self, space: _Space, absorbs: Iterable[_CommittedDelta]
     ) -> None:
         """Fold the store's committed content-doc deltas back into the facade.
 
@@ -394,12 +350,11 @@ class FacadeProjection:
         """
 
         for absorb in absorbs:
-            document = space.contents.get(absorb.doc_id)
+            document = self._content_doc(space, absorb.doc_id, None)
             if document is None:
                 continue
             if absorb.delta and absorb.delta != _EMPTY_UPDATE:
                 document.update(absorb.delta)
-
 
     def _ensure_writable(self, space: _Space) -> None:
         member = space.members.get(self.author)
@@ -410,6 +365,98 @@ class FacadeProjection:
         ):
             raise OrgFsError("not-a-member", {"spaceId": space.info.space_id})
 
+    def _content_doc(
+        self, space: _Space, doc_id: str, default: Any = _REQUIRED
+    ) -> _ContentDocument | None:
+        """Hook: the space's content document ``doc_id``.
+
+        Without ``default`` a missing document raises ``KeyError``; with one,
+        the default comes back, which is how membership checks ask.
+        """
+
+        if default is _REQUIRED:
+            return space.contents[doc_id]
+        return space.contents.get(doc_id, default)
+
+    def _new_content_doc(self, space: _Space, node_id: str, doc_id: str) -> None:
+        """Hook: create the empty content document of a newly created node."""
+
+        client_id = int.from_bytes(
+            hashlib.sha256(node_id.encode()).digest()[:8], "big"
+        ) & ((1 << 53) - 1)
+        space.contents[doc_id] = _ContentDocument(client_id=client_id)
+
+    def _put_content_doc(
+        self, space: _Space, doc_id: str, document: _ContentDocument
+    ) -> None:
+        """Hook: bind ``document`` as the space's content document ``doc_id``."""
+
+        space.contents[doc_id] = document
+
+    def _drop_content_doc(self, space: _Space, doc_id: str) -> None:
+        """Hook: forget the space's content document ``doc_id`` if present."""
+
+        space.contents.pop(doc_id, None)
+
+    def _content_covered(self, space: _Space, node: _Node) -> bool | None:
+        """Hook: whether local content covers the row frontier; ``None`` if none."""
+
+        if node.required_content_frontier is None:
+            return None
+        return state_covers(
+            self._content_doc(space, node.doc_id or "").doc.get_state(),
+            node.required_content_frontier,
+        )
+
+    def _holders_hint(self, space: _Space, node: _Node) -> list[str]:
+        """Hook: holders suggested by a ``content-pending`` error."""
+
+        if self.mesh is None or not hasattr(self.mesh, "known_holders"):
+            return []
+        return list(
+            self.mesh.known_holders(
+                space.info.space_id,
+                doc_id=node.doc_id if node.kind == "doc" else None,
+                required_frontier=node.required_content_frontier,
+            )
+        )
+
+    def _record_row(self, space: _Space, node: _Node) -> None:
+        """Hook: write ``node``'s tree row in the space's tree document."""
+
+        space.tree.record(node)
+
+    def _stamp_versions(
+        self,
+        space: _Space,
+        node_ids: list[str],
+        changed: str,
+        author: str,
+        actor: str | None,
+    ) -> None:
+        """Hook: give ``node_ids`` their post-commit version and attribution.
+
+        Legacy: in-process clock and revision, a space snapshot per version
+        and one history entry per node.
+        """
+
+        with self._lock:
+            self._clock += 1
+            clock = self._clock
+        space.revision += 1
+        version = _version(space.revision, clock)
+        at = _now()
+        for node_id in node_ids:
+            node = space.nodes[node_id]
+            node.version = version
+            node.modified_by = author
+            node.modified_via = actor
+        snapshot = self._snapshot(space)
+        space.snapshots[version] = snapshot
+        for node_id in node_ids:
+            space.history.setdefault(node_id, []).append(
+                _History(snapshot[node_id], changed, author, actor, at)
+            )
 
     def _space(self, space_id: str) -> _Space:
         with self._lock:
@@ -418,11 +465,9 @@ class FacadeProjection:
             except KeyError as exc:
                 raise OrgFsError("unknown-space", {"spaceId": space_id}) from exc
 
-
     def _existing_space(self, space_id: str) -> _Space | None:
         with self._lock:
             return self._spaces.get(space_id)
-
 
     def retained_blob_digests(self, space_id: str) -> tuple[str, ...]:
         """Snapshot current and trash blob references for inbound materialization."""
@@ -438,7 +483,6 @@ class FacadeProjection:
             }
         return tuple(sorted(digests))
 
-
     @staticmethod
     def _validate_path(path: str) -> list[str]:
         if not isinstance(path, str) or not path:
@@ -449,7 +493,6 @@ class FacadeProjection:
         if any(part in ("", ".", "..") for part in parts):
             _raise_invalid("path contains an empty or reserved segment")
         return parts
-
 
     def _resolve_ids(
         self, space: _Space, path: str, *, include_deleted: bool = False
@@ -534,7 +577,6 @@ class FacadeProjection:
                 raise OrgFsError("unknown-doc", {"node": path})
         return candidates
 
-
     @staticmethod
     def _member_row_visible(space: _Space, node: _Node) -> bool:
         """Hide removed members' protected rows using causal org meta state."""
@@ -559,7 +601,6 @@ class FacadeProjection:
             for member in space.members
         )
 
-
     @_facade_locked
     def resolve(self, space_id: str, path: str) -> tuple[NodeInfo, ...]:
         space = self._space(space_id)
@@ -568,7 +609,6 @@ class FacadeProjection:
             for node_id in self._resolve_ids(space, path)
         )
 
-
     def _one(
         self, space: _Space, node: NodeRef, *, include_deleted: bool = False
     ) -> _Node:
@@ -576,7 +616,6 @@ class FacadeProjection:
         if len(ids) > 1:
             raise OrgFsError("ambiguous-path", {"candidates": ids})
         return space.nodes[ids[0]]
-
 
     def _path(
         self, space: _Space, node_id: str, nodes: Mapping[str, _Node] | None = None
@@ -596,7 +635,6 @@ class FacadeProjection:
             cursor = item.parent
         return "/".join(reversed(pieces))
 
-
     def _name_conflict(
         self, space: _Space, node: _Node, nodes: Mapping[str, _Node] | None = None
     ) -> bool:
@@ -612,27 +650,22 @@ class FacadeProjection:
             > 1
         )
 
-
     def _node_info(
         self, space: _Space, node_id: str, nodes: Mapping[str, _Node] | None = None
     ) -> NodeInfo:
         source = nodes or space.nodes
         node = source[node_id]
-        content = space.contents.get(node.doc_id or "")
+        content = self._content_doc(space, node.doc_id or "", None)
         size = None
         content_state = None
         if node.kind == "doc" and content is not None:
             size = len(content.value().encode())
-            if node.required_content_frontier is None:
-                content_state = "unverifiable"
-            else:
-                content_state = (
-                    "arrived"
-                    if state_covers(
-                        content.doc.get_state(), node.required_content_frontier
-                    )
-                    else "pending"
-                )
+            covered = self._content_covered(space, node)
+            content_state = (
+                "unverifiable"
+                if covered is None
+                else ("arrived" if covered else "pending")
+            )
         elif node.kind == "blob" and node.blob_hash:
             size = node.size
             content_state = (
@@ -663,7 +696,6 @@ class FacadeProjection:
             uri=_node_uri(space.info, node_id),
         )
 
-
     def _content_pending(
         self,
         space: _Space,
@@ -672,15 +704,7 @@ class FacadeProjection:
         local_state: str | None = None,
     ) -> OrgFsError:
         required = node.required_content_frontier
-        holders: list[str] = []
-        if self.mesh is not None and hasattr(self.mesh, "known_holders"):
-            holders = list(
-                self.mesh.known_holders(
-                    space.info.space_id,
-                    doc_id=node.doc_id if node.kind == "doc" else None,
-                    required_frontier=required,
-                )
-            )
+        holders = self._holders_hint(space, node)
         details: dict[str, object] = {
             "kind": node.kind,
             "spaceId": space.info.space_id,
@@ -698,7 +722,7 @@ class FacadeProjection:
                 }
             )
         else:
-            content = space.contents.get(node.doc_id or "")
+            content = self._content_doc(space, node.doc_id or "", None)
             details.update(
                 {
                     "requiredFrontier": (
@@ -715,12 +739,11 @@ class FacadeProjection:
             )
         return OrgFsError(ORGFS_CONTENT_PENDING, details)
 
-
     def _forget_history(self, space: _Space) -> None:
         """Drop every earlier in-memory version after a purge.
 
         Versions share snapshot entries, so a purged text stays readable
-        through ``read_at``/``history``/``restore`` for as long as any version
+        through ``restore`` for as long as any version
         that saw it is kept.  After a purge the space keeps only its current
         state -- what a restart would leave -- registered under each node's
         current version label, so current-version reads and writes still work.
@@ -733,7 +756,6 @@ class FacadeProjection:
         current = self._snapshot(space)
         for version in {node.version for node in space.nodes.values()}:
             space.snapshots[version] = current
-
 
     def _snapshot(self, space: _Space) -> _SpaceSnapshot:
         """Record the space as a layer over its latest version.
@@ -750,7 +772,9 @@ class FacadeProjection:
         marks = space.snapshot_marks
         changes: dict[str, Any] = {}
         for node_id, node in space.nodes.items():
-            document = space.contents.get(node.doc_id) if node.doc_id else None
+            document = (
+                self._content_doc(space, node.doc_id, None) if node.doc_id else None
+            )
             fingerprint = (
                 _content_fingerprint(document) if document is not None else None
             )
@@ -789,7 +813,6 @@ class FacadeProjection:
                 changes[node_id] = _ABSENT_NODE
         return _SpaceSnapshot(previous, changes)
 
-
     def _finish(
         self,
         space: _Space,
@@ -802,27 +825,10 @@ class FacadeProjection:
     ) -> None:
         attributed_author = self.author if author is None else author
         attributed_actor = self.actor if author is None else actor
-        with self._lock:
-            self._clock += 1
-            clock = self._clock
-        space.revision += 1
-        version = _version(space.revision, clock)
-        at = _now()
         unique = list(dict.fromkeys(affected))
-        for node_id in unique:
-            node = space.nodes[node_id]
-            node.version = version
-            node.modified_by = attributed_author
-            node.modified_via = attributed_actor
-        snapshot = self._snapshot(space)
-        space.snapshots[version] = snapshot
-        for node_id in unique:
-            node = space.nodes[node_id]
-            space.history.setdefault(node_id, []).append(
-                _History(
-                    snapshot[node_id], changed, attributed_author, attributed_actor, at
-                )
-            )
+        self._stamp_versions(
+            space, unique, changed, attributed_author, attributed_actor
+        )
         for node_id in unique:
             info = self._node_info(space, node_id)
             kind = "modified" if changed in {"content", "both", "position"} else changed
@@ -837,7 +843,6 @@ class FacadeProjection:
                     continue
                 watcher.events.append(event)
                 self._defer_effect(_WatchNotification(watcher.watch_id, event))
-
 
     def _parent_for_new(self, space: _Space, path: str) -> tuple[_Node, str]:
         if path.startswith("id:"):
@@ -873,7 +878,6 @@ class FacadeProjection:
                 "invalid-argument", {"message": "parent is not a directory"}
             )
         return parent, name
-
 
     def _new_node(
         self, space: _Space, parent: _Node, name: str, kind: NodeKind
@@ -919,13 +923,9 @@ class FacadeProjection:
             node_id, parent.node_id, name, kind, doc_id=doc_id, modified_by=self.author
         )
         space.nodes[node_id] = node
-        if doc_id and doc_id not in space.contents:
-            client_id = int.from_bytes(
-                hashlib.sha256(node_id.encode()).digest()[:8], "big"
-            ) & ((1 << 53) - 1)
-            space.contents[doc_id] = _ContentDocument(client_id=client_id)
+        if doc_id and self._content_doc(space, doc_id, None) is None:
+            self._new_content_doc(space, node_id, doc_id)
         return node
-
 
     def _write_tree(
         self,
@@ -955,7 +955,7 @@ class FacadeProjection:
                 )
             else:
                 for node_id in affected:
-                    space.tree.record(space.nodes[node_id])
+                    self._record_row(space, space.nodes[node_id])
 
         self._commit(space, space.tree_doc_id, apply, broadcast=broadcast)
         self._finish(space, affected, changed, old_paths=old_paths)

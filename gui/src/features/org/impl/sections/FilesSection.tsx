@@ -12,12 +12,10 @@ import {
 } from '../dialogs/FileDialogs';
 import type { OrgGuardKey } from '../domain/unwired';
 import type { WorkspaceApi } from '../workspace/api';
-import { resultMessage } from '../workspace/api';
 import {
   MetaParts,
   OrgReadStateBlock,
   SectionHeader,
-  SidePanel,
   TabList,
   TabPanel,
   UnknownBlock,
@@ -45,7 +43,7 @@ const SEGMENTS = [
 /**
  * 文件（5.8，OrgFS）：先选空间，再看目录与预览。按所选空间的状态决定可用操作，
  * 不把一种情况套到所有空间；导入导出用 CLI，本期不呈现。
- * 文件与文件夹都可以选中：文件看预览、编辑、历史；文件夹看包含几项，可移动、改名、删除。
+ * 文件与文件夹都可以选中：文件看预览、编辑；文件夹看包含几项，可移动、改名、删除。
  */
 export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
   const { snapshot, detail, org } = api;
@@ -56,27 +54,14 @@ export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
   );
   const [segment, setSegment] = useState<Segment>('files');
   const [selected, setSelected] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  // 历史里选中的版本，绑定“空间:路径”；换了文件或空间就不再显示。
-  const [historyPick, setHistoryPick] = useState<{ readonly key: string; readonly version: number } | null>(
-    null,
-  );
   const [dialog, setDialog] = useState<FileDialog | null>(null);
   const openDialog = (subject: string, method: OrgGuardKey, next: FileDialog): void => {
     if (api.guard(subject, method)) setDialog(next);
   };
-  const [historyMessage, setHistoryMessage] = useState<string | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const space = spaces?.find((item) => item.id === spaceId) ?? null;
-
-  function closeHistory(): void {
-    setHistoryOpen(false);
-    setHistoryPick(null);
-  }
 
   function select(path: string | null): void {
     setSelected(path);
-    closeHistory();
   }
 
   /**
@@ -113,38 +98,18 @@ export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
   }
 
   const writeBlock = spaceWriteBlock(space);
-  const historyBlocked = !space || space.health !== 'healthy';
   const files = space ? (detail?.files[space.id] ?? []) : [];
   const trash = space ? (detail?.trash[space.id] ?? []) : [];
   const entry = files.find((item) => item.path === selected) ?? null;
   const file = entry?.kind === 'file' ? entry : null;
   const folder = entry?.kind === 'folder' ? entry : null;
   const childCount = folder ? files.filter((item) => item.path.startsWith(`${folder.path}/`)).length : 0;
-  const historyKey = file && space ? `${space.id}:${file.path}` : null;
-  const versions = historyKey ? (detail?.history[historyKey] ?? []) : [];
-  const picked =
-    historyPick && historyPick.key === historyKey
-      ? (versions.find((version) => version.version === historyPick.version) ?? null)
-      : null;
   const filesFailed = detail?.filesStatus === 'error';
   const trashFailed = detail?.trashStatus === 'error';
   const listWriteBlock = filesFailed
     ? '文件列表读取失败，暂不能判断是否为空；请刷新后重试。'
     : null;
   const effectiveWriteBlock = listWriteBlock ?? writeBlock;
-
-  async function loadHistory(subject: string, opening: boolean): Promise<void> {
-    if (!org || !space || !file) return;
-    setHistoryMessage(null);
-    setHistoryLoading(true);
-    const result = await api.labelled(subject).loadHistory(org.id, space.id, file.path);
-    setHistoryLoading(false);
-    if (result.kind === 'unavailable') {
-      if (opening) setHistoryOpen(false);
-      return;
-    }
-    if (result.kind !== 'ok') setHistoryMessage(resultMessage(result));
-  }
 
   return (
     <div className="org-section" data-org-section="files" data-dev-ui="DEV-UI-ORG-012">
@@ -173,10 +138,7 @@ export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
         <TabList
           items={SEGMENTS}
           value={segment}
-          onChange={(next) => {
-            setSegment(next);
-            closeHistory();
-          }}
+          onChange={setSegment}
           label="文件分组"
           idPrefix="org-files"
           variant="segments"
@@ -194,7 +156,7 @@ export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
 
       <TabPanel idPrefix="org-files" value={segment}>
         {segment === 'files' ? (
-          <div className={`org-master-detail${historyOpen ? ' has-panel' : ''}`}>
+          <div className="org-master-detail">
             <div className="org-master">
               <div className="org-toolbar">
                 <Button
@@ -258,20 +220,6 @@ export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
                     </Button>
                     <Button
                       size="sm"
-                      disabled={historyBlocked}
-                      title={historyBlocked ? ORG_COPY.historyAnomalyReason : undefined}
-                      onClick={() => {
-                        if (!api.guard('历史', 'loadHistory')) return;
-                        setHistoryPick(null);
-                        setHistoryMessage(null);
-                        setHistoryOpen(true);
-                        void loadHistory('历史', true);
-                      }}
-                    >
-                      历史
-                    </Button>
-                    <Button
-                      size="sm"
                       disabled={effectiveWriteBlock !== null}
                       title={effectiveWriteBlock ?? undefined}
                       onClick={() => openDialog('移动', 'moveEntry', { kind: 'move', entry: file })}
@@ -318,56 +266,6 @@ export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
                 </section>
               ) : null}
             </div>
-            {historyOpen && file ? (
-              <SidePanel parentLabel="文件" title={`历史：${file.name}`} onClose={closeHistory}>
-                {historyMessage ? (
-                  <Notice tone="warning" role="alert">
-                    {historyMessage}
-                  </Notice>
-                ) : historyLoading ? (
-                  <p className="org-pending" role="status">
-                    正在读取版本历史…
-                  </p>
-                ) : versions.length === 0 ? (
-                  <p className="org-empty-inline">没有版本记录。</p>
-                ) : (
-                  <ul className="org-rows" aria-label="版本记录">
-                    {versions.map((version) => (
-                      <li key={version.version} className="org-row">
-                        <button
-                          type="button"
-                          className="org-row__main"
-                          aria-pressed={picked?.version === version.version}
-                          onClick={() => historyKey && setHistoryPick({ key: historyKey, version: version.version })}
-                        >
-                          <span className="org-row__title">版本 {version.version}</span>
-                          <span className="org-row__meta">
-                            <MetaParts parts={[version.modifiedBy, version.modifiedAt]} />
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {picked && picked.contentStatus !== 'refused' ? (
-                  picked.contentStatus === 'error' ? (
-                    <Notice tone="warning" role="alert">
-                      该版本内容读取失败，正文不可用。
-                      <Button size="sm" onClick={() => {
-                          if (api.guard('重新读取', 'loadHistory')) void loadHistory('重新读取', false);
-                        }}
-                      >
-                        重新读取
-                      </Button>
-                    </Notice>
-                  ) : (
-                    <pre className="org-preview__content" aria-label={`版本 ${picked.version} 的内容`}>
-                      {picked.content}
-                    </pre>
-                  )
-                ) : null}
-              </SidePanel>
-            ) : null}
           </div>
         ) : (
           <>
@@ -396,12 +294,7 @@ export function FilesSection({ api }: { readonly api: WorkspaceApi }) {
                     <Button
                       size="sm"
                       disabled={effectiveWriteBlock !== null}
-                      title={
-                        effectiveWriteBlock ??
-                        (item.kind === 'folder'
-                          ? '将恢复到原路径，并恢复文件夹中的内容。'
-                          : undefined)
-                      }
+                      title={effectiveWriteBlock ?? undefined}
                       onClick={() =>
                         openDialog('恢复', 'restoreEntry', { kind: 'restore', entry: item, orgId: org.id, spaceId: space?.id ?? '' })
                       }

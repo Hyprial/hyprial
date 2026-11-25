@@ -1,3 +1,9 @@
+# Decisions:
+# - Phase D T1: ``test_r10_forged_fill_only_delays_update_until_anti_entropy``
+#   runs on the state host (``device_rows/support``).  There is no pending
+#   queue to fill (design §3.6): an update whose predecessor is missing is
+#   ``Pending``, nothing is stored, and one §4.3 pull from the supplier brings
+#   the predecessor and the update.  The other tests here are journal-only.
 """ROUND 10 forged suppliers, empty frontiers, and replica priming."""
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 from pycrdt import Map, Text
 
+from hyprial.daemon.impl.orgfs.membership import Pending
 from hyprial.daemon.impl.orgfs.mesh import OrgFsMesh
 from hyprial.daemon.impl.orgfs.storage.replica import (
     MemoryReplicaBackend,
@@ -24,7 +31,8 @@ from ...authority.admission.support import (
     _close_stores as _close_stores,
     _store,
 )
-from .test_round4 import BOB, OWNER, _commits_since, _position, replicas
+from .support import ALICE, Org, new_row
+from .test_round4 import BOB, OWNER, replicas
 from .test_round8 import _pending_meta_envelope
 from ..test_orgfs_mesh import _Bus
 
@@ -76,53 +84,6 @@ def test_r10_forged_origin_node_cannot_fill_honest_supplier_bucket(
         "SELECT 1 FROM pending WHERE supplier = ? AND author = ?",
         (owner.node_id, f"user:{OWNER}"),
     ).fetchone() is not None
-
-
-def test_r10_forged_fill_only_delays_update_until_anti_entropy(
-    round10_replicas, monkeypatch
-) -> None:
-    """A capacity drop is non-durable; ordered anti-entropy still converges."""
-
-    _tmp_path, space_id, owner, alice, _bob, _carol = round10_replicas
-    store = alice.stores[space_id]
-    store._pending_import_limit = 8
-    store._pending_import_supplier_limit = 1
-    forged = _pending_meta_envelope(
-        owner,
-        space_id,
-        author=BOB,
-        supplier=owner.node_id,
-        index=1010,
-    )
-    _ingress(alice, space_id, forged)
-
-    monkeypatch.setattr(
-        owner._meshes[space_id], "broadcast_pending", lambda _space_id=None: 0
-    )
-    before = _position(owner, space_id)
-    owner.facade.mkdir(space_id, "round10-parent")
-    owner.facade.mkdir(space_id, "round10-parent/child")
-    parent, child = tuple(
-        envelope
-        for envelope in _commits_since(owner, space_id, before)
-        if str(json.loads(envelope)["docId"]).startswith("tree-")
-    )
-
-    _ingress(alice, space_id, child)
-    child_value = json.loads(child)
-    assert store._db.execute(
-        "SELECT 1 FROM commits WHERE writer = ? AND seq = ? AND doc_id = ?",
-        (
-            child_value["origin"]["writer"],
-            child_value["seq"],
-            child_value["docId"],
-        ),
-    ).fetchone() is None
-    assert store._pending_drop_count == 1
-
-    assert alice._meshes[space_id].sync_from(owner.node_id) >= 2
-    assert alice.facade.stat(space_id, "round10-parent/child").kind == "dir"
-    assert parent != child
 
 
 def test_r10_non_meta_empty_frontier_is_rejected_not_parked(tmp_path) -> None:
@@ -293,3 +254,39 @@ def test_r12_attach_replica_is_atomic_when_prime_hits_enospc(tmp_path) -> None:
         assert mesh.durable is False
     finally:
         mesh.close()
+
+
+@pytest.fixture
+def state_org():
+    value = Org()
+    try:
+        yield value
+    finally:
+        value.close()
+
+
+def test_r10_forged_fill_only_delays_update_until_anti_entropy(state_org: Org) -> None:
+    """An update that arrives before its predecessor waits; one pull converges."""
+
+    org = state_org
+    space_id = org.space_id
+    forged = org.forge_rows(
+        BOB,
+        [new_row("round10-forged", parent="round10-missing-parent", name="forged.json",
+                 doc_id="doc-00000000-0000-4000-8000-000000001010")],
+        author=BOB,
+    )
+    org.apply(ALICE, forged, peer="node-owner")
+    frames = org.capture(OWNER, lambda: (
+        org.fs(OWNER).mkdir(space_id, "round10-parent"),
+        org.fs(OWNER).mkdir(space_id, "round10-parent/child"),
+    ))
+    parent, child = [frame for frame in frames if frame.doc_id == "tree"]
+
+    assert isinstance(org.apply(ALICE, child, peer="node-owner"), Pending)
+    assert org.missing(ALICE, "round10-parent")
+    assert org.rejected(ALICE) == 0
+
+    assert org.cluster.pull(org[ALICE], org[OWNER]) >= 1
+    assert org.fs(ALICE).stat(space_id, "round10-parent/child").kind == "dir"
+    assert parent != child

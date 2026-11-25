@@ -70,7 +70,6 @@ _MUTATING_FACADE_METHODS = frozenset(
         "apply_tree_update",
         "apply_content_update",
         "hydrate_content_snapshot",
-        "_apply_structured_update",
     }
 )
 _SPACE_STATE_METHODS = frozenset(
@@ -94,7 +93,6 @@ _SPACE_STATE_METHODS = frozenset(
         "apply_tree_update",
         "apply_content_update",
         "hydrate_content_snapshot",
-        "_apply_structured_update",
     }
 )
 
@@ -274,16 +272,6 @@ class _HydrateContentSnapshot:
     snapshot: bytes
 
 
-@dataclass(frozen=True, slots=True)
-class _ApplyStructuredUpdate:
-    space_id: str
-    node_id: str
-    doc_id: str
-    client_id: int
-    base_state: bytes
-    update: bytes
-
-
 _SpaceStateOperation = (
     _CreateSpace
     | _LoadSpace
@@ -304,7 +292,6 @@ _SpaceStateOperation = (
     | _ApplyTreeUpdate
     | _ApplyContentUpdate
     | _HydrateContentSnapshot
-    | _ApplyStructuredUpdate
 )
 
 
@@ -898,20 +885,6 @@ class _Space:
     #: atomic ``created`` version instead of splitting into an empty ``created``
     #: followed by ``content`` (which no strict chain consumer can repair).
     birth_pending: dict[str, tuple[str, str | None]] = field(default_factory=dict)
-
-
-class _OrgDoc:
-    def __init__(self, document: _ContentDocument, doc_id: str) -> None:
-        self._document = document
-        self._doc_id = doc_id
-
-    def doc_id(self) -> str:
-        return self._doc_id
-
-    def snapshot_json(self) -> str:
-        return json.dumps(
-            {"text": self._document.value()}, ensure_ascii=False, sort_keys=True
-        )
 
 
 def _node_uri(info: SpaceInfo, node_id: str) -> str:

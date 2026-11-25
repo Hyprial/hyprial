@@ -2,6 +2,8 @@
 
 A restart is simulated by dropping the in-process mark cache on the app, so the next
 service is built from the durable marks under the local state directory only.
+Where the service also commits to OrgFS (whose file store renames too), the
+injected ``os.replace`` failure is limited to the high-water marks file.
 """
 from __future__ import annotations
 
@@ -52,13 +54,27 @@ def _fail_replace_once(monkeypatch) -> None:
     monkeypatch.setattr(os, "replace", flaky)
 
 
+def _fail_mark_replace_once(monkeypatch) -> None:
+    real = os.replace
+    failing = [True]
+
+    def flaky(source, target, *args, **kwargs):
+        name = os.path.basename(os.fspath(target))
+        if failing[0] and name.startswith("high-water-") and name.endswith(".json"):
+            failing[0] = False
+            raise OSError(28, "No space left on device")
+        return real(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", flaky)
+
+
 def test_a_revoke_mark_whose_save_failed_is_saved_by_the_retry(world, monkeypatch):
     world.login()
     ref = world.ref()
     world.service().allow(agent=ref, provider="anthropic")
     path = storage.grant_path(ref.agent, "anthropic")
     active = world.store.read(path)[0]
-    _fail_replace_once(monkeypatch)
+    _fail_mark_replace_once(monkeypatch)
     assert _code(lambda: world.service().revoke(agent=ref, grant_id="anthropic")) == \
         ipc_errors.PROVIDER_STORE_UNAVAILABLE
     again = world.service().revoke(agent=ref, grant_id="anthropic")

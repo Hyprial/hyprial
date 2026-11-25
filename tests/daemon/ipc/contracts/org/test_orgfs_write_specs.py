@@ -21,11 +21,7 @@ _WRITE_METHODS = (
     "orgfs.move",
     "orgfs.remove",
     "orgfs.restore",
-    "orgfs.purge_plan",
-    "orgfs.purge",
     "orgfs.space_purge",
-    "orgfs.unban",
-    "orgfs.serve",
     "orgfs.checkout",
     "orgfs.invite",
     "orgfs.remove_member",
@@ -55,14 +51,7 @@ _PARAMS = {
     },
     "orgfs.remove": {"spaceId": "space-x", "path": "docs/a.md"},
     "orgfs.restore": {"spaceId": "space-x", "node": "id:n1", "version": "v1"},
-    "orgfs.purge_plan": {
-        "spaceId": "space-x",
-        "targets": [{"kind": "tree-range", "from": "a", "to": "b"}],
-    },
-    "orgfs.purge": {"spaceId": "space-x", "planId": "plan-1"},
     "orgfs.space_purge": {"spaceId": "space-x"},
-    "orgfs.unban": {"spaceId": "space-x", "sha": "0" * 64},
-    "orgfs.serve": {"spaceId": "space-x", "backend": "memory"},
     "orgfs.checkout": {"spaceId": "space-x", "enabled": True},
     "orgfs.invite": {"spaceId": "space-x", "user": "user:bob", "mode": "ro"},
     "orgfs.remove_member": {"spaceId": "space-x", "user": "user:bob"},
@@ -99,26 +88,6 @@ _MEMBER = {
     "added_by": "user:owner",
     "added_at": "2026-11-02T10:00:00Z",
 }
-_PLAN = {
-    "plan_id": "plan-1",
-    "space_id": "space-x",
-    "meta_frontier": "frontier",
-    "docs": [
-        {
-            "doc_id": "tree-1",
-            "start": "a",
-            "end": "b",
-            "update_blobs": [],
-            "log_keys": ["tree-1/lane-0/0"],
-        }
-    ],
-    "blobs": [],
-    "snapshots": [],
-    "writers_affected": ["node-1"],
-    "authors_before": {"user:owner": 2},
-    "expires_at": "2026-11-03T10:00:00Z",
-}
-
 _RESULTS = {
     "orgfs.create": _SPACE,
     "orgfs.write": _NODE,
@@ -128,25 +97,10 @@ _RESULTS = {
     "orgfs.move": _NODE,
     "orgfs.remove": {"ok": True},
     "orgfs.restore": _NODE,
-    "orgfs.purge_plan": _PLAN,
-    "orgfs.purge": {
-        "plan_id": "plan-1",
-        "executed_locally": True,
-        "acknowledged": ["node-1"],
-        "pending": [],
-        "replacements": [],
-    },
     "orgfs.space_purge": {
         "spaceId": "space-x",
         "purged": True,
         "localOnly": True,
-    },
-    "orgfs.unban": {"ok": True},
-    "orgfs.serve": {
-        "spaceId": "space-x",
-        "backend": "memory",
-        "durable": False,
-        "pinnedBlobs": [],
     },
     "orgfs.checkout": {
         "spaceId": "space-x",

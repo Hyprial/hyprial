@@ -258,4 +258,4 @@ def test_live_mcp_contract_passes_on_the_fixed_identity_server() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "mcp-tools: PASS 33/33"
+    assert completed.stdout.strip() == "mcp-tools: PASS 29/29"

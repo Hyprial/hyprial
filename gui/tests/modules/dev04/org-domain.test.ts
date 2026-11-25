@@ -231,11 +231,11 @@ describe('组织开发数据网关（内存）', () => {
     await expect(
       gateway.saveFile(ORG_TEAM, 'space-docs', 'guides/onboarding.md', '我的修改', 4),
     ).resolves.toEqual({ kind: 'ok', value: { version: 5, versionKey: '5' } });
-    const history = store.get().details[ORG_TEAM].history['space-docs:guides/onboarding.md'];
-    expect(history.map((item) => item.version).slice(0, 3)).toEqual([5, 4, 3]);
+    const saved = store.get().details[ORG_TEAM].files['space-docs'].find((item) => item.path === 'guides/onboarding.md');
+    expect(saved).toMatchObject({ version: 5, content: '我的修改' });
   });
 
-  it('文件：新建补齐上级目录，删除进回收站后可以恢复原位置', async () => {
+  it('文件：新建补齐上级目录，删除进回收站后文件可以恢复原位置，文件夹不恢复', async () => {
     const { store, gateway } = fixture();
     await gateway.createEntry(ORG_TEAM, 'space-docs', 'plans/q4/roadmap.md', 'file');
     const paths = () => store.get().details[ORG_TEAM].files['space-docs'].map((item) => item.path);
@@ -246,8 +246,17 @@ describe('组织开发数据网关（内存）', () => {
     const trashIds = store.get().details[ORG_TEAM].trash['space-docs'].map((item) => item.id);
     expect(new Set(trashIds).size).toBe(trashIds.length);
     const trashId = store.get().details[ORG_TEAM].trash['space-docs'][0].id;
-    await gateway.restoreEntry(ORG_TEAM, 'space-docs', trashId);
-    expect(paths()).toContain('plans/q4/roadmap.md');
+    await expect(gateway.restoreEntry(ORG_TEAM, 'space-docs', trashId)).resolves.toMatchObject({
+      kind: 'failed',
+      code: 'ORG_FOLDER_RESTORE_UNSUPPORTED',
+    });
+    expect(paths()).not.toContain('plans');
+    expect(store.get().details[ORG_TEAM].trash['space-docs'][0].id).toBe(trashId);
+    await gateway.createEntry(ORG_TEAM, 'space-docs', 'notes.md', 'file');
+    await gateway.deleteEntry(ORG_TEAM, 'space-docs', 'notes.md');
+    const fileTrashId = store.get().details[ORG_TEAM].trash['space-docs'][0].id;
+    await expect(gateway.restoreEntry(ORG_TEAM, 'space-docs', fileTrashId)).resolves.toEqual({ kind: 'ok', value: undefined });
+    expect(paths()).toContain('notes.md');
   });
 
   it('配置：校验错误时不能发布；发布候选后采信成为当前版本', async () => {

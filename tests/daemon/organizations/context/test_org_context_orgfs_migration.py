@@ -289,11 +289,9 @@ def test_morg_2_publish_failure_keeps_adoption_and_restart_retry_is_idempotent(
         assert first_retry["orgfsPublished"] is True
         assert not store.publish_pending_path.exists()
         restarted = application._require_orgfs_runtime()
-        first_history = restarted.facade.history(space_id, "candidates/owner.md")
+        first_node = restarted.facade.stat(space_id, "candidates/owner.md")
         assert application.handle("org.publish", {})["orgfsPublished"] is True
-        assert (
-            restarted.facade.history(space_id, "candidates/owner.md") == first_history
-        )
+        assert restarted.facade.stat(space_id, "candidates/owner.md") == first_node
 
         class _FailedMesh(_Endpoint):
             def publish_accepted(self) -> bool:

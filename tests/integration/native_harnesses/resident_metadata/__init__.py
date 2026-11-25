@@ -236,6 +236,7 @@ HISTORICAL_ROWS = frozenset(
         "daemon/impl/orgfs/document/register/__init__.py",
         "daemon/impl/request_catalog/org/membership/lifecycle.py",
         "daemon/impl/identity/profiles.py",
+        "daemon/impl/orgfs/document/structured.py",
     }
 )
 

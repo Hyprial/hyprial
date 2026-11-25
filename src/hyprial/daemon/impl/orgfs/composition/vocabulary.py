@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from threading import Lock
 import threading
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Callable, Final, Protocol
 
 if TYPE_CHECKING:
+    from hyprial.daemon.impl.orgfs.api import Registration
     from hyprial.daemon.impl.composition.actors import ActorHostRegistry
     from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
     from hyprial.kernel import ActorHost, EffectLane
@@ -16,6 +17,14 @@ from hyprial.kernel import ActorCell
 from hyprial.daemon.impl.transport import TransportSample
 
 from hyprial.daemon.impl.orgfs.storage.store  import LocalSpaceStore
+
+
+class _SpaceMetaWatcher(Protocol):
+    """Package-internal: observe committed changes to a space's meta doc."""
+
+    def watch_meta(
+        self, space_id: str, callback: Callable[[], None]
+    ) -> Registration: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +54,6 @@ class _JoinSpace:
 
 
 @dataclass(frozen=True, slots=True)
-class _ServeSpace:
-    space_id: str
-    backend: str
-
-
-@dataclass(frozen=True, slots=True)
 class _CheckoutSpace:
     space_id: str
     enabled: bool
@@ -74,7 +77,7 @@ class _MeshCreation:
     error: BaseException | None = None
 
 
-_DirectoryCallOperation = _JoinSpace | _ServeSpace | _CheckoutSpace | _OpenSpaceMesh
+_DirectoryCallOperation = _JoinSpace | _CheckoutSpace | _OpenSpaceMesh
 
 
 @dataclass(frozen=True, slots=True)

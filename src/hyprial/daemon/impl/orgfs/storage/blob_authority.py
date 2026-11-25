@@ -89,6 +89,13 @@ class _ReleaseBlob:
 
 
 @dataclass(frozen=True, slots=True)
+class _UnpinBlob:
+    space_id: str
+    digest: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class _DeleteBlobIfUnreferenced:
     digest: str
 
@@ -117,6 +124,7 @@ _BlobOperation = (
     | _ListBlobReferences
     | _FindOtherBlobReferences
     | _ReleaseBlob
+    | _UnpinBlob
     | _DeleteBlobIfUnreferenced
     | _ReadBlobChunk
     | _ReadBlobChunkAlias
@@ -325,6 +333,10 @@ class BlobAuthority:
                 )
             elif isinstance(operation, _ReleaseBlob):
                 value = self._store.release(operation.space_id, operation.digest)
+            elif isinstance(operation, _UnpinBlob):
+                value = self._store.unpin(
+                    operation.space_id, operation.digest, operation.reason
+                )
             elif isinstance(operation, _DeleteBlobIfUnreferenced):
                 value = self._store.delete_if_unreferenced(operation.digest)
             elif isinstance(operation, _ReadBlobChunk):
@@ -483,6 +495,9 @@ class BlobAuthority:
 
     def release(self, space_id: str, digest: str) -> None:
         self._call(_ReleaseBlob(space_id, digest))
+
+    def unpin(self, space_id: str, digest: str, reason: str) -> None:
+        self._call(_UnpinBlob(space_id, digest, reason))
 
     def delete_if_unreferenced(self, digest: str) -> bool:
         return self._call(_DeleteBlobIfUnreferenced(digest))

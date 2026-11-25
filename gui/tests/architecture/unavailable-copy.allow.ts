@@ -127,7 +127,6 @@ export const STATE: CopyMap = {
   ],
   "features/org/impl/sections/FilesSection.tsx": [
     "文件列表读取失败，暂不能判断是否为空；请刷新后重试。",
-    "该版本内容读取失败，正文不可用。",
   ],
   "features/org/impl/workspace/OrgWorkspace.tsx": [
     "暂不设置",

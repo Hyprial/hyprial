@@ -1,3 +1,11 @@
+# Decisions:
+# - Phase D T1: R4-A and R4-B run on the state host (``device_rows/support``).
+#   A forged child under Alice's protected directory that arrives before the
+#   directory is ``Pending("dependency")`` (design §3.6: nothing stored, no
+#   queue, so there is no capacity to consume); delivered again after the
+#   directory, as the next pull would, it is ``Rejected("protected-path")``
+#   and counted once (§3.7).  The other tests here are journal-only or
+#   identity tests and keep the journal replicas until package S.
 """ROUND 4 device-row admission, storage-key, and purge acceptance."""
 
 from __future__ import annotations
@@ -21,12 +29,15 @@ from hyprial.daemon.impl.orgfs.storage.replica import (
     ReplicaStore,
 )
 from hyprial.daemon.impl.transport import KeySpace, ZenohConfig, ZenohTransport
+from hyprial.daemon.impl.orgfs.membership import Accepted, Rejected
 from hyprial.identity import (
     DirectoryDevice,
     directory_device_path,
     parse_protected_directory_doc_id,
     protected_directory_doc_id,
 )
+
+from .support import ORG, Frame, Org, new_row
 
 OWNER = "owner@example"
 ALICE = "alice@example"
@@ -265,74 +276,6 @@ def _assert_alice_tree(runtime: OrgFsRuntime, space_id: str) -> None:
     assert missing.value.code == "unknown-doc"
 
 
-def test_r4_a_protected_parent_id_is_judged_before_parent_arrives(
-    replicas,
-) -> None:
-    """R4-A: a short-path judgment cannot fork or wedge Alice's tree lane."""
-
-    space_id, owner, alice, bob, carol, mkdir_update, forged, later_update = (
-        _arrival_order_updates(replicas)
-    )
-    refused_first = _receive(owner, space_id, forged, bob.node_id)
-    assert (refused_first.status, refused_first.code) == ("rejected", "not-a-member")
-    assert owner.stores[space_id]._db.execute(
-        "SELECT COUNT(*) FROM pending"
-    ).fetchone()[0] == 0
-    assert _receive(owner, space_id, mkdir_update, alice.node_id).status == "applied"
-
-    assert _receive(carol, space_id, mkdir_update, alice.node_id).status == "applied"
-    refused = _receive(carol, space_id, forged, bob.node_id)
-    assert (refused.status, refused.code) == ("rejected", "not-a-member")
-
-    for receiver in (owner, carol):
-        assert _receive(receiver, space_id, later_update, alice.node_id).status == "applied"
-        assert receiver.stores[space_id]._db.execute(
-            "SELECT COUNT(*) FROM pending"
-        ).fetchone()[0] == 0
-        _assert_alice_tree(receiver, space_id)
-
-
-def test_r4_b_protected_id_verdict_does_not_consume_pending_capacity(
-    replicas, caplog
-) -> None:
-    """R4-B: a tiny hold cap drops retryable bytes, never a durable verdict."""
-
-    space_id, owner, alice, bob, carol, mkdir_update, forged, later_update = (
-        _arrival_order_updates(replicas)
-    )
-    owner.stores[space_id]._pending_import_limit = 0
-    caplog.set_level("WARNING")
-    dropped = _receive(owner, space_id, forged, bob.node_id)
-    held = _receive(carol, space_id, forged, bob.node_id)
-    assert (dropped.status, dropped.code) == ("rejected", "not-a-member")
-    assert (held.status, held.code) == ("rejected", "not-a-member")
-    assert owner.stores[space_id]._db.execute(
-        "SELECT COUNT(*) FROM pending"
-    ).fetchone()[0] == 0
-    assert carol.stores[space_id]._db.execute(
-        "SELECT COUNT(*) FROM pending"
-    ).fetchone()[0] == 0
-    assert "orgfs dropped pending dependency" not in caplog.text
-
-    for receiver in (owner, carol):
-        assert _receive(receiver, space_id, mkdir_update, alice.node_id).status == "applied"
-    retried = _receive(owner, space_id, forged, bob.node_id)
-    assert (retried.status, retried.code) == ("rejected", "not-a-member")
-    for receiver in (owner, carol):
-        assert _receive(receiver, space_id, later_update, alice.node_id).status == "applied"
-        _assert_alice_tree(receiver, space_id)
-
-    forged_value = json.loads(forged)
-    assert owner.stores[space_id]._db.execute(
-        "SELECT 1 FROM commits WHERE writer = ? AND seq = ? AND doc_id = ?",
-        (
-            forged_value["origin"]["writer"],
-            forged_value["seq"],
-            forged_value["docId"],
-        ),
-    ).fetchone() is None
-
-
 @pytest.mark.parametrize(
     ("space_id", "owner", "path", "section", "path_principal", "leaf"),
     [
@@ -405,9 +348,8 @@ def test_r4_c_protected_ids_round_trip_through_every_real_key_validator(
     )
 
 
-def test_r4_c_put_broadcast_and_receiver_replica_store_the_row(replicas) -> None:
+def test_r4_c_put_broadcast_reaches_the_receiver(replicas) -> None:
     _tmp_path, space_id, owner, alice, _bob, _carol = replicas
-    alice.serve(space_id, backend="memory")
     row = _device(
         OWNER,
         "opaque-device",
@@ -425,15 +367,6 @@ def test_r4_c_put_broadcast_and_receiver_replica_store_the_row(replicas) -> None
         lambda: _equal(
             [item.device_id for item in OrgFsDirectoryStore(alice.facade).list_devices("group-acme")],
             [row.device_id],
-        )
-    )
-    _eventually(
-        lambda: _equal(
-            any(
-                f"/{doc_id}/" in key
-                for key in alice._replicas[space_id].backend_keys("log/")
-            ),
-            True,
         )
     )
 
@@ -491,3 +424,90 @@ def test_r5_long_protected_path_is_stored_not_refused(replicas) -> None:
     owner.facade.write_text(space_id, path, "{}")
     text, _version = owner.facade.read_text(space_id, path)
     assert text == "{}"
+
+
+@pytest.fixture
+def state_org():
+    value = Org()
+    try:
+        yield value
+    finally:
+        value.close()
+
+
+def _state_arrival_order_updates(org: Org) -> tuple[list[Frame], Frame, list[Frame]]:
+    space_id = org.space_id
+    org.directory(BOB).put_device(ORG, _device(BOB, "bob-device", address="tcp://10.0.0.8:7447#bob"))
+    org.deliver()
+    mkdir = org.capture(ALICE, lambda: org.fs(ALICE).mkdir(space_id, f"directory/devices/{ALICE}"))
+    for frame in mkdir:
+        assert org.apply(BOB, frame, peer="node-alice") == Accepted()
+    parent = org.node_id(BOB, f"directory/devices/{ALICE}")
+    forged = org.forge_rows(
+        BOB,
+        [new_row("bob-forged-child", parent=parent, name="evil.json",
+                 doc_id="doc-00000000-0000-4000-8000-000000000099")],
+        author=BOB,
+    )
+    later = org.capture(ALICE, lambda: org.fs(ALICE).mkdir(space_id, f"directory/devices/{ALICE}/later"))
+    return mkdir, forged, later
+
+
+def _assert_state_alice_tree(org: Org, user: str) -> None:
+    assert org.fs(user).stat(org.space_id, f"directory/devices/{ALICE}/later").kind == "dir"
+    assert org.missing(user, f"directory/devices/{ALICE}/evil.json")
+
+
+def _rejection_code(outcome: object) -> str | None:
+    return outcome.code if isinstance(outcome, Rejected) else None
+
+
+def test_r4_a_protected_parent_id_is_judged_before_parent_arrives(state_org: Org) -> None:
+    """R4-A: an early forged child cannot fork or wedge Alice's tree."""
+
+    org = state_org
+    mkdir, forged, later = _state_arrival_order_updates(org)
+    before = org.listing(OWNER)
+    early = org.apply(OWNER, forged, peer="node-bob")
+    assert not isinstance(early, Accepted)
+    assert org.listing(OWNER) == before
+    for frame in mkdir:
+        assert org.apply(OWNER, frame, peer="node-alice") == Accepted()
+    assert _rejection_code(org.apply(OWNER, forged, peer="node-bob")) == "protected-path"
+
+    for frame in mkdir:
+        assert org.apply(CAROL, frame, peer="node-alice") == Accepted()
+    assert _rejection_code(org.apply(CAROL, forged, peer="node-bob")) == "protected-path"
+
+    for receiver in (OWNER, CAROL):
+        for frame in later:
+            assert org.apply(receiver, frame, peer="node-alice") == Accepted()
+        _assert_state_alice_tree(org, receiver)
+    assert org.listing(OWNER) == org.listing(CAROL)
+
+
+def test_r4_b_protected_id_verdict_does_not_consume_pending_capacity(state_org: Org) -> None:
+    """R4-B: waiting for a predecessor stores and counts nothing; the verdict counts once."""
+
+    org = state_org
+    mkdir, forged, later = _state_arrival_order_updates(org)
+    for frame in mkdir:
+        assert org.apply(CAROL, frame, peer="node-alice") == Accepted()
+
+    before = org.listing(OWNER)
+    waiting = org.apply(OWNER, forged, peer="node-bob")
+    held = org.apply(CAROL, forged, peer="node-bob")
+    assert not isinstance(waiting, (Accepted, Rejected))
+    assert _rejection_code(held) == "protected-path"
+    assert org.listing(OWNER) == before
+    assert (org.rejected(OWNER), org.rejected(CAROL)) == (0, 1)
+
+    for frame in mkdir:
+        assert org.apply(OWNER, frame, peer="node-alice") == Accepted()
+    assert _rejection_code(org.apply(OWNER, forged, peer="node-bob")) == "protected-path"
+    assert isinstance(org.apply(CAROL, forged, peer="node-bob"), Rejected)
+    assert (org.rejected(OWNER), org.rejected(CAROL)) == (1, 1)
+    for receiver in (OWNER, CAROL):
+        for frame in later:
+            assert org.apply(receiver, frame, peer="node-alice") == Accepted()
+        _assert_state_alice_tree(org, receiver)

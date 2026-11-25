@@ -96,12 +96,11 @@ ERROR_DATA: dict[str, Any] = {
 }
 
 
-def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
+def node_schema() -> dict[str, Any]:
     """One orgfs node as projected by ``_orgfs_json``.
 
     ``read``/``ls``/``stat`` receive a dataclass directly and therefore name the
-    field ``contentState``; histories embed the node through ``asdict`` and
-    keep the dataclass spelling ``content_state``.  Both spellings are real.
+    field ``contentState``.
     """
 
     return {
@@ -120,7 +119,7 @@ def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
             "modified_via": {"type": ["string", "null"]},
             "name_conflict": Boolean,
             "deleted": Boolean,
-            content_state_key: {
+            "contentState": {
                 "type": ["string", "null"],
                 "enum": ["arrived", "pending", "unverifiable", None],
             },
@@ -140,7 +139,7 @@ def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
             "modified_via",
             "name_conflict",
             "deleted",
-            content_state_key,
+            "contentState",
             "uri",
         ],
         "additionalProperties": False,
@@ -148,7 +147,6 @@ def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
 
 
 NODE = node_schema()
-HISTORY_NODE = node_schema("content_state")
 
 SPACE = {
     "type": "object",
@@ -172,22 +170,6 @@ MEMBER = {
         "added_at": String,
     },
     "required": ["space_id", "user", "mode", "added_by", "added_at"],
-    "additionalProperties": False,
-}
-
-HISTORY_ENTRY = {
-    "type": "object",
-    "properties": {
-        "node": HISTORY_NODE,
-        "changed": {
-            "type": "string",
-            "enum": ["position", "content", "both", "created", "removed", "restored"],
-        },
-        "author": String,
-        "actor": {"type": ["string", "null"]},
-        "at": String,
-    },
-    "required": ["node", "changed", "author", "actor", "at"],
     "additionalProperties": False,
 }
 

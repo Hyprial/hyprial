@@ -1,3 +1,12 @@
+# Decisions:
+# - 2026-11-25, orgfs-minimal design section 5 (C5): a leave request covers the
+#   member's current add only when its memberAddedAt equals addedAt of the
+#   user's current member row.  A missing or malformed field, or no member row,
+#   is not covered.  The journal's causal relation is no longer consulted, so
+#   the check survives the removal of document_covers_member_add.
+# - 2026-11-25 (C5): parkedCommits is read only through
+#   parked_commits_diagnostic, the one place phase D re-sources from
+#   status.rejected_updates before the field is removed.
 """The OrgFS-backed ``DirectoryStore``: org directories as OrgFS documents.
 
 Each organization occupies one OrgFS directory space named ``group-NAME``
@@ -27,9 +36,9 @@ import json
 import logging
 import time
 from threading import Lock
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
-from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
+from hyprial.daemon.impl.orgfs.api import MemberInfo, OrgFs, OrgFsError
 from hyprial.identity import (
     DIRECTORY_DIR,
     INVITES_DIR,
@@ -143,18 +152,9 @@ class OrgFsDirectoryStore:
         not exist.
         """
         devices, content_pending, data_problems = self._scan(org)
-        try:
-            parked: list[dict[str, Any]] | None = self.parked_commits(org)
-        except Exception as error:  # noqa: BLE001 - must not hide the device listing
-            parked = None  # unknown, never "nothing parked"
-            fields = {"org": org, "detail": str(error)}
-            if self._logger is not None:
-                self._logger("warn", "org", "directory.parked_unavailable", **fields)
-            else:
-                _LOG.warning("org.directory.parked_unavailable org=%s detail=%s", org, error)
         status: dict[str, Any] = {
             "contentPending": content_pending,
-            "parkedCommits": parked,
+            "parkedCommits": self.parked_commits_diagnostic(org),
         }
         if data_problems:
             status["dataProblems"] = data_problems
@@ -305,6 +305,24 @@ class OrgFsDirectoryStore:
         problems.sort(key=lambda row: str(row["path"]))
         return devices, pending, problems
 
+    def parked_commits_diagnostic(self, org: str) -> list[dict[str, Any]] | None:
+        """The ``parkedCommits`` value of the directory status for ``org``.
+
+        The only place the directory status reads OrgFS for held-back
+        updates.  ``None`` means the read failed: unknown, never "nothing
+        parked"; the failure is logged and never hides the device listing.
+        """
+
+        try:
+            return self.parked_commits(org)
+        except Exception as error:  # noqa: BLE001 - must not hide the device listing
+            fields = {"org": org, "detail": str(error)}
+            if self._logger is not None:
+                self._logger("warn", "org", "directory.parked_unavailable", **fields)
+            else:
+                _LOG.warning("org.directory.parked_unavailable org=%s detail=%s", org, error)
+            return None
+
     def parked_commits(self, org: str) -> list[dict[str, Any]]:
         """Commits received for ``org``'s directory but parked behind a gap.
 
@@ -453,13 +471,28 @@ class OrgFsDirectoryStore:
         space_id = self._space_id(org)
         return self._fs.document_authors(space_id, f"{LEAVES_DIR}/{user}.json")
 
+    def member_added_at(self, org: str, user: str) -> str | None:
+        """Return ``addedAt`` of ``user``'s current member row, if there is one."""
+
+        return current_member_added_at(self._fs.members(self._space_id(org)), user)
+
     def leave_request_covers_current_add(self, org: str, user: str) -> bool:
-        """Return whether the request causally follows the member's latest add."""
+        """Return whether the request was filed in the member's current period.
+
+        The request's ``memberAddedAt`` must equal ``addedAt`` of the user's
+        current member row.  A missing or malformed field, an unreadable
+        request and an absent member row all count as not covered.
+        """
 
         space_id = self._space_id(org)
-        return self._fs.document_covers_member_add(
-            space_id, f"{LEAVES_DIR}/{user}.json", directory_owner_principal(user)
-        )
+        try:
+            text, _version = self._fs.read_text(space_id, f"{LEAVES_DIR}/{user}.json")
+            record = json.loads(text)
+            current = self.member_added_at(org, user)
+        except (OrgFsError, ValueError):
+            return False
+        filed = leave_request_member_added_at(record)
+        return filed is not None and filed == current
 
     def remove_leave_request(self, org: str, user: str) -> bool:
         """Delete one leave request; ``False`` when it was already absent."""
@@ -789,7 +822,39 @@ class OrgFsDirectoryStore:
         )
 
 
-__all__ = ["InvalidDeviceDiagnostics", "OrgFsDirectoryStore"]
+__all__ = [
+    "InvalidDeviceDiagnostics",
+    "OrgFsDirectoryStore",
+    "current_member_added_at",
+    "leave_request_member_added_at",
+]
+
+
+def current_member_added_at(members: Iterable[MemberInfo], user: str) -> str | None:
+    """Return ``addedAt`` of ``user``'s row among current ``members``."""
+
+    principal = directory_owner_principal(user)
+    return next(
+        (
+            member.added_at
+            for member in members
+            if directory_owner_principal(member.user) == principal
+        ),
+        None,
+    )
+
+
+def leave_request_member_added_at(record: object) -> str | None:
+    """Return a leave request's ``memberAddedAt`` when it is well formed.
+
+    The field is required: a record that is not a JSON object, lacks it, or
+    carries anything but a non-empty string yields ``None``.
+    """
+
+    if not isinstance(record, dict):
+        return None
+    value = record.get("memberAddedAt")
+    return value if isinstance(value, str) and value else None
 
 
 def leave_request_admitted(
@@ -801,9 +866,9 @@ def leave_request_admitted(
     """Whether ``user``'s leave request in ``org`` may be fulfilled now.
 
     The request is member-written: the owner's sweep fulfils it only when its
-    name is a user, its OrgFS authors are exactly that user, and it was written
-    after the member's current add.  Anything else is logged and skipped (an
-    unparseable name is also removed), never fatal to the sweep.
+    name is a user, its OrgFS authors are exactly that user, and its
+    ``memberAddedAt`` names the member's current add.  Anything else is logged
+    and skipped (an unparseable name is also removed), never fatal to the sweep.
     """
 
     # The filename is member-written: a name that cannot be a user

@@ -1,3 +1,8 @@
+# Rehearsal switch (phase D, package D2, 2026-11-25; plan §3.4 last paragraph):
+# - Test-only: with ``HYPRIAL_ORGFS_IMPL=state`` in the environment when this
+#   module is imported, the name ``LocalOrgFs`` is bound to ``StateOrgFs``
+#   (the state host).  Any other value, or none, keeps the legacy class.  The
+#   switch exists until package S and is not a product setting.
 from __future__ import annotations
 
 
@@ -57,7 +62,6 @@ from hyprial.daemon.impl.orgfs.document.model import TreeDocument as TreeDocumen
 from hyprial.daemon.impl.orgfs.document.model import _AcknowledgePurge as _AcknowledgePurge
 from hyprial.daemon.impl.orgfs.document.model import _ApplyContentUpdate as _ApplyContentUpdate
 from hyprial.daemon.impl.orgfs.document.model import _ApplyEnvelope as _ApplyEnvelope
-from hyprial.daemon.impl.orgfs.document.model import _ApplyStructuredUpdate as _ApplyStructuredUpdate
 from hyprial.daemon.impl.orgfs.document.model import _ApplyTreeUpdate as _ApplyTreeUpdate
 from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending as _BroadcastPending
 from hyprial.daemon.impl.orgfs.document.model import _ContentDocument as _ContentDocument
@@ -78,7 +82,6 @@ from hyprial.daemon.impl.orgfs.document.model import _MetaWatchNotification as _
 from hyprial.daemon.impl.orgfs.document.model import _Move as _Move
 from hyprial.daemon.impl.orgfs.document.model import _Node as _Node
 from hyprial.daemon.impl.orgfs.document.model import _NodeSnapshot as _NodeSnapshot
-from hyprial.daemon.impl.orgfs.document.model import _OrgDoc as _OrgDoc
 from hyprial.daemon.impl.orgfs.document.model import _Purge as _Purge
 from hyprial.daemon.impl.orgfs.document.model import _PurgePlanCommand as _PurgePlanCommand
 from hyprial.daemon.impl.orgfs.document.model import _ReconcileReplicaBlobs as _ReconcileReplicaBlobs
@@ -171,3 +174,7 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         self._events: dict[str, list[ChangeEvent]] = {}
         self._purge_plans: dict[str, tuple[PurgePlan, tuple[dict[str, str], ...]]] = {}
         self._pending_outbox: dict[str, list[CommitRecord]] = {}
+
+
+if __import__("os").environ.get("HYPRIAL_ORGFS_IMPL") == "state":
+    from hyprial.daemon.impl.orgfs.document.coordinator import StateOrgFs as LocalOrgFs  # type: ignore[assignment]  # noqa: E402, F401

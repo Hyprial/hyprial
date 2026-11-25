@@ -1,9 +1,26 @@
+# Decisions:
+# - Phase D, package T2 (triage "pending" for the three directory-ingress
+#   tests, decided: keep).  The directory mailbox, its custody bound and the
+#   reserved rebuild catch-up belong to ``RuntimeDirectory``, which
+#   ``StateOrgFsRuntime`` composes unchanged.  The overflow test failed on the
+#   state runtime only because its announces lacked ``protocol: 3``; it now
+#   constructs the state runtime.  The other two pass on both runtimes and
+#   keep ``OrgFsRuntime`` (package S points the name at the new runtime).
+# - The three ``OrgFsMesh`` tests below exercise the journal mesh directly and
+#   pass under the switch; they go with ``OrgFsMesh`` in package S.  Their
+#   behaviour on protocol 3 is covered by
+#   ``sync/test_broadcast.py::test_ingress_is_bounded_forged_floods_drop_and_pulls_recover``,
+#   ``sync/test_lifecycle.py::test_close_drains_admitted_broadcasts_then_never_calls_the_host``,
+#   ``::test_close_raises_when_the_deadline_passes_with_work_in_flight``,
+#   ``::test_close_stops_a_round_before_its_next_host_call`` and
+#   ``::test_request_blob_queue_is_bounded``.
 import threading
 import time
 import json
 from types import SimpleNamespace
 
 from hyprial.daemon.impl.orgfs.mesh import OrgFsMesh
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _DirectoryEffect
 from hyprial.daemon.impl.transport import KeySpace, TransportSample, ZenohConfig
@@ -65,16 +82,16 @@ def test_directory_mailbox_preserves_the_reserved_overflow_envelope(tmp_path, mo
 
     monkeypatch.setattr(runtime_module, "ORGFS_ANNOUNCE_BUFFER_LIMIT", 3)
     entered, release = threading.Event(), threading.Event()
-    original_receive = OrgFsRuntime._on_directory_command
+    original_receive = StateOrgFsRuntime._on_directory_command
 
     def before_dequeue(runtime, command):
         entered.set()
         assert release.wait(3)
         return original_receive(runtime, command)
 
-    monkeypatch.setattr(OrgFsRuntime, "_on_directory_command", before_dequeue)
+    monkeypatch.setattr(StateOrgFsRuntime, "_on_directory_command", before_dequeue)
     events = []
-    runtime = OrgFsRuntime(
+    runtime = StateOrgFsRuntime(
         tmp_path, node_id="reader", author="user:reader",
         logger=lambda level, event, **fields: events.append((event, fields)),
     )
@@ -85,7 +102,7 @@ def test_directory_mailbox_preserves_the_reserved_overflow_envelope(tmp_path, mo
             node = f"node-{index}"
             runtime._admit_directory_sample("announce", TransportSample(
                 KeySpace().orgfs_announce(node),
-                json.dumps({"schemaVersion": 1, "type": "orgfs-announce", "node": node,
+                json.dumps({"schemaVersion": 1, "type": "orgfs-announce", "protocol": 3, "node": node,
                             "spaces": [{"spaceId": f"space-{index}"}]}).encode(),
             ))
             if index == 0:

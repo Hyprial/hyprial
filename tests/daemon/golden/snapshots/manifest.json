@@ -780,10 +780,6 @@
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
   },
-  "orgfs.history": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
   "orgfs.import": {
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
@@ -812,23 +808,7 @@
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
   },
-  "orgfs.purge": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
-  "orgfs.purge_plan": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
-  "orgfs.purge_status": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
   "orgfs.read": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
-  "orgfs.read_at": {
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
   },
@@ -848,10 +828,6 @@
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
   },
-  "orgfs.serve": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
   "orgfs.space_purge": {
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
@@ -864,19 +840,11 @@
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
   },
-  "orgfs.stat_at": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
   "orgfs.status": {
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
   },
   "orgfs.trash": {
-   "covered": false,
-   "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
-  },
-  "orgfs.unban": {
    "covered": false,
    "reason": "BLOCKED in this in-process harness: needs the real OrgFS runtime behind the IPC facade (the golden OrgFs fake has none). S3 writes cells through the facade, not this request surface; its first cell write is the plan's one allowed orgfs.* re-pin."
   },

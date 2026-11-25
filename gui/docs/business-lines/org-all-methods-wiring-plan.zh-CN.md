@@ -42,8 +42,8 @@
 | `purgeEntry` | `orgfs.purge_plan` + `orgfs.purge` |
 | 空间/目录/回收站快照 | `orgfs.spaces` / `orgfs.ls` / `orgfs.trash` |
 
-`orgfs.history`、`read`、`watch`、`status`、`serve`、`checkout`、`members`、`invite`、
-`join`、`remove_member`、`create`、`space_purge`、`unban`、`resolve`、`stat_at`、`read_at`
+`read`、`watch`、`status`、`serve`、`checkout`、`members`、`invite`、
+`join`、`remove_member`、`create`、`space_purge`、`unban`、`resolve`
 已有 HTTP 方法；当前 GUI 没有对应动作/渲染位，不新造 UI，不伪装成已接。
 
 ### link / hosts / top

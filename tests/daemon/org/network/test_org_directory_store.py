@@ -1,3 +1,10 @@
+# Decisions:
+# - Phase D T1: three tests run on ``StateOrgFsRuntime`` (``state_runtime``)
+#   whatever the rehearsal switch says.  Document authors are read through
+#   ``facade.document_authors`` instead of a journal store; a member's write
+#   of another user's ``people`` row is ``protected-path`` (design §3.4); the
+#   record whose owner disagrees with its path is written by the path's own
+#   user through the facade instead of being planted in a projection.
 """OrgFsDirectoryStore against a real local OrgFS runtime (no transport)."""
 
 from __future__ import annotations
@@ -15,6 +22,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.storage.store import LocalSpaceStore
 from hyprial.daemon.impl.org.network.directory import (
@@ -69,6 +77,15 @@ def _as(runtime: OrgFsRuntime, owner: str):
 
 
 @pytest.fixture
+def state_runtime(tmp_path: Path) -> StateOrgFsRuntime:
+    runtime = StateOrgFsRuntime(
+        tmp_path / "state", node_id="node-a", author="user:owner@example"
+    )
+    yield runtime
+    runtime.close()
+
+
+@pytest.fixture
 def runtime(tmp_path: Path) -> OrgFsRuntime:
     runtime = OrgFsRuntime(
         tmp_path / "state", node_id="node-a", author="user:owner@example"
@@ -109,11 +126,13 @@ def test_orgs_lists_only_org_spaces(runtime: OrgFsRuntime) -> None:
 
 
 def test_raw_orgfs_write_of_a_people_row_has_no_publication_time_gate(
-    runtime: OrgFsRuntime,
+    state_runtime: StateOrgFsRuntime,
 ) -> None:
     """R3: nothing publishes or reads a binding row any more; ``people`` stays a
     protected section, so its author rule still holds, but a row is admitted
     whatever its content."""
+
+    runtime = state_runtime
 
     space = runtime.facade.create_space("group-acme")
     runtime.facade.invite(space.space_id, "user:bob@example", "rw")
@@ -126,7 +145,7 @@ def test_raw_orgfs_write_of_a_people_row_has_no_publication_time_gate(
     runtime.facade.write_text(space.space_id, path, row)
 
     assert runtime.facade.read_text(space.space_id, path)[0] == row
-    with _as(runtime, "bob@example"), pytest.raises(OrgFsError, match="not-a-member"):
+    with _as(runtime, "bob@example"), pytest.raises(OrgFsError, match="protected-path"):
         runtime.facade.write_text(space.space_id, path, "{}")
 
 
@@ -138,9 +157,11 @@ def test_list_devices_on_a_fresh_org_is_empty(runtime: OrgFsRuntime) -> None:
 
 
 def test_reader_skips_prefixed_row_when_path_record_and_authors_disagree(
-    runtime: OrgFsRuntime,
+    state_runtime: StateOrgFsRuntime,
 ) -> None:
-    """A pre-fix poisoned row is warning-only and never reaches consumers."""
+    """A record naming another owner is warning-only and never reaches consumers."""
+
+    runtime = state_runtime
 
     space = runtime.facade.create_space("group-acme")
     valid = _device("random-device")
@@ -151,8 +172,10 @@ def test_reader_skips_prefixed_row_when_path_record_and_authors_disagree(
         space.space_id, "directory/devices/owner@example/random-device.json"
     )
     poisoned = replace(valid, owner="bob@example")
-    runtime.facade._spaces[space.space_id].contents[info.doc_id].set(
-        json.dumps(poisoned.as_record(), sort_keys=True, separators=(",", ":"))
+    runtime.facade.write_text(
+        space.space_id,
+        f"id:{info.node_id}",
+        json.dumps(poisoned.as_record(), sort_keys=True, separators=(",", ":")),
     )
     events: list[tuple[str, str, str, dict]] = []
     store = OrgFsDirectoryStore(
@@ -535,9 +558,11 @@ def test_reader_ignores_a_non_deterministic_doc_link_with_warning(
 
 
 def test_put_device_reuses_the_deterministic_document_id(
-    runtime: OrgFsRuntime,
+    state_runtime: StateOrgFsRuntime,
 ) -> None:
     """Round 3 removes M2 replacement: authorization prevents pollution."""
+
+    runtime = state_runtime
 
     space = runtime.facade.create_space("group-acme")
     store = OrgFsDirectoryStore(runtime.facade)
@@ -552,7 +577,7 @@ def test_put_device_reuses_the_deterministic_document_id(
 
     replacement = runtime.facade.stat(space.space_id, path)
     assert replacement.doc_id == original.doc_id
-    assert runtime.stores[space.space_id].document_authors(replacement.doc_id) == (
+    assert runtime.facade.document_authors(space.space_id, path) == (
         "user:owner@example",
     )
     assert store.list_devices("group-acme") == [clean]

@@ -162,6 +162,7 @@ FROZEN_CODES = frozenset(
         # of loading a compaction backup as a second space.  The code names the
         # offending path and carries the same grow-only contract as the rest.
         "ORGFS_INVALID_SPACE_DIRECTORY",
+        "ORGFS_LAYOUT_UNSUPPORTED",
         "ORG_ACL_GRANT_FORBIDDEN",
         "ORG_ACL_GRANT_NOT_OWNED",
         "ORG_ACL_WRITE_DENIED",

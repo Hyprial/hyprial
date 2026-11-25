@@ -1,3 +1,9 @@
+# Decisions:
+# - Phase D T1: ``test_r8_overlong_writer_is_rejected_without_journal_residue``
+#   was deleted: the state host has no per-writer journal lane (a writer is a
+#   CRDT client id, never a path component) and keeps no pending rows, so
+#   neither the input nor the residue it guarded against exists.  The other
+#   tests here are journal-only and leave with package S.
 """ROUND 8 writer, pending-supplier, and drain-efficiency acceptance."""
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from hyprial.daemon.impl.orgfs.storage.store import (
     _encode_state_vector,
 )
 
-from .test_round4 import ALICE, OWNER, _receive, replicas
+from .test_round4 import ALICE, _receive, replicas
 from .test_round6 import _pending_count, _tree_envelope
 
 _IMPORTED_REPLICAS_FIXTURE = replicas
@@ -64,39 +70,6 @@ def _pending_meta_envelope(
         runtime.stores[space_id]
     )
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-
-
-def test_r8_overlong_writer_is_rejected_without_journal_or_replica_residue(
-    round8_replicas,
-) -> None:
-    """A writer that cannot be a filesystem component never crosses ingress."""
-
-    _tmp_path, space_id, owner, alice, _bob, _carol = round8_replicas
-    alice.serve(space_id, backend="memory")
-    envelope = _tree_envelope(
-        owner,
-        space_id,
-        author=OWNER,
-        actor="overlong-writer",
-        node_id="overlong-writer-child",
-        parent="missing-parent",
-        name="child.json",
-        doc_id="doc-00000000-0000-4000-8000-000000000801",
-    )
-    value = json.loads(envelope)
-    value["origin"]["writer"] = "w" * 300
-    crafted = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-
-    result = _receive(alice, space_id, crafted, owner.node_id)
-
-    assert (result.status, result.code) == ("rejected", "invalid-argument")
-    assert alice.stores[space_id]._db.execute(
-        "SELECT 1 FROM commits WHERE writer = ?", ("w" * 300,)
-    ).fetchone() is None
-    assert alice.stores[space_id]._db.execute(
-        "SELECT 1 FROM pending WHERE writer = ?", ("w" * 300,)
-    ).fetchone() is None
-    assert not any("w" * 300 in key for key in alice._replicas[space_id].backend_keys("log/"))
 
 
 def test_r8_replica_segments_reserve_suffix_margin() -> None:

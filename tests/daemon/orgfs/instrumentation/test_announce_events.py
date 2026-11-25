@@ -1,3 +1,15 @@
+# Decisions:
+# - Phase D, package T2 (triage "pending", decided: keep).  The announce
+#   handling these diagnostics observe (buffering, holder promotion, the
+#   held-space re-announce) is ``RuntimeDirectory``'s, which
+#   ``StateOrgFsRuntime`` composes unchanged, so the switch and the
+#   logger-failure isolation still matter and run on the state runtime.
+# - Samples carry ``protocol: 3`` (the state runtime drops other protocols).
+# - ``announce.published`` was logged by the journal mesh's ``announce``;
+#   ``StateSpaceSync.announce`` has no instrumentation, so the expected event
+#   set loses it and the mesh half of both tests is removed.  The sync's own
+#   announce payload is covered by
+#   ``sync/test_lifecycle.py::test_announce_lists_this_space_with_protocol_3``.
 """Switch and actor-path coverage for OrgFS announce diagnostics."""
 
 from __future__ import annotations
@@ -6,27 +18,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _DirectoryEffectBatch
-from hyprial.daemon.impl.orgfs.mesh import OrgFsMesh
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.transport import KeySpace, TransportSample
 
 
 _ANNOUNCE_EVENTS = {
     "announce.broadcast",
     "announce.buffered",
-    "announce.published",
     "announce.received",
     "holder.promoted",
 }
-
-
-class _PutSession:
-    def __init__(self) -> None:
-        self.puts: list[tuple[str, bytes]] = []
-
-    def put(self, key: str, payload: bytes) -> None:
-        self.puts.append((key, payload))
 
 
 class _Announcer:
@@ -44,6 +46,7 @@ def _sample(node: str, space_id: str) -> TransportSample:
             {
                 "schemaVersion": 1,
                 "type": "orgfs-announce",
+                "protocol": 3,
                 "node": node,
                 "durable": True,
                 "spaces": [{"spaceId": space_id}],
@@ -54,13 +57,13 @@ def _sample(node: str, space_id: str) -> TransportSample:
 
 def _exercise_announce_events(
     state_dir: Path, *, enabled: bool
-) -> tuple[list[tuple[str, str, dict[str, Any]]], _PutSession]:
+) -> list[tuple[str, str, dict[str, Any]]]:
     events: list[tuple[str, str, dict[str, Any]]] = []
 
     def record(level: str, event: str, **fields: Any) -> None:
         events.append((level, event, fields))
 
-    runtime = OrgFsRuntime(
+    runtime = StateOrgFsRuntime(
         state_dir,
         node_id="reader-node",
         author="user:reader@example.com",
@@ -89,29 +92,17 @@ def _exercise_announce_events(
         runtime._session = None
         runtime._meshes.clear()
         runtime.close()
-
-    session = _PutSession()
-    mesh = object.__new__(OrgFsMesh)
-    mesh.session = session
-    mesh.node_id = "owner-node"
-    mesh.durable = True
-    mesh._keys = KeySpace()
-    mesh._announcement_source = lambda: ({"spaceId": "space-promoted"},)
-    mesh._logger = record
-    mesh._announce_instrumentation_enabled = enabled
-    mesh.announce()
-    return events, session
+    return events
 
 
 def test_announce_instrumentation_switch_is_off_by_default_and_additive(
     tmp_path: Path,
 ) -> None:
-    off_events, off_session = _exercise_announce_events(tmp_path / "off", enabled=False)
-    on_events, on_session = _exercise_announce_events(tmp_path / "on", enabled=True)
+    off_events = _exercise_announce_events(tmp_path / "off", enabled=False)
+    on_events = _exercise_announce_events(tmp_path / "on", enabled=True)
 
     assert {event for _level, event, _fields in off_events} & _ANNOUNCE_EVENTS == set()
     assert {event for _level, event, _fields in on_events} & _ANNOUNCE_EVENTS == _ANNOUNCE_EVENTS
-    assert len(off_session.puts) == len(on_session.puts) == 1
 
 
 def test_announce_instrumentation_logger_failure_cannot_change_observed_flow(
@@ -120,7 +111,7 @@ def test_announce_instrumentation_logger_failure_cannot_change_observed_flow(
     def broken_logger(_level: str, _event: str, **_fields: Any) -> None:
         raise RuntimeError("diagnostic sink failed")
 
-    runtime = OrgFsRuntime(
+    runtime = StateOrgFsRuntime(
         tmp_path,
         node_id="reader-node",
         author="user:reader@example.com",
@@ -144,15 +135,3 @@ def test_announce_instrumentation_logger_failure_cannot_change_observed_flow(
         runtime._session = None
         runtime._meshes.clear()
         runtime.close()
-
-    session = _PutSession()
-    mesh = object.__new__(OrgFsMesh)
-    mesh.session = session
-    mesh.node_id = "owner-node"
-    mesh.durable = True
-    mesh._keys = KeySpace()
-    mesh._announcement_source = lambda: ({"spaceId": "space-promoted"},)
-    mesh._logger = broken_logger
-    mesh._announce_instrumentation_enabled = True
-    mesh.announce()
-    assert len(session.puts) == 1

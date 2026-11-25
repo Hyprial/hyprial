@@ -1,90 +1,68 @@
-"""A log callback finishing after runtime close must not re-open stores.
+# Decisions:
+# - Phase D, package T2: rewritten onto ``StateOrgFsRuntime``.  The late work
+#   is no longer a journal log callback reaching the mesh's on-applied hook:
+#   every inbound update reaches the coordinator through the space's sync
+#   host (``SyncHost.apply_remote``), so the test keeps a reference to the
+#   closed node's sync host and delivers a real update from the owner after
+#   ``close``.  Refusing that work is allowed (``unavailable``); opening a
+#   store again is not: the runtime's store registry must stay empty.
+# - The in-process network replaces the two Zenoh sessions; the property is
+#   about close custody, not transport.
+"""Work arriving after runtime close must not re-open space stores.
 
-On dev (pre-#976) the on-applied hook reaches the lazy store registry after
-close() cleared it, re-opens journal.sqlite3/-wal/-shm and nothing closes them
-again: the resident_blobs CI fd leak (80a6e231 group).  #976 refuses the late
-hook with ``unavailable: orgfs is closing``; this keeps that behaviour pinned.
+On dev (pre-#976) the on-applied hook reached the lazy store registry after
+close() cleared it and re-opened the space's files, which nothing closed
+again (the resident_blobs CI fd leak, 80a6e231 group).  #976 refuses late
+work with ``unavailable: orgfs is closing``; this keeps that pinned.
 """
 
 from __future__ import annotations
 
-import socket
-import time
+from collections.abc import Iterator
 
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.transport import ZenohConfig, ZenohTransport
+from hyprial.daemon.impl.orgfs.membership.contract import Accepted
+from tests.daemon.orgfs.mesh.replication.state_support import (
+    StatePeers,
+    open_state_peers,
+    shared_space,
+)
+from tests.daemon.orgfs.runtime_state.support import eventually, text
 
 
-def _port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+@pytest.fixture
+def state_peers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[StatePeers]:
+    yield from open_state_peers(tmp_path, monkeypatch)
 
 
-@pytest.fixture(autouse=True)
-def isolated_orgfs_environment(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("HYPRIAL_PEER_DISCOVERY", "0")
+def test_late_log_callback_after_close_does_not_reopen_store(state_peers: StatePeers) -> None:
+    owner = state_peers.add("node-owner", "user:owner")
+    peer = state_peers.add("node-peer", "user:peer")
+    space_id = shared_space(state_peers, owner, peer, name="late callback")
+    owner.fs.write_text(space_id, "before.txt", "seen")
+    eventually(lambda: _assert_text(peer, space_id, "before.txt", "seen"))
+    runtime = peer.runtime
+    assert runtime is not None
+    host = peer.fs.sync_host(space_id)
+    vector = host.read_vectors(("tree",))["tree"]
+    owner.fs.write_text(space_id, "late.txt", "delivered after close")
+    found = owner.fs.sync_host(space_id).read_update("tree", vector)
+    assert found is not None
 
-
-def _eventually(action, *, timeout: float = 8.0):
-    deadline = time.monotonic() + timeout
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            return action()
-        except (AssertionError, OrgFsError) as error:
-            last_error = error
-            time.sleep(0.05)
-    if last_error is not None:
-        raise last_error
-    raise AssertionError("condition did not become true")
-
-
-def test_late_log_callback_after_close_does_not_reopen_store(tmp_path) -> None:
-    endpoint = f"tcp/127.0.0.1:{_port()}"
-    owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
-    peer_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
-    # Close/callback custody after private sidecar admission (§7).
-    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-owner", author="user:owner", trust_tailnet_members=True)
-    peer = OrgFsRuntime(tmp_path / "peer", node_id="node-peer", author="user:peer", trust_tailnet_members=True)
+    peer.close()
+    if runtime.stores.snapshot_ids():
+        pytest.fail("precondition: close() left space stores registered")
     try:
-        time.sleep(0.3)
-        owner.bind_transport(owner_transport, supplier_online=lambda _node: True)
-        peer.bind_transport(
-            peer_transport,
-            supplier_online=lambda _node: True,
-            holder_candidates=lambda: ("node-owner",),
-        )
-        space = owner.facade.create_space("late callback")
-        owner.facade.invite(space.space_id, "user:peer", "rw")
+        outcome = host.apply_remote("tree", found[0], found[1], "node-owner")
+    except OrgFsError as error:
+        assert error.code == "unavailable"
+    else:
+        assert not isinstance(outcome, Accepted)
 
-        def announce_and_join():
-            owner._announce_all()
-            return peer.facade.join(space.space_id)
+    assert runtime.stores.snapshot_ids() == ()
 
-        _eventually(announce_and_join)
-        owner.facade.write_text(space.space_id, "late.txt", "delivered after close")
-        store = owner.stores[space.space_id]
-        tree = next(d for d in store.document_ids() if d.startswith("tree-"))
-        envelope = store.export_since(tree, b"", cursor=None, max_bytes=1 << 20).envelopes[-1]
-        mesh = peer._meshes[space.space_id]
-        peer.close()
-        if dict(peer.stores):
-            pytest.fail("precondition: close() left space stores registered")
-        # A log callback that imported its envelope just before close reaches
-        # the runtime's on-applied hook after close has cleared the stores.
-        try:
-            mesh._on_applied(envelope)
-        except OrgFsError:
-            pass  # refusing late work is fine; re-opening a store is not
-        assert dict(peer.stores) == {}
-    finally:
-        peer.close()
-        owner.close()
-        peer_transport.close()
-        owner_transport.close()
+
+def _assert_text(peer, space_id: str, ref: str, expected: str) -> None:
+    assert text(peer.fs, space_id, ref) == expected

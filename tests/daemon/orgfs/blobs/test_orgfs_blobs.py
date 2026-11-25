@@ -87,3 +87,58 @@ def test_purge_checker_is_space_specific_and_does_not_delete_bytes(tmp_path: Pat
         assert purged.value.code == "purged"
         assert blobs.get("kept", digest) == b"retained"
         assert blobs.has(digest)
+
+
+def _unpin_fixture(blobs) -> str:
+    digest = blobs.put("space-a", b"shared by reasons", reason="sync")
+    blobs.pin("space-a", digest, "own-write")
+    blobs.pin("space-b", digest, "sync")
+    return digest
+
+
+def test_unpin_releases_only_one_reason_of_one_space(tmp_path: Path) -> None:
+    with BlobStore(tmp_path) as blobs:
+        digest = _unpin_fixture(blobs)
+        blobs.unpin("space-a", digest, "sync")
+        assert blobs.references(digest=digest) == (
+            ("space-a", digest, "own-write"),
+            ("space-b", digest, "sync"),
+        )
+        assert blobs.delete_if_unreferenced(digest) is False
+        blobs.unpin("space-a", digest, "sync")
+        blobs.unpin("space-a", digest, "own-write")
+        blobs.unpin("space-b", digest, "sync")
+        assert blobs.references(digest=digest) == ()
+        assert blobs.delete_if_unreferenced(digest) is True
+
+
+def test_unpin_rejects_a_malformed_digest_or_reason(tmp_path: Path) -> None:
+    with BlobStore(tmp_path) as blobs:
+        digest = _unpin_fixture(blobs)
+        with pytest.raises(ValueError):
+            blobs.unpin("space-a", "not-a-digest", "sync")
+        with pytest.raises(ValueError):
+            blobs.unpin("space-a", digest, "")
+        assert len(blobs.references(digest=digest)) == 3
+
+
+def test_release_still_drops_every_reason_of_the_space(tmp_path: Path) -> None:
+    with BlobStore(tmp_path) as blobs:
+        digest = _unpin_fixture(blobs)
+        blobs.release("space-a", digest)
+        assert blobs.references(digest=digest) == (("space-b", digest, "sync"),)
+
+
+def test_the_blob_authority_forwards_unpin(tmp_path: Path) -> None:
+    from hyprial.daemon.impl.orgfs.storage.blob_authority import BlobAuthority
+
+    blobs = BlobAuthority(tmp_path)
+    try:
+        digest = _unpin_fixture(blobs)
+        blobs.unpin("space-a", digest, "sync")
+        assert blobs.references(digest=digest) == (
+            ("space-a", digest, "own-write"),
+            ("space-b", digest, "sync"),
+        )
+    finally:
+        blobs.close()

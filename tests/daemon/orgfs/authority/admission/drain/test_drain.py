@@ -1,3 +1,10 @@
+# Decisions:
+# - Phase D T1: ``test_idle_runtime_tick_expires_pending_without_an_import``
+#   runs on ``StateOrgFsRuntime``.  The state host keeps no pending envelopes
+#   to expire (design §3.6); what an idle maintenance tick owes it is the §9
+#   R4 verification batch: after a reopen every document is unverified and
+#   counted in ``content_pending``, and one due tick with no peer to pull from
+#   verifies them.  The other tests here are journal-only.
 from __future__ import annotations
 
 import base64
@@ -6,6 +13,8 @@ import pytest
 from pycrdt import Doc, Map, Text
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.storage.store import _decode_state_vector, _encode_state_vector
+
+from tests.daemon.orgfs.runtime_state.support import Peers
 
 from ..support import (
     TREE_DOC_ID,
@@ -95,52 +104,6 @@ def test_meta_ack_waits_for_earlier_writer_registration_envelope(tmp_path):
         ]["ackedAt"]
         == "2026-09-27T12:00:00Z"
     )
-
-
-def test_idle_runtime_tick_expires_pending_without_an_import(
-    tmp_path, request, caplog
-):
-    """The maintenance tick cleans an idle space without a drain trigger."""
-
-    from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-
-    runtime = OrgFsRuntime(
-        tmp_path / "idle-runtime", node_id="node-receiver", author="user:owner"
-    )
-    request.addfinalizer(runtime.close)
-    info = runtime.facade.create_space("group-idle")
-    store = runtime.stores.get(info.space_id)
-    store._db.execute(
-        "INSERT INTO pending(writer, seq, doc_id, author, meta_frontier, "
-        "envelope_bytes, supplier, held_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            "stale-writer",
-            0,
-            runtime.facade._spaces[info.space_id].tree_doc_id,
-            "user:member",
-            _encode_state_vector({999: 1}),
-            b"{}",
-            "node-supplier",
-            "2000-01-01T00:00:00+00:00",
-        ),
-    )
-    store._db.commit()
-    runtime._directory_sync_due = 0.0
-
-    with caplog.at_level("WARNING"):
-        runtime.anti_entropy_tick(1.0)
-
-    assert store._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0
-    event = next(
-        record.message
-        for record in caplog.records
-        if "orgfs.pending_expired" in record.message
-    )
-    assert "org=group-idle" in event
-    assert f"space={info.space_id}" in event
-    assert "count=1" in event
-    assert "oldestHeldAt=2000-01-01T00:00:00+00:00" in event
-    assert "reason=age-after-revalidation" in event
 
 
 def test_expiry_revalidates_an_admissible_member_envelope_before_discarding(
@@ -725,3 +688,31 @@ def test_pending_delete_failure_is_deferred_out_of_durable_trigger(tmp_path, cap
         == "applied"
     )
     assert target._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0
+
+
+def test_idle_runtime_tick_expires_pending_without_an_import(tmp_path, monkeypatch):
+    """The maintenance tick makes progress on an idle space without a pull."""
+
+    monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "harness-state"))
+    monkeypatch.setenv("HYPRIAL_PEER_DISCOVERY", "0")
+    peers = Peers(tmp_path / "idle-runtime")
+    try:
+        receiver = peers.add("node-receiver", "user:owner")
+        info = receiver.fs.create_space("group-idle")
+        for index in range(5):
+            receiver.fs.write_text(info.space_id, f"note-{index}.md", str(index))
+        receiver.reopen()
+        assert receiver.runtime is not None
+        assert receiver.fs.status(info.space_id).content_pending == 5
+        receiver.runtime._directory_sync_due = 0.0
+
+        receiver.runtime.anti_entropy_tick(1.0)
+
+        assert receiver.fs.status(info.space_id).content_pending == 0
+        assert "orgfs.sync.maintain-failed" not in receiver.events.names()
+        assert [receiver.fs.read_text(info.space_id, f"note-{index}.md")[0] for index in range(5)] == [
+            str(index) for index in range(5)
+        ]
+    finally:
+        peers.close()

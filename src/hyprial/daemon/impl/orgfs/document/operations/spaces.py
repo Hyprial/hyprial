@@ -79,7 +79,7 @@ class FacadeSpaces:
             {},
             {},
         )
-        space.tree.record(root)
+        self._record_row(space, root)
         member = MemberInfo(space_id, self.author, "rw", self.author, info.created_at)
         space.members[self.author] = member
         self._spaces[space_id] = space
@@ -365,8 +365,7 @@ class FacadeSpaces:
         return info
 
 
-    @staticmethod
-    def _remote_birth_content_pending(space: "_Space", node: "_Node") -> bool:
+    def _remote_birth_content_pending(self, space: "_Space", node: "_Node") -> bool:
         """Whether a remotely created doc node still lacks its birth content.
 
         The origin commits a node's creation atomically with its content, but
@@ -381,12 +380,161 @@ class FacadeSpaces:
             return False
         if node.required_content_frontier is None:
             return False
-        document = space.contents.get(node.doc_id)
+        document = self._content_doc(space, node.doc_id, None)
         if document is None:
             return True
         return not state_covers(
             document.doc.get_state(), node.required_content_frontier
         )
+
+
+    def _project_tree_change(
+        self,
+        space: _Space,
+        previous: Mapping[str, tuple],
+        old_paths: Mapping[str, str | None],
+        attribution: tuple[str, str | None],
+    ) -> None:
+        """Hook: project an applied tree update into nodes and change events.
+
+        ``previous`` holds each node's ``(parent, name, kind, blob_hash,
+        deleted)`` and ``old_paths`` its path, both from before the update.
+        Legacy: new nodes carry the envelope's origin as ``attribution`` and
+        their content documents are read from the store.
+        """
+
+        origin_author, origin_actor = attribution
+        materialized = space.tree.materialize()
+        for node_id, raw in materialized.items():
+            if node_id not in space.nodes:
+                space.nodes[node_id] = _Node(
+                    node_id=node_id,
+                    parent=raw.get("parent"),
+                    name=str(raw.get("name", "")),
+                    kind=raw.get("kind", "doc"),
+                    doc_id=raw.get("doc_id"),
+                    blob_hash=raw.get("blob_hash"),
+                    size=(
+                        raw.get("size")
+                        if type(raw.get("size")) is int
+                        else None
+                    ),
+                    required_content_frontier=_decode_content_frontier(
+                        raw.get("contentFrontier")
+                    ),
+                    ref_size=(
+                        raw.get("refSize")
+                        if type(raw.get("refSize")) is int
+                        else None
+                    ),
+                    ref_sha256=(
+                        raw.get("refSha256")
+                        if isinstance(raw.get("refSha256"), str)
+                        else None
+                    ),
+                    deleted=bool(raw.get("deleted", False)),
+                    modified_by=origin_author,
+                    modified_via=origin_actor,
+                )
+            else:
+                node = space.nodes[node_id]
+                node.parent = raw.get("parent")
+                node.name = str(raw.get("name", node.name))
+                node.kind = raw.get("kind", node.kind)
+                node.doc_id = raw.get("doc_id", node.doc_id)
+                node.blob_hash = raw.get("blob_hash", node.blob_hash)
+                node.size = (
+                    raw.get("size")
+                    if type(raw.get("size")) is int
+                    else None
+                )
+                node.required_content_frontier = _decode_content_frontier(
+                    raw.get("contentFrontier")
+                )
+                node.ref_size = (
+                    raw.get("refSize")
+                    if type(raw.get("refSize")) is int
+                    else None
+                )
+                node.ref_sha256 = (
+                    raw.get("refSha256")
+                    if isinstance(raw.get("refSha256"), str)
+                    else None
+                )
+                node.deleted = bool(raw.get("deleted", node.deleted))
+            node = space.nodes[node_id]
+            if node.doc_id and self._content_doc(space, node.doc_id, None) is None:
+                document = _ContentDocument()
+                store = self._store(space.info.space_id)
+                if store is not None:
+                    try:
+                        document = _ContentDocument(
+                            update=store.snapshot(
+                                node.doc_id, shallow_since=None
+                            ).snapshot_bytes
+                        )
+                    except Exception:
+                        pass
+                self._put_content_doc(space, node.doc_id, document)
+        self._tree_change_events(space, previous, old_paths, attribution)
+
+    def _tree_change_events(
+        self,
+        space: _Space,
+        previous: Mapping[str, tuple],
+        old_paths: Mapping[str, str | None],
+        attribution: tuple[str, str | None],
+    ) -> None:
+        """Finish every node whose tree row changed against ``previous``.
+
+        A cross-node birth must materialize as one ``created`` version that
+        already carries its content.  The tree update can be projected before
+        the sibling content update (sync pages flatten documents in
+        meta/tree/content order), so the birth is held in ``birth_pending``
+        until the local content document covers the frontier the origin
+        recorded at creation; while it waits, intermediate tree changes of
+        that node produce no entries so the chain never interleaves.
+        """
+
+        origin_author, origin_actor = attribution
+        for node_id, node in space.nodes.items():
+            current = (
+                node.parent,
+                node.name,
+                node.kind,
+                node.blob_hash,
+                node.deleted,
+            )
+            if previous.get(node_id) == current:
+                continue
+            if node_id in space.birth_pending:
+                if node.deleted and not previous[node_id][4]:
+                    space.birth_pending.pop(node_id, None)
+                    changed = "removed"
+                else:
+                    continue
+            elif node_id not in previous:
+                changed = "created"
+                if self._remote_birth_content_pending(space, node):
+                    space.birth_pending[node_id] = (
+                        origin_author,
+                        origin_actor,
+                    )
+                    continue
+            elif node.deleted and not previous[node_id][4]:
+                changed = "removed"
+            elif (node.parent, node.name) != previous[node_id][:2]:
+                changed = "moved"
+            else:
+                changed = "content"
+            self._finish(
+                space,
+                [node_id],
+                changed,
+                old_paths={node_id: old_paths.get(node_id)},
+                author=origin_author,
+                actor=origin_actor,
+            )
 
     @_facade_locked
     def apply_envelope(self, space_id: str, envelope: bytes) -> None:
@@ -481,129 +629,14 @@ class FacadeSpaces:
                     node_id: self._path(space, node_id) for node_id in space.nodes
                 }
                 space.tree.apply_update(update)
-                materialized = space.tree.materialize()
-                for node_id, raw in materialized.items():
-                    if node_id not in space.nodes:
-                        space.nodes[node_id] = _Node(
-                            node_id=node_id,
-                            parent=raw.get("parent"),
-                            name=str(raw.get("name", "")),
-                            kind=raw.get("kind", "doc"),
-                            doc_id=raw.get("doc_id"),
-                            blob_hash=raw.get("blob_hash"),
-                            size=(
-                                raw.get("size")
-                                if type(raw.get("size")) is int
-                                else None
-                            ),
-                            required_content_frontier=_decode_content_frontier(
-                                raw.get("contentFrontier")
-                            ),
-                            ref_size=(
-                                raw.get("refSize")
-                                if type(raw.get("refSize")) is int
-                                else None
-                            ),
-                            ref_sha256=(
-                                raw.get("refSha256")
-                                if isinstance(raw.get("refSha256"), str)
-                                else None
-                            ),
-                            deleted=bool(raw.get("deleted", False)),
-                            modified_by=origin_author,
-                            modified_via=origin_actor,
-                        )
-                    else:
-                        node = space.nodes[node_id]
-                        node.parent = raw.get("parent")
-                        node.name = str(raw.get("name", node.name))
-                        node.kind = raw.get("kind", node.kind)
-                        node.doc_id = raw.get("doc_id", node.doc_id)
-                        node.blob_hash = raw.get("blob_hash", node.blob_hash)
-                        node.size = (
-                            raw.get("size")
-                            if type(raw.get("size")) is int
-                            else None
-                        )
-                        node.required_content_frontier = _decode_content_frontier(
-                            raw.get("contentFrontier")
-                        )
-                        node.ref_size = (
-                            raw.get("refSize")
-                            if type(raw.get("refSize")) is int
-                            else None
-                        )
-                        node.ref_sha256 = (
-                            raw.get("refSha256")
-                            if isinstance(raw.get("refSha256"), str)
-                            else None
-                        )
-                        node.deleted = bool(raw.get("deleted", node.deleted))
-                    node = space.nodes[node_id]
-                    if node.doc_id and node.doc_id not in space.contents:
-                        document = _ContentDocument()
-                        store = self._store(space_id)
-                        if store is not None:
-                            try:
-                                document = _ContentDocument(
-                                    update=store.snapshot(
-                                        node.doc_id, shallow_since=None
-                                    ).snapshot_bytes
-                                )
-                            except Exception:
-                                pass
-                        space.contents[node.doc_id] = document
-                for node_id, node in space.nodes.items():
-                    current = (
-                        node.parent,
-                        node.name,
-                        node.kind,
-                        node.blob_hash,
-                        node.deleted,
-                    )
-                    if previous.get(node_id) == current:
-                        continue
-                    if node_id in space.birth_pending:
-                        if node.deleted and not previous[node_id][4]:
-                            space.birth_pending.pop(node_id, None)
-                            changed = "removed"
-                        else:
-                            # The remote birth is still waiting for its content;
-                            # keep intermediate projection entries behind the
-                            # finalized birth so the chain never interleaves.
-                            continue
-                    elif node_id not in previous:
-                        changed = "created"
-                        if self._remote_birth_content_pending(space, node):
-                            # A cross-node birth must materialize as one
-                            # ``created`` version that already carries its
-                            # content.  The tree envelope can be admitted and
-                            # projected before the sibling content envelope
-                            # (sync pages flatten documents in meta/tree/
-                            # content order), so hold the birth entry until the
-                            # local content document covers the frontier the
-                            # origin recorded at creation.
-                            space.birth_pending[node_id] = (
-                                origin_author,
-                                origin_actor,
-                            )
-                            continue
-                    elif node.deleted and not previous[node_id][4]:
-                        changed = "removed"
-                    elif (node.parent, node.name) != previous[node_id][:2]:
-                        changed = "moved"
-                    else:
-                        changed = "content"
-                    self._finish(
-                        space,
-                        [node_id],
-                        changed,
-                        old_paths={node_id: old_paths.get(node_id)},
-                        author=origin_author,
-                        actor=origin_actor,
-                    )
+                self._project_tree_change(
+                    space, previous, old_paths, (origin_author, origin_actor)
+                )
                 return
-            document = space.contents.setdefault(doc_id, _ContentDocument())
+            document = self._content_doc(space, doc_id, None)
+            if document is None:
+                document = _ContentDocument()
+                self._put_content_doc(space, doc_id, document)
             document.update(update)
             affected = [
                 node.node_id for node in space.nodes.values() if node.doc_id == doc_id
@@ -705,8 +738,10 @@ class FacadeSpaces:
                 )
             space.nodes = rebuilt
         else:
-            space.contents[new_doc_id] = _ContentDocument(update=snapshot_bytes)
-            space.contents.pop(old_doc_id, None)
+            self._put_content_doc(
+                space, new_doc_id, _ContentDocument(update=snapshot_bytes)
+            )
+            self._drop_content_doc(space, old_doc_id)
 
 
     @_facade_locked

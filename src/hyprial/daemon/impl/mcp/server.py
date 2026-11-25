@@ -453,35 +453,6 @@ def create_mcp_server(
     async def orgfs_remove(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.remove", {"spaceId": spaceId, "node": node}, mutation=True)
 
-    @server.tool(description="Read attributed orgfs history; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_history(
-        spaceId: NonEmpty,
-        node: NonEmpty,
-        ctx: Context,
-        limit: int = 50,
-        before: str | None = None,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {"spaceId": spaceId, "node": node, "limit": limit}
-        if before is not None:
-            params["before"] = before
-        return await invoke(ctx, "orgfs.history", params, mutation=False)
-
-    @server.tool(description="Read bytes at one orgfs version; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_read_at(
-        spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
-    ) -> dict[str, Any]:
-        return await invoke(
-            ctx, "orgfs.read_at", {"spaceId": spaceId, "node": node, "version": version}, mutation=False
-        )
-
-    @server.tool(description="Stat one orgfs node at a historical version; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_stat_at(
-        spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
-    ) -> dict[str, Any]:
-        return await invoke(
-            ctx, "orgfs.stat_at", {"spaceId": spaceId, "node": node, "version": version}, mutation=False
-        )
-
     @server.tool(description="List soft-deleted orgfs nodes.")
     async def orgfs_trash(spaceId: NonEmpty, ctx: Context, limit: int = 100) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.trash", {"spaceId": spaceId, "limit": limit}, mutation=False)
@@ -513,17 +484,6 @@ def create_mcp_server(
     @server.tool(description="Show orgfs holders and unconfirmed commits.")
     async def orgfs_status(spaceId: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.status", {"spaceId": spaceId}, mutation=False)
-
-    @server.tool(description="Show acknowledged and pending orgfs purge participants.")
-    async def orgfs_purge_status(
-        spaceId: NonEmpty, planId: NonEmpty, ctx: Context
-    ) -> dict[str, Any]:
-        return await invoke(
-            ctx,
-            "orgfs.purge_status",
-            {"spaceId": spaceId, "planId": planId},
-            mutation=False,
-        )
 
     @server.tool(description="Invite a user into an orgfs space; inbox notification is a separate send.")
     async def orgfs_invite(

@@ -42,15 +42,7 @@ def _latest(store: LocalSpaceStore, doc_id: str) -> bytes:
     )
 
 
-def _scan_replica_backend(replica: ReplicaStore, *needles: bytes) -> None:
-    for prefix in ("log/", "snapshot/", "blob/"):
-        for key in replica.backend.keys(prefix):
-            value = replica.backend.get(key)
-            assert value is not None
-            assert all(needle not in value for needle in needles), key
-
-
-def test_purge_full_scan_no_residue_across_member_and_replica_backends(
+def test_purge_full_scan_leaves_no_residue_in_the_member_store(
     tmp_path,
 ) -> None:
     runtime = OrgFsRuntime(tmp_path / "runtime", node_id="node-a", author="user:owner")
@@ -67,14 +59,11 @@ def test_purge_full_scan_no_residue_across_member_and_replica_backends(
                 (node.doc_id,),
             )
         )
-        update_blob = next(row["updateBlob"] for row in rows if "updateBlob" in row)
+        assert any("updateBlob" in row for row in rows)
         runtime.facade.write_text(
             space.space_id, f"id:{node.node_id}", "sanitized and non-empty"
         )
         store.snapshot(node.doc_id, shallow_since=None)
-        runtime.serve(space.space_id, "memory")
-        replica = runtime._replicas[space.space_id]
-        assert replica.backend.get(f"blob/{update_blob}") is not None
         before = store.scan_forbidden_bytes((marker,))
         assert before["journal"]
         assert before["blobs"]
@@ -87,12 +76,6 @@ def test_purge_full_scan_no_residue_across_member_and_replica_backends(
             "documents": (),
             "blobs": (),
         }
-        assert not tuple(replica.backend.keys(f"log/{space.space_id}/{old_doc_id}/"))
-        assert not tuple(
-            replica.backend.keys(f"snapshot/{space.space_id}/{old_doc_id}/")
-        )
-        assert replica.backend.get(f"blob/{update_blob}") is None
-        _scan_replica_backend(replica, marker)
         audit = store._docs["meta"].get("purgeAudit", type=Map).to_py()
         encoded = json.dumps(audit, sort_keys=True)
         assert "secret-name.md" not in encoded

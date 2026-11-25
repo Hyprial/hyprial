@@ -1,3 +1,11 @@
+# Decision record (phase F4, real-node finding R2-3, 2026-11-25):
+# - Design §9.2 "准入规则的补充": in an org directory space ``move`` refuses
+#   any move whose node, old parent or new parent is a protected directory
+#   node with ``protected-path`` and the data of every other protected-path
+#   refusal (``message``, ``path``), where ``path`` is the path the first such
+#   id encodes (node, then old parent, then new parent).  It was a bare
+#   ``not-a-member``.  The refusal itself stays: protected ids are derived
+#   from the path, so a renamed or moved row would no longer match its id.
 from __future__ import annotations
 
 
@@ -29,12 +37,10 @@ from hyprial.identity import (
 
 
 from hyprial.daemon.impl.orgfs.api  import (
-    HistoryEntry,
     NodeInfo,
     NodeRef,
     OrgFsError)
 
-from hyprial.daemon.impl.orgfs.storage.blobs  import BlobIntegrityError
 
 
 
@@ -43,7 +49,7 @@ from hyprial.daemon.impl.orgfs.storage.blobs  import BlobIntegrityError
 
 
 
-from hyprial.daemon.impl.orgfs.document.model import _ContentDocument, _Node, _NodeSnapshot, _Space, _facade_locked, _node_uri, _version_number
+from hyprial.daemon.impl.orgfs.document.model import _ContentDocument, _NodeSnapshot, _Space, _facade_locked
 
 class FacadeTreeHistory:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -89,15 +95,19 @@ class FacadeTreeHistory:
         old_parent = node.parent
         if org_from_space_name(space.info.name) is not None:
             try:
-                protected_ids = any(
-                    parse_protected_directory_node_id(node_id) is not None
+                protected = [
+                    identity[2]
                     for node_id in (node.node_id, old_parent, parent.node_id)
                     if node_id is not None
-                )
+                    and (identity := parse_protected_directory_node_id(node_id)) is not None
+                ]
             except ValueError as error:
                 raise OrgFsError("invalid-argument", {"message": str(error)}) from error
-            if protected_ids:
-                raise OrgFsError("not-a-member")
+            if protected:
+                raise OrgFsError(
+                    "protected-path",
+                    {"message": f"protected path: {protected[0]}", "path": protected[0]},
+                )
 
         def operation() -> None:
             node.parent = parent.node_id
@@ -151,166 +161,6 @@ class FacadeTreeHistory:
             seen.add(cursor)
             cursor = space.nodes.get(cursor).parent if cursor in space.nodes else None
         return False
-
-
-    @_facade_locked
-    def history(
-        self, space_id: str, node: NodeRef, limit: int = 50, before: str | None = None
-    ) -> tuple[HistoryEntry, ...]:
-        space = self._space(space_id)
-        item = self._one(space, node, include_deleted=True)
-        entries = list(reversed(space.history.get(item.node_id, [])))
-        if before is not None:
-            cutoff = _version_number(before)
-            entries = [
-                entry
-                for entry in entries
-                if _version_number(entry.node.version) < cutoff
-            ]
-        return tuple(
-            HistoryEntry(
-                self._snapshot_info(
-                    space, entry.node, space.snapshots.get(entry.node.version)
-                ),
-                entry.changed,
-                entry.author,
-                entry.actor,
-                entry.at,
-            )
-            for entry in entries[: max(0, limit)]
-        )
-
-
-    def _snapshot_info(
-        self,
-        space: _Space,
-        snapshot: _NodeSnapshot,
-        all_nodes: Mapping[str, _NodeSnapshot] | None,
-    ) -> NodeInfo:
-        nodes = {
-            node_id: _Node(
-                node_id=value.node_id,
-                parent=value.parent,
-                name=value.name,
-                kind=value.kind,
-                doc_id=value.doc_id,
-                blob_hash=value.blob_hash,
-                size=value.size,
-                required_content_frontier=value.required_content_frontier,
-                ref_size=value.ref_size,
-                ref_sha256=value.ref_sha256,
-                deleted=value.deleted,
-                version=value.version,
-                modified_by=value.modified_by,
-                modified_via=value.modified_via,
-            )
-            for node_id, value in (all_nodes or {snapshot.node_id: snapshot}).items()
-        }
-        return NodeInfo(
-            space.info.space_id,
-            snapshot.node_id,
-            snapshot.kind,
-            snapshot.name,
-            self._path(space, snapshot.node_id, nodes),
-            (
-                len(snapshot.content)
-                if snapshot.kind == "doc"
-                else snapshot.size
-                if snapshot.kind == "blob"
-                else None
-            ),
-            snapshot.blob_hash,
-            snapshot.doc_id,
-            snapshot.version,
-            snapshot.modified_by,
-            snapshot.modified_via,
-            self._name_conflict(space, nodes[snapshot.node_id], nodes),
-            snapshot.deleted,
-            (
-                "unverifiable"
-                if snapshot.kind == "doc"
-                and snapshot.required_content_frontier is None
-                else "arrived"
-                if snapshot.kind == "doc"
-                else (
-                    "arrived"
-                    if snapshot.kind == "blob"
-                    and snapshot.blob_hash is not None
-                    and self.blobs is not None
-                    and self.blobs.contains(snapshot.blob_hash)
-                    else "pending"
-                )
-                if snapshot.kind == "blob"
-                else None
-            ),
-            uri=_node_uri(space.info, snapshot.node_id),
-        )
-
-
-    @_facade_locked
-    def read_at(self, space_id: str, node: NodeRef, version: str) -> bytes:
-        space = self._space(space_id)
-        item = self._one(space, node, include_deleted=True)
-        snapshot = space.snapshots.get(version, {}).get(item.node_id)
-        if snapshot is None:
-            raise OrgFsError("unknown-doc", {"version": version})
-        if snapshot.kind == "doc":
-            return snapshot.content
-        if snapshot.kind == "blob" and snapshot.blob_hash:
-            if self.blobs is None:
-                raise self._content_pending(
-                    space,
-                    _Node(
-                        snapshot.node_id,
-                        snapshot.parent,
-                        snapshot.name,
-                        snapshot.kind,
-                        blob_hash=snapshot.blob_hash,
-                        size=snapshot.size,
-                    ),
-                )
-            try:
-                return self.blobs.get(space_id, snapshot.blob_hash)
-            except BlobIntegrityError as exc:
-                raise self._content_pending(
-                    space,
-                    _Node(
-                        snapshot.node_id,
-                        snapshot.parent,
-                        snapshot.name,
-                        snapshot.kind,
-                        blob_hash=snapshot.blob_hash,
-                        size=snapshot.size,
-                    ),
-                    local_state="corrupt",
-                ) from exc
-            except Exception as exc:
-                if getattr(exc, "code", None) == "purged":
-                    raise OrgFsError(
-                        "purged", dict(getattr(exc, "details", {}) or {})
-                    ) from exc
-                raise self._content_pending(
-                    space,
-                    _Node(
-                        snapshot.node_id,
-                        snapshot.parent,
-                        snapshot.name,
-                        snapshot.kind,
-                        blob_hash=snapshot.blob_hash,
-                        size=snapshot.size,
-                    ),
-                ) from exc
-        raise OrgFsError("invalid-argument", {"message": "node has no bytes"})
-
-
-    @_facade_locked
-    def stat_at(self, space_id: str, node: NodeRef, version: str) -> NodeInfo:
-        space = self._space(space_id)
-        item = self._one(space, node, include_deleted=True)
-        snapshots = space.snapshots.get(version)
-        if snapshots is None or item.node_id not in snapshots:
-            raise OrgFsError("unknown-doc", {"version": version})
-        return self._snapshot_info(space, snapshots[item.node_id], snapshots)
 
 
     @_facade_locked
@@ -380,11 +230,11 @@ class FacadeTreeHistory:
                 snap is None
                 or snap.kind != "doc"
                 or not snap.doc_id
-                or snap.doc_id not in space.contents
+                or self._content_doc(space, snap.doc_id, None) is None
             ):
                 continue
             restored_text = snap.content.decode(errors="replace")
-            document = space.contents[snap.doc_id]
+            document = self._content_doc(space, snap.doc_id)
             if document.value() == restored_text:
                 continue
 
@@ -404,8 +254,8 @@ class FacadeTreeHistory:
             if (snap := snapshots.get(affected_id)) is not None
             and snap.kind == "doc"
             and snap.doc_id is not None
-            and snap.doc_id in space.contents
-            and space.contents[snap.doc_id].value()
+            and self._content_doc(space, snap.doc_id, None) is not None
+            and self._content_doc(space, snap.doc_id).value()
             != snap.content.decode(errors="replace")
         }
         restores_content = bool(content_restores)
@@ -450,7 +300,7 @@ class FacadeTreeHistory:
                     and affected_id in content_restores
                     and restored.doc_id
                 ):
-                    document = space.contents[restored.doc_id]
+                    document = self._content_doc(space, restored.doc_id)
                     raw = document.value().encode()
                     restored.required_content_frontier = document.doc.get_state()
                     restored.ref_size = len(raw)
@@ -460,7 +310,7 @@ class FacadeTreeHistory:
                     restored.ref_size = None
                     restored.ref_sha256 = None
                 restored.deleted = False
-                space.tree.record(restored)
+                self._record_row(space, restored)
 
         if tree_changed or restores_content:
             operations.append((space.tree_doc_id, restore_tree))

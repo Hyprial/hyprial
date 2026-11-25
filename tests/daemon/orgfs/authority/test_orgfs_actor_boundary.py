@@ -1,3 +1,15 @@
+# Decisions:
+# - Phase D T1: five tests run on the state host (``StateOrgFs`` /
+#   ``StateOrgFsRuntime``) whatever the rehearsal switch says.  A slow or
+#   interrupted commit is injected by replacing ``commit`` on the space's
+#   ``FileStateStore`` instance (D2 report §10); the space command loop's
+#   actor cell (``_space_state_owners``) is the restart seam, as the space
+#   authority cell was.  The store registry no longer creates a store on
+#   ``get`` (an unknown id is ``None``), so the singleton test opens one space
+#   and races reads and writes on it.  ``members()`` order is not a contract
+#   (the state host sorts it), so the meta watch compares sets.
+#   ``broadcast_runs_after...`` attaches a recording ``SpaceSync``, the state
+#   host's publication seam, instead of a journal mesh.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +25,8 @@ from hyprial.daemon.impl.orgfs.api import ChangeEvent, OrgFsError
 from hyprial.daemon.impl.orgfs.storage.blob_authority import BlobAuthority
 from hyprial.daemon.impl.orgfs.storage.blobs import BlobError
 from hyprial.daemon.impl.orgfs.docs import LocalOrgFs
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.document.coordinator import StateOrgFs
 from hyprial.daemon.impl.orgfs.runtime import (
     OrgFsRuntime,
 )
@@ -40,27 +54,6 @@ def test_watchers_run_after_space_authority_lock_is_released() -> None:
 
     assert delivered.wait(2)
     assert observed == [True]
-
-
-def test_membership_meta_watch_runs_after_commit_and_can_be_closed() -> None:
-    facade = LocalOrgFs(author="user:owner")
-    space = facade.create_space("membership watch")
-    delivered = threading.Event()
-    observed: list[tuple[str, ...]] = []
-
-    def observe_members() -> None:
-        observed.append(tuple(row.user for row in facade.members(space.space_id)))
-        delivered.set()
-
-    watcher = facade.watch_meta(space.space_id, observe_members)
-    facade.invite(space.space_id, "user:member")
-
-    assert delivered.wait(2)
-    assert observed == [("user:owner", "user:member")]
-    watcher.close()
-    facade.remove_member(space.space_id, "user:member")
-    time.sleep(0.05)
-    assert len(observed) == 1
 
 
 def test_committed_watcher_effects_keep_space_commit_order() -> None:
@@ -391,112 +384,6 @@ def test_checkout_request_admitted_during_followup_scan_gets_its_own_scan(
         runtime.close()
 
 
-def test_space_authority_restarts_without_repeating_an_admitted_commit(tmp_path) -> None:
-    runtime = OrgFsRuntime(tmp_path, node_id="node-space", author="user:owner")
-    space = runtime.facade.create_space("space authority")
-    original_node = runtime.facade.write_text(space.space_id, "seed.md", "before")
-    store = runtime.stores[space.space_id]
-    authority = runtime.facade._space_authorities[space.space_id]
-    entered = threading.Event()
-    release = threading.Event()
-    original_commit = store.commit_many_with_outbox
-    calls = 0
-
-    def blocked_commit(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        entered.set()
-        assert release.wait(3)
-        return original_commit(*args, **kwargs)
-
-    store.commit_many_with_outbox = blocked_commit  # type: ignore[method-assign]
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            accepted = pool.submit(
-                    runtime.facade.write_text,
-                    space.space_id,
-                    f"id:{original_node.node_id}",
-                "committed once",
-            )
-            assert entered.wait(2)
-            assert (
-                authority._cell.tell(object())
-                is AdmissionResult.ACCEPTED
-            )
-            deadline = time.monotonic() + 3
-            while (
-                authority._cell.snapshot().generation == 1
-                and time.monotonic() < deadline
-            ):
-                time.sleep(0.005)
-            assert authority._cell.snapshot().generation > 1
-            release.set()
-            node = accepted.result(timeout=3)
-        assert runtime.facade.read_text(space.space_id, f"id:{node.node_id}")[0] == (
-            "committed once"
-        )
-        assert calls == 1
-    finally:
-        release.set()
-        runtime.close()
-
-
-def test_slow_space_commit_does_not_hold_other_space_facade_lock(tmp_path) -> None:
-    runtime = OrgFsRuntime(tmp_path, node_id="node-sharded", author="user:owner")
-    first_space = runtime.facade.create_space("first")
-    second_space = runtime.facade.create_space("second")
-    first_node = runtime.facade.write_text(first_space.space_id, "a.md", "before")
-    second_node = runtime.facade.write_text(second_space.space_id, "b.md", "before")
-    store = runtime.stores[first_space.space_id]
-    original_commit = store.commit_many_with_outbox
-    entered = threading.Event()
-    release = threading.Event()
-
-    def blocked_commit(*args, **kwargs):
-        entered.set()
-        assert release.wait(3)
-        return original_commit(*args, **kwargs)
-
-    store.commit_many_with_outbox = blocked_commit  # type: ignore[method-assign]
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            blocked = pool.submit(
-                runtime.facade.write_text,
-                first_space.space_id,
-                f"id:{first_node.node_id}",
-                "blocked durable write",
-            )
-            assert entered.wait(2)
-            started = time.monotonic()
-            updated = runtime.facade.write_text(
-                second_space.space_id,
-                f"id:{second_node.node_id}",
-                "independent write",
-            )
-            assert time.monotonic() - started < 1.0
-            assert runtime.facade.read_text(
-                second_space.space_id, f"id:{updated.node_id}"
-            )[0] == "independent write"
-            release.set()
-            blocked.result(timeout=3)
-    finally:
-        release.set()
-        runtime.close()
-
-
-def test_runtime_lazy_store_registry_is_singleton_under_cross_space_admission(
-    tmp_path,
-) -> None:
-    runtime = OrgFsRuntime(tmp_path, node_id="node-registry", author="user:owner")
-    try:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            stores = tuple(pool.map(lambda _index: runtime.stores.get("same-space"), range(32)))
-        assert {id(store) for store in stores} == {id(stores[0])}
-        assert runtime.stores.snapshot_ids() == ("same-space",)
-    finally:
-        runtime.close()
-
-
 def test_runtime_close_retries_after_a_partial_drain_timeout(tmp_path) -> None:
     runtime = OrgFsRuntime(tmp_path, node_id="node-close", author="user:owner")
     space = runtime.facade.create_space("close retry")
@@ -612,26 +499,175 @@ def test_directory_effect_overload_defers_without_blocking_completion(tmp_path) 
         assert runtime._closed
 
 
-def test_broadcast_runs_after_space_authority_lock_is_released() -> None:
-    class Store:
-        def commit(self, _doc_id: str, mutate: object, **_metadata: object) -> None:
-            mutate(None)  # type: ignore[operator]
+def test_membership_meta_watch_runs_after_commit_and_can_be_closed() -> None:
+    facade = StateOrgFs(author="user:owner")
+    space = facade.create_space("membership watch")
+    delivered = threading.Event()
+    observed: list[set[str]] = []
 
-    facade = LocalOrgFs(stores=Store())
+    def observe_members() -> None:
+        observed.append({row.user for row in facade.members(space.space_id)})
+        delivered.set()
+
+    watcher = facade.watch_meta(space.space_id, observe_members)
+    facade.invite(space.space_id, "user:member")
+
+    assert delivered.wait(2)
+    assert observed == [{"user:owner", "user:member"}]
+    watcher.close()
+    delivered.clear()
+    facade.invite(space.space_id, "user:second")
+    assert not delivered.wait(0.2)
+    assert observed == [{"user:owner", "user:member"}]
+    facade.close_effects(timeout=5.0)
+
+
+def _block_commits(runtime: StateOrgFsRuntime, space_id: str) -> tuple[threading.Event, threading.Event, list[int]]:
+    """Make the space's store wait in ``commit`` until released (failure seam, D2 §10)."""
+
+    store = runtime.stores.get(space_id)
+    assert store is not None
+    original_commit = store.commit
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[int] = []
+
+    def blocked_commit(batch):
+        calls.append(1)
+        entered.set()
+        assert release.wait(3)
+        return original_commit(batch)
+
+    store.commit = blocked_commit  # type: ignore[method-assign]
+    return entered, release, calls
+
+
+def test_space_authority_restarts_without_repeating_an_admitted_commit(tmp_path) -> None:
+    runtime = StateOrgFsRuntime(tmp_path, node_id="node-space", author="user:owner")
+    release = threading.Event()
+    try:
+        space = runtime.facade.create_space("space authority")
+        original_node = runtime.facade.write_text(space.space_id, "seed.md", "before")
+        entered, release, calls = _block_commits(runtime, space.space_id)
+        cell = runtime.facade._space_state_owners[space.space_id].runtime
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            accepted = pool.submit(
+                runtime.facade.write_text,
+                space.space_id,
+                f"id:{original_node.node_id}",
+                "committed once",
+            )
+            assert entered.wait(2)
+            assert cell.tell(object()) is AdmissionResult.ACCEPTED
+            deadline = time.monotonic() + 3
+            while cell.snapshot().generation == 1 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert cell.snapshot().generation > 1
+            release.set()
+            node = accepted.result(timeout=3)
+        assert runtime.facade.read_text(space.space_id, f"id:{node.node_id}")[0] == "committed once"
+        assert calls == [1]
+    finally:
+        release.set()
+        runtime.close()
+    reopened = StateOrgFsRuntime(tmp_path, node_id="node-space", author="user:owner")
+    try:
+        assert reopened.facade.read_text(space.space_id, "seed.md")[0] == "committed once"
+    finally:
+        reopened.close()
+
+
+def test_slow_space_commit_does_not_hold_other_space_facade_lock(tmp_path) -> None:
+    runtime = StateOrgFsRuntime(tmp_path, node_id="node-sharded", author="user:owner")
+    release = threading.Event()
+    try:
+        first_space = runtime.facade.create_space("first")
+        second_space = runtime.facade.create_space("second")
+        first_node = runtime.facade.write_text(first_space.space_id, "a.md", "before")
+        second_node = runtime.facade.write_text(second_space.space_id, "b.md", "before")
+        entered, release, _calls = _block_commits(runtime, first_space.space_id)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            blocked = pool.submit(
+                runtime.facade.write_text,
+                first_space.space_id,
+                f"id:{first_node.node_id}",
+                "blocked durable write",
+            )
+            assert entered.wait(2)
+            started = time.monotonic()
+            updated = runtime.facade.write_text(
+                second_space.space_id,
+                f"id:{second_node.node_id}",
+                "independent write",
+            )
+            assert time.monotonic() - started < 1.0
+            assert runtime.facade.read_text(
+                second_space.space_id, f"id:{updated.node_id}"
+            )[0] == "independent write"
+            release.set()
+            blocked.result(timeout=3)
+        assert runtime.facade.read_text(first_space.space_id, "a.md")[0] == "blocked durable write"
+    finally:
+        release.set()
+        runtime.close()
+
+
+def test_runtime_lazy_store_registry_is_singleton_under_cross_space_admission(
+    tmp_path,
+) -> None:
+    runtime = StateOrgFsRuntime(tmp_path, node_id="node-registry", author="user:owner")
+    try:
+        space = runtime.facade.create_space("same-space")
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            stores = tuple(pool.map(lambda _index: runtime.stores.get(space.space_id), range(32)))
+            written = tuple(pool.map(
+                lambda index: runtime.facade.write_text(space.space_id, f"f-{index}.md", str(index)),
+                range(32),
+            ))
+            unknown = tuple(pool.map(lambda _index: runtime.stores.get("not-a-space"), range(8)))
+        assert stores[0] is not None
+        assert {id(store) for store in stores} == {id(stores[0])}
+        assert runtime.stores.snapshot_ids() == (space.space_id,)
+        assert unknown == (None,) * 8
+        assert len({node.node_id for node in written}) == 32
+    finally:
+        runtime.close()
+    reopened = StateOrgFsRuntime(tmp_path, node_id="node-registry", author="user:owner")
+    try:
+        assert {node.path for node in reopened.facade.listdir(space.space_id, "")} == {
+            f"f-{index}.md" for index in range(32)
+        }
+        assert [item.space_id for item in reopened.facade.spaces()] == [space.space_id]
+    finally:
+        reopened.close()
+
+
+def test_broadcast_runs_after_space_authority_lock_is_released() -> None:
+    facade = StateOrgFs(author="user:owner")
     space = facade.create_space("broadcast boundary")
-    observed: list[bool] = []
+    observed: list[tuple[bool, bool]] = []
     delivered = threading.Event()
 
-    class Mesh:
-        def broadcast_pending(self, _space_id: str) -> None:
-            acquired = facade._lock.acquire(blocking=False)
-            observed.append(acquired)
-            if acquired:
-                facade._lock.release()
+    def free(lock) -> bool:
+        acquired = lock.acquire(blocking=False)
+        if acquired:
+            lock.release()
+        return acquired
+
+    class Sync:
+        def publish(self, _doc_id: str, _update: bytes, _vector: bytes) -> None:
+            observed.append((free(facade._lock), free(facade._space_lock(space.space_id))))
             delivered.set()
 
-    facade.mesh = Mesh()
+        def observations(self) -> tuple[object, ...]:
+            return ()
+
+        def request_content(self, _doc_id: str) -> None:
+            return None
+
+    facade.attach_sync(space.space_id, Sync())
     facade.mkdir(space.space_id, "child")
 
     assert delivered.wait(2)
-    assert observed == [True]
+    assert observed and set(observed) == {(True, True)}
+    facade.close_effects(timeout=5.0)

@@ -1,3 +1,9 @@
+# Decision record
+# - 2026-11-25 (OrgFS minimal phase D P0, C3 report §4-8): ``unpin`` releases
+#   one ``(space, digest, reason)`` reference and leaves the space's other
+#   reasons alone; ``release`` keeps dropping every reason the space holds.
+#   Expiring a temporary sync blob needs the former, because the same digest
+#   can also be held by the space as written or fetched content.
 """Content-addressed storage and wire helpers for the orgfs blob plane.
 
 The blob plane deliberately has no transport dependency.  ``BlobStore`` owns
@@ -532,6 +538,18 @@ class BlobStore:
             self._db.execute(
                 "DELETE FROM blob_refs WHERE spaceId = ? AND sha = ?",
                 (space_id, digest),
+            )
+
+    def unpin(self, space_id: str, digest: str, reason: str) -> None:
+        """Release one reason held by one space; other reasons and spaces stay."""
+
+        digest = _require_digest(digest)
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("reason must be a non-empty string")
+        with self._db_lock, self._db:
+            self._db.execute(
+                "DELETE FROM blob_refs WHERE spaceId = ? AND sha = ? AND pinnedReason = ?",
+                (space_id, digest, reason),
             )
 
     def delete_if_unreferenced(self, digest: str) -> bool:

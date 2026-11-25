@@ -47,7 +47,7 @@ from hyprial.daemon.impl.orgfs.storage.space_authority  import (
 from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
 
 
-from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending, _FACADE_EFFECT_CAPACITY, _FACADE_NETWORK_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _MetaWatchNotification, _ReconcileReplicaBlobs, _WatchNotification
+from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending, _FACADE_EFFECT_CAPACITY, _FACADE_NETWORK_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _MetaWatchNotification, _ReconcileReplicaBlobs, _Space, _WatchNotification
 
 class FacadeEffects:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -94,6 +94,30 @@ class FacadeEffects:
         # Capture explicit instance overrides before the asynchronous effect
         # runs, preserving suppression/admission seams without caller closures.
         return implementation is None or getattr(method, "__func__", None) is implementation
+
+
+    def _publish_effects(
+        self,
+        space: _Space,
+        doc_ids: tuple[str, ...],
+        current: tuple[CommitRecord, ...],
+        *,
+        broadcast: bool,
+    ) -> None:
+        """Hook: defer the post-commit publication of one committed batch.
+
+        Legacy: the journal outbox rows through ``_publication_records``, a
+        ``_ReconcileReplicaBlobs`` after a tree write, then ``_BroadcastPending``.
+        """
+
+        space_id = space.info.space_id
+        records = self._publication_records(space_id, current, broadcast=broadcast)
+        if space.tree_doc_id in doc_ids:
+            self._defer_effect(_ReconcileReplicaBlobs(space_id))
+        if records or (
+            not current and broadcast and self._broadcast_is_enabled()
+        ):
+            self._defer_effect(_BroadcastPending(space_id, records))
 
 
     def _publication_records(
@@ -546,7 +570,7 @@ class FacadeEffects:
 
     @contextmanager
     def _post_commit_scope(self, space_id: str | None = None):
-        """Reserve bounded observer custody around structured-document writes."""
+        """Reserve bounded observer custody around document writes."""
 
         outermost = not hasattr(self._effect_context, "pending")
         wait_for_callbacks = False

@@ -187,7 +187,7 @@ GUI 网关前提：`dev` 上的 GUI 适配层只有 capabilities.get、sessions.
 **F16 OrgFS**
 - 冲突：带基础版本做三方合并；带期望版本做严格校验，失败报 stale-write；只读成员写入报 not-a-member。
 - 限制：单次读取不超过 2 MiB；导入、导出不超过 64 MiB。
-- 历史：每条记录含节点、变化、作者、actor、时间；支持按版本读取、回收站、恢复。
+- 历史：不提供（owner 2026-11-25 决定，见 `docs/design/orgfs-minimal-plan-2026-11-24.md` Q5）；保留回收站与恢复。
 - 当前状态（S4，2026-10-29 实测 `group-internal`）：内容完整，但历史层为空（frontier 全零）；修复方式为重新发布，由该空间 owner 执行。这是该空间的问题，不代表所有空间；GUI 按所选空间的反馈显示状态。
 
 **F17 迁移**

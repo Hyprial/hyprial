@@ -48,7 +48,7 @@ from hyprial.daemon.impl.orgfs.storage.space_authority  import (
 from hyprial.daemon.impl.orgfs.storage.store  import StoreError
 
 
-from hyprial.daemon.impl.orgfs.document.model import _AcknowledgePurge, _ApplyContentUpdate, _ApplyEnvelope, _ApplyStructuredUpdate, _ApplyTreeUpdate, _CreateSpace, _HydrateContentSnapshot, _InstallReplacement, _InviteMember, _LoadSpace, _Mkdir, _Move, _Purge, _PurgePlanCommand, _RemoveMember, _RemoveNode, _Restore, _SPACE_STATE_CAPACITY, _SpaceStateCommand, _SpaceStateFailure, _SpaceStateOperation, _SpaceStateOutcome, _SpaceStateOwner, _SpaceStateWaiter, _Unban, _WriteBytes, _WriteText
+from hyprial.daemon.impl.orgfs.document.model import _AcknowledgePurge, _ApplyContentUpdate, _ApplyEnvelope, _ApplyTreeUpdate, _CreateSpace, _HydrateContentSnapshot, _InstallReplacement, _InviteMember, _LoadSpace, _Mkdir, _Move, _Purge, _PurgePlanCommand, _RemoveMember, _RemoveNode, _Restore, _SPACE_STATE_CAPACITY, _SpaceStateCommand, _SpaceStateFailure, _SpaceStateOperation, _SpaceStateOutcome, _SpaceStateOwner, _SpaceStateWaiter, _Unban, _WriteBytes, _WriteText
 
 class FacadeSpaceState:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -122,12 +122,6 @@ class FacadeSpaceState:
             return _HydrateContentSnapshot(
                 values["space_id"], values["node"], values["expected_doc_id"],
                 bytes(values["snapshot"])
-            )
-        if name == "_apply_structured_update":
-            return _ApplyStructuredUpdate(
-                values["space_id"], values["node_id"], values["doc_id"],
-                int(values["client_id"]), bytes(values["base_state"]),
-                bytes(values["update"]),
             )
         raise ValueError(f"no frozen OrgSpace command for {name}")
 
@@ -284,11 +278,6 @@ class FacadeSpaceState:
             return type(self).hydrate_content_snapshot.__wrapped__(
                 self, operation.space_id, operation.node, operation.snapshot,
                 expected_doc_id=operation.expected_doc_id,
-            )
-        if isinstance(operation, _ApplyStructuredUpdate):
-            return type(self)._apply_structured_update.__wrapped__(
-                self, operation.space_id, operation.node_id, operation.doc_id,
-                operation.client_id, operation.base_state, operation.update,
             )
         raise TypeError(f"unsupported OrgSpace operation: {type(operation).__name__}")
 

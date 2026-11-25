@@ -1,3 +1,9 @@
+# Decisions (phase D, package T3, 2026-11-25):
+# - The runtime is ``StateOrgFsRuntime`` (built directly, independent of
+#   ``HYPRIAL_ORGFS_IMPL``); a space's files are the design §2.1 layout, so the
+#   "store files" whose descriptors must be released are every file under the
+#   space directory plus the blob reference database, and the file that proves
+#   a refused purge left the space alone is ``space.json``.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -8,7 +14,7 @@ import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.composition import space_purge as space_purge_module
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
 from hyprial.kernel import link_directory
 
 
@@ -16,7 +22,7 @@ OWNER = "user:owner"
 
 
 def _runtime(tmp_path, *, binding=None):
-    return OrgFsRuntime(
+    return StateOrgFsRuntime(
         tmp_path / "state",
         node_id="node-a",
         author=OWNER,
@@ -64,16 +70,12 @@ def _admit_delayed_broadcast(runtime, monkeypatch):
     monkeypatch.setattr(runtime.facade, "_execute_network_effect", delayed)
     space = runtime.facade.create_space("group-team")
     assert entered.wait(2)
+    space_dir = runtime.state_dir / "orgfs" / "spaces" / space.space_id
+    space_files = [path for path in space_dir.rglob("*") if path.is_file()]
+    assert space_dir / "space.json" in space_files
     identities = {
-        _file_identity(tmp)
-        for tmp in (
-            runtime.state_dir / "orgfs" / "blob-refs.sqlite3",
-            runtime.state_dir
-            / "orgfs"
-            / "spaces"
-            / space.space_id
-            / "journal.sqlite3",
-        )
+        _file_identity(path)
+        for path in (runtime.state_dir / "orgfs" / "blob-refs.sqlite3", *space_files)
     }
     return space, release, identities
 
@@ -122,7 +124,6 @@ def test_space_purge_main_preserves_acl_across_restart(tmp_path):
     runtime = _runtime(tmp_path, binding=binding)
     main, acl = _create_paired_spaces(runtime)
     runtime.checkout(main.space_id, True)
-    runtime.serve(main.space_id, "fs")
 
     assert runtime.purge_space(main.space_id)["purged"] is True
     assert [item.space_id for item in runtime.facade.spaces()] == [acl.space_id]
@@ -209,7 +210,6 @@ def test_space_purge_preserves_paired_space_for_every_ordering(
     for name, space in spaces.items():
         runtime.facade.write_text(space.space_id, f"{name}.txt", name)
     runtime.checkout(first_id, True)
-    runtime.serve(first_id, "fs")
 
     assert runtime.purge_space(first_id) == {
         "spaceId": first_id,
@@ -287,12 +287,14 @@ def test_space_purge_path_fence_refuses_symlink_without_touching_target(tmp_path
     os.rename(space_path, moved)
     space_path.symlink_to(moved, target_is_directory=True)
 
-    with pytest.raises(OrgFsError, match="unsafe-space-path"):
-        runtime.purge_space(space.space_id)
+    try:
+        with pytest.raises(OrgFsError, match="unsafe-space-path"):
+            runtime.purge_space(space.space_id)
 
-    assert moved.is_dir()
-    assert (moved / "journal.sqlite3").is_file()
-    runtime.close()
+        assert moved.is_dir()
+        assert (moved / "space.json").is_file()
+    finally:
+        runtime.close()
 
 
 def test_space_purge_path_fence_refuses_ancestry_swap_without_touching_target(
@@ -415,7 +417,7 @@ def test_space_purge_internal_links_never_escape_to_delete_external_targets(
     runtime = _runtime(tmp_path)
     space = runtime.facade.create_space("scratch")
     runtime.facade.write_text(space.space_id, "inside.txt", "inside")
-    runtime.serve(space.space_id, "fs")
+    (tmp_path / "state" / "orgfs" / "replica" / space.space_id).mkdir(parents=True)
 
     external_dir = tmp_path / "external-victim-dir"
     external_dir.mkdir()
@@ -463,6 +465,6 @@ def test_space_purge_refuses_reparse_point_root_without_deleting(
     try:
         with pytest.raises(OrgFsError, match="unsafe-space-path"):
             runtime.purge_space(space.space_id)
-        assert (space_path / "journal.sqlite3").is_file()
+        assert (space_path / "space.json").is_file()
     finally:
         runtime.close()

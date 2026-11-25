@@ -18,7 +18,6 @@ _SPACE_ID = "b363d762-a06e-496d-94d0-e4695b66e206"
 _NODE_ID = "89fd8adf4f8f43f48f475bef6914c61f"
 _VERSION = "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
 _REMOVED_VERSION = "eyJjb250ZW50RnJvbnRpZXIiOjIsInRyZWVGcm9udGllciI6Mn0"
-_PLAN_ID = 'b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878'
 _AT = "2026-11-03T09:00:00Z"
 _SPACE = {
     "space_id": _SPACE_ID, "name": "example-space", "owner": "user:example",
@@ -32,8 +31,6 @@ _NODE = {
     "name_conflict": False, "deleted": False, "contentState": "arrived",
     "uri": canonical_orgfs_uri("example", _SPACE_ID, _NODE_ID),
 }
-_HISTORY_NODE = {key: value for key, value in _NODE.items() if key != "contentState"}
-_HISTORY_NODE["content_state"] = "arrived"
 _MEMBER = {
     "space_id": _SPACE_ID, "user": "user:example", "mode": "rw",
     "added_by": "user:example", "added_at": _AT,
@@ -93,14 +90,6 @@ def _absolute_path():
     )
 
 
-def _unknown_version():
-    return _error(
-        "unknown-version", {**_REF, "version": "unknown-version"},
-        "unknown-doc", {"version": "unknown-version"},
-        f"{_DOC}operations/tree.py:FacadeTreeHistory.read_at/stat_at",
-    )
-
-
 ORGFS_READ_EXAMPLES = (
     _set(
         "orgfs.spaces", {}, {"spaces": [_SPACE]},
@@ -135,26 +124,6 @@ ORGFS_READ_EXAMPLES = (
         errors=(_absolute_path(),),
     ),
     _set(
-        "orgfs.read_at", {**_REF, "version": _VERSION}, {"contentB64": "aGVsbG8gd29ybGQh"},
-        producer=f"{_DOC}operations/tree.py:FacadeTreeHistory.read_at",
-        empty={"contentB64": ""}, empty_reason="a saved zero-byte document snapshot has empty base64 content",
-        errors=(_unknown_version(),),
-    ),
-    _set(
-        "orgfs.stat_at", {**_REF, "version": _VERSION}, _NODE,
-        producer=f"{_DOC}operations/tree.py:FacadeTreeHistory.stat_at/_snapshot_info",
-        gap="stat_at returns one historical NodeInfo or unknown-doc, never an absent object",
-        errors=(_unknown_version(),),
-    ),
-    _set(
-        "orgfs.history", {**_REF, "limit": 50},
-        {"history": [{"node": _HISTORY_NODE, "changed": "created", "author": "user:example", "actor": None, "at": _AT}]},
-        producer=f"{_DOC}operations/tree.py:FacadeTreeHistory.history",
-        empty={"history": []}, empty_params={**_REF, "before": _VERSION, "limit": 50},
-        empty_reason="before excludes the only retained creation version",
-        errors=(_absolute_path(),),
-    ),
-    _set(
         "orgfs.status", {"spaceId": _SPACE_ID},
         {"space_id": _SPACE_ID, "unconfirmed_commits": 5, "durable_holders_seen": [], "holders_online": [], "parked_commits": []},
         producer="daemon/impl/orgfs/composition/content.py:RuntimeContent.status -> FacadeContent.status (fresh durable space plus one write, no remote holders)",
@@ -177,16 +146,5 @@ ORGFS_READ_EXAMPLES = (
         "orgfs.members", {"spaceId": _SPACE_ID}, {"members": [_MEMBER]},
         producer=f"{_DOC}operations/spaces.py:FacadeSpaces.members",
         gap="normal created/joined spaces retain their owner membership; remove_member refuses removing the owner, so this catalog does not invent a memberless space",
-    ),
-    _set(
-        "orgfs.purge_status", {"spaceId": _SPACE_ID, "planId": _PLAN_ID},
-        {"plan_id": _PLAN_ID, "acknowledged": [], "pending": ["node-example"]},
-        producer="daemon/impl/orgfs/composition/checkout.py:RuntimeCheckout.purge_status -> FacadePurge.purge_status (created plan, not yet executed)",
-        gap="purge_status returns a plan receipt or stale-plan; absent plans are errors",
-        errors=(_error(
-            "stale-plan", {"spaceId": _SPACE_ID, "planId": "missing-plan"},
-            "stale-plan", {"planId": "missing-plan"},
-            f"{_DOC}operations/purge.py:FacadePurge.purge_status",
-        ),),
     ),
 )

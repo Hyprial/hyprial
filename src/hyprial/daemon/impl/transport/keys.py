@@ -228,10 +228,32 @@ class KeySpace:
             f"{_orgfs_segment(digest, name='digest')}"
         )
 
+    def orgfs_blob_any(self) -> str:
+        """Declaration side: one blob query handler for every digest."""
+
+        return f"{self.prefix}/org/fs/blob/*"
+
     def orgfs_announce(self, node: str) -> str:
         return (
             f"{self.prefix}/org/fs/announce/"
             f"{_orgfs_segment(node, name='node')}"
+        )
+
+    def orgfs3_sync(self, space_id: str, node: str) -> str:
+        """Protocol 3 pull queryable of one node's copy of one space."""
+
+        return (
+            f"{self.prefix}/org/fs3/sync/"
+            f"{_orgfs_segment(space_id, name='space_id')}/"
+            f"{_orgfs_segment(node, name='node')}"
+        )
+
+    def orgfs3_update(self, space_id: str) -> str:
+        """Protocol 3 broadcast channel of one space's committed updates."""
+
+        return (
+            f"{self.prefix}/org/fs3/update/"
+            f"{_orgfs_segment(space_id, name='space_id')}"
         )
 
     # --- delivery terminal state (msg/ namespace, design section 5) ----------

@@ -1,3 +1,13 @@
+# Decisions:
+# - Phase D T1: ``test_public_tree_api_restore_and_change_events`` and
+#   ``test_directory_restore_respects_recursive_flag`` restored an earlier body
+#   by ``version`` (design §6 removed that); they were deleted, not rewritten.
+#   Their user-visible parts are the contracts
+#   ``content/test_cas.py::test_base_version_current_is_a_plain_overwrite``,
+#   ``tree/test_trash.py::test_restore_brings_back_the_last_state``,
+#   ``tree/test_trash.py::test_directory_restore_respects_recursive_flag``,
+#   ``tree/test_trash.py::test_recursive_directory_restore_brings_back_the_subtree``
+#   and ``watch/test_watch.py::test_watch_reports_every_change_kind_in_order``.
 from __future__ import annotations
 
 from dataclasses import replace
@@ -6,29 +16,6 @@ import threading
 import pytest
 
 from hyprial.daemon.impl.orgfs import LocalOrgFs, OrgFsError, TreeDocument
-
-
-def test_public_tree_api_restore_and_history() -> None:
-    fs = LocalOrgFs(author="user:alice", actor="agent:alice:mac:pytest")
-    space = fs.create_space("shared")
-    fs.mkdir(space.space_id, "notes")
-    first = fs.write_text(space.space_id, "notes/readme.md", "before")
-    original_version = first.version
-
-    second = fs.write_text(space.space_id, "notes/readme.md", "after", base_version=original_version)
-    assert fs.read_text(space.space_id, "notes/readme.md") == ("after", second.version)
-    fs.remove(space.space_id, "notes/readme.md")
-    assert fs.trash(space.space_id)[0].deleted is True
-    restored = fs.restore(space.space_id, f"id:{first.node_id}", original_version)
-
-    assert restored.path == "notes/readme.md"
-    assert fs.read_text(space.space_id, f"id:{first.node_id}")[0] == "before"
-    assert {entry.changed for entry in fs.history(space.space_id, f"id:{first.node_id}")} >= {
-        "created",
-        "content",
-        "removed",
-        "restored",
-    }
 
 
 def test_ambiguous_paths_require_stable_id() -> None:
@@ -119,33 +106,6 @@ def test_restore_reverts_rename_and_move_to_earlier_version() -> None:
     assert restored.path == "before/name.txt"
     assert restored.name == "name.txt"
     assert fs.read_text(space.space_id, "before/name.txt")[0] == "content"
-
-
-def test_directory_restore_respects_recursive_flag() -> None:
-    """Review item 15l: directory restore covers recursive=False and True."""
-
-    fs = LocalOrgFs(author="user:alice")
-    space = fs.create_space("shared")
-    directory = fs.mkdir(space.space_id, "directory")
-    first = fs.write_text(space.space_id, "directory/first.txt", "one")
-    second = fs.write_text(space.space_id, "directory/second.txt", "two")
-    subtree_version = second.version
-    fs.remove(space.space_id, f"id:{directory.node_id}")
-
-    fs.restore(space.space_id, f"id:{directory.node_id}", subtree_version, recursive=False)
-    assert fs.listdir(space.space_id, f"id:{directory.node_id}") == ()
-    assert {item.node_id for item in fs.trash(space.space_id)} >= {
-        first.node_id,
-        second.node_id,
-    }
-
-    fs.restore(space.space_id, f"id:{directory.node_id}", subtree_version, recursive=True)
-    assert {item.node_id for item in fs.listdir(space.space_id, "directory")} == {
-        first.node_id,
-        second.node_id,
-    }
-    assert fs.read_text(space.space_id, f"id:{first.node_id}")[0] == "one"
-    assert fs.read_text(space.space_id, f"id:{second.node_id}")[0] == "two"
 
 
 def test_path_negatives_reject_empty_segments_unknown_ids_and_cross_space_move() -> None:

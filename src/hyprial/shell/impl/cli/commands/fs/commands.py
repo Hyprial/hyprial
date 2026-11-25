@@ -7,7 +7,6 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from collections.abc import Callable, Mapping
 from typing import Any
 from pathlib import Path
-from hyprial.error import codes
 import json
 import os
 from hyprial.kernel import parse_orgfs_uri
@@ -17,10 +16,10 @@ from hyprial.shell.impl.cli.commands.common.groups import group
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _local_operator_identity, _message_claim_params
 from hyprial.shell.impl.cli.output import CliResult, confirm as ask, render_generic
 fs_app = group(help="Share and synchronize organization folders.")
-space_app = group(help="Organization folders: list, create, join, status, serve, web, checkout.")
+space_app = group(help="Organization folders: list, create, join, status, web, checkout.")
 member_app = group(help="Read and change organization folder membership.")
 trash_app = group(help="List and restore deleted nodes.")
-purge_app = group(help="Owner-reviewed permanent deletion.")
+purge_app = group(help="Remove this node's local replica of a space.")
 fs_app.add_typer(space_app, name="space")
 fs_app.add_typer(member_app, name="member")
 fs_app.add_typer(trash_app, name="trash")
@@ -172,21 +171,6 @@ def fs_rm(
 ) -> None:
     """Soft-delete a node."""
     _fs_run("orgfs.remove", {"spaceId": space_id, "path": path}, json_output=json_output)
-
-
-@fs_app.command("history")
-def fs_history(
-    space_id: str = typer.Argument(..., help="Space UUID."),
-    node: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
-    limit: int = typer.Option(50, "--limit", help="Maximum history entries."),
-    before: str | None = typer.Option(None, "--before", help="Return entries before this version."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Show attributed node history."""
-    params: JsonObject = {"spaceId": space_id, "node": node, "limit": limit}
-    if before is not None:
-        params["before"] = before
-    _fs_run("orgfs.history", params, json_output=json_output)
 
 
 @fs_app.command("watch")
@@ -462,20 +446,6 @@ def fs_status(
     _fs_run("orgfs.status", {"spaceId": space_id}, json_output=json_output)
 
 
-@space_app.command("serve")
-def fs_serve(
-    space_id: str = typer.Argument(..., help="Space UUID."),
-    backend: str = typer.Option("fs", "--backend", help="Replica backend: fs or memory."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Serve a space as a resident replica."""
-    _fs_run(
-        "orgfs.serve",
-        {"spaceId": space_id, "backend": backend},
-        json_output=json_output,
-    )
-
-
 @space_app.command("checkout")
 def fs_checkout(
     space_id: str = typer.Argument(..., help="Space UUID."),
@@ -494,59 +464,19 @@ def fs_checkout(
     )
 
 
-@purge_app.command("plan")
-def fs_purge_plan(
-    space_id: str = typer.Argument(..., help="Space UUID."),
-    targets_json: str = typer.Argument(
-        ..., help="JSON array of exact blob/doc/tree-range targets."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Build an owner-reviewed purge plan bound to exact targets."""
-    services = get_services()
-    try:
-        targets = json.loads(targets_json)
-    except json.JSONDecodeError as exc:
-        raise services.CliError(
-            codes.INVALID_ARGUMENT, "targets must be valid JSON"
-        ) from exc
-    if not isinstance(targets, list) or not all(
-        isinstance(target, dict) for target in targets
-    ):
-        raise services.CliError(
-            codes.INVALID_ARGUMENT, "targets must be a JSON array of objects"
-        )
-    _fs_run(
-        "orgfs.purge_plan",
-        {"spaceId": space_id, "targets": targets},
-        json_output=json_output,
-    )
-
-
 @purge_app.command("run")
 def fs_purge(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    plan_id: str | None = typer.Argument(
-        None, help="Optional reviewed content-purge plan ID."
-    ),
     yes: bool = typer.Option(
         False, "--yes", help="Confirm local replica removal without a prompt."
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Purge a local replica, or execute a supplied content-purge plan.
+    """Purge this node's local replica of a space.
 
-    Without PLAN_ID this removes only this node's replica. It does not
-    broadcast a deletion to peers.
+    This removes only this node's replica. It does not broadcast a deletion
+    to peers.
     """
-    if plan_id is not None:
-        _fs_run(
-            "orgfs.purge",
-            {"spaceId": space_id, "planId": plan_id},
-            json_output=json_output,
-        )
-        return
-
     services = get_services()
 
     def render(result: Mapping[str, Any]) -> str:
@@ -580,31 +510,3 @@ def fs_purge(
         return CliResult(result, render=render)
 
     services.runtime.execute(operation, json_output=json_output)
-
-
-@purge_app.command("status")
-def fs_purge_status(
-    space_id: str = typer.Argument(..., help="Space UUID."),
-    plan_id: str = typer.Argument(..., help="Purge plan ID."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Show acknowledged and pending purge participants."""
-    _fs_run(
-        "orgfs.purge_status",
-        {"spaceId": space_id, "planId": plan_id},
-        json_output=json_output,
-    )
-
-
-@purge_app.command("unban")
-def fs_unban(
-    space_id: str = typer.Argument(..., help="Space UUID."),
-    sha: str = typer.Argument(..., help="Lowercase SHA-256 digest."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Explicitly allow the same content hash to be written again."""
-    _fs_run(
-        "orgfs.unban",
-        {"spaceId": space_id, "sha": sha},
-        json_output=json_output,
-    )

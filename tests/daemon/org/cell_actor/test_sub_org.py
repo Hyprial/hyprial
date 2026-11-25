@@ -487,9 +487,6 @@ def test_sub_org_leave_and_repair_preserve_inherited_tailnet(tmp_path: Path) -> 
         left = confirm_ipc_removal(ipc_org_leave, app_b, {"org": "group-dept"})
         assert left["phase"] == "complete"
         assert left["tailnetUnchanged"] is True
-        app_a._require_orgfs_runtime().facade.document_covers_member_add = (
-            lambda *_args, **_kwargs: True
-        )
         processed = process_leave_requests_for_app(app_a)
         assert any(item["org"] == "group-dept" for item in processed["processed"])
         assert "group-root" in _network_orgs(app_b)

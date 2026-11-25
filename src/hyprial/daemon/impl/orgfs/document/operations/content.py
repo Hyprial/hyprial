@@ -1,10 +1,25 @@
+# Decision record (phase F4, real-node finding R2-2, 2026-11-25):
+# - ``_three_way`` (``write_text(base_version=)``) keeps its fast paths, then
+#   merges by lines: the base -> requested hunks are mapped onto ``current``
+#   through the base -> current hunks.  The old fallback replayed the
+#   base -> requested character opcodes at base offsets shifted only by the
+#   requested side's own growth, so any edit of ``current`` that changed a
+#   length before a requested hunk moved that hunk and corrupted the text
+#   (``aaa\nX\nccY``).  Lines, not characters: character opcodes of two
+#   rewrites of one line interleave on shared letters and splice both.
+# - Hunks that do not overlap in the base are both kept.  Where both writes
+#   changed the same base lines, the requested (later) text replaces the
+#   current text of those lines, the rule the fallback always stated ("apply
+#   the requested diff to the current document"); a requested insertion at
+#   the point where ``current`` inserted goes after it.  A requested hunk that
+#   spans several current hunks replaces all of them; two requested hunks that
+#   land on one current hunk are joined into one replacement.
 from __future__ import annotations
 
 
 
 
 
-import base64
 
 import difflib
 
@@ -12,7 +27,6 @@ import fnmatch
 
 
 import hashlib
-import json
 
 
 
@@ -23,7 +37,6 @@ import json
 
 from typing import Callable
 
-from pycrdt import Doc
 
 
 
@@ -33,32 +46,71 @@ from pycrdt import Doc
 
 from hyprial.daemon.impl.orgfs.api  import (
     ChangeEvent,
-    JournalCommit,
-    JournalHistory,
     NodeInfo,
     NodeRef,
     OrgFsError,
     SpaceStatus,
     TextReadSnapshot)
 
-from hyprial.daemon.impl.orgfs.storage.blobs  import BlobError, BlobIntegrityError
+from hyprial.daemon.impl.orgfs.storage.blobs  import BlobIntegrityError
 
 
 
 
-from hyprial.daemon.impl.orgfs.storage.store  import (
-    StoreError,
-    decode_state_vector,
-    state_covers,
-)
 
 from hyprial.daemon.impl.orgfs.storage.space_authority import _ReadStore
 
-from hyprial.daemon.impl.orgfs.document.structured  import StructuredOrgDoc
 
 
 
 from hyprial.daemon.impl.orgfs.document.model import ORGFS_TEXT_MAX, _ContentDocument, _Node, _Space, _Watch, _decode_content_frontier, _facade_locked, _version_number
+
+def _line_changes(base: list[str], other: list[str]) -> list[tuple[int, int, int, int]]:
+    matcher = difflib.SequenceMatcher(a=base, b=other, autojunk=False)
+    return [
+        (i1, i2, j1, j2)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
+    ]
+
+
+def _to_current(changes: list[tuple[int, int, int, int]], position: int, *, after: bool) -> int:
+    offset = 0
+    for b1, b2, c1, c2 in changes:
+        if b2 < position or (b2 == position and (b1 < b2 or after)):
+            offset += (c2 - c1) - (b2 - b1)
+        elif b1 < position < b2:
+            return c2 if after else c1
+        else:
+            break
+    return position + offset
+
+
+def _merge_lines(base: str, current: str, requested: str) -> str:
+    """Apply the base -> requested line hunks to ``current``."""
+
+    base_lines = base.splitlines(keepends=True)
+    current_lines = current.splitlines(keepends=True)
+    requested_lines = requested.splitlines(keepends=True)
+    ours = _line_changes(base_lines, current_lines)
+    spans: list[tuple[int, int, int, int]] = []
+    for i1, i2, j1, j2 in _line_changes(base_lines, requested_lines):
+        start = _to_current(ours, i1, after=True)
+        end = max(start, _to_current(ours, i2, after=i1 == i2))
+        if spans and start < spans[-1][1]:
+            first_start, first_end, first_j1, _first_j2 = spans[-1]
+            spans[-1] = (first_start, max(first_end, end), first_j1, j2)
+        else:
+            spans.append((start, end, j1, j2))
+    merged: list[str] = []
+    cursor = 0
+    for start, end, j1, j2 in spans:
+        merged.extend(current_lines[cursor:start])
+        merged.extend(requested_lines[j1:j2])
+        cursor = end
+    merged.extend(current_lines[cursor:])
+    return "".join(merged)
+
 
 class FacadeContent:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -148,131 +200,6 @@ class FacadeContent:
         return False
 
 
-    def journal_history(self, space_id: str, node: NodeRef) -> JournalHistory:
-        """Return one document's durable commit chain, not facade history.
-
-        The durable read runs outside the facade lock: the space authority is an
-        actor call, and holding the lock across it can deadlock with deferred
-        effect callbacks that re-enter the facade.
-        """
-
-        with self._space_lock(space_id):
-            space = self._space(space_id)
-            item = self._one(space, node, include_deleted=True)
-            if item.kind != "doc" or item.doc_id is None:
-                raise OrgFsError(
-                    "invalid-argument", {"message": "not a text document"}
-                )
-            doc_id = item.doc_id
-            current_version = item.version
-            document = space.contents.get(doc_id)
-            current_text = document.value() if document is not None else None
-        store = self._store(space_id)
-        if store is None:
-            return JournalHistory(
-                commits=(), frontier="", durable=False, head_current=False
-            )
-        authority = self.space_authority(space_id, store)
-        try:
-            if authority is not None:
-                retirements = tuple(authority.read(_ReadStore("retirement_records")))
-            else:
-                retirements = tuple(store.retirement_records())
-            plan_id = next(
-                (
-                    str(record.plan_id)
-                    for record in retirements
-                    if doc_id
-                    in (record.old_physical_doc_id, record.replacement_doc_id)
-                ),
-                None,
-            )
-            try:
-                if authority is not None:
-                    records, frontier = authority.read(
-                        _ReadStore("document_history", doc_id=doc_id)
-                    )
-                else:
-                    records, frontier = store.document_history(doc_id)
-            except StoreError as error:
-                if plan_id is not None and error.code == "snapshot-barrier":
-                    return JournalHistory(
-                        commits=(),
-                        frontier="",
-                        durable=True,
-                        head_current=False,
-                        plan_id=plan_id,
-                    )
-                raise
-            replay = _ContentDocument()
-            commits: list[JournalCommit] = []
-            for index, record in enumerate(records):
-                replay.update(self._journal_update(space_id, record.envelope_bytes))
-                commits.append(
-                    JournalCommit(
-                        journal_ref=f"journal:{doc_id}:{record.writer}:{record.seq}",
-                        durable_version=str(record.version),
-                        writer=str(record.writer),
-                        changed=(
-                            "created"
-                            if index == 0 and int(record.seq) == 0
-                            else "content"
-                        ),
-                        text=replay.value(),
-                    )
-                )
-        except OrgFsError:
-            raise
-        except (BlobError, KeyError, StoreError, TypeError, UnicodeError, ValueError) as error:
-            raise OrgFsError(
-                "unavailable", {"message": str(error)}
-            ) from error
-        head_text = commits[-1].text if commits else None
-        return JournalHistory(
-            commits=tuple(commits),
-            frontier=str(frontier),
-            durable=True,
-            head_current=bool(commits)
-            and self._same_state_vector(
-                commits[-1].durable_version, str(frontier)
-            )
-            and self._same_state_vector(
-                base64.b64encode(replay.doc.get_state()).decode("ascii"), str(frontier)
-            )
-            and head_text == current_text,
-            plan_id=plan_id,
-            snapshot_version=current_version,
-        )
-
-
-    @staticmethod
-    def _same_state_vector(left: str, right: str) -> bool:
-        """Compare two opaque state-vector encodings by value, not by bytes."""
-
-        try:
-            return decode_state_vector(base64.b64decode(left)) == decode_state_vector(
-                base64.b64decode(right)
-            )
-        except (ValueError, UnicodeError):
-            return False
-
-
-    def _journal_update(self, space_id: str, envelope_bytes: bytes) -> bytes:
-        envelope = json.loads(envelope_bytes)
-        if not isinstance(envelope, dict) or ("update" in envelope) == (
-            "updateBlob" in envelope
-        ):
-            raise OrgFsError(
-                "invalid-argument", {"message": "invalid journal envelope"}
-            )
-        if "update" in envelope:
-            return base64.b64decode(str(envelope["update"]), validate=True)
-        digest = str(envelope["updateBlob"])
-        if self.blobs is None:
-            raise OrgFsError("blob-unavailable", {"digest": digest})
-        return bytes(self.blobs.get(space_id, digest))
-
-
     @_facade_locked
     def read_text(self, space_id: str, node: NodeRef) -> tuple[str, str]:
         _space, item, content = self._read_text_value(space_id, node)
@@ -288,7 +215,7 @@ class FacadeContent:
             content=content,
             version=item.version,
             node=self._node_info(space, item.node_id),
-            content_revision=hashlib.sha256(space.contents[item.doc_id].export()).hexdigest(),
+            content_revision=hashlib.sha256(self._content_doc(space, item.doc_id).export()).hexdigest(),
         )
 
 
@@ -297,18 +224,27 @@ class FacadeContent:
     ) -> tuple[_Space, _Node, str]:
         space = self._space(space_id)
         item = self._one(space, node)
-        if item.kind != "doc" or item.doc_id not in space.contents:
-            raise OrgFsError("invalid-argument", {"message": "not a text document"})
-        content = space.contents[item.doc_id]
         if (
-            item.required_content_frontier is not None
-            and not state_covers(
-                content.doc.get_state(), item.required_content_frontier
-            )
+            item.kind != "doc"
+            or self._content_doc(space, item.doc_id, None) is None
         ):
+            raise OrgFsError("invalid-argument", {"message": "not a text document"})
+        content = self._content_doc(space, item.doc_id)
+        if self._content_covered(space, item) is False:
             raise self._content_pending(space, item)
         return space, item, content.value()
 
+
+    def _base_text(self, space: _Space, node: _Node, base_version: str) -> str:
+        """Hook: the text ``base_version`` names for a three-way merge.
+
+        Legacy: the node's entry in the in-memory version snapshot.
+        """
+
+        snapshot = space.snapshots.get(base_version)
+        if snapshot is None or node.node_id not in snapshot:
+            raise OrgFsError("stale-write", {"baseVersion": base_version})
+        return snapshot[node.node_id].content.decode(errors="replace")
 
     def _three_way(self, base: str, current: str, requested: str) -> str:
         if current == base:
@@ -326,23 +262,7 @@ class FacadeContent:
                 }
             )
             return "".join(prefixes) + base
-        # For overlapping edits, apply the requested diff to the current
-        # document.  This retains both edits for disjoint regions and is
-        # deterministic when the two edits have identical anchors.
-        matcher = difflib.SequenceMatcher(a=base, b=requested, autojunk=False)
-        result = current
-        delta = 0
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag == "equal":
-                continue
-            anchor = min(len(result), i1 + delta)
-            result = (
-                result[:anchor]
-                + requested[j1:j2]
-                + result[min(len(result), i2 + delta) :]
-            )
-            delta += (j2 - j1) - (i2 - i1)
-        return result
+        return _merge_lines(base, current, requested)
 
 
     @_facade_locked
@@ -375,7 +295,7 @@ class FacadeContent:
             parent, name = self._parent_for_new(space, node)
             created = self._new_node(space, parent, name, "doc")
 
-            created_doc = space.contents[created.doc_id or ""]
+            created_doc = self._content_doc(space, created.doc_id or "")
 
             def initialize() -> None:
                 created_doc.set(content)
@@ -385,7 +305,7 @@ class FacadeContent:
                 raw = content.encode()
                 created.ref_size = len(raw)
                 created.ref_sha256 = hashlib.sha256(raw).hexdigest()
-                space.tree.record(created)
+                self._record_row(space, created)
 
             try:
                 self._commit_many(
@@ -397,7 +317,7 @@ class FacadeContent:
                 )
             except Exception:
                 space.nodes.pop(created.node_id, None)
-                space.contents.pop(created.doc_id or "", None)
+                self._drop_content_doc(space, created.doc_id or "")
                 raise
             self._finish(space, [created.node_id], "created")
             return self._node_info(space, created.node_id)
@@ -413,15 +333,12 @@ class FacadeContent:
             raise OrgFsError(
                 "stale-write", {"expected": expect_version, "actual": existing.version}
             )
-        current_doc = space.contents[existing.doc_id or ""]
+        current_doc = self._content_doc(space, existing.doc_id or "")
         current = current_doc.value()
         if base_version is None:
             base = current
         else:
-            snapshot = space.snapshots.get(base_version)
-            if snapshot is None or existing.node_id not in snapshot:
-                raise OrgFsError("stale-write", {"baseVersion": base_version})
-            base = snapshot[existing.node_id].content.decode(errors="replace")
+            base = self._base_text(space, existing, base_version)
         value = self._three_way(base, current, content)
         if value == current:
             if existing.required_content_frontier is None:
@@ -450,7 +367,7 @@ class FacadeContent:
             raw = value.encode()
             existing.ref_size = len(raw)
             existing.ref_sha256 = hashlib.sha256(raw).hexdigest()
-            space.tree.record(existing)
+            self._record_row(space, existing)
 
         self._commit_many(
             space,
@@ -470,13 +387,8 @@ class FacadeContent:
         space = self._space(space_id)
         item = self._one(space, node)
         if item.kind == "doc":
-            content = space.contents[item.doc_id or ""]
-            if (
-                item.required_content_frontier is not None
-                and not state_covers(
-                    content.doc.get_state(), item.required_content_frontier
-                )
-            ):
+            content = self._content_doc(space, item.doc_id or "")
+            if self._content_covered(space, item) is False:
                 raise self._content_pending(space, item)
             return content.value().encode()
         if item.kind != "blob" or not item.blob_hash:
@@ -621,104 +533,6 @@ class FacadeContent:
 
 
     @_facade_locked
-    def open_doc(self, space_id: str, node: NodeRef) -> StructuredOrgDoc:
-        """Open a container view with an explicit direct-root deletion contract.
-
-        Structured tombstones hide a deleted P1 direct root from the structured
-        projection.  P1 reads then observe that cleared root and a later P1
-        write changes its bytes without clearing the tombstone; a structured
-        ``set``/``ensure_*`` is the explicit operation that restores visibility.
-        """
-
-        space = self._space(space_id)
-        item = self._one(space, node)
-        if item.kind != "doc" or item.doc_id not in space.contents:
-            raise OrgFsError("invalid-argument", {"message": "not a document"})
-        node_id = item.node_id
-        doc_id = item.doc_id
-        document = space.contents[doc_id]
-        handle_ref: list[StructuredOrgDoc] = []
-
-        def commit(mutate: Callable[[Doc], None]) -> NodeInfo:
-            with self._space_lock(space_id):
-                current_space = self._space(space_id)
-                current = self._one(current_space, f"id:{node_id}")
-                if current.doc_id != doc_id or doc_id not in current_space.contents:
-                    raise OrgFsError(
-                        "snapshot-barrier",
-                        {"retiredDocId": doc_id, "replacementDocId": current.doc_id},
-                    )
-                self._ensure_writable(current_space)
-                live = current_space.contents[doc_id]
-                before = bytes(live.doc.get_state())
-                client_id = live.doc.client_id
-                working = _ContentDocument(client_id=client_id, update=live.export())
-            mutate(working.doc)
-            update = bytes(working.doc.get_update(before))
-            try:
-                return self._apply_structured_update(
-                    space_id, node_id, doc_id, client_id, before, update
-                )
-            finally:
-                with self._space_lock(space_id):
-                    refreshed = self._space(space_id).contents.get(doc_id)
-                    if handle_ref and refreshed is not None:
-                        handle_ref[0]._document = refreshed  # noqa: SLF001
-                        handle_ref[0]._doc = refreshed.doc  # noqa: SLF001
-
-        def version() -> str:
-            with self._space_lock(space_id):
-                current_space = self._space(space_id)
-                return self._node_info(current_space, node_id).version
-
-        handle = StructuredOrgDoc(document, doc_id, commit, version=version)
-        handle_ref.append(handle)
-        return handle
-
-    @_facade_locked
-    def _apply_structured_update(
-        self, space_id: str, node_id: str, doc_id: str, client_id: int,
-        base_state: bytes, update: bytes,
-    ) -> NodeInfo:
-        space = self._space(space_id)
-        current = self._one(space, f"id:{node_id}")
-        if current.doc_id != doc_id or doc_id not in space.contents:
-            raise OrgFsError(
-                "snapshot-barrier",
-                {"retiredDocId": doc_id, "replacementDocId": current.doc_id},
-            )
-        self._ensure_writable(space)
-        live = space.contents[doc_id]
-        # Remote clients retain ordinary CRDT merge semantics. Only a local
-        # writer advancing the same client clock would reuse generated IDs.
-        if (
-            live.doc.client_id != client_id
-            or decode_state_vector(live.doc.get_state()).get(client_id, 0)
-            != decode_state_vector(base_state).get(client_id, 0)
-        ):
-            raise OrgFsError(
-                "stale-write", {"message": "structured local writer advanced"}
-            )
-
-        def apply_content() -> None:
-            live.doc.apply_update(update)
-            current.content_frontier += 1
-
-        def record_requirement() -> None:
-            current.required_content_frontier = live.doc.get_state()
-            raw = live.value().encode()
-            current.ref_size = len(raw)
-            current.ref_sha256 = hashlib.sha256(raw).hexdigest()
-            space.tree.record(current)
-
-        self._commit_many(
-            space, [(doc_id, apply_content), (space.tree_doc_id, record_requirement)]
-        )
-        self._finish(space, [node_id], "content")
-        return self._node_info(space, node_id)
-
-
-    @_facade_locked
     def status(self, space_id: str) -> SpaceStatus:
         self._space(space_id)
         store = self._store(space_id)
@@ -796,8 +610,11 @@ class FacadeContent:
                     deleted=bool(raw.get("deleted", False)),
                     modified_by=self.author,
                 )
-                if raw.get("doc_id") and raw["doc_id"] not in space.contents:
-                    space.contents[raw["doc_id"]] = _ContentDocument()
+                if (
+                    raw.get("doc_id")
+                    and self._content_doc(space, raw["doc_id"], None) is None
+                ):
+                    self._put_content_doc(space, raw["doc_id"], _ContentDocument())
             else:
                 node = space.nodes[node_id]
                 node.parent = raw.get("parent")
@@ -829,7 +646,7 @@ class FacadeContent:
         item = self._one(space, node)
         if item.kind != "doc":
             raise OrgFsError("invalid-argument")
-        return space.contents[item.doc_id or ""].export()
+        return self._content_doc(space, item.doc_id or "").export()
 
 
     @_facade_locked
@@ -847,9 +664,9 @@ class FacadeContent:
                 "snapshot-barrier",
                 {"retiredDocId": expected_doc_id, "replacementDocId": item.doc_id},
             )
-        if item.doc_id not in space.contents:
+        if self._content_doc(space, item.doc_id, None) is None:
             raise OrgFsError("invalid-argument", {"message": "not a text document"})
-        space.contents[item.doc_id].doc.apply_update(snapshot)
+        self._content_doc(space, item.doc_id).doc.apply_update(snapshot)
         pending = space.birth_pending.get(item.node_id)
         if (
             pending is not None
@@ -871,6 +688,6 @@ class FacadeContent:
         item = self._one(space, node)
         if item.kind != "doc":
             raise OrgFsError("invalid-argument")
-        space.contents[item.doc_id or ""].update(update)
+        self._content_doc(space, item.doc_id or "").update(update)
         self._finish(space, [item.node_id], "content")
         return self._node_info(space, item.node_id)

@@ -8,17 +8,14 @@ future store implementations from having to import the tree engine.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, TypeAlias
+from typing import Callable, Literal, Mapping, Protocol
 
 from hyprial.kernel import ipc_errors
-
-from hyprial.daemon.impl.orgfs.projection.purge  import PurgePlan, PurgeResult, PurgeStatus
 
 NodeRef = str
 NodeKind = Literal["dir", "doc", "blob"]
 MemberMode = Literal["ro", "rw"]
 ChangeKind = Literal["created", "modified", "moved", "removed", "restored"]
-PurgeTarget: TypeAlias = dict[str, Any]
 
 
 class OrgFsError(Exception):
@@ -135,44 +132,6 @@ class TextReadSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class HistoryEntry:
-    node: NodeInfo
-    changed: Literal["position", "content", "both", "created", "removed", "restored"]
-    author: str
-    actor: str | None
-    at: str
-
-
-@dataclass(frozen=True, slots=True)
-class JournalCommit:
-    """One retained durable commit of a document, oldest first in a chain."""
-
-    journal_ref: str
-    durable_version: str
-    writer: str
-    changed: Literal["created", "content"]
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class JournalHistory:
-    """A document's journal chain, its durable head, and any purge retirement.
-
-    ``commits`` comes from the space journal, never from the facade's
-    process-local version list.  ``durable`` is false when the space has no
-    durable store, so a caller can tell "cannot read" from "nothing retained".
-    ``plan_id`` is set only when a committed purge retired this document.
-    """
-
-    commits: tuple[JournalCommit, ...]
-    frontier: str
-    durable: bool
-    head_current: bool
-    plan_id: str | None = None
-    snapshot_version: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class ChangeEvent:
     space_id: str
     kind: ChangeKind
@@ -188,52 +147,6 @@ class SpaceStatus:
     holders_online: tuple[str, ...]
     # (author, count) of received commits parked behind a missing predecessor.
     parked_commits: tuple[tuple[str, int], ...] = ()
-
-
-class OrgDoc(Protocol):
-    def doc_id(self) -> str: ...
-
-    def snapshot_json(self) -> str: ...
-
-    def version(self) -> str: ...
-
-    def root(self) -> "DocMap": ...
-
-    def transact(self, mutate: Callable[["DocMap"], None]) -> NodeInfo: ...
-
-
-class DocMap(Protocol):
-    def get(self, key: str, default: object | None = None) -> object: ...
-
-    def keys(self) -> tuple[str, ...]: ...
-
-    def set(self, key: str, value: object) -> None: ...
-
-    def delete(self, key: str) -> None: ...
-
-    def ensure_map(self, key: str) -> "DocMap": ...
-
-    def ensure_list(self, key: str) -> "DocList": ...
-
-    def ensure_text(self, key: str) -> "DocText": ...
-
-
-class DocList(Protocol):
-    def get(self, index: int) -> object: ...
-
-    def len(self) -> int: ...
-
-    def insert(self, index: int, value: object) -> None: ...
-
-    def delete(self, index: int) -> None: ...
-
-
-class DocText(Protocol):
-    def str(self) -> str: ...
-
-    def insert(self, index: int, value: str) -> None: ...
-
-    def delete(self, index: int, length: int) -> None: ...
 
 
 class Registration(Protocol):
@@ -275,10 +188,6 @@ class OrgFs(Protocol):
 
     def document_authors(self, space_id: str, node: NodeRef) -> tuple[str, ...]: ...
 
-    def document_covers_member_add(
-        self, space_id: str, node: NodeRef, user: str
-    ) -> bool: ...
-
     def write_text(
         self,
         space_id: str,
@@ -313,22 +222,6 @@ class OrgFs(Protocol):
         self, space_id: str, glob: str, callback: Callable[[ChangeEvent], None]
     ) -> Registration: ...
 
-    def watch_meta(
-        self, space_id: str, callback: Callable[[], None]
-    ) -> Registration: ...
-
-    def open_doc(self, space_id: str, node: NodeRef) -> OrgDoc: ...
-
-    def history(
-        self, space_id: str, node: NodeRef, limit: int = 50, before: str | None = None
-    ) -> tuple[HistoryEntry, ...]: ...
-
-    def journal_history(self, space_id: str, node: NodeRef) -> JournalHistory: ...
-
-    def read_at(self, space_id: str, node: NodeRef, version: str) -> bytes: ...
-
-    def stat_at(self, space_id: str, node: NodeRef, version: str) -> NodeInfo: ...
-
     def trash(self, space_id: str, limit: int = 100) -> tuple[NodeInfo, ...]: ...
 
     def restore(
@@ -336,21 +229,5 @@ class OrgFs(Protocol):
     ) -> NodeInfo: ...
 
     def status(self, space_id: str) -> SpaceStatus: ...
-
-    def parked_commits(self, space_id: str) -> tuple[tuple[str, int], ...]: ...
-
-    def purge_plan(
-        self, space_id: str, targets: Sequence[PurgeTarget]
-    ) -> "PurgePlan": ...
-
-    def purge(self, space_id: str, plan_id: str) -> "PurgeResult": ...
-
-    def purge_status(self, space_id: str, plan_id: str) -> "PurgeStatus": ...
-
-    def unban(self, space_id: str, sha: str) -> None: ...
-
-    def serve(
-        self, space_id: str, backend: Literal["fs", "memory"] = "fs"
-    ) -> Mapping[str, object]: ...
 
     def checkout(self, space_id: str, enabled: bool) -> Mapping[str, object]: ...

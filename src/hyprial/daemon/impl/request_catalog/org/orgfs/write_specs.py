@@ -39,7 +39,6 @@ JsonObject = dict[str, Any]
 _SPACE_ID = {"type": "string", "minLength": 1}
 _NODE_REF = {"type": "string", "minLength": 1}
 _BOOL = {"type": "boolean"}
-_SHA = {"type": "string", "minLength": 64, "maxLength": 64}
 _HTTP_FORBIDDEN_FROM = {**_NODE_REF, "x-hyprial-http-forbidden": True}
 
 
@@ -184,51 +183,7 @@ _RESTORE_PARAMS = _params(
     required=("spaceId", "node", "version"),
 )
 
-_PURGE_TARGET = {
-    "oneOf": [
-        _object({"kind": {"const": "blob"}, "sha": _SHA}, required=("kind", "sha")),
-        _object(
-            {"kind": {"const": "tree-range"}, "from": String, "to": String},
-            required=("kind", "from", "to"),
-        ),
-        _object(
-            {
-                "kind": {"const": "doc-range"},
-                "node": _NODE_REF,
-                "from": String,
-                "to": String,
-            },
-            required=("kind", "node", "from", "to"),
-        ),
-    ]
-}
-
-_PURGE_PLAN_PARAMS = _params(
-    {
-        "spaceId": _SPACE_ID,
-        "targets": {"type": "array", "items": _PURGE_TARGET, "minItems": 1},
-    },
-    required=("spaceId", "targets"),
-)
-
-_PURGE_PARAMS = _params(
-    {"spaceId": _SPACE_ID, "planId": _NODE_REF},
-    required=("spaceId", "planId"),
-)
-
 _SPACE_PARAMS = _params({"spaceId": _SPACE_ID}, required=("spaceId",))
-
-_UNBAN_PARAMS = _params(
-    {"spaceId": _SPACE_ID, "sha": _SHA}, required=("spaceId", "sha")
-)
-
-_SERVE_PARAMS = _params(
-    {
-        "spaceId": _SPACE_ID,
-        "backend": {"type": "string", "enum": ["fs", "memory"]},
-    },
-    required=("spaceId",),
-)
 
 _CHECKOUT_PARAMS = _params(
     {"spaceId": _SPACE_ID, "enabled": _BOOL},
@@ -251,98 +206,9 @@ _REMOVE_MEMBER_PARAMS = _params(
 
 _JOIN_PARAMS = _params({"spaceId": _SPACE_ID}, required=("spaceId",))
 
-_PURGE_DOCUMENT = _object(
-    {
-        "doc_id": String,
-        "start": String,
-        "end": String,
-        "update_blobs": {"type": "array", "items": String},
-        "log_keys": {"type": "array", "items": String},
-    },
-    required=("doc_id", "start", "end", "update_blobs", "log_keys"),
-)
-
-_PURGE_BLOB = _object(
-    {
-        "sha": String,
-        "referenced_elsewhere_locally": {"type": "array", "items": String},
-    },
-    required=("sha", "referenced_elsewhere_locally"),
-)
-
-_PURGE_SNAPSHOT = _object(
-    {"snapshot_id": String, "doc_id": String},
-    required=("snapshot_id", "doc_id"),
-)
-
-_PURGE_PLAN_RESULT = _object(
-    {
-        "plan_id": String,
-        "space_id": String,
-        "meta_frontier": String,
-        "docs": {"type": "array", "items": _PURGE_DOCUMENT},
-        "blobs": {"type": "array", "items": _PURGE_BLOB},
-        "snapshots": {"type": "array", "items": _PURGE_SNAPSHOT},
-        "writers_affected": {"type": "array", "items": String},
-        "authors_before": {
-            "type": "object",
-            "additionalProperties": {"type": "integer"},
-        },
-        "expires_at": String,
-    },
-    required=(
-        "plan_id",
-        "space_id",
-        "meta_frontier",
-        "docs",
-        "blobs",
-        "snapshots",
-        "writers_affected",
-        "authors_before",
-        "expires_at",
-    ),
-)
-
-_PURGE_REPLACEMENT = _object(
-    {
-        "doc_id": String,
-        "replacement_doc_id": String,
-        "snapshot_id": String,
-        "snapshot_sha256": String,
-    },
-    required=("doc_id", "replacement_doc_id", "snapshot_id", "snapshot_sha256"),
-)
-
-_PURGE_RESULT = _object(
-    {
-        "plan_id": String,
-        "executed_locally": _BOOL,
-        "acknowledged": {"type": "array", "items": String},
-        "pending": {"type": "array", "items": String},
-        "replacements": {"type": "array", "items": _PURGE_REPLACEMENT},
-    },
-    required=(
-        "plan_id",
-        "executed_locally",
-        "acknowledged",
-        "pending",
-        "replacements",
-    ),
-)
-
 _SPACE_PURGE_RESULT = _object(
     {"spaceId": String, "purged": _BOOL, "localOnly": _BOOL},
     required=("spaceId", "purged", "localOnly"),
-)
-
-_SERVE_RESULT = _object(
-    {
-        "spaceId": String,
-        "backend": {"type": "string", "enum": ["fs", "memory"]},
-        "durable": _BOOL,
-        "pinnedBlobs": {"type": "array", "items": String},
-    },
-    required=("spaceId", "backend", "durable", "pinnedBlobs"),
 )
 
 _CHECKOUT_RESULT = _object(
@@ -435,19 +301,9 @@ ORGFS_MKDIR_SPEC = _write_spec("orgfs.mkdir", _MKDIR_PARAMS, NODE)
 ORGFS_MOVE_SPEC = _write_spec("orgfs.move", _MOVE_PARAMS, NODE)
 ORGFS_REMOVE_SPEC = _write_spec("orgfs.remove", _REMOVE_PARAMS, _OK)
 ORGFS_RESTORE_SPEC = _write_spec("orgfs.restore", _RESTORE_PARAMS, NODE)
-ORGFS_PURGE_PLAN_SPEC = _write_spec(
-    "orgfs.purge_plan", _PURGE_PLAN_PARAMS, _PURGE_PLAN_RESULT, errors=PURGE_ERRORS
-)
-ORGFS_PURGE_SPEC = _write_spec(
-    "orgfs.purge", _PURGE_PARAMS, _PURGE_RESULT, errors=PURGE_ERRORS
-)
 ORGFS_SPACE_PURGE_SPEC = _write_spec(
     "orgfs.space_purge", _SPACE_PARAMS, _SPACE_PURGE_RESULT, errors=PURGE_ERRORS
 )
-ORGFS_UNBAN_SPEC = _write_spec(
-    "orgfs.unban", _UNBAN_PARAMS, _OK, errors=PURGE_ERRORS
-)
-ORGFS_SERVE_SPEC = _write_spec("orgfs.serve", _SERVE_PARAMS, _SERVE_RESULT)
 ORGFS_CHECKOUT_SPEC = _write_spec(
     "orgfs.checkout", _CHECKOUT_PARAMS, _CHECKOUT_RESULT
 )
@@ -466,11 +322,7 @@ BATCH4_ORGFS_BINDINGS = (
     (ORGFS_MOVE_SPEC, _handler("orgfs.move")),
     (ORGFS_REMOVE_SPEC, _handler("orgfs.remove")),
     (ORGFS_RESTORE_SPEC, _handler("orgfs.restore")),
-    (ORGFS_PURGE_PLAN_SPEC, _handler("orgfs.purge_plan")),
-    (ORGFS_PURGE_SPEC, _handler("orgfs.purge")),
     (ORGFS_SPACE_PURGE_SPEC, _handler("orgfs.space_purge")),
-    (ORGFS_UNBAN_SPEC, _handler("orgfs.unban")),
-    (ORGFS_SERVE_SPEC, _handler("orgfs.serve")),
     (ORGFS_CHECKOUT_SPEC, _handler("orgfs.checkout")),
     (ORGFS_INVITE_SPEC, _handler("orgfs.invite")),
     (ORGFS_REMOVE_MEMBER_SPEC, _handler("orgfs.remove_member")),
@@ -487,11 +339,7 @@ __all__ = [
     "ORGFS_MOVE_SPEC",
     "ORGFS_REMOVE_SPEC",
     "ORGFS_RESTORE_SPEC",
-    "ORGFS_PURGE_PLAN_SPEC",
-    "ORGFS_PURGE_SPEC",
     "ORGFS_SPACE_PURGE_SPEC",
-    "ORGFS_UNBAN_SPEC",
-    "ORGFS_SERVE_SPEC",
     "ORGFS_CHECKOUT_SPEC",
     "ORGFS_INVITE_SPEC",
     "ORGFS_REMOVE_MEMBER_SPEC",

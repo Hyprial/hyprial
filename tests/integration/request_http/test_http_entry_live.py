@@ -685,45 +685,6 @@ def test_orgfs_restore_uses_the_trash_node_version(
     assert payload["result"]["path"] == "trash.md"
 
 
-def test_orgfs_purge_plan_accepts_a_deleted_doc_target(
-    http_server, isolation: Isolation
-) -> None:
-    space_id = _create_space(isolation, "purge-team")
-    _write_text(isolation, space_id, "purge.md", "body")
-    daemon_request_once(
-        "orgfs.remove",
-        {"spaceId": space_id, "path": "purge.md"},
-        socket_path=isolation.socket_path,
-        timeout=15,
-    )
-    trashed = daemon_request_once(
-        "orgfs.trash",
-        {"spaceId": space_id},
-        socket_path=isolation.socket_path,
-        timeout=15,
-    )
-    item = next(node for node in trashed["nodes"] if node["path"] == "purge.md")
-    status, _, payload = http_server.request(
-        "POST",
-        "/daemon/request/orgfs.purge_plan",
-        body={
-            "spaceId": space_id,
-            "targets": [
-                {
-                    "kind": "doc-range",
-                    "node": f"id:{item['node_id']}",
-                    "from": item["version"],
-                    "to": item["version"],
-                }
-            ],
-        },
-    )
-    assert status == 200, payload
-    assert payload["dispatch"] == "dispatched"
-    assert payload["result"]["plan_id"]
-    assert payload["result"]["docs"] or payload["result"]["blobs"]
-
-
 def test_orgfs_export_and_import_use_the_trusted_local_owner(
     http_server, isolation: Isolation
 ) -> None:
@@ -793,52 +754,6 @@ def test_orgfs_spaces_accepts_the_mcp_session_envelope_over_real_ipc(
         timeout=15,
     )
     assert result == {"spaces": []}
-
-
-def test_orgfs_purge_status_accepts_a_real_plan_over_ipc_and_http(
-    http_server, isolation: Isolation
-) -> None:
-    space_id = _create_space(isolation, "purge-team")
-    written = _write_text(isolation, space_id, "note.md", "secret")
-    plan = daemon_request_once(
-        "orgfs.purge_plan",
-        {
-            "spaceId": space_id,
-            "targets": [
-                {
-                    "kind": "doc-range",
-                    "node": f"id:{written['node_id']}",
-                    "from": "all",
-                    "to": "all",
-                }
-            ],
-        },
-        socket_path=isolation.socket_path,
-        timeout=15,
-    )
-    assert isinstance(plan, dict), plan
-    # ``_orgfs_json`` uses dataclass ``asdict``; PurgePlan keeps plan_id.
-    plan_id = plan["plan_id"]
-    assert isinstance(plan_id, str) and plan_id
-
-    direct = daemon_request_once(
-        "orgfs.purge_status",
-        {"spaceId": space_id, "planId": plan_id},
-        socket_path=isolation.socket_path,
-        timeout=15,
-    )
-    assert direct["plan_id"] == plan_id
-    assert direct["acknowledged"] == []
-    assert isinstance(direct["pending"], list)
-
-    status, _, payload = http_server.request(
-        "POST",
-        "/daemon/request/orgfs.purge_status",
-        body={"spaceId": space_id, "planId": plan_id},
-    )
-    assert status == 200, payload
-    assert payload["dispatch"] == "dispatched"
-    assert payload["result"] == direct
 
 
 def test_message_http_rejects_session_impersonation_before_dispatch(http_server) -> None:

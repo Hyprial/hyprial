@@ -1,3 +1,8 @@
+# Rehearsal switch (phase D, package D2, 2026-11-25; plan §3.4 last paragraph):
+# - Test-only: with ``HYPRIAL_ORGFS_IMPL=state`` in the environment when this
+#   module is imported, the name ``OrgFsRuntime`` is bound to
+#   ``StateOrgFsRuntime``.  Any other value, or none, keeps the legacy class.
+#   The switch exists until package S and is not a product setting.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -72,7 +77,6 @@ from hyprial.daemon.impl.orgfs.composition.vocabulary import _LifecycleOutcome a
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _LifecycleWaiter as _LifecycleWaiter
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _MeshCreation as _MeshCreation
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _OpenSpaceMesh as _OpenSpaceMesh
-from hyprial.daemon.impl.orgfs.composition.vocabulary import _ServeSpace as _ServeSpace
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _SpaceResourceHandle as _SpaceResourceHandle
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _StoreRegistry as _StoreRegistry
 from hyprial.daemon.impl.orgfs.instrumentation import AnnounceInstrumentation
@@ -316,6 +320,10 @@ class OrgFsRuntime(
             self.close()
         except Exception:
             pass
+
+
+if __import__("os").environ.get("HYPRIAL_ORGFS_IMPL") == "state":
+    from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime as OrgFsRuntime  # type: ignore[assignment]  # noqa: E402
 
 
 __all__ = ["OrgFsRuntime"]

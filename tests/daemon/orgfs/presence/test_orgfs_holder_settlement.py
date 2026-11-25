@@ -1,3 +1,10 @@
+# Decisions:
+# - Phase D, package T2: ``test_d3_liveliness_flicker_settles_holder_and_fetches_blob``
+#   runs on ``StateOrgFsRuntime`` over loopback Zenoh.  Its hand-written
+#   withdraw announce carries ``protocol: 3``, and the forced fetch failure
+#   raises the sync package's ``SyncError`` (the state runtime catches that,
+#   not the journal's ``StoreError``).  ``test_d5...`` passes on both runtimes
+#   and keeps ``OrgFsRuntime``, which package S points at the new runtime.
 """Loopback coverage for OrgFS holder settlement under liveliness flicker."""
 
 from __future__ import annotations
@@ -10,8 +17,9 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.storage.store import StoreError
+from hyprial.daemon.impl.orgfs.sync import SyncError
 from hyprial.daemon.impl.transport import KeySpace, ZenohConfig, ZenohTransport
 
 
@@ -61,9 +69,9 @@ def test_d3_liveliness_flicker_settles_holder_and_fetches_blob(
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
     # Holder settlement models private sidecar admission (§7), retaining presence gates.
-    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
+    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
     events: list[tuple[str, str, dict[str, object]]] = []
-    reader = OrgFsRuntime(
+    reader = StateOrgFsRuntime(
         tmp_path / "reader",
         node_id="node-b",
         author="user:reader",
@@ -101,6 +109,7 @@ def test_d3_liveliness_flicker_settles_holder_and_fetches_blob(
                 {
                     "schemaVersion": 1,
                     "type": "orgfs-announce",
+                    "protocol": 3,
                     "node": "node-a",
                     "durable": True,
                     "spaces": [],
@@ -160,7 +169,7 @@ def test_d3_liveliness_flicker_settles_holder_and_fetches_blob(
 
         def timed_out_fetch(_supplier, _digest, *, timeout=3.0, size_hint=None):
             del timeout, size_hint
-            raise StoreError("blob-unavailable", "blob supplier did not answer")
+            raise SyncError("blob-unavailable", "blob supplier did not answer")
 
         monkeypatch.setattr(reader_mesh, "fetch_blob", timed_out_fetch)
         with pytest.raises(OrgFsError, match="blob-unavailable"):

@@ -1,4 +1,21 @@
+# Decisions:
+# - Phase D, package T2: ``test_text_required_frontier_blocks_stale_read_then_converges``
+#   runs on ``StateOrgFsRuntime`` (plan §5: the text ``content-pending`` and
+#   its convergence had no test on the new runtime).  Broadcasts are dropped;
+#   the reader gets the owner's newer tree row through the sync host (the
+#   seam every pulled update crosses) while the owner is partitioned, so the
+#   row names a content frontier the reader's document does not cover.  The
+#   read is refused with the typed error and both frontiers, and healing the
+#   partition (an online edge, then a pull) delivers the text.
+# - ``test_legacy_entries_are_honestly_unverifiable_or_unknown_size`` is
+#   journal-only (triage) and left for package S.
+# - ``test_content_frontier_tree_entry_carries_reference_metadata`` (triage
+#   "pending") is kept unchanged: ``contentFrontier``, ``refSize`` and
+#   ``refSha256`` stay in protocol 3 tree rows (they are what makes the read
+#   above pending), and it passes on both runtimes.
 from __future__ import annotations
+
+from collections.abc import Iterator
 
 import base64
 import json
@@ -16,7 +33,14 @@ from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.storage.blobs import ORGFS_BLOB_CHUNK_BYTES
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.mcp import DaemonRequestRejected, create_mcp_server
+from hyprial.daemon.impl.orgfs.membership.contract import Accepted
 from hyprial.daemon.impl.transport import KeySpace, ZenohConfig, ZenohTransport
+from tests.daemon.orgfs.mesh.replication.state_support import (
+    StatePeers,
+    open_state_peers,
+    shared_space,
+)
+from tests.daemon.orgfs.runtime_state.support import eventually, text
 
 
 def _port() -> int:
@@ -218,54 +242,43 @@ def test_corrupt_supplier_and_local_copy_are_never_returned(tmp_path) -> None:
         owner_transport.close()
 
 
-def test_text_required_frontier_blocks_stale_read_then_converges(tmp_path) -> None:
-    owner = OrgFsRuntime(
-        tmp_path / "owner", node_id="node-owner", author="user:owner"
-    )
-    peer = OrgFsRuntime(
-        tmp_path / "peer", node_id="node-peer", author="user:peer"
-    )
-    try:
-        space = owner.facade.create_space("text-frontier")
-        owner.facade.invite(space.space_id, "user:peer", "rw")
-        node = owner.facade.write_text(space.space_id, "note.md", "A")
-        owner.facade.write_text(space.space_id, f"id:{node.node_id}", "AB")
-        rows = [
-            (str(row[0]), bytes(row[1]))
-            for row in owner.stores[space.space_id]._db.execute(
-                "SELECT doc_id, envelope_bytes FROM commits ORDER BY rowid"
-            )
-        ]
-        content_rows = [row for row in rows if row[0] == node.doc_id]
-        assert len(content_rows) == 2
-        withheld = content_rows[-1][1]
-        peer_store = peer.stores.get(space.space_id)
-        for _doc_id, envelope in rows:
-            if envelope == withheld:
-                continue
-            result = peer_store.import_envelope(envelope, supplier="node-owner")
-            assert result.status in {"applied", "duplicate"}, result
-        peer.facade.load_space(space.space_id)
+@pytest.fixture
+def state_peers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[StatePeers]:
+    yield from open_state_peers(tmp_path, monkeypatch)
 
-        pending = peer.facade.stat(space.space_id, f"id:{node.node_id}")
-        assert pending.content_state == "pending"
-        with pytest.raises(OrgFsError) as rejected:
-            peer.facade.read_text(space.space_id, f"id:{node.node_id}")
-        assert rejected.value.code == ipc_errors.ORGFS_CONTENT_PENDING
-        assert rejected.value.details["requiredFrontier"]
-        assert rejected.value.details["localFrontier"]
 
-        result = peer_store.import_envelope(withheld, supplier="node-owner")
-        assert result.status == "applied"
-        peer.facade.apply_envelope(space.space_id, withheld)
-        assert peer.facade.read_text(space.space_id, f"id:{node.node_id}")[0] == "AB"
-        assert (
-            peer.facade.stat(space.space_id, f"id:{node.node_id}").content_state
-            == "arrived"
-        )
-    finally:
-        peer.close()
-        owner.close()
+def test_text_required_frontier_blocks_stale_read_then_converges(state_peers: StatePeers) -> None:
+    network = state_peers.network
+    network.drop_updates = True
+    owner = state_peers.add("node-owner", "user:owner")
+    peer = state_peers.add("node-peer", "user:peer")
+    space_id = shared_space(state_peers, owner, peer, name="text-frontier")
+    node = owner.fs.write_text(space_id, "note.md", "A")
+    state_peers.pull_all(space_id)
+    state_peers.pull_all(space_id)
+    assert text(peer.fs, space_id, f"id:{node.node_id}") == "A"
+
+    owner.fs.write_text(space_id, f"id:{node.node_id}", "AB")
+    owner_host = owner.fs.sync_host(space_id)
+    peer_host = peer.fs.sync_host(space_id)
+    found = owner_host.read_update("tree", peer_host.read_vectors(("tree",))["tree"])
+    assert found is not None
+    network.partition("node-owner")
+    assert isinstance(peer_host.apply_remote("tree", found[0], found[1], "node-owner"), Accepted)
+
+    pending = peer.fs.stat(space_id, f"id:{node.node_id}")
+    assert pending.content_state == "pending"
+    with pytest.raises(OrgFsError) as rejected:
+        peer.fs.read_text(space_id, f"id:{node.node_id}")
+    assert rejected.value.code == ipc_errors.ORGFS_CONTENT_PENDING
+    assert rejected.value.details["requiredFrontier"]
+    assert rejected.value.details["localFrontier"]
+    assert rejected.value.details["requiredFrontier"] != rejected.value.details["localFrontier"]
+    assert "node-owner" in rejected.value.details["suggestedHolders"]
+
+    network.heal("node-owner")
+    eventually(lambda: _equal(text(peer.fs, space_id, f"id:{node.node_id}"), "AB"))
+    assert peer.fs.stat(space_id, f"id:{node.node_id}").content_state == "arrived"
 
 
 def test_legacy_entries_are_honestly_unverifiable_or_unknown_size(tmp_path) -> None:

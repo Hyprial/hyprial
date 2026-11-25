@@ -22,12 +22,9 @@ from hyprial.kernel import (
 from .wire import (
     Boolean,
     CHANGE_EVENT,
-    HISTORY_ENTRY,
     MEMBER,
     NODE,
     ORG_CONTEXT_ERRORS,
-    PURGE_STATUS,
-    PURGE_STATUS_ERRORS,
     READ_ERRORS,
     SESSION_PROPERTIES,
     SPACE,
@@ -98,24 +95,6 @@ _READ_PARAMS = _params(
     required=("spaceId",),
 )
 
-_READ_AT_PARAMS = _params(
-    {"spaceId": _SPACE_ID, "node": _NODE_REF, "version": _NODE_REF},
-    required=("spaceId", "node", "version"),
-)
-
-_STAT_AT_PARAMS = dict(_READ_AT_PARAMS)
-
-_HISTORY_PARAMS = _params(
-    {
-        "spaceId": _SPACE_ID,
-        "path": String,
-        "node": String,
-        "limit": _LIMIT,
-        "before": String,
-    },
-    required=("spaceId",),
-)
-
 _STATUS_PARAMS = _params({"spaceId": _SPACE_ID}, required=("spaceId",))
 
 _TRASH_PARAMS = _params({"spaceId": _SPACE_ID, "limit": _LIMIT}, required=("spaceId",))
@@ -126,11 +105,6 @@ _WATCH_PARAMS = _params(
 )
 
 _MEMBERS_PARAMS = _params({"spaceId": _SPACE_ID}, required=("spaceId",))
-
-_PURGE_STATUS_PARAMS = _params(
-    {"spaceId": _SPACE_ID, "planId": _NODE_REF},
-    required=("spaceId", "planId"),
-)
 
 _READ_RESULT = {
     "type": "object",
@@ -148,7 +122,6 @@ _READ_RESULT = {
     ],
 }
 
-_HISTORY_RESULT = _object({"history": {"type": "array", "items": HISTORY_ENTRY}})
 _WATCH_RESULT = _object({"events": {"type": "array", "items": CHANGE_EVENT}})
 _MEMBERS_RESULT = _object({"members": {"type": "array", "items": MEMBER}})
 _SPACES_RESULT = _object({"spaces": {"type": "array", "items": SPACE}})
@@ -227,33 +200,6 @@ def orgfs_read(
     return _forward("orgfs.read", app, params, trusted_message_origin)
 
 
-def orgfs_read_at(
-    app: Any,
-    params: Mapping[str, Any],
-    *,
-    trusted_message_origin: str | None = None,
-) -> JsonObject:
-    return _forward("orgfs.read_at", app, params, trusted_message_origin)
-
-
-def orgfs_stat_at(
-    app: Any,
-    params: Mapping[str, Any],
-    *,
-    trusted_message_origin: str | None = None,
-) -> JsonObject:
-    return _forward("orgfs.stat_at", app, params, trusted_message_origin)
-
-
-def orgfs_history(
-    app: Any,
-    params: Mapping[str, Any],
-    *,
-    trusted_message_origin: str | None = None,
-) -> JsonObject:
-    return _forward("orgfs.history", app, params, trusted_message_origin)
-
-
 def orgfs_status(
     app: Any,
     params: Mapping[str, Any],
@@ -288,15 +234,6 @@ def orgfs_members(
     trusted_message_origin: str | None = None,
 ) -> JsonObject:
     return _forward("orgfs.members", app, params, trusted_message_origin)
-
-
-def orgfs_purge_status(
-    app: Any,
-    params: Mapping[str, Any],
-    *,
-    trusted_message_origin: str | None = None,
-) -> JsonObject:
-    return _forward("orgfs.purge_status", app, params, trusted_message_origin)
 
 
 def _spec(
@@ -338,28 +275,10 @@ ORGFS_STAT_SPEC = _spec(
 ORGFS_READ_SPEC = _spec(
     "orgfs.read", _READ_PARAMS, _READ_RESULT, _ORG_CONTEXT_READ_ERRORS
 )
-ORGFS_READ_AT_SPEC = _spec(
-    "orgfs.read_at",
-    _READ_AT_PARAMS,
-    _object({"contentB64": String}, required=("contentB64",)),
-    _ORG_CONTEXT_READ_ERRORS,
-)
-ORGFS_STAT_AT_SPEC = _spec(
-    "orgfs.stat_at", _STAT_AT_PARAMS, NODE, _ORG_CONTEXT_READ_ERRORS
-)
-ORGFS_HISTORY_SPEC = _spec(
-    "orgfs.history", _HISTORY_PARAMS, _HISTORY_RESULT, _ORG_CONTEXT_READ_ERRORS
-)
 ORGFS_STATUS_SPEC = _spec("orgfs.status", _STATUS_PARAMS, SPACE_STATUS)
 ORGFS_TRASH_SPEC = _spec("orgfs.trash", _TRASH_PARAMS, _nodes_result())
 ORGFS_WATCH_SPEC = _spec("orgfs.watch", _WATCH_PARAMS, _WATCH_RESULT)
 ORGFS_MEMBERS_SPEC = _spec("orgfs.members", _MEMBERS_PARAMS, _MEMBERS_RESULT)
-ORGFS_PURGE_STATUS_SPEC = _spec(
-    "orgfs.purge_status",
-    _PURGE_STATUS_PARAMS,
-    PURGE_STATUS,
-    PURGE_STATUS_ERRORS,
-)
 
 BATCH3_ORGFS_BINDINGS = (
     (ORGFS_SPACES_SPEC, orgfs_spaces),
@@ -367,12 +286,8 @@ BATCH3_ORGFS_BINDINGS = (
     (ORGFS_LS_SPEC, orgfs_ls),
     (ORGFS_STAT_SPEC, orgfs_stat),
     (ORGFS_READ_SPEC, orgfs_read),
-    (ORGFS_READ_AT_SPEC, orgfs_read_at),
-    (ORGFS_STAT_AT_SPEC, orgfs_stat_at),
-    (ORGFS_HISTORY_SPEC, orgfs_history),
     (ORGFS_STATUS_SPEC, orgfs_status),
     (ORGFS_TRASH_SPEC, orgfs_trash),
     (ORGFS_WATCH_SPEC, orgfs_watch),
     (ORGFS_MEMBERS_SPEC, orgfs_members),
-    (ORGFS_PURGE_STATUS_SPEC, orgfs_purge_status),
 )

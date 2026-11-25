@@ -181,34 +181,6 @@ def test_uri_is_stable_across_move_trash_and_restore(tmp_path) -> None:
         _close(application)
 
 
-def test_history_and_stat_at_carry_the_uri(tmp_path) -> None:
-    """Kill-mutation 5: a _snapshot_info that stops populating ``uri`` raises
-    TypeError (the field is keyword-only and required) → this test goes red."""
-
-    application = _application(tmp_path)
-    try:
-        space_id, written = _create_doc(application)
-        uri = written["uri"]
-        rewritten = application._handle_orgfs(
-            "orgfs.write", {"spaceId": space_id, "path": uri, "text": "v2"}
-        )
-        assert rewritten["uri"] == uri
-
-        history = application._handle_orgfs(
-            "orgfs.history", {"spaceId": space_id, "node": uri}
-        )
-        assert history["history"]
-        assert {entry["node"]["uri"] for entry in history["history"]} == {uri}
-
-        at = application._handle_orgfs(
-            "orgfs.stat_at",
-            {"spaceId": space_id, "node": uri, "version": written["version"]},
-        )
-        assert at["uri"] == uri
-    finally:
-        _close(application)
-
-
 def test_non_user_space_owner_fails_with_a_typed_error(tmp_path) -> None:
     """Q6=A: a legacy/invalid (non ``user:``) owner never silently mints a
     URI — _node_uri raises the typed invalid-argument error."""

@@ -673,9 +673,10 @@ def test_a_checkpoint_never_writes_a_retired_document(runtime):
 
 
 def test_purged_text_is_not_readable_from_any_in_memory_version(runtime):
-    # Versions share snapshot entries in memory; after a purge no earlier
-    # version that saw the purged text may stay reachable through read_at,
-    # history or restore (customer-data deletion right).
+    """Versions share snapshot entries in memory; after a purge no earlier
+    version that saw the purged text may stay reachable through history or
+    restore (customer-data deletion right)."""
+
     info, store = _space(runtime)
     marker = "P2R-HISTORY-SECRET-5e07"
     node = runtime.facade.write_text(info.space_id, "note.md", marker)
@@ -694,8 +695,6 @@ def test_purged_text_is_not_readable_from_any_in_memory_version(runtime):
     )
     runtime.facade.purge(info.space_id, plan.plan_id)
 
-    with pytest.raises(OrgFsError):
-        runtime.facade.read_at(info.space_id, f"id:{node.node_id}", node.version)
     with pytest.raises(OrgFsError):
         runtime.facade.restore(info.space_id, f"id:{node.node_id}", node.version)
     space = runtime.facade._spaces[info.space_id]

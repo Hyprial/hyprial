@@ -139,31 +139,6 @@ async def main() -> None:
             },
         ),
         ("orgfs_remove", {"spaceId": "space-1", "node": "id:node-1"}),
-        (
-            "orgfs_history",
-            {
-                "spaceId": "space-1",
-                "node": "id:node-1",
-                "limit": 25,
-                "before": "version-3",
-            },
-        ),
-        (
-            "orgfs_read_at",
-            {
-                "spaceId": "space-1",
-                "node": "id:node-1",
-                "version": "version-1",
-            },
-        ),
-        (
-            "orgfs_stat_at",
-            {
-                "spaceId": "space-1",
-                "node": "id:node-1",
-                "version": "version-1",
-            },
-        ),
         ("orgfs_trash", {"spaceId": "space-1", "limit": 25}),
         (
             "orgfs_restore",
@@ -183,7 +158,6 @@ async def main() -> None:
             },
         ),
         ("orgfs_status", {"spaceId": "space-1"}),
-        ("orgfs_purge_status", {"spaceId": "space-1", "planId": "plan-1"}),
         (
             "orgfs_invite",
             {"spaceId": "space-1", "user": "user:bob", "mode": "ro"},
@@ -253,21 +227,17 @@ async def main() -> None:
         "orgfs.mkdir",
         "orgfs.move",
         "orgfs.remove",
-        "orgfs.history",
-        "orgfs.read_at",
-        "orgfs.stat_at",
         "orgfs.trash",
         "orgfs.restore",
         "orgfs.watch",
         "orgfs.status",
-        "orgfs.purge_status",
         "orgfs.invite",
         "orgfs.remove_member",
         "orgfs.members",
         "orgfs.join",
         "conversations.history",
     ]
-    print("mcp-tools: PASS 33/33")
+    print("mcp-tools: PASS 29/29")
 
 
 if __name__ == "__main__":

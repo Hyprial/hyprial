@@ -1,3 +1,18 @@
+# Decisions (phase D, package T3, 2026-11-25):
+# - The scale-invariance, no-op-rewrite and lock-hold tests build the new
+#   ``StateOrgFsRuntime`` / ``StateOrgFs`` directly (independent of
+#   ``HYPRIAL_ORGFS_IMPL``).  The new store has no state-file checkpoint and no
+#   per-version snapshot layer, so the write cost is the fsync count and the
+#   bytes ``os.write`` puts on disk for one overwrite and one create, compared
+#   between a small and a large space.
+# - The no-op-rewrite test records commits through the facade's
+#   ``store_factory`` seam: a rewrite with identical content commits nothing.
+# - The checkpoint-crash test was deleted: the new store's durability across a
+#   process exit is C1's ``state/test_state_crash.py``
+#   ``test_a_real_process_exit_keeps_confirmed_writes_and_batch_atomicity`` and
+#   the runtime's recovery is ``runtime_state/test_startup.py``.
+# - The two snapshot-layer tests and the history test still describe the
+#   journal store and are left for its deletion (package S).
 """One orgfs write must cost the same however large the space is.
 
 2026-10-06: every write rewrote and fsynced the state file of every document
@@ -18,8 +33,8 @@ import time
 import pytest
 from pycrdt import Doc, Map, Text
 
-from hyprial.daemon.impl.orgfs import LocalOrgFs
-from hyprial.daemon.impl.orgfs.document.model import _SpaceSnapshot
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores, StateOrgFs
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.storage.store import LocalSpaceStore
 
@@ -37,43 +52,44 @@ def _space_with_files(path: Path, count: int) -> tuple[OrgFsRuntime, str]:
     return runtime, space_id
 
 
+def _state_space_with_files(path: Path, count: int) -> tuple[StateOrgFsRuntime, str]:
+    runtime = StateOrgFsRuntime(path, node_id="node-cost", author="user:cost")
+    space_id = runtime.facade.create_space("cost").space_id
+    for index in range(count):
+        runtime.facade.write_text(space_id, f"file-{index}.md", "x" * 200)
+    runtime.facade.write_text(space_id, "probe.md", "before")
+    return runtime, space_id
+
+
 def _write_cost(
     path: Path, monkeypatch: pytest.MonkeyPatch, files: int
-) -> dict[str, tuple[int, int, int]]:
-    runtime, space_id = _space_with_files(path, files)
+) -> dict[str, tuple[int, int]]:
+    runtime, space_id = _state_space_with_files(path, files)
     try:
-        # Start both measurements from a fresh state-file checkpoint so a
-        # batched refresh cannot land inside one of them.
-        runtime.stores.get(space_id).checkpoint()
         counts = {"fsync": 0, "bytes": 0}
         real_fsync = os.fsync
-        real_write_bytes = Path.write_bytes
+        real_write = os.write
 
         def counting_fsync(fd: int) -> None:
             counts["fsync"] += 1
             real_fsync(fd)
 
-        def counting_write_bytes(self: Path, data: bytes) -> int:
-            counts["bytes"] += len(data)
-            return real_write_bytes(self, data)
+        def counting_write(fd: int, data) -> int:
+            written = real_write(fd, data)
+            counts["bytes"] += written
+            return written
 
         monkeypatch.setattr(os, "fsync", counting_fsync)
-        monkeypatch.setattr(Path, "write_bytes", counting_write_bytes)
-        space = runtime.facade._spaces[space_id]  # noqa: SLF001
-        cost: dict[str, tuple[int, int, int]] = {}
+        monkeypatch.setattr(os, "write", counting_write)
+        cost: dict[str, tuple[int, int]] = {}
         for name, write in (
             ("overwrite", lambda: runtime.facade.write_text(space_id, "probe.md", "after")),
             ("create", lambda: runtime.facade.write_text(space_id, "new.md", "fresh")),
         ):
             counts.update(fsync=0, bytes=0)
-            node = write()
-            layer = space.snapshots[node.version]
-            assert isinstance(layer, _SpaceSnapshot)
-            cost[name] = (
-                counts["fsync"],
-                counts["bytes"],
-                len(layer._changes),  # noqa: SLF001
-            )
+            write()
+            assert runtime.facade.drain_broadcasts((space_id,), timeout=5.0)
+            cost[name] = (counts["fsync"], counts["bytes"])
         monkeypatch.undo()
         return cost
     finally:
@@ -86,15 +102,12 @@ def test_a_write_costs_the_same_in_a_small_and_a_large_space(
     small = _write_cost(tmp_path / "small", monkeypatch, 20)
     large = _write_cost(tmp_path / "large", monkeypatch, 200)
 
-    # An overwrite touches no state file and records one changed node.
-    assert small["overwrite"] == large["overwrite"] == (0, 0, 1), (small, large)
-    # A new file writes only its own new state file.  Its size varies by a
-    # byte or two with the random node id's client-id encoding, so bound it
-    # instead of comparing exactly; a whole-space rewrite is ~1 KB per file.
-    for cost in (small, large):
-        fsyncs, written, entries = cost["create"]
-        assert (fsyncs, entries) == (1, 1), (small, large)
-        assert written < 256, (small, large)
+    for name in ("overwrite", "create"):
+        small_fsyncs, small_bytes = small[name]
+        large_fsyncs, large_bytes = large[name]
+        assert small_fsyncs == large_fsyncs, (small, large)
+        assert abs(large_bytes - small_bytes) <= 64, (small, large)
+        assert large_bytes < 4096, (small, large)
 
 
 def test_unchanged_files_share_their_snapshot_entry_across_versions(
@@ -112,7 +125,6 @@ def test_unchanged_files_share_their_snapshot_entry_across_versions(
         assert new[untouched] is old[untouched]
         assert old[first.node_id].content == b"one"
         assert new[second.node_id].content == b"two"
-        assert runtime.facade.read_at(space_id, f"id:{first.node_id}", first.version) == b"one"
     finally:
         runtime.close()
 
@@ -139,19 +151,28 @@ def test_a_delete_only_content_change_is_not_shared_from_the_old_version(
 
 
 class _CommitRecorder:
+    """A ``store_factory`` that records the documents each commit appends to."""
+
     def __init__(self) -> None:
         self.commits: list[str] = []
+        self._stores = MemoryStores()
+        self.discard = self._stores.discard
 
-    def commit(self, doc_id, mutate, *, author, actor):  # type: ignore[no-untyped-def]
-        del author, actor
-        self.commits.append(doc_id)
-        mutate(None)
-        return None
+    def __call__(self, space_id: str, create: bool) -> "_RecordingStore":
+        return _RecordingStore(self._stores(space_id, create), self.commits)
 
-    def commit_many(self, mutations, *, author, actor):  # type: ignore[no-untyped-def]
-        del author, actor
-        self.commits.extend(doc_id for doc_id, _mutate in mutations)
-        return ()
+
+class _RecordingStore:
+    def __init__(self, inner, commits: list[str]) -> None:
+        self._inner = inner
+        self._commits = commits
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self._inner, name)
+
+    def commit(self, batch, *args, **kwargs):  # type: ignore[no-untyped-def]
+        self._commits.extend(doc_id for doc_id, _update in batch.appends)
+        return self._inner.commit(batch, *args, **kwargs)
 
 
 class _HoldProbe:
@@ -207,7 +228,7 @@ class _HoldProbe:
 @pytest.mark.perf_bound
 def test_identical_directory_documents_create_no_tree_commits() -> None:
     store = _CommitRecorder()
-    facade = LocalOrgFs(stores=store, author="user:cost")
+    facade = StateOrgFs(author="user:cost", store_factory=store, store_discard=store.discard)
     try:
         space_id = facade.create_space("noop-writes").space_id
         documents = {
@@ -220,6 +241,7 @@ def test_identical_directory_documents_create_no_tree_commits() -> None:
         for path, content in documents.items():
             facade.write_text(space_id, path, content)
         before = tuple(store.commits)
+        assert before
         for path, content in documents.items():
             facade.write_text(space_id, path, content)
         assert tuple(store.commits) == before
@@ -229,8 +251,7 @@ def test_identical_directory_documents_create_no_tree_commits() -> None:
 
 @pytest.mark.perf_bound
 def test_space_authority_lock_hold_stays_below_250ms_during_list_write_mix() -> None:
-    store = _CommitRecorder()
-    facade = LocalOrgFs(stores=store, author="user:cost")
+    facade = StateOrgFs(author="user:cost")
     try:
         space_id = facade.create_space("lock-hold").space_id
         facade.write_text(space_id, "probe.md", "seed")
@@ -350,25 +371,3 @@ def test_steady_state_commit_does_not_reapply_document_history(
     finally:
         small.close()
         large.close()
-
-
-def test_writes_since_the_last_checkpoint_survive_a_crash(tmp_path: Path) -> None:
-    # State files are refreshed in batches; the journal alone must carry every
-    # write in between.  Simulate a crash: close the journal without the
-    # checkpoint close() would run, then reopen from disk.
-    runtime, space_id = _space_with_files(tmp_path, 3)
-    runtime.stores.get(space_id).checkpoint()
-    runtime.facade.write_text(space_id, "probe.md", "after the checkpoint")
-    runtime.facade.write_text(space_id, "late.md", "created after it")
-    store = runtime.stores.get(space_id)
-    with store._lock:  # noqa: SLF001
-        store._db.close()  # noqa: SLF001
-        store._db = None  # noqa: SLF001
-    runtime.close()
-
-    reopened = OrgFsRuntime(tmp_path, node_id="node-cost", author="user:cost")
-    try:
-        assert reopened.facade.read_text(space_id, "probe.md")[0] == "after the checkpoint"
-        assert reopened.facade.read_text(space_id, "late.md")[0] == "created after it"
-    finally:
-        reopened.close()

@@ -1,0 +1,490 @@
+# Decision record (phase D, package D2, 2026-11-25):
+# - Plan §1.4 / §3.3: the state runtime keeps the legacy per-space mesh
+#   bookkeeping (``_meshes``, ``_mesh_creations``, the lifecycle commands) and
+#   only changes the value: a ``StateSpaceSync`` over the facade's
+#   ``SpaceSyncHost``, attached to the facade so publications and
+#   observations go to it.  ``RuntimeDirectory`` calls ``schedule_sync_from``
+#   and ``announce`` on it unchanged.
+# - Design §3.5 as ruled after F1 (node gate ruling): the node gate is
+#   presence (checked by the sync itself) and, unless
+#   ``trust_tailnet_members`` (read at every call), ``principal(node)`` being
+#   a current member of the space.  ``principal(node)`` is resolved the same
+#   way for every space, plain or org: the device-owner index (live rows and
+#   trash history, ``_device_owner_index``) of every org directory space this
+#   node holds, plus the space itself when it is an org directory still being
+#   joined, together with the assembly's ``device_owner_hint`` (the bootstrap
+#   source; a revoked device has no principal there).  Two directories or the
+#   two sources naming different principals refuse the node and log
+#   ``supplier-owner-conflict``.  A failing hint or index refuses the node and
+#   logs ``supplier-owner-unresolved``, as the mesh did.
+# - The device-owner index of a directory space is keyed by the space's meta
+#   and tree vectors and rebuilt when either moves: the index is a function of
+#   the tree's ``directory/devices`` rows, the trash and the member table, so
+#   this invalidates it after every accepted update that can change it (the
+#   ruling's "any accepted update"); a content-only update cannot.  The
+#   rebuild drops the legacy cache entry and its meta watch first, so the
+#   retained builder never stacks watches.
+# - An abandoned join forgets the device index it may have cached for the
+#   temporary space.
+# - D0 hooks: ``_ANNOUNCE_PROTOCOL = 3``; ``_maintain_spaces`` (the due
+#   anti-entropy tick) calls each sync's ``maintain(now)``, verifies one batch
+#   through ``SyncHost.pending_content`` and schedules one pull from an online
+#   holder when content is pending.
+# - F1 round 2 (ruling on F1 item 4): the verification backlog does not wait
+#   for due ticks.  ``anti_entropy_tick``, which the maintenance thread calls
+#   every pass, first verifies each space's unverified documents in
+#   VERIFY_BATCH batches until none is left; each batch is one
+#   ``pending_content`` call, which takes and releases the space lock, and a
+#   batch that verifies nothing stops the loop.  The due tick also schedules
+#   one pull when no current observation covers the local meta and tree
+#   vectors (only vectors are compared; no timer), so a local write turns
+#   ``synced`` true again within one due tick once a holder has it.  With no
+#   holder online nothing is scheduled and ``synced`` stays ``None``.
+# - F4 (real-node finding R2-1): a round whose tree came as a temporary blob
+#   that failed to arrive still records the holder's observation, and that
+#   observation covers the local vectors, so the rule above never pulls
+#   again and nothing is pending: a joined member kept an empty tree until
+#   the holder wrote.  The due tick therefore also pulls from an online holder
+#   whose observed meta or tree the local vectors do not cover.  Those pulls
+#   back off per space: the first is immediate, then CATALOG_RETRY_BASE_SECONDS
+#   doubling up to CATALOG_RETRY_MAX_SECONDS, measured in the tick's ``now``;
+#   the backoff is forgotten once no online observation is ahead.  A round
+#   that fails outright records no observation and stays under the rule above
+#   and the shared supplier hold, which already backs off failures.
+# - Design §9 R5 join: a temporary space (``facade.begin_join``) is filled by
+#   a temporary ``StateSpaceSync`` whose node gate is presence only, from each
+#   candidate holder in turn; the space is kept only when its meta names an
+#   owner, this node's author is a member and the holder passes the formal
+#   node gate.  Otherwise the temporary sync is closed first, then the space
+#   and its directory are dropped.  Error codes match the legacy join: no
+#   candidate is ``no-holder-online``; a holder that is offline when its pull
+#   fails is ``not-a-member`` with ``reason: supplier-not-online`` (the
+#   retryable shape ``OrgNetworkService`` waits for); otherwise the sync's
+#   code (a supplier refusing an uninvited requester answers ``not-a-member``).
+#   With several holders the join raises the most informative failure, not
+#   the last one (V defect 4): a node-gate or membership refusal from a
+#   holder that answered, then any other sync error, then an offline holder,
+#   then "no holder"; the first of the best rank wins.
+#   Every join error carries a ``message`` in its details, so ``str()`` names
+#   the code once and then says what happened (T2 D-1).
+#   A space id that is not a UUID can never be stored and is ``unknown-space``
+#   before anything is opened.
+# - F1 item 3: between ``begin_join`` and ``complete_join`` the space
+#   directory holds ``JOIN_MARKER`` (written and fsynced before the temporary
+#   sync pulls anything, removed and fsynced once the join completed), so a
+#   crash in between leaves a directory the startup scan discards instead of
+#   a space that skipped the member and node-gate checks.
+# - Journal-only runtime calls the legacy facade made (``broadcast_pending``,
+#   ``broadcast_records``, retirement and replica reconciliation) do nothing.
+"""Per-space sync assembly, node gate and join of the state runtime."""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from hyprial.daemon.impl.orgfs.api import OrgFsError, SpaceInfo
+from hyprial.daemon.impl.orgfs.composition.state.stores import JOIN_MARKER
+from hyprial.daemon.impl.orgfs.composition.vocabulary import _SpaceResourceHandle
+from hyprial.daemon.impl.orgfs.state import is_space_directory_name
+from hyprial.daemon.impl.orgfs.sync import SyncError, covers
+from hyprial.daemon.impl.orgfs.sync.interface import CATALOG_DOC_IDS
+from hyprial.daemon.impl.orgfs.sync.space import StateSpaceSync
+from hyprial.daemon.impl.transport import KeySpace
+from hyprial.identity import directory_owner_principal, is_org_directory_space
+from hyprial.kernel import atomic_json_write, fsync_directory
+
+VERIFY_BATCH = 256
+JOIN_ROUND_TIMEOUT_SECONDS = 10.0
+CATALOG_RETRY_BASE_SECONDS = 60.0
+CATALOG_RETRY_MAX_SECONDS = 960.0
+
+
+def _join_error_rank(error: OrgFsError) -> int:
+    """V defect 4: how informative a failed holder's error is for the caller."""
+
+    reason = error.details.get("reason") if isinstance(error.details, dict) else None
+    if error.code == "no-holder-online":
+        return 0
+    if reason == "supplier-not-online":
+        return 1
+    if error.code == "not-a-member":
+        return 3
+    return 2
+
+
+class StateLifecycle:
+    """Sync assembly and join of ``StateOrgFsRuntime``."""
+
+    _ANNOUNCE_PROTOCOL: int | None = 3
+
+    def _log(self, level: str, event: str, **fields: object) -> None:
+        if self.logger is None:
+            return
+        try:
+            self.logger(level, event, **fields)
+        except Exception:
+            return
+
+    def _node_gate(self, space_id: str) -> Callable[[str], bool]:
+        """Design §3.5: the device of ``node`` belongs to a current member."""
+
+        resolver = self._device_owner_resolver(space_id)
+
+        def gate(node: str) -> bool:
+            if self._trust_tailnet_members:
+                return True
+            try:
+                principal = resolver(node)
+            except Exception as exc:
+                self._log(
+                    "warn",
+                    "orgfs.update.rejected",
+                    reason="supplier-owner-unresolved",
+                    supplier=node,
+                    spaceId=space_id,
+                    detail=str(exc),
+                )
+                return False
+            if principal is None:
+                return False
+            space = self.facade._existing_space(space_id)
+            return space is not None and principal in space.members
+
+        return gate
+
+    def bind_device_owner_hint(self, hint: Callable[[str], str | None] | None) -> None:
+        """Set the assembly's bootstrap ``node -> principal`` source."""
+
+        self._device_owner_hint = hint
+
+    def _device_owner_resolver(self, space_id: str) -> Callable[[str], str | None]:
+        """``node -> principal`` from every org directory held here and the hint."""
+
+        def resolve(node: str) -> str | None:
+            if not node:
+                return None
+            found: dict[str, str] = {}
+            for directory in self._directory_spaces(space_id):
+                principal = self._device_owner_index(directory).get(node)
+                if principal:
+                    found.setdefault(principal, f"directory:{directory}")
+            hint = self._device_owner_hint
+            hinted = hint(node) if hint is not None else None
+            if hinted:
+                found.setdefault(directory_owner_principal(hinted), "hint")
+            if len(found) > 1:
+                self._log(
+                    "warn",
+                    "orgfs.update.rejected",
+                    reason="supplier-owner-conflict",
+                    supplier=node,
+                    spaceId=space_id,
+                    principals=sorted(found),
+                    sources=sorted(found.values()),
+                )
+                return None
+            return next(iter(found), None)
+
+        return resolve
+
+    def _directory_spaces(self, space_id: str) -> tuple[str, ...]:
+        directories = [
+            info.space_id for info in self.facade.spaces() if is_org_directory_space(info.name)
+        ]
+        space = self.facade._existing_space(space_id)
+        if space is not None and is_org_directory_space(space.info.name) and space_id not in directories:
+            directories.append(space_id)
+        return tuple(directories)
+
+    def _device_owner_index(self, directory_space: str) -> dict[str, str]:
+        key = self._directory_index_key(directory_space)
+        with self._supplier_device_lock:
+            current = self._directory_index_keys.get(directory_space) == key
+            cached = self._supplier_device_owners.get(directory_space) if current else None
+        if cached is not None:
+            return cached
+        self._forget_device_index(directory_space)
+        index = super()._device_owner_index(directory_space)
+        with self._supplier_device_lock:
+            self._directory_index_keys[directory_space] = key
+        return index
+
+    def _directory_index_key(self, directory_space: str) -> tuple[bytes, bytes]:
+        vectors = self.facade.sync_host(directory_space).read_vectors(CATALOG_DOC_IDS)
+        return bytes(vectors.get("meta") or b""), bytes(vectors.get("tree") or b"")
+
+    def _forget_device_index(self, space_id: str) -> None:
+        with self._supplier_device_lock:
+            self._directory_index_keys.pop(space_id, None)
+            watch = self._supplier_device_watches.pop(space_id, None)
+            self._supplier_device_owners.pop(space_id, None)
+        close = getattr(watch, "close", None)
+        if callable(close):
+            close()
+
+    def _holder_discovery(self, space_id: str) -> Callable[[], tuple[str, ...]]:
+        def discover() -> tuple[str, ...]:
+            return tuple(
+                dict.fromkeys((*self._holder_snapshot(space_id), *self._holder_candidates()))
+            )
+
+        return discover
+
+    def _new_sync(self, space_id: str, gate: Callable[[str], bool], *, node_level: bool) -> StateSpaceSync:
+        with self._resource_lock:
+            session = self._session
+        if session is None:
+            raise OrgFsError("unavailable", {"message": "orgfs transport is not bound"})
+        return StateSpaceSync(
+            session,
+            KeySpace(),
+            space_id,
+            self.node_id,
+            self.author,
+            self.facade.sync_host(space_id, gate),
+            self.blobs,
+            self._supplier_sync_health,
+            self._supplier_online,
+            self.logger,
+            announcement_source=self._announcement_spaces if node_level else None,
+            holder_discovery=self._holder_discovery(space_id),
+        )
+
+    def _create_mesh_sync(self, space_id: str) -> _SpaceResourceHandle | None:
+        with self._resource_lock:
+            session = self._session
+            if self._closing or session is None:
+                return None
+            existing = self._meshes.get(space_id)
+        if existing is not None:
+            return _SpaceResourceHandle(space_id, self._directory_generation)
+        if space_id not in {info.space_id for info in self.facade.spaces()}:
+            return None
+        sync = self._new_sync(space_id, self._node_gate(space_id), node_level=True)
+        with self._resource_lock:
+            if self._closing or self._session is not session:
+                current = None
+                discard = True
+            else:
+                current = self._meshes.get(space_id)
+                if current is None:
+                    current = sync
+                    self._meshes[space_id] = sync
+                discard = current is not sync
+        if discard:
+            sync.close()
+            return (
+                _SpaceResourceHandle(space_id, self._directory_generation)
+                if current is not None
+                else None
+            )
+        self.facade.attach_sync(space_id, sync)
+        self.facade.request_broadcast_drain(space_id)
+        self._announce_all()
+        return _SpaceResourceHandle(space_id, self._directory_generation)
+
+    def anti_entropy_tick(self, now: float) -> int:
+        """Drain every verification backlog, then the due-gated tick (F1 round 2)."""
+
+        try:
+            self._drain_verification()
+        except Exception as exc:  # noqa: BLE001 - must not skip later maintenance
+            self._log("warn", "orgfs.anti_entropy.failed", error=repr(exc))
+        return super().anti_entropy_tick(now)
+
+    def _drain_verification(self) -> int:
+        """Verify unverified documents in VERIFY_BATCH batches until none is left."""
+
+        batches = 0
+        for info in self.facade.spaces():
+            registry = self.facade._registry(info.space_id)
+            host = self.facade.sync_host(info.space_id)
+            left = len(registry.unverified)
+            while left:
+                host.pending_content(VERIFY_BATCH)
+                batches += 1
+                now_left = len(registry.unverified)
+                if now_left >= left:
+                    break
+                left = now_left
+        return batches
+
+    def _maintain_spaces(self, now: float) -> None:
+        """Hook: ``SpaceSync.maintain``, verification, and a pull when behind."""
+
+        with self._resource_lock:
+            syncs = tuple(self._meshes.items())
+        for space_id, sync in syncs:
+            try:
+                sync.maintain(now)
+                host = self.facade.sync_host(space_id)
+                pending = host.pending_content(VERIFY_BATCH)
+                behind = bool(pending) or not self._observed(host, sync)
+                ahead = self._ahead_holders(host, sync)
+            except Exception as exc:
+                self._log("warn", "orgfs.sync.maintain-failed", spaceId=space_id, detail=str(exc))
+                continue
+            if not ahead:
+                self._catalog_retries.pop(space_id, None)
+            if behind:
+                holders = [
+                    node
+                    for node in self._holder_discovery(space_id)()
+                    if node != self.node_id and self._supplier_online(node)
+                ]
+                if holders:
+                    sync.schedule_sync_from(holders[0])
+            elif ahead and self._catalog_retry_due(space_id, ahead[0], now):
+                sync.schedule_sync_from(ahead[0])
+
+    @staticmethod
+    def _observed(host: Any, sync: Any) -> bool:
+        """Whether a current observation covers the local meta and tree vectors."""
+
+        vectors = host.read_vectors(CATALOG_DOC_IDS)
+        meta = vectors.get("meta") or b"\x00"
+        tree = vectors.get("tree") or b"\x00"
+        return any(
+            covers(item.meta_vector, meta) and covers(item.tree_vector, tree)
+            for item in sync.observations()
+        )
+
+    def _ahead_holders(self, host: Any, sync: Any) -> list[str]:
+        """Online holders whose observed meta or tree the local vectors do not cover."""
+
+        vectors = host.read_vectors(CATALOG_DOC_IDS)
+        meta = vectors.get("meta") or b"\x00"
+        tree = vectors.get("tree") or b"\x00"
+        return sorted(
+            item.node
+            for item in sync.observations()
+            if item.node != self.node_id
+            and self._supplier_online(item.node)
+            and not (covers(meta, item.meta_vector) and covers(tree, item.tree_vector))
+        )
+
+    def _catalog_retry_due(self, space_id: str, holder: str, now: float) -> bool:
+        """Back off pulls for a catalog an online holder is ahead of (F4, R2-1)."""
+
+        attempts, next_at = self._catalog_retries.get(space_id, (0, now))
+        if now < next_at:
+            return False
+        attempts += 1
+        delay = min(CATALOG_RETRY_BASE_SECONDS * 2 ** (attempts - 1), CATALOG_RETRY_MAX_SECONDS)
+        self._catalog_retries[space_id] = (attempts, now + delay)
+        self._log(
+            "info",
+            "orgfs.sync.catalog-behind",
+            spaceId=space_id,
+            supplier=holder,
+            attempt=attempts,
+            nextRetrySeconds=delay,
+        )
+        return True
+
+    def _join_sync(self, space_id: str) -> SpaceInfo:
+        existing = self.facade._existing_space(space_id)
+        if existing is not None and existing.info.owner:
+            return existing.info
+        if not is_space_directory_name(space_id):
+            raise OrgFsError("unknown-space", {"spaceId": space_id, "reason": "not-a-uuid"})
+        holders = sorted(
+            {
+                *(node for node in self._holder_snapshot(space_id) if node != self.node_id),
+                *(node for node in self._holder_candidates() if node != self.node_id),
+            }
+        )
+        if not holders:
+            raise OrgFsError("no-holder-online", {"spaceId": space_id})
+        self.facade.begin_join(space_id)
+        marker = self._spaces_root / space_id / JOIN_MARKER
+        try:
+            atomic_json_write(marker, {"spaceId": space_id})
+            fsync_directory(marker.parent)
+            info, holder = self._fill_joined_space(space_id, holders)
+            marker.unlink()
+            fsync_directory(marker.parent)
+        except BaseException:
+            self._forget_device_index(space_id)
+            self.facade.abandon_join(space_id)
+            raise
+        sync = self._mesh(space_id)
+        if sync is not None:
+            sync.schedule_sync_from(holder)
+        self._announce_all()
+        return info
+
+    def _fill_joined_space(self, space_id: str, holders: list[str]) -> tuple[SpaceInfo, str]:
+        temporary = self._new_sync(space_id, lambda _node: True, node_level=False)
+        result: tuple[SpaceInfo, str] | None = None
+        best: OrgFsError = OrgFsError(
+            "no-holder-online", {"spaceId": space_id, "message": "no holder of the space is online"}
+        )
+
+        def keep(error: OrgFsError) -> None:
+            nonlocal best
+            if _join_error_rank(error) > _join_error_rank(best):
+                best = error
+
+        try:
+            gate = self._node_gate(space_id)
+            for holder in holders:
+                try:
+                    temporary.sync_from(holder, timeout=JOIN_ROUND_TIMEOUT_SECONDS)
+                except SyncError as exc:
+                    keep(self._join_error(space_id, holder, exc.code, exc.details, str(exc)))
+                    continue
+                if not self._supplier_online(holder):
+                    keep(self._join_error(space_id, holder, "not-a-member", {}, "supplier went offline"))
+                    continue
+                if not gate(holder):
+                    keep(OrgFsError(
+                        "not-a-member",
+                        {"spaceId": space_id, "supplier": holder, "reason": "supplier-not-member",
+                         "message": "supplier's device owner is not a current member"},
+                    ))
+                    continue
+                try:
+                    result = (self.facade.complete_join(space_id), holder)
+                except OrgFsError as exc:
+                    keep(exc)
+                    continue
+                break
+        finally:
+            temporary.close()
+        if result is None:
+            raise best
+        return result
+
+    def _join_error(
+        self, space_id: str, holder: str, code: str, details: Any, message: str
+    ) -> OrgFsError:
+        if not self._supplier_online(holder):
+            return OrgFsError(
+                "not-a-member",
+                {"spaceId": space_id, "supplier": holder, "reason": "supplier-not-online",
+                 "message": message or "supplier is not an online host"},
+            )
+        values = {str(key): value for key, value in dict(details or {}).items()}
+        return OrgFsError(code, {**values, "spaceId": space_id, "supplier": holder, "message": message})
+
+    def broadcast_pending(self, space_id: str) -> int:
+        return 0
+
+    def broadcast_records(self, space_id: str, records: tuple[Any, ...]) -> int:
+        return 0
+
+    def reconcile_replica_blobs(self, space_id: str) -> tuple[str, ...]:
+        return ()
+
+    def _reconcile_retirements(self, space_id: str) -> None:
+        return None
+
+
+__all__ = [
+    "CATALOG_RETRY_BASE_SECONDS",
+    "CATALOG_RETRY_MAX_SECONDS",
+    "JOIN_ROUND_TIMEOUT_SECONDS",
+    "StateLifecycle",
+    "VERIFY_BATCH",
+]

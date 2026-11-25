@@ -1,3 +1,17 @@
+# Decisions (F1, node gate ruling, 2026-11-25):
+# - The state runtime's node gate takes a ``device_owner_hint`` as its
+#   bootstrap source.  The org cell roster cannot serve: only the owner holds
+#   the cell, its devices are keyed by ``deviceUid`` rather than the OrgFS node
+#   id, no production path writes a joining member's device into it, and a
+#   member's read-only projection is the OrgFS directory itself.  The tailnet
+#   roster can: the owner's authority records the member's device when the
+#   invite is redeemed (before the OrgFS join), every node's sidecar answers
+#   ``membership-status`` with ``owner``/``deviceId`` (the OrgFS node id) per
+#   tailnet, and removal revokes the device.  ``TailnetDeviceOwners`` maps
+#   active members only, caches one status for a few seconds (gate calls run
+#   on sync threads), answers nothing when the sidecar fails or two tailnets
+#   name different owners for one device, and is bound only on a runtime that
+#   offers ``bind_device_owner_hint`` (the legacy runtime is unchanged).
 """OrgFs runtime bridge: the orgfs.* IPC family, owner notices and the org-context bridge.
 
 R2 (owner ruling 2026-11-19): an OrgFS owner notice to this node's owner is
@@ -7,6 +21,7 @@ nowhere; a notice to another space owner keeps the user-delivery transport.
 
 from __future__ import annotations
 import json
+from threading import Lock
 import time
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
@@ -48,17 +63,74 @@ from hyprial.daemon.impl.ipc.params import (
 
 
 _ORGFS_NOTICE_NAMESPACE = "orgfs"
+_TAILNET_OWNERS_TTL_S = 5.0
+_TAILNET_STATUS_TIMEOUT_S = 2.0
+
+
+class TailnetDeviceOwners:
+    """``node -> user principal`` from the active tailnet roster (node gate bootstrap)."""
+
+    def __init__(
+        self,
+        status: Callable[[], dict[str, Any]],
+        *,
+        ttl: float = _TAILNET_OWNERS_TTL_S,
+        clock: Callable[[], float] = time.monotonic,
+        log: Callable[..., None] | None = None,
+    ) -> None:
+        self._status = status
+        self._ttl = ttl
+        self._clock = clock
+        self._log = log
+        self._lock = Lock()
+        self._owners: dict[str, str | None] = {}
+        self._expires = float("-inf")
+
+    def __call__(self, node: str) -> str | None:
+        return self._current().get(node)
+
+    def _current(self) -> dict[str, str | None]:
+        with self._lock:
+            if self._clock() < self._expires:
+                return self._owners
+        try:
+            owners = self._parse(self._status())
+        except Exception as exc:  # noqa: BLE001 - an unreadable roster gives no hint
+            self._emit("orgfs.gate.roster-unavailable", code=getattr(exc, "code", type(exc).__name__))
+            owners = {}
+        with self._lock:
+            self._owners = owners
+            self._expires = self._clock() + self._ttl
+            return owners
+
+    def _parse(self, status: dict[str, Any]) -> dict[str, str | None]:
+        from hyprial.daemon.impl.forwarding.membership.projection import active_members
+
+        owners: dict[str, str | None] = {}
+        for member in active_members(status):
+            device = member.get("deviceId")
+            owner = member.get("owner")
+            if not isinstance(device, str) or not device or not isinstance(owner, str) or not owner:
+                continue
+            principal = owner if owner.startswith("user:") else canonical_user_uri(owner)
+            if device in owners and owners[device] != principal:
+                self._emit("orgfs.gate.roster-conflict", deviceId=device)
+                owners[device] = None
+            elif device not in owners:
+                owners[device] = principal
+        return owners
+
+    def _emit(self, event: str, **fields: object) -> None:
+        if self._log is not None:
+            self._log("warn", event, **fields)
 
 
 _ORG_CONTEXT_READ_METHODS = frozenset(
     {
         "orgfs.export",
-        "orgfs.history",
         "orgfs.ls",
         "orgfs.read",
-        "orgfs.read_at",
         "orgfs.stat",
-        "orgfs.stat_at",
     }
 )
 
@@ -71,14 +143,10 @@ _ORGFS_MUTATING_METHODS = frozenset(
         "orgfs.join",
         "orgfs.mkdir",
         "orgfs.move",
-        "orgfs.purge",
-        "orgfs.purge_plan",
         "orgfs.remove",
         "orgfs.remove_member",
         "orgfs.restore",
-        "orgfs.serve",
         "orgfs.space_purge",
-        "orgfs.unban",
         "orgfs.write",
     }
 )
@@ -86,16 +154,12 @@ _ORGFS_MUTATING_METHODS = frozenset(
 _ORGFS_READ_METHODS = frozenset(
     {
         "orgfs.export",
-        "orgfs.history",
         "orgfs.ls",
         "orgfs.members",
-        "orgfs.purge_status",
         "orgfs.read",
-        "orgfs.read_at",
         "orgfs.resolve",
         "orgfs.spaces",
         "orgfs.stat",
-        "orgfs.stat_at",
         "orgfs.status",
         "orgfs.trash",
         "orgfs.watch",
@@ -234,6 +298,14 @@ class _OrgFsBridgeMixin:
                 ),
                 actor_host=self._actor_hosts.host_for("orgfs"),
             )
+            bind_hint = getattr(self._orgfs_runtime, "bind_device_owner_hint", None)
+            if callable(bind_hint):
+                from hyprial.daemon.impl.forwarding.membership.projection import status_for_app
+
+                bind_hint(TailnetDeviceOwners(
+                    lambda: status_for_app(self, timeout=_TAILNET_STATUS_TIMEOUT_S),
+                    log=getattr(self._orgfs_runtime, "logger", None),
+                ))
         return self._orgfs_runtime
 
 
@@ -515,27 +587,6 @@ class _OrgFsBridgeMixin:
             if method == "orgfs.remove":
                 fs.remove(required("spaceId"), str(params.get("node", params.get("path", ""))))
                 return {"ok": True}
-            if method == "orgfs.history":
-                before = params.get("before")
-                return {
-                    "history": self._orgfs_json(
-                        fs.history(
-                            required("spaceId"),
-                            str(params.get("node", params.get("path", ""))),
-                            int(params.get("limit", 50)),
-                            str(before) if before is not None else None,
-                        )
-                    )
-                }
-            if method == "orgfs.read_at":
-                import base64
-
-                content = fs.read_at(required("spaceId"), required("node"), required("version"))
-                return {"contentB64": base64.b64encode(content).decode("ascii")}
-            if method == "orgfs.stat_at":
-                return self._orgfs_json(
-                    fs.stat_at(required("spaceId"), required("node"), required("version"))
-                )
             if method == "orgfs.trash":
                 return {"nodes": self._orgfs_json(fs.trash(required("spaceId"), int(params.get("limit", 100))))}
             if method == "orgfs.restore":
@@ -549,37 +600,8 @@ class _OrgFsBridgeMixin:
                 )
             if method == "orgfs.status":
                 return self._orgfs_json(runtime.status(required("spaceId")))
-            if method == "orgfs.purge_plan":
-                targets = params.get("targets")
-                if not isinstance(targets, list) or not all(
-                    isinstance(target, dict) for target in targets
-                ):
-                    raise OrgFsError(
-                        "invalid-argument",
-                        {"message": "targets must be an array of objects"},
-                    )
-                return self._orgfs_json(
-                    runtime.purge_plan(required("spaceId"), targets)
-                )
-            if method == "orgfs.purge":
-                return self._orgfs_json(
-                    runtime.purge(required("spaceId"), required("planId"))
-                )
             if method == "orgfs.space_purge":
                 return runtime.purge_space(required("spaceId"))
-            if method == "orgfs.purge_status":
-                return self._orgfs_json(
-                    runtime.purge_status(required("spaceId"), required("planId"))
-                )
-            if method == "orgfs.unban":
-                runtime.unban(required("spaceId"), required("sha"))
-                return {"ok": True}
-            if method == "orgfs.serve":
-                return self._orgfs_json(
-                    runtime.serve(
-                        required("spaceId"), str(params.get("backend", "fs"))
-                    )
-                )
             if method == "orgfs.checkout":
                 enabled = params.get("enabled")
                 if type(enabled) is not bool:

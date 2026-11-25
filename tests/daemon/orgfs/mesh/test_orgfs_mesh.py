@@ -1,3 +1,12 @@
+# Decisions:
+# - Phase D, package T2: ``test_online_replication_refreshes_open_facade_and_watch``
+#   (the one test here that failed on the state runtime: it read the
+#   journal store's lock) is deleted; contract
+#   ``multinode/test_convergence.py::test_online_replication_refreshes_reads_and_watch``
+#   covers it on both runtimes (C4 report §5).  The other tests exercise
+#   ``OrgFsMesh`` / ``LocalSpaceStore`` directly, pass under the switch, and go
+#   with the journal mesh in package S (their protocol 3 counterparts are
+#   listed in the T2 report).
 from __future__ import annotations
 
 from fnmatch import fnmatch
@@ -651,47 +660,6 @@ def test_review_fix_14_log_range_errors_use_concrete_record_keys(tmp_path):
             mesh.close()
     finally:
         store.close()
-
-
-def test_online_replication_refreshes_open_facade_and_watch(tmp_path):
-    bus = _Bus()
-    # Watch refresh tests replication after private sidecar admission (§7).
-    owner = OrgFsRuntime(
-        tmp_path / "owner", node_id="node-a", author="user:owner",
-        trust_tailnet_members=True,
-    )
-    reader = OrgFsRuntime(
-        tmp_path / "reader", node_id="node-b", author="user:reader",
-        trust_tailnet_members=True,
-    )
-    try:
-        owner.bind_transport(
-            bus.session(), supplier_online=lambda node: node in {"node-a", "node-b"}
-        )
-        reader.bind_transport(
-            bus.session(), supplier_online=lambda node: node in {"node-a", "node-b"}
-        )
-        space = owner.facade.create_space("team")
-        owner.facade.invite(space.space_id, "user:reader", "rw")
-        owner._mesh(space.space_id).announce()
-        joined = reader.facade.join(space.space_id)
-        assert joined.space_id == space.space_id
-
-        created = owner.facade.write_text(space.space_id, "shared.md", "hello")
-        _eventually_text(reader, space.space_id, created.node_id, "hello")
-        owner.facade.write_text(space.space_id, f"id:{created.node_id}", "hello again")
-        _eventually_text(reader, space.space_id, created.node_id, "hello again")
-        changes = reader.facade.changes_since(space.space_id, "*.md")
-        assert [(event.kind, event.node.path) for event in changes] == [
-            ("created", "shared.md"),
-            ("modified", "shared.md"),
-        ]
-        _assert_registered(
-            owner.stores.get(space.space_id), reader.stores.get(space.space_id)
-        )
-    finally:
-        reader.close()
-        owner.close()
 
 
 @pytest.mark.parametrize("owner_case", ["nonmember", "missing", "unknown", "error"])

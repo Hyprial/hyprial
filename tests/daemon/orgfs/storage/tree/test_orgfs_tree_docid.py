@@ -1,3 +1,9 @@
+# Decisions:
+# - Phase D T1: the R1 property (an rw member cannot start another tree that
+#   replaces the space's tree) is driven through the state host's
+#   ``SyncHost.apply_remote`` with C2's ``forge_update``; it asserts the
+#   listing and the space directory's bytes, before and after a reopen.  The
+#   other tests here are journal-only and leave with package S.
 from __future__ import annotations
 
 import base64
@@ -7,8 +13,13 @@ import uuid
 import pytest
 from pycrdt import Doc, Map
 
+from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.membership import Accepted
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.storage.store import StoreError
+
+from tests.daemon.orgfs.membership.support import forge_update
+from tests.daemon.orgfs.runtime_state.support import snapshot
 
 
 @pytest.fixture
@@ -148,62 +159,6 @@ def test_literal_tree_wire_id_is_rejected_without_fallback(runtime):
     assert "tree" not in store.document_ids()
 
 
-def test_r1_rw_member_shadow_tree_envelope_cannot_touch_active_tree_or_reopen(
-    tmp_path,
-):
-    """R1: a valid fresh physical-tree id cannot alias the active tree file."""
-
-    state_dir = tmp_path / "r1-state"
-    runtime = OrgFsRuntime(state_dir, node_id="node-owner", author="user:owner")
-    try:
-        info = runtime.facade.create_space("team")
-        runtime.facade.invite(info.space_id, "user:rw")
-        runtime.facade.mkdir(info.space_id, "kept")
-        store = runtime.stores.get(info.space_id)
-        active = store.active_tree_doc_id()
-        assert active is not None
-        active_before = store.snapshot(active, shallow_since=None).snapshot_bytes
-        tree_file_before = (store.root / "tree.loro").read_bytes()
-
-        shadow_id = f"tree-{uuid.uuid4()}"
-        writer = "node-rw.incarnation.lane"
-        shadow = Doc(client_id=store._client_id(writer))
-        shadow.get("shadow", type=Map)["payload"] = "must-not-persist"
-        store._advance_commit_clock(shadow, writer=writer, seq=0)
-        envelope = store._make_envelope(
-            shadow_id,
-            writer,
-            0,
-            shadow.get_update(),
-            author="user:rw",
-            actor="agent:rw:test:orgfs",
-            meta_frontier=store._meta_frontier_for_commit(),
-        )
-
-        result = store.import_envelope(envelope, supplier="node-rw")
-        assert (result.status, result.code) == ("rejected", "unknown-doc")
-        assert shadow_id not in store.document_ids()
-        assert (
-            store.snapshot(active, shallow_since=None).snapshot_bytes == active_before
-        )
-        assert (store.root / "tree.loro").read_bytes() == tree_file_before
-    finally:
-        runtime.close()
-
-    reopened = OrgFsRuntime(state_dir, node_id="node-owner", author="user:owner")
-    try:
-        reopened_store = reopened.stores.get(info.space_id)
-        assert reopened_store.active_tree_doc_id() == active
-        assert shadow_id not in reopened_store.document_ids()
-        assert (
-            reopened_store.snapshot(active, shallow_since=None).snapshot_bytes
-            == active_before
-        )
-        assert reopened.facade.stat(info.space_id, "kept").path == "kept"
-    finally:
-        reopened.close()
-
-
 def test_r5_pending_drain_keeps_snapshot_barrier_after_retirement(runtime, caplog):
     """R5: a parked old-tree envelope drains with snapshot-barrier semantics."""
 
@@ -276,4 +231,53 @@ def test_r5_pending_drain_keeps_snapshot_barrier_after_retirement(runtime, caplo
             (old_tree, late_writer),
         ).fetchone()[0]
         == 0
+    )
+
+
+def test_r1_rw_member_shadow_tree_update_cannot_touch_the_tree_or_reopen(tmp_path):
+    """R1: an rw member's update for another tree-like document changes nothing."""
+
+    state_dir = tmp_path / "r1-state"
+    runtime = StateOrgFsRuntime(state_dir, node_id="node-owner", author="user:owner")
+    try:
+        info = runtime.facade.create_space("team")
+        runtime.facade.invite(info.space_id, "user:rw")
+        runtime.facade.mkdir(info.space_id, "kept")
+        listing = _listing(runtime.facade, info.space_id)
+        space_dir = state_dir / "orgfs" / "spaces" / info.space_id
+        files_before = snapshot(space_dir)
+
+        shadow_id = f"tree-{uuid.uuid4()}"
+
+        def shadow(doc: Doc, author: str) -> None:
+            doc.get("nodes", type=Map)["root"] = json.dumps(
+                {"node_id": "root", "parent": None, "name": "", "kind": "dir",
+                 "doc_id": None, "blob_hash": None, "deleted": False, "author": author}
+            )
+            doc.get("shadow", type=Map)["payload"] = "must-not-persist"
+
+        frame = forge_update(shadow_id, shadow, author="user:rw", client_id=4242)
+        outcome = runtime.facade.sync_host(info.space_id).apply_remote(
+            frame.doc_id, frame.update, frame.vector, "node-rw"
+        )
+
+        assert not isinstance(outcome, Accepted)
+        assert _listing(runtime.facade, info.space_id) == listing
+        assert snapshot(space_dir) == files_before
+    finally:
+        runtime.close()
+
+    reopened = StateOrgFsRuntime(state_dir, node_id="node-owner", author="user:owner")
+    try:
+        assert _listing(reopened.facade, info.space_id) == listing
+        assert reopened.facade.stat(info.space_id, "kept").path == "kept"
+        assert not any(shadow_id in str(path) for path in space_dir.rglob("*"))
+    finally:
+        reopened.close()
+
+
+def _listing(fs, space_id: str) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (node.node_id, node.path, node.kind)
+        for node in fs.listdir(space_id, "", recursive=True)
     )

@@ -25,7 +25,7 @@ SPECS = tuple(spec for spec, _handler in BATCH4_ORGFS_BINDINGS)
 def write_contract(tmp_path_factory):
     validated = validate_method_example_sets(SPECS, ORGFS_WRITE_EXAMPLES)
     assert {item.method for item in validated} == {spec.name for spec in SPECS}
-    assert len(validated) == 17
+    assert len(validated) == 13
     document = export_openapi(SPECS, example_sets=validated)
     path = tmp_path_factory.mktemp("write-contract") / "openapi.json"
     path.write_text(json.dumps(document), encoding="utf-8")

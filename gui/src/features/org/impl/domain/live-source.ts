@@ -49,7 +49,7 @@
  *   complete 时，删除可能已部分执行：先刷新列表，再提示“可能已部分执行、再次删除并确认会继续”；
  *   OPERATION_CONFLICT（子组织）在写入前拒绝，提示未删除。REMOVAL_CONFIRMATION_STALE 与
  *   AUTHORITY_REQUIRED 不断言删除结果：竞争或续删时组织可能已经删除，只提示列表已刷新、仍在列表中再删。
- * - OrgFS 文件动作走 orgfs.write/mkdir/move/remove/stat/restore/purge_plan/purge；
+ * - OrgFS 文件动作走 orgfs.write/mkdir/move/remove/stat/restore（内容清除 2026-11-25 D4a 退场）；
  *   保存使用 orgfs.ls 学到的原始版本串，版本未知或已变化时拒绝保存。
  * - 2026-11-22（G1）：移除 link.*（link.add/link.drop/link.list）调用及 addLink/revokeLink 网关成员。
  * - claimInvite / renameOrg / 模板 / 配置采信 / 迁移 / Agent-org 等
@@ -85,7 +85,6 @@ import { ORG_COPY, ORG_DELETE_REASONS, ORG_FAILURE_REASONS } from '../domain/cop
 import { orgNameFromId, peopleFromMembers, sameUser } from '../domain/selectors';
 import { orgIdFromName } from '../domain/validation';
 import type {
-  FileVersion,
   OrgDetail,
   OrgAgentRecord,
   OrgFileEntry,
@@ -237,16 +236,6 @@ function clockNow(): string {
   return `${pad(now.getHours())}:${pad(now.getMinutes())}`;
 }
 
-function decodeBase64Text(value: string): string | null {
-  try {
-    const binary = atob(value);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
 function fileKind(kind: OrgfsNodeView['kind']): OrgFileEntry['kind'] {
   return kind === 'dir' ? 'folder' : 'file';
 }
@@ -385,7 +374,6 @@ function detailFor(
         : { [spaceId]: trash.map((node) => trashEntry(node, trash)) },
     filesStatus,
     trashStatus,
-    history: {},
     config: null,
     routes: null,
     stats: null,
@@ -871,62 +859,6 @@ export function createOrgLiveSource(client: OrgBackendClient, access?: MethodAcc
           await refresh(orgId);
           return { kind: 'ok', value: undefined };
         },
-        async loadHistory(orgId, spaceId, path) {
-          try {
-            const events = await orgfs.history(spaceId, path);
-            const versions = await Promise.all(
-              events.slice(0, 20).map(async (event, index) => {
-                let content = '';
-                let contentStatus: FileVersion['contentStatus'] = 'error';
-                try {
-                  const at = await orgfs.readAt(
-                    spaceId,
-                    nodeRef(event.node.node_id),
-                    event.version,
-                  );
-                  if (at.contentB64 !== null) {
-                    const decoded = decodeBase64Text(at.contentB64);
-                    if (decoded !== null) {
-                      content = decoded;
-                      contentStatus = 'ready';
-                    }
-                  }
-                } catch (error) {
-                  if (methodRefusal(error) !== null) contentStatus = 'refused';
-                }
-                const parsed = Number.parseInt(event.version, 10);
-                return {
-                  version:
-                    Number.isFinite(parsed) && parsed > 0 ? parsed : index + 1,
-                  modifiedBy: event.author,
-                  modifiedAt: event.at,
-                  content,
-                  contentStatus,
-                };
-              }),
-            );
-            store.update((state) => {
-              const detail = state.details[orgId];
-              if (!detail) return state;
-              return {
-                ...state,
-                details: {
-                  ...state.details,
-                  [orgId]: {
-                    ...detail,
-                    history: {
-                      ...detail.history,
-                      [`${spaceId}:${path}`]: versions,
-                    },
-                  },
-                },
-              };
-            });
-            return { kind: 'ok', value: versions };
-          } catch (error) {
-            return writeFailure(error);
-          }
-        },
         async restoreEntry(orgId, spaceId, trashId) {
           const meta = trashMeta.get(`${spaceId}:${trashId}`);
           if (meta === undefined) {
@@ -937,117 +869,11 @@ export function createOrgLiveSource(client: OrgBackendClient, access?: MethodAcc
             };
           }
           if (meta.kind === 'dir') {
-            // 目录删除会把整棵子树（包括删除前已经单独删除的子项）都写成
-            // 同一个删除版本。不能拿删除前快照 recursive=true 整棵恢复：
-            // 那会把更早删除、后来被目录删除再次标记的子项一起复活。
-            // 只恢复本次删除批次里、删除前仍未删除的节点，逐个用删除版本
-            // non-recursive 恢复；目录按路径深度排在子项之前。
-            const trashLimit = 10_000;
-            let candidates: readonly OrgfsNodeView[];
-            try {
-              // 列表页默认只取 100 条；目录恢复要覆盖整棵子树，显式放大。
-              candidates = await orgfs.listTrash(spaceId, trashLimit);
-            } catch {
-              return {
-                kind: 'failed',
-                code: 'ORG_FOLDER_RESTORE_SNAPSHOT_UNKNOWN',
-                message: '无法读取回收站中的完整子项，未执行恢复。',
-              };
-            }
-            if (candidates.length >= trashLimit) {
-              return {
-                kind: 'failed',
-                code: 'ORG_FOLDER_RESTORE_SNAPSHOT_UNKNOWN',
-                message: '回收站条目达到恢复读取上限，无法保证完整恢复，未执行恢复。',
-              };
-            }
-            const batch = candidates.filter(
-              (item) =>
-                item.version === meta.version &&
-                (item.path === meta.path || item.path.startsWith(`${meta.path}/`)),
-            );
-            const restoreItems: OrgfsNodeView[] = [];
-            for (const item of batch) {
-              let history;
-              try {
-                history = await orgfs.history(spaceId, nodeRef(item.node_id));
-              } catch {
-                return {
-                  kind: 'failed',
-                  code: 'ORG_FOLDER_RESTORE_SNAPSHOT_UNKNOWN',
-                  message: '无法读取文件夹删除前的版本历史，未执行恢复。',
-                };
-              }
-              // 本次删除前的最新一条历史，是判断“是否早已删除”的唯一依据。
-              // 历史缺失/被截断时无法证明，必须 fail closed，不能猜成“未删除”。
-              const previous = history.find(
-                (entry) => entry.node.version !== meta.version,
-              );
-              if (previous === undefined) {
-                return {
-                  kind: 'failed',
-                  code: 'ORG_FOLDER_RESTORE_SNAPSHOT_UNKNOWN',
-                  message: '无法确认文件夹子项删除前的状态，未执行恢复。',
-                };
-              }
-              if (previous.node.deleted) continue;
-              restoreItems.push(item);
-            }
-            if (!restoreItems.some((item) => item.node_id === trashId)) {
-              return {
-                kind: 'failed',
-                code: 'ORG_FOLDER_RESTORE_SNAPSHOT_UNKNOWN',
-                message: '找不到文件夹可恢复的删除批次，未执行恢复。',
-              };
-            }
-            restoreItems.sort(
-              (left, right) =>
-                left.path.split('/').length - right.path.split('/').length ||
-                left.path.localeCompare(right.path),
-            );
-            let restored = 0;
-            for (const item of restoreItems) {
-              try {
-                await orgfs.restore(spaceId, nodeRef(item.node_id), item.version, false);
-                restored += 1;
-              } catch (error) {
-                const failure = writeFailure(error);
-                if (failure.kind !== 'failed') return failure;
-                // 预检成功不能保证后续 N 次写原子；失败后先刷新，让页面显示
-                // 已完成/未完成项。已成功项不能重放，失败项是否已执行按
-                // writeFailure 的 dispatch/unknown 语义保留；刷新失败也不能
-                // 覆盖原写入结果。
-                const refreshed = await refresh(orgId);
-                const refreshNote =
-                  refreshed.kind === 'ok'
-                    ? ''
-                    : ' 刷新失败，页面可能仍是旧状态，请手动刷新核对。';
-                const total = restoreItems.length;
-                const current = restored + 1;
-                const remaining = total - restored - 1;
-                if (failure.unknown) {
-                  return {
-                    ...failure,
-                    code: 'ORG_FOLDER_RESTORE_PARTIAL',
-                    message:
-                      `已确认 ${restored}/${total} 项恢复；当前第 ${current} 项结果未知` +
-                      `（${failure.message}）；剩余 ${remaining} 项未尝试。` +
-                      `请刷新核对，不要重试已确认项。${refreshNote}`,
-                  };
-                }
-                if (restored === 0) return failure;
-                return {
-                  ...failure,
-                  code: 'ORG_FOLDER_RESTORE_PARTIAL',
-                  message:
-                    `已确认 ${restored}/${total} 项恢复；第 ${current} 项明确失败` +
-                    `（${failure.message}）；剩余 ${remaining} 项未尝试。` +
-                    `请刷新核对，未自动重试。${refreshNote}`,
-                };
-              }
-            }
-            await refresh(orgId);
-            return { kind: 'ok', value: undefined };
+            return {
+              kind: 'failed',
+              code: 'ORG_FOLDER_RESTORE_UNSUPPORTED',
+              message: ORG_COPY.folderRestoreUnsupported,
+            };
           }
           try {
             await orgfs.restore(spaceId, nodeRef(trashId), meta.version, false);

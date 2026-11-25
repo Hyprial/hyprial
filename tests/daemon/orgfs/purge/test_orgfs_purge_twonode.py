@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import socket
@@ -48,17 +49,6 @@ def _doc_target(node_id: str) -> dict[str, str]:
         "from": "all",
         "to": "all",
     }
-
-
-def _scan_replica_backend(
-    runtime: OrgFsRuntime, space_id: str, *needles: bytes
-) -> None:
-    backend = runtime._replicas[space_id].backend
-    for prefix in ("log/", "snapshot/", "blob/"):
-        for key in backend.keys(prefix):
-            value = backend.get(key)
-            assert value is not None
-            assert all(needle not in value for needle in needles), key
 
 
 @pytest.fixture(autouse=True)
@@ -199,7 +189,6 @@ def test_cross_node_reclone_offline_cleanup_ack_and_fresh_joiner(
         old_doc_id = node.doc_id
         assert any("updateBlob" in envelope for _raw, envelope in owner_rows)
 
-        member.serve(space.space_id, "fs")
         assert_client_ids_registered(owner.stores[space.space_id])
         assert_client_ids_registered(member.stores[space.space_id])
         member.close()
@@ -230,7 +219,6 @@ def test_cross_node_reclone_offline_cleanup_ack_and_fresh_joiner(
             tmp_path / "member", node_id="node-b", author="user:member",
             trust_tailnet_members=True,  # Same private-path fixture after restart (§7).
         )
-        returned.serve(space.space_id, "fs")
         returned_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
         time.sleep(0.2)
         returned.bind_transport(
@@ -313,7 +301,6 @@ def test_cross_node_reclone_offline_cleanup_ack_and_fresh_joiner(
             )
         )
 
-        # Exercise the handlers themselves, not ReplicaStore methods.
         sync_request = json.dumps(
             {
                 "schemaVersion": 1,
@@ -328,7 +315,10 @@ def test_cross_node_reclone_offline_cleanup_ack_and_fresh_joiner(
             separators=(",", ":"),
         ).encode()
         sync_reply = json.loads(tuple(mesh._handle_sync("", sync_request))[0][1])
-        assert sync_reply["code"] == "snapshot-barrier"
+        assert all(
+            json.loads(base64.b64decode(envelope))["docId"] != old_doc_id
+            for envelope in sync_reply["envelopes"]
+        )
         log_request = json.dumps(
             {
                 "schemaVersion": 1,
@@ -379,7 +369,6 @@ def test_cross_node_reclone_offline_cleanup_ack_and_fresh_joiner(
         for runtime in (owner, returned, newcomer):
             scans = runtime.stores[space.space_id].scan_forbidden_bytes(needles)
             assert scans == {"journal": (), "documents": (), "blobs": ()}
-        _scan_replica_backend(returned, space.space_id, *needles)
     finally:
         if tracemalloc.is_tracing():
             tracemalloc.stop()

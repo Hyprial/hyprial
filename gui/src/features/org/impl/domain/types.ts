@@ -194,15 +194,6 @@ export interface TrashEntry {
   readonly childCount?: number;
 }
 
-export interface FileVersion {
-  readonly version: number;
-  readonly modifiedBy: string;
-  readonly modifiedAt: string;
-  readonly content: string;
-  /** read_at 失败时为 error，不能把空白当成真实空正文；调用前即被拒绝时为 refused，不呈现为失败。 */
-  readonly contentStatus?: 'ready' | 'error' | 'refused';
-}
-
 export interface OrgDepartment {
   readonly id: string;
   readonly name: string;
@@ -334,7 +325,6 @@ export interface OrgDetail {
   /** 分项读取状态；error 时不能把空数组显示成“没有文件/回收站为空”。 */
   readonly filesStatus?: 'ready' | 'error';
   readonly trashStatus?: 'ready' | 'error';
-  readonly history: Readonly<Record<string, readonly FileVersion[]>>;
   readonly config: OrgConfigState | null;
   readonly routes: readonly OrgRoute[] | null;
   readonly stats: Readonly<Partial<Record<StatsWindow, OrgStats>>> | null;
@@ -512,11 +502,6 @@ export interface OrgGateway {
   ): Promise<OrgResult>;
   moveEntry(orgId: string, spaceId: string, from: string, to: string): Promise<OrgResult>;
   deleteEntry(orgId: string, spaceId: string, path: string): Promise<OrgResult>;
-  loadHistory(
-    orgId: string,
-    spaceId: string,
-    path: string,
-  ): Promise<OrgResult<readonly FileVersion[]>>;
   restoreEntry(orgId: string, spaceId: string, trashId: string): Promise<OrgResult>;
   retryMachine(orgId: string, machineId: string): Promise<OrgResult>;
   decideMigration?(ticketId: string, decision: MigrationDecision): Promise<OrgResult>;

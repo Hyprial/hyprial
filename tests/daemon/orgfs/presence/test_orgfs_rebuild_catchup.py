@@ -1,3 +1,26 @@
+# Decisions:
+# - Phase D, package T2: the tests that read the journal store or the legacy
+#   mesh (``stores[...]``, ``unbroadcast``, ``_meshes``, a monkeypatched
+#   ``_mesh``) run on ``StateOrgFsRuntime`` through ``state_peers``
+#   (``mesh/replication/state_support.py``) and assert only reads, device rows,
+#   logged events and errors.  The other tests here construct ``OrgFsRuntime``
+#   and pass under the rehearsal switch; package S points that name at the new
+#   runtime.
+# - A lost broadcast is no longer parked per writer: the next broadcast that
+#   depends on it is ``Pending("dependency")`` and pulls from its sender
+#   (design §4.2), so the old "parks until an explicit sync" test became
+#   ``test_one_lost_commit_is_pulled_when_a_later_commit_arrives``.
+# - ``test_parked_commits_are_reported_until_the_gap_is_pulled`` is deleted:
+#   ``parkedCommits`` is removed by design §10 (diagnostic moves to
+#   ``status.rejected_updates``, which counts admission rejections, not frames
+#   dropped by presence); the recovery it also checked is
+#   ``test_supplier_online_edge_applies_buffered_announce_before_sync``.
+# - Waits for a dropped broadcast count ``StateNetwork.dropped`` rather than
+#   calling ``drain_broadcasts``: that facade call is the close-time drain and
+#   leaves the network lane in drain mode, so later writes are not published
+#   until the next drain.
+# - The rejected-supplier event of protocol 3 names the sender as ``peer``
+#   (``orgfs.update.rejected`` with ``reason=supplier-offline``).
 """Deterministic OrgFS catch-up after transport callback replay completes."""
 
 from __future__ import annotations
@@ -5,7 +28,6 @@ from __future__ import annotations
 from fnmatch import fnmatch
 import threading
 import time
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -14,10 +36,16 @@ from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.orgfs.composition import directory as directory_composition
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.storage.store import StoreError
 from hyprial.daemon.impl.transport import TransportSample
 from hyprial.daemon.impl.transport.presence_actor import ActorOnlineTransition
 from hyprial.identity.impl.org_directory import DirectoryDevice
+from tests.daemon.orgfs.mesh.replication.state_support import (
+    StateNetwork,
+    StatePeers,
+    open_state_peers,
+    shared_space,
+)
+from tests.daemon.orgfs.runtime_state.support import Peer, eventually, holds, text, tree
 
 
 _DIRECTORY_SYNC_INTERVAL_SECONDS = 60.0
@@ -123,6 +151,11 @@ class _Presence:
             callback(transition)
 
 
+@pytest.fixture
+def state_peers(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    yield from open_state_peers(tmp_path, monkeypatch)
+
+
 @pytest.fixture(autouse=True)
 def isolated_orgfs_environment(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("HYPRIAL_HOME", str(tmp_path / "home"))
@@ -164,10 +197,6 @@ def _assert_text(runtime, space_id: str, node_id: str, expected: str) -> None:
     assert runtime.facade.read_text(space_id, f"id:{node_id}")[0] == expected
 
 
-def _assert_broadcast_drained(runtime, space_id: str) -> None:
-    assert not tuple(runtime.stores[space_id].unbroadcast())
-
-
 def _joined_pair(tmp_path, *, events=None):
     bus = _Bus()
     owner_session = bus.session()
@@ -200,124 +229,62 @@ def _joined_pair(tmp_path, *, events=None):
     return bus, owner, reader, reader_session, presence, space
 
 
-def test_transition_before_complete_recovers_dropped_broadcast(tmp_path) -> None:
-    """A: a non-resident space needs the retained supplier-online transition."""
+def test_transition_before_complete_recovers_dropped_broadcast(state_peers: StatePeers) -> None:
+    """A: an online edge seen during a rebuild is retained and pulls after it completes."""
 
-    bus, owner, reader, session, presence, space = _joined_pair(tmp_path)
-    try:
-        node = owner.facade.write_text(space.space_id, "shared.md", "before")
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "before"))
-        assert space.space_id not in reader._replicas
+    network = state_peers.network
+    owner = state_peers.add("node-owner", "user:owner")
+    reader = state_peers.add("node-reader", "user:reader")
+    space_id = shared_space(state_peers, owner, reader)
+    node = owner.fs.write_text(space_id, "shared.md", "before")
+    eventually(lambda: _assert_state_text(reader, space_id, node.node_id, "before"))
 
-        bus.drop_updates = True
-        owner.facade.write_text(space.space_id, f"id:{node.node_id}", "after")
-        session.begin_rebuild()
-        for _ in range(5):
-            presence.emit_online("node-owner")
-        _eventually(lambda: assert_directory_drained(reader))
-        _assert_text(reader, space.space_id, node.node_id, "before")
+    network.drop_updates = True
+    owner.fs.write_text(space_id, f"id:{node.node_id}", "after")
+    eventually(lambda: _assert_dropped(network, 2))
+    network.begin_rebuild("node-reader")
+    for _ in range(5):
+        network.emit_online(observer="node-reader", peer="node-owner")
+    holds(lambda: _assert_state_text(reader, space_id, node.node_id, "before"), duration=0.3)
 
-        session.finish_rebuild()
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "after"))
-    finally:
-        reader.close()
-        owner.close()
+    network.finish_rebuild("node-reader")
+    eventually(lambda: _assert_state_text(reader, space_id, node.node_id, "after"))
 
 
-def test_resident_space_pulls_dropped_broadcast_after_every_rebuild(tmp_path) -> None:
-    """B: an already-online holder is pulled without another presence edge."""
+def test_one_lost_commit_is_pulled_when_a_later_commit_arrives(state_peers: StatePeers) -> None:
+    """A later broadcast that depends on a lost one makes the reader pull the gap.
 
-    bus, owner, reader, session, _presence, space = _joined_pair(tmp_path)
-    try:
-        reader.serve(space.space_id, "memory")
-        node = owner.facade.write_text(space.space_id, "resident.md", "before")
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "before"))
-
-        bus.drop_updates = True
-        owner.facade.write_text(space.space_id, f"id:{node.node_id}", "after")
-        session.begin_rebuild()
-        session.finish_rebuild()
-
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "after"))
-    finally:
-        reader.close()
-        owner.close()
-
-
-def test_one_lost_commit_parks_later_commits_until_rebuild_catchup(tmp_path) -> None:
-    """A lost commit parks every later commit by that writer to that doc.
-
-    The receiver's seq gap is keyed by (writer, doc): later broadcasts that do
-    arrive stay pending-dependency, so the doc must not advance until the
-    post-rebuild catch-up supplies the missing commit and drains the chain.
+    Protocol 3 replaces the journal's per-writer parking: an update whose
+    predecessor is missing is ``Pending("dependency")`` and schedules a pull
+    from its sender, so the reader reaches the last state without an explicit
+    sync and never shows a state the writer did not have.
     """
 
-    bus, owner, reader, session, _presence, space = _joined_pair(tmp_path)
-    try:
-        reader.serve(space.space_id, "memory")
-        node = owner.facade.write_text(space.space_id, "chain.md", "v0")
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "v0"))
+    network = state_peers.network
+    owner = state_peers.add("node-owner", "user:owner")
+    reader = state_peers.add("node-reader", "user:reader")
+    space_id = shared_space(state_peers, owner, reader)
+    node = owner.fs.write_text(space_id, "chain.md", "v0")
+    eventually(lambda: _assert_state_text(reader, space_id, node.node_id, "v0"))
 
-        bus.drop_updates = True
-        owner.facade.write_text(space.space_id, f"id:{node.node_id}", "v1")
-        _eventually(lambda: _assert_broadcast_drained(owner, space.space_id))
-        bus.drop_updates = False
-        owner.facade.write_text(space.space_id, f"id:{node.node_id}", "v2")
-        owner.facade.write_text(space.space_id, f"id:{node.node_id}", "v3")
-        time.sleep(0.2)
-        _assert_text(reader, space.space_id, node.node_id, "v0")
+    network.drop_updates = True
+    owner.fs.write_text(space_id, f"id:{node.node_id}", "v1")
+    eventually(lambda: _assert_dropped(network, 2))
+    network.drop_updates = False
+    holds(lambda: _assert_state_text(reader, space_id, node.node_id, "v0"), duration=0.2)
+    owner.fs.write_text(space_id, f"id:{node.node_id}", "v2")
+    owner.fs.write_text(space_id, f"id:{node.node_id}", "v3")
 
-        session.begin_rebuild()
-        session.finish_rebuild()
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "v3"))
-    finally:
-        reader.close()
-        owner.close()
+    eventually(lambda: _assert_state_text(reader, space_id, node.node_id, "v3"))
+    assert tree(reader.fs, space_id) == tree(owner.fs, space_id)
 
 
-def test_second_rebuild_reruns_sync_after_inflight_catchup(
-    tmp_path, monkeypatch
-) -> None:
-    """A rebuild completed during catch-up still pulls its later commit."""
+def _assert_dropped(network: StateNetwork, count: int) -> None:
+    assert network.dropped >= count
 
-    bus, owner, reader, session, _presence, space = _joined_pair(tmp_path)
-    first_finished = threading.Event()
-    release_first = threading.Event()
-    try:
-        reader.serve(space.space_id, "memory")
-        node = owner.facade.write_text(space.space_id, "coalesced.md", "before")
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "before"))
-        mesh = reader._meshes[space.space_id]
-        original_sync = mesh.sync_from
-        calls = []
 
-        def gated_sync(peer, *, timeout, deadline_monotonic):
-            calls.append(peer)
-            original_sync(
-                peer, timeout=timeout, deadline_monotonic=deadline_monotonic
-            )
-            if len(calls) == 1:
-                first_finished.set()
-                assert release_first.wait(3)
-
-        monkeypatch.setattr(mesh, "sync_from", gated_sync)
-        bus.drop_updates = True
-        session.begin_rebuild()
-        session.finish_rebuild()
-        assert first_finished.wait(2)
-
-        owner.facade.write_text(space.space_id, f"id:{node.node_id}", "between")
-        session.begin_rebuild()
-        session.finish_rebuild()
-        _eventually(lambda: assert_directory_drained(reader))
-        release_first.set()
-
-        _eventually(lambda: _assert_text(reader, space.space_id, node.node_id, "between"))
-        assert calls == ["node-owner", "node-owner"]
-    finally:
-        release_first.set()
-        reader.close()
-        owner.close()
+def _assert_state_text(peer: Peer, space_id: str, node_id: str, expected: str) -> None:
+    assert text(peer.fs, space_id, f"id:{node_id}") == expected
 
 
 def test_offline_deferred_supplier_survives_rebuild_drain(tmp_path) -> None:
@@ -505,125 +472,54 @@ def _expect_devices(runtime: OrgFsRuntime, expected: list[str]) -> None:
     assert _device_ids(runtime) == expected
 
 
-def _rejected_suppliers(events) -> set[str]:
+def _state_three_members(state_peers: StatePeers) -> tuple[Peer, Peer, Peer, str]:
+    """Alice (creator) has not seen Carol online yet; Carol writes her device row."""
+
+    network = state_peers.network
+    alice = state_peers.add("node-alice", "user:alice@example")
+    bob = state_peers.add("node-bob", "user:bob@example")
+    carol = state_peers.add("node-carol", "user:carol@example")
+    network.hide("node-alice", "node-carol")
+    space_id = shared_space(state_peers, alice, bob, carol, name="group-late")
+    OrgFsDirectoryStore(alice.fs).ensure_org_directory_roots("group-late")
+    OrgFsDirectoryStore(alice.fs).put_device("group-late", _device("alice@example", "node-alice"))
+    eventually(lambda: _expect_state_devices(carol, ["node-alice"]))
+    OrgFsDirectoryStore(carol.fs).put_device("group-late", _device("carol@example", "node-carol"))
+    eventually(lambda: _expect_state_devices(bob, ["node-alice", "node-carol"]))
+    return alice, bob, carol, space_id
+
+
+def _state_device_ids(peer: Peer) -> list[str]:
+    return [row.device_id for row in OrgFsDirectoryStore(peer.fs).list_devices("group-late")]
+
+
+def _expect_state_devices(peer: Peer, expected: list[str]) -> None:
+    assert _state_device_ids(peer) == expected
+
+
+def _offline_rejections(peer: Peer) -> set[str]:
     return {
-        fields["supplier"]
-        for _level, event, fields in events
+        str(fields.get("peer"))
+        for event, fields in peer.events.seen
         if event == "orgfs.update.rejected" and fields.get("reason") == "supplier-offline"
     }
 
 
-def _three_members_with_alice_presence(tmp_path, *, alice_events):
-    """Alice (creator) judges suppliers by presence; Bob and Carol trust everyone."""
-
-    bus = _Bus()
-    alice_session = bus.session("node-alice")
-    presence = _Presence(alice_session)
-    presence.online = {"node-bob"}
-    alice = OrgFsRuntime(
-        tmp_path / "alice",
-        node_id="node-alice",
-        author="user:alice@example",
-        trust_tailnet_members=True,  # Presence races after private admission (§7).
-        logger=lambda level, event, **fields: alice_events.append((level, event, fields)),
-    )
-    # Cold peers in this presence fixture already passed private admission (§7).
-    bob = OrgFsRuntime(
-        tmp_path / "bob", node_id="node-bob", author="user:bob@example", trust_tailnet_members=True
-    )
-    carol = OrgFsRuntime(
-        tmp_path / "carol", node_id="node-carol", author="user:carol@example", trust_tailnet_members=True
-    )
-    alice.bind_transport(
-        alice_session,
-        supplier_online=presence.supplier_online,
-        observe_supplier_online=presence.observe,
-    )
-    for runtime, node in ((bob, "node-bob"), (carol, "node-carol")):
-        runtime.bind_transport(
-            bus.session(node),
-            supplier_online=lambda _peer: True,
-            holder_candidates=lambda: ("node-alice",),
-        )
-    alice_store = OrgFsDirectoryStore(alice.facade)
-    space = alice.facade.create_space("group-late")
-    alice_store.ensure_org_directory_roots("group-late")
-    alice.facade.invite(space.space_id, "user:bob@example", "rw")
-    alice.facade.invite(space.space_id, "user:carol@example", "rw")
-    alice._mesh(space.space_id).announce()
-    for runtime in (bob, carol):
-        runtime.facade.join(space.space_id)
-        runtime._mesh(space.space_id).announce()
-    alice_store.put_device("group-late", _device("alice@example", "node-alice"))
-    # Carol writes before Alice's presence has seen her: Alice's ingress rejects
-    # Carol's tree commit (supplier-offline) and buffers her announce.
-    OrgFsDirectoryStore(carol.facade).put_device(
-        "group-late", _device("carol@example", "node-carol")
-    )
-    _eventually(lambda: _assert_broadcast_drained(carol, space.space_id))
-    _eventually(lambda: assert_directory_drained(alice))
-    return bus, presence, alice, bob, carol, space
-
-
-def test_supplier_online_edge_applies_buffered_announce_before_sync(
-    tmp_path,
-) -> None:
+def test_supplier_online_edge_applies_buffered_announce_before_sync(state_peers: StatePeers) -> None:
     """F1b: the race from the field (cr-old-3) heals on Carol's online edge, no tick."""
 
-    events: list = []
-    _bus, presence, alice, bob, carol, _space = _three_members_with_alice_presence(
-        tmp_path, alice_events=events
-    )
-    try:
-        assert "node-carol" in _rejected_suppliers(events)
-        assert _device_ids(alice) == ["node-alice"]
+    alice, _bob, carol, _space_id = _state_three_members(state_peers)
+    assert "node-carol" in _offline_rejections(alice)
+    holds(lambda: _expect_state_devices(alice, ["node-alice"]), duration=0.2)
 
-        presence.online.add("node-carol")
-        presence.emit_online("node-carol")
+    carol.runtime._mesh(_space_id).announce()  # noqa: SLF001 - Carol's held-space announce
+    state_peers.network.show("node-alice", "node-carol")
 
-        _eventually(lambda: _expect_devices(alice, ["node-alice", "node-carol"]))
-    finally:
-        for runtime in (carol, bob, alice):
-            runtime.close()
-
-
-def test_parked_commits_are_reported_until_the_gap_is_pulled(tmp_path) -> None:
-    """org network's parkedCommits: a commit behind a rejected one is visible as parked."""
-
-    events: list = []
-    _bus, presence, alice, bob, carol, _space = _three_members_with_alice_presence(
-        tmp_path, alice_events=events
-    )
-    try:
-        assert "node-carol" in _rejected_suppliers(events)
-        presence.online.add("node-carol")  # no edge: nothing pulls the gap yet
-        updated = replace(
-            _device("carol@example", "node-carol"),
-            updated_at="2026-10-08T00:01:00+00:00",
-        )
-        OrgFsDirectoryStore(carol.facade).put_device("group-late", updated)
-        _eventually(lambda: _assert_broadcast_drained(carol, _space.space_id))
-        _eventually(lambda: assert_directory_drained(alice))
-        alice_store = OrgFsDirectoryStore(alice.facade)
-        parked = alice_store.parked_commits("group-late")
-        assert [row["author"] for row in parked] == ["user:carol@example"]
-        assert parked[0]["commits"] >= 1
-        assert _device_ids(alice) == ["node-alice"]
-
-        presence.emit_online("node-carol")
-        _eventually(lambda: _expect_devices(alice, ["node-alice", "node-carol"]))
-        _eventually(lambda: _expect_parked(alice_store, []))
-    finally:
-        for runtime in (carol, bob, alice):
-            runtime.close()
-
-
-def _expect_parked(store: OrgFsDirectoryStore, expected: list) -> None:
-    assert store.parked_commits("group-late") == expected
+    eventually(lambda: _expect_state_devices(alice, ["node-alice", "node-carol"]))
 
 
 def test_creator_restart_recovers_rejected_row_by_anti_entropy(
-    tmp_path, monkeypatch
+    state_peers: StatePeers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """F2: Alice rejected Carol's commit, restarted, and saw no online edge since.
 
@@ -632,49 +528,20 @@ def test_creator_restart_recovers_rejected_row_by_anti_entropy(
     """
 
     monkeypatch.setattr(directory_composition, "_directory_sync_jitter", lambda: 0.0)
-    events: list = []
-    bus, presence, alice, bob, carol, space = _three_members_with_alice_presence(
-        tmp_path, alice_events=events
-    )
-    runtimes = [alice, bob, carol]
-    try:
-        assert "node-carol" in _rejected_suppliers(events)
-        alice.close()
-        runtimes.remove(alice)
-        alice = OrgFsRuntime(
-            tmp_path / "alice", node_id="node-alice", author="user:alice@example",
-            trust_tailnet_members=True,  # Same private-path fixture after restart (§7).
-        )
-        runtimes.append(alice)
-        presence.online.add("node-carol")  # online now, but no edge is emitted
-        alice.bind_transport(
-            bus.session("node-alice"),
-            supplier_online=presence.supplier_online,
-            observe_supplier_online=presence.observe,
-        )
-        carol._mesh(space.space_id).announce()
-        _eventually(lambda: assert_directory_drained(alice))
-        assert _device_ids(alice) == ["node-alice"]
+    alice, _bob, carol, space_id = _state_three_members(state_peers)
+    assert "node-carol" in _offline_rejections(alice)
 
-        mesh = alice._meshes[space.space_id]
-        original_sync = mesh.sync_from
-        synced = threading.Event()
+    alice.reopen()
+    state_peers.network.show("node-alice", "node-carol", edge=False)
+    carol.runtime._mesh(space_id).announce()  # noqa: SLF001 - Carol's held-space announce
+    holds(lambda: _expect_state_devices(alice, ["node-alice"]), duration=0.2)
 
-        def observed_sync(*args, **kwargs):
-            try:
-                return original_sync(*args, **kwargs)
-            finally:
-                synced.set()
-
-        monkeypatch.setattr(mesh, "sync_from", observed_sync)
-        clock = 100.0
-        assert alice.anti_entropy_tick(clock) == 0
-        assert alice.anti_entropy_tick(clock + _DIRECTORY_SYNC_INTERVAL_SECONDS) >= 1
-        assert synced.wait(2.0), "bounded sync worker did not settle"
-        _eventually(lambda: _expect_devices(alice, ["node-alice", "node-carol"]))
-    finally:
-        for runtime in reversed(runtimes):
-            runtime.close()
+    runtime = alice.runtime
+    assert runtime is not None
+    clock = 100.0
+    assert runtime.anti_entropy_tick(clock) == 0
+    assert runtime.anti_entropy_tick(clock + _DIRECTORY_SYNC_INTERVAL_SECONDS) >= 1
+    eventually(lambda: _expect_state_devices(alice, ["node-alice", "node-carol"]))
 
 
 @pytest.mark.parametrize("offset", [0, 1, 2])
@@ -876,32 +743,21 @@ def test_anti_entropy_tick_never_raises(tmp_path, monkeypatch) -> None:
         runtime.close()
 
 
-def test_join_error_message_has_one_code_prefix(tmp_path, monkeypatch) -> None:
-    """F3: lifecycle translation does not wrap the same join error twice."""
+def test_join_error_message_has_one_code_prefix(state_peers: StatePeers) -> None:
+    """F3: the join error names its code once and keeps a human-readable message."""
 
-    runtime = OrgFsRuntime(
-        tmp_path / "reader", node_id="node-reader", author="user:reader"
-    )
+    owner = state_peers.add("node-owner", "user:owner")
+    reader = state_peers.add("node-reader", "user:reader")
+    space = owner.fs.create_space("offline supplier")
+    owner.fs.invite(space.space_id, "user:reader", "rw")
+    state_peers.network.hide("node-reader", "node-owner")
 
-    class Mesh:
-        def sync_from(self, _holder):
-            raise StoreError(
-                "not-a-member",
-                "supplier is not an online host",
-                reason="supplier-not-online",
-            )
+    with pytest.raises(OrgFsError) as raised:
+        reader.fs.join(space.space_id)
 
-    monkeypatch.setattr(runtime, "_holder_candidates", lambda: ("node-owner",))
-    monkeypatch.setattr(runtime, "_mesh", lambda _space_id: Mesh())
-    try:
-        with pytest.raises(OrgFsError) as raised:
-            runtime.join("space-late")
-        assert str(raised.value) == (
-            "not-a-member: supplier is not an online host"
-        )
-        assert raised.value.details["reason"] == "supplier-not-online"
-    finally:
-        runtime.close()
+    assert raised.value.code == "not-a-member"
+    assert raised.value.details["reason"] == "supplier-not-online"
+    assert str(raised.value).count("not-a-member") == 1, str(raised.value)
 
 
 def test_successful_sync_logs_one_summary_line(tmp_path) -> None:
@@ -951,14 +807,13 @@ def test_successful_sync_logs_one_summary_line(tmp_path) -> None:
 
 
 def test_rebuild_catchup_is_deduplicated_and_logged_once(tmp_path, monkeypatch) -> None:
-    """N rebuilds schedule at most one pair each and emit one count line each."""
+    """Presence edges deferred by one rebuild schedule one pair; every rebuild logs once."""
 
     events = []
     _bus, owner, reader, session, presence, space = _joined_pair(
         tmp_path, events=events
     )
     try:
-        reader.serve(space.space_id, "memory")
         mesh = reader._meshes[space.space_id]
         scheduled = []
         monkeypatch.setattr(
@@ -991,10 +846,10 @@ def assert_directory_drained(runtime: OrgFsRuntime) -> None:
 
 def assert_rebuild_evidence(events, scheduled, space_id: str) -> None:
     rows = [row for row in events if row[1] == "orgfs.sync.post-rebuild"]
-    assert scheduled == [(space_id, "node-owner")] * 3
+    assert scheduled == [(space_id, "node-owner")]
     assert len(rows) == 3
     assert all(level == "info" for level, _event, _fields in rows)
-    assert all(fields["residentSpaces"] == 1 for _level, _event, fields in rows)
-    assert all(fields["onlineHolderPairs"] == 1 for _level, _event, fields in rows)
-    assert all(fields["syncTargets"] == 1 for _level, _event, fields in rows)
-    assert all(fields["scheduledCount"] == 1 for _level, _event, fields in rows)
+    assert all("residentSpaces" not in fields for _level, _event, fields in rows)
+    assert all("onlineHolderPairs" not in fields for _level, _event, fields in rows)
+    assert [fields["syncTargets"] for _level, _event, fields in rows] == [1, 0, 0]
+    assert [fields["scheduledCount"] for _level, _event, fields in rows] == [1, 0, 0]

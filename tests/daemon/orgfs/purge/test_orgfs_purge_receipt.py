@@ -1,43 +1,31 @@
-"""G3: the ordinary purge publishes a safe ``replacements`` receipt.
+"""Isolated real-CLI daemon root shared by daemon home-isolation tests.
 
-Real isolated CLI -> canonical ``org fs purge plan`` / ``org fs purge run`` -> local
-persisted readback.  Every value asserted here is compared against bytes the
-daemon wrote to disk (the ``meta.loro`` retirements and the replacement
-snapshot blob), never against the purge's own in-memory state.
+Decision (orgfs-minimal D4a, 2026-11-25): the G3 content-purge receipt tests
+drove ``org fs purge plan`` / ``org fs purge run PLAN_ID`` through the real CLI.
+Content purge left every public surface (owner Q4), so those three tests are
+gone; the request-layer refusal is pinned in
+``tests/daemon/ipc/retired_work/test_orgfs_content_purge_removed.py``.  The
+facade-level purge tests in this directory stay until package S deletes the
+old implementation.  ``_IsolatedCli`` stays because
+``tests/daemon/application/composition/service/test_home_isolation.py`` builds
+it to prove the daemon builder owns its home and XDG roots.
 
 Isolation: the CLI fixture owns a temporary ``HOME``, ``HYPRIAL_HOME`` and
 ``HARNESS_STATE_DIR`` under one test root, unsets ``HYPRIAL_NODE_ID`` (the
 home inside that root carries its own minted node id) and unsets the worker/tool-profile
 bindings.  Nothing ambient survives into either subprocess.
-
-Kill mutations these tests must survive:
-
-* emitting the receipt from the pre-commit plan (no replacement ids yet);
-* recomputing the digest from the live document instead of the committed
-  snapshot (an edit after the purge would change it);
-* reporting a replacement for a purge that never committed;
-* re-executing a completed plan on replay (new replacement ids / new snapshot).
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import shutil
 import socket
-import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
-from collections.abc import Iterator
 from pathlib import Path
 
-from pycrdt import Doc, Map
-import pytest
-
-from tests.support.runtime._tmp import hyprial_test_tmp_root
 from tests.support.runtime.environment import (
     assert_root_local_environment,
     home_with_node_id,
@@ -45,8 +33,6 @@ from tests.support.runtime.environment import (
 )
 
 OWNER = "g3-owner"
-MEMBER = "user:g3-member"
-NODE = "node-g3"
 _SOCKET_TIMEOUT_SECONDS = 5.0
 _READY_TIMEOUT_SECONDS = 90.0
 _CLI_TIMEOUT_SECONDS = 180
@@ -191,210 +177,3 @@ class _IsolatedCli:
         code, payload = self.run(*args)
         assert (code, payload.get("ok")) == (1, False), payload
         return payload
-
-    def write_and_plan(self, space_id: str) -> tuple[dict, dict]:
-        node = self.ok("org", "fs", "write", space_id, "note.md", "secret")
-        plan = self.ok(
-            "org", "fs",
-            "purge",
-            "plan",
-            space_id,
-            json.dumps(
-                [
-                    {
-                        "kind": "doc-range",
-                        "node": f"id:{node['node_id']}",
-                        "from": "all",
-                        "to": "all",
-                    }
-                ]
-            ),
-        )
-        return node, plan
-
-
-def _durable_retirements(state: Path, space_id: str) -> dict[str, dict]:
-    """Read the retirement records out of the persisted meta document."""
-
-    raw = (state / "orgfs" / "spaces" / space_id / "meta.loro").read_bytes()
-    document = Doc()
-    document.apply_update(raw)
-    roots = document.get("retirements", type=Map)
-    return dict(roots.to_py()) if roots is not None else {}
-
-
-def _replacement_snapshot_sha256(state: Path, digest: str) -> str:
-    """Recompute the digest of the replacement snapshot bytes on disk."""
-
-    path = state / "orgfs" / "blobs" / digest[:2] / digest
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-@pytest.fixture()
-def cli(tmp_path: Path) -> Iterator[_IsolatedCli]:
-    root = Path(tempfile.mkdtemp(prefix="hyprial-g3-", dir=hyprial_test_tmp_root()))
-    value = _IsolatedCli(root)
-    try:
-        yield value
-    finally:
-        value.close()
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_purge_receipt_matches_durable_records_across_replay_and_restart(
-    cli: _IsolatedCli,
-) -> None:
-    cli.start()
-    space_id = cli.ok("org", "fs", "space", "create", "team")["space_id"]
-    node, plan = cli.write_and_plan(space_id)
-    first = cli.ok("org", "fs", "purge", "run", space_id, plan["plan_id"])
-
-    receipt = first["replacements"]
-    assert len(receipt) == 1, first
-    item = receipt[0]
-    assert set(item) == {
-        "doc_id",
-        "replacement_doc_id",
-        "snapshot_id",
-        "snapshot_sha256",
-    }
-    assert item["doc_id"] == node["doc_id"]
-    assert item["replacement_doc_id"] != node["doc_id"]
-    # Ids and digests only: no content, no paths, no errors.
-    encoded = json.dumps(first, sort_keys=True)
-    assert "note.md" not in encoded
-    assert "secret" not in encoded
-    assert len(item["snapshot_sha256"]) == 64
-    assert set(item["snapshot_sha256"]) <= set("0123456789abcdef")
-
-    # Replaying the same plan returns the same committed receipt.
-    replay = cli.ok("org", "fs", "purge", "run", space_id, plan["plan_id"])
-    assert replay["replacements"] == receipt
-
-    # A later edit of the replacement document must not change the receipt: it
-    # is derived from committed records, not from the live document bytes.
-    edited = cli.ok(
-        "org", "fs", "write", space_id, f"id:{node['node_id']}", "edited after purge"
-    )
-    assert edited["doc_id"] == item["replacement_doc_id"]
-    after_edit = cli.ok("org", "fs", "purge", "run", space_id, plan["plan_id"])
-    assert after_edit["replacements"] == receipt
-
-    # Local persisted readback, with no daemon running at all.
-    cli.stop()
-    retirements = _durable_retirements(cli.state, space_id)
-    assert retirements[item["doc_id"]] == {
-        "replacementDocId": item["replacement_doc_id"],
-        "planId": plan["plan_id"],
-        "snapshotId": item["snapshot_id"],
-        "retiredAt": retirements[item["doc_id"]]["retiredAt"],
-    }
-    assert (
-        _replacement_snapshot_sha256(cli.state, item["snapshot_sha256"])
-        == item["snapshot_sha256"]
-    )
-    assert item["snapshot_id"] == item["snapshot_sha256"]
-
-    # A restarted daemon re-reads the same receipt from the same records.
-    cli.start()
-    after_restart = cli.ok("org", "fs", "purge", "run", space_id, plan["plan_id"])
-    assert after_restart["replacements"] == receipt
-    assert after_restart["acknowledged"] == first["acknowledged"]
-    assert after_restart["pending"] == first["pending"]
-
-
-def test_failed_purge_never_reports_a_replacement(cli: _IsolatedCli) -> None:
-    cli.start()
-    space_id = cli.ok("org", "fs", "space", "create", "team")["space_id"]
-    node, plan = cli.write_and_plan(space_id)
-    # The document changes after planning, so the purge is refused as stale and
-    # commits no retirement at all.
-    cli.ok("org", "fs", "write", space_id, f"id:{node['node_id']}", "changed later")
-    failure = cli.refused("org", "fs", "purge", "run", space_id, plan["plan_id"])
-    assert failure["code"] == "stale-plan"
-    assert "replacements" not in failure
-    assert "replacements" not in (failure.get("data") or {})
-
-    cli.stop()
-    assert _durable_retirements(cli.state, space_id) == {}
-    journal = sqlite3.connect(
-        f"file:{cli.state / 'orgfs' / 'spaces' / space_id / 'journal.sqlite3'}?mode=ro",
-        uri=True,
-    )
-    try:
-        rows = tuple(journal.execute("SELECT doc_id, snapshot_id FROM snapshots"))
-    finally:
-        journal.close()
-    assert all(row[0] != plan["docs"][0]["doc_id"] for row in rows)
-
-
-def test_real_cli_purge_refuses_foreign_and_non_owner_member(
-    cli: _IsolatedCli,
-) -> None:
-    """The changed method itself, driven through the real CLI, stays owner-only.
-
-    Two principals are exercised on the same space through the same CLI: an
-    invited read-only member and a user who was never invited.  Both must be
-    refused by ``orgfs.purge`` with no replacement claim and no retirement on
-    disk.  The owner's plan was built and accepted before either switch, so the
-    refusal is the only reason the purge did not happen.
-    """
-
-    cli.start()
-    space_id = cli.ok("org", "fs", "space", "create", "team")["space_id"]
-    # The member is added before the plan is built: a membership change after
-    # planning would rebind the plan's own hash and hide the refusal under
-    # `stale-plan`.
-    cli.ok(
-        "org", "fs",
-        "member",
-        "invite",
-        space_id,
-        MEMBER,
-        "--mode",
-        "ro",
-        "--no-notify",
-    )
-    node, plan = cli.write_and_plan(space_id)
-    cli.stop()
-
-    for owner in (MEMBER.removeprefix("user:"), "g3-foreign"):
-        cli.write_owner(owner)
-        cli.start()
-        try:
-            refused = cli.refused(
-                "org", "fs", "purge", "run", space_id, plan["plan_id"]
-            )
-        finally:
-            cli.stop()
-        assert refused["code"] == "not-owner", refused
-        assert "replacements" not in refused
-        assert "replacements" not in (refused.get("data") or {})
-        # Nothing committed for the plan: no replacement can be claimed.
-        assert _durable_retirements(cli.state, space_id) == {}
-
-    # The owner keeps the capability: a fresh exact plan still executes and
-    # claims one replacement, so the refusals above were about the principal.
-    # (A restart rebinds the local writer id, so the pre-switch plan no longer
-    # hashes to the same inventory; the owner rebinds before purging.)
-    cli.write_owner(OWNER)
-    cli.start()
-    rebound = cli.ok(
-        "org", "fs",
-        "purge",
-        "plan",
-        space_id,
-        json.dumps(
-            [
-                {
-                    "kind": "doc-range",
-                    "node": f"id:{node['node_id']}",
-                    "from": "all",
-                    "to": "all",
-                }
-            ]
-        ),
-    )
-    granted = cli.ok("org", "fs", "purge", "run", space_id, rebound["plan_id"])
-    assert len(granted["replacements"]) == 1
-    assert granted["replacements"][0]["doc_id"] == node["doc_id"]

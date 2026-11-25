@@ -81,6 +81,7 @@ export const ORG_COPY = {
   filesSecretHint: '组织成员都能读取这里的文件，不要存放秘密。',
   historyAnomaly: '状态未确认：历史记录异常，等待空间所有者修复',
   historyAnomalyReason: '该空间的历史记录异常，写操作和历史暂不可用。',
+  folderRestoreUnsupported: '无法确认文件夹删除前哪些子项仍然存在（OrgFS 不再保留版本历史），未执行恢复。',
   spaceUnknownReason: '该空间状态未确认，刷新后再操作。',
   noWriteReason: '你没有该空间的写权限。',
   statsScope: '只统计本机能看到的通信；没有数据不代表没有活动。',

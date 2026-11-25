@@ -193,69 +193,6 @@ def test_replica_total_custody_bounds_deferred_and_rebases_restart(monkeypatch) 
         assert authority.close(timeout=2)
 
 
-def test_concurrent_serve_constructs_one_replica_per_space(monkeypatch, tmp_path) -> None:
-    runtime = OrgFsRuntime(tmp_path, node_id="node-serve", author="user:owner")
-    same = runtime.facade.create_space("same")
-    other = runtime.facade.create_space("other")
-    entered = threading.Event()
-    release = threading.Event()
-    duplicate_blocked = threading.Event()
-
-    class ObservedCreationLock:
-        def __init__(self):
-            self.lock = threading.Lock()
-
-        def __enter__(self):
-            if not self.lock.acquire(blocking=False):
-                duplicate_blocked.set()
-                self.lock.acquire()
-            return self
-
-        def __exit__(self, *_args):
-            self.lock.release()
-
-    runtime._replica_creation_locks[same.space_id] = ObservedCreationLock()
-    constructed: list[str] = []
-    primed: list[str] = []
-    original_init = ReplicaAuthority.__init__
-    original_prime = ReplicaAuthority.prime_from
-
-    def counted_init(self, store, source_store, blob_store, **kwargs):
-        constructed.append(store.space_id)
-        original_init(self, store, source_store, blob_store, **kwargs)
-
-    def blocked_prime(self, store, blob_store=None):
-        primed.append(self.space_id)
-        if self.space_id == same.space_id:
-            entered.set()
-            assert release.wait(3)
-        return original_prime(self, store, blob_store)
-
-    monkeypatch.setattr(ReplicaAuthority, "__init__", counted_init)
-    monkeypatch.setattr(ReplicaAuthority, "prime_from", blocked_prime)
-    try:
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            first = pool.submit(runtime.serve, same.space_id, "memory")
-            assert entered.wait(1)
-            duplicate = pool.submit(runtime.serve, same.space_id, "memory")
-            independent = pool.submit(runtime.serve, other.space_id, "memory")
-            assert independent.result(timeout=2)["spaceId"] == other.space_id
-            # A submitted future is not evidence that the duplicate reached
-            # this space's creation fence while its first replica was held.
-            assert duplicate_blocked.wait(1)
-            assert constructed.count(same.space_id) == 1
-            assert primed.count(same.space_id) == 1
-            release.set()
-            assert first.result(timeout=2)["spaceId"] == same.space_id
-            assert duplicate.result(timeout=2)["spaceId"] == same.space_id
-        assert constructed.count(same.space_id) == 1
-        assert primed.count(same.space_id) == 2
-        assert constructed.count(other.space_id) == 1
-    finally:
-        release.set()
-        runtime.close()
-
-
 def test_purge_and_writer_projection_use_the_space_authority(tmp_path) -> None:
     runtime = OrgFsRuntime(tmp_path, node_id="node-purge", author="user:owner")
     space = runtime.facade.create_space("typed purge")

@@ -29,17 +29,17 @@
     "workflow"
   ],
   "counts": {
-    "nodes": 260,
-    "rootInclusiveNodes": 261,
-    "leaves": 209,
+    "nodes": 255,
+    "rootInclusiveNodes": 256,
+    "leaves": 204,
     "groups": 51,
     "groupsIncludingRoot": 52,
     "executableGroups": 4,
-    "entries": 213,
+    "entries": 208,
     "hiddenNodes": 6,
     "directHiddenNodes": 3,
     "hiddenEntries": 4,
-    "visibleEntries": 209,
+    "visibleEntries": 204,
     "rootParams": 0
   },
   "commands": [
@@ -11263,108 +11263,6 @@
       ]
     },
     {
-      "path": "org fs history",
-      "family": "fs",
-      "kind": "leaf",
-      "hidden": false,
-      "directHidden": false,
-      "executable": true,
-      "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Show attributed node history.",
-      "params": [
-        {
-          "opts": [
-            "space_id"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Space UUID.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "node"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Path, id:<nodeId>, or orgfs: URI.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--limit"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "int",
-          "help": "Maximum history entries.",
-          "nargs": 1,
-          "metavar": null,
-          "default": 50,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--before"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Return entries before this version.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--json"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": true,
-          "multiple": false,
-          "hidden": false,
-          "type": "boolean",
-          "help": "Emit JSON only.",
-          "nargs": 1,
-          "metavar": null,
-          "default": false,
-          "choices": [],
-          "min": null,
-          "max": null
-        }
-      ]
-    },
-    {
       "path": "org fs watch",
       "family": "fs",
       "kind": "leaf",
@@ -11660,7 +11558,7 @@
       "directHidden": false,
       "executable": false,
       "callbackModule": null,
-      "help": "Organization folders: list, create, join, status, serve, web, checkout.",
+      "help": "Organization folders: list, create, join, status, web, checkout.",
       "params": []
     },
     {
@@ -11987,72 +11885,6 @@
           "nargs": 1,
           "metavar": null,
           "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--json"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": true,
-          "multiple": false,
-          "hidden": false,
-          "type": "boolean",
-          "help": "Emit JSON only.",
-          "nargs": 1,
-          "metavar": null,
-          "default": false,
-          "choices": [],
-          "min": null,
-          "max": null
-        }
-      ]
-    },
-    {
-      "path": "org fs space serve",
-      "family": "fs",
-      "kind": "leaf",
-      "hidden": false,
-      "directHidden": false,
-      "executable": true,
-      "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Serve a space as a resident replica.",
-      "params": [
-        {
-          "opts": [
-            "space_id"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Space UUID.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--backend"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Replica backend: fs or memory.",
-          "nargs": 1,
-          "metavar": null,
-          "default": "fs",
           "choices": [],
           "min": null,
           "max": null
@@ -12561,74 +12393,8 @@
       "directHidden": false,
       "executable": false,
       "callbackModule": null,
-      "help": "Owner-reviewed permanent deletion.",
+      "help": "Remove this node's local replica of a space.",
       "params": []
-    },
-    {
-      "path": "org fs purge plan",
-      "family": "fs",
-      "kind": "leaf",
-      "hidden": false,
-      "directHidden": false,
-      "executable": true,
-      "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Build an owner-reviewed purge plan bound to exact targets.",
-      "params": [
-        {
-          "opts": [
-            "space_id"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Space UUID.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "targets_json"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "JSON array of exact blob/doc/tree-range targets.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--json"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": true,
-          "multiple": false,
-          "hidden": false,
-          "type": "boolean",
-          "help": "Emit JSON only.",
-          "nargs": 1,
-          "metavar": null,
-          "default": false,
-          "choices": [],
-          "min": null,
-          "max": null
-        }
-      ]
     },
     {
       "path": "org fs purge run",
@@ -12638,7 +12404,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Purge a local replica, or execute a supplied content-purge plan.\n\nWithout PLAN_ID this removes only this node's replica. It does not\nbroadcast a deletion to peers.",
+      "help": "Purge this node's local replica of a space.\n\nThis removes only this node's replica. It does not broadcast a deletion\nto peers.",
       "params": [
         {
           "opts": [
@@ -12651,24 +12417,6 @@
           "hidden": false,
           "type": "str",
           "help": "Space UUID.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "plan_id"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Optional reviewed content-purge plan ID.",
           "nargs": 1,
           "metavar": null,
           "default": null,
@@ -12690,138 +12438,6 @@
           "nargs": 1,
           "metavar": null,
           "default": false,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--json"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": true,
-          "multiple": false,
-          "hidden": false,
-          "type": "boolean",
-          "help": "Emit JSON only.",
-          "nargs": 1,
-          "metavar": null,
-          "default": false,
-          "choices": [],
-          "min": null,
-          "max": null
-        }
-      ]
-    },
-    {
-      "path": "org fs purge status",
-      "family": "fs",
-      "kind": "leaf",
-      "hidden": false,
-      "directHidden": false,
-      "executable": true,
-      "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Show acknowledged and pending purge participants.",
-      "params": [
-        {
-          "opts": [
-            "space_id"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Space UUID.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "plan_id"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Purge plan ID.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "--json"
-          ],
-          "secondaryOpts": [],
-          "required": false,
-          "isFlag": true,
-          "multiple": false,
-          "hidden": false,
-          "type": "boolean",
-          "help": "Emit JSON only.",
-          "nargs": 1,
-          "metavar": null,
-          "default": false,
-          "choices": [],
-          "min": null,
-          "max": null
-        }
-      ]
-    },
-    {
-      "path": "org fs purge unban",
-      "family": "fs",
-      "kind": "leaf",
-      "hidden": false,
-      "directHidden": false,
-      "executable": true,
-      "callbackModule": "hyprial.shell.impl.cli.commands.fs.commands",
-      "help": "Explicitly allow the same content hash to be written again.",
-      "params": [
-        {
-          "opts": [
-            "space_id"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Space UUID.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
-          "choices": [],
-          "min": null,
-          "max": null
-        },
-        {
-          "opts": [
-            "sha"
-          ],
-          "secondaryOpts": [],
-          "required": true,
-          "isFlag": false,
-          "multiple": false,
-          "hidden": false,
-          "type": "str",
-          "help": "Lowercase SHA-256 digest.",
-          "nargs": 1,
-          "metavar": null,
-          "default": null,
           "choices": [],
           "min": null,
           "max": null

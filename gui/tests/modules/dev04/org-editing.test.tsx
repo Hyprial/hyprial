@@ -2,7 +2,8 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { FixtureApp } from '../../../src/dev/FixtureApp';
 import { OrgDomainProvider } from '../../../src/features/org/impl/domain/context';
-import { OrgResultShapeError, type OrgRequestPort } from '../../../src/features/org/impl/api/org-request-api';
+import type { OrgRequestPort } from '../../../src/features/org/impl/api/org-request-api';
+import { ORG_COPY } from '../../../src/features/org/impl/domain/copy';
 import { createOrgLiveSourceForPort } from '../../support/org-backend';
 import { openOrgTab, openRail, orgLive, renderOrgScenario, stubRadixPointerApis } from './org-render';
 
@@ -33,67 +34,24 @@ function folderNode(id: string, path: string, kind: 'dir' | 'doc', version = 'de
   };
 }
 
-function folderHistory(item: ReturnType<typeof folderNode>, at: string, deleted: boolean) {
-  return { author: 'user:me', at, node: { ...item, deleted } };
-}
-
 /**
- * 目录恢复的可见点击场景：d1 是文件夹，c1 是本次删除批次的子项，c3 是更早已删除的子项。
- * 刷新后的列表由 deleted 集合同步生成，恢复动作只改变集合，不伪造成功。
+ * 目录恢复的可见点击场景：d1 是文件夹，c1 是同一删除批次的子项。
+ * OrgFS 不再保留版本历史，无法确认删除前哪些子项仍存在，目录恢复不发出写请求。
  */
-function folderRestorePort(options: {
-  readonly failOn?: string;
-  readonly failure?: unknown;
-  readonly failRefresh?: boolean;
-} = {}) {
+function folderRestorePort() {
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const folder = folderNode('d1', 'dir', 'dir');
   const keep = folderNode('c1', 'dir/keep.md', 'doc');
-  const old = folderNode('c3', 'dir/old.md', 'doc');
-  const nodes = new Map([folder, keep, old].map((item) => [item.node_id, item]));
+  const nodes = new Map([folder, keep].map((item) => [item.node_id, item]));
   const deleted = new Map([
     ['d1', true],
     ['c1', true],
-    ['c3', true],
   ]);
   const contents = new Map([
     ['dir/keep.md', 'keep'],
-    ['dir/old.md', 'old'],
   ]);
-  const histories = new Map([
-    [
-      'id:d1',
-      [
-        folderHistory(folder, '2026-11-03T10:00:03Z', true),
-        {
-          ...folderHistory(folder, '2026-11-03T10:00:00Z', false),
-          node: { ...folder, deleted: false, version: 'folder-pre' },
-        },
-      ],
-    ],
-    [
-      'id:c1',
-      [
-        folderHistory(keep, '2026-11-03T10:00:03Z', true),
-        {
-          ...folderHistory(keep, '2026-11-03T10:00:00Z', false),
-          node: { ...keep, deleted: false, version: 'keep-pre' },
-        },
-      ],
-    ],
-    [
-      'id:c3',
-      [
-        folderHistory(old, '2026-11-03T10:00:03Z', true),
-        { ...folderHistory(old, '2026-11-03T10:00:01Z', true), node: { ...old, version: 'old-already-deleted' } },
-      ],
-    ],
-  ]);
-  let listCalls = 0;
   const base: Record<string, unknown> = {
     'org.list': () => {
-      listCalls += 1;
-      if (options.failRefresh && listCalls > 1) throw new Error('refresh unavailable');
       return {
         orgs: [{ org: ORG, spaceId: SPACE, role: 'owner', devices: 1, state: 'active' }],
         leftOrgs: [],
@@ -134,9 +92,6 @@ function folderRestorePort(options: {
     'orgfs.trash': () => ({
       nodes: [...nodes.values()].filter((item) => deleted.get(item.node_id)),
     }),
-    'orgfs.history': (params: Record<string, unknown>) => ({
-      history: histories.get(String(params.path)) ?? [],
-    }),
     'orgfs.read': (params: Record<string, unknown>) => {
       const path = String(params.path);
       const item = [...nodes.values()].find((entry) => entry.path === path);
@@ -145,7 +100,6 @@ function folderRestorePort(options: {
     },
     'orgfs.restore': (params: Record<string, unknown>) => {
       const id = String(params.node).replace(/^id:/, '');
-      if (id === options.failOn) throw options.failure ?? new Error('restore denied');
       const item = nodes.get(id);
       if (!item) throw new Error(`unexpected restore ${id}`);
       deleted.set(id, false);
@@ -329,28 +283,15 @@ describe('编辑器：未保存的修改在退出前确认', () => {
   });
 });
 
-describe('文件：历史与文件夹', () => {
-  it('历史按文件区分：看过 onboarding.md 的版本后切到 README.md，不显示别的文件的内容', async () => {
+describe('文件：文件与文件夹', () => {
+  it('选中文件只提供编辑、移动、删除，没有历史入口', async () => {
     const { user } = renderOrgScenario('owner');
     await openRail(user, '组织');
     await openOrgTab(user, '文件');
     await user.click(screen.getByRole('button', { name: 'onboarding.md' }));
-    await user.click(screen.getByRole('button', { name: '历史' }));
-    await user.click(within(screen.getByRole('list', { name: '版本记录' })).getAllByRole('button')[0]);
-    expect(screen.getByLabelText('版本 3 的内容')).toHaveTextContent('新成员入门');
-
-    await user.click(screen.getByRole('button', { name: 'README.md' }));
-    await user.click(screen.getByRole('button', { name: '历史' }));
-    const panel = screen.getByRole('complementary', { name: '历史：README.md' });
-    expect(within(panel).getByText('没有版本记录。')).toBeInTheDocument();
-    expect(panel).not.toHaveTextContent('新成员入门');
-    expect(screen.queryByLabelText(/^版本 \d+ 的内容$/)).not.toBeInTheDocument();
-
-    // 回到 onboarding.md 重新打开历史：不沿用上次选中的版本。
-    await user.click(screen.getByRole('button', { name: 'onboarding.md' }));
-    await user.click(screen.getByRole('button', { name: '历史' }));
-    expect(screen.getByRole('complementary', { name: '历史：onboarding.md' })).toBeInTheDocument();
-    expect(screen.queryByLabelText(/^版本 \d+ 的内容$/)).not.toBeInTheDocument();
+    const preview = screen.getByRole('region', { name: '预览 onboarding.md' });
+    expect(within(preview).getAllByRole('button').map((button) => button.textContent)).toEqual(['编辑', '移动', '删除']);
+    expect(screen.queryByRole('button', { name: '历史' })).not.toBeInTheDocument();
   });
 
   it('新建的文件夹可以选中，移动或改名后选中跟随新位置', async () => {
@@ -398,7 +339,7 @@ describe('文件：历史与文件夹', () => {
     ).toBe('guides/');
   });
 
-  it('删除带子项的文件夹：确认说明连同子项进回收站；目录恢复入口明确禁用', async () => {
+  it('删除带子项的文件夹：确认说明连同子项进回收站；恢复文件夹时说明原因且不恢复', async () => {
     const { user } = renderOrgScenario('owner');
     await openRail(user, '组织');
     await openOrgTab(user, '文件');
@@ -420,84 +361,25 @@ describe('文件：历史与文件夹', () => {
     expect(row).toHaveTextContent('含 1 项');
     const restore = within(row as HTMLElement).getByRole('button', { name: '恢复' });
     expect(restore).toBeEnabled();
-    expect(restore).toHaveAttribute(
-      'title',
-      '将恢复到原路径，并恢复文件夹中的内容。',
-    );
+    expect(restore).not.toHaveAttribute('title');
+    await user.click(restore);
+    const dialog = screen.getByRole('dialog', { name: '恢复 guides？' });
+    await user.click(within(dialog).getByRole('button', { name: '恢复' }));
+    expect(await within(dialog).findByText(ORG_COPY.folderRestoreUnsupported)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'onboarding.md' })).not.toBeInTheDocument();
   });
 });
 
-describe('目录恢复：部分结果跨刷新保留', () => {
-  it('第二项被明确拒绝：刷新后对话框仍在，显示已恢复项且不自动重试', async () => {
-    const { port, calls, deleted } = folderRestorePort({ failOn: 'c1' });
+describe('目录恢复：不再提供', () => {
+  it('恢复文件夹：说明无法确认删除前的子项，不发出恢复请求，回收站保持原样', async () => {
+    const { port, calls, deleted } = folderRestorePort();
     const { user } = renderLiveOrg(port);
     const dialog = await confirmFolderRestore(user);
 
-    expect(
-      await within(dialog).findByText(/已确认 1\/2 项恢复；第 2 项明确失败/),
-    ).toBeInTheDocument();
-    const stillOpen = screen.getByRole('dialog', { name: '恢复 dir？' });
-    expect(stillOpen).toBeInTheDocument();
-    expect(within(stillOpen).getByRole('button', { name: '恢复' })).toBeDisabled();
-    // 刷新后的真实成员：文件夹已恢复，keep 仍在回收站，更早删除的 old 没有被复活。
-    expect(await screen.findByText('dir/keep.md')).toBeInTheDocument();
-    expect(await screen.findByText('dir/old.md')).toBeInTheDocument();
-    expect(deleted.get('d1')).toBe(false);
+    expect(await within(dialog).findByText(ORG_COPY.folderRestoreUnsupported)).toBeInTheDocument();
+    expect(restoreCalls(calls)).toHaveLength(0);
+    expect(deleted.get('d1')).toBe(true);
     expect(deleted.get('c1')).toBe(true);
-    expect(deleted.get('c3')).toBe(true);
-    expect(restoreCalls(calls)).toHaveLength(2);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(restoreCalls(calls)).toHaveLength(2);
-  });
-
-  it('第一项结果未知：显示 0/2 与 unknown，刷新后仍可见且不继续恢复', async () => {
-    const { port, calls } = folderRestorePort({
-      failOn: 'd1',
-      failure: new OrgResultShapeError('restore'),
-    });
-    const { user } = renderLiveOrg(port);
-    const dialog = await confirmFolderRestore(user);
-
-    expect(
-      await within(dialog).findByText(/已确认 0\/2 项恢复；当前第 1 项结果未知/),
-    ).toBeInTheDocument();
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/结果未知/);
-    expect(restoreCalls(calls)).toHaveLength(1);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(restoreCalls(calls)).toHaveLength(1);
-  });
-
-  it('第二项结果未知：保留 unknown，第一项已确认，不重试第二项', async () => {
-    const { port, calls, deleted } = folderRestorePort({
-      failOn: 'c1',
-      failure: new OrgResultShapeError('restore'),
-    });
-    const { user } = renderLiveOrg(port);
-    const dialog = await confirmFolderRestore(user);
-
-    expect(
-      await within(dialog).findByText(/已确认 1\/2 项恢复；当前第 2 项结果未知/),
-    ).toBeInTheDocument();
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/结果未知/);
-    expect(deleted.get('d1')).toBe(false);
-    expect(restoreCalls(calls)).toHaveLength(2);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(restoreCalls(calls)).toHaveLength(2);
-  });
-
-  it('刷新失败：保留原写结果与刷新提示，不出现空白且可再次确认的旧操作', async () => {
-    const { port, calls } = folderRestorePort({ failOn: 'c1', failRefresh: true });
-    const { user } = renderLiveOrg(port);
-    const dialog = await confirmFolderRestore(user);
-
-    expect(
-      await within(dialog).findByText(/已确认 1\/2 项恢复；第 2 项明确失败/),
-    ).toBeInTheDocument();
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/刷新失败，页面可能仍是旧状态/);
-    expect(screen.getByRole('dialog', { name: '恢复 dir？' })).toBeInTheDocument();
-    expect(restoreCalls(calls)).toHaveLength(2);
-    expect(calls.filter((call) => call.method === 'org.list')).toHaveLength(2);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(restoreCalls(calls)).toHaveLength(2);
+    expect(screen.getByText('dir/keep.md')).toBeInTheDocument();
   });
 });

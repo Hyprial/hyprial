@@ -1,4 +1,4 @@
-"""Same-source examples verified against the seventeen actual OrgFS write producers.
+"""Same-source examples verified against the thirteen actual OrgFS write producers.
 
 Export/import retain the trusted caller field in full MethodSpec examples;
 the existing exporter removes HTTP-forbidden fields only after validation.
@@ -19,10 +19,6 @@ _EMPTY_GAPS = {
     "orgfs.import": "The file reader refuses an empty local file; admitted bytes return a blob NodeInfo.",
     "orgfs.mkdir": "Even an empty new directory returns its NodeInfo; absence is not a successful result.",
     "orgfs.remove": "A successful removal returns ok=true; missing targets and the root are refused.",
-    "orgfs.purge_plan": "A plan requires a nonempty target list and returns its complete digest-bearing plan.",
-    "orgfs.purge": "Executing a valid plan returns a PurgeResult receipt; absent or stale plans are errors.",
-    "orgfs.unban": "A successful unban returns ok=true; a digest without a purge-list entry is refused.",
-    "orgfs.serve": "Serving returns a backend receipt, including an empty pinnedBlobs list when appropriate.",
     "orgfs.invite": "Inviting or updating a member returns MemberInfo; there is no absent-member success.",
     "orgfs.remove_member": "Removing a member returns ok=true; absent members and the owner are refused.",
     "orgfs.join": "A local/remote join returns SpaceInfo; no holder is a typed error, not an empty success.",
@@ -47,13 +43,8 @@ _DESCRIPTIONS = {
     "absolute-path": "The OrgFS path resolver refuses absolute filesystem-style paths.",
     "root-refused": "Removing the OrgFS root is refused even though the request is schema-valid.",
     "missing-version": "The selected node has no snapshot at this version.",
-    "not-document": "A doc-range purge cannot target a binary blob node.",
-    "missing-plan": "Execution refuses a plan not present in the space's plan inventory.",
     "unsafe-space": "Local space purging refuses an unsafe path component before filesystem access.",
     "other-members": "Local space purging refuses a space with another live member.",
-    "not-banned": "Unban refuses a digest without a corresponding purge-list entry.",
-    "backend-conflict": "A replica already served in memory cannot be silently switched to fs.",
-    "filesystem-backend": "A filesystem replica reports durable=true.",
     "disabled": "An unconfigured checkout can be explicitly disabled.",
     "owner-refused": "The owner cannot be removed from its own membership list.",
     "empty-export": "Export a zero-byte document to a real isolated absolute path.",

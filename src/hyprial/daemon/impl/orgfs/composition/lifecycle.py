@@ -1,18 +1,10 @@
-# Re-serve/reuse decision record (2026-11-03, brief-replica.md Round 3, RM2
-# review REJECT 8e6a2d7701).
+# Resident-holder removal (2026-11-25, orgfs-minimal-plan Q3 / A5, owner).
 #
-# Defect: `_create_or_reuse_replica`'s reuse branch primed the replica directly
-# (`existing.prime_from`) before looking at the mesh, and skipped
-# `attach_replica` when the mesh already served that same replica. The prime
-# therefore ran on the replica actor while the mesh stayed ready, so
-# ready-path mirror puts blocked behind the prime on the single effect lane —
-# exactly the serialization the Round 2 NOT-READY gate forbids.
-#
-# Decision: when a mesh exists, the reuse branch never primes directly. If the
-# mesh serves that replica, `refresh_replica` reruns the delta check inside
-# the same NOT-READY / non-blocking-mirror / backfill window as first attach;
-# otherwise `attach_replica` runs unchanged. Only mesh-less runtimes keep the
-# direct prime (no ingress state exists to gate).
+# `serve`, `_ServeSpace` and the replica create/reuse/re-serve path are gone:
+# OrgFS keeps no resident holder role.  The mesh-open attach branch and the
+# purge/retirement replica branches below still read `_replicas`; nothing can
+# populate it any more, and they are left for stage E together with
+# `storage/replica*` because they touch purge, blob pins and `durable`.
 
 from __future__ import annotations
 
@@ -20,7 +12,6 @@ from __future__ import annotations
 
 
 
-from threading import Lock
 
 import threading
 
@@ -50,16 +41,12 @@ from hyprial.daemon.impl.orgfs.api  import OrgFsError, SpaceInfo
 from hyprial.daemon.impl.orgfs.mesh  import (
     OrgFsMesh)
 
-from hyprial.daemon.impl.orgfs.storage.replica  import FsReplicaBackend, MemoryReplicaBackend, ReplicaStore
-
-from hyprial.daemon.impl.orgfs.storage.replica_authority  import ReplicaAuthority
-
 from hyprial.daemon.impl.orgfs.storage.space_authority  import _ReadStore
 
-from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord, LocalSpaceStore, StoreError
+from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord, StoreError
 
 
-from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace, _DirectoryCallOperation, _JoinSpace, _LifecycleAuthority, _LifecycleCommand, _LifecycleFailure, _LifecycleOutcome, _LifecycleWaiter, _MeshCreation, _OpenSpaceMesh, _ServeSpace, _SpaceResourceHandle
+from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace, _DirectoryCallOperation, _JoinSpace, _LifecycleAuthority, _LifecycleCommand, _LifecycleFailure, _LifecycleOutcome, _LifecycleWaiter, _MeshCreation, _OpenSpaceMesh, _SpaceResourceHandle
 
 ORGFS_LIFECYCLE_WAIT_SECONDS = 120.0
 
@@ -139,8 +126,6 @@ class RuntimeLifecycle:
             operation = command.operation
             if isinstance(operation, _JoinSpace):
                 value = self._join_sync(operation.space_id)
-            elif isinstance(operation, _ServeSpace):
-                value = self._serve_sync(operation.space_id, operation.backend)
             elif isinstance(operation, _CheckoutSpace):
                 value = self._checkout_sync(operation.space_id, operation.enabled)
             elif isinstance(operation, _OpenSpaceMesh):
@@ -302,8 +287,6 @@ class RuntimeLifecycle:
         if getattr(self._lifecycle_context, "running", False):
             if isinstance(operation, _JoinSpace):
                 return self._join_sync(operation.space_id)
-            if isinstance(operation, _ServeSpace):
-                return self._serve_sync(operation.space_id, operation.backend)
             if isinstance(operation, _CheckoutSpace):
                 return self._checkout_sync(operation.space_id, operation.enabled)
             if isinstance(operation, _OpenSpaceMesh):
@@ -340,8 +323,8 @@ class RuntimeLifecycle:
             if self.logger is not None:
                 self.logger(
                     "warn", "orgfs.lifecycle.wait-timeout",
-                    operation={_JoinSpace: "join", _ServeSpace: "serve",
-                               _CheckoutSpace: "checkout", _OpenSpaceMesh: "open-mesh"}[type(operation)],
+                    operation={_JoinSpace: "join", _CheckoutSpace: "checkout",
+                               _OpenSpaceMesh: "open-mesh"}[type(operation)],
                     waitedSeconds=max(0.0, time.monotonic() - started),
                     budgetSeconds=wait,
                     commandId=operation_id,
@@ -687,115 +670,3 @@ class RuntimeLifecycle:
             }
             for event in self.facade.changes_since(space_id, glob, since_version)
         )
-
-
-    def serve(self, space_id: str, backend: str = "fs") -> dict[str, object]:
-        return self._ask_lifecycle(_ServeSpace(space_id, backend))  # type: ignore[return-value]
-
-
-    def _serve_sync(self, space_id: str, backend: str = "fs") -> dict[str, object]:
-        if backend not in {"fs", "memory"}:
-            raise OrgFsError(
-                "invalid-argument", {"message": "backend must be fs or memory"}
-            )
-        try:
-            self.facade.stat(space_id, "id:root")
-        except OrgFsError as exc:
-            if exc.code != "unknown-space":
-                raise
-            self.join(space_id)
-        local_store = self.stores.get(space_id)
-        with self._resource_lock:
-            creation_lock = self._replica_creation_locks.setdefault(space_id, Lock())
-        with creation_lock:
-            return self._create_or_reuse_replica(space_id, backend, local_store)
-
-
-    def _create_or_reuse_replica(
-        self, space_id: str, backend: str, local_store: LocalSpaceStore
-    ) -> dict[str, object]:
-        """Own one space's replica construction before touching its backend."""
-
-        with self._resource_lock:
-            if self._closing:
-                raise OrgFsError("unavailable", {"message": "orgfs runtime is closing"})
-            existing = self._replicas.get(space_id)
-        if existing is not None:
-            existing_backend = "fs" if existing.backend_kind == "FsReplicaBackend" else "memory"
-            if existing_backend != backend:
-                raise OrgFsError(
-                    "invalid-argument",
-                    {
-                        "message": "space is already served by another backend",
-                        "spaceId": space_id,
-                        "backend": existing_backend,
-                    },
-                )
-            mesh = self._mesh(space_id)
-            if mesh is None:
-                existing.prime_from(local_store, self.blobs)
-            elif mesh.replica_store is existing:
-                mesh.refresh_replica(existing)
-            else:
-                mesh.attach_replica(existing)
-            for digest in existing.pinned_blobs():
-                self.blobs.pin(space_id, digest, "replica")
-            self._reconcile_retirements(space_id)
-            return {
-                "spaceId": space_id,
-                "backend": backend,
-                "durable": existing.durable(),
-                "pinnedBlobs": list(existing.pinned_blobs()),
-            }
-        replica_backend = (
-            FsReplicaBackend(space_id, self.state_dir)
-            if backend == "fs"
-            else MemoryReplicaBackend(space_id)
-        )
-
-        def conflict_event(event: str, details: Any) -> None:
-            if self.logger is not None:
-                self.logger("error", f"orgfs.{event}", **dict(details))
-
-        def owner_notice(event: str, details: Any) -> None:
-            owner = next(
-                info.owner for info in self.facade.spaces() if info.space_id == space_id
-            )
-            if self.logger is not None:
-                self.logger(
-                    "warn",
-                    "orgfs.owner-notice",
-                    notice=event,
-                    owner=owner,
-                    **dict(details),
-                )
-            if self.owner_notifier is not None:
-                self.owner_notifier(owner, event, dict(details))
-
-        replica_core = ReplicaStore(
-            space_id, replica_backend, local_store,
-            event_callback=conflict_event, owner_notifier=owner_notice,
-        )
-        replica = ReplicaAuthority(
-            replica_core, local_store, self.blobs,
-            actor_host=self._actor_hosts.host,
-        )
-        with self._resource_lock:
-            if self._closing:
-                replica.close(timeout=5.0)
-                raise OrgFsError("unavailable", {"message": "orgfs runtime is closing"})
-            self._replicas[space_id] = replica
-        mesh = self._mesh(space_id)
-        if mesh is not None:
-            mesh.attach_replica(replica)
-        else:
-            replica.prime_from(local_store, self.blobs)
-        for digest in replica.pinned_blobs():
-            self.blobs.pin(space_id, digest, "replica")
-        self._reconcile_retirements(space_id)
-        return {
-            "spaceId": space_id,
-            "backend": backend,
-            "durable": replica.durable(),
-            "pinnedBlobs": list(replica.pinned_blobs()),
-        }
