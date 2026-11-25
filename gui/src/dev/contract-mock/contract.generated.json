@@ -11587,7 +11587,7 @@
               "org": "group-hyprial-dev",
               "space": "group-hyprial-dev"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -11946,7 +11946,7 @@
           "error": {
             "code": "checkout-io",
             "data": {},
-            "message": "checkout-io: OrgFsError: unknown-space: unknown-space"
+            "message": "checkout-io: OrgFsError: unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12033,7 +12033,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: space name is required"
+            "message": "invalid-argument: space name is required"
           },
           "kind": "semantic-param-error",
           "name": "blank-name",
@@ -12150,7 +12150,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12309,7 +12309,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12440,7 +12440,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12514,7 +12514,7 @@
               "reason": "not-a-uuid",
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12643,7 +12643,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -12734,7 +12734,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -12820,7 +12820,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12834,7 +12834,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: absolute paths are not accepted"
+            "message": "invalid-argument: absolute paths are not accepted"
           },
           "kind": "semantic-param-error",
           "name": "absolute-path",
@@ -12983,7 +12983,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12998,7 +12998,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: absolute paths are not accepted"
+            "message": "invalid-argument: absolute paths are not accepted"
           },
           "kind": "semantic-param-error",
           "name": "absolute-path",
@@ -13183,7 +13183,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -13291,7 +13291,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -13305,7 +13305,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: root cannot be removed"
+            "message": "invalid-argument: root cannot be removed"
           },
           "kind": "semantic-param-error",
           "name": "root-refused",
@@ -13386,7 +13386,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -13400,7 +13400,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: invalid-argument"
+            "message": "invalid-argument"
           },
           "kind": "semantic-param-error",
           "name": "owner-refused",
@@ -13511,7 +13511,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -13611,7 +13611,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -13730,7 +13730,7 @@
               "reason": "invalid-space-id",
               "spaceId": "../escape"
             },
-            "message": "unsafe-space-path: unsafe-space-path"
+            "message": "unsafe-space-path"
           },
           "kind": "domain-error",
           "name": "unsafe-space",
@@ -13749,7 +13749,7 @@
               "reason": "other-members",
               "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
             },
-            "message": "space-purge-refused: space-purge-refused"
+            "message": "space-purge-refused"
           },
           "kind": "domain-error",
           "name": "other-members",
@@ -13913,7 +13913,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -14000,7 +14000,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -14108,7 +14108,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -14228,7 +14228,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -14370,7 +14370,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
