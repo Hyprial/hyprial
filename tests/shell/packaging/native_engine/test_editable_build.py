@@ -5,6 +5,14 @@ and failed with WinError 193.  These tests pin that the hook never runs the
 script, and that the staged file name comes from
 ``importlib.machinery.EXTENSION_SUFFIXES`` (simulated per platform by replacing
 the list in the namespace the helper functions read).
+
+The fake toolchain is one Python script behind an npm-style pair of entries
+(extensionless for POSIX shells, ``.cmd`` for ``PATHEXT`` lookup).  A
+``#!/bin/sh`` stand-in is not an executable to Windows: ``shutil.which``
+skips it, so the build hook reported "Rust 1.93.1 is not available" and a
+direct start failed with WinError 193.  Both entries are written on every
+platform and the platform's lookup picks one, so no test branches on the
+platform; a test names a fake tool by the path ``shutil.which`` returns.
 """
 
 from __future__ import annotations
@@ -32,21 +40,38 @@ LINUX = [".cpython-312-x86_64-linux-gnu.so", ".abi3.so", ".so"]
 MACOS = [".cpython-312-darwin.so", ".abi3.so", ".so"]
 FREE_THREADED = [".cpython-313t-x86_64-linux-gnu.so", ".so"]
 
-FAKE_CARGO = """#!/bin/sh
-dir="${CARGO_TARGET_DIR:-$PWD/crates/target}"
-mkdir -p "$dir/release"
-printf fresh-artifact > "$dir/release/libactors.so"
-printf '%s\\n' "$*" > "$dir/cargo-args"
-printf '{"reason":"compiler-artifact","target":{"name":"actors","kind":["cdylib"]},"filenames":["%s/release/libactors.so"]}\\n' "$dir"
-"""
+FAKE_TOOL = """import json, os, shutil, subprocess, sys
 
-FAKE_RUSTUP = """#!/bin/sh
-if [ "$1" = run ] && [ "$3" = rustc ]; then
-  case "$2" in 1.93.1) echo 'rustc 1.93.1 (fake)'; exit 0 ;; esac
-  exit 1
-fi
-shift 2
-exec "$@"
+
+def report(stream, version):
+    stream.buffer.write(b"rustc " + version.encode("ascii") + b" (fake)\\n")
+    return 0
+
+
+name, args = sys.argv[1], sys.argv[2:]
+version = args.pop(0) if name != "cargo" else ""
+if name == "cargo":
+    target = os.environ.get("CARGO_TARGET_DIR") or os.path.join(os.getcwd(), "crates", "target")
+    os.makedirs(os.path.join(target, "release"), exist_ok=True)
+    library = os.path.join(target, "release", "libactors.so")
+    with open(library, "wb") as handle:
+        handle.write(b"fresh-artifact")
+    with open(os.path.join(target, "cargo-args"), "w", encoding="utf-8") as handle:
+        handle.write(" ".join(args) + "\\n")
+    message = {"reason": "compiler-artifact", "target": {"name": "actors", "kind": ["cdylib"]},
+               "filenames": [library]}
+    sys.stdout.buffer.write(json.dumps(message).encode("utf-8") + b"\\n")
+elif name == "rustup":
+    if args[:1] == ["run"] and args[2:3] == ["rustc"]:
+        sys.exit(1 if args[1] != version else report(sys.stdout, version))
+    del args[:2]
+    tool = shutil.which(args[0])
+    if tool is None:
+        sys.stderr.write(f"fake rustup: cannot find {args[0]!r} on PATH\\n")
+        sys.exit(127)
+    sys.exit(subprocess.call([tool, *args[1:]]))
+elif name == "rustc":
+    sys.exit(report(sys.stdout, version))
 """
 
 
@@ -153,8 +178,8 @@ def test_wheel_cargo_decodes_a_non_ascii_artefact_path_as_utf8(
     base = tmp_path / "用户张三"
     base.mkdir()
     root = _checkout(base)
-    cargo = _fake_bin(base, rustup=False) / "cargo"
-    env = {"PATH": f"/usr/bin{os.pathsep}/bin", "HYPRIAL_CARGO": str(cargo)}
+    cargo = _tool(_fake_bin(base, rustup=None), "cargo")
+    env = {"PATH": f"/usr/bin{os.pathsep}/bin", "HYPRIAL_CARGO": cargo}
 
     library = editable["ENGINE"]["run_cargo"](root, python=sys.executable, environ=env)
 
@@ -173,18 +198,53 @@ def _checkout(tmp_path: Path) -> Path:
     return root
 
 
-def _fake_bin(tmp_path: Path, *, rustup: bool = True, rustc: str | None = None) -> Path:
+def _fake_bin(
+    tmp_path: Path, *, rustup: str | None = "1.93.1", rustc: str | None = None
+) -> Path:
+    """A directory of fake ``cargo``/``rustup``/``rustc`` that any platform can execute.
+
+    Each tool is one Python script started through two entries of the kind npm
+    writes: ``<name>`` for POSIX shells and ``<name>.cmd`` for ``PATHEXT``
+    lookup.  Both are written everywhere; only the platform's lookup rules
+    decide which one ``shutil.which`` selects, so the test has no platform
+    branch.  ``rustup`` and ``rustc`` take the Rust version they answer with:
+    a rustup of another version refuses the pinned-toolchain probe, and
+    ``rustup=None`` leaves rustup out.
+    """
+
     fake = tmp_path / "bin"
     fake.mkdir()
-    tools = {"cargo": FAKE_CARGO}
-    if rustup:
-        tools["rustup"] = FAKE_RUSTUP
-    if rustc is not None:
-        tools["rustc"] = f"#!/bin/sh\necho 'rustc {rustc} (fake)'\n"
-    for name, text in tools.items():
-        (fake / name).write_text(text, encoding="utf-8")
+    tool = fake / "tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    interpreter = f'"{sys.executable}" -X utf8 "{tool}"'
+    shell_interpreter = "'" + sys.executable.replace("'", "'\\''") + "'"
+    shell_tool = "'" + str(tool).replace("'", "'\\''") + "'"
+    for name, version in (("cargo", ""), ("rustup", rustup), ("rustc", rustc)):
+        if version is None:
+            continue
+        role = name if not version else f"{name} {version}"
+        (fake / name).write_text(
+            f'#!/bin/sh\nexec {shell_interpreter} -X utf8 {shell_tool} {role} "$@"\n',
+            encoding="utf-8",
+        )
         (fake / name).chmod(0o755)
+        (fake / f"{name}.cmd").write_text(
+            f'@echo off\r\n{interpreter} {role} %*\r\n', encoding="utf-8"
+        )
     return fake
+
+
+def _tool(directory: Path, name: str) -> str:
+    """The entry ``shutil.which`` selects for ``name`` in ``directory``.
+
+    The product code starts what ``shutil.which`` returns, so a test names a
+    fake tool by that path: the extensionless entry on POSIX, ``<name>.cmd``
+    where ``PATHEXT`` governs the lookup.
+    """
+
+    found = shutil.which(name, path=str(directory))
+    assert found is not None, f"no executable entry for {name} in {directory}"
+    return found
 
 
 def test_windows_hook_builds_in_process_and_stages_the_pyd(
@@ -240,20 +300,20 @@ def test_build_runs_the_pinned_rustup_toolchain_and_honours_profile_and_features
     args = (root / "crates/target/cargo-args").read_text(encoding="utf-8").split()
     assert "--release" not in args
     assert args[args.index("--features") + 1] == "extension-module,conformance-handlers"
-    assert editable["cargo_prefix"](env) == [str(fake / "rustup"), "run", "1.93.1", "cargo"]
+    assert editable["cargo_prefix"](env) == [_tool(fake, "rustup"), "run", "1.93.1", "cargo"]
     os.utime(library, (1000, 1000))
     module, _reported, _stamp = editable["build_editable"](root, python=sys.executable, environ=env)
     assert module.stat().st_mtime > 1000
     assert "--release" in (root / "crates/target/cargo-args").read_text(encoding="utf-8").split()
 
 
-@pytest.mark.parametrize("rustup", [True, False])
+@pytest.mark.parametrize("rustup", ["1.97.0", None])
 def test_missing_pinned_toolchain_names_the_install_command(
-    editable: dict, tmp_path: Path, rustup: bool
+    editable: dict, tmp_path: Path, rustup: str | None
 ) -> None:
+    """rustup without the pinned toolchain, or no rustup and a wrong rustc."""
+
     fake = _fake_bin(tmp_path, rustup=rustup, rustc="1.97.0")
-    if rustup:
-        (fake / "rustup").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     env = {"PATH": f"{fake}{os.pathsep}/usr/bin{os.pathsep}/bin"}
     with pytest.raises(editable["NativeEngineError"]) as raised:
         editable["cargo_prefix"](env)
@@ -264,9 +324,9 @@ def test_missing_pinned_toolchain_names_the_install_command(
 def test_without_rustup_a_matching_rustc_selects_cargo_on_path(
     editable: dict, tmp_path: Path
 ) -> None:
-    fake = _fake_bin(tmp_path, rustup=False, rustc="1.93.1")
+    fake = _fake_bin(tmp_path, rustup=None, rustc="1.93.1")
     env = {"PATH": f"{fake}{os.pathsep}/usr/bin{os.pathsep}/bin"}
-    assert editable["cargo_prefix"](env) == [str(fake / "cargo")]
+    assert editable["cargo_prefix"](env) == [_tool(fake, "cargo")]
 
 
 def test_main_rejects_unknown_arguments(editable: dict) -> None:

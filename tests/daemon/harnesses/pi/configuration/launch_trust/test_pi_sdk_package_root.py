@@ -5,8 +5,9 @@ an ancestor of the resolved command.  Windows npm writes ``pi.cmd``/``pi``
 shims into the prefix directory and keeps the package in the sibling
 ``node_modules`` (KP-134 symptom A); that sibling is trusted only when the
 command's text names the SDK path, as npm's cmd/ps1/sh shims (reproduced
-here) do.  Both layouts are built with plain files so they run on any
-platform; the probe has no platform branch.
+here) do.  The shim layouts are built with plain files; the symlink layout
+creates a real symlink and is skipped, with the reason, on a machine whose
+account cannot create one.  No test has a platform branch.
 """
 
 from __future__ import annotations
@@ -94,16 +95,33 @@ def _windows_prefix(
     return prefix, root
 
 
-def test_posix_symlinked_bin_resolves_to_the_package_ancestor(tmp_path: Path) -> None:
+def test_a_symlinked_bin_resolves_to_the_package_ancestor(tmp_path: Path) -> None:
+    """The POSIX npm layout: ``bin/pi`` is a symlink into the package's ``dist/cli.js``.
+
+    The command names the link itself, so after ``resolve`` the ancestor
+    walk starts from the file the link points to, one level inside the SDK.
+    An SDK of the same name nested above the inner package shows the walk
+    stops at the nearest ancestor.  A bare command looked up on ``PATH`` is
+    covered by the shim tests below.  Creating a symlink is refused for an
+    account without the privilege; that is a property of the machine, so
+    the case is skipped there with this reason instead of failing.
+    """
+
     prefix = tmp_path / "prefix"
-    root = _package(prefix / "lib" / "node_modules" / "@earendil-works" / "pi-coding-agent")
+    outer = _package(prefix / "lib" / "node_modules" / _PACKAGE / "nested")
+    root = _package(outer / "node_modules" / _PACKAGE)
     bin_dir = prefix / "bin"
     bin_dir.mkdir()
-    (bin_dir / "pi").symlink_to(root / "dist" / "cli.js")
+    link = bin_dir / "pi"
+    try:
+        link.symlink_to(root / "dist" / "cli.js")
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"this machine does not let the test create a symlink: {error}")
 
-    found = find_pi_package_root(("pi",), {"PATH": str(bin_dir)})
+    found = find_pi_package_root((str(link),), {})
 
     assert found == root.resolve()
+    assert found != outer.resolve()
 
 
 @pytest.mark.parametrize("shim", sorted(_SHIMS))
