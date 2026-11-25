@@ -7,6 +7,9 @@ concurrency:
   group: ops-cancel-on-pr-close-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   cancel:
     runs-on: ubuntu-latest

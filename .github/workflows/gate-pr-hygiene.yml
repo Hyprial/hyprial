@@ -15,6 +15,9 @@ concurrency:
   group: gate-pr-hygiene-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   pr-hygiene:
     # Merge-blocking PR hygiene. Three rules, one red step each:

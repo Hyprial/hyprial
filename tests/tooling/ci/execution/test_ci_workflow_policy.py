@@ -11,10 +11,13 @@ real workflow tree:
    are executed with the FORGEJO_TOKEN and GITHUB_TOKEN environment variables;
    interacting with untrusted code in the pull request may leak these tokens").
 
-5. ``permissions:`` is forbidden while this instance ignores it.  Forgejo
-   16.0.5 SILENTLY drops the key (support is WIP upstream, ``forgejo#13079``;
-   ``forgejo#13164`` only adds a warning), so the block creates the belief that
-   the token was narrowed when nothing changed.
+5. A workflow triggered by ``pull_request`` declares a read-only token.  On
+   GitHub the top-level ``permissions:`` key is honoured, and without it the
+   automatic token takes the repository default, which can be write.  The
+   top level must be exactly ``contents: read``; a job that needs more widens
+   its own ``permissions:``.  Until the 2026-11-25 move to GitHub this gate
+   was the opposite (the key was forbidden because Forgejo 16.0.5 ignored
+   it); the old failure text named this inversion as its off-switch.
 
 Both gates read through ``policy.workflow_files()`` (globs ``*.yml`` AND
 ``*.yaml``), so a newly added workflow cannot escape either one, and
@@ -185,111 +188,123 @@ def test_unparsable_workflow_is_textually_swept(monkeypatch, tmp_path) -> None:
     assert pull_request_target_offenders()
 
 
-# --- gate 2: `permissions:` is forbidden while the instance ignores it -------
+READ_ONLY_PERMISSIONS = {"contents": "read"}
 
-# The reason and the reversal are shared by the detected case and the
-# fail-closed unparsable case, so the off-switch cannot drift between them.
-PERMISSIONS_REASON_AND_REVERSAL = (
-    "Forgejo 16.0.5 SILENTLY IGNORES this key: token-permission support is still WIP\n"
-    "upstream (forgejo#13079), and forgejo#13164 only adds a warning. Nothing about the\n"
-    "automatic token changed -- the block creates the belief that it did.\n"
-    "Do not add it.\n"
-    "WHEN this instance supports `permissions:` (forgejo#13079 lands), THIS TEST MUST BE\n"
-    "INVERTED: pull_request-triggered workflows must then declare\n"
-    "`permissions: contents: read` and widen per step/job. That reversal is written here,\n"
-    "in the failure, on purpose: a rule whose lifetime is conditional must state its\n"
-    "off-switch where the next reader cannot miss it, or today's \"forbidden\" becomes\n"
-    "tomorrow's stale gate."
+PERMISSIONS_REASON = (
+    "GitHub honours the top-level `permissions:` key. A workflow triggered by\n"
+    "pull_request must declare exactly `permissions: contents: read` at the top level,\n"
+    "so the automatic token cannot write while pull-request code runs; a job that\n"
+    "needs more widens its own `permissions:`."
 )
 
-PERMISSIONS_FAILURE = (
-    "{location}: declares `permissions:`.\n" + PERMISSIONS_REASON_AND_REVERSAL
+PERMISSIONS_MISSING = (
+    "{location}: is triggered by pull_request and declares no top-level `permissions:`.\n"
+    + PERMISSIONS_REASON
+)
+
+PERMISSIONS_TOO_WIDE = (
+    "{location}: top-level `permissions:` is {found!r}, not `contents: read`.\n"
+    + PERMISSIONS_REASON
 )
 
 PERMISSIONS_UNVERIFIABLE = (
     "{location}: the workflow does not parse as YAML, so `permissions:` cannot be "
-    "structurally verified; fail closed.\n" + PERMISSIONS_REASON_AND_REVERSAL
+    "structurally verified; fail closed.\n" + PERMISSIONS_REASON
 )
 
 
-def permissions_offenders() -> list[str]:
-    """Every top-level or job-level ``permissions:``, by STRUCTURED YAML.
+def _triggers(document: dict) -> set[str]:
+    declared = document.get("on", document.get(True))
+    if isinstance(declared, str):
+        return {declared}
+    if isinstance(declared, list):
+        return {str(item) for item in declared}
+    if isinstance(declared, dict):
+        return {str(key) for key in declared}
+    return set()
 
-    Textual detection would false-positive on ``permissions:`` inside a ``run:``
-    heredoc, so this reads the parsed document only and names the exact location
-    as ``{file}::{job}`` / ``{file}::top-level`` (the ``JobRef.key`` style).  An
-    unparsable workflow fails closed: it cannot be verified.
+
+def permissions_offenders() -> list[str]:
+    """Pull-request workflows whose top-level token is not read-only.
+
+    Reads the parsed document only, so ``permissions:`` inside a ``run:``
+    heredoc is not mistaken for the key, and names the location as
+    ``{file}::top-level``.  An unparsable workflow fails closed.
     """
 
     offenders: list[str] = []
     for path in policy.workflow_files():
+        location = f"{path.name}::top-level"
         try:
             document = yaml.safe_load(policy.workflow_text(path))
         except yaml.YAMLError as error:
             offenders.append(
-                PERMISSIONS_UNVERIFIABLE.format(location=f"{path.name}::top-level")
+                PERMISSIONS_UNVERIFIABLE.format(location=location)
                 + f"\n(parse error: {error})"
             )
             continue
-        if not isinstance(document, dict):
+        if not isinstance(document, dict) or "pull_request" not in _triggers(document):
             continue
-        locations: list[str] = []
-        if document.get("permissions") is not None:
-            locations.append(f"{path.name}::top-level")
-        for name, job in (document.get("jobs") or {}).items():
-            if isinstance(job, dict) and job.get("permissions") is not None:
-                locations.append(f"{path.name}::{name}")
-        offenders.extend(
-            PERMISSIONS_FAILURE.format(location=location) for location in locations
-        )
+        declared = document.get("permissions")
+        if declared is None:
+            offenders.append(PERMISSIONS_MISSING.format(location=location))
+        elif declared != READ_ONLY_PERMISSIONS:
+            offenders.append(
+                PERMISSIONS_TOO_WIDE.format(location=location, found=declared)
+            )
     return offenders
 
 
-def test_no_workflow_declares_permissions() -> None:
-    """Forgejo 16.0.5 silently ignores `permissions:`, so the block buys false
-    assurance, not a narrower token.  Measured 2026-10-09: 0 of 14.
-    """
-
+def test_every_pull_request_workflow_declares_a_read_only_token() -> None:
     offenders = permissions_offenders()
-    assert offenders == [], "workflow declares the ignored key:\n" + "\n".join(
+    assert offenders == [], "pull-request workflow without a read-only token:\n" + "\n".join(
         offenders
     )
 
 
-def test_permissions_mutation_is_rejected(monkeypatch, tmp_path) -> None:
-    (tmp_path / "bad2.yml").write_text("permissions: read-all\njobs: {}\n")
+def test_a_pull_request_workflow_without_permissions_is_rejected(
+    monkeypatch, tmp_path
+) -> None:
+    (tmp_path / "bad1.yml").write_text("on:\n  pull_request:\njobs: {}\n")
     monkeypatch.setattr(policy, "WORKFLOW_DIR", tmp_path)
     offenders = permissions_offenders()
-    assert offenders, "the ignored key slipped through the structural reader"
-    assert "bad2.yml::top-level" in offenders[0]
-    assert "declares `permissions:`" in offenders[0]
-    assert "SILENTLY IGNORES" in offenders[0]
-    assert "forgejo#13079" in offenders[0]
-    assert "INVERTED" in offenders[0]
+    assert offenders and "bad1.yml::top-level" in offenders[0]
+    assert "declares no top-level `permissions:`" in offenders[0]
     assert "permissions: contents: read" in offenders[0]
 
 
-def test_unparsable_workflow_fails_closed_on_permissions(monkeypatch, tmp_path) -> None:
-    """A file that cannot be parsed cannot be verified: fail closed, and carry
-    the same reason/reversal so the off-switch is never lost."""
+def test_a_wider_top_level_token_is_rejected(monkeypatch, tmp_path) -> None:
+    (tmp_path / "bad2.yml").write_text(
+        "on: [pull_request]\npermissions: read-all\njobs: {}\n"
+    )
+    (tmp_path / "bad3.yml").write_text(
+        "on: pull_request\npermissions:\n  contents: write\njobs: {}\n"
+    )
+    monkeypatch.setattr(policy, "WORKFLOW_DIR", tmp_path)
+    offenders = permissions_offenders()
+    assert len(offenders) == 2
+    assert "bad2.yml::top-level" in offenders[0] and "read-all" in offenders[0]
+    assert "bad3.yml::top-level" in offenders[1] and "write" in offenders[1]
 
+
+def test_unparsable_workflow_fails_closed_on_permissions(monkeypatch, tmp_path) -> None:
     (tmp_path / "broken.yml").write_text("permissions: [unclosed\njobs: {}\n")
     monkeypatch.setattr(policy, "WORKFLOW_DIR", tmp_path)
     offenders = permissions_offenders()
     assert offenders and "cannot be" in offenders[0]
-    assert "forgejo#13079" in offenders[0]
 
 
-def test_job_level_permissions_are_rejected_at_the_job_location(
+def test_a_job_may_widen_its_own_token_and_other_triggers_are_not_judged(
     monkeypatch, tmp_path
 ) -> None:
-    (tmp_path / "bad3.yml").write_text(
-        "jobs:\n  deploy:\n    runs-on: ubuntu-latest\n"
-        "    permissions: write-all\n    steps: []\n"
+    (tmp_path / "ok1.yml").write_text(
+        "on:\n  pull_request:\npermissions:\n  contents: read\n"
+        "jobs:\n  label:\n    runs-on: ubuntu-latest\n"
+        "    permissions:\n      pull-requests: write\n    steps: []\n"
     )
+    (tmp_path / "ok2.yml").write_text("on:\n  push:\njobs: {}\n")
     monkeypatch.setattr(policy, "WORKFLOW_DIR", tmp_path)
-    offenders = permissions_offenders()
-    assert offenders and "bad3.yml::deploy" in offenders[0]
+    assert permissions_offenders() == []
 
 
 # --- artifact uploads are bounded and visible --------------------------------

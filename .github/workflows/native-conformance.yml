@@ -51,6 +51,9 @@ concurrency:
   group: native-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   plan:
     runs-on: [release-ci]

@@ -38,6 +38,9 @@ concurrency:
   group: gate-native-shell-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
   launcher:
     runs-on: ubuntu-latest

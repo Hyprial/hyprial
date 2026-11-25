@@ -55,6 +55,9 @@ concurrency:
   group: gate-python-${{ github.event_name }}-${{ github.event.pull_request.number || (startsWith(github.ref, 'refs/heads/intg/') && github.ref) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/intg/')) }}
 
+permissions:
+  contents: read
+
 jobs:
   cli-help-inventory:
     outputs:

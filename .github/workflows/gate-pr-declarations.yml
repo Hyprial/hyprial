@@ -16,6 +16,9 @@ concurrency:
   group: gate-pr-declarations-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   declaration:
     # ⭐ The visible name states the requirement, because the check name is the

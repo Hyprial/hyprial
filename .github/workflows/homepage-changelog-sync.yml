@@ -48,6 +48,9 @@ concurrency:
   group: homepage-changelog-${{ inputs.source_tag }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   sync:
     runs-on: ubuntu-latest
