@@ -15,7 +15,7 @@
 
 | item | value |
 |---|---|
-| node | `hyprial-powerstation` |
+| node | `bench-host` |
 | uname | Linux 7.0.0-38-generic x86_64 |
 | CPU | AMD Ryzen 9 5950X 16-Core Processor (32 logical cores) |
 | Python | CPython 3.12.16 (`uv`-managed venv, `--python 3.12`) |
@@ -132,7 +132,7 @@ up to ~±15 % on the spin-retry rows; ordering conclusions are stable.
 
 ```
 === machine ===
-node: hyprial-powerstation
+node: bench-host
 system: Linux 7.0.0-38-generic x86_64
 cpu: AMD Ryzen 9 5950X 16-Core Processor (32 logical cores)
 python: 3.12.16 (/home/hyprial/zcode/harness-bridge/.venv/bin/python)
@@ -157,7 +157,7 @@ n_messages: 20000  capacity: 128  profile: state_authority
 === RESULTS (json) ===
 {
   "machine": {
-    "node": "hyprial-powerstation",
+    "node": "bench-host",
     "system": "Linux 7.0.0-38-generic x86_64",
     "cpu": "AMD Ryzen 9 5950X 16-Core Processor",
     "logical_cores": 32,

@@ -47,7 +47,7 @@
 
 ## 5. 验证记录与未测范围
 
-- 单元/组件/Contract Mock 测试与 `gate-gui.yml` 的 `gui-unit` 门禁：见本次工作汇报（远程 `hyprial-powerstation` 实测结果）。
+- 单元/组件/Contract Mock 测试与 `gate-gui.yml` 的 `gui-unit` 门禁：见本次工作汇报（一台远程 Linux 主机 实测结果）。
 - **未测范围（NOT_RUN）**：
   - 真实浏览器 + 隔离真实 daemon 手工旅程（第 1 片浏览器第 1、2、3、8、9 步）。
   - 真实主体下 `from === identity` 显示为「你」（Contract Mock 主体为 `user:owner`、示例作者为 `user:alice`，属已知缺口 B4）。
@@ -101,7 +101,7 @@
 
 ## 4. 验证记录与未测范围
 
-- 单元/组件/Contract Mock 测试及 `gate-gui` 门禁实测结果：见本次工作汇报（远程 `hyprial-powerstation` 执行）。
+- 单元/组件/Contract Mock 测试及 `gate-gui` 门禁实测结果：见本次工作汇报（一台远程 Linux 主机 执行）。
 - **未测范围（NOT_RUN）**：
   - 真实浏览器 + 隔离真实 daemon 手工旅程（第 2 片第 3–6 步）。
   - 原生壳实机验证、读屏朗读、窄屏 390px 实机核对。
@@ -147,7 +147,7 @@
 
 ## 4. 验证记录与未测范围
 
-- 单元/组件/Contract Mock 测试与 `gate-gui.yml` 的 `gui-unit` 门禁：见 `report-gc3.md`（远程 `hyprial-powerstation` 实测结果）。
+- 单元/组件/Contract Mock 测试与 `gate-gui.yml` 的 `gui-unit` 门禁：见 `report-gc3.md`（一台远程 Linux 主机 实测结果）。
 - **未测范围（NOT_RUN）**：真实浏览器 + 隔离真实 daemon 手工旅程、原生壳实机、读屏朗读、窄屏 390px 实机像素核对。
 
 ---
@@ -192,5 +192,5 @@
 
 ## 4. 验证记录与未测范围
 
-- 单元/组件测试（`group-mention.test.tsx` 等）及 GUI 门禁实测结果：见 `report-pick.md`（远程 `hyprial-powerstation` 执行）。
+- 单元/组件测试（`group-mention.test.tsx` 等）及 GUI 门禁实测结果：见 `report-pick.md`（一台远程 Linux 主机 执行）。
 - **未测范围（NOT_RUN）**：真实浏览器 + 隔离真实 daemon 手工旅程、原生壳实机、读屏朗读、窄屏 390px 实机像素核对。
