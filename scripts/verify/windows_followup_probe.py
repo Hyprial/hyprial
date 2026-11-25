@@ -13,7 +13,8 @@
 #   together, to show which of them Node needs. This is the ambient filter
 #   only; the per-agent home and generated names a real launch adds are not
 #   reproduced here.
-# - Exit code 1 only when the product function does not find the package root.
+# - Exit code 1 when the package-root part does not complete (``pi`` missing,
+#   the command file unreadable, or the product function finding no root).
 #   The environment part is a measurement and never fails the run.
 """Probe the Pi SDK package root and the worker environment for KP-134.
 
@@ -87,7 +88,7 @@ def probe_package_root() -> dict[str, Any]:
         "ok": True,
         "which": located,
         "resolved": str(resolved),
-        "resolved_is_symlink_target": str(resolved) != os.path.abspath(located),
+        "resolved_differs_from_which": str(resolved) != os.path.abspath(located),
         "ancestor_walk_alone_finds": ancestors,
         "product_function_finds": str(root),
         "siblings": sorted(entry.name for entry in resolved.parent.iterdir())[:40],

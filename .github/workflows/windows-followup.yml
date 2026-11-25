@@ -4,18 +4,22 @@
 # - A hosted runner is Windows Server under an administrator account with no
 #   desktop session. A pass here is recorded as "GitHub-hosted Windows runner",
 #   never as a Windows 11 real-machine pass. KP-136 depends on real terminal
-#   hosts, so its job stays advisory: it prints the handle facts and closes a
-#   pipe and a pseudo console on a GUI started the way the wheel smoke script
-#   starts it (pre-created isolated directories, --no-open --json --port 0).
+#   hosts, so its job only prints the handle facts. Starting the GUI on the
+#   runner was tried and stopped at the home check (GUI_HOME_UNSAFE on a
+#   directory the runner's administrator account had just created), so the
+#   close steps were removed; they produced no evidence about stdin-stop.
 # - KP-134 runs on three Node majors because the real-machine symptom (the
 #   worker starts, then exits at the random call) may depend on the version.
 # - KP-135 runs the exact reproduction on the base commit and on the head. The
-#   base leg is expected to fail; it is there so a pass on the head is known to
-#   come from the change and not from the runner.
+#   base leg is expected to fail with WinError 193, which the step writes to
+#   the job summary; a base failure without that line is a runner problem, not
+#   a reproduction. Once the change is on dev the base leg passes and no
+#   longer shows anything.
 # - GitHub-hosted runners only, read-only token, no secret, no
-#   pull_request_target. Actions are pinned to the same commit SHAs as the
-#   merge gate (actions/checkout v7.0.1, astral-sh/setup-uv v10.4.0,
-#   actions/setup-node v7.1.0, actions/upload-artifact v7.0.2).
+#   pull_request_target. Actions are pinned to commit SHAs, the ones the
+#   proposed merge gate workflow lists for actions/checkout v7.0.1,
+#   astral-sh/setup-uv v10.4.0, actions/setup-node v7.1.0 and
+#   actions/upload-artifact v7.0.2; the tag mapping was not re-checked here.
 # - Limited by path to the files these three problems touch, so it does not run
 #   on unrelated pull requests.
 name: windows-followup
@@ -33,6 +37,9 @@ on:
       - "src/hyprial/daemon/impl/harnesses/pi/**"
       - "src/hyprial/kernel/impl/manysys/**"
       - "src/hyprial/identity/impl/agents/home/environment.py"
+      - "tests/daemon/harnesses/pi/**"
+      - "tests/shell/packaging/**"
+      - "tests/kernel/manysys/**"
 
 permissions:
   contents: read
@@ -112,6 +119,7 @@ jobs:
       - name: Install Pi the way a user does
         run: |
           npm install -g --no-audit --no-fund $env:PI_PACKAGE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "npm prefix -g: $(npm prefix -g)"
           Get-Command pi -All | Format-List Name, Source, CommandType
       - name: Probe the package root and the worker environment
@@ -199,28 +207,3 @@ jobs:
       - name: Handle facts as the runner sees them
         if: always()
         run: uv run --locked --no-sync python scripts/verify/stdin_stop_windows_probe.py facts
-      - name: Prepare an isolated home
-        if: always()
-        run: |
-          $root = Join-Path $env:RUNNER_TEMP "g"
-          foreach ($name in @("u", "h", "s", "t")) { New-Item -ItemType Directory -Force -Path (Join-Path $root $name) | Out-Null }
-          "HOME=$root\u" >> $env:GITHUB_ENV
-          "USERPROFILE=$root\u" >> $env:GITHUB_ENV
-          "HYPRIAL_HOME=$root\h" >> $env:GITHUB_ENV
-          "HARNESS_STATE_DIR=$root\s" >> $env:GITHUB_ENV
-          "HYPRIAL_NETWORK_ISOLATED=1" >> $env:GITHUB_ENV
-          "HYPRIAL_USAGE_DISABLE=1" >> $env:GITHUB_ENV
-          "HYPRIAL_PEER_DISCOVERY=0" >> $env:GITHUB_ENV
-          "NO_PROXY=127.0.0.1,localhost,::1" >> $env:GITHUB_ENV
-      - name: Close a pipe on a running gui --stdin-stop
-        if: always()
-        run: >
-          uv run --locked --no-sync python scripts/verify/stdin_stop_windows_probe.py
-          run --via pipe --after 30 --timeout 120 --
-          "$env:GITHUB_WORKSPACE\.venv\Scripts\hyprial.exe" gui --no-open --json --port 0 --stdin-stop
-      - name: Close a pseudo console on a running gui --stdin-stop
-        if: always()
-        run: >
-          uv run --locked --no-sync python scripts/verify/stdin_stop_windows_probe.py
-          run --via conpty --after 30 --timeout 120 --
-          "$env:GITHUB_WORKSPACE\.venv\Scripts\hyprial.exe" gui --no-open --json --port 0 --stdin-stop
