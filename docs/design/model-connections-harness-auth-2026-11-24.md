@@ -596,14 +596,16 @@ messageId=`8a1ce56c-225b-5aed-8cab-9918fc470948`。
 
 ### 7.2 任务执行对照（2026-11-25）
 
+当前开发入口为 GitHub `Hyprial/hyprial`：本设计 [#71](https://github.com/Hyprial/hyprial/pull/71)、Pi 实现 [#61](https://github.com/Hyprial/hyprial/pull/61)、Lark 修复 [#59](https://github.com/Hyprial/hyprial/pull/59)。内部旧 PR 编号与 SHA 仅为历史证据；迁移压缩历史并保留脱敏。逐文件 blob 核对：Pi 的 46 个改动文件和 Lark 的 2 个改动文件分别与原固定 e4d2d2ac、e25f726a 完全一致；这不替代 GitHub 新 SHA 的评审与正式 CI。
+
 流程固定为：开发并保持 WIP → cc-gui-orgs 独立实现评审通过 → 去 WIP → 同一 SHA 正式 CI 通过 → e2e-verifier 正常合并 → 下一阶段。
 若合入新 dev 或修改实现，记录新 base/head，并由评审判断需要重验的范围。设计评审不替代此流程。
 
 | 阶段 | 实现和固定版本 | 验收与剩余事项 | 状态 |
 |---|---|---|---|
 | PR 1：连接记录与请求契约 | [#3141](https://code.hyprial.com/HyprialOS/hyprial/pulls/3141)，评审/CI head `cb9eb3bf74df398524030365969239ff0fa50f90`；用户手动合并 `4766a1f1be4de1c8e84e1330dc30fa903946c3da` | v2 Secret/CAS/迁移、旧目录兼容、精确探针、取消、HTTP 预算与契约已交付；Linux CI run 58214 全部选定 lane 成功。GUI/真实厂商不在本片验收范围 | 已合并 |
-| PR 2：Pi runtime 与会话保护 | [#3153](https://code.hyprial.com/HyprialOS/hyprial/pulls/3153)，head `e4d2d2ac77f3440648e16a2268f69aa62117ed0c`，base `5fc90df53b46082f6c2a47ad4aebae5a2e578873`，46 文件 | §2.3/§3/§8 产品代码及非回归范围独立 PASS；原始全量39F/2E/31045P仍记FAIL，24项基线已交接，额外16项双方分别串行复跑通过。两处GUI错误文案门遗漏已修并独立PASS。89bda正式重跑Python五分片及unit通过，但GUI启动case N退出1（28P/1F）；本机精确用例及四组合复跑通过，原退出根因UNKNOWN。e4d仅修测试诊断保留stdout/stderr，红2F→绿2P，cc限定本地门PASS（ff6e4c16）；单CPU有界压力三次case N复跑3P | 本地门PASS；e4d正式CI FAIL，独立修复#3155进行中，未交e2e |
-| CI 阻断修复：Lark completion | [#3155](https://code.hyprial.com/HyprialOS/hyprial/pulls/3155)，head `e25f726a7c73d70dc2eccb64a4e8c8f0dac05930`，base `3e9b4adf7f119d013e0d4926db7caaa2618c71ec`，2 文件 | #3153 run59162/shard3 原始7101P/1F保留FAIL；Lark代码与PR2基线一致。完成通知对CLOSED仍重试5秒，拖住stop(2s)；独立一行修复保留receipt和原错误，过载重试不变。确定性旧实现2F/1P→修复shutdown19P，原超时/断言未改；完整焦点与独立评审待终态 | WIP；修复合入后再验证PR2 |
+| PR 2：Pi runtime 与会话保护 | [#61](https://github.com/Hyprial/hyprial/pull/61)，GitHub head `24f200502a00fb5510f1993bb582128257e47f55`，46 文件；历史评审 head `e4d2d2ac77f3440648e16a2268f69aa62117ed0c` | §2.3/§3/§8 产品及非回归范围已独立 PASS。原始全量39F/2E/31045P仍记FAIL，24项基线已交接，额外16项双方分别串行复跑通过。e4d正式GUI通过，Python run59162/shard3为7101P/1F；失败为预存Lark关闭竞争。GitHub改动文件与e4d逐blob相同，迁移后的基线与CI需重新核验 | 保持非Draft；等#59合入，再更新基线、评审与GitHub CI，未交e2e |
+| CI 阻断修复：Lark completion | [#59](https://github.com/Hyprial/hyprial/pull/59)，GitHub head `cd0d6828863fd4ca335e76fcf98d272431f87d10`，2 文件；历史验证 head `e25f726a7c73d70dc2eccb64a4e8c8f0dac05930` | 完成通知对CLOSED仍重试5秒，拖住stop(2s)；一行修复保留receipt和既有失败分支，过载重试不变。确定性旧实现2F/1P→shutdown19P，Lark目录815P；原用例10次串行及4-worker全量运行期间5次复跑通过，原超时/断言未改。原始全量30937P/31F/1E保持FAIL：24个既有ID+8额外ID，后8项同提交串行8P，根因未据此关闭。固定独立评审已送达，尚无结论；GitHub新SHA尚无正式CI | WIP/Draft；独立评审通过后去WIP、CI、e2e，合入后再验证PR2 |
 | PR 3：绑定存储与事务 | 未开实现 PR | §5.1：schema 4、首次启动前记录、操作回执/容量、Agent 级 cleanupPending、降级与故障回读 | 未开始，依赖 PR 2 合并 |
 | PR 4：启动/Cell/CLI 接线 | 未开实现 PR | §2/§5：configure/status/cancel、prepared/Cell CAS/finalize、restore/routines、销毁恢复、生成物与操作说明 | 未开始，依赖 PR 3；新生产绑定仍关闭 |
 | PR 5：连接 GUI | 未开实现 PR | §2.1/§3.2：预设/自定义、测试时手填 ID、显式 30s 预算、真实点击及错误/取消旅程 | 未开始 |
