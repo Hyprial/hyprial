@@ -123,7 +123,6 @@ export const STATE: CopyMap = {
   "features/org/impl/domain/copy.ts": [
     "组织服务暂时不可用。",
     "组织身份服务不可用。",
-    "该空间的历史记录异常，写操作和历史暂不可用。",
   ],
   "features/org/impl/sections/FilesSection.tsx": [
     "文件列表读取失败，暂不能判断是否为空；请刷新后重试。",
