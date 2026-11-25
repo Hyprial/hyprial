@@ -1,0 +1,548 @@
+# 发布规则唯一事实源：docs/guides/release-rules.md；以下事故说明保留为历史。
+# github-publish —— 把 harness-bridge 的黑名单过滤快照推到 GitHub 公网镜像
+# (Hyprial/hyprial),并把可移动轨道 tag 同步过去。
+#
+# 契约(spec 2026-09-14,交付一;Allen 2026-09-14 迁移 GitHub 裁定):
+#   - 触发:push 到 v* / internal / nightly / stable tag,或
+#     workflow_dispatch(ref + dry_run,默认 true)。⛔ 不监听旧名
+#     dev/dev-track/nightly-track/stable-track —— 旧名在 GitHub 上不得出现,
+#     交给 scripts/ci/github_publish.py policy 在入口处拒绝。
+#   - 快照 = 全树减去黑名单(Allen 2026-11-03:除明确不应公开的内容外全部同步;
+#     方案见 docs/design/public-snapshot-denylist-2026-11-03.md)。黑名单只有一处常量:
+#     scripts/ci/github_publish.py SNAPSHOT_DENYLIST(逐项带理由),另有
+#     SNAPSHOT_EXCLUDE_GLOBS 与必需项 SNAPSHOT_REQUIRED;本文件不得复述这份清单。
+#   - installability 闸直接在快照里 uv build:快照写入的 gui/gui-source.json
+#     (guistamp,0.5.5.3.2)让 wheel 构建钩子在无 .git 的树里逐文件复核后打包 GUI。
+#   - 发布树 = 在 ${GITHUB_SHA} 重新抽取的原始快照(publish 步内部),
+#     绝不是被 uv build 写脏的 ${SNAP_DIR}(2026-10-08:internal 9e148506
+#     与 v0.5.3 40825d78 都把扫描后才生成的 pyc/钩子产物发了出去)。
+#     提交前有 purity gate:暂存路径集必须与扫描清单逐路径相等,
+#     多一条或少一条都红、不推(hq-adjutant 2026-10-08 裁定)。
+#   - 双扫描闸,任一命中即红、不推:gitleaks(固定版本 + sha256 校验,
+#     只打印 RuleID 与文件名)+ 内网标识 grep 闸(允许清单在
+#     github-publish-allowlist.txt,逐条理由;未豁免命中即红)。
+#   - v* 在目标仓不可变(已存在即拒推);*-track 仅 tag ref 可 force,
+#     ⛔ 从不 force 分支;快照树与上一版完全相同时不新建提交、只移 tag。
+#   - dry_run:走完快照/扫描/uv build 与凭据 ls-remote 读数,⛔ 一律不 push。
+#   - checkout 走内网 ${GITHUB_SERVER_URL}(job 侧实例;公网
+#     code.hyprial.com 的 fetch 在隧道上实测 13-14 分钟,2026-09-14)。
+#   - `uses:` 允许但必须钉住版本(Allen 2026-09-21,判定见
+#     tests/support/ci/ci_workflow_policy.py);本 workflow 目前不引入任何 `uses:`,因为
+#     #503:远端 action 在 step 之前拉取,脚本的 fail-soft 管不到。
+#     失败只影响本 workflow;所有 tag 共用一个 publish lane,因为它们都写
+#     GitHub refs/heads/main。不 cancel-in-progress(发布半截取消比失败更糟)。
+#   - 凭据:GH_PUBLISH_TOKEN(fine-grained,仅 Contents RW)按名引用,
+#     经 GIT_ASKPASS 注入;⛔ 不进 remote URL、不打印、不落日志。
+
+name: github-publish
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "tag name to publish (v*, internal, nightly, stable)"
+        required: true
+      dry_run:
+        description: "walk snapshot + gates + credential check without pushing"
+        required: false
+        default: "true"
+      report_pr:
+        description: "PR number to post the readings comment on (0 = skip)"
+        required: false
+        default: "0"
+  push:
+    tags: ["v*", "internal", "nightly", "stable"]
+
+concurrency:
+  group: github-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Pinned to the proxy-enabled runner (infra-ops, 2026-10-26): CI runners have no
+    # proxy and reach github.com only intermittently (GnuTLS -110 in runs 27445/27501).
+    runs-on: publish-github
+    # 25 = 快照(秒级)+ gitleaks 下载与扫描(~234 文件)+ uv/python
+    # 下载与 wheel 构建(分钟级)+ 目标仓 clone/推送。internal 还等待独立
+    # wheel-release(最长 35 分钟),所以总预算为 65 分钟。
+    # 2026-10-08: 25 → 40。 The wheel build now also compiles the Tailcat
+    # sidecar from source (Go steps below): gate-gui.yml release-package measured a
+    # cold Go sidecar build at 403-734 s, and this job must never be killed
+    # mid-publish -- a timeout during the push leaves the same "applied or
+    # not?" ambiguity the no-retry rule exists to avoid.
+    timeout-minutes: 65
+    env:
+      # 与 gate-python.yml 相同的网络加固:DinD 无可用 IPv6,pypi/golang/astral
+      # 走宿主代理;内网 origin 与 code.hyprial.com 直连(checkout 步会
+      # 把 GITHUB_SERVER_URL 的主机名追加进 NO_PROXY)。
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      # The wheel's installability gate compiles the bundled Tailcat sidecar
+      # (`go build` in the snapshot's sidecar/hyprial-tailcat); same egress
+      # pairing as gate-gui.yml release-package.
+      GOPROXY: "https://goproxy.cn|https://proxy.golang.org"
+    steps:
+      - name: Preflight (publish secret present)
+        env:
+          GH_PUBLISH_TOKEN: ${{ secrets.GH_PUBLISH_TOKEN }}
+        run: |
+          # 缺 secret 时响亮失败在最前面,而不是走完快照+扫描才 401。
+          [ -n "${GH_PUBLISH_TOKEN}" ] || { echo "secret GH_PUBLISH_TOKEN missing"; exit 1; }
+          echo "preflight: GH_PUBLISH_TOKEN present (value never logged)"
+          # The attach step sizes its registry wait from the job's remaining budget.
+          echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Check out event SHA (intranet origin)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # ⛔ 不走 https://code.hyprial.com(隧道实测 13-14 分钟);runner
+          # 注入的 GITHUB_SERVER_URL 就是 job 侧实例(--add-host 直达)。
+          server_host="${GITHUB_SERVER_URL#http://}"
+          server_host="${server_host#https://}"
+          server_host="${server_host%%[:/]*}"
+          export NO_PROXY="${NO_PROXY},${server_host}"
+          ASKPASS="/tmp/ghpub-fetch-askpass-${GITHUB_RUN_ID}"
+          trap 'rm -f "${ASKPASS}"' EXIT
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Resolve publish plan (tag policy)
+        env:
+          REF_INPUT: ${{ inputs.ref || github.event.inputs.ref }}
+          DRY_INPUT: ${{ inputs.dry_run || github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/plan
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            dry=false
+          else
+            tag="${REF_INPUT}"
+            dry="$(printf '%s' "${DRY_INPUT:-true}" | tr '[:upper:]' '[:lower:]')"
+          fi
+          [ -n "${tag}" ] || { echo "plan: no tag resolved (dispatch requires the ref input)"; exit 1; }
+
+          # ⛔⛔ 这一格决定【发布出去的是哪棵树】,而它此前无人把守。
+          #
+          # 一次 dispatch 有两个独立的值:
+          #   inputs.ref        ⇒ 发布成哪个【标签名】
+          #   运行所在的 ref     ⇒ 快照取哪棵【树】(下一步用的 ${GITHUB_SHA})
+          # 只有后者决定内容,而两者不一致时【不会报错】。
+          #
+          # 2026-09-17 实测(两次 dry run,退出码都是绿的,区别只在 plan 这一行):
+          #   dispatch ref=dev    · inputs.ref=v0.4.6 ⇒ source_sha=b5d66401(dev 的 HEAD)  ⛔
+          #   dispatch ref=v0.4.6 · inputs.ref=v0.4.6 ⇒ source_sha=dd13e702(标签所指)      ✅
+          # ⇒ 前者会把 dev 的当前代码当作 v0.4.6 发到公网,而 v* 是 immutable ——
+          #   发出去收不回,且内容不符【不会自己现形】。
+          #
+          # 之所以没人踩过:此前发布过的只有 internal(当时叫 dev-track),它本来就跟着 dev 走,
+          # ref 与内容碰巧一致 ⇒ ⭐ 这个缺陷只在【给一个过去的、不可变的 v* 补发】时可达,
+          # 也就是最罕见、后果最重的那一格。
+          #
+          # 守法选了【拒绝】而不是【自动改正】:两者不一致说明操作者的心智模型与事实不符,
+          # 悄悄替他改对会把那件事藏起来;而且本步之前 checkout 只 fetch 了 GITHUB_SHA,
+          # 要改正就得再取一次对象——拒绝不需要网络,也不需要额外凭据。
+          if [ "${GITHUB_EVENT_NAME}" != "push" ] && [ "${GITHUB_REF_NAME}" != "${tag}" ]; then
+            echo "plan: refusing to publish '${tag}' from a run started on '${GITHUB_REF_NAME}'."
+            echo "  the snapshot is taken at ${GITHUB_SHA}, which is '${GITHUB_REF_NAME}', not '${tag}'"
+            echo "  ⇒ re-dispatch this workflow WITH ref='${tag}' (the same value as the ref input)"
+            exit 1
+          fi
+          # 唯一的 tag 策略来源:旧名 dev 与 *-track 和一切
+          # 未识别形态在这里被拒,而不是各自散落在 shell 里。
+          mutability="$(python3 scripts/ci/github_publish.py policy --tag "${tag}")"
+          case "${dry}" in true|false) ;; *) dry=true ;; esac
+          echo "plan: tag=${tag} mutability=${mutability} dry_run=${dry} source_sha=${GITHUB_SHA}"
+          {
+            echo "PLAN_TAG=${tag}"
+            echo "PLAN_DRY=${dry}"
+            echo "READINGS=/tmp/ghpub-readings-${GITHUB_RUN_ID}.txt"
+          } >> "${GITHUB_ENV}"
+          {
+            echo "github-publish dry-run readings (run ${GITHUB_RUN_NUMBER}, head ${GITHUB_SHA})"
+            echo "plan: tag=${tag} mutability=${mutability} dry_run=${dry} source_sha=${GITHUB_SHA}"
+          } > "/tmp/ghpub-readings-${GITHUB_RUN_ID}.txt"
+
+      - name: Require versioned changelog before formal release build or publish
+        run: |
+          set -euo pipefail
+          case "${PLAN_TAG}" in
+            v*) node scripts/ci/check-changelog.mjs --tag "${PLAN_TAG}" ;;
+            *) echo "changelog gate: movable track; unchanged" ;;
+          esac
+
+      - name: Build denylist-filtered snapshot tree
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/snapshot
+          SNAP_DIR="/tmp/ghpub-snap-${GITHUB_RUN_ID}"
+          python3 scripts/ci/github_publish.py snapshot \
+            --rev "${GITHUB_SHA}" --out "${SNAP_DIR}" | tee /tmp/ghpub-snap-manifest.txt
+          grep -E '^snapshot' /tmp/ghpub-snap-manifest.txt >> "${READINGS}"
+          echo "SNAP_DIR=${SNAP_DIR}" >> "${GITHUB_ENV}"
+
+      - name: Intranet identifier gate
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/intranet-gate
+          python3 scripts/ci/github_publish.py intranet-scan \
+            --tree "${SNAP_DIR}" \
+            --allowlist .github/workflows/github-publish-allowlist.txt \
+            --private-markers .github/workflows/github-publish-private-markers.txt | tee /tmp/ghpub-intranet.txt
+          grep -E '^intranet-gate: ' /tmp/ghpub-intranet.txt >> "${READINGS}"
+
+      - name: Fetch pinned gitleaks and verify sha256
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          # sha256 of gitleaks_8.30.1_linux_x64.tar.gz, measured at pin
+          # time (2026-09-14).  The check below is the gate: a tampered or
+          # re-uploaded tarball goes red before the binary ever runs.
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/gitleaks-fetch
+          dir="/tmp/ghpub-gitleaks-${GITHUB_RUN_ID}"
+          mkdir -p "${dir}"
+          file="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+            --output "${dir}/${file}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${file}"
+          echo "${GITLEAKS_SHA256}  ${dir}/${file}" | sha256sum --check -
+          tar -xzf "${dir}/${file}" -C "${dir}" gitleaks
+          "${dir}/gitleaks" version
+          "${dir}/gitleaks" version >> "${READINGS}"
+          echo "GITLEAKS_BIN=${dir}/gitleaks" >> "${GITHUB_ENV}"
+          echo "GITLEAKS_REPORT=${dir}/gitleaks-report.json" >> "${GITHUB_ENV}"
+
+      - name: Secret scan (gitleaks; findings redacted to RuleID + file)
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/gitleaks-scan
+          set +e
+          "${GITLEAKS_BIN}" detect --no-git --source "${SNAP_DIR}" \
+            --report-format json --report-path "${GITLEAKS_REPORT}" \
+            --exit-code 1 --redact >/dev/null 2>&1
+          rc=$?
+          set -e
+          # 0 = clean, 1 = findings; anything else means the scanner itself
+          # failed and must not be read as a pass.
+          if [ "${rc}" -gt 1 ]; then
+            echo "gitleaks run itself failed (rc=${rc})"
+            exit 1
+          fi
+          python3 scripts/ci/github_publish.py leaks --report "${GITLEAKS_REPORT}" | tee /tmp/ghpub-leaks.txt
+          grep -E '^gitleaks-gate: ' /tmp/ghpub-leaks.txt >> "${READINGS}"
+
+      - name: Ensure uv
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/ensure-uv
+          # Cache-first, sha256-pinned (scripts/ci/ci-ensure-uv.sh); the direct
+          # astral.sh fetch this step used to do made the job depend on a live
+          # third-party fetch.  The script reports the tier it used.
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+          # Pinned CPython from the cache volume when CI_CACHE_ROOT is mounted
+          # (a no-op otherwise); the installability gate below pins --python 3.12
+          # so it builds with the same interpreter as wheel-release.
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Install pinned Go toolchain for the tailcat wheel
+        # Mirrors gate-gui.yml release-package (2026-10-03): the installability
+        # gate builds the wheel from the snapshot, and the wheel's build hook
+        # runs `go build` for the bundled sidecar.  This job had no Go at all,
+        # so since the 10-05 stable run every wheel build died with
+        # TailcatWheelError "no sidecar binary for linux/arm64 ... no go
+        # toolchain was found".  The sidecar module's go.mod pins go 1.27.1;
+        # ci-ensure-go.sh always verifies the official archive against its
+        # compiled-in sha256 pin.
+        run: GO_VERSION=1.27.1 bash scripts/ci/ci-ensure-go.sh
+
+      - name: Persist the Go module and build caches
+        # Mirrors gate-gui.yml release-package: ci-ensure-go.sh caches only the
+        # toolchain; without these every run re-downloaded every module and
+        # recompiled the sidecar cold.  The hb-ci-cache volume is mounted at
+        # CI_CACHE_ROOT on every DinD runner; Go's module and build caches are
+        # safe for concurrent jobs.
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/go-mod" "$CI_CACHE_ROOT/go-build"
+            echo "GOMODCACHE=$CI_CACHE_ROOT/go-mod" >> "$GITHUB_ENV"
+            echo "GOCACHE=$CI_CACHE_ROOT/go-build" >> "$GITHUB_ENV"
+            du -sh "$CI_CACHE_ROOT/go-mod" "$CI_CACHE_ROOT/go-build" 2>/dev/null || true
+          else
+            echo "CI_CACHE_ROOT unset: Go caches stay job-local (cold)"
+          fi
+
+      - name: Installability gate (uv build --wheel from the snapshot)
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/uv-build
+          out="/tmp/ghpub-wheel-${GITHUB_RUN_ID}"
+          echo "node $(node --version) npm $(npm --version)" | tee -a "${READINGS}"
+          (cd "${SNAP_DIR}" && uv build --wheel --python 3.12 --out-dir "${out}")
+          wheels="$(find "${out}" -maxdepth 1 -name '*.whl' | wc -l | tr -d ' ')"
+          [ "${wheels}" -ge 1 ] || { echo "no wheel produced from the snapshot"; exit 1; }
+          echo "uv build: ${wheels} wheel(s) built from the snapshot tree" | tee -a "${READINGS}"
+          find "${out}" -maxdepth 1 -name '*.whl' -printf '%f %s bytes\n' >> "${READINGS}" || true
+
+      - name: Publish snapshot to the GitHub mirror
+        env:
+          GH_PUBLISH_TOKEN: ${{ secrets.GH_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/publish
+          # ⛔ The publish source is a PRISTINE re-extraction at ${GITHUB_SHA},
+          # never ${SNAP_DIR}: the wheel build ran inside the snapshot dir
+          # AFTER the scans and wrote build artefacts there, so copying that
+          # dir wholesale ships bytes no gate ever saw (internal 9e148506 and
+          # v0.5.3 40825d78 both did). publish_snapshot re-extracts from this
+          # checkout at the pinned commit; its pre-commit purity gate then
+          # compares the staged path set against the scanned manifest teed to
+          # /tmp/ghpub-snap-manifest.txt -- any divergence is a red job with
+          # the paths named, and nothing is pushed.
+          python3 scripts/ci/github_publish.py publish \
+            --source . --source-sha "${GITHUB_SHA}" \
+            --manifest /tmp/ghpub-snap-manifest.txt \
+            --tag "${PLAN_TAG}" \
+            --dry-run "${PLAN_DRY}" | tee /tmp/ghpub-publish.txt
+          grep -E '^(credential check|target state|github-publish: |publish source: |purity gate: )' /tmp/ghpub-publish.txt >> "${READINGS}"
+
+      - name: Attach wheels to the public release
+        # All three tracks must attach the exact five-wheel set (Allen
+        # 2026-10-28; docs/guides/release-rules.md). No opt-in repository variable.
+        # This path needs GH_PUBLISH_TOKEN, PKG_PUBLISH_USER, PKG_PUBLISH_TOKEN.
+        # History: stable/nightly attachment was opt-in while the identity
+        # mapping was being agreed. Keep the reason, not the obsolete switch:
+        #
+        #   the wheel version carries the INTERNAL commit  (<base>+g<sha7>)
+        #   the public tag points at a SNAPSHOT commit          (different sha)
+        #
+        # Both name the same tree content. Recording only one of them makes
+        # `verified_commit` ambiguous, so an installer receipt has to carry
+        # install.commit (public) AND install.wheel_version (stamped).
+        #
+        # Every track must finish with five wheels plus SHA256SUMS.
+        # Default success gating keeps dry-run and non-track handling below;
+        # any missing credentials or incomplete wheel set fails the job.
+        env:
+          GH_PUBLISH_TOKEN: ${{ secrets.GH_PUBLISH_TOKEN }}
+          PKG_PUBLISH_USER: ${{ secrets.PKG_PUBLISH_USER }}
+          PKG_PUBLISH_TOKEN: ${{ secrets.PKG_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/attach-wheels
+          case "${PLAN_DRY}" in true|1|yes) echo "dry-run: nothing was pushed; skipping asset attach" | tee -a "${READINGS}"; exit 0 ;; esac
+          # Only track tags carry wheels; a v* release is a formal anchor and
+          # has its own open question about whether it gets its own wheel line.
+          case "${PLAN_TAG}" in
+            stable|nightly|internal) ;;
+            *) echo "tag ${PLAN_TAG} is not a wheel track; nothing to attach" | tee -a "${READINGS}"; exit 0 ;;
+          esac
+          # The version file's path belongs to github_publish.py's whitelist;
+          # ask that module for the value instead of restating the path here.
+          STAMPED="$(python3 scripts/ci/github_publish.py version)+g$(git rev-parse --short=7 HEAD)"
+          echo "wheel version for ${PLAN_TAG}: ${STAMPED}" | tee -a "${READINGS}"
+          # Credentials go through the ENVIRONMENT, never argv: an argv token is
+          # visible in `ps` to every process on the runner. This is the same
+          # contract wheel-release.yml states for the registry publish step.
+          export WHEEL_REGISTRY_USER="${PKG_PUBLISH_USER}"
+          export WHEEL_REGISTRY_TOKEN="${PKG_PUBLISH_TOKEN}"
+          export GH_TOKEN="${GH_PUBLISH_TOKEN}"
+          # Registry wait = the job's remaining budget minus 600 s for download +
+          # GitHub upload + rollback and the verify step, capped at 2400.  An
+          # absent upstream (wheel-release failed or still building) then ends as
+          # an explicit NOT EVALUABLE rc=2 instead of a runner kill mid-upload
+          # (run 51607).  65 must equal this job's timeout-minutes (test-asserted).
+          : "${JOB_START_EPOCH:?JOB_START_EPOCH unset (Preflight must export it)}"
+          budget=$(( 65*60 - ($(date +%s) - JOB_START_EPOCH) - 600 ))
+          wait=$(( budget > 2400 ? 2400 : (budget < 0 ? 0 : budget) ))
+          echo "attach: registry wait ${wait}s (job budget remaining minus 600s)" | tee -a "${READINGS}"
+          set +e
+          python3 scripts/ci/attach_wheel_assets.py \
+            --tag "${PLAN_TAG}" \
+            --version "${STAMPED}" \
+            --source-sha "${GITHUB_SHA}" \
+            --registry-url "${GITHUB_SERVER_URL%/}/api/packages/HyprialOS/pypi" \
+            --github-repo "Hyprial/hyprial" \
+            --wait-for-registry "${wait}" 2>&1 | tee -a "${READINGS}"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          case "${rc}" in
+            0) echo "assets attached" | tee -a "${READINGS}" ;;
+            2) echo "NOT EVALUABLE (rc=2): credential or exact registry set missing; previous complete release assets remain selected" >&2; exit 1 ;;
+            4) echo "PARTIAL (rc=4): canonical SHA256SUMS is missing after bounded rollback; use the named backup and repair command above" >&2; exit 1 ;;
+            *) echo "FAIL (rc=${rc}): see the attach reason above; it names which complete manifest remains selected" >&2; exit 1 ;;
+          esac
+
+      - name: Verify the published install command resolves (post-push acceptance)
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/verify
+          # This runs right after the mirror push on purpose: that is the only
+          # moment the public content just changed, and the only moment these
+          # checks can catch anything. It reads the commit that was just
+          # pushed -- never the `main` ref -- because raw/API reads by ref can
+          # still serve the previous content.
+          case "${PLAN_DRY}" in true|1|yes) echo "dry-run: nothing was pushed; skipping" | tee -a "${READINGS}"; exit 0 ;; esac
+          pushed="$(sed -n 's/^pushed refs\/heads\/main -> \([0-9a-f]\{7,\}\).*/\1/p' /tmp/ghpub-publish.txt | tail -1)"
+          if [ -z "${pushed}" ]; then
+            # Tag-move-only outcome: the snapshot tree equalled main's head, so
+            # publish pushed no main commit (commit_created=false) and pointed the
+            # tag at the EXISTING main head. That is a success, and the install
+            # command still has to resolve -- verify the commit the tag now names.
+            # Accepted only with both lines present; anything else stays red.
+            if grep -q '^github-publish: outcome .* commit_created=false' /tmp/ghpub-publish.txt; then
+              # A re-dispatch of an identical immutable tag prints
+              # "already-published refs/tags/<tag> -> <sha>" instead of pushing.
+              pushed="$(sed -nE 's/^(pushed|already-published) refs\/tags\/[^ ]* -> ([0-9a-f]{7,}).*/\2/p' /tmp/ghpub-publish.txt | tail -1)"
+            fi
+            if [ -z "${pushed}" ]; then
+              echo "verify-public-install: no 'pushed refs/heads/main -> <sha>' line and no tag-move-only outcome; nothing to verify against" | tee -a "${READINGS}"
+              exit 1
+            fi
+            echo "verify-public-install: tag move only (commit_created=false); verifying the tag's commit ${pushed}" | tee -a "${READINGS}"
+          fi
+          # ⛔ 刻意不传任何凭据:镜像是 public,这三类端点匿名可读(含正控的
+          # 404 分辨力)。token 在这条路径上只提供速率余量,而不需要的凭据
+          # 是将来最容易被扩权的那一种。限流(403)会被"正控先跑"当场逮住。
+          python3 scripts/verify/verify_public_install.py \
+            --repo "${GH_TARGET_REPO:-Hyprial/hyprial}" \
+            --commit "${pushed}" | tee -a "${READINGS}"
+
+      - name: Advance and verify release tracks (formal v* releases only)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # One stable writer. Track-tag publications and dry runs never enter
+          # this path, so the dispatches below cannot form a release loop.
+          case "${PLAN_DRY}:${PLAN_TAG}" in false:v*) ;; *) exit 0 ;; esac
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}"
+          export GIT_TERMINAL_PROMPT=0
+          previous_stable="$(git ls-remote --refs origin refs/tags/stable | cut -f1)"
+          previous_nightly="$(git ls-remote --refs origin refs/tags/nightly | cut -f1)"
+          python3 scripts/ci/release_tracks.py --release "${PLAN_TAG}" --expected-sha "${GITHUB_SHA}"
+          python3 scripts/ci/check-release-tracks.py "${PLAN_TAG}" | tee -a "${READINGS}"
+          # Actions-token pushes do not trigger workflows on this instance.
+          # Explicitly publish both tracks (including an unchanged newer nightly).
+          # Dispatch, do not wait: these publications share this serialized lane.
+          dispatch_failed=0
+          for track in stable nightly; do
+            track_sha="$(git ls-remote --refs origin "refs/tags/${track}" | cut -f1)"
+            printf '%s\n' "$track_sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "invalid ${track} source SHA" >&2; exit 1; }
+            previous="$previous_stable"
+            [ "$track" != nightly ] || previous="$previous_nightly"
+            if [ "$previous" != "$track_sha" ]; then
+              wheel_body="$(printf '{"ref":"%s","inputs":{"track":"%s","source_sha":"%s"}}' "$track" "$track" "$track_sha")"
+              printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+                curl --config - --fail --silent --show-error --connect-timeout 10 --max-time 60 -X POST \
+                  -H "Content-Type: application/json" --data "$wheel_body" \
+                  "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/wheel-release.yml/dispatches" \
+                || dispatch_failed=1
+            fi
+            body="$(printf '{"ref":"%s","inputs":{"ref":"%s","dry_run":"false","report_pr":"0"}}' "$track" "$track")"
+            printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+              curl --config - --fail --silent --show-error -X POST \
+                -H "Content-Type: application/json" --data "$body" \
+                "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/github-publish.yml/dispatches" \
+              || dispatch_failed=1
+          done
+          [ "$dispatch_failed" = 0 ] || { echo 'release track dispatch failed' >&2; exit 1; }
+
+      - name: Dispatch homepage changelog sync (formal v* releases only)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Only a successful, non-dry-run formal v* publication creates a
+          # public changelog candidate. internal/nightly/stable are movable
+          # tracks and must never become public release records.
+          case "${PLAN_TAG}" in v*) ;; *) echo "not a formal v* release; skipping homepage sync"; exit 0 ;; esac
+          case "${PLAN_DRY}" in true|1|yes) echo "dry-run: not dispatching homepage sync"; exit 0 ;; esac
+          [ -n "${GITHUB_TOKEN}" ] || { echo "job GITHUB_TOKEN missing"; exit 1; }
+
+          server_host="${GITHUB_SERVER_URL#http://}"
+          server_host="${server_host#https://}"
+          server_host="${server_host%%[:/]*}"
+          export NO_PROXY="${NO_PROXY},${server_host}"
+          # Use the job token for this same-repository dispatch. Forgejo cannot
+          # scope a token to one workflow; this is not a single-workflow grant.
+          # Candidate-write and guard-status credentials stay in the receiver.
+          body="$(TAG="${PLAN_TAG}" SHA="${GITHUB_SHA}" node -e '
+            const body = {
+              ref: "dev",
+              inputs: {
+                source_tag: process.env.TAG,
+                source_sha: process.env.SHA,
+                metadata_sha: "",
+                historical: "false",
+                dry_run: "false",
+              },
+            };
+            process.stdout.write(JSON.stringify(body));
+          ')"
+          code="$(printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+            curl --config - --location --silent --show-error -o /tmp/changelog-sync-dispatch.out -w '%{http_code}' \
+            -H "Content-Type: application/json" -X POST --data "${body}" \
+            "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/homepage-changelog-sync.yml/dispatches")"
+          if [ "${code}" = "204" ] || [ "${code}" = "200" ]; then
+            echo "homepage changelog sync dispatched for ${PLAN_TAG} (http ${code})"
+          else
+            echo "homepage changelog sync dispatch failed (http ${code}):" >&2
+            cat /tmp/changelog-sync-dispatch.out >&2 || true
+            exit 1
+          fi
+
+      - name: Report readings to the dispatching PR (API comment; #503 log-loss workaround)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT_PR: ${{ inputs.report_pr || github.event.inputs.report_pr }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh github-publish/report
+          # Job logs on this instance do not reliably reach storage (measured
+          # 2026-09-14: log route 404s for this task; ci-runner-shared-vm-rules
+          # records 396/965 succeeded tasks without stored logs), and the
+          # the artifact action is not used here: #503's usual fix is a
+          # `uses:` step, and a remote action is fetched BEFORE the step runs,
+          # so this script's own fail-soft cannot cover it.
+          # So the run posts its own acceptance readings back to the PR it
+          # was dispatched from -- an API-readable, durable record.
+          case "${REPORT_PR}" in ""|0|false) echo "report_pr not set; readings stay in the job log only"; exit 0 ;; esac
+          server_host="${GITHUB_SERVER_URL#http://}"
+          server_host="${server_host#https://}"
+          server_host="${server_host%%[:/]*}"
+          export NO_PROXY="${NO_PROXY},${server_host}"
+          body="$(node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{console.log(JSON.stringify({body:s}))})' < "${READINGS}")"
+          code="$(printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+            curl --config - --location --silent --show-error -o /tmp/ghpub-report.out -w '%{http_code}' \
+            -H "Content-Type: application/json" -X POST --data "${body}" \
+            "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/issues/${REPORT_PR}/comments")"
+          if [ "${code}" = "201" ]; then
+            echo "readings posted to PR ${REPORT_PR} (http ${code})"
+          else
+            echo "posting readings to PR ${REPORT_PR} failed (http ${code}); readings remain in the job log:" >&2
+            cat "${READINGS}" >&2
+            # Loud but non-fatal: a reporting failure must not red (or block)
+            # a publish run whose gates all passed.
+          fi

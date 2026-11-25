@@ -1,0 +1,3 @@
+# The list of real identifiers is not kept in this repository: it would publish
+# the names it exists to keep private. It lives in the private operations
+# repository; this file is present so the scan's inputs are explicit.

@@ -1,0 +1,2912 @@
+{
+  "captured_at_utc": "2026-09-21T03:40:34Z",
+  "claude": {
+    "auth_refresh": {
+      "reason": "no authorized test OAuth account; no real login/keychain read performed",
+      "state": "NOT_RUN"
+    },
+    "commands": [
+      {
+        "argv": [
+          "claude",
+          "--version"
+        ],
+        "duration_ms": 11,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "2.1.278 (Claude Code)",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "claude",
+          "--help"
+        ],
+        "duration_ms": 63,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Usage: claude [options] [command] [prompt]\n\nClaude Code - starts an interactive session by default, use -p/--print for\nnon-interactive output\n\nArguments:\n  prompt                                Your prompt\n\nOptions:\n  --add-dir <directories...>            Additional directories to allow tool\n                                        access to\n  --agent <agent>                       Agent for the current session. Overrides\n                                        the 'agent' setting.\n  --agents <json>                       JSON object defining custom agents (e.g.\n                                        '{\"reviewer\": {\"description\": \"Reviews\n                                        code\", \"prompt\": \"You are a code\n                                        reviewer\"}}')\n  --allow-dangerously-skip-permissions  Enable bypassing all permission checks\n                                        as an option, without it being enabled\n                                        by default. Recommended only for\n                                        sandboxes with no internet access.\n  --allowedTools, --allowed-tools <tools...>\n      Comma or space-separated list of tool names to allow (e.g. \"Bash(git *)\n      Edit\")\n  --append-system-prompt <prompt>       Append a system prompt to the default\n                                        system prompt\n  --autocompact <auto|tokens>           Auto-compact window size (auto, or\n                                        100k\u20131M tokens)\n  --ax-screen-reader                    Render screen-reader friendly output\n                                        (flat text, no decorative borders or\n                                        animations).\n  --bg, --background                    Start the session in the background and\n                                        return immediately. Prints the id that\n                                        `claude attach`, `logs`, `stop` and `rm`\n                                        take; `claude agents` lists them. With\n                                        --resume <session-id>, continues that\n                                        session in the background under the same\n                                        ID, or starts a copy and says so when\n                                        the session is already running\n  --bare                                Minimal mode: skip hooks, LSP, plugin\n                                        sync, attribution, auto-memory,\n                                        background prefetches, keychain reads,\n                                        and CLAUDE.md auto-discovery. Sets\n                                        CLAUDE_CODE_SIMPLE=1. Anthropic auth is\n                                        strictly ANTHROPIC_API_KEY or\n                                        apiKeyHelper via --settings (OAuth and\n                                        keychain are never read). 3P providers\n                                        (Bedrock/Vertex/Foundry) use their own\n                                        credentials. Skills still resolve via\n                                        /skill-name. Explicitly provide context\n                                        via: --system-prompt[-file],\n                                        --append-system-prompt[-file], --add-dir\n                                        (CLAUDE.md dirs), --mcp-config,\n                                        --settings, --agents, --plugin-dir.\n  --betas <betas...>                    Beta headers to include in API requests\n                                        (API key users only)\n  --brief                               Enable SendUserMessage tool for\n                                        agent-to-user communication\n  --chrome                              Enable Claude in Chrome integration\n  --cloud [description|session_id|url]  Create a cloud session with the given\n                                        description, or attach to an existing\n                                        one by session ID or claude.ai/code URL\n  -c, --continue                        Continue the most recent conversation in\n                                        the current directory\n  --dangerously-skip-permissions        Bypass all permission checks.\n                                        Recommended only for sandboxes with no\n                                        internet access.\n  -d, --debug [filter]                  Enable debug mode with optional category\n                                        filtering (e.g., \"api,hooks\" or\n                                        \"!1p,!file\")\n  --debug-file <path>                   Write debug logs to a specific file path\n                                        (implicitly enables debug mode)\n  --disable-slash-commands              Disable all skills\n  --disallowedTools, --disallowed-tools <tools...>\n      Comma or space-separated list of tool names to deny (e.g. \"Bash(git *)\n      Edit\")\n  --effort <level>                      Effort level for the current session\n                                        (low, medium, high, xhigh, max)\n  --environment <environment_id>        Create a new cloud session that runs on\n                                        the given self-hosted environment\n                                        (ccpool_...).\n  --exclude-dynamic-system-prompt-sections\n      Move per-machine sections (cwd, env info, memory paths, git status) from\n      the system prompt into the first user message. Improves cross-user\n      prompt-cache reuse. Only applies with the default system prompt (ignored\n      with --system-prompt). (default: false)\n  --fallback-model <model>              Enable automatic fallback to specified\n                                        model(s) when the default model is\n                                        overloaded or not available. Accepts a\n                                        comma-separated list to try each in\n                                        order. Re-tries the primary at the start\n                                        of each user turn.\n  --file <specs...>                     File resources to download at startup.\n                                        Format: file_id:relative_path (e.g.,\n                                        --file file_abc:doc.txt\n                                        file_def:img.png)\n  --fork-session                        When resuming, create a new session ID\n                                        instead of reusing the original (use\n                                        with --resume or --continue)\n  --forward-subagent-text               Forward subagent text and thinking\n                                        blocks as assistant/user messages with\n                                        parent_tool_use_id set (only works with\n                                        --print and --output-format=stream-json)\n  --from-pr [value]                     Resume a session linked to a PR by PR\n                                        number/URL, or open interactive picker\n                                        with optional search term\n  -h, --help                            Display help for command\n  --ide                                 Automatically connect to IDE on startup\n                                        if exactly one valid IDE is available\n  --include-hook-events                 Include all hook lifecycle events in the\n                                        output stream (only works with\n                                        --output-format=stream-json)\n  --include-partial-messages            Include partial message chunks as they\n                                        arrive (only works with --print and\n                                        --output-format=stream-json)\n  --input-format <format>               Input format (only works with --print):\n                                        \"text\" (default), or \"stream-json\"\n                                        (realtime streaming input) (choices:\n                                        \"text\", \"stream-json\")\n  --json-schema <schema>                JSON Schema for structured output\n                                        validation. Example:\n                                        {\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}\n  --max-budget-usd <amount>             Maximum dollar amount to spend on API\n                                        calls (only works with --print)\n  --mcp-config <configs...>             Load MCP servers from JSON files or\n                                        strings (space-separated)\n  --model <model>                       Model for the current session. Provide\n                                        an alias for the latest model (e.g.\n                                        'fable', 'opus', or 'sonnet') or a\n                                        model's full name (e.g.\n                                        'claude-fable-5').\n  -n, --name <name>                     Set a display name for this session\n                                        (shown in the prompt box, /resume\n                                        picker, and terminal title)\n  --no-chrome                           Disable Claude in Chrome integration\n  --no-session-persistence              Disable session persistence - sessions\n                                        will not be saved to disk and cannot be\n                                        resumed (only works with --print)\n  --output-format <format>              Output format (only works with --print):\n                                        \"text\" (default), \"json\" (single\n                                        result), or \"stream-json\" (realtime\n                                        streaming) (choices: \"text\", \"json\",\n                                        \"stream-json\")\n  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: \"acceptEdits\", \"auto\",\n                                        \"bypassPermissions\", \"manual\",\n                                        \"dontAsk\", \"plan\")\n  --permission-prompts <target>         Who answers permission prompts with\n                                        --print: \"host\" (the SDK host or\n                                        --permission-prompt-tool) or \"none\"\n                                        (nobody: anything that would prompt is\n                                        denied automatically; the permission\n                                        mode still decides everything else)\n                                        (choices: \"host\", \"none\", default:\n                                        \"host\")\n  --plugin-dir <path>                   Load a plugin from a directory or .zip\n                                        for this session only; a folder of\n                                        plugins loads each child (repeatable:\n                                        --plugin-dir A --plugin-dir B.zip)\n                                        (default: [])\n  --plugin-url <url>                    Fetch a plugin .zip from a URL for this\n                                        session only (repeatable: --plugin-url A\n                                        --plugin-url B) (default: [])\n  -p, --print                           Print response and exit (useful for\n                                        pipes). Note: The workspace trust dialog\n                                        is skipped when Claude is run in\n                                        non-interactive mode (via -p, or when\n                                        stdout is not a TTY, e.g. piped or\n                                        redirected output). Only use this in\n                                        directories you trust. Settings files\n                                        that fail validation are silently\n                                        ignored in this mode (no error dialog is\n                                        shown).\n  --prompt-suggestions [value]          Enable prompt suggestions. In print/SDK\n                                        mode, emits a prompt_suggestion message\n                                        after each turn with a predicted next\n                                        user prompt (choices: \"true\", \"false\",\n                                        \"1\", \"0\", \"yes\", \"no\", \"on\", \"off\",\n                                        preset: \"true\")\n  --remote-control [name]               Start an interactive session with Remote\n                                        Control enabled (optionally named)\n  --remote-control-session-name-prefix <prefix>\n      Prefix for auto-generated Remote Control session names (default: hostname)\n  --replay-user-messages                Re-emit user messages from stdin back on\n                                        stdout for acknowledgment (only works\n                                        with --input-format=stream-json and\n                                        --output-format=stream-json)\n  --restricted                          Restricted mode: removes the built-in\n                                        tools that run commands or code (Bash,\n                                        PowerShell, REPL and the other\n                                        code-running tools) and WebFetch unless\n                                        --tools names them, and ignores user,\n                                        project and local settings files\n                                        (managed settings and --settings still\n                                        apply; add --strict-mcp-config to skip\n                                        MCP servers too). Also confines the file\n                                        tools to the working directories\n                                        (--add-dir included), refuses\n                                        bypassPermissions, and lets only a\n                                        person or the configured permission\n                                        handler approve writes to settings, git\n                                        and tool-configuration files.\n  -r, --resume [value]                  Resume a conversation by session ID, or\n                                        open interactive picker with optional\n                                        search term\n  --safe-mode                           Start with all customizations\n                                        (CLAUDE.md, skills, plugins, hooks, MCP\n                                        servers, custom commands and agents,\n                                        output styles, workflows, custom themes,\n                                        keybindings, and more) disabled \u2014 useful\n                                        for troubleshooting a broken\n                                        configuration. Admin-managed (policy)\n                                        settings still apply. Auth, model\n                                        selection, built-in tools, and\n                                        permissions work normally. Sets\n                                        CLAUDE_CODE_SAFE_MODE=1.\n  --session-id <uuid>                   Use a specific session ID for the\n                                        conversation (must be a valid UUID)\n  --setting-sources <sources>           Comma-separated list of setting sources\n                                        to load (user, project, local).\n  --settings <file-or-json>             Path to a settings JSON file or a JSON\n                                        string to load additional settings from\n  --strict-mcp-config                   Only use MCP servers from --mcp-config,\n                                        ignoring all other MCP configurations\n  --system-prompt <prompt>              System prompt to use for the session\n  --system-prompt-snapshot <on|off>     Record the system prompt once per\n                                        conversation and reuse it verbatim on\n                                        every request and resume. on (the\n                                        default): the prompt is rendered on the\n                                        conversation's first request \u2014 a\n                                        --system-prompt or\n                                        --append-system-prompt included \u2014 sent,\n                                        and recorded; every later request and\n                                        resume sends the record as-is, even when\n                                        a later launch passes different text,\n                                        until the conversation is compacted.\n                                        off: never record; the prompt is\n                                        rendered fresh every request (for\n                                        iterating on prompt text). No effect\n                                        where system-prompt recording is not yet\n                                        enabled. (choices: \"on\", \"off\")\n  --teleport [session]                  Resume a teleport session, optionally\n                                        specify session ID\n  --tmux                                Create a tmux session for the worktree\n                                        (requires --worktree). Uses iTerm2\n                                        native panes when available; use\n                                        --tmux=classic for traditional tmux.\n  --tools <tools...>                    Specify the list of available tools from\n                                        the built-in set. Use \"\" to disable all\n                                        tools, \"default\" to use all tools, or\n                                        specify tool names (e.g.\n                                        \"Bash,Edit,Read\").\n  --verbose                             Override verbose mode setting from\n                                        config\n  -v, --version                         Output the version number\n  -w, --worktree [name]                 Create a new git worktree for this\n                                        session (optionally specify a name)\n\nCommands:\n  agents [options]                      Manage background agents\n  attach <id>                           Open a background session in this\n                                        terminal. <id> is the short id that\n                                        `claude --bg` prints and `claude agents`\n                                        lists\n  auth                                  Manage authentication\n  auto-mode                             Inspect or reset auto mode classifier\n                                        configuration\n  doctor                                Check the health of your Claude Code\n                                        installation. Reads settings files in\n                                        the current directory without a trust\n                                        prompt. For a full checkup that can also\n                                        fix issues, run /doctor in a session.\n  gateway [options]                     Run the enterprise auth/telemetry\n                                        gateway\n  import [options] [source]             Import config from another AI coding\n                                        agent into Claude Code\n  install [options] [target]            Install Claude Code native build. Use\n                                        [target] to specify version (stable,\n                                        latest, or specific version)\n  logs <id>                             Print a background session's recent\n                                        terminal output\n  mcp                                   Configure and manage MCP servers\n  plugin|plugins                        Manage Claude Code plugins\n  project                               Manage Claude Code project state\n  respawn [options] [id]                Restart a background session, or all of\n                                        them with --all, so it runs the current\n                                        Claude Code version\n  rm <id>                               Delete a background session, and its\n                                        worktree when that is safe. Works on\n                                        sessions that have already exited\n  setup-token                           Set up a long-lived authentication token\n                                        (requires Claude subscription)\n  stop|kill <id>                        Stop a background session. Its\n                                        conversation is kept: `claude attach\n                                        <id>` opens it again, `claude --resume`\n                                        works once it is stopped\n  ultrareview [options] [target]        Run a cloud-hosted multi-agent code\n                                        review of the current branch (or a PR\n                                        number / base branch) and print the\n                                        findings\n  update|upgrade                        Check for updates and install if\n                                        available",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "claude",
+          "auth",
+          "--help"
+        ],
+        "duration_ms": 62,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Usage: claude auth [options] [command]\n\nManage authentication\n\nOptions:\n  -h, --help        Display help for command\n\nCommands:\n  help [command]    display help for command\n  login [options]   Sign in to your Anthropic account\n  logout            Log out from your Anthropic account\n  status [options]  Show authentication status",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "claude",
+          "auth",
+          "status",
+          "--help"
+        ],
+        "duration_ms": 61,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Usage: claude auth status [options]\n\nShow authentication status\n\nOptions:\n  -h, --help  Display help for command\n  --json      Output as JSON (default)\n  --text      Output as human-readable text",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "claude",
+          "auth",
+          "status",
+          "--json"
+        ],
+        "duration_ms": 140,
+        "returncode": 1,
+        "stderr": "",
+        "stdout": "{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"<PROBE_ROOT>/claude/projects\",\n  \"configDirectory\": \"<PROBE_ROOT>/claude\"\n}",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "claude",
+          "doctor",
+          "--help"
+        ],
+        "duration_ms": 58,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Usage: claude doctor [options]\n\nCheck the health of your Claude Code installation. Reads settings files in the\ncurrent directory without a trust prompt. For a full checkup that can also fix\nissues, run /doctor in a session.\n\nOptions:\n  -h, --help  Display help for command",
+        "timed_out": false
+      }
+    ],
+    "config_root": {
+      "auth_status": {
+        "analyticsDisabled": false,
+        "apiProvider": "firstParty",
+        "authMethod": "none",
+        "configDirectory": "<PROBE_ROOT>/claude",
+        "loggedIn": false,
+        "projectsDirectory": "<PROBE_ROOT>/claude/projects"
+      },
+      "state": "PASS"
+    },
+    "effective_settings": {
+      "reason": "2.1.278 exposes no non-auth effective-settings command; help/auth status proves the redirected root, not actual user/project settings consumption",
+      "state": "NOT_RUN"
+    },
+    "executable": "/Users/ci-runner/.local/bin/claude",
+    "executable_sha256": "bd245662fb8a0e321b3bf133e930371d6563c387527885f30b2613aef3ba14d6",
+    "resolved_executable": "/Users/ci-runner/.local/share/claude/versions/2.1.278",
+    "state": "PASS",
+    "version": "2.1.278 (Claude Code)"
+  },
+  "claude_sdk": {
+    "command": {
+      "argv": [
+        "/opt/homebrew/bin/uv",
+        "run",
+        "--offline",
+        "--isolated",
+        "--no-project",
+        "--with",
+        "claude-agent-sdk==0.2.125",
+        "python",
+        "-c",
+        "import dataclasses,importlib.metadata as m,json;from claude_agent_sdk import ClaudeAgentOptions;print(json.dumps({'version':m.version('claude-agent-sdk'),'option_fields':[f.name for f in dataclasses.fields(ClaudeAgentOptions)],'setting_sources':str(ClaudeAgentOptions.__annotations__['setting_sources'])},sort_keys=True))"
+      ],
+      "duration_ms": 598,
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "{\"option_fields\": [\"tools\", \"allowed_tools\", \"system_prompt\", \"mcp_servers\", \"strict_mcp_config\", \"permission_mode\", \"continue_conversation\", \"resume\", \"session_id\", \"max_turns\", \"max_budget_usd\", \"disallowed_tools\", \"model\", \"fallback_model\", \"betas\", \"permission_prompt_tool_name\", \"cwd\", \"cli_path\", \"settings\", \"add_dirs\", \"env\", \"extra_args\", \"max_buffer_size\", \"debug_stderr\", \"stderr\", \"can_use_tool\", \"hooks\", \"user\", \"include_partial_messages\", \"include_hook_events\", \"fork_session\", \"agents\", \"setting_sources\", \"skills\", \"sandbox\", \"plugins\", \"max_thinking_tokens\", \"thinking\", \"effort\", \"output_format\", \"enable_file_checkpointing\", \"session_store\", \"session_store_flush\", \"load_timeout_ms\", \"task_budget\"], \"setting_sources\": \"list[typing.Literal['user', 'project', 'local']] | None\", \"version\": \"0.2.125\"}",
+      "timed_out": false
+    },
+    "pinned_version": "0.2.125",
+    "reason": null,
+    "schema": {
+      "option_fields": [
+        "tools",
+        "allowed_tools",
+        "system_prompt",
+        "mcp_servers",
+        "strict_mcp_config",
+        "permission_mode",
+        "continue_conversation",
+        "resume",
+        "session_id",
+        "max_turns",
+        "max_budget_usd",
+        "disallowed_tools",
+        "model",
+        "fallback_model",
+        "betas",
+        "permission_prompt_tool_name",
+        "cwd",
+        "cli_path",
+        "settings",
+        "add_dirs",
+        "env",
+        "extra_args",
+        "max_buffer_size",
+        "debug_stderr",
+        "stderr",
+        "can_use_tool",
+        "hooks",
+        "user",
+        "include_partial_messages",
+        "include_hook_events",
+        "fork_session",
+        "agents",
+        "setting_sources",
+        "skills",
+        "sandbox",
+        "plugins",
+        "max_thinking_tokens",
+        "thinking",
+        "effort",
+        "output_format",
+        "enable_file_checkpointing",
+        "session_store",
+        "session_store_flush",
+        "load_timeout_ms",
+        "task_budget"
+      ],
+      "setting_sources": "list[typing.Literal['user', 'project', 'local']] | None",
+      "version": "0.2.125"
+    },
+    "state": "PASS"
+  },
+  "codex": {
+    "auth": {
+      "file_mode": "0o600",
+      "fixture_shape": [
+        "auth_mode",
+        "OPENAI_API_KEY"
+      ],
+      "login_status": {
+        "argv": [
+          "codex",
+          "login",
+          "status"
+        ],
+        "duration_ms": 14,
+        "returncode": 0,
+        "stderr": "Logged in using an API key - <P20_SENTINEL>",
+        "stdout": "",
+        "timed_out": false
+      },
+      "note": "native parser sees the isolated sentinel file; no vendor request was made",
+      "state": "PASS"
+    },
+    "auth_refresh": {
+      "reason": "no authorized test OAuth account; refresh was not attempted",
+      "state": "NOT_RUN"
+    },
+    "commands": [
+      {
+        "argv": [
+          "codex",
+          "--version"
+        ],
+        "duration_ms": 12,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "codex-cli 0.153.4",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "codex",
+          "--help"
+        ],
+        "duration_ms": 12,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Codex CLI\n\nIf no subcommand is specified, options will be forwarded to the interactive CLI.\n\nUsage: codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]\n\nCommands:\n  agents            Browse all agent sessions on the shared local app-server daemon\n  exec              Run Codex non-interactively [aliases: e]\n  review            Run a code review non-interactively\n  login             Manage login\n  logout            Remove stored authentication credentials\n  mcp               Manage external MCP servers for Codex\n  plugin            Manage Codex plugins\n  mcp-server        Start Codex as an MCP server (stdio)\n  app-server        [experimental] Run the app server or related tooling\n  remote-control    [experimental] Manage the app-server daemon with remote control enabled\n  app               Launch the Desktop app (opens the app installer if missing)\n  completion        Generate shell completion scripts\n  update            Update Codex to the latest version\n  doctor            Diagnose local Codex installation, config, auth, and runtime health\n  sandbox           Run commands within a Codex-provided sandbox\n  debug             Debugging tools\n  apply             Apply the latest diff produced by Codex agent as a `git apply` to your local\n                    working tree [aliases: a]\n  resume            Resume a previous interactive session (picker by default; use --last to continue\n                    the most recent)\n  queue             Queue a message for an existing session\n  archive           Archive a saved session by id or session name\n  delete            Permanently delete a saved session by id or session name\n  migrate-rollouts  Inspect or migrate legacy local sessions to paginated thread history\n  unarchive         Unarchive a saved session by id or session name\n  fork              Fork a previous interactive session (picker by default; use --last to fork the\n                    most recent)\n  cloud             [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally\n  exec-server       [EXPERIMENTAL] Run the standalone exec-server service\n  features          Inspect feature flags\n  help              Print this message or the help of the given subcommand(s)\n\nArguments:\n  [PROMPT]\n          Optional user prompt to start the session\n\nOptions:\n  -c, --config <key=value>\n          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.\n          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed\n          as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n          \n          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c\n          shell_environment_policy.inherit=all`\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n      --remote <ADDR>\n          Connect the TUI to a remote app server endpoint.\n          \n          Accepted forms: `ws://host:port`, `wss://host:port`, `unix://`, or `unix://PATH`.\n\n      --remote-auth-token-env <ENV_VAR>\n          Name of the environment variable containing the bearer token to send to a remote app\n          server websocket\n\n      --strict-config\n          Error out when config.toml contains fields that are not recognized by this version of\n          Codex\n\n  -i, --image <FILE>...\n          Optional image(s) to attach to the initial prompt\n\n  -m, --model <MODEL>\n          Model the agent should use\n\n      --oss\n          Use open-source provider\n\n      --local-provider <OSS_PROVIDER>\n          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,\n          will use config default or show selection\n\n  -p, --profile <CONFIG_PROFILE_V2>\n          Layer $CODEX_HOME/<name>.config.toml on top of the base user config\n\n  -s, --sandbox <SANDBOX_MODE>\n          Select the sandbox policy to use when executing model-generated shell commands\n          \n          [possible values: read-only, workspace-write, danger-full-access]\n\n      --approve-for-me\n          Route approval requests through automatic review using the workspace-write sandbox\n\n      --dangerously-bypass-approvals-and-sandbox\n          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY\n          DANGEROUS. Intended solely for running in environments that are externally sandboxed\n\n      --dangerously-bypass-hook-trust\n          Run enabled hooks without requiring persisted hook trust for this invocation. DANGEROUS.\n          Intended only for automation that already vets hook sources\n\n  -C, --cd <DIR>\n          Tell the agent to use the specified directory as its working root\n\n      --add-dir <DIR>\n          Additional directories that should be writable alongside the primary workspace\n\n  -a, --ask-for-approval <APPROVAL_POLICY>\n          Configure when the model requires human approval before executing a command\n\n          Possible values:\n          - on-request: The model decides when to ask the user for approval\n          - never:      Never ask for user approval Execution failures are immediately returned to\n            the model\n\n      --search\n          Enable live web search. When enabled, the native Responses `web_search` tool is available\n          to the model (no per\u2011call approval)\n\n      --no-alt-screen\n          Disable alternate screen mode\n          \n          Runs the TUI in inline mode, preserving terminal scrollback history.\n\n  -h, --help\n          Print help (see a summary with '-h')\n\n  -V, --version\n          Print version",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "codex",
+          "login",
+          "--help"
+        ],
+        "duration_ms": 11,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Manage login\n\nUsage: codex login [OPTIONS] [COMMAND]\n\nCommands:\n  status  Show login status\n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n  -c, --config <key=value>\n          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.\n          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed\n          as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n          \n          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c\n          shell_environment_policy.inherit=all`\n\n      --with-api-key\n          Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --with-access-token\n          Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | codex login\n          --with-access-token`)\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n      --device-auth\n          \n\n  -h, --help\n          Print help (see a summary with '-h')",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "codex",
+          "login",
+          "status",
+          "--help"
+        ],
+        "duration_ms": 11,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Show login status\n\nUsage: codex login status [OPTIONS]\n\nOptions:\n  -c, --config <key=value>\n          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.\n          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed\n          as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n          \n          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c\n          shell_environment_policy.inherit=all`\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n  -h, --help\n          Print help (see a summary with '-h')",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "codex",
+          "login",
+          "status"
+        ],
+        "duration_ms": 14,
+        "returncode": 0,
+        "stderr": "Logged in using an API key - <P20_SENTINEL>",
+        "stdout": "",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "codex",
+          "app-server",
+          "--help"
+        ],
+        "duration_ms": 10,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "[experimental] Run the app server or related tooling\n\nUsage: codex app-server [OPTIONS] [COMMAND]\n\nCommands:\n  daemon                Manage the local app-server daemon\n  proxy                 Proxy stdio bytes to the running app-server control socket\n  generate-ts           [experimental] Generate TypeScript bindings for the app server protocol\n  generate-json-schema  [experimental] Generate JSON Schema for the app server protocol\n  help                  Print this message or the help of the given subcommand(s)\n\nOptions:\n  -c, --config <key=value>\n          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.\n          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed\n          as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n          \n          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c\n          shell_environment_policy.inherit=all`\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n      --code-mode-host <URL>\n          Connect to a remote code-mode host instead of starting a local host\n\n      --strict-config\n          Error out when config.toml contains fields that are not recognized by this version of\n          Codex\n\n      --listen <URL>\n          Transport endpoint URL. Supported values: `stdio://` (default), `unix://`, `unix://PATH`,\n          `ws://IP:PORT`, `off`\n          \n          [default: stdio://]\n\n      --stdio\n          Use stdio as the transport (equivalent to `--listen stdio://`)\n\n      --analytics-default-enabled\n          Controls whether analytics are enabled by default.\n          \n          Analytics are disabled by default for app-server. Users have to explicitly opt in via the\n          `analytics` section in the config.toml file.\n          \n          However, for first-party use cases like the VSCode IDE extension, we default analytics to\n          be enabled by default by setting this flag. Users can still opt out by setting this in\n          their config.toml:\n          \n          ```toml [analytics] enabled = false ```\n          \n          See https://developers.openai.com/codex/config-advanced/#metrics for more details.\n\n      --ws-auth <MODE>\n          Websocket auth mode for non-loopback listeners\n          \n          [possible values: capability-token, signed-bearer-token]\n\n      --ws-token-file <PATH>\n          Absolute path to the capability-token file\n\n      --ws-token-sha256 <HEX>\n          Hex-encoded SHA-256 digest of the capability token\n\n      --ws-shared-secret-file <PATH>\n          Absolute path to the shared secret file for signed JWT bearer tokens\n\n      --ws-issuer <ISSUER>\n          Expected issuer for signed JWT bearer tokens\n\n      --ws-audience <AUDIENCE>\n          Expected audience for signed JWT bearer tokens\n\n      --ws-max-clock-skew-seconds <SECONDS>\n          Maximum clock skew when validating signed JWT bearer tokens\n\n  -h, --help\n          Print help (see a summary with '-h')",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "codex",
+          "app-server",
+          "generate-json-schema",
+          "--help"
+        ],
+        "duration_ms": 10,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "[experimental] Generate JSON Schema for the app server protocol\n\nUsage: codex app-server generate-json-schema [OPTIONS] --out <DIR>\n\nOptions:\n  -c, --config <key=value>\n          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.\n          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed\n          as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n          \n          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c\n          shell_environment_policy.inherit=all`\n\n  -o, --out <DIR>\n          Output directory where the schema bundle will be written\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --experimental\n          Include experimental methods and fields in the generated output\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n  -h, --help\n          Print help (see a summary with '-h')",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "codex",
+          "doctor",
+          "--help"
+        ],
+        "duration_ms": 10,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Diagnose local Codex installation, config, auth, and runtime health\n\nUsage: codex doctor [OPTIONS]\n\nOptions:\n  -c, --config <key=value>\n          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.\n          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed\n          as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n          \n          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c\n          shell_environment_policy.inherit=all`\n\n      --json\n          Emit a redacted machine-readable report\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n      --summary\n          Only show grouped check rows and the final count summary\n\n      --all\n          Expand long lists in detailed human output\n\n      --no-color\n          Disable ANSI color in human output\n\n      --ascii\n          Use ASCII status labels and separators in human output\n\n  -h, --help\n          Print help (see a summary with '-h')",
+        "timed_out": false
+      }
+    ],
+    "config_discovery": {
+      "effective_model": "p20-codex-project-sentinel",
+      "layer_files": [
+        null,
+        "<PROBE_ROOT>/codex/config.toml",
+        "/etc/codex/config.toml"
+      ],
+      "layer_types": [
+        "project",
+        "user",
+        "system"
+      ],
+      "rpc": {
+        "argv": [
+          "codex",
+          "app-server",
+          "--stdio"
+        ],
+        "other_messages": [
+          {
+            "emittedAtMs": 1789962035574,
+            "method": "configWarning",
+            "params": {
+              "details": null,
+              "summary": "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n    1. <PROBE_ROOT>/workspace/.codex\n       To load project-local config, hooks, and exec policies, add <PROBE_ROOT>/workspace as a trusted project in <PROBE_ROOT>/codex/config.toml.\n"
+            }
+          },
+          {
+            "emittedAtMs": 1789962035574,
+            "method": "remoteControl/status/changed",
+            "params": {
+              "environmentId": null,
+              "installationId": "4e84f2fd-a7f8-43fa-8670-f12a0bb94554",
+              "serverName": "hq.example.invalid",
+              "status": "disabled"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "responses": {
+          "1": {
+            "id": 1,
+            "result": {
+              "codexHome": "<PROBE_ROOT>/codex",
+              "platformFamily": "unix",
+              "platformOs": "macos",
+              "userAgent": "agent-home-p20-probe/0.153.4 (Mac OS 26.5.2; arm64) dumb (agent-home-p20-probe; 1)"
+            }
+          },
+          "2": {
+            "id": 2,
+            "result": {
+              "config": {
+                "agents": null,
+                "allow_login_shell": true,
+                "analytics": null,
+                "approval_policy": null,
+                "approvals_reviewer": null,
+                "apps": null,
+                "apps_mcp_product_sku": null,
+                "audio": null,
+                "auto_review": null,
+                "background_terminal_max_timeout": 300000,
+                "browser_use": null,
+                "chatgpt_base_url": "https://chatgpt.com/backend-api/",
+                "check_for_update_on_startup": false,
+                "cli_auth_credentials_store": "file",
+                "compact_prompt": null,
+                "computer_use": null,
+                "default_permissions": null,
+                "desktop": null,
+                "developer_instructions": null,
+                "disable_paste_burst": null,
+                "experimental_compact_prompt_file": null,
+                "experimental_realtime_start_instructions": null,
+                "experimental_realtime_webrtc_call_base_url": null,
+                "experimental_realtime_ws_backend_prompt": null,
+                "experimental_realtime_ws_base_url": null,
+                "experimental_realtime_ws_model": null,
+                "experimental_realtime_ws_startup_context": null,
+                "experimental_thread_store": null,
+                "experimental_thread_store_endpoint": null,
+                "experimental_use_unified_exec_tool": null,
+                "features": {
+                  "auth_elicitation": true,
+                  "background_paginated_rollout_migration": false,
+                  "mcp_2026_07_28": false,
+                  "memories": false,
+                  "mentions_v2": true,
+                  "network_proxy": null,
+                  "remote_control": false,
+                  "remote_plugin": true,
+                  "tool_suggest": true
+                },
+                "feedback": null,
+                "file_opener": "vscode",
+                "forced_chatgpt_workspace_id": null,
+                "forced_login_method": null,
+                "ghost_snapshot": null,
+                "goals": null,
+                "hide_agent_reasoning": false,
+                "history": {
+                  "max_bytes": null,
+                  "persistence": "save-all"
+                },
+                "hooks": null,
+                "include_apps_instructions": true,
+                "include_collaboration_mode_instructions": true,
+                "include_environment_context": true,
+                "include_permissions_instructions": true,
+                "instructions": null,
+                "js_repl_node_module_dirs": null,
+                "js_repl_node_path": null,
+                "log_dir": null,
+                "marketplaces": {},
+                "mcp_oauth_callback_port": null,
+                "mcp_oauth_callback_url": null,
+                "mcp_oauth_credentials_store": "auto",
+                "mcp_optional_startup_grace_ms": null,
+                "mcp_servers": {},
+                "memories": null,
+                "model": "p20-codex-project-sentinel",
+                "model_auto_compact_token_limit": null,
+                "model_auto_compact_token_limit_scope": null,
+                "model_catalog_json": null,
+                "model_context_window": null,
+                "model_instructions_file": null,
+                "model_provider": null,
+                "model_providers": {},
+                "model_reasoning_effort": null,
+                "model_reasoning_summary": null,
+                "model_verbosity": null,
+                "notice": null,
+                "notify": null,
+                "openai_base_url": null,
+                "orchestrator": null,
+                "oss_provider": null,
+                "otel": null,
+                "permissions": null,
+                "personality": null,
+                "plan_mode_reasoning_effort": null,
+                "plugins": {},
+                "profile": null,
+                "profiles": {},
+                "project_doc_fallback_filenames": [],
+                "project_doc_max_bytes": 32768,
+                "project_root_markers": [
+                  ".git"
+                ],
+                "projects": {
+                  "<PROBE_ROOT>/workspace": {
+                    "trust_level": "trusted"
+                  }
+                },
+                "realtime": null,
+                "responses_api_metadata": null,
+                "review_model": null,
+                "sandbox_mode": null,
+                "sandbox_workspace_write": null,
+                "service_tier": null,
+                "shell_environment_policy": {
+                  "exclude": null,
+                  "experimental_use_profile": null,
+                  "filters": null,
+                  "ignore_default_excludes": null,
+                  "include_only": null,
+                  "inherit": null,
+                  "set": null
+                },
+                "show_raw_agent_reasoning": null,
+                "skills": null,
+                "sqlite_home": null,
+                "suppress_unstable_features_warning": null,
+                "tool_output_token_limit": null,
+                "tool_suggest": null,
+                "tools": null,
+                "tui": null,
+                "web_search": null,
+                "windows": null
+              },
+              "layers": [
+                {
+                  "config": {
+                    "features": {
+                      "memories": false
+                    },
+                    "model": "p20-codex-project-sentinel"
+                  },
+                  "name": {
+                    "dotCodexFolder": "<PROBE_ROOT>/workspace/.codex",
+                    "type": "project"
+                  },
+                  "version": "sha256:efdd0f7296992b91eee0a1cb661af5ff5693d755fa0aead07e78cb4439a78330"
+                },
+                {
+                  "config": {
+                    "check_for_update_on_startup": false,
+                    "cli_auth_credentials_store": "file",
+                    "features": {
+                      "memories": false
+                    },
+                    "model": "p20-codex-user-sentinel",
+                    "projects": {
+                      "<PROBE_ROOT>/workspace": {
+                        "trust_level": "trusted"
+                      }
+                    }
+                  },
+                  "name": {
+                    "file": "<PROBE_ROOT>/codex/config.toml",
+                    "profile": null,
+                    "type": "user"
+                  },
+                  "version": "sha256:d53fee32e9481f6fa8d18a0e006fa339447207ea7d77b4a9991747df63a35d5b"
+                },
+                {
+                  "config": {},
+                  "name": {
+                    "file": "/etc/codex/config.toml",
+                    "type": "system"
+                  },
+                  "version": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              ],
+              "origins": {
+                "check_for_update_on_startup": {
+                  "name": {
+                    "file": "<PROBE_ROOT>/codex/config.toml",
+                    "profile": null,
+                    "type": "user"
+                  },
+                  "version": "sha256:d53fee32e9481f6fa8d18a0e006fa339447207ea7d77b4a9991747df63a35d5b"
+                },
+                "cli_auth_credentials_store": {
+                  "name": {
+                    "file": "<PROBE_ROOT>/codex/config.toml",
+                    "profile": null,
+                    "type": "user"
+                  },
+                  "version": "sha256:d53fee32e9481f6fa8d18a0e006fa339447207ea7d77b4a9991747df63a35d5b"
+                },
+                "features.memories": {
+                  "name": {
+                    "dotCodexFolder": "<PROBE_ROOT>/workspace/.codex",
+                    "type": "project"
+                  },
+                  "version": "sha256:efdd0f7296992b91eee0a1cb661af5ff5693d755fa0aead07e78cb4439a78330"
+                },
+                "model": {
+                  "name": {
+                    "dotCodexFolder": "<PROBE_ROOT>/workspace/.codex",
+                    "type": "project"
+                  },
+                  "version": "sha256:efdd0f7296992b91eee0a1cb661af5ff5693d755fa0aead07e78cb4439a78330"
+                },
+                "projects.<PROBE_ROOT>/workspace.trust_level": {
+                  "name": {
+                    "file": "<PROBE_ROOT>/codex/config.toml",
+                    "profile": null,
+                    "type": "user"
+                  },
+                  "version": "sha256:d53fee32e9481f6fa8d18a0e006fa339447207ea7d77b4a9991747df63a35d5b"
+                }
+              }
+            }
+          }
+        },
+        "state": "PASS",
+        "stderr": "2026-09-21T03:40:35.520408Z ERROR codex_app_server: Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n    1. <PROBE_ROOT>/workspace/.codex\n       To load project-local config, hooks, and exec policies, add <PROBE_ROOT>/workspace as a trusted project in <PROBE_ROOT>/codex/config.toml."
+      },
+      "state": "PASS"
+    },
+    "executable": "/Users/ci-runner/.local/bin/codex",
+    "executable_sha256": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+    "resolved_executable": "/Users/ci-runner/.codex/packages/standalone/releases/0.153.4-aarch64-apple-darwin/bin/codex",
+    "schema_generation": {
+      "command": {
+        "argv": [
+          "codex",
+          "app-server",
+          "generate-json-schema",
+          "--out",
+          "/var/folders/c9/08j4d2c14mzgjsnfgz0twbww0000gn/T/agent-home-p20-sa3ke4qt/codex-probe/schema"
+        ],
+        "duration_ms": 38,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "",
+        "timed_out": false
+      },
+      "manifest": {
+        "file_count": 304,
+        "files": [
+          {
+            "bytes": 2657,
+            "path": "ApplyPatchApprovalParams.json",
+            "sha256": "179d91081c3c84d0f79fc544a3d6d423f280c0f9d93512cdd0344c80e09b99a3"
+          },
+          {
+            "bytes": 4278,
+            "path": "ApplyPatchApprovalResponse.json",
+            "sha256": "a5e145b4794ea91da6eb478626fac96bbbd4485c3399fabd1c9972d53d2d9010"
+          },
+          {
+            "bytes": 118,
+            "path": "AttestationGenerateParams.json",
+            "sha256": "b85df8f169cfbca98724df3a5f7550fc4649fa69b23f5160aafdb52e027133a8"
+          },
+          {
+            "bytes": 277,
+            "path": "AttestationGenerateResponse.json",
+            "sha256": "2eb86b2a37bca01a8cb5d0822f28cf13d46dd106c8b1d38e7ba097e436b5ab30"
+          },
+          {
+            "bytes": 971,
+            "path": "ChatgptAuthTokensRefreshParams.json",
+            "sha256": "03b7a734b8b3180d9cb477b33564385d29b22a2528165a614891f13849060503"
+          },
+          {
+            "bytes": 406,
+            "path": "ChatgptAuthTokensRefreshResponse.json",
+            "sha256": "06d6b30436fc962d80b5d7920f8f323de12a052214d9148c5f0dfbaedd5eec6c"
+          },
+          {
+            "bytes": 431,
+            "path": "ClientNotification.json",
+            "sha256": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a"
+          },
+          {
+            "bytes": 196747,
+            "path": "ClientRequest.json",
+            "sha256": "25bc001b5dfe3b35785597b8f9ad9e5aaf7e437331fa9921f041c9e0e03fc9f3"
+          },
+          {
+            "bytes": 15559,
+            "path": "CommandExecutionRequestApprovalParams.json",
+            "sha256": "16a71816c2d66e319c2c4aa83dd636dfdc43c61e72b6d5475e421ce08d8e6558"
+          },
+          {
+            "bytes": 3202,
+            "path": "CommandExecutionRequestApprovalResponse.json",
+            "sha256": "6d0767113e22f311381809b6b236b0dde2b99b01992879c26bf7b1ea0e003cb7"
+          },
+          {
+            "bytes": 519,
+            "path": "DynamicToolCallParams.json",
+            "sha256": "401bba20cfbd95762bef0467d840430c46be53369093ad9f26425ba757e34efc"
+          },
+          {
+            "bytes": 2010,
+            "path": "DynamicToolCallResponse.json",
+            "sha256": "abb082cad67f11fcc98ba75f2eff75d7d1723af0c657655329b83ff160451a02"
+          },
+          {
+            "bytes": 3768,
+            "path": "ExecCommandApprovalParams.json",
+            "sha256": "653116614df1aa5011c3cc399cf79bae6b9eb28c1d527df27275abf61ceb1365"
+          },
+          {
+            "bytes": 4279,
+            "path": "ExecCommandApprovalResponse.json",
+            "sha256": "80dba6d9f28d19c57960db72340554c193624f014cd496714a0c7aabe1120046"
+          },
+          {
+            "bytes": 968,
+            "path": "FileChangeRequestApprovalParams.json",
+            "sha256": "13848b26814c286ad6425a20d01c1691c86790e1f9e2529399677a8a22fe0d18"
+          },
+          {
+            "bytes": 1158,
+            "path": "FileChangeRequestApprovalResponse.json",
+            "sha256": "b95b03ee6be674e25cee2e863cc135a28620e1070addd2f34685aadee27cde08"
+          },
+          {
+            "bytes": 413,
+            "path": "FuzzyFileSearchParams.json",
+            "sha256": "0291dbb87a7c3d8ef7f7cdf8d5d61f929deabab8c0ea79f064da95984d7d5f4f"
+          },
+          {
+            "bytes": 1332,
+            "path": "FuzzyFileSearchResponse.json",
+            "sha256": "4984c3dba591e240407c39531d41c6b499c4816017de70a3371c7d6fa2d0951f"
+          },
+          {
+            "bytes": 244,
+            "path": "FuzzyFileSearchSessionCompletedNotification.json",
+            "sha256": "d3af2e301142ac0cb2462d95b052162ff4f25d83f9c1b21e319d5ce9c860d401"
+          },
+          {
+            "bytes": 1474,
+            "path": "FuzzyFileSearchSessionUpdatedNotification.json",
+            "sha256": "b8626521028e0c68611c57d458f27dbc9bf8be542e804865ae0d14acd78cf2e6"
+          },
+          {
+            "bytes": 893,
+            "path": "JSONRPCError.json",
+            "sha256": "d7ea353d4875ae204625da5a00a1ecb5afc69101d5778b9acc253a49f8932992"
+          },
+          {
+            "bytes": 314,
+            "path": "JSONRPCErrorError.json",
+            "sha256": "12cc5cd5d9df9246defa609c472375020fe5250f3aeabd7d529076cecd9f541e"
+          },
+          {
+            "bytes": 2888,
+            "path": "JSONRPCMessage.json",
+            "sha256": "6da4cc373a7ccd01f5608ad4496eeb4d44b6a9b0d3158e85ed66b59f3c0b5114"
+          },
+          {
+            "bytes": 303,
+            "path": "JSONRPCNotification.json",
+            "sha256": "c2b43f26880db331393fe09f34bdd76dfeb4dc30d8418d1c26e18db166d6c8c8"
+          },
+          {
+            "bytes": 1093,
+            "path": "JSONRPCRequest.json",
+            "sha256": "31bd6f360b2dd8a7ceaf682708105d40d38cb0b9d0821357a04da67028438f73"
+          },
+          {
+            "bytes": 520,
+            "path": "JSONRPCResponse.json",
+            "sha256": "4796738c04c74288213a08fb8d820c7b4df19e0977cdcd35b65ffcb43cfc93ab"
+          },
+          {
+            "bytes": 13636,
+            "path": "McpServerElicitationRequestParams.json",
+            "sha256": "5cbeb6bc702d2efa076da4c1dfb00672c970c1bad747031eb880b9ab907815c0"
+          },
+          {
+            "bytes": 741,
+            "path": "McpServerElicitationRequestResponse.json",
+            "sha256": "792a012fdfe53ac211575a6c37ffbd492be848d15cb313d1bb4b534ade1f54ac"
+          },
+          {
+            "bytes": 7719,
+            "path": "PermissionsRequestApprovalParams.json",
+            "sha256": "c6d165e1b0c65d5dcf1e099b4c226c7e4dad79fe2b88b03621a1fc6c1d3c86c2"
+          },
+          {
+            "bytes": 7068,
+            "path": "PermissionsRequestApprovalResponse.json",
+            "sha256": "23f3f24e9dbf35db3e0b85703f0d934da5a1cff3cbb611fba8bcd41f3b4a04b0"
+          },
+          {
+            "bytes": 197,
+            "path": "RequestId.json",
+            "sha256": "9c72d59a306d827113020c6d31a14c326d55210d9bd6954f825196a52009f1c7"
+          },
+          {
+            "bytes": 200298,
+            "path": "ServerNotification.json",
+            "sha256": "b3e76cf11842f3e8b3270c05e000212b56eabafb0152fc38e8f920e2ef902991"
+          },
+          {
+            "bytes": 50320,
+            "path": "ServerRequest.json",
+            "sha256": "31f580ad468fbd18766eb7adb12744be4e3790e3357b58bd4413c0108c4f65d0"
+          },
+          {
+            "bytes": 2143,
+            "path": "ToolRequestUserInputParams.json",
+            "sha256": "fda15b62e7446105b59c8ed85c908abed2a47db70653e57c92c47a2f204fa77a"
+          },
+          {
+            "bytes": 793,
+            "path": "ToolRequestUserInputResponse.json",
+            "sha256": "5073b245f741fa8ce62ec52e4dd1809b7831f9c4284c279a78abc9b171f8e3f2"
+          },
+          {
+            "bytes": 683139,
+            "path": "codex_app_server_protocol.schemas.json",
+            "sha256": "e8284c5cb8157554a3dd1e035aadbd4325aea501af56887e9c2e12eb1b9b9448"
+          },
+          {
+            "bytes": 583707,
+            "path": "codex_app_server_protocol.v2.schemas.json",
+            "sha256": "d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a"
+          },
+          {
+            "bytes": 2143,
+            "path": "v1/InitializeParams.json",
+            "sha256": "6f0094be9a65242ec779a40794cbd4fdfa32fca1e45084a16adfb50501d33ea2"
+          },
+          {
+            "bytes": 1286,
+            "path": "v1/InitializeResponse.json",
+            "sha256": "62ad689c2cb6379913c1d72749cfd8de5089d35760214123518eb92eef11acc9"
+          },
+          {
+            "bytes": 720,
+            "path": "v2/AccountLoginCompletedNotification.json",
+            "sha256": "d81e8821fd5a4a9ad118dfc3506ea156d32dcb18da388b336501bbc6a5ccb4a6"
+          },
+          {
+            "bytes": 4532,
+            "path": "v2/AccountRateLimitsUpdatedNotification.json",
+            "sha256": "c50daa6abb4723ca1edffdae9d0d6ca452770669ed045fae48d0fe9b20c6ea81"
+          },
+          {
+            "bytes": 2745,
+            "path": "v2/AccountUpdatedNotification.json",
+            "sha256": "9bf450d9d9ea23a2bac9c9cb0a68c2de8f89a97bdeb4485c91762bb4d43295b8"
+          },
+          {
+            "bytes": 406,
+            "path": "v2/AgentMessageDeltaNotification.json",
+            "sha256": "996e6c0ea65e57bed5a00f410b94381fe5ebf804333e5d00c2b6e6d47e5c55f6"
+          },
+          {
+            "bytes": 5703,
+            "path": "v2/AppListUpdatedNotification.json",
+            "sha256": "2c67a3bc676309afdd0d6952ad454c2a040a3d4c09d38c8f63ca7fb632034cce"
+          },
+          {
+            "bytes": 570,
+            "path": "v2/AppsInstalledParams.json",
+            "sha256": "c2027510d5d041c2205349036f9c2bea10b20df309de5330beab9de8a9e50bdb"
+          },
+          {
+            "bytes": 1343,
+            "path": "v2/AppsInstalledResponse.json",
+            "sha256": "d8ef8dd14dcba8aaaaaf2b0b80db90d66edf8f4ff422589b844ae2b0edcb46d4"
+          },
+          {
+            "bytes": 904,
+            "path": "v2/AppsListParams.json",
+            "sha256": "e880d0c24811118a2d3c2c7f0569a14aae5b12a31b0efe56809ccca8bbd85802"
+          },
+          {
+            "bytes": 5888,
+            "path": "v2/AppsListResponse.json",
+            "sha256": "5811fda68d6274decfc11744ad72bbe93e601d8514549e94f361ba3131d1adeb"
+          },
+          {
+            "bytes": 823,
+            "path": "v2/AppsReadParams.json",
+            "sha256": "61e6a9d35515f3164a7f7e7a5b0c5ac92817c5a3b5d7fb27e9a704fe2935ddf7"
+          },
+          {
+            "bytes": 2443,
+            "path": "v2/AppsReadResponse.json",
+            "sha256": "f3b73c2c31f16a2cff013c9682dfea48f26571f94002195c93ce10722a288791"
+          },
+          {
+            "bytes": 409,
+            "path": "v2/AuthRecoveryNotification.json",
+            "sha256": "c19238d43cf8bf610ea346afefc390b9ffa4f01e98ec6b42af0addf29d6cb7d5"
+          },
+          {
+            "bytes": 221,
+            "path": "v2/CancelLoginAccountParams.json",
+            "sha256": "a4570a7542b82b918f69199f1e214ef747151c678473a5af58c58b088fdf58b6"
+          },
+          {
+            "bytes": 404,
+            "path": "v2/CancelLoginAccountResponse.json",
+            "sha256": "06bc17624df01600fdc399d3c0f222f875c010d2d952c1d1191cb84de9b59014"
+          },
+          {
+            "bytes": 1585,
+            "path": "v2/CommandExecOutputDeltaNotification.json",
+            "sha256": "28e74454b211ab677a256129e623fc5a2a29ce5394da1c69d3bc5136f7e37c57"
+          },
+          {
+            "bytes": 7397,
+            "path": "v2/CommandExecParams.json",
+            "sha256": "e4f20080b92c6199cf132941840c4bd0fb9a90e3fec197ceb0e1ce9084346e18"
+          },
+          {
+            "bytes": 1216,
+            "path": "v2/CommandExecResizeParams.json",
+            "sha256": "b748fee19979d2c32ac17a460ccfdc761e125cc2939bc551945e1e2c2af34197"
+          },
+          {
+            "bytes": 188,
+            "path": "v2/CommandExecResizeResponse.json",
+            "sha256": "01da20d70957fa5b43cf41365c5fee4fb3a69927947a45f92866f9bcf0895d0f"
+          },
+          {
+            "bytes": 699,
+            "path": "v2/CommandExecResponse.json",
+            "sha256": "dec52d187121e8dd48124b47a4a8d8428ef3717b98b9200345bb404f73b62c9d"
+          },
+          {
+            "bytes": 404,
+            "path": "v2/CommandExecTerminateParams.json",
+            "sha256": "979ece7059c6713d0909ab1690daec27149510f4ea2ec10014600bfb1d631c97"
+          },
+          {
+            "bytes": 194,
+            "path": "v2/CommandExecTerminateResponse.json",
+            "sha256": "d46aa76d952bb3ac95d0bd64de609fb8a82efd98d9ee38264fe3673fd184ce5d"
+          },
+          {
+            "bytes": 716,
+            "path": "v2/CommandExecWriteParams.json",
+            "sha256": "3e8e849ce321c85987bbe96ce1f913df0047696a5207bc97dfa1409b0142eda8"
+          },
+          {
+            "bytes": 186,
+            "path": "v2/CommandExecWriteResponse.json",
+            "sha256": "22887250f84443b2a6f5fc6f9c46cf9e2af072ff631574340018c48771411571"
+          },
+          {
+            "bytes": 416,
+            "path": "v2/CommandExecutionOutputDeltaNotification.json",
+            "sha256": "841fa94098ddb63a71acf1bf5f9e3fac1b0491f4ed3fa8ef86f9a6ca1260b539"
+          },
+          {
+            "bytes": 1325,
+            "path": "v2/ConfigBatchWriteParams.json",
+            "sha256": "d11e244258ffaf8a37a0ca4afdbe589d07cb7881b72f06b7f730fddbab9ad613"
+          },
+          {
+            "bytes": 495,
+            "path": "v2/ConfigReadParams.json",
+            "sha256": "257c54a423b47c1d209ff1076765a1564d82322fd5161670fd489a2874de1bac"
+          },
+          {
+            "bytes": 27473,
+            "path": "v2/ConfigReadResponse.json",
+            "sha256": "bd72c94e2c7d49ead6a20bcf54afedc8db11044bf8cadb387e42135dd5d1e342"
+          },
+          {
+            "bytes": 23562,
+            "path": "v2/ConfigRequirementsReadResponse.json",
+            "sha256": "7f3cd9856eeb581985a4dcd1acd90be8efa30a7929a96e4e74b6b9a3d878118f"
+          },
+          {
+            "bytes": 763,
+            "path": "v2/ConfigValueWriteParams.json",
+            "sha256": "b9032e35bf64d4628bfc72e22b58b71bbcf754aeb720a86eacb091e0137547c9"
+          },
+          {
+            "bytes": 1640,
+            "path": "v2/ConfigWarningNotification.json",
+            "sha256": "533e713405b582cce4d772d0b4ebbc75e840f0fe71cedbb17c2c83da285a21d4"
+          },
+          {
+            "bytes": 8685,
+            "path": "v2/ConfigWriteResponse.json",
+            "sha256": "1d690287d9e8a0c552f664038d3810dfc3903ec8042eb2c0f772856414f59954"
+          },
+          {
+            "bytes": 594,
+            "path": "v2/ConsumeAccountRateLimitResetCreditParams.json",
+            "sha256": "ce36a9f59ce3b8138fccdca042538f723e93d0e34d08441e6846d3153ee0b291"
+          },
+          {
+            "bytes": 1177,
+            "path": "v2/ConsumeAccountRateLimitResetCreditResponse.json",
+            "sha256": "6d4144c00dcb7f73be6ad24693ff7e539bad56064e4432f7f2bf8d20b3bab724"
+          },
+          {
+            "bytes": 362,
+            "path": "v2/ContextCompactedNotification.json",
+            "sha256": "c9f9a58ef680e09d568cff5f24b45895841e1cf138b650bae64dcf6c85f177af"
+          },
+          {
+            "bytes": 457,
+            "path": "v2/DeprecationNoticeNotification.json",
+            "sha256": "29fdb44fc0a09bfdc5c4924ff34e33679acc9201730fa4fe9be7ed1978af0b72"
+          },
+          {
+            "bytes": 306,
+            "path": "v2/EnvironmentConnectionNotification.json",
+            "sha256": "007e9a6ccae0003a56476bb7cdc9a097141e964c168e7ae43d213a763c93fb56"
+          },
+          {
+            "bytes": 6895,
+            "path": "v2/ErrorNotification.json",
+            "sha256": "d77732536ef8864799e4fbb5bf6965a9f1970a6195e523f144252a82287c08e7"
+          },
+          {
+            "bytes": 509,
+            "path": "v2/ExperimentalFeatureEnablementSetParams.json",
+            "sha256": "00aaf2ef719cc336e4d20eb26dd6158be1eb26161fb7647372804b80a02e3131"
+          },
+          {
+            "bytes": 386,
+            "path": "v2/ExperimentalFeatureEnablementSetResponse.json",
+            "sha256": "5ecd92ee95380d7cadc4c109091530aa71245e41b9f1b530a5e9d5c5c9eda95b"
+          },
+          {
+            "bytes": 827,
+            "path": "v2/ExperimentalFeatureListParams.json",
+            "sha256": "4db92977e59fea4125710babb4cd2128dc2cebef8292e3619d0844089e7fc1f5"
+          },
+          {
+            "bytes": 3066,
+            "path": "v2/ExperimentalFeatureListResponse.json",
+            "sha256": "4084a25f32333b3f58eb5e9803a5983739b57f945c4e7e4002e85851622ce597"
+          },
+          {
+            "bytes": 1414,
+            "path": "v2/ExternalAgentConfigDetectParams.json",
+            "sha256": "db6c6ea654efb4095dc745a1e65bee76d0d063b03f2bc3202b9077a1569211f8"
+          },
+          {
+            "bytes": 5240,
+            "path": "v2/ExternalAgentConfigDetectResponse.json",
+            "sha256": "36c4173d5f30ebd04be3d40389c904bc4ecadfbb8e5d1dd46b9b589254f7e1d9"
+          },
+          {
+            "bytes": 3025,
+            "path": "v2/ExternalAgentConfigImportCompletedNotification.json",
+            "sha256": "c54702d40c3a40bcb3e3e835d99860473831725acbd3576fc26d2d4fa3a7617a"
+          },
+          {
+            "bytes": 3890,
+            "path": "v2/ExternalAgentConfigImportHistoriesReadResponse.json",
+            "sha256": "1c09641e957333a2f602a350532acd99cf538a73ea45f39a2294289907a0bd96"
+          },
+          {
+            "bytes": 3237,
+            "path": "v2/ExternalAgentConfigImportHistoryRecordParams.json",
+            "sha256": "6a3e8071854771b0f34c6623fb7dcfbeaa7518a90779cc4a40c97fe92ac6f3ed"
+          },
+          {
+            "bytes": 245,
+            "path": "v2/ExternalAgentConfigImportHistoryRecordResponse.json",
+            "sha256": "a252a2c2a03b4460bf3635d517c0735fa487a2f8a97de1aa0637f930419ae656"
+          },
+          {
+            "bytes": 5152,
+            "path": "v2/ExternalAgentConfigImportParams.json",
+            "sha256": "6b8d0a8fbd5a7ddd455ec0dea6d1b578f56841480c8a5fffbfcd045db79458ee"
+          },
+          {
+            "bytes": 3024,
+            "path": "v2/ExternalAgentConfigImportProgressNotification.json",
+            "sha256": "dae7bfc12026811ba24cc6f32dc01ae9ffaee7d9340d7768f9afce94575c23d2"
+          },
+          {
+            "bytes": 232,
+            "path": "v2/ExternalAgentConfigImportResponse.json",
+            "sha256": "0ad2fc7dff7b1bdc471cc365985f559490f253ea127263417f0a0a1edcb33cef"
+          },
+          {
+            "bytes": 726,
+            "path": "v2/FeedbackUploadParams.json",
+            "sha256": "aa958cd74b37fb28cc49ce22345a1efcda9d4cf5fa47e7cce6949e5366ff8b2e"
+          },
+          {
+            "bytes": 221,
+            "path": "v2/FeedbackUploadResponse.json",
+            "sha256": "604390e864944eed2c4268675978dd8082f0884909d73cc79fda59dbe03a2d58"
+          },
+          {
+            "bytes": 544,
+            "path": "v2/FileChangeOutputDeltaNotification.json",
+            "sha256": "04c3df83d46725ffc048577e7a5aa25de9a6c8ea9eff713bbae2b408672481c5"
+          },
+          {
+            "bytes": 2159,
+            "path": "v2/FileChangePatchUpdatedNotification.json",
+            "sha256": "cfb69d18658610a0510f213e09c6847f70517410ed91cf99cc4713c15a795213"
+          },
+          {
+            "bytes": 1061,
+            "path": "v2/FsChangedNotification.json",
+            "sha256": "197693fcb852a85fedfbcf1cd00c9a3cc74dddfa09bdf6b11fdafebbcd12ea2d"
+          },
+          {
+            "bytes": 1198,
+            "path": "v2/FsCopyParams.json",
+            "sha256": "bc1135070827681e4d9a14f79b5b06a4f5652e538ae6a89642d27dbc8b2a2af1"
+          },
+          {
+            "bytes": 162,
+            "path": "v2/FsCopyResponse.json",
+            "sha256": "c88392d6c3ff394441231cdf5614794ba0c2b4ba683811f6033a01fe65528a59"
+          },
+          {
+            "bytes": 1047,
+            "path": "v2/FsCreateDirectoryParams.json",
+            "sha256": "405fd718ebafe7f47ffd82c86540ab4af663659c737ea2b25acd3e04a1bc94ea"
+          },
+          {
+            "bytes": 184,
+            "path": "v2/FsCreateDirectoryResponse.json",
+            "sha256": "a658fbd34d5e3d6300bcb7015f10fc1764aa8aca3088abc79af9caa2e848e527"
+          },
+          {
+            "bytes": 851,
+            "path": "v2/FsGetMetadataParams.json",
+            "sha256": "382bbf3a8b5c7e8cb16a1a29f853ce49c2904e563325e33a9e41dcbf632dab5e"
+          },
+          {
+            "bytes": 1005,
+            "path": "v2/FsGetMetadataResponse.json",
+            "sha256": "b8355f112eda37d7ff25ad0eda7dae912dba695961855c5cb8444a7f867d66c2"
+          },
+          {
+            "bytes": 862,
+            "path": "v2/FsReadDirectoryParams.json",
+            "sha256": "c4ca6cdc129d70375fe638c723c1b1bb07a9716101525970cf77bf7560fec657"
+          },
+          {
+            "bytes": 1139,
+            "path": "v2/FsReadDirectoryResponse.json",
+            "sha256": "2cfb28c3c1ab1487f6b778f4d76871e3a9f590597bdf0da502cc41b202269dbc"
+          },
+          {
+            "bytes": 844,
+            "path": "v2/FsReadFileParams.json",
+            "sha256": "74b325108195fe955e6ffcb6032e9380d3bfdee8aed7d115f5f1e4b127c5d706"
+          },
+          {
+            "bytes": 354,
+            "path": "v2/FsReadFileResponse.json",
+            "sha256": "fd67dd725b5bf5c7f27e78cc3d66fe24314f08913fc00ace9dbb663bf2f487e1"
+          },
+          {
+            "bytes": 1199,
+            "path": "v2/FsRemoveParams.json",
+            "sha256": "c453f8ae4b3311f5da88f67f743fdabbcdc323dc3d9eaa40d750ceae147bb630"
+          },
+          {
+            "bytes": 166,
+            "path": "v2/FsRemoveResponse.json",
+            "sha256": "6371aba2cae2f92be487be05c1ce531ca4139da5004b740a0010ccfdba548100"
+          },
+          {
+            "bytes": 368,
+            "path": "v2/FsUnwatchParams.json",
+            "sha256": "3134d42c231f40769a4d1ac4adcf051be5205e7a1b70bb32c4a8655fea730175"
+          },
+          {
+            "bytes": 168,
+            "path": "v2/FsUnwatchResponse.json",
+            "sha256": "9c59c3473df1f1873ee0d87ed33cecec0766b24c8357ee7dc8b29a57ca21e104"
+          },
+          {
+            "bytes": 1042,
+            "path": "v2/FsWatchParams.json",
+            "sha256": "10bd9c01b3819db1ed8e2487a277f20b35e3a9f74ae77214654f1a529fc1444d"
+          },
+          {
+            "bytes": 864,
+            "path": "v2/FsWatchResponse.json",
+            "sha256": "d32e77e7d6f619c5f4183c335ecddd3c4ffb95a51761198985c47838ae891a6c"
+          },
+          {
+            "bytes": 970,
+            "path": "v2/FsWriteFileParams.json",
+            "sha256": "2167e05c7f3eb26d475f9c1ce71697ba3b635efd8761a00b22abfd6af175bd2f"
+          },
+          {
+            "bytes": 172,
+            "path": "v2/FsWriteFileResponse.json",
+            "sha256": "0e4153ee7baa5c1203c2c573504baaa40e1dd8738d78e4c1e3a179fb49df6b16"
+          },
+          {
+            "bytes": 485,
+            "path": "v2/GetAccountParams.json",
+            "sha256": "30b545275f60975b55bd6fbaafd70f15505801d14168ee82d3931b6e93c78aab"
+          },
+          {
+            "bytes": 7670,
+            "path": "v2/GetAccountRateLimitsResponse.json",
+            "sha256": "a28d4d0e9181a498c58d4ae3b6b49aaa6ee7a33c0c9f81c1ad0bff223bfbbe3b"
+          },
+          {
+            "bytes": 2399,
+            "path": "v2/GetAccountResponse.json",
+            "sha256": "08a7dd8c570c905b0bb6998d43ed133e72e2445f08125f86dfc96887e288701a"
+          },
+          {
+            "bytes": 3838,
+            "path": "v2/GetAccountTokenUsageResponse.json",
+            "sha256": "a58e58c852c888e5de925d99a66688d55ebb2fff038e795aadf04f8a8426dff8"
+          },
+          {
+            "bytes": 1565,
+            "path": "v2/GetWorkspaceMessagesResponse.json",
+            "sha256": "3ebd00f0acca088e5ee0309ec09b9a571e7f2eea5b63a32cda67be01c6886d67"
+          },
+          {
+            "bytes": 423,
+            "path": "v2/GuardianWarningNotification.json",
+            "sha256": "5325551d2efb47d578665e3deb846f6369e05f98fbc5bfbffc5d9fe0cb0bd167"
+          },
+          {
+            "bytes": 4287,
+            "path": "v2/HookCompletedNotification.json",
+            "sha256": "1f146d70303cea6e59752191179e36a273650d63a74d4f9338f9a399da6597d2"
+          },
+          {
+            "bytes": 4285,
+            "path": "v2/HookStartedNotification.json",
+            "sha256": "913ca61da2ab299d5f3318f6ea4d842d22708fc9308a9b10cdfad5e757098f2f"
+          },
+          {
+            "bytes": 311,
+            "path": "v2/HooksListParams.json",
+            "sha256": "07638c3a8a3690cf368fa92c7ff697fdd0132865e8c59d53f6e5789e5a260053"
+          },
+          {
+            "bytes": 5850,
+            "path": "v2/HooksListResponse.json",
+            "sha256": "891dd10ef7f78e59631fce05fff2becddb8004b3c0338dbbbd6b4f17ef1fa64f"
+          },
+          {
+            "bytes": 45968,
+            "path": "v2/ItemCompletedNotification.json",
+            "sha256": "69aba3fe5f72f38bf5c541e7e2c09de40778abe65ff969d9fc73372037812091"
+          },
+          {
+            "bytes": 16903,
+            "path": "v2/ItemGuardianApprovalReviewCompletedNotification.json",
+            "sha256": "bcf94662d3589c36ac3a13c0d919fa33c2b85f452d5098a8093360884d768a02"
+          },
+          {
+            "bytes": 16405,
+            "path": "v2/ItemGuardianApprovalReviewStartedNotification.json",
+            "sha256": "baf4e17938f94e2cf4d86d31f02f66d69d394b00594e3e04ed03dfe901014543"
+          },
+          {
+            "bytes": 45960,
+            "path": "v2/ItemStartedNotification.json",
+            "sha256": "c4c34f47db6326cd4841bae428f23d08eb285077ffad35be9772b928c65bb912"
+          },
+          {
+            "bytes": 1030,
+            "path": "v2/ListMcpServerStatusParams.json",
+            "sha256": "33b1933595d844c61f76bdcfbc874c8456b65079877fed6e86e2710ea3d49f1b"
+          },
+          {
+            "bytes": 5588,
+            "path": "v2/ListMcpServerStatusResponse.json",
+            "sha256": "d581e9ba17f6da0d686d0e730cddd51fda091f361a8c119317b2138a3ecdb612"
+          },
+          {
+            "bytes": 4353,
+            "path": "v2/LoginAccountParams.json",
+            "sha256": "48fb9bea54d7e0890052653ac06737efb3200ba2261515b2c4014027f36bea3d"
+          },
+          {
+            "bytes": 2521,
+            "path": "v2/LoginAccountResponse.json",
+            "sha256": "72e6d77f49bc5809c3af50f183e2a0862dd8f7836816d4796ff69bb13eae0e89"
+          },
+          {
+            "bytes": 114,
+            "path": "v2/LogoutAccountResponse.json",
+            "sha256": "ac14ddfca2ec6092b0039be8720262d5a9930484d23e62544d2ef0b7e1db7926"
+          },
+          {
+            "bytes": 431,
+            "path": "v2/MarketplaceAddParams.json",
+            "sha256": "e6c92ca2a3889641ca2281cca7684569b1187653b25b57f9beabf85519d638a2"
+          },
+          {
+            "bytes": 865,
+            "path": "v2/MarketplaceAddResponse.json",
+            "sha256": "a37633e9ecc2fdd87ea582861bcdcbf7963a8fab6db9fbc1bc8eac7d2f7f9a8b"
+          },
+          {
+            "bytes": 236,
+            "path": "v2/MarketplaceRemoveParams.json",
+            "sha256": "220c2475a96f32ca095f80f3ecbad427477b4ba37dfad7fb48a0acabdeb1f4eb"
+          },
+          {
+            "bytes": 869,
+            "path": "v2/MarketplaceRemoveResponse.json",
+            "sha256": "98deb2f721d57ed727f7cc7b4f478db5f604b6b6d40e6261928dfd5f586405e3"
+          },
+          {
+            "bytes": 228,
+            "path": "v2/MarketplaceUpgradeParams.json",
+            "sha256": "93fc5d331d353b1b89262625c38eed54c6c16b2fb8aa0eac718245c7bdcbe4dc"
+          },
+          {
+            "bytes": 1348,
+            "path": "v2/MarketplaceUpgradeResponse.json",
+            "sha256": "2402379cb0ed1168a7dc327c412fd61bafdea2ad13ea7a3b3ebaee3b43c45963"
+          },
+          {
+            "bytes": 608,
+            "path": "v2/McpResourceReadParams.json",
+            "sha256": "a8241b056a65473b2b9bf0a14c1a49146de52dbc1cfc276549f52f4db13f3be6"
+          },
+          {
+            "bytes": 1664,
+            "path": "v2/McpResourceReadResponse.json",
+            "sha256": "a48af749203ed3307414750d5070facb5ae6ef8b00253f1cfd9a8124bdfcfe41"
+          },
+          {
+            "bytes": 614,
+            "path": "v2/McpServerEventStreamNotification.json",
+            "sha256": "44b04b6cc079ec0b99b4d29af1a69d99037505c19a2a07cff955aa298d7c181b"
+          },
+          {
+            "bytes": 455,
+            "path": "v2/McpServerOauthLoginCompletedNotification.json",
+            "sha256": "d3b7ca4f2626a623b4b5a97eeedc711cc27d41b3ee56fed8b0304857c5c9b13c"
+          },
+          {
+            "bytes": 1003,
+            "path": "v2/McpServerOauthLoginParams.json",
+            "sha256": "83446fb61e04a361691f84fe236a51fff2ee4fb12a8f58e2e828a32cf6f6cc75"
+          },
+          {
+            "bytes": 242,
+            "path": "v2/McpServerOauthLoginResponse.json",
+            "sha256": "95d7d00622866ac49dbe459164b8be665b2c9ad7b26772eadfc610a0537aa6d4"
+          },
+          {
+            "bytes": 117,
+            "path": "v2/McpServerRefreshResponse.json",
+            "sha256": "54a77812db02175dc69053870e582d3b314af6f161f0c76846f3563b0f9487c4"
+          },
+          {
+            "bytes": 973,
+            "path": "v2/McpServerStatusUpdatedNotification.json",
+            "sha256": "d6f4cb120b2363d321247592f03b9afbbf2762ad6d8af31b88c1b1bf39c4c7aa"
+          },
+          {
+            "bytes": 380,
+            "path": "v2/McpServerToolCallParams.json",
+            "sha256": "7039a7583a1cbf38e9e0f5fe6398ff3711acd4d654b81b0be562514087fce6ba"
+          },
+          {
+            "bytes": 374,
+            "path": "v2/McpServerToolCallResponse.json",
+            "sha256": "04a59b2064922c37b0c49bdb2470b8fff08d943e56dba4f7280a6b34bfa52c68"
+          },
+          {
+            "bytes": 412,
+            "path": "v2/McpToolCallProgressNotification.json",
+            "sha256": "64a32b8282226876e749bc107a81db89d20d5ce5cb86ee6a043b960763214b1d"
+          },
+          {
+            "bytes": 688,
+            "path": "v2/ModelListParams.json",
+            "sha256": "de29a536c00a5b8f46f34dba417dabd93365305571a8ed200e33bea85db68b5a"
+          },
+          {
+            "bytes": 6002,
+            "path": "v2/ModelListResponse.json",
+            "sha256": "c7b58b332f6cf18fd64235409a6daf27bb9e6c09d12dcd0daa2f3dc628b55f6f"
+          },
+          {
+            "bytes": 128,
+            "path": "v2/ModelProviderCapabilitiesReadParams.json",
+            "sha256": "9db732188a15476cabb42cf05e495ae0803a1ada993fca7348c21c30a998388d"
+          },
+          {
+            "bytes": 395,
+            "path": "v2/ModelProviderCapabilitiesReadResponse.json",
+            "sha256": "5c42590f728289daaa441b947617398a0ca3aa17479013b3c564a5d314a3c9cf"
+          },
+          {
+            "bytes": 636,
+            "path": "v2/ModelReroutedNotification.json",
+            "sha256": "37cd3c1b3a3560b85b01d4061a07d830fc9ed93b80e4663f975f9197cdb501ef"
+          },
+          {
+            "bytes": 746,
+            "path": "v2/ModelSafetyBufferingUpdatedNotification.json",
+            "sha256": "4cf853e3a2f968fdfde75206fd497d3d530b26769026bee343c3ef09ce438cfd"
+          },
+          {
+            "bytes": 574,
+            "path": "v2/ModelVerificationNotification.json",
+            "sha256": "4f27a99d0c8664c29abb4d65384ab16853bbc29b61de5e749111cefdc6994655"
+          },
+          {
+            "bytes": 573,
+            "path": "v2/NullableGetAccountTokenUsageParams.json",
+            "sha256": "a992c6ea0fe02b0e9f46b18afb51b8ee2635e7f0c7d546f71e7f95e2a98bebba"
+          },
+          {
+            "bytes": 667,
+            "path": "v2/PermissionProfileListParams.json",
+            "sha256": "576d405f6c94cbde982a9f65c9301717043683b83ca35d564247907feb16b1b4"
+          },
+          {
+            "bytes": 1174,
+            "path": "v2/PermissionProfileListResponse.json",
+            "sha256": "4a290b5b9d47c2fc671033e22754671161bc563027ba387e861bd935398f0def"
+          },
+          {
+            "bytes": 565,
+            "path": "v2/PlanDeltaNotification.json",
+            "sha256": "a5cf42ccfc6cf905ede0fa9041e9c951ea7870aba4e3a7c7f68d85f01416d3af"
+          },
+          {
+            "bytes": 1136,
+            "path": "v2/PluginInstallParams.json",
+            "sha256": "d6a8ff6356aed22c916cfd5a791ecce34ee2ac509750f690e7d0ef483fec7472"
+          },
+          {
+            "bytes": 1190,
+            "path": "v2/PluginInstallResponse.json",
+            "sha256": "ae283e1ecb9f454f7614c6a4348fda5a7aba5af99e9ab9177b9a0cd3e1cd7db7"
+          },
+          {
+            "bytes": 1174,
+            "path": "v2/PluginInstalledParams.json",
+            "sha256": "0b56f55a817b6e82ea104496281cd43714ee96800f9b984412a3a858f444f68c"
+          },
+          {
+            "bytes": 15679,
+            "path": "v2/PluginInstalledResponse.json",
+            "sha256": "8afc8a16fa5c21d67f66d1855bf29890bad10a6229bafc960b3503281fc878e2"
+          },
+          {
+            "bytes": 1629,
+            "path": "v2/PluginListParams.json",
+            "sha256": "bc6b499161306df7082c5a8cc51fd793cd6d28dda93555b12ae299445132270a"
+          },
+          {
+            "bytes": 15802,
+            "path": "v2/PluginListResponse.json",
+            "sha256": "a405d2514d6236df75130c87c749e0e070b946a889f143a0448bbcd27d1d8501"
+          },
+          {
+            "bytes": 947,
+            "path": "v2/PluginReadParams.json",
+            "sha256": "f15952a2828c90501cc32f347c1e1691ea65cd2d97f503ab40e7be08757de74d"
+          },
+          {
+            "bytes": 23636,
+            "path": "v2/PluginReadResponse.json",
+            "sha256": "1651d8136fbbbb00878c4c1f8adbf279d050bf25b4454e6db4fa46f192f953d2"
+          },
+          {
+            "bytes": 314,
+            "path": "v2/PluginReconcileParams.json",
+            "sha256": "91dfe0967326b876e50ddf8d896c6c516440c43a36b08efd4746c0bd770882dc"
+          },
+          {
+            "bytes": 2424,
+            "path": "v2/PluginReconcileResponse.json",
+            "sha256": "ba2a8e317c9098beed39d4decc433d9dc29ba0c8164e8d4c229481b9243c5ec8"
+          },
+          {
+            "bytes": 236,
+            "path": "v2/PluginShareCheckoutParams.json",
+            "sha256": "25fd868fff9500ff244150a4ecd36322c0d31b339a4709649594b79aa1349185"
+          },
+          {
+            "bytes": 1187,
+            "path": "v2/PluginShareCheckoutResponse.json",
+            "sha256": "d6271afa9bba5531574ba255d22b03f70fe10b8ef159185355625d92b6f9fac6"
+          },
+          {
+            "bytes": 234,
+            "path": "v2/PluginShareDeleteParams.json",
+            "sha256": "d422a3fdecf91612bdf839d4fea6f1cddccb794869dc03ad3b8998bcb8e27fff"
+          },
+          {
+            "bytes": 118,
+            "path": "v2/PluginShareDeleteResponse.json",
+            "sha256": "ae881a7f898f5287354de5adf6f42094cef9029a9b9376bfd12aa1b0fe0b3106"
+          },
+          {
+            "bytes": 114,
+            "path": "v2/PluginShareListParams.json",
+            "sha256": "0d71280d2a655ffc26375044ec1693203848614f99fdb4563e0cb5a4ee40122b"
+          },
+          {
+            "bytes": 14477,
+            "path": "v2/PluginShareListResponse.json",
+            "sha256": "d349a496947956fd5f4d125b8348faa2ef0c91daf7f3cd74ae0616f55c8e328b"
+          },
+          {
+            "bytes": 1974,
+            "path": "v2/PluginShareSaveParams.json",
+            "sha256": "ec937521a40437506ceb2dcfe79cedd03812dd1b8233c651b89c2ddd76e148fe"
+          },
+          {
+            "bytes": 417,
+            "path": "v2/PluginShareSaveResponse.json",
+            "sha256": "3eb7c0ed6e6c72126c7bb3d845e73d5de98ad0d4ea8639d2f227fecd16c15411"
+          },
+          {
+            "bytes": 1369,
+            "path": "v2/PluginShareUpdateTargetsParams.json",
+            "sha256": "0ecf16212022bca115211cbf13a1302f8995d7be5664ca268b926b7d00add7b0"
+          },
+          {
+            "bytes": 1380,
+            "path": "v2/PluginShareUpdateTargetsResponse.json",
+            "sha256": "caf42dec67940f9e686ac7b4e77484921d62fee400b3af73fc85e6f46eaa03f4"
+          },
+          {
+            "bytes": 388,
+            "path": "v2/PluginSkillReadParams.json",
+            "sha256": "8850a9a45b9cf6e8b016f014c7c65f7062937be896d4fa0eafdaccc816909a56"
+          },
+          {
+            "bytes": 220,
+            "path": "v2/PluginSkillReadResponse.json",
+            "sha256": "dedaf95c4a8f70c022f5cac6fe3882603ed2b27d5efef710b52ae370869956cc"
+          },
+          {
+            "bytes": 220,
+            "path": "v2/PluginUninstallParams.json",
+            "sha256": "4c9e1da7048fc99ef5269d4c3f4c6c3297dac01992c2756340fa210ae8f800cc"
+          },
+          {
+            "bytes": 116,
+            "path": "v2/PluginUninstallResponse.json",
+            "sha256": "f6a0c9c8dfd9e3fc4a535ecfa606f12922c09e469a37d6b1c6e189f45cacb89e"
+          },
+          {
+            "bytes": 1419,
+            "path": "v2/ProcessExitedNotification.json",
+            "sha256": "06cb5f39c67f84c227063d7f40e5e78fb62afdb76778c3d603687181896e8440"
+          },
+          {
+            "bytes": 1436,
+            "path": "v2/ProcessOutputDeltaNotification.json",
+            "sha256": "c31714aa83297b83fd69dee98db877be7d4a3f98551dbeb517750efba0ecd79d"
+          },
+          {
+            "bytes": 481,
+            "path": "v2/ProjectChangedNotification.json",
+            "sha256": "b32151fcb7ef78fc5c969db44255756e5e6e1754398a5b6b09244dcff0c1eab9"
+          },
+          {
+            "bytes": 1998,
+            "path": "v2/RawResponseCompletedNotification.json",
+            "sha256": "aba140e87952c900f96e0308a8849d3e313d985de1f1aa2b77f193884a76357c"
+          },
+          {
+            "bytes": 31359,
+            "path": "v2/RawResponseItemCompletedNotification.json",
+            "sha256": "cbcffe7b3f2dffb607f7e20ac1f1196509ff42e7d0cd9e6961d7c19b25506899"
+          },
+          {
+            "bytes": 454,
+            "path": "v2/ReasoningSummaryPartAddedNotification.json",
+            "sha256": "c8dfcb82d773d0f5d297ae1a47749e2b719013e82030a3af5d4550f9feb8eed6"
+          },
+          {
+            "bytes": 512,
+            "path": "v2/ReasoningSummaryTextDeltaNotification.json",
+            "sha256": "895bdca00b4674634c25a5c4d1f82e55e65767d81ddcac4bb7b00aa3d438e62f"
+          },
+          {
+            "bytes": 505,
+            "path": "v2/ReasoningTextDeltaNotification.json",
+            "sha256": "16cdc13080a7523b44f00fb6fdb660c56a7c4c8cda96b2f9b87b7e72264170fb"
+          },
+          {
+            "bytes": 800,
+            "path": "v2/RemoteControlStatusChangedNotification.json",
+            "sha256": "56aa1d58294238557cd8b16199909c2c157a7542b9259ef2deddf40fe4c02c91"
+          },
+          {
+            "bytes": 3200,
+            "path": "v2/ReviewStartParams.json",
+            "sha256": "c55c510988a34d2e95752aeb95e5d165f7083724a0945d7fccd1c568ad85dbb0"
+          },
+          {
+            "bytes": 54982,
+            "path": "v2/ReviewStartResponse.json",
+            "sha256": "d6d5c99473b695fff0f58a896bee11ddcddca23304523fba878860324b7f07df"
+          },
+          {
+            "bytes": 420,
+            "path": "v2/SendAddCreditsNudgeEmailParams.json",
+            "sha256": "91b380293f5685573f8dcdf46c99eba6f8a2adb7a206df9ac987f7fe6cb282a1"
+          },
+          {
+            "bytes": 417,
+            "path": "v2/SendAddCreditsNudgeEmailResponse.json",
+            "sha256": "389978f741476c7cbcaec716b11a5bfb7f17581a28013e18cbf7a73ec8a45ae6"
+          },
+          {
+            "bytes": 514,
+            "path": "v2/ServerRequestResolvedNotification.json",
+            "sha256": "4f03d586a5af04edd912cad08cc97eceb658e7e06744565e6d41a93e04a55966"
+          },
+          {
+            "bytes": 341,
+            "path": "v2/SkillsChangedNotification.json",
+            "sha256": "84f7f1d327c5c774899992f32c98e9e95ee3e010a410d233ec0c33221e4ccbfb"
+          },
+          {
+            "bytes": 1011,
+            "path": "v2/SkillsConfigWriteParams.json",
+            "sha256": "6e7dea83b649bfd118828b60446eb2eab2f5ce3cafe287c933b830c9cae9b170"
+          },
+          {
+            "bytes": 241,
+            "path": "v2/SkillsConfigWriteResponse.json",
+            "sha256": "628bc112ca64f5475eb02a0eda718e82d670c40299444494e02a8dc278a772c7"
+          },
+          {
+            "bytes": 761,
+            "path": "v2/SkillsExtraRootsSetParams.json",
+            "sha256": "bb60389a0c7d4b73f625b9a40965e5e67b56b6503989f2d732cae12e9ca9698a"
+          },
+          {
+            "bytes": 120,
+            "path": "v2/SkillsExtraRootsSetResponse.json",
+            "sha256": "b659ec17a196eaa3a23273a3e2d5596460ea329bc3ade249971576bc723d9e96"
+          },
+          {
+            "bytes": 453,
+            "path": "v2/SkillsListParams.json",
+            "sha256": "1d245374e64c5acc9739dfc68a4fe5114c6c9147af04c480886f1846d2ca6239"
+          },
+          {
+            "bytes": 5295,
+            "path": "v2/SkillsListResponse.json",
+            "sha256": "230f125d6c36ec1b1514018a0bb6d0627f7308ea82f1ef04cad85490de482bae"
+          },
+          {
+            "bytes": 470,
+            "path": "v2/StrictReviewRequiredNotification.json",
+            "sha256": "16b50621c0982d84bd83b6e85586c1038ff309337e4253219895be7c118df470"
+          },
+          {
+            "bytes": 474,
+            "path": "v2/TerminalInteractionNotification.json",
+            "sha256": "5383b3d9681d3c071c9845fd4f043afd60fbe1bcc3650939356cb03848a7d627"
+          },
+          {
+            "bytes": 360,
+            "path": "v2/ThreadApproveGuardianDeniedActionParams.json",
+            "sha256": "082e5278ed4fb1fc23eafbe658e95ec21d81c446bb6daf2b57e25e8cd3aebd5e"
+          },
+          {
+            "bytes": 134,
+            "path": "v2/ThreadApproveGuardianDeniedActionResponse.json",
+            "sha256": "628336c7cdabd508d5202695502bb0f9ce42fdde380f5efdd4b033cf215d93e5"
+          },
+          {
+            "bytes": 218,
+            "path": "v2/ThreadArchiveParams.json",
+            "sha256": "dc2c0b133b814a5d9d543cc37afdb3f4f22feca35b7cea4272834b20a1e47705"
+          },
+          {
+            "bytes": 114,
+            "path": "v2/ThreadArchiveResponse.json",
+            "sha256": "2e021dabd0930ae3e2beb68cd0ddbafc40fc20cfbf8dbcb5e2f9c0493d06a08c"
+          },
+          {
+            "bytes": 225,
+            "path": "v2/ThreadArchivedNotification.json",
+            "sha256": "54ca94956719ade8682c766f31419ee9953dee8f4587b5b30efd0927de6ca26e"
+          },
+          {
+            "bytes": 223,
+            "path": "v2/ThreadClosedNotification.json",
+            "sha256": "d504cceb70e3397ad684924b08d3bff328a927be02ef4e3d482a18e27bab73de"
+          },
+          {
+            "bytes": 223,
+            "path": "v2/ThreadCompactStartParams.json",
+            "sha256": "684b20adf20213a9fcbca31b59108feadcd5a8b693c16431c20d701049df3737"
+          },
+          {
+            "bytes": 119,
+            "path": "v2/ThreadCompactStartResponse.json",
+            "sha256": "74674e47f33e37d7d97d144eac1789ef0580a1fc12d45a5675bb97caa08d803a"
+          },
+          {
+            "bytes": 217,
+            "path": "v2/ThreadDeleteParams.json",
+            "sha256": "0d5425d94af95e3dd20971cee052b2cb8c7d0d23195db1d17fde4e59cfbdec4a"
+          },
+          {
+            "bytes": 113,
+            "path": "v2/ThreadDeleteResponse.json",
+            "sha256": "333c0c5df96d78d1bcbdb19b57ddfa941de9a02bdae1c29d13c5311c2cdf6527"
+          },
+          {
+            "bytes": 224,
+            "path": "v2/ThreadDeletedNotification.json",
+            "sha256": "6f8d6fa96700ec6fff4b8c2bddf6768539b7ec7ba5dc05483aba53f5183386f9"
+          },
+          {
+            "bytes": 5385,
+            "path": "v2/ThreadForkParams.json",
+            "sha256": "60540b97d453ddbc5e12bfaa007a3718f31847d18dec0da59a5e4b89be4717ad"
+          },
+          {
+            "bytes": 74825,
+            "path": "v2/ThreadForkResponse.json",
+            "sha256": "c15e43ec275b370df2d831cb5147f7ff399aab2e74d091c07cdb3de57db11f94"
+          },
+          {
+            "bytes": 220,
+            "path": "v2/ThreadGoalClearParams.json",
+            "sha256": "896c8b1997edf913382393f7d0f20ced4344714b9f0e8ce1f6564a11403e1675"
+          },
+          {
+            "bytes": 221,
+            "path": "v2/ThreadGoalClearResponse.json",
+            "sha256": "2652c2d0072be8ccb71c8dcaaa054aa74f974e68156a73451baf72c8597669c2"
+          },
+          {
+            "bytes": 228,
+            "path": "v2/ThreadGoalClearedNotification.json",
+            "sha256": "ad6c2cf53970e45cae55d36dbddd84ecc7b34837846616493efa7b132a35a051"
+          },
+          {
+            "bytes": 218,
+            "path": "v2/ThreadGoalGetParams.json",
+            "sha256": "1a5de89b3c5c49528af404a65411a73ef05dc7c9c49c3f00c90d9926dfe34137"
+          },
+          {
+            "bytes": 1491,
+            "path": "v2/ThreadGoalGetResponse.json",
+            "sha256": "f610000963194731c96ce2b45e46722ca700f1b6ccc1fc55a2fd95e526018fd9"
+          },
+          {
+            "bytes": 804,
+            "path": "v2/ThreadGoalSetParams.json",
+            "sha256": "93162f095e9b3b5a051ceb24318b8922c663edefc1f8c67bd378085c0d6c01d2"
+          },
+          {
+            "bytes": 1428,
+            "path": "v2/ThreadGoalSetResponse.json",
+            "sha256": "b1c61b6068b3b73dd3d97b38f8a269593f8f7added4643bfdb2016315b71ad8e"
+          },
+          {
+            "bytes": 1580,
+            "path": "v2/ThreadGoalUpdatedNotification.json",
+            "sha256": "52010479c7efcc6dc749e2d9bf1e27c134453d92a1f0b367193d8125eec1fedc"
+          },
+          {
+            "bytes": 397,
+            "path": "v2/ThreadInjectItemsParams.json",
+            "sha256": "8d7e754402a2bb71bd817882076d2f8ac4cd75d4573306db082a83b841aa3532"
+          },
+          {
+            "bytes": 118,
+            "path": "v2/ThreadInjectItemsResponse.json",
+            "sha256": "93d909e5b49b44da02072d340f8ad0ecd417d448ccf27fe50be7e369c7864159"
+          },
+          {
+            "bytes": 1138,
+            "path": "v2/ThreadItemsListParams.json",
+            "sha256": "ff56040c327ecdd30ef02affac9bc71fab64031e8980f2b4fea9fd8a888160b4"
+          },
+          {
+            "bytes": 46506,
+            "path": "v2/ThreadItemsListResponse.json",
+            "sha256": "886369490fec07067597460301b3d5c1dc9aedc41ea42522cae397d8babe6156"
+          },
+          {
+            "bytes": 3628,
+            "path": "v2/ThreadListParams.json",
+            "sha256": "b227bb78acf9b91060d03c56d3f2072cdd9f1bd08290c11e8869f1a663b16da2"
+          },
+          {
+            "bytes": 68425,
+            "path": "v2/ThreadListResponse.json",
+            "sha256": "351be50beed03976ddd63e8027e9ddeecb240d7611856b2dc19125c3f8eba400"
+          },
+          {
+            "bytes": 489,
+            "path": "v2/ThreadLoadedListParams.json",
+            "sha256": "42c2d124ab2b2998d84f0126daae2d32b0bf9c5a7ea7266e3a0814e5e37cf00d"
+          },
+          {
+            "bytes": 565,
+            "path": "v2/ThreadLoadedListResponse.json",
+            "sha256": "1ea02c4710083e552b2a3a89b931b9049d5bf05b7db46278b8352cf9fd80cd52"
+          },
+          {
+            "bytes": 1465,
+            "path": "v2/ThreadMetadataUpdateParams.json",
+            "sha256": "190da07d8c7c89c44b1e44b4e57fb5d803f356953534498a7a7f39fe29a8a6a4"
+          },
+          {
+            "bytes": 67771,
+            "path": "v2/ThreadMetadataUpdateResponse.json",
+            "sha256": "c1c1095f8ebb5a975c7cdd8b4fb36b81e3e2797e35209b2cf0a4597c6f418961"
+          },
+          {
+            "bytes": 312,
+            "path": "v2/ThreadNameUpdatedNotification.json",
+            "sha256": "06d5e6b0e1eaf03eb88891af58eff14368a76e300a40a9bed71bacce2093b960"
+          },
+          {
+            "bytes": 331,
+            "path": "v2/ThreadProjectUpdatedNotification.json",
+            "sha256": "ad31b029957a9259f26352ce879219cbe25f0314ae883d02ab811a0c6427a1e5"
+          },
+          {
+            "bytes": 229,
+            "path": "v2/ThreadQueueChangedNotification.json",
+            "sha256": "0a960da43fb14f69dae2550ac4f8517760464eedbf95a9977718548739fdcf21"
+          },
+          {
+            "bytes": 502,
+            "path": "v2/ThreadReadParams.json",
+            "sha256": "dfe040c6ac71d30795b8be3f3ff232e66f362a37f883b491e5d1ea367f470db4"
+          },
+          {
+            "bytes": 67761,
+            "path": "v2/ThreadReadResponse.json",
+            "sha256": "a76583d07f6096fee33045da2dc9caed84d858f8f2d39b37bb38528dbaf32511"
+          },
+          {
+            "bytes": 393,
+            "path": "v2/ThreadRealtimeClosedNotification.json",
+            "sha256": "5290a73f8d4652b59d2f82d89c7bd289003fe2981fb0c628a61e801fa2123364"
+          },
+          {
+            "bytes": 377,
+            "path": "v2/ThreadRealtimeErrorNotification.json",
+            "sha256": "aeba7e4b477b4825b41990a4da69b0f3cb3a00f44cf9e2e42e275b944b7cb040"
+          },
+          {
+            "bytes": 358,
+            "path": "v2/ThreadRealtimeItemAddedNotification.json",
+            "sha256": "48aabfcbfd2361b5830a93257bc9eb31a6933f6e390694e188bfb287acbad9b4"
+          },
+          {
+            "bytes": 5063,
+            "path": "v2/ThreadRealtimeItemCompletedNotification.json",
+            "sha256": "b2a5e38840b8afc2111620c332801603e832b91ad4c95dd1f13c926923b760ef"
+          },
+          {
+            "bytes": 5063,
+            "path": "v2/ThreadRealtimeItemStartedNotification.json",
+            "sha256": "ef1a68a635ce680b321e276fd9144ef614b37bab16942368bdc16bb8ee217f46"
+          },
+          {
+            "bytes": 450,
+            "path": "v2/ThreadRealtimeItemTranscriptDeltaNotification.json",
+            "sha256": "42f2456726367b90a2626a32f3f88495de87032243beecd9bfbad28734f4b62d"
+          },
+          {
+            "bytes": 1261,
+            "path": "v2/ThreadRealtimeOutputAudioDeltaNotification.json",
+            "sha256": "4f73a5c606fda4984da4fc14e4cd98f62c8f9aa75b2db17cff76562c2d176ec0"
+          },
+          {
+            "bytes": 376,
+            "path": "v2/ThreadRealtimeSdpNotification.json",
+            "sha256": "1e276f48d346e6cace65551f84ef9b0bc8daba2a3ce93499f3a902551de239fc"
+          },
+          {
+            "bytes": 661,
+            "path": "v2/ThreadRealtimeStartedNotification.json",
+            "sha256": "483d324381a8ced04c8ab158c825bca2b64c06a4e85b350a086730050fe8f188"
+          },
+          {
+            "bytes": 533,
+            "path": "v2/ThreadRealtimeTranscriptDeltaNotification.json",
+            "sha256": "1a6add677534de891026eb56aac815b2585fbd4a6d6475f679a722c52b778703"
+          },
+          {
+            "bytes": 528,
+            "path": "v2/ThreadRealtimeTranscriptDoneNotification.json",
+            "sha256": "0000453425e300fd19ac2bc5fba4ebf3fbce48ac9a9b62ceb8bc5db8b6c77fff"
+          },
+          {
+            "bytes": 38018,
+            "path": "v2/ThreadResumeParams.json",
+            "sha256": "8ac68582a81d60940b10b330be8546123f56bfe246b56f8a4f121da00f347cf2"
+          },
+          {
+            "bytes": 75971,
+            "path": "v2/ThreadResumeResponse.json",
+            "sha256": "a553d6b1eb66111ca556e22138017ec54fd07c3257dbd2d5ad97ad7660786345"
+          },
+          {
+            "bytes": 579,
+            "path": "v2/ThreadRevertParams.json",
+            "sha256": "3a5e85a67906c8ea3ad9f5065559d263d968a28a957739e7a1d9e4e1981e4eb8"
+          },
+          {
+            "bytes": 68571,
+            "path": "v2/ThreadRevertResponse.json",
+            "sha256": "de7206155e188cea30dfd81fb3295d6e2554a7cc7b58202c4b0a49e9623affe1"
+          },
+          {
+            "bytes": 225,
+            "path": "v2/ThreadRevertedNotification.json",
+            "sha256": "570995a91a4436d403bafbf9a4c34ead666b137ecd5406803e14826a6d84cf22"
+          },
+          {
+            "bytes": 667,
+            "path": "v2/ThreadRollbackParams.json",
+            "sha256": "27002ceab514bcbab10ad2e0a7b9b842f9ae51bd5e8c084ed14960889b422ebd"
+          },
+          {
+            "bytes": 68092,
+            "path": "v2/ThreadRollbackResponse.json",
+            "sha256": "c5e1d8f6845e0840068cc46422fcc986a7648487219a901f8a0f51ee9fbb6ca7"
+          },
+          {
+            "bytes": 969,
+            "path": "v2/ThreadSectionCreateParams.json",
+            "sha256": "e3bf941ceab7a4dd39ce1b4063168621d60162aa97f7171cef59819c999c501e"
+          },
+          {
+            "bytes": 1548,
+            "path": "v2/ThreadSectionCreateResponse.json",
+            "sha256": "2b0b0e7a2651354aac35aa5d1a423b9f207ee8d46b2de077df747f4ed4f4c8de"
+          },
+          {
+            "bytes": 401,
+            "path": "v2/ThreadSectionDeleteParams.json",
+            "sha256": "93cc3d12bd5580966b59bbab8f2ccddd31b3b4bce56f76d49cfe41f1916b5deb"
+          },
+          {
+            "bytes": 201,
+            "path": "v2/ThreadSectionDeleteResponse.json",
+            "sha256": "9bbee5cca1fca02e4a65c2481dc3b24f090bca7afb786923ee481017b133b091"
+          },
+          {
+            "bytes": 570,
+            "path": "v2/ThreadSectionListParams.json",
+            "sha256": "6aea71b3fba46351fcaf648eab0da564080ba424599a012648abd9fd44464cf8"
+          },
+          {
+            "bytes": 1760,
+            "path": "v2/ThreadSectionListResponse.json",
+            "sha256": "dc3b5e5501a56ea2a1a83cb97c5221b355629f8c9468793d94e22673424140bc"
+          },
+          {
+            "bytes": 768,
+            "path": "v2/ThreadSectionMoveParams.json",
+            "sha256": "48bc921055838df25c5595c96be7bd25beef3accb8bd1d28026fcaa7d81487b1"
+          },
+          {
+            "bytes": 118,
+            "path": "v2/ThreadSectionMoveResponse.json",
+            "sha256": "243299d7eebd4fb264d4e75efeb5058982681202371c2b83ff1a63b3369ddbb6"
+          },
+          {
+            "bytes": 1211,
+            "path": "v2/ThreadSectionUpdateParams.json",
+            "sha256": "6cc7b7e486026a59d6fcc0701407d9293c0fe8b96e41894630c3a39fee967980"
+          },
+          {
+            "bytes": 1552,
+            "path": "v2/ThreadSectionUpdateResponse.json",
+            "sha256": "4588cbf0374204c17f02f15eecb5390cd5346bc551675e07e541bbfd28d020bf"
+          },
+          {
+            "bytes": 274,
+            "path": "v2/ThreadSetNameParams.json",
+            "sha256": "8e334c816bbaeb80f807aca61bf659246f3f60c245c21b5cb7e3ca4ee3ce4820"
+          },
+          {
+            "bytes": 114,
+            "path": "v2/ThreadSetNameResponse.json",
+            "sha256": "f8763716433feea94f7c1ebd59b6cea4c261432e83240c13a8d49ba8185aa567"
+          },
+          {
+            "bytes": 10318,
+            "path": "v2/ThreadSettingsUpdatedNotification.json",
+            "sha256": "e601ede3c6947f6df0aea6b1c091c01e38ef7909df939f5ef11c8f836fc8a2ed"
+          },
+          {
+            "bytes": 917,
+            "path": "v2/ThreadShellCommandParams.json",
+            "sha256": "dc646457ca36be601c8c3d15c44d14907d9a165ccf2b9635a8e9a878f0ca0727"
+          },
+          {
+            "bytes": 119,
+            "path": "v2/ThreadShellCommandResponse.json",
+            "sha256": "fd4911613f6a6da2ca13b75342501d4d61f64e00a1083c6d60038369b8caeefe"
+          },
+          {
+            "bytes": 10180,
+            "path": "v2/ThreadStartParams.json",
+            "sha256": "792e2f32e37cece971bd616664ea2053741acbed4e9c92e9d1766427718f2ecd"
+          },
+          {
+            "bytes": 74826,
+            "path": "v2/ThreadStartResponse.json",
+            "sha256": "656f8fd0fe91f533126cbfdb9369cfab550927a229e48dd46460f6f015d2b186"
+          },
+          {
+            "bytes": 67768,
+            "path": "v2/ThreadStartedNotification.json",
+            "sha256": "d66a9b4563471c5fe99de18cb2bd3c83e7b6aac8deb0b0579406b3b7c74d7b35"
+          },
+          {
+            "bytes": 2207,
+            "path": "v2/ThreadStatusChangedNotification.json",
+            "sha256": "26f3c60c1b73f7fa2d31c74429cdc36f8746c76c33e3d314b3fb61d3661f05f6"
+          },
+          {
+            "bytes": 1727,
+            "path": "v2/ThreadTokenUsageUpdatedNotification.json",
+            "sha256": "aba4f6c7e4a19b2b842c08ee793b57000c07dafd57b922ad0d8e7c76609108c2"
+          },
+          {
+            "bytes": 1889,
+            "path": "v2/ThreadTurnsListParams.json",
+            "sha256": "2a8b93d7d4437cc25e16a1dde16d8db3c338d39e16c5eece2a56e943a21577d7"
+          },
+          {
+            "bytes": 55347,
+            "path": "v2/ThreadTurnsListResponse.json",
+            "sha256": "45bffd91efc358859a1a54b8165c0a8b1c21ebc2a312da9f25d05ff27af798ee"
+          },
+          {
+            "bytes": 220,
+            "path": "v2/ThreadUnarchiveParams.json",
+            "sha256": "a1d5d847b61ea16ab09d5b9d1c1461134a7829292aae02a7e11b0a69b00c76ca"
+          },
+          {
+            "bytes": 67766,
+            "path": "v2/ThreadUnarchiveResponse.json",
+            "sha256": "1df1bd13818b3c22a2fb4a64c55b393778e0eaa65547744333d8df9bb40a29cd"
+          },
+          {
+            "bytes": 227,
+            "path": "v2/ThreadUnarchivedNotification.json",
+            "sha256": "fc00949cdc588b84800a26403647eda0e22d6f28663dc032a90db9c20dfa822d"
+          },
+          {
+            "bytes": 222,
+            "path": "v2/ThreadUnsubscribeParams.json",
+            "sha256": "77c67e0dc0a729af2d4612f30ed63f1297160232e96cd32b7cb9cc3e7fff0233"
+          },
+          {
+            "bytes": 431,
+            "path": "v2/ThreadUnsubscribeResponse.json",
+            "sha256": "9cad5e71a589c3c20e0980ce34a894a29e2898a075b10b1493bc87f32500081a"
+          },
+          {
+            "bytes": 54789,
+            "path": "v2/TurnCompletedNotification.json",
+            "sha256": "78af2a37391e8e669a4020cb58593e4d3e378756ced79d5fec72374fa69fb94b"
+          },
+          {
+            "bytes": 494,
+            "path": "v2/TurnDiffUpdatedNotification.json",
+            "sha256": "59a02535094b591b926cdc11a8e5f5babf73b442323a02cace1661c62f0c2918"
+          },
+          {
+            "bytes": 278,
+            "path": "v2/TurnInterruptParams.json",
+            "sha256": "6dff382dae73d1dbc58406ed045605f647e7a49660e2540fbd2c6c24d60c5f2b"
+          },
+          {
+            "bytes": 114,
+            "path": "v2/TurnInterruptResponse.json",
+            "sha256": "531de6be06fe979b5963f249bab82498a175e614bf65ac12fb2e849dfe60bcf1"
+          },
+          {
+            "bytes": 331,
+            "path": "v2/TurnModerationMetadataNotification.json",
+            "sha256": "90fe9ade83c46fd42af9d023737a9990595dac71e059158744950f538e802876"
+          },
+          {
+            "bytes": 948,
+            "path": "v2/TurnPlanUpdatedNotification.json",
+            "sha256": "2522f743be0a1e9666dec5ad4f18d8ecba3c4f16e66d510b1491d4117d1dd0ba"
+          },
+          {
+            "bytes": 20847,
+            "path": "v2/TurnStartParams.json",
+            "sha256": "a3835e8c1e942e4b358e1a670939b89918b16c4d13105a579899892b7ade6dea"
+          },
+          {
+            "bytes": 54717,
+            "path": "v2/TurnStartResponse.json",
+            "sha256": "6fc49c3e5d0ce11a3a109ae194619b04d6e3ff98fa29bac683fdb754608958be"
+          },
+          {
+            "bytes": 54787,
+            "path": "v2/TurnStartedNotification.json",
+            "sha256": "d4b59fd396cadfc2377f60c9f9f4c9367dca95362baadf7817c74e1b9c910c4d"
+          },
+          {
+            "bytes": 6385,
+            "path": "v2/TurnSteerParams.json",
+            "sha256": "4a52eb76e7a717bb388484ccd7538737fca0df35481fc30a21e259f1bfe96e37"
+          },
+          {
+            "bytes": 212,
+            "path": "v2/TurnSteerResponse.json",
+            "sha256": "866ba9a77c12b5d570c837d58f73bf40b24e50fa93404bdf792dd984d313b1aa"
+          },
+          {
+            "bytes": 454,
+            "path": "v2/WarningNotification.json",
+            "sha256": "f83c400591b923400ca0beaaaab1341c712d5ac0dee4ce6868a8e590f46490f9"
+          },
+          {
+            "bytes": 435,
+            "path": "v2/WindowsSandboxReadinessResponse.json",
+            "sha256": "077f60a3d6d1fc226c45059472b29caf675fdc3fdebb29569eaab94bd05ceb00"
+          },
+          {
+            "bytes": 556,
+            "path": "v2/WindowsSandboxSetupCompletedNotification.json",
+            "sha256": "dc5383ae8fc2a46badbc2dab3ccd0447fed97729c2d5a177e28c4a7e2a60c329"
+          },
+          {
+            "bytes": 1002,
+            "path": "v2/WindowsSandboxSetupStartParams.json",
+            "sha256": "8610d077fff4fc5811f2e33dea82617a15ffb82f08e55e1540aef877133f5b4f"
+          },
+          {
+            "bytes": 230,
+            "path": "v2/WindowsSandboxSetupStartResponse.json",
+            "sha256": "830bf89deac3e73e36b7d9799ceed32ee25e782c30b1d25266374aa020d3bc7e"
+          },
+          {
+            "bytes": 478,
+            "path": "v2/WindowsWorldWritableWarningNotification.json",
+            "sha256": "bfa34d4890c8121a04412b8d53314a13adf98289fdd948857fd97b808dcbe79e"
+          }
+        ],
+        "total_bytes": 3464477,
+        "tree_sha256": "7b008240c5e201a9cca7651f4c0b4d37c7fbbb66431a8f6bac83a6befb031583"
+      },
+      "methods": {
+        "ClientNotification": [],
+        "ClientRequest": [
+          "account/login/cancel",
+          "account/login/start",
+          "account/logout",
+          "account/rateLimitResetCredit/consume",
+          "account/rateLimits/read",
+          "account/read",
+          "account/sendAddCreditsNudgeEmail",
+          "account/usage/read",
+          "account/workspaceMessages/read",
+          "app/installed",
+          "app/list",
+          "app/read",
+          "command/exec",
+          "command/exec/resize",
+          "command/exec/terminate",
+          "command/exec/write",
+          "config/batchWrite",
+          "config/mcpServer/reload",
+          "config/read",
+          "config/value/write",
+          "configRequirements/read",
+          "experimentalFeature/enablement/set",
+          "experimentalFeature/list",
+          "externalAgentConfig/detect",
+          "externalAgentConfig/import",
+          "externalAgentConfig/import/readHistories",
+          "externalAgentConfig/import/recordHistory",
+          "feedback/upload",
+          "fs/copy",
+          "fs/createDirectory",
+          "fs/getMetadata",
+          "fs/readDirectory",
+          "fs/readFile",
+          "fs/remove",
+          "fs/unwatch",
+          "fs/watch",
+          "fs/writeFile",
+          "fuzzyFileSearch",
+          "hooks/list",
+          "initialize",
+          "marketplace/add",
+          "marketplace/remove",
+          "marketplace/upgrade",
+          "mcpServer/oauth/login",
+          "mcpServer/resource/read",
+          "mcpServer/tool/call",
+          "mcpServerStatus/list",
+          "model/list",
+          "modelProvider/capabilities/read",
+          "permissionProfile/list",
+          "plugin/install",
+          "plugin/installed",
+          "plugin/list",
+          "plugin/read",
+          "plugin/reconcile",
+          "plugin/share/checkout",
+          "plugin/share/delete",
+          "plugin/share/list",
+          "plugin/share/save",
+          "plugin/share/updateTargets",
+          "plugin/skill/read",
+          "plugin/uninstall",
+          "review/start",
+          "skills/config/write",
+          "skills/extraRoots/set",
+          "skills/list",
+          "thread/approveGuardianDeniedAction",
+          "thread/archive",
+          "thread/compact/start",
+          "thread/delete",
+          "thread/fork",
+          "thread/goal/clear",
+          "thread/goal/get",
+          "thread/goal/set",
+          "thread/inject_items",
+          "thread/items/list",
+          "thread/list",
+          "thread/loaded/list",
+          "thread/metadata/update",
+          "thread/name/set",
+          "thread/read",
+          "thread/resume",
+          "thread/revert",
+          "thread/rollback",
+          "thread/section/move",
+          "thread/shellCommand",
+          "thread/start",
+          "thread/turns/list",
+          "thread/unarchive",
+          "thread/unsubscribe",
+          "threadSection/create",
+          "threadSection/delete",
+          "threadSection/list",
+          "threadSection/update",
+          "turn/interrupt",
+          "turn/start",
+          "turn/steer",
+          "windowsSandbox/readiness",
+          "windowsSandbox/setupStart"
+        ],
+        "ServerNotification": [
+          "account/login/completed",
+          "account/rateLimits/updated",
+          "account/updated",
+          "app/list/updated",
+          "autoApprovalReview/strictReviewRequired",
+          "command/exec/outputDelta",
+          "configWarning",
+          "deprecationNotice",
+          "error",
+          "externalAgentConfig/import/completed",
+          "externalAgentConfig/import/progress",
+          "fs/changed",
+          "fuzzyFileSearch/sessionCompleted",
+          "fuzzyFileSearch/sessionUpdated",
+          "guardianWarning",
+          "hook/completed",
+          "hook/started",
+          "item/agentMessage/delta",
+          "item/autoApprovalReview/completed",
+          "item/autoApprovalReview/started",
+          "item/commandExecution/outputDelta",
+          "item/commandExecution/terminalInteraction",
+          "item/completed",
+          "item/fileChange/outputDelta",
+          "item/fileChange/patchUpdated",
+          "item/mcpToolCall/progress",
+          "item/plan/delta",
+          "item/reasoning/summaryPartAdded",
+          "item/reasoning/summaryTextDelta",
+          "item/reasoning/textDelta",
+          "item/started",
+          "mcpServer/event/stream/notification",
+          "mcpServer/oauthLogin/completed",
+          "mcpServer/startupStatus/updated",
+          "model/rerouted",
+          "model/safetyBuffering/updated",
+          "model/verification",
+          "modelProvider/authRecoveryCompleted",
+          "modelProvider/authRecoveryStarted",
+          "process/exited",
+          "process/outputDelta",
+          "project/changed",
+          "remoteControl/status/changed",
+          "serverRequest/resolved",
+          "skills/changed",
+          "thread/archived",
+          "thread/closed",
+          "thread/compacted",
+          "thread/deleted",
+          "thread/environment/connected",
+          "thread/environment/disconnected",
+          "thread/goal/cleared",
+          "thread/goal/updated",
+          "thread/name/updated",
+          "thread/project/updated",
+          "thread/queue/changed",
+          "thread/realtime/closed",
+          "thread/realtime/error",
+          "thread/realtime/item/completed",
+          "thread/realtime/item/started",
+          "thread/realtime/item/transcript/delta",
+          "thread/realtime/itemAdded",
+          "thread/realtime/outputAudio/delta",
+          "thread/realtime/sdp",
+          "thread/realtime/started",
+          "thread/realtime/transcript/delta",
+          "thread/realtime/transcript/done",
+          "thread/reverted",
+          "thread/settings/updated",
+          "thread/started",
+          "thread/status/changed",
+          "thread/tokenUsage/updated",
+          "thread/unarchived",
+          "turn/completed",
+          "turn/diff/updated",
+          "turn/moderationMetadata",
+          "turn/plan/updated",
+          "turn/started",
+          "warning",
+          "windows/worldWritableWarning",
+          "windowsSandbox/setupCompleted"
+        ],
+        "ServerRequest": []
+      },
+      "parse_errors": [],
+      "parsed_files": 304,
+      "state": "PASS"
+    },
+    "state": "PASS",
+    "version": "codex-cli 0.153.4"
+  },
+  "fixtures": {
+    "manifest": {
+      "file_count": 26,
+      "files": [
+        {
+          "bytes": 519,
+          "path": "README.md",
+          "sha256": "4a5cb33a9cf3a15442c6336c07a94a0e028f2dc808837e6f3cd074f9a20bccae"
+        },
+        {
+          "bytes": 52,
+          "path": "claude/native-root/CLAUDE.md",
+          "sha256": "b137439ee0290bb962b9d1220634ecb22b0c4f4ab3c3c7b30a60b8f95775517f"
+        },
+        {
+          "bytes": 98,
+          "path": "claude/native-root/settings.json",
+          "sha256": "ae331777fc5bb915b3e305e2b0162e015c561728422a21cebb2c34acffa09987"
+        },
+        {
+          "bytes": 164,
+          "path": "claude/native-root/skills/p20-claude-user/SKILL.md",
+          "sha256": "6ffd46165febc22208ab2a1d45db06d3a10c4b601acf8ac8d94f9b39dbbaf725"
+        },
+        {
+          "bytes": 45,
+          "path": "claude/project/.claude/settings.json",
+          "sha256": "cc7617ae9098befb7e8796b2de4faba970dec4039ddf5ef8669788274b6f925c"
+        },
+        {
+          "bytes": 173,
+          "path": "claude/project/.claude/skills/p20-claude-project/SKILL.md",
+          "sha256": "58f6372ec14181a70f2ec62c579f3ecc14af140706c691239916f88b830b4a70"
+        },
+        {
+          "bytes": 58,
+          "path": "claude/project/CLAUDE.md",
+          "sha256": "f89af85940d76bd09e742802545d4e6d786de38bd1a282e7c2e6ad8ff24f94e3"
+        },
+        {
+          "bytes": 50,
+          "path": "codex/native-root/AGENTS.md",
+          "sha256": "cd7827598b6a02da2e5c14897f42490bf204ab70815f29e93746401f2e62df94"
+        },
+        {
+          "bytes": 77,
+          "path": "codex/native-root/auth.json",
+          "sha256": "1bfd7a660030a900ade30358e1883045f7c5643eae0a4f3937dc5712d9048c49"
+        },
+        {
+          "bytes": 135,
+          "path": "codex/native-root/config.toml",
+          "sha256": "146997fb690ec3186d990c15850fee39efdd8e62b23d6844a7041629cd27b4b2"
+        },
+        {
+          "bytes": 161,
+          "path": "codex/native-root/skills/p20-codex-user/SKILL.md",
+          "sha256": "7e6fa3155aa906cc117eecf3f342ff8135c51ed7db1d68fe24c71cfa4dfb411f"
+        },
+        {
+          "bytes": 170,
+          "path": "codex/project/.agents/skills/p20-codex-project/SKILL.md",
+          "sha256": "5df336fc1d78fd2317dedd07be7de7f99ea73bbf20e2fcf599c0d9c7f8b84ebc"
+        },
+        {
+          "bytes": 66,
+          "path": "codex/project/.codex/config.toml",
+          "sha256": "e28366085f7141a54d636c26ea9387e43cc014ebe6fcd918e32737b44a0a9104"
+        },
+        {
+          "bytes": 56,
+          "path": "codex/project/AGENTS.md",
+          "sha256": "0ce47874fd5883d546274b89749cbd13d73891e6e3f397734a34e57893fe28d1"
+        },
+        {
+          "bytes": 44,
+          "path": "pi/native-root/AGENTS.md",
+          "sha256": "21fa4b1b6da30d9d5a251ee7865e376fc87c7c0d04b214a479c70bbcca98c6f8"
+        },
+        {
+          "bytes": 84,
+          "path": "pi/native-root/auth.json",
+          "sha256": "7ca9a4e28946c2fd1c4cec002a935ddfe20b1c9b95c79111ef9da44ba613255a"
+        },
+        {
+          "bytes": 134,
+          "path": "pi/native-root/settings.json",
+          "sha256": "39b25c3e27f44a7663cc4e1a99ec75d4203ac6b9b49ca7c4cc19ff5443743b7c"
+        },
+        {
+          "bytes": 152,
+          "path": "pi/native-root/skills/p20-pi-user/SKILL.md",
+          "sha256": "20570fb4a771f9c71a1fe93e8710a20320d11f6feaa286cdc83c2e2038b99459"
+        },
+        {
+          "bytes": 72,
+          "path": "pi/workspace/AGENTS.md",
+          "sha256": "15242a9aff39c7b9ea541513639e713e63e78691d977b3288027eaa6dd13d6a2"
+        },
+        {
+          "bytes": 161,
+          "path": "pi/workspace/repo/.agents/skills/p20-pi-project/SKILL.md",
+          "sha256": "eaa64105a600d359ea0a696f553fc1b0390bb1c2e7f41aa300b52ebcce79bab8"
+        },
+        {
+          "bytes": 69,
+          "path": "pi/workspace/repo/.p20-repository-root",
+          "sha256": "516aff60fdf77ae825fbc214606eb7cb92b42e6fd98cc9c89ad2ee4ddc801b87"
+        },
+        {
+          "bytes": 36,
+          "path": "pi/workspace/repo/.pi/settings.json",
+          "sha256": "c419236c34f6b24748882086b9c2dd990f35e028a93ecd347c2eb39bbf0224c4"
+        },
+        {
+          "bytes": 61,
+          "path": "pi/workspace/repo/AGENTS.md",
+          "sha256": "a9b948df46705696a14b8028ffb3a71f572da9547bc9c64ad3c00e4c67197b53"
+        },
+        {
+          "bytes": 56,
+          "path": "pi/workspace/repo/nested/AGENTS.md",
+          "sha256": "41251a8802c24e18ba6a76324f983c1ef4f2d199d7b25f93fd9ae587d6fb8a0c"
+        },
+        {
+          "bytes": 161,
+          "path": "tool-profile/gitconfig",
+          "sha256": "a0d8f4f1b28009df82984e052708849a4b13071266e7215eedf53eea668d2711"
+        },
+        {
+          "bytes": 371,
+          "path": "tool-profile/ssh_config",
+          "sha256": "3e840e5a22736fa4f0ee0a2d119884004f903db4f7867da58d666114751d972f"
+        }
+      ],
+      "total_bytes": 3225,
+      "tree_sha256": "351aa5b0315b599c7d238c1ed1bd8caad1090a704c808e8e9b5b37e194725fd3"
+    },
+    "missing": [],
+    "parse_errors": [],
+    "secret_findings": [],
+    "sentinel_shapes_exact": true,
+    "state": "PASS"
+  },
+  "object": "installed tools and checked-in fixtures on this host",
+  "pi": {
+    "auth": {
+      "check": {
+        "authType": "api_key",
+        "provider": "openai",
+        "status": "ready"
+      },
+      "file_mode": "0o600",
+      "refresh": "suppressed by --no-refresh",
+      "state": "PASS"
+    },
+    "auth_refresh": {
+      "reason": "no authorized test OAuth account; --no-refresh was mandatory",
+      "state": "NOT_RUN"
+    },
+    "commands": [
+      {
+        "argv": [
+          "pi",
+          "--version"
+        ],
+        "duration_ms": 223,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "0.85.1",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "pi",
+          "--help"
+        ],
+        "duration_ms": 202,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "pi - AI coding assistant with read, bash, edit, write tools\n\nUsage:\n  pi [options] [--] [@files...] [messages...]\n\nCommands:\n  pi install <source> [-l]     Install extension source and add to settings\n  pi remove <source> [-l]      Remove extension source from settings\n  pi uninstall <source> [-l]   Alias for remove\n  pi update [source|self|pi]   Update pi, extensions, or model catalogs\n  pi list                      List installed extensions from settings\n  pi config [-l]               Open TUI to enable/disable package resources (Tab switches scope)\n  pi auth <command>            Print credentials or check provider readiness\n  pi <command> --help          Show help for install/remove/uninstall/update/list/config/auth\n\nOptions:\n  --provider <name>              Provider name (default: google)\n  --model <pattern>              Model pattern or ID (supports \"provider/id\" and optional \":<thinking>\")\n  --api-key <key>                API key (defaults to env vars)\n  --system-prompt <text>         System prompt (default: coding assistant prompt)\n  --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)\n  --mode <mode>                  Output mode: text (default), json, or rpc\n  --print, -p                    Non-interactive mode: process prompt and exit\n  --continue, -c                 Continue previous session\n  --resume, -r                   Select a session to resume\n  --session <path|id>            Use specific session file or partial UUID\n  --session-id <id>              Use exact project session ID, creating it if missing\n  --fork <path|id>               Fork specific session file or partial UUID into a new session\n  --session-dir <dir>            Directory for session storage and lookup\n  --no-session                   Don't save session (ephemeral)\n  --name, -n <name>              Set session display name\n  --models <patterns>            Comma-separated model patterns for Ctrl+P cycling\n                                 Supports globs (anthropic/*, *sonnet*) and fuzzy matching\n  --no-tools, -nt                Disable all tools by default (built-in and extension)\n  --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled\n  --tools, -t <tools>            Comma-separated allowlist of tool names to enable\n                                 Applies to built-in, extension, and custom tools\n  --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable\n                                 Applies to built-in, extension, and custom tools\n  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max\n  --extension, -e <path>         Load an extension file (can be used multiple times)\n  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)\n  --skill <path>                 Load a skill file or directory (can be used multiple times)\n  --no-skills, -ns               Disable skills discovery and loading\n  --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)\n  --no-prompt-templates, -np     Disable prompt template discovery and loading\n  --theme <path>                 Load a theme file or directory (can be used multiple times)\n  --use-theme <name[/name]>      Set the initial interactive theme for this run\n  --no-themes                    Disable theme discovery and loading\n  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading\n  --export <file>                Export session file to HTML and exit\n  --list-models [search]         List available models (with optional fuzzy search)\n  --verbose                      Force verbose startup (overrides quietStartup setting)\n  --tui-mode <mode>              TUI mode: regular (default) or fullscreen\n  --approve, -a                  Trust project-local files for this run\n  --no-approve, -na              Ignore project-local files for this run\n  --offline                      Disable startup network operations (same as PI_OFFLINE=1)\n  --                             End option parsing; treat remaining arguments as messages/files\n  --help, -h                     Show this help\n  --version, -v                  Show version number\n\nExtensions can register additional flags (e.g., --plan from plan-mode extension).\n\nExamples:\n  # Print a provider API key for an external client\n  pi auth print-api-key --provider openai\n\n  # Print an OAuth bearer token for an external client (refreshes if expired)\n  pi auth print-bearer-token --provider openai-codex\n\n  # Interactive mode\n  pi\n\n  # Interactive mode with initial prompt\n  pi \"List all .ts files in src/\"\n\n  # Include files in initial message\n  pi @prompt.md @image.png \"What color is the sky?\"\n\n  # Non-interactive mode (process and exit)\n  pi -p \"List all .ts files in src/\"\n\n  # Prompt beginning with a dash\n  pi -p -- \"- Summarize these points\"\n\n  # Multiple messages (interactive)\n  pi \"Read package.json\" \"What dependencies do we have?\"\n\n  # Continue previous session\n  pi --continue \"What did we discuss?\"\n\n  # Start a named session\n  pi --name \"Refactor auth module\"\n\n  # Use different model\n  pi --provider openai --model gpt-4o-mini \"Help me refactor this code\"\n\n  # Use model with provider prefix (no --provider needed)\n  pi --model openai/gpt-4o \"Help me refactor this code\"\n\n  # Use model with thinking level shorthand\n  pi --model sonnet:high \"Solve this complex problem\"\n\n  # Limit model cycling to specific models\n  pi --models claude-sonnet,claude-haiku,gpt-4o\n\n  # Limit to a specific provider with glob pattern\n  pi --models \"github-copilot/*\"\n\n  # Cycle models with fixed thinking levels\n  pi --models sonnet:high,haiku:low\n\n  # Start with a specific thinking level\n  pi --thinking high \"Solve this complex problem\"\n\n  # Read-only mode (no file modifications possible)\n  pi --tools read,grep,find,ls -p \"Review the code in src/\"\n\n  # Disable one tool while keeping the rest available\n  pi --exclude-tools ask_question\n\n  # Export a session file to HTML\n  pi --export ~/.pi/agent/sessions/--path--/session.jsonl\n  pi --export session.jsonl output.html\n\nEnvironment Variables:\n  ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token\n  ANTHROPIC_API_KEY                - Anthropic Claude API key\n  ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)\n  ANT_LING_API_KEY                 - Ant Ling API key\n  OPENAI_API_KEY                   - OpenAI GPT API key\n  AZURE_OPENAI_API_KEY             - Azure OpenAI API key\n  AZURE_OPENAI_BASE_URL            - Azure OpenAI/Cognitive Services base URL (e.g. https://{resource}.openai.azure.com)\n  AZURE_OPENAI_RESOURCE_NAME       - Azure OpenAI resource name (alternative to base URL)\n  AZURE_OPENAI_API_VERSION         - Azure OpenAI API version (default: v1)\n  AZURE_OPENAI_DEPLOYMENT_NAME_MAP - Azure OpenAI model=deployment map (comma-separated)\n  DEEPSEEK_API_KEY                 - DeepSeek API key\n  NVIDIA_API_KEY                   - NVIDIA NIM API key\n  GEMINI_API_KEY                   - Google Gemini API key\n  GROQ_API_KEY                     - Groq API key\n  CEREBRAS_API_KEY                 - Cerebras API key\n  XAI_API_KEY                      - xAI Grok API key\n  FIREWORKS_API_KEY                - Fireworks API key\n  TOGETHER_API_KEY                 - Together AI API key\n  BASETEN_API_KEY                  - Baseten API key\n  OPENROUTER_API_KEY               - OpenRouter API key\n  AI_GATEWAY_API_KEY               - Vercel AI Gateway API key\n  ZAI_API_KEY                      - ZAI Coding Plan API key (Global)\n  ZAI_CODING_CN_API_KEY            - ZAI Coding Plan API key (China)\n  MISTRAL_API_KEY                  - Mistral API key\n  MINIMAX_API_KEY                  - MiniMax API key\n  MOONSHOT_API_KEY                 - Moonshot AI API key\n  OPENCODE_API_KEY                 - OpenCode Zen/OpenCode Go API key\n  KIMI_API_KEY                     - Kimi For Coding API key\n  CLOUDFLARE_API_KEY               - Cloudflare API token (Workers AI and AI Gateway)\n  CLOUDFLARE_ACCOUNT_ID            - Cloudflare account id (required for both)\n  CLOUDFLARE_GATEWAY_ID            - Cloudflare AI Gateway slug (required for AI Gateway)\n  QWEN_TOKEN_PLAN_API_KEY          - Qwen Token Plan API key (international region)\n  QWEN_TOKEN_PLAN_CN_API_KEY       - Qwen Token Plan API key (China region)\n  XIAOMI_API_KEY                   - Xiaomi MiMo API key (api.xiaomimimo.com billing)\n  XIAOMI_TOKEN_PLAN_CN_API_KEY     - Xiaomi MiMo Token Plan API key (China region)\n  XIAOMI_TOKEN_PLAN_AMS_API_KEY    - Xiaomi MiMo Token Plan API key (Amsterdam region)\n  XIAOMI_TOKEN_PLAN_SGP_API_KEY    - Xiaomi MiMo Token Plan API key (Singapore region)\n  AWS_PROFILE                      - AWS profile for Amazon Bedrock\n  AWS_ACCESS_KEY_ID                - AWS access key for Amazon Bedrock\n  AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock\n  AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)\n  AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)\n  PI_CODING_AGENT_DIR              - Config directory (default: ~/.pi/agent)\n  PI_CODING_AGENT_SESSION_DIR      - Session storage directory (overridden by --session-dir)\n  PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)\n  PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes\n  PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no\n  PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)\n\nBuilt-in Tool Names:\n  read       - Read file contents\n  bash       - Execute bash commands\n  powershell - Execute PowerShell commands on Windows\n  edit       - Edit files with find/replace\n  write      - Write files (creates/overwrites)\n  grep       - Search file contents (read-only, off by default)\n  find       - Find files by glob pattern (read-only, off by default)\n  ls         - List directory contents (read-only, off by default)",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "pi",
+          "auth",
+          "--help"
+        ],
+        "duration_ms": 170,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Usage:\n  pi auth print-api-key [--provider <provider>] [--model <model>]\n  pi auth print-bearer-token [--provider <provider>] [--model <model>] [--min-expiry <duration>]\n  pi auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh]\n\nAuth commands require at least one of --provider or --model. Checks refresh expired OAuth credentials by default; --no-refresh prevents this. --credentials emits the credential, or includes it in JSON output.",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "pi",
+          "auth",
+          "check",
+          "--provider",
+          "openai",
+          "--json",
+          "--no-refresh"
+        ],
+        "duration_ms": 171,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "{\"status\":\"ready\",\"provider\":\"openai\",\"authType\":\"api_key\"}",
+        "timed_out": false
+      }
+    ],
+    "default_root_help": {
+      "command": {
+        "argv": [
+          "pi",
+          "--help"
+        ],
+        "duration_ms": 187,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "pi - AI coding assistant with read, bash, edit, write tools\n\nUsage:\n  pi [options] [--] [@files...] [messages...]\n\nCommands:\n  pi install <source> [-l]     Install extension source and add to settings\n  pi remove <source> [-l]      Remove extension source from settings\n  pi uninstall <source> [-l]   Alias for remove\n  pi update [source|self|pi]   Update pi, extensions, or model catalogs\n  pi list                      List installed extensions from settings\n  pi config [-l]               Open TUI to enable/disable package resources (Tab switches scope)\n  pi auth <command>            Print credentials or check provider readiness\n  pi <command> --help          Show help for install/remove/uninstall/update/list/config/auth\n\nOptions:\n  --provider <name>              Provider name (default: google)\n  --model <pattern>              Model pattern or ID (supports \"provider/id\" and optional \":<thinking>\")\n  --api-key <key>                API key (defaults to env vars)\n  --system-prompt <text>         System prompt (default: coding assistant prompt)\n  --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)\n  --mode <mode>                  Output mode: text (default), json, or rpc\n  --print, -p                    Non-interactive mode: process prompt and exit\n  --continue, -c                 Continue previous session\n  --resume, -r                   Select a session to resume\n  --session <path|id>            Use specific session file or partial UUID\n  --session-id <id>              Use exact project session ID, creating it if missing\n  --fork <path|id>               Fork specific session file or partial UUID into a new session\n  --session-dir <dir>            Directory for session storage and lookup\n  --no-session                   Don't save session (ephemeral)\n  --name, -n <name>              Set session display name\n  --models <patterns>            Comma-separated model patterns for Ctrl+P cycling\n                                 Supports globs (anthropic/*, *sonnet*) and fuzzy matching\n  --no-tools, -nt                Disable all tools by default (built-in and extension)\n  --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled\n  --tools, -t <tools>            Comma-separated allowlist of tool names to enable\n                                 Applies to built-in, extension, and custom tools\n  --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable\n                                 Applies to built-in, extension, and custom tools\n  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max\n  --extension, -e <path>         Load an extension file (can be used multiple times)\n  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)\n  --skill <path>                 Load a skill file or directory (can be used multiple times)\n  --no-skills, -ns               Disable skills discovery and loading\n  --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)\n  --no-prompt-templates, -np     Disable prompt template discovery and loading\n  --theme <path>                 Load a theme file or directory (can be used multiple times)\n  --use-theme <name[/name]>      Set the initial interactive theme for this run\n  --no-themes                    Disable theme discovery and loading\n  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading\n  --export <file>                Export session file to HTML and exit\n  --list-models [search]         List available models (with optional fuzzy search)\n  --verbose                      Force verbose startup (overrides quietStartup setting)\n  --tui-mode <mode>              TUI mode: regular (default) or fullscreen\n  --approve, -a                  Trust project-local files for this run\n  --no-approve, -na              Ignore project-local files for this run\n  --offline                      Disable startup network operations (same as PI_OFFLINE=1)\n  --                             End option parsing; treat remaining arguments as messages/files\n  --help, -h                     Show this help\n  --version, -v                  Show version number\n\nExtensions can register additional flags (e.g., --plan from plan-mode extension).\n\nExamples:\n  # Print a provider API key for an external client\n  pi auth print-api-key --provider openai\n\n  # Print an OAuth bearer token for an external client (refreshes if expired)\n  pi auth print-bearer-token --provider openai-codex\n\n  # Interactive mode\n  pi\n\n  # Interactive mode with initial prompt\n  pi \"List all .ts files in src/\"\n\n  # Include files in initial message\n  pi @prompt.md @image.png \"What color is the sky?\"\n\n  # Non-interactive mode (process and exit)\n  pi -p \"List all .ts files in src/\"\n\n  # Prompt beginning with a dash\n  pi -p -- \"- Summarize these points\"\n\n  # Multiple messages (interactive)\n  pi \"Read package.json\" \"What dependencies do we have?\"\n\n  # Continue previous session\n  pi --continue \"What did we discuss?\"\n\n  # Start a named session\n  pi --name \"Refactor auth module\"\n\n  # Use different model\n  pi --provider openai --model gpt-4o-mini \"Help me refactor this code\"\n\n  # Use model with provider prefix (no --provider needed)\n  pi --model openai/gpt-4o \"Help me refactor this code\"\n\n  # Use model with thinking level shorthand\n  pi --model sonnet:high \"Solve this complex problem\"\n\n  # Limit model cycling to specific models\n  pi --models claude-sonnet,claude-haiku,gpt-4o\n\n  # Limit to a specific provider with glob pattern\n  pi --models \"github-copilot/*\"\n\n  # Cycle models with fixed thinking levels\n  pi --models sonnet:high,haiku:low\n\n  # Start with a specific thinking level\n  pi --thinking high \"Solve this complex problem\"\n\n  # Read-only mode (no file modifications possible)\n  pi --tools read,grep,find,ls -p \"Review the code in src/\"\n\n  # Disable one tool while keeping the rest available\n  pi --exclude-tools ask_question\n\n  # Export a session file to HTML\n  pi --export ~/.pi/agent/sessions/--path--/session.jsonl\n  pi --export session.jsonl output.html\n\nEnvironment Variables:\n  ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token\n  ANTHROPIC_API_KEY                - Anthropic Claude API key\n  ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)\n  ANT_LING_API_KEY                 - Ant Ling API key\n  OPENAI_API_KEY                   - OpenAI GPT API key\n  AZURE_OPENAI_API_KEY             - Azure OpenAI API key\n  AZURE_OPENAI_BASE_URL            - Azure OpenAI/Cognitive Services base URL (e.g. https://{resource}.openai.azure.com)\n  AZURE_OPENAI_RESOURCE_NAME       - Azure OpenAI resource name (alternative to base URL)\n  AZURE_OPENAI_API_VERSION         - Azure OpenAI API version (default: v1)\n  AZURE_OPENAI_DEPLOYMENT_NAME_MAP - Azure OpenAI model=deployment map (comma-separated)\n  DEEPSEEK_API_KEY                 - DeepSeek API key\n  NVIDIA_API_KEY                   - NVIDIA NIM API key\n  GEMINI_API_KEY                   - Google Gemini API key\n  GROQ_API_KEY                     - Groq API key\n  CEREBRAS_API_KEY                 - Cerebras API key\n  XAI_API_KEY                      - xAI Grok API key\n  FIREWORKS_API_KEY                - Fireworks API key\n  TOGETHER_API_KEY                 - Together AI API key\n  BASETEN_API_KEY                  - Baseten API key\n  OPENROUTER_API_KEY               - OpenRouter API key\n  AI_GATEWAY_API_KEY               - Vercel AI Gateway API key\n  ZAI_API_KEY                      - ZAI Coding Plan API key (Global)\n  ZAI_CODING_CN_API_KEY            - ZAI Coding Plan API key (China)\n  MISTRAL_API_KEY                  - Mistral API key\n  MINIMAX_API_KEY                  - MiniMax API key\n  MOONSHOT_API_KEY                 - Moonshot AI API key\n  OPENCODE_API_KEY                 - OpenCode Zen/OpenCode Go API key\n  KIMI_API_KEY                     - Kimi For Coding API key\n  CLOUDFLARE_API_KEY               - Cloudflare API token (Workers AI and AI Gateway)\n  CLOUDFLARE_ACCOUNT_ID            - Cloudflare account id (required for both)\n  CLOUDFLARE_GATEWAY_ID            - Cloudflare AI Gateway slug (required for AI Gateway)\n  QWEN_TOKEN_PLAN_API_KEY          - Qwen Token Plan API key (international region)\n  QWEN_TOKEN_PLAN_CN_API_KEY       - Qwen Token Plan API key (China region)\n  XIAOMI_API_KEY                   - Xiaomi MiMo API key (api.xiaomimimo.com billing)\n  XIAOMI_TOKEN_PLAN_CN_API_KEY     - Xiaomi MiMo Token Plan API key (China region)\n  XIAOMI_TOKEN_PLAN_AMS_API_KEY    - Xiaomi MiMo Token Plan API key (Amsterdam region)\n  XIAOMI_TOKEN_PLAN_SGP_API_KEY    - Xiaomi MiMo Token Plan API key (Singapore region)\n  AWS_PROFILE                      - AWS profile for Amazon Bedrock\n  AWS_ACCESS_KEY_ID                - AWS access key for Amazon Bedrock\n  AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock\n  AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)\n  AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)\n  PI_CODING_AGENT_DIR              - Config directory (default: ~/.pi/agent)\n  PI_CODING_AGENT_SESSION_DIR      - Session storage directory (overridden by --session-dir)\n  PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)\n  PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes\n  PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no\n  PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)\n\nBuilt-in Tool Names:\n  read       - Read file contents\n  bash       - Execute bash commands\n  powershell - Execute PowerShell commands on Windows\n  edit       - Edit files with find/replace\n  write      - Write files (creates/overwrites)\n  grep       - Search file contents (read-only, off by default)\n  find       - Find files by glob pattern (read-only, off by default)\n  ls         - List directory contents (read-only, off by default)",
+        "timed_out": false
+      },
+      "note": "pi --help initializes files below default HOME/.pi when PI_CODING_AGENT_DIR is unset",
+      "state": "PASS",
+      "written_files": [
+        "home/.pi/agent/auth.json",
+        "home/.pi/agent/models-store.json"
+      ]
+    },
+    "executable": "/opt/homebrew/bin/pi",
+    "executable_sha256": "e6d7fcf36a239cf3746e67ddf4222081ac01a601b85a3ee688bdfe9c161d754c",
+    "package_artifacts": {
+      "package": {
+        "bytes": 4145,
+        "path": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/package.json",
+        "sha256": "f1738e4b42203e5f22bcb513f13fb2fb224f1e98d1f129ff042f87048665a94c"
+      },
+      "resource_loader": {
+        "bytes": 39133,
+        "path": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js",
+        "sha256": "8e8a1bc1c5bc9e955f6a2314dd1db02071be56d48b1fea7b8b2cacb4fc9a0628"
+      },
+      "resource_loader_types": {
+        "bytes": 6831,
+        "path": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.d.ts",
+        "sha256": "f7c1dac7b3d661dff5fbfe51d1b50dff12b4c4329ae29a280ae713740b162493"
+      },
+      "rpc_command_literals": [
+        "abort",
+        "abort_bash",
+        "abort_retry",
+        "bash",
+        "clear_queue",
+        "clone",
+        "compact",
+        "cycle_model",
+        "cycle_thinking_level",
+        "export_html",
+        "extension_ui_request",
+        "extension_ui_response",
+        "follow_up",
+        "fork",
+        "get_available_models",
+        "get_available_thinking_levels",
+        "get_commands",
+        "get_entries",
+        "get_fork_messages",
+        "get_last_assistant_text",
+        "get_messages",
+        "get_session_stats",
+        "get_state",
+        "get_tree",
+        "new_session",
+        "prompt",
+        "response",
+        "set_auto_compaction",
+        "set_auto_retry",
+        "set_follow_up_mode",
+        "set_model",
+        "set_session_name",
+        "set_steering_mode",
+        "set_thinking_level",
+        "steer",
+        "switch_session"
+      ],
+      "rpc_docs": {
+        "bytes": 42698,
+        "path": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/rpc.md",
+        "sha256": "15fcd26bee72777b373fd5f2edd77091a01cadd4de95e48b08422ced0552a28d"
+      },
+      "rpc_types": {
+        "bytes": 9801,
+        "path": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/rpc/rpc-types.d.ts",
+        "sha256": "e968e5be01dc7ad9615f938ae867ef136fa495f13dcf169942e9f781a299d9eb"
+      }
+    },
+    "resolved_executable": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+    "resource_discovery": {
+      "context_boundary": {
+        "command": {
+          "argv": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { pathToFileURL } from 'node:url';\nconst [loader, cwd, agentDir] = process.argv.slice(1);\nconst mod = await import(pathToFileURL(loader).href);\nconst rows = mod.loadProjectContextFiles({cwd, agentDir});\nprocess.stdout.write(JSON.stringify(rows));",
+            "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js",
+            "/var/folders/c9/08j4d2c14mzgjsnfgz0twbww0000gn/T/agent-home-p20-sa3ke4qt/pi-probe/workspace/repo/nested",
+            "/var/folders/c9/08j4d2c14mzgjsnfgz0twbww0000gn/T/agent-home-p20-sa3ke4qt/pi-probe/pi"
+          ],
+          "duration_ms": 684,
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "[{\"path\":\"<PROBE_ROOT>/pi/AGENTS.md\",\"content\":\"# P20 Pi user sentinel\\n\\nP20_PI_USER_CONTEXT\\n\"},{\"path\":\"<PROBE_ROOT>/workspace/AGENTS.md\",\"content\":\"# P20 Pi outside-repository sentinel\\n\\nP20_PI_OUTSIDE_REPOSITORY_CONTEXT\\n\"},{\"path\":\"<PROBE_ROOT>/workspace/repo/AGENTS.md\",\"content\":\"# P20 Pi repository-root sentinel\\n\\nP20_PI_REPOSITORY_CONTEXT\\n\"},{\"path\":\"<PROBE_ROOT>/workspace/repo/nested/AGENTS.md\",\"content\":\"# P20 Pi nested-project sentinel\\n\\nP20_PI_NESTED_CONTEXT\\n\"}]",
+          "timed_out": false
+        },
+        "outside_repository_ancestor_loaded": true,
+        "paths": [
+          "<PROBE_ROOT>/pi/AGENTS.md",
+          "<PROBE_ROOT>/workspace/AGENTS.md",
+          "<PROBE_ROOT>/workspace/repo/AGENTS.md",
+          "<PROBE_ROOT>/workspace/repo/nested/AGENTS.md"
+        ],
+        "reason": "0.85.1 loadProjectContextFiles traverses above the fixture Git root",
+        "state": "UNSUPPORTED"
+      },
+      "skills": [
+        {
+          "location": null,
+          "name": "skill:p20-pi-project",
+          "path": null,
+          "source": "skill"
+        },
+        {
+          "location": null,
+          "name": "skill:p20-pi-user",
+          "path": null,
+          "source": "skill"
+        }
+      ],
+      "state": "PASS"
+    },
+    "rpc": {
+      "argv": [
+        "pi",
+        "--mode",
+        "rpc",
+        "--no-session",
+        "--offline",
+        "--approve",
+        "--session-dir",
+        "/var/folders/c9/08j4d2c14mzgjsnfgz0twbww0000gn/T/agent-home-p20-sa3ke4qt/pi-probe/sessions"
+      ],
+      "other_messages": [],
+      "parse_errors": [],
+      "responses": {
+        "commands": {
+          "command": "get_commands",
+          "data": {
+            "commands": [
+              {
+                "description": "Manage llama.cpp router models",
+                "name": "llama",
+                "source": "extension",
+                "sourceInfo": {
+                  "origin": "top-level",
+                  "path": "<inline:llama.cpp>",
+                  "scope": "temporary",
+                  "source": "inline"
+                }
+              },
+              {
+                "description": "Non-secret P20 Pi project-skill sentinel.",
+                "name": "skill:p20-pi-project",
+                "source": "skill",
+                "sourceInfo": {
+                  "baseDir": "<PROBE_ROOT>/workspace/repo/.agents",
+                  "origin": "top-level",
+                  "path": "<PROBE_ROOT>/workspace/repo/.agents/skills/p20-pi-project/SKILL.md",
+                  "scope": "project",
+                  "source": "auto"
+                }
+              },
+              {
+                "description": "Non-secret P20 Pi user-skill sentinel.",
+                "name": "skill:p20-pi-user",
+                "source": "skill",
+                "sourceInfo": {
+                  "baseDir": "<PROBE_ROOT>/pi",
+                  "origin": "top-level",
+                  "path": "<PROBE_ROOT>/pi/skills/p20-pi-user/SKILL.md",
+                  "scope": "user",
+                  "source": "auto"
+                }
+              }
+            ]
+          },
+          "id": "commands",
+          "success": true,
+          "type": "response"
+        },
+        "state": {
+          "command": "get_state",
+          "data": {
+            "autoCompactionEnabled": true,
+            "followUpMode": "one-at-a-time",
+            "isCompacting": false,
+            "isStreaming": false,
+            "messageCount": 0,
+            "model": {
+              "api": "openai-responses",
+              "baseUrl": "https://api.openai.com/v1",
+              "compat": {
+                "supportsStrictMode": true
+              },
+              "contextWindow": 128000,
+              "cost": {
+                "cacheRead": 0.075,
+                "cacheWrite": 0,
+                "input": 0.15,
+                "output": 0.6
+              },
+              "id": "gpt-4o-mini",
+              "input": [
+                "text",
+                "image"
+              ],
+              "maxTokens": 16384,
+              "name": "GPT-4o mini",
+              "provider": "openai",
+              "reasoning": false
+            },
+            "pendingMessageCount": 0,
+            "sessionId": "01a0c20d-25f9-771e-b396-f51bbbaee4cf",
+            "steeringMode": "one-at-a-time",
+            "thinkingLevel": "off"
+          },
+          "id": "state",
+          "success": true,
+          "type": "response"
+        }
+      },
+      "state": "PASS",
+      "stderr": ""
+    },
+    "state": "PASS",
+    "version": "0.85.1"
+  },
+  "platform": {
+    "machine": "arm64",
+    "python": "3.14.4",
+    "release": "25.5.0",
+    "system": "Darwin"
+  },
+  "schema_version": 1,
+  "tools": {
+    "commands": {
+      "fj_help": {
+        "argv": [
+          "fj",
+          "--help"
+        ],
+        "duration_ms": 9,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Usage: fj [OPTIONS] <COMMAND>\n\nCommands:\n  repo        \n  issue       \n  pr          \n  wiki        \n  actions     \n  whoami      \n  auth        \n  release     \n  tag         \n  user        \n  org         \n  version     \n  completion  \n  help        Print this message or the help of the given subcommand(s)\n\nOptions:\n  -H, --host <HOST>\n          \n\n  -C, --cwd <CWD>\n          Sets the working directory to <CWD>\n\n      --style <STYLE>\n          Possible values:\n          - fancy:   Use special characters, and colors\n          - minimal: No special characters and no colors. Always used in non-terminal contexts (i.e. pipes)\n\n  -h, --help\n          Print help (see a summary with '-h')",
+        "timed_out": false
+      },
+      "fj_version": {
+        "argv": [
+          "fj",
+          "version"
+        ],
+        "duration_ms": 42,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Could not find keys file. Creating a new file.\nfj v0.6.0",
+        "timed_out": false
+      },
+      "fj_whoami_help": {
+        "argv": [
+          "fj",
+          "whoami",
+          "--help"
+        ],
+        "duration_ms": 8,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Usage: fj whoami [OPTIONS]\n\nOptions:\n  -H, --host <HOST>      \n  -r, --remote <REMOTE>  \n  -C, --cwd <CWD>        Sets the working directory to <CWD>\n  -h, --help             Print help",
+        "timed_out": false
+      },
+      "git_profile": {
+        "argv": [
+          "git",
+          "config",
+          "--global",
+          "--list",
+          "--show-origin"
+        ],
+        "duration_ms": 10,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "file:<REPO_ROOT>/tests/fixtures/agent_home_p20/tool-profile/gitconfig\tuser.name=Allen Woods\nfile:<REPO_ROOT>/tests/fixtures/agent_home_p20/tool-profile/gitconfig\tuser.email=allenwoods@users.noreply.code.hyprial.com\nfile:<REPO_ROOT>/tests/fixtures/agent_home_p20/tool-profile/gitconfig\turl.ssh://git@git.internal.hyprial.com/.insteadof=https://code.hyprial.com/",
+        "timed_out": false
+      },
+      "git_version": {
+        "argv": [
+          "git",
+          "--version"
+        ],
+        "duration_ms": 11,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "git version 2.50.1 (Apple Git-155)",
+        "timed_out": false
+      },
+      "ssh_effective": {
+        "argv": [
+          "ssh",
+          "-G",
+          "-F",
+          "/Users/ci-runner/h2b-work/p2-p20/tests/fixtures/agent_home_p20/tool-profile/ssh_config",
+          "git.internal.hyprial.com"
+        ],
+        "duration_ms": 6,
+        "returncode": 0,
+        "stderr": "Pseudo-terminal will not be allocated because stdin is not a terminal.",
+        "stdout": "host git.internal.hyprial.com\nuser git\nhostname git.internal.hyprial.com\nport 22\naddressfamily any\nbatchmode no\ncanonicalizefallbacklocal yes\ncanonicalizehostname false\ncheckhostip no\ncompression no\ncontrolmaster false\nenablesshkeysign no\nclearallforwardings no\nexitonforwardfailure no\nfingerprinthash SHA256\nforwardx11 no\nforwardx11trusted no\ngatewayports no\ngssapiauthentication no\ngssapidelegatecredentials no\nhashknownhosts no\nhostbasedauthentication no\nidentitiesonly yes\nkbdinteractiveauthentication no\nnohostauthenticationforlocalhost no\nnohostauthenticationforproxycommand no\npasswordauthentication no\npermitlocalcommand no\nproxyusefdpass no\npubkeyauthentication true\nrequesttty auto\nsessiontype default\nstdinnull no\nforkafterauthentication no\nstreamlocalbindunlink no\nstricthostkeychecking true\ntcpkeepalive yes\ntunnel false\nverifyhostkeydns false\nvisualhostkey no\nupdatehostkeys false\nenableescapecommandline no\nwarnweakcrypto yes\napplemultipath no\ncanonicalizemaxdots 1\nconnectionattempts 1\nforwardx11timeout 1200\nnumberofpasswordprompts 3\nserveralivecountmax 3\nserveraliveinterval 0\nrequiredrsasize 1024\nobscurekeystroketiming yes\nciphers chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr\nhostkeyalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-cert-v01@openssh.com,ecdsa-sha2-nistp384-cert-v01@openssh.com,ecdsa-sha2-nistp521-cert-v01@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256\nhostbasedacceptedalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-cert-v01@openssh.com,ecdsa-sha2-nistp384-cert-v01@openssh.com,ecdsa-sha2-nistp521-cert-v01@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256\nidentityagent P20_SENTINEL_SOCKET_NOT_REAL\nkexalgorithms mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256\ncasignaturealgorithms ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256\nloglevel INFO\nmacs umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-256,hmac-sha2-512,hmac-sha1\nsecuritykeyprovider $SSH_SK_PROVIDER\npubkeyacceptedalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-cert-v01@openssh.com,ecdsa-sha2-nistp384-cert-v01@openssh.com,ecdsa-sha2-nistp521-cert-v01@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256\nxauthlocation /usr/X11R6/bin/xauth\nidentityfile P20_SENTINEL_PUBLIC_KEY_NOT_REAL\ncanonicaldomains none\nglobalknownhostsfile /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2\nuserknownhostsfile P20_SENTINEL_KNOWN_HOSTS_NOT_REAL\nlogverbose none\nchanneltimeout none\npermitremoteopen any\naddkeystoagent false\nforwardagent no\nconnecttimeout none\ntunneldevice any:any\ncanonicalizePermittedcnames none\ncontrolpersist no\nescapechar ~\nipqos ef cs0\nrekeylimit 0 0\nstreamlocalbindmask 0177\nsyslogfacility USER",
+        "timed_out": false
+      },
+      "ssh_version": {
+        "argv": [
+          "ssh",
+          "-V"
+        ],
+        "duration_ms": 5,
+        "returncode": 0,
+        "stderr": "OpenSSH_10.2p1, LibreSSL 3.3.6",
+        "stdout": "",
+        "timed_out": false
+      },
+      "tea_help": {
+        "argv": [
+          "tea",
+          "--help"
+        ],
+        "duration_ms": 17,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "NAME:\n   tea - command line tool to interact with Gitea\n\nUSAGE:\n   tea [global options] [command [command options]]\n\nVERSION:\n   Version: \u001b[1m0.15.1\u001b[0m  golang: 1.26.5  go-sdk: v1.2.0\n\nDESCRIPTION:\n   tea is a productivity helper for Gitea. It can be used to manage most entities on\n   one or multiple Gitea instances & provides local helpers like 'tea pr checkout'.\n\n   tea tries to make use of context provided by the repository in $PWD if available.\n   tea works best in a upstream/fork workflow, when the local main branch tracks the\n   upstream repo. tea assumes that local git state is published on the remote before\n   doing operations with tea.    Configuration is persisted in $XDG_CONFIG_HOME/tea.\n\n\nCOMMANDS:\n   help, h  Shows a list of commands or help for one command\n\n   ENTITIES:\n     issues, issue, i                  List, create and update issues\n     pulls, pull, pr                   Manage and checkout pull requests\n     labels, label                     Manage issue labels\n     milestones, milestone, ms         List and create milestones\n     releases, release, r              Manage releases\n     times, time, t                    Operate on tracked times of a repository's issues & pulls\n     organizations, organization, org  List, create, delete organizations\n     repos, repo                       Manage repositories\n     branches, branch, b               Consult branches\n     actions, action                   Manage repository actions\n     wiki                              Manage repository wiki pages\n     webhooks, webhook, hooks, hook    Manage webhooks\n     comments, comment, c              Manage comments on issues and pull requests\n\n   HELPERS:\n     open, o                         Open something of the repository in web browser\n     notifications, notification, n  Show notifications\n     clone, C                        Clone a repository locally\n     api                             Make an authenticated API request\n\n   MISCELLANEOUS:\n     whoami    Show current logged in user\n     admin, a  Operations requiring admin access on the Gitea instance\n\n   SETUP:\n     logins, login      Log in to a Gitea server\n     logout             Log out from a Gitea server\n     ssh-keys, ssh-key  Manage SSH public keys\n\nGLOBAL OPTIONS:\n   --debug, --vvv  Enable debug mode\n   --help, -h      show help\n   --version, -v   print the version",
+        "timed_out": false
+      },
+      "tea_version": {
+        "argv": [
+          "tea",
+          "--version"
+        ],
+        "duration_ms": 72,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Version: \u001b[1m0.15.1\u001b[0m\tgolang: 1.26.5\tgo-sdk: v1.2.0",
+        "timed_out": false
+      },
+      "tea_whoami_help": {
+        "argv": [
+          "tea",
+          "whoami",
+          "--help"
+        ],
+        "duration_ms": 17,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "NAME:\n   tea whoami - Show current logged in user\n\nUSAGE:\n   tea whoami [options]  \n\nCATEGORY:\n   MISCELLANEOUS\n\nDESCRIPTION:\n   For debugging purposes, show the user that is currently logged in.\n\nOPTIONS:\n   --help, -h  show help\n\nGLOBAL OPTIONS:\n   --debug, --vvv  Enable debug mode",
+        "timed_out": false
+      },
+      "uv_version": {
+        "argv": [
+          "uv",
+          "--version"
+        ],
+        "duration_ms": 8,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "uv 0.11.7 (Homebrew 2026-04-15 aarch64-apple-darwin)",
+        "timed_out": false
+      }
+    },
+    "service_identity": {
+      "reason": "no approved test Forgejo login/repository; whoami and push were not run, and no client auth store was read",
+      "state": "NOT_RUN"
+    },
+    "ssh_signing_identity": {
+      "reason": "no approved test key/socket; only ssh -G schema expansion was run",
+      "state": "NOT_RUN"
+    },
+    "state": "PASS"
+  }
+}
