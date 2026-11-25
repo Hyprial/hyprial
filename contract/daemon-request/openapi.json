@@ -73081,6 +73081,51 @@
                         "message"
                       ],
                       "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "ORGFS_LAYOUT_UNSUPPORTED"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "guide": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "reason": {
+                              "enum": [
+                                "legacy-journal",
+                                "unknown-space-json",
+                                "space-id-mismatch",
+                                "corrupt-file"
+                              ],
+                              "type": "string"
+                            },
+                            "spaceId": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "spaceId",
+                            "reason",
+                            "guide"
+                          ],
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
                     }
                   ]
                 }
@@ -139308,6 +139353,39 @@
             "type": "object"
           },
           "description": "orgfs runtime error"
+        },
+        {
+          "code": "ORGFS_LAYOUT_UNSUPPORTED",
+          "dataSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "guide": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "legacy-journal",
+                  "unknown-space-json",
+                  "space-id-mismatch",
+                  "corrupt-file"
+                ],
+                "type": "string"
+              },
+              "spaceId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "spaceId",
+              "reason",
+              "guide"
+            ],
+            "type": "object"
+          },
+          "description": "the space is stored in a layout this daemon does not open; see guide"
         }
       ],
       "httpBinding": {
