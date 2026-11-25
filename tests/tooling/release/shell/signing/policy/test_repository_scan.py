@@ -28,7 +28,7 @@ control points are outside the repository).
 the workflow file) is refused in every job that runs on the release Mac
 (``release-macos-arm64`` and ``macos-host``, two runner processes of the same
 macOS account), job-level ``uses:`` included. Workflows are read from
-``.forgejo/workflows`` and, when present, ``.github/workflows`` (PR #2980
+``.github/workflows`` and, when present, ``.github/workflows`` (PR #2980
 re-review, item 3). Not covered: a remote action (``uses: owner/action@ref``)
 or a remote reusable workflow on a Mac job runs code that is outside this
 repository, and a ``pull_request`` job runs the workflow files of the pull
@@ -172,7 +172,7 @@ def test_the_patterns_catch_each_form_and_spare_the_harmless_ones() -> None:
 
 def _mac_jobs() -> list[tuple[str, str, dict]]:
     found = []
-    directories = (ROOT / ".forgejo" / "workflows", ROOT / ".github" / "workflows")
+    directories = (ROOT / ".github" / "workflows", ROOT / ".github" / "workflows")
     for path in sorted(path for directory in directories for pattern in ("*.yml", "*.yaml") for path in directory.glob(pattern)):
         document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for name, job in (document.get("jobs") or {}).items():

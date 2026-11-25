@@ -1,0 +1,251 @@
+# 2026-11-08: PR/code cleanup does not publish versions; hold nightly writes and dispatch.
+# Release rules: docs/guides/release-rules.md (single source; incident history below).
+# Nightly track promotion (task 25: three movable upgrade-track refs).
+#
+# CONTRACT (E2E promotion gates unchanged):
+#   Beyond stable, `nightly` advances only when BOTH E2E gates went green on
+#   the SAME commit during the SAME night:
+#     1. e2e-macos-isolated.yml and e2e-macos-credentialed.yml each record a green marker file on the
+#        ci/gate-status branch, only on a fully successful SCHEDULED run
+#        (their marker steps carry `if: success() && event == schedule`);
+#     2. this job promotes only when gate-e2e.json and
+#        gate-e2e-controlled.json name the identical sha AND both concludedAt
+#        timestamps are fresh (within FRESHNESS_SECONDS of now) — a stale or
+#        missing marker means that gate did not go green tonight, and one
+#        green gate NEVER promotes (half-state prevention);
+#     3. the candidate is exactly that verified sha — never the current dev
+#        head or a re-resolved ref; an older candidate cannot roll tracks back.
+# Allen 2026-10-26: nightly also has a stable floor, even on NO-PROMOTE nights.
+# This job and github-publish's v* path use the SAME release_tracks.py writer
+# with compare-and-swap leases; neither overwrites a concurrent newer move.
+# A night with no promotion is a healthy, expected outcome (red gate, SHA
+# drift between the two gates, or a missing marker); it must never be
+# "fixed" by relaxing the checks above.
+#
+# Timing: e2e-macos-isolated.yml starts 18:17 UTC, e2e-macos-credentialed.yml 19:47 UTC with a
+# 120-minute timeout, so the latest honest marker lands ~21:50 UTC.  This
+# job runs at 22:17 UTC; FRESHNESS_SECONDS=4h accepts tonight's markers and
+# rejects last night's (~24h old).  workflow_dispatch runs the identical
+# checks — manual triggering cannot bypass the dual-green contract.
+
+name: release-nightly-promote
+on:
+  schedule:
+    - cron: "17 22 * * *"
+  workflow_dispatch:
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NIGHTLY_PUBLICATION_ENABLED: "false"
+      FRESHNESS_SECONDS: "14400"
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+    steps:
+      - name: Record start CI conditions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          emit_unavailable() {
+            at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unavailable)
+            line="CI_CONDITIONS phase=start job=${GITHUB_JOB:-unknown} run=${GITHUB_RUN_ID:-unknown} scope=vm-container instrument=unavailable error=script-unavailable reason=$1 at=${at}"
+            printf '%s\n' "$line" >> "${RUNNER_TEMP}/ci-conditions-${GITHUB_JOB:-unknown}.txt" 2>/dev/null || true
+            printf '%s\n' "$line"
+          }
+          conditions_repo="${RUNNER_TEMP}/ci-conditions-repo"
+          reason=
+          rm -rf "${conditions_repo}" 2>/dev/null || true
+          if ! git init -q "${conditions_repo}" 2>/dev/null; then
+            reason=git-init-failed
+          elif ! git -C "${conditions_repo}" remote add origin \
+            "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git" 2>/dev/null; then
+            reason=git-remote-failed
+          elif ! GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+            GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+              git -C "${conditions_repo}" fetch -q --depth=1 origin "${GITHUB_SHA}" 2>/dev/null; then
+            reason=git-fetch-failed
+          elif ! git -C "${conditions_repo}" show \
+            "${GITHUB_SHA}:scripts/ci/ci-conditions.sh" \
+            > "${RUNNER_TEMP}/ci-conditions.sh" 2>/dev/null; then
+            reason=git-show-failed
+          fi
+          if [ -n "$reason" ]; then
+            emit_unavailable "$reason"
+          elif ! bash "${RUNNER_TEMP}/ci-conditions.sh" start; then
+            emit_unavailable script-exec-failed
+          fi
+          exit 0
+
+      - name: Verify dual-gate green on one SHA, then move the nightly tag
+        id: candidate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          # This step talks to origin repeatedly (ls-remote/fetch/push), so
+          # the token rides in the process environment for the WHOLE step via
+          # a URL-scoped extraHeader -- never in the remote URL, where it
+          # would be echoed. #531: the env must live on this step itself, not
+          # be assumed from an earlier one.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}"
+          if ! git ls-remote --exit-code origin refs/heads/ci/gate-status >/dev/null 2>&1; then
+            echo "NO-PROMOTE: ci/gate-status does not exist yet (no gate has ever recorded green)"
+            exit 0
+          fi
+          git fetch -q --depth=1 origin ci/gate-status
+          git checkout -q --detach FETCH_HEAD
+
+          field_str() { sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" "$1"; }
+          field_num() { sed -n "s/.*\"$2\":\([0-9][0-9]*\).*/\1/p" "$1"; }
+
+          # ⚠️ Check the files exist BEFORE reading them. Under `set -e` a
+          # `sed` on a missing file kills the script, so the "marker file
+          # missing" guard below was unreachable in exactly the case it names:
+          # the job went RED instead of printing NO-PROMOTE and exiting 0.
+          # The contract above says a night with no promotion is healthy and
+          # expected -- a red job for a healthy night trains everyone to ignore
+          # this workflow, and then a real failure is invisible too.
+          for marker in gate-e2e.json gate-e2e-controlled.json; do
+            if [ ! -f "${marker}" ]; then
+              echo "NO-PROMOTE: ${marker} is absent -- that gate recorded no green tonight"
+              exit 0
+            fi
+          done
+
+          # `|| true` so a file that exists but lacks the key yields an empty
+          # string and reaches the guard below, rather than dying here. The two
+          # causes stay distinguishable: absent file above, malformed content
+          # below -- they need different fixes, so they get different messages.
+          sha_a="$(field_str gate-e2e.json sha || true)"
+          sha_b="$(field_str gate-e2e-controlled.json sha || true)"
+          epoch_a="$(field_num gate-e2e.json epoch || true)"
+          epoch_b="$(field_num gate-e2e-controlled.json epoch || true)"
+          test -n "${sha_a}" && test -n "${sha_b}" && test -n "${epoch_a}" && test -n "${epoch_b}" || {
+            echo "NO-PROMOTE: a marker file is present but malformed (missing sha or epoch)"
+            exit 0
+          }
+          if [ "${sha_a}" != "${sha_b}" ]; then
+            echo "NO-PROMOTE: gates went green on different commits (${sha_a} vs ${sha_b})"
+            exit 0
+          fi
+          # Pure integer arithmetic: no date-implementation dependence.
+          now="$(date -u +%s)"
+          age_a=$(( now - epoch_a ))
+          age_b=$(( now - epoch_b ))
+          if [ "${age_a}" -gt "${FRESHNESS_SECONDS}" ] || [ "${age_b}" -gt "${FRESHNESS_SECONDS}" ]; then
+            echo "NO-PROMOTE: stale marker(s) (age ${age_a}s / ${age_b}s > ${FRESHNESS_SECONDS}s)"
+            exit 0
+          fi
+
+          echo "PROMOTE: both gates green on ${sha_a} (ages ${age_a}s/${age_b}s)"
+          # Selection is unchanged; the shared writer applies the stable floor
+          # and refuses to roll a newer nightly back to an older green SHA.
+          echo "candidate=${sha_a}" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile nightly with stable and the verified candidate
+        id: move
+        if: success() && env.NIGHTLY_PUBLICATION_ENABLED == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE: ${{ steps.candidate.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}"
+          export GIT_TERMINAL_PROMPT=0
+          # The gate checkout contains markers, not CI tools. Restore the
+          # event's tools, not the marker SHA's tools, even on NO-PROMOTE paths.
+          git fetch --no-tags origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          python3 scripts/ci/release_tracks.py --nightly "${CANDIDATE}"
+
+      - name: Dispatch the GitHub publication of the moved nightly tag
+        # Allen 2026-09-25 (Feishu, verbatim): 「公网要发布nightly，stable，规则按我们之前定的，通过CI发布」.
+        # Same shape as gate-python.yml's internal dispatch: github-publish.yml already
+        # listens on `push: tags: [nightly]`, but the move above pushes as the
+        # Actions user and Forgejo starts no workflow for that user's pushes.
+        # The publication keeps github-publish's own gates (whitelist snapshot,
+        # gitleaks, intranet-name scan). Dispatched AT the tag, so the snapshot
+        # is the tag's own commit (github-publish refuses a run started on
+        # another ref). Only when `nightly` is still the commit this run moved
+        # it to; `--fail` keeps a refused dispatch loud.
+        if: success() && env.NIGHTLY_PUBLICATION_ENABLED == 'true' && steps.move.outputs.promoted != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMOTED: ${{ steps.move.outputs.promoted }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}"
+          export GIT_TERMINAL_PROMPT=0
+          nightly_sha="$(git ls-remote --refs origin refs/tags/nightly | cut -f1)"
+          if [[ "$nightly_sha" != "$PROMOTED" ]]; then
+            echo "CI_PUBLISH: nightly=${nightly_sha:-absent} is not this run's ${PROMOTED}; no dispatch"
+            exit 0
+          fi
+          wheel_body="$(printf '{"ref":"nightly","inputs":{"track":"nightly","source_sha":"%s"}}' "$PROMOTED")"
+          wheel_failed=0
+          printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+            curl --config - --fail --silent --show-error --connect-timeout 10 --max-time 60 -X POST \
+              -H "Content-Type: application/json" --data "$wheel_body" \
+              "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/wheel-release.yml/dispatches" \
+            || wheel_failed=1
+          printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+            curl --config - --fail --silent --show-error -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"ref":"nightly","inputs":{"ref":"nightly","dry_run":"false","report_pr":"0"}}' \
+              "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/github-publish.yml/dispatches"
+          echo "CI_PUBLISH: dispatched github-publish for nightly=${PROMOTED}"
+          [ "$wheel_failed" = 0 ] || { echo 'wheel-release dispatch failed' >&2; exit 1; }
+
+      - name: Record end CI conditions
+        if: always()
+        run: |
+          if [ -r "${RUNNER_TEMP}/ci-conditions.sh" ]; then
+            bash "${RUNNER_TEMP}/ci-conditions.sh" end || true
+          else
+            at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unavailable)
+            line="CI_CONDITIONS phase=end job=${GITHUB_JOB:-unknown} run=${GITHUB_RUN_ID:-unknown} scope=vm-container instrument=unavailable error=script-unavailable reason=script-file-missing at=${at}"
+            printf '%s\n' "$line" >> "${RUNNER_TEMP}/ci-conditions-${GITHUB_JOB:-unknown}.txt" 2>/dev/null || true
+            printf '%s\n' "$line"
+          fi
+          exit 0
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          if [ -r "${RUNNER_TEMP}/ci-conditions.sh" ]; then
+            bash "${RUNNER_TEMP}/ci-conditions.sh" artifact || true
+          else
+            printf 'CI_CONDITIONS phase=artifact job=%s run=%s scope=vm-container instrument=unavailable error=artifact-upload-failed reason=script-file-missing at=%s\n' \
+              "${GITHUB_JOB:-unknown}" "${GITHUB_RUN_ID:-unknown}" \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unavailable)"
+          fi
+          echo "artifact upload failed/timeout: ci_conditions_artifact" >> "$GITHUB_STEP_SUMMARY"
+          exit 0

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parents[3] / ".forgejo/workflows/wheel-release.yml"
+WORKFLOW = Path(__file__).resolve().parents[3] / ".github/workflows/wheel-release.yml"
 TEXT = WORKFLOW.read_text(encoding="utf-8")
 
 

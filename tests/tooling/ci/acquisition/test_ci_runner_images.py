@@ -12,7 +12,7 @@ import yaml
 
 from tests.support.ci import _ci_download_scanner as scanner
 
-WF = ".forgejo/workflows/fixture.yml"
+WF = ".github/workflows/fixture.yml"
 SELECTOR = "${{ startsWith(github.base_ref, 'release/') && 'release-ci' || 'ubuntu-latest' }}"
 
 
@@ -86,7 +86,7 @@ def test_every_runs_on_label_is_registered():
     """The registration gate and scanner use the same fail-closed reader."""
     root = Path(__file__).resolve().parents[4]
     unregistered = []
-    for path in sorted((root / ".forgejo/workflows").glob("*.y*ml")):
+    for path in sorted((root / ".github/workflows").glob("*.y*ml")):
         for name, job in (yaml.safe_load(path.read_text()).get("jobs") or {}).items():
             if not isinstance(job, dict) or "runs-on" not in job:
                 continue

@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOW = ROOT / ".forgejo/workflows/gate-python.yml"
+WORKFLOW = ROOT / ".github/workflows/gate-python.yml"
 
 STAGES = (
     ("Ensure the pinned Rust toolchain for the editable native engine", 12, "scripts/ci/ci-ensure-rust.sh"),

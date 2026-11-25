@@ -32,7 +32,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOWS = ROOT / ".forgejo" / "workflows"
+WORKFLOWS = ROOT / ".github" / "workflows"
 REMINDER_STEP = "Remind on new inline comments"
 REMINDER_JOB = "pr-hygiene"
 

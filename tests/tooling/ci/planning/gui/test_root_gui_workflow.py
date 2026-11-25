@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[5]
 
 
 def test_gui_workflow_commands_resolve_to_existing_packages_and_scripts():
-    workflow = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())
     commands = '\n'.join(
         step.get('run', '')
         for job in workflow['jobs'].values() for step in job.get('steps', [])
@@ -34,18 +34,18 @@ def test_gui_workflow_commands_resolve_to_existing_packages_and_scripts():
 
 
 def test_root_gui_gate_is_not_disabled_by_retirement():
-    workflow = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())
     job = workflow['jobs']['gui-unit']
     assert 'if' not in job
     for step in job['steps']:
         if 'npm --prefix gui' in step.get('run', ''):
             assert step.get('if') == "success() && steps.scope.outputs.gui == 'true'"
             assert not step.get('continue-on-error', False)
-    assert 'hyprial/_gui/release.json' not in (ROOT / '.forgejo/workflows/gate-gui.yml').read_text()
+    assert 'hyprial/_gui/release.json' not in (ROOT / '.github/workflows/gate-gui.yml').read_text()
 
 
 def test_gui_build_enforces_module_boundaries_and_artifact_for_every_gui_scope():
-    workflow = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())
     steps = workflow['jobs']['gui-unit']['steps']
     build = next(step for step in steps if step['name'] == 'Build independent GUI')
     assert build['if'] == "success() && steps.scope.outputs.gui == 'true'"
@@ -59,7 +59,7 @@ def test_gui_build_enforces_module_boundaries_and_artifact_for_every_gui_scope()
 
 
 def test_gui_unit_builds_artifact_before_production_bundle_tests():
-    workflow = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())
     steps = workflow['jobs']['gui-unit']['steps']
     names = [step['name'] for step in steps]
     assert names.index('Run independent GUI tests') < names.index('Build independent GUI')
@@ -70,7 +70,7 @@ def test_gui_unit_builds_artifact_before_production_bundle_tests():
 
 
 def test_gui_unit_provisions_chromium_before_the_unit_tests_and_fails_without_a_browser():
-    workflow = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())
     steps = workflow['jobs']['gui-unit']['steps']
     names = [step['name'] for step in steps]
     provision = steps[names.index('Provision pinned Chromium for the browser gates')]
@@ -88,7 +88,7 @@ def test_gui_unit_provisions_chromium_before_the_unit_tests_and_fails_without_a_
 
 
 def test_gui_unit_guarantees_a_cjk_font_between_chromium_and_the_unit_tests():
-    workflow = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())
     steps = workflow['jobs']['gui-unit']['steps']
     names = [step['name'] for step in steps]
     name = 'Ensure a CJK font and fontconfig for the browser screenshots'
@@ -109,7 +109,7 @@ def test_gui_unit_guarantees_a_cjk_font_between_chromium_and_the_unit_tests():
 
 
 def test_gui_unit_runs_the_host_conformance_suite_inside_the_unit_tests_against_the_python_host():
-    workflow = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())
     steps = workflow['jobs']['gui-unit']['steps']
     names = [step['name'] for step in steps]
     assert 'Run GUI host conformance against the Python host' not in names
@@ -133,7 +133,7 @@ def test_gui_unit_runs_the_host_conformance_suite_inside_the_unit_tests_against_
 
 def test_heavy_component_jobs_require_successful_plan_and_selected_component():
     """Verify gate-gui heavy job gating, driver selection and nightly native wiring."""
-    gui = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())['jobs']
+    gui = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())['jobs']
     for name, key in [('release-package', 'package')]:
         assert gui[name]['needs'] == ['gui-unit']
         assert gui[name]['if'] == f"needs.gui-unit.outputs.{key} == 'true'"
@@ -164,7 +164,7 @@ def test_heavy_component_jobs_require_successful_plan_and_selected_component():
 
 
 def test_root_gui_and_source_lifecycle_do_not_depend_on_retired_inputs():
-    jobs = yaml.safe_load((ROOT / '.forgejo/workflows/gate-gui.yml').read_text())['jobs']
+    jobs = yaml.safe_load((ROOT / '.github/workflows/gate-gui.yml').read_text())['jobs']
     assert 'legacy' not in jobs['gui-unit']['outputs']
     steps = {step['name']: step for step in jobs['gui-unit']['steps']}
     for name in (

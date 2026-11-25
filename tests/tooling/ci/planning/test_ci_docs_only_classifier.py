@@ -72,7 +72,7 @@ def test_empty_change_list_is_not_docs_only():
 
 def test_required_jobs_stay_present_and_gate_expensive_suites_by_step():
     workflow = yaml.safe_load(
-        (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8")
+        (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8")
     )
     jobs = workflow["jobs"]
     inventory = jobs["cli-help-inventory"]

@@ -2,7 +2,7 @@
 
 Runner: `run-group-conversation.py` (isolated; CI gates: `run-isolated-gate.py`
 runs GC-00..GC-10 and GC-12; the `hosted` job of
-`.forgejo/workflows/mock-model-harness-e2e.yml` runs the whole scenario with
+`.github/workflows/mock-model-harness-e2e.yml` runs the whole scenario with
 `--harness pi`, GC-11 included).
 Scenario package: `_group_conversation/` (`fixture.py`, `steps.py`,
 `harness.py`, `phases.py`); it reuses its own session fixture (`cli.py`,

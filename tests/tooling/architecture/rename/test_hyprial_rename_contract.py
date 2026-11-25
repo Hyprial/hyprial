@@ -130,7 +130,7 @@ def test_live_python_uses_only_the_new_environment_prefix() -> None:
 
 def test_code_paths_and_sidecar_module_are_renamed() -> None:
     code_roots = (
-        ".forgejo",
+        ".github",
         "contract",
         "docker",
         "scripts",

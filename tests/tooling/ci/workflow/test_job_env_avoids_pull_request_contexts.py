@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOW = ROOT / ".forgejo" / "workflows" / "gate-pr-hygiene.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "gate-pr-hygiene.yml"
 PULL_REQUEST_CONTEXT = "github.event.pull_request"
 
 

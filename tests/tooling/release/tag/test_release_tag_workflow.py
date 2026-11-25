@@ -13,10 +13,10 @@ from tests.support.ci.ci_workflow_policy import unpinned_uses_offenders_in
 
 
 WORKFLOW = (
-    Path(__file__).resolve().parents[4] / '.forgejo/workflows/release-tag.yml'
+    Path(__file__).resolve().parents[4] / '.github/workflows/release-tag.yml'
 )
 SYNC_WORKFLOW = (
-    Path(__file__).resolve().parents[4] / '.forgejo/workflows/homepage-changelog-sync.yml'
+    Path(__file__).resolve().parents[4] / '.github/workflows/homepage-changelog-sync.yml'
 )
 
 

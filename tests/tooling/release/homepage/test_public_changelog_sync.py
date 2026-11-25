@@ -507,7 +507,7 @@ def test_publish_keeps_the_guard_silent_when_the_diff_touches_a_workflow(
     mock = _MockForgejo()
     mock.files = [
         f"{SYNC.RELEASE_RECORD_DIR}{VERSION}.md",
-        ".forgejo/workflows/release.yml",
+        ".github/workflows/release.yml",
     ]
     try:
         pr, decision = _publish(mock, tmp_path)
@@ -585,14 +585,14 @@ def test_publish_treats_a_rename_out_of_the_workflow_dir_as_touching(
     tmp_path: Path,
 ) -> None:
     """Forgejo lists the new path as `filename`; a rename out of
-    `.forgejo/workflows/` is only visible through `previous_filename`."""
+    `.github/workflows/` is only visible through `previous_filename`."""
 
     mock = _MockForgejo()
     mock.files = [
         {"filename": f"{SYNC.RELEASE_RECORD_DIR}{VERSION}.md", "status": "added"},
         {
             "filename": "docs/moved-workflow.md",
-            "previous_filename": ".forgejo/workflows/release.yml",
+            "previous_filename": ".github/workflows/release.yml",
             "status": "renamed",
         },
     ]
@@ -630,17 +630,17 @@ def test_publish_does_not_treat_an_unrelated_rename_as_touching(
 def test_workflow_path_definition_is_shared_and_pinned() -> None:
     """One definition for the dispatcher, and it must be >= the #166 gate.
 
-    The gate (HyprialOS/homepage `.forgejo/workflows/homepage-release-gate.yml`
-    at #166) filters compare paths with startsWith(".forgejo/workflows/").
+    The gate (HyprialOS/homepage `.github/workflows/homepage-release-gate.yml`
+    at #166) filters compare paths with startsWith(".github/workflows/").
     Cross-repo code cannot import, so both sides name each other and this test
     pins the literal the two implementations share.
     """
 
-    assert SYNC.WORKFLOW_PATH_PREFIX == ".forgejo/workflows/"
+    assert SYNC.WORKFLOW_PATH_PREFIX == ".github/workflows/"
     assert SYNC.GUARD_FILES_PAGE_LIMIT == 50
-    assert SYNC.is_workflow_path(".forgejo/workflows/release.yml")
-    assert SYNC.is_workflow_path(".forgejo/workflows")
-    assert not SYNC.is_workflow_path(".forgejo/workflowsx/release.yml")
+    assert SYNC.is_workflow_path(".github/workflows/release.yml")
+    assert SYNC.is_workflow_path(".github/workflows")
+    assert not SYNC.is_workflow_path(".github/workflowsx/release.yml")
     assert not SYNC.is_workflow_path("docs/changelog/releases/0.4.6.md")
 
 
@@ -885,7 +885,7 @@ def test_publish_rename_into_the_workflow_dir_suppresses_dispatch(
     mock.files = [
         {"filename": f"{SYNC.RELEASE_RECORD_DIR}{VERSION}.md", "status": "added"},
         {
-            "filename": ".forgejo/workflows/release.yml",
+            "filename": ".github/workflows/release.yml",
             "previous_filename": "docs/release.yml",
             "status": "renamed",
         },

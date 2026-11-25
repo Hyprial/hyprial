@@ -1,0 +1,685 @@
+# mock-model-harness-e2e (renamed from hosted-agent-e2e.yml, 2026-11-06).
+# Mock model, real everything else: a local FakeProvider answers every model
+# request, while the hyprial CLI, isolated daemons and the installed Pi /
+# Codex / Claude harness binaries are the real ones.  Three stages:
+#   1. run-real-harness-loopback.py -- one real turn per harness and launch
+#      mode (pi + codex headless/interactive, claude headless);
+#   2. run-group-conversation.py --harness pi -- E2E-031 on its own isolated
+#      daemon, including GC-11 (two woken headless Pi workers answer an owner
+#      message in a group through the mock model);
+#   3. run-hosted-suite.py -- AT01 hosted-registry, AT02 capability-ledger,
+#      AT03 hosted-start and AT04 hosted-upgrade (worker destruction + frozen-build rollback).
+# Deliberately separate from credential-dependent E2E (e2e-macos-credentialed.yml).
+# Runs 54882/54830: the old 480 s turn gate could kill a 600 s SDK pre-warm.
+# Gate budget: 15 * 60 = 900 s = 600 s pre-warm (at most 2 * 300 s attempts)
+# + 300 s policy margin for the preceding four scenarios, Claude turn and
+# setup/teardown. This margin is not a measured worst-case bound. Keep the
+# enclosing 35-minute job bound; no measured cold-job evidence requires more.
+# Owner 2026-11-15 (CI load): a pull request whose title starts with `WIP:`
+# does not run `hosted`. The `plan` job asks scripts/ci/ci-plan.mjs --wip-only
+# (the one WIP rule, read from the event payload) and `hosted` needs it. The
+# pull_request trigger adds `edited` so removing the prefix starts the run
+# without a push; the paths filter below still applies to every event. A
+# skipped `hosted` is not a pass; see .forgejo/workflows/README.md.
+name: mock-model-harness-e2e
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [dev, "intg/*"]
+    paths:
+      # Refactored layout (2026-10-04): the old flat paths (src/hyprial/agents,
+      # harnesses, transfer, inbox, contracts/*, uri.py, persistent_config.py)
+      # no longer exist, so the filter silently matched only daemon/**.
+      - "src/hyprial/daemon/**"
+      - "src/hyprial/identity/impl/agents/**"
+      - "src/hyprial/shell/impl/cli/commands/agent/**"
+      - "src/hyprial/shell/impl/cli/commands/user/**"
+      - "src/hyprial/shell/impl/cli/commands/transfer/**"
+      - "src/hyprial/kernel/impl/contracts/daemon/ipc_errors.py"
+      - "src/hyprial/error/**"
+      - "src/hyprial/kernel/impl/contracts/daemon/lifecycle_budgets.py"
+      - "src/hyprial/kernel/impl/primitives/uri.py"
+      - "src/hyprial/kernel/impl/configuration/persistent_config.py"
+      - "src/hyprial/cli.py"
+      - "src/hyprial/skills/hyprial-ops/SKILL.md"
+      - "contract/e2e/run-hosted-registry.py"
+      - "contract/e2e/run-capability-ledger.py"
+      - "contract/e2e/run-hosted-*.py"
+      - "contract/e2e/run-real-harness-loopback.py"
+      - "contract/e2e/run-group-conversation.py"
+      - "contract/e2e/_group_conversation/**"
+      - "contract/e2e/_runner_shared/**"
+      - "src/hyprial/shell/impl/cli/commands/message/**"
+      - "contract/e2e/_daemon_runner.py"
+      - "contract/e2e/_deepseek.py"
+      - "contract/e2e/_fake_provider.py"
+      - "contract/e2e/with-machine-lock.py"
+      - "tests/fixtures/registry-bd6eb960/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".forgejo/workflows/mock-model-harness-e2e.yml"
+  push:
+    branches: [dev, "intg/*"]
+    paths:
+      # Refactored layout (2026-10-04): the old flat paths (src/hyprial/agents,
+      # harnesses, transfer, inbox, contracts/*, uri.py, persistent_config.py)
+      # no longer exist, so the filter silently matched only daemon/**.
+      - "src/hyprial/daemon/**"
+      - "src/hyprial/identity/impl/agents/**"
+      - "src/hyprial/shell/impl/cli/commands/agent/**"
+      - "src/hyprial/shell/impl/cli/commands/user/**"
+      - "src/hyprial/shell/impl/cli/commands/transfer/**"
+      - "src/hyprial/kernel/impl/contracts/daemon/ipc_errors.py"
+      - "src/hyprial/error/**"
+      - "src/hyprial/kernel/impl/contracts/daemon/lifecycle_budgets.py"
+      - "src/hyprial/kernel/impl/primitives/uri.py"
+      - "src/hyprial/kernel/impl/configuration/persistent_config.py"
+      - "src/hyprial/cli.py"
+      - "src/hyprial/skills/hyprial-ops/SKILL.md"
+      - "contract/e2e/run-hosted-registry.py"
+      - "contract/e2e/run-capability-ledger.py"
+      - "contract/e2e/run-hosted-*.py"
+      - "contract/e2e/run-real-harness-loopback.py"
+      - "contract/e2e/run-group-conversation.py"
+      - "contract/e2e/_group_conversation/**"
+      - "contract/e2e/_runner_shared/**"
+      - "src/hyprial/shell/impl/cli/commands/message/**"
+      - "contract/e2e/_daemon_runner.py"
+      - "contract/e2e/_deepseek.py"
+      - "contract/e2e/_fake_provider.py"
+      - "contract/e2e/with-machine-lock.py"
+      - "tests/fixtures/registry-bd6eb960/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".forgejo/workflows/mock-model-harness-e2e.yml"
+
+concurrency:
+  group: mock-model-harness-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || (startsWith(github.ref, 'refs/heads/intg/') && github.ref) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/intg/')) }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      wip: ${{ steps.wip.outputs.wip }}
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+    steps:
+      - name: Checkout exact candidate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Decide WIP from the event payload
+        id: wip
+        run: node scripts/ci/ci-plan.mjs --wip-only
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  hosted:
+    needs: [plan]
+    if: needs.plan.outputs.wip != 'true'
+    # Linux container (2026-10-04, Allen: move hosted-agent-e2e off macos-host).
+    # The suite needs no credentials (synthetic loopback model) and no macOS
+    # API; it ran on the Mac only for the host-installed Pi and an external
+    # disk. Both are now provisioned per job: Pi from npm at the same pinned
+    # version, run roots in the container's own /tmp. The single Mac stays
+    # free for the credentialed E2E gates.
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/node:24-bookworm
+    # Cold uv for two trees + Pi from npm + the suite (20 on the warm Mac).
+    timeout-minutes: 35
+    env:
+      # Same proxy route as gate-python.yml from the DinD job container.
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      HYPRIAL_NETWORK_ISOLATED: "1"
+      HYPRIAL_PEER_DISCOVERY: "0"
+    steps:
+      - name: Checkout exact candidate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          # The job's first step owns the start-conditions reading (tail policy).
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Ensure uv and its caches
+        timeout-minutes: 6
+        run: |
+          source scripts/ci/ci-step.sh ensure-uv
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+
+      - name: Persist the npm cache
+        # Linux job container on an HQ Docker runner (moved off macos-host
+        # 2026-10-04): CI_CACHE_ROOT is the hb-ci-cache volume shared with
+        # gate-python.yml. npm's cache (cacache) is safe for concurrent writers,
+        # as Go's is. A runner without the volume stays cold, but the fetch
+        # retries still apply.
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/npm"
+            echo "npm_config_cache=$CI_CACHE_ROOT/npm" >> "$GITHUB_ENV"
+          else
+            echo "CI_CACHE_ROOT unset: npm cache stays job-local (cold)"
+          fi
+          echo "npm_config_fetch_retries=5" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_mintimeout=10000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_maxtimeout=120000" >> "$GITHUB_ENV"
+          # A socket that hangs without ever erroring (#1260's run 3) never
+          # fires the retries above; a fetch timeout turns the stall itself
+          # into a retryable error.
+          echo "npm_config_fetch_timeout=60000" >> "$GITHUB_ENV"
+
+      - name: Install the pinned Pi
+        # 3 x (timeout 150 + kill 10) + 2 x sleep 10 = 500 s, plus the node
+        # symlink and version assertion; nothing more.
+        timeout-minutes: 9
+        run: |
+          set -euo pipefail
+          # The version the macOS host had installed (/opt/homebrew/bin/pi).
+          # The scenarios run Pi under a hermetic PATH: /usr/bin:/bin:... plus
+          # exactly /opt/homebrew/bin (run-hosted-registry.py).
+          # Reproduce that layout instead of widening the scenarios' PATH: Pi
+          # and the Node it runs on both live in /opt/homebrew/bin.
+          # Stall guard (#1260's run 3): a hung socket never errors, so npm's
+          # fetch retries cannot fire.  Each attempt is bounded by
+          # timeout -k 10 150 -- SIGKILL 10 s after TERM, since an npm that
+          # ignores TERM must not run to the step deadline -- with a 10 s
+          # sleep between; the 3rd failure reddens the step.  The pin and
+          # the version assertion below stay unchanged.
+          for attempt in 1 2 3; do
+            if timeout -k 10 150 npm install -g --prefix /opt/homebrew --no-audit --no-fund --prefer-offline @earendil-works/pi-coding-agent@0.85.1; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Pi install failed or stalled in all 3 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+          ln -sf "$(command -v node)" /opt/homebrew/bin/node
+          test "$(PATH=/opt/homebrew/bin:/usr/bin:/bin /opt/homebrew/bin/pi --version)" = "0.85.1"
+
+      - name: Install pinned Codex and Claude harnesses
+        timeout-minutes: 9
+        run: |
+          set -euo pipefail
+          # The first attempt reads the warm cache (--prefer-offline). A cache whose
+          # metadata predates a pinned release answers ETARGET for it forever
+          # (runs 26664/26926: codex 0.164.0), so retries revalidate the metadata
+          # with --prefer-online instead of repeating the same stale answer.
+          cache_mode=--prefer-offline
+          for attempt in 1 2 3; do
+            if timeout -k 10 150 npm install -g --prefix /opt/homebrew --no-audit --no-fund "$cache_mode" \
+              @openai/codex@0.164.0 @anthropic-ai/claude-code@2.1.299; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Codex/Claude install failed or stalled in all 3 attempts"
+              exit 1
+            fi
+            cache_mode=--prefer-online
+            sleep 10
+          done
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test "$(PATH=/opt/homebrew/bin:$PATH codex --version)" = "codex-cli 0.164.0"
+          test "$(PATH=/opt/homebrew/bin:$PATH claude --version)" = "2.1.299 (Claude Code)"
+
+      - name: Create the CI root and fetch the frozen rollback build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          AT04_CI_ROOT="$(mktemp -d /tmp/hyprial-hosted-ci-XXXXXX)"
+          echo "AT04_CI_ROOT=${AT04_CI_ROOT}" >> "$GITHUB_ENV"
+          echo "HYPRIAL_HOME=${AT04_CI_ROOT}/guard-home" >> "$GITHUB_ENV"
+          echo "HARNESS_STATE_DIR=${AT04_CI_ROOT}/guard-state" >> "$GITHUB_ENV"
+          echo "HARNESS_SOCKET_PATH=${AT04_CI_ROOT}/guard.sock" >> "$GITHUB_ENV"
+          git init -q "${AT04_CI_ROOT}/old"
+          git -C "${AT04_CI_ROOT}/old" remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git -C "${AT04_CI_ROOT}/old" fetch --depth=1 origin bd6eb9601ec3ee54b788d71ac7dfa3e0864fea72
+          git -C "${AT04_CI_ROOT}/old" checkout -q --detach FETCH_HEAD
+
+      - name: Verify guard socket paths fit the sun_path limit
+        # Linux allows 107 bytes, macOS 103; keep the stricter macOS budget so
+        # the same roots stay valid on either host.
+        run: |
+          set -euo pipefail
+          limit=103
+          failed=0
+          for path in \
+            "${AT04_CI_ROOT}/guard.sock" \
+            "${AT04_CI_ROOT}/guard-state/daemon.sock" \
+            "${AT04_CI_ROOT}/guard-home/state/daemon.sock" \
+            "${HOME}/.hyprial/state/daemon.sock"; do
+            length="$(printf %s "${path}" | wc -c | tr -d ' ')"
+            echo "socket path (${length} bytes): ${path}"
+            if [ "${length}" -gt "${limit}" ]; then
+              echo "::error::socket path exceeds the ${limit}-byte sun_path budget: ${path} (${length} bytes)"
+              failed=1
+            fi
+          done
+          exit "${failed}"
+
+      - name: Prepare separate environments for the candidate and the rollback build
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12 --extra test
+          (cd "${AT04_CI_ROOT}/old" && ci_retry_uv uv-sync-old uv sync --locked --python 3.12 --extra test)
+
+      # The candidate environment runs the suite with the native default backend once
+      # S (#2726) lands. Editable installs ship no compiled module, so the daemon
+      # fails closed at startup (observed as DAEMON_START_FAILED in run 56885).
+      # Stage the same extension gate-python.yml builds, with the ADR-pinned Rust
+      # 1.93.1; the uv sync above stays toolchain-free.
+      - name: Ensure the pinned Rust toolchain for the editable native engine
+        timeout-minutes: 12
+        run: |
+          source scripts/ci/ci-step.sh ensure-native-rust-hosted
+          HYPRIAL_E2E_ROOT="${RUNNER_TEMP:-/tmp}/hosted-native-rust" \
+            bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Build and stage the editable native engine
+        timeout-minutes: 15
+        run: |
+          source scripts/ci/ci-step.sh build-native-engine-hosted
+          bash scripts/build/build_native_engine.sh
+
+      - name: Verify the staged native engine imports
+        timeout-minutes: 5
+        run: |
+          source scripts/ci/ci-step.sh verify-native-engine-hosted
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import hyprial._core.actors as actors
+
+          print(f"native extension={actors.__name__} ABI={actors.ENGINE_ABI_VERSION}")
+          PY
+
+      # Pi awaits these tools before binding extensions/session_start. A cold
+      # GitHub asset download has a 120s timeout, beyond registration's 75s gate.
+      # Provision outside the gate; never hide this dependency with a larger wait.
+      - name: Install pinned Pi startup tools
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          fd_version=10.3.0
+          rg_version=15.1.0
+          # SHA-256 values from the upstream GitHub release asset digests.
+          case "$(uname -m)" in
+            aarch64)
+              target=aarch64-unknown-linux-gnu
+              fd_sha=66f297e404400a3358e9a0c0b2f3f4725956e7e4435427a9ae56e22adbe73a68
+              rg_sha=2b661c6ef508e902f388e9098d9c4c5aca72c87b55922d94abdba830b4dc885e
+              ;;
+            x86_64)
+              target=x86_64-unknown-linux-musl
+              fd_sha=2b6bfaae8c48f12050813c2ffe1884c61ea26e750d803df9c9114550a314cd14
+              rg_sha=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+              ;;
+            *) echo "Unsupported hosted tool architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          tools="$(mktemp -d)"
+          trap 'rm -rf "$tools"' EXIT
+          fetch_tool() {
+            local url="$1" name="$2" digest="$3" binary="$4"
+            local archive="$tools/$name.tar.gz"
+            curl --fail --location --retry 2 --connect-timeout 10 --max-time 60 "$url" -o "$archive"
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            tar -xzf "$archive" -C "$tools"
+            install -m 0755 "$tools/$name/$binary" "/opt/homebrew/bin/$binary"
+          }
+          fd_name="fd-v${fd_version}-${target}"
+          rg_name="ripgrep-${rg_version}-${target}"
+          fetch_tool "https://github.com/sharkdp/fd/releases/download/v${fd_version}/${fd_name}.tar.gz" "$fd_name" "$fd_sha" fd
+          fetch_tool "https://github.com/BurntSushi/ripgrep/releases/download/${rg_version}/${rg_name}.tar.gz" "$rg_name" "$rg_sha" rg
+          test "$(PATH=/opt/homebrew/bin:/usr/bin:/bin fd --version)" = "fd $fd_version"
+          # ripgrep prints "ripgrep X.Y.Z (rev <hash>)" on its first line, so match the
+          # version token rather than the whole line. No pipe into head: under
+          # pipefail a SIGPIPE from rg would turn a correct install red.
+          rg_line="$(PATH=/opt/homebrew/bin:/usr/bin:/bin rg --version)"
+          rg_line="${rg_line%%$'\n'*}"
+          case "$rg_line" in "ripgrep $rg_version"|"ripgrep $rg_version "*) ;; *) echo "::error::unexpected rg version: $rg_line"; exit 1 ;; esac
+
+      - name: Real harness local-provider turn gate
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          time .venv/bin/python contract/e2e/run-real-harness-loopback.py
+
+      - name: Group conversation scenario with real Pi workers (E2E-031)
+        # The whole run took 23-30 s on the macOS dev host (13 local runs,
+        # 2026-11-20, Pi 1.3.0); the Linux container is unmeasured. GC-11
+        # waits at most 120 s for the two Pi turns. BLOCKED (pi missing)
+        # exits 2 and fails the step; without --harness pi GC-11 would be
+        # NOT_RUN and the step green, so the flag stays.
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          time .venv/bin/python contract/e2e/run-group-conversation.py --harness pi
+
+      - name: Start the stand-in production daemon
+        # Every scenario pings the "production" daemon before and after and is
+        # INCONCLUSIVE unless its pid/epoch are unchanged: the proof that the
+        # suite never touched another daemon on the same machine. On the Mac
+        # that was the real one; this container has none, so start an isolated
+        # one at the same conventional path for the guard to watch.
+        run: |
+          set -euo pipefail
+          env -u HARNESS_SOCKET_PATH HYPRIAL_HOME="${HOME}/.hyprial" HARNESS_STATE_DIR="${HOME}/.hyprial/state" \
+            HYPRIAL_OWNER=ci-production-standin HYPRIAL_NODE_ID=ci-production-standin \
+            .venv/bin/hyprial init --json
+          test -S "${HOME}/.hyprial/state/daemon.sock"
+
+      - name: Real hosted lifecycle and upgrade rollback
+        run: |
+          set -euo pipefail
+          if nice -n 10 .venv/bin/python contract/e2e/with-machine-lock.py hosted-agent-e2e \
+            .venv/bin/python contract/e2e/run-hosted-suite.py \
+            --old-tree "${AT04_CI_ROOT}/old" \
+            --production-socket "${HOME}/.hyprial/state/daemon.sock" \
+            --evidence "${AT04_CI_ROOT}/evidence"; then rc=0; else rc=$?; fi
+          printf '{"exitCode":%s}\n' "$rc" > "${AT04_CI_ROOT}/gate.json"
+          if [ "$rc" -eq 5 ]; then echo '::notice::MACHINE-BUSY: NOT_RUN; retry in an available window.'; fi
+          exit "$rc"
+
+      - name: Pack hosted evidence
+        # Uploading the evidence tree file by file made ~243 requests; six runs
+        # failed on the same two files (daemon-1-sigusr2.txt, daemon-1.stderr)
+        # with server 5xx after ~90 s of retries, failing the job although
+        # every scenario passed.  One archive is one request.  The empty-file
+        # listing records whether the failing files are the 0-byte ones.
+        if: always()
+        run: |
+          set -u
+          evidence="${AT04_CI_ROOT:-}/evidence"
+          if [ -z "${AT04_CI_ROOT:-}" ] || [ ! -d "$evidence" ]; then
+            echo "::warning::no hosted evidence directory to pack"
+            exit 0
+          fi
+          echo "empty evidence files:"
+          find "$evidence" -type f -empty -print
+          # GNU tar exits 1 when a file changed while being read (a daemon
+          # still writing its log); that archive is still usable, so only
+          # 2+ (a real failure) fails the step.
+          rc=0
+          tar -C "${AT04_CI_ROOT}" -czf "${AT04_CI_ROOT}/hosted-evidence.tgz" evidence || rc=$?
+          if [ "$rc" -gt 1 ]; then exit "$rc"; fi
+
+      # Authoritative local copy (infra-ops 2026-10-06, Allen: 直接做挂目录) --
+      # same contract as the shard-results copy in gate-python.yml: the host
+      # directory /ci-artifacts is bind-mounted into every HQ runner DinD
+      # daemon and passed into job containers (valid_volumes), so the
+      # packed evidence survives a dropped upload tunnel (Cloudflare 530,
+      # run 20499). Layout contract: /ci-artifacts/<repo-name>/<run-id>/<job>
+      # -- the host retention cron deletes depth-2 run directories after 14
+      # days, so the depth must not change. Off-host runners (macos-host and
+      # any future one) have no mount: the step fails on purpose there
+      # (continue-on-error keeps the job itself alive) so the final upload
+      # attempt below stays job-failing when no copy exists.
+      - name: Copy results to /ci-artifacts
+        id: copy_hosted_evidence
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          artifact="hosted-evidence-${{ github.run_number }}"
+          dest="/ci-artifacts/${GITHUB_REPOSITORY#*/}/${GITHUB_RUN_ID}/hosted-agent-e2e"
+          if [ ! -d /ci-artifacts ] || [ ! -w /ci-artifacts ]; then
+            echo "CI_ARTIFACT_LOCAL artifact=${artifact} status=unavailable"
+            exit 1
+          fi
+          # The upload globs the same packed evidence; keep relative names.
+          set -- /tmp/hyprial-hosted-ci-*/hosted-evidence.tgz
+          if [ ! -f "$1" ]; then
+            echo "::warning::no packed hosted-evidence.tgz to copy"
+            exit 1
+          fi
+          mkdir -p "${dest}"
+          for tgz in "$@"; do
+            cp "${tgz}" "${dest}/"
+          done
+          cd "${dest}"
+          find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0r sha256sum > SHA256SUMS
+          files="$(find . -type f ! -name SHA256SUMS | wc -l | tr -d '[:space:]')"
+          bytes=0
+          while IFS= read -r -d '' f; do
+            bytes=$((bytes + $(wc -c < "$f")))
+          done < <(find . -type f ! -name SHA256SUMS -print0)
+          echo "CI_ARTIFACT_LOCAL artifact=${artifact} path=${dest} files=${files} bytes=${bytes}"
+
+      # Bounded retry (3 attempts) for the hosted-evidence upload. Forgejo
+      # builds the chunk-upload URL from setting.AppURL, so every chunk PUT
+      # leaves through the public cloudflared tunnel; when that tunnel drops,
+      # Cloudflare answers 530 for seconds to tens of seconds and the job
+      # went red with every scenario green. upload-artifact@v3 has no retry
+      # option, so the attempts are separate steps and each is a COMPLETE
+      # new upload -- artifact container, every chunk, confirm -- never a
+      # bare re-confirm: after a 530 the server holds zero chunks and a
+      # re-confirm only re-hits the "merge chunks: lstat tmp<run>" 500.
+      # Forgejo v15 accepts the same-name re-upload in the same run:
+      # CreateArtifact is get-or-create over (run, name, path) and reuses
+      # the pending row.
+      - name: Upload hosted evidence
+        # The Mac kept roots on its disk for later inspection; a container
+        # disappears, so the evidence travels as an artifact instead.
+        id: upload_hosted_evidence_1
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: hosted-evidence-${{ github.run_number }}
+          path: /tmp/hyprial-hosted-ci-*/hosted-evidence.tgz
+          if-no-files-found: warn
+
+      - name: Wait before retrying the hosted evidence upload
+        if: always() && steps.upload_hosted_evidence_1.outcome == 'failure'
+        run: |
+          echo "ARTIFACT_UPLOAD_RETRY artifact=hosted-evidence-${{ github.run_number }} attempt=1 outcome=failed"
+          sleep 20
+          echo "artifact upload failed/timeout: upload_hosted_evidence_1" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload hosted evidence (retry 2)
+        id: upload_hosted_evidence_2
+        if: always() && steps.upload_hosted_evidence_1.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: hosted-evidence-${{ github.run_number }}
+          path: /tmp/hyprial-hosted-ci-*/hosted-evidence.tgz
+          if-no-files-found: warn
+
+      - name: Wait before the last hosted evidence upload attempt
+        if: always() && steps.upload_hosted_evidence_2.outcome == 'failure'
+        run: |
+          echo "ARTIFACT_UPLOAD_RETRY artifact=hosted-evidence-${{ github.run_number }} attempt=2 outcome=failed"
+          sleep 60
+          echo "artifact upload failed/timeout: upload_hosted_evidence_2" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+
+      - name: Upload hosted evidence (retry 3, local copy holds)
+        # The authoritative /ci-artifacts copy succeeded, so this web copy
+        # is best-effort: continue-on-error keeps a dropped tunnel (the run
+        # 20499 failure mode) from reddening a job whose scenarios passed.
+        id: upload_hosted_evidence_3
+        if: always() && steps.upload_hosted_evidence_2.outcome == 'failure' && steps.copy_hosted_evidence.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: hosted-evidence-${{ github.run_number }}
+          path: /tmp/hyprial-hosted-ci-*/hosted-evidence.tgz
+          if-no-files-found: warn
+
+
+      - name: Warn when the artifact upload fails or times out
+        if: always() && (steps.upload_hosted_evidence_3.outcome == 'failure' || steps.upload_hosted_evidence_3.outcome == 'cancelled')
+        run: |
+          echo "::warning::artifact upload failed/timeout (upload_hosted_evidence_3)"
+          echo "artifact upload failed/timeout: upload_hosted_evidence_3" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+      - name: Upload hosted evidence (retry 3, no local copy)
+        # No continue-on-error: without the authoritative local copy, all
+        # three attempts failing must fail the job exactly as the single
+        # upload did before. `!= 'success'` rather than `== 'failure'`: a
+        # skipped or cancelled copy step must never be read as a copy that
+        # happened.
+        id: upload_hosted_evidence_4
+        if: always() && steps.upload_hosted_evidence_2.outcome == 'failure' && steps.copy_hosted_evidence.outcome != 'success'
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: hosted-evidence-${{ github.run_number }}
+          path: /tmp/hyprial-hosted-ci-*/hosted-evidence.tgz
+          if-no-files-found: warn
+
+      - name: Report the hosted evidence upload retry outcome
+        # Runs only when attempt 1 failed, so the happy path adds no step
+        # and no delay. A skipped attempt keeps outcome=skipped, which
+        # never equals "success": a skipped retry cannot be read as a
+        # recovered upload (no "PASS as the else branch"). When every
+        # attempt failed, the line says which copy is authoritative:
+        # local=ok means the /ci-artifacts copy holds (the job stays green
+        # via the continue-on-error final attempt); without it the job is
+        # red through the no-continue-on-error final attempt.
+        if: always() && steps.upload_hosted_evidence_1.outcome == 'failure'
+        run: |
+          artifact="hosted-evidence-${{ github.run_number }}"
+          if [ "${{ steps.upload_hosted_evidence_2.outcome }}" = success ]; then
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} attempt=2 outcome=success"
+          elif [ "${{ steps.upload_hosted_evidence_3.outcome }}" = success ] || [ "${{ steps.upload_hosted_evidence_4.outcome }}" = success ]; then
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} attempt=3 outcome=success"
+          elif [ "${{ steps.copy_hosted_evidence.outcome }}" = success ]; then
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} outcome=failed attempts=3 local=ok"
+          else
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} outcome=failed attempts=3"
+          fi
+          if [ "${{ steps.upload_hosted_evidence_2.outcome }}" != success ] && [ "${{ steps.upload_hosted_evidence_3.outcome }}" != success ] && [ "${{ steps.upload_hosted_evidence_4.outcome }}" != success ]; then
+            echo "artifact upload failed/timeout: upload_hosted_evidence_4" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          bash scripts/ci/ci-conditions.sh artifact || true
+
+      - name: Stop the stand-in production daemon
+        if: always()
+        run: |
+          env -u HARNESS_SOCKET_PATH HYPRIAL_HOME="${HOME}/.hyprial" HARNESS_STATE_DIR="${HOME}/.hyprial/state" \
+            HYPRIAL_OWNER=ci-production-standin HYPRIAL_NODE_ID=ci-production-standin \
+            .venv/bin/hyprial daemon stop --json || true
+
+      # The CI conditions upload gets the same bounded retry (3 attempts)
+      # as the hosted-evidence upload above. The three-step tail is frozen
+      # verbatim by policy 2 in tests/support/ci/ci_workflow_policy.py
+      # (last three steps, exact upload step), so attempts 1-2 sit before
+      # the end reader and the tail's own upload step is the third and
+      # final attempt; the report step therefore still fires only when
+      # that final attempt failed. Each attempt is a COMPLETE new upload
+      # (container, chunks, confirm) -- Forgejo v15 accepts the
+      # same-name re-upload because CreateArtifact is get-or-create over
+      # (run, name, path) and reuses the pending row.
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          # 2026-11-07: one upload of this telemetry artifact. The two earlier
+          # attempts (3f37f4aa6, tunnel 530s) never fired after uploads went
+          # direct to the runtime URL: 0 retries in 87 sampled jobs.
+          echo "ARTIFACT_UPLOAD_RETRY artifact=ci-conditions-${{ github.job }} outcome=failed attempts=1"
+          bash scripts/ci/ci-conditions.sh artifact

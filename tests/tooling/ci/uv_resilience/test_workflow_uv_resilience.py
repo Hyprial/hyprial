@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOWS = ROOT / ".forgejo" / "workflows"
+WORKFLOWS = ROOT / ".github" / "workflows"
 
 UV_USE = re.compile(r"(^|[\s(])uv (sync|run|build|python|pip|venv)|scripts/build/package-macos-shell\.sh", re.M)
 FETCH_COMMANDS = re.compile(r"^\s*(?:\(cd \"[^\"]+\" && )?uv (sync|python install|pip install)\b")

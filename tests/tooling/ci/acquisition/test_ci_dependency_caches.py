@@ -22,40 +22,40 @@ from tests.support.ci_download.release_images import (
     RETIRED_RELEASE_RUNNER_IMAGE_CONTEXTS,
 )
 
-WF = ".forgejo/workflows/fixture.yml"
+WF = ".github/workflows/fixture.yml"
 
 # Exact HEAD 1ea20ee0 pre-refactor image identities; the original >=20 floor
 # remains historical evidence, not a minimum number of unnecessary downloads.
 # The independent GUI intentionally retired only these four real old jobs.
 ORIGINAL_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/contract-impact.yml","impact","runner-image ubuntu-latest"),
-    (".forgejo/workflows/desktop-check.yml","desktop-unit","runner-image ubuntu-latest"),
-    (".forgejo/workflows/desktop-release.yml","publish","runner-image ubuntu-latest"),
-    (".forgejo/workflows/github-publish.yml","publish","runner-image ubuntu-latest"),
-    (".forgejo/workflows/gui.yml","gui-unit","runner-image ubuntu-latest"),
-    (".forgejo/workflows/gui.yml","gui-browser","runner-image ubuntu-latest"),
-    (".forgejo/workflows/gui.yml","codex-compatibility","runner-image ubuntu-latest"),
-    (".forgejo/workflows/gui.yml","dsh-latest","runner-image ubuntu-latest"),
-    (".forgejo/workflows/gui.yml","dsh-release","runner-image ubuntu-latest"),
-    (".forgejo/workflows/gui.yml","release-package","runner-image ubuntu-latest"),
-    (".forgejo/workflows/nightly-promote.yml","promote","runner-image ubuntu-latest"),
-    (".forgejo/workflows/release-tag.yml","tag","runner-image ubuntu-latest"),
-    (".forgejo/workflows/sidecar.yml","test","runner-image ubuntu-latest"),
-    (".forgejo/workflows/sidecar.yml","build","runner-image ubuntu-latest"),
-    (".forgejo/workflows/sidecar.yml","e2e-official","runner-image ubuntu-latest"),
-    (".forgejo/workflows/sidecar.yml","e2e-headscale","runner-image ubuntu-latest"),
-    (".forgejo/workflows/skill-declaration.yml","declaration","runner-image ubuntu-latest"),
-    (".forgejo/workflows/tests.yml","cli-help-inventory","runner-image ubuntu-latest"),
-    (".forgejo/workflows/tests.yml","unit","runner-image ubuntu-latest"),
-    (".forgejo/workflows/tests.yml","stable-pointer","runner-image ubuntu-latest"),
-    (".forgejo/workflows/wheel-release.yml","build-publish","runner-image ubuntu-latest"),
+    (".github/workflows/contract-impact.yml","impact","runner-image ubuntu-latest"),
+    (".github/workflows/desktop-check.yml","desktop-unit","runner-image ubuntu-latest"),
+    (".github/workflows/desktop-release.yml","publish","runner-image ubuntu-latest"),
+    (".github/workflows/github-publish.yml","publish","runner-image ubuntu-latest"),
+    (".github/workflows/gui.yml","gui-unit","runner-image ubuntu-latest"),
+    (".github/workflows/gui.yml","gui-browser","runner-image ubuntu-latest"),
+    (".github/workflows/gui.yml","codex-compatibility","runner-image ubuntu-latest"),
+    (".github/workflows/gui.yml","dsh-latest","runner-image ubuntu-latest"),
+    (".github/workflows/gui.yml","dsh-release","runner-image ubuntu-latest"),
+    (".github/workflows/gui.yml","release-package","runner-image ubuntu-latest"),
+    (".github/workflows/nightly-promote.yml","promote","runner-image ubuntu-latest"),
+    (".github/workflows/release-tag.yml","tag","runner-image ubuntu-latest"),
+    (".github/workflows/sidecar.yml","test","runner-image ubuntu-latest"),
+    (".github/workflows/sidecar.yml","build","runner-image ubuntu-latest"),
+    (".github/workflows/sidecar.yml","e2e-official","runner-image ubuntu-latest"),
+    (".github/workflows/sidecar.yml","e2e-headscale","runner-image ubuntu-latest"),
+    (".github/workflows/skill-declaration.yml","declaration","runner-image ubuntu-latest"),
+    (".github/workflows/tests.yml","cli-help-inventory","runner-image ubuntu-latest"),
+    (".github/workflows/tests.yml","unit","runner-image ubuntu-latest"),
+    (".github/workflows/tests.yml","stable-pointer","runner-image ubuntu-latest"),
+    (".github/workflows/wheel-release.yml","build-publish","runner-image ubuntu-latest"),
 }
 # Allen 2026-10-26: formal publication replaces the old main-push mover.
 RETIRED_TRACK_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/tests.yml", "stable-pointer", "runner-image ubuntu-latest"),
+    (".github/workflows/tests.yml", "stable-pointer", "runner-image ubuntu-latest"),
 }
 RETIRED_GUI_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/gui.yml", job, "runner-image ubuntu-latest")
+    (".github/workflows/gui.yml", job, "runner-image ubuntu-latest")
     for job in ("gui-browser", "codex-compatibility", "dsh-latest", "dsh-release")
 }
 
@@ -63,17 +63,17 @@ RETIRED_GUI_IMAGE_CONTEXTS = {
 # explicitly reviewed legacy publisher and adds one Ubuntu Rust job. The
 # macos-host native build has no pre-job runner-image acquisition context.
 RETIRED_TAURI_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/desktop-release.yml", "publish", "runner-image ubuntu-latest"),
+    (".github/workflows/desktop-release.yml", "publish", "runner-image ubuntu-latest"),
 }
 INTRODUCED_TAURI_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/desktop-release.yml", "publish-reviewed-legacy", "runner-image ubuntu-latest"),
-    (".forgejo/workflows/desktop-check.yml", "desktop-rust", "runner-image ubuntu-latest"),
+    (".github/workflows/desktop-release.yml", "publish-reviewed-legacy", "runner-image ubuntu-latest"),
+    (".github/workflows/desktop-check.yml", "desktop-rust", "runner-image ubuntu-latest"),
 }
 
 # The 2026-10-27 GUI retirement removed app and src/gui. Retire their
 # unconditionally scheduled check jobs; keep the original inventory frozen.
 RETIRED_DESKTOP_CHECK_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/desktop-check.yml", job, "runner-image ubuntu-latest")
+    (".github/workflows/desktop-check.yml", job, "runner-image ubuntu-latest")
     for job in ("desktop-unit", "desktop-rust")
 }
 
@@ -82,40 +82,40 @@ RETIRED_DESKTOP_CHECK_IMAGE_CONTEXTS = {
 # aggregator), and hosted-agent-e2e moved from the macos-host to a Linux
 # container. Each is a new runner-image context, never a renamed original.
 INTRODUCED_CI_SPEEDUP_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/tests.yml", "checks", "runner-image ubuntu-latest"),
-    *((".forgejo/workflows/tests.yml", f"pytest-shard[shard={index}]", "runner-image ubuntu-latest")
+    (".github/workflows/tests.yml", "checks", "runner-image ubuntu-latest"),
+    *((".github/workflows/tests.yml", f"pytest-shard[shard={index}]", "runner-image ubuntu-latest")
       for index in range(1, 5)),
-    (".forgejo/workflows/hosted-agent-e2e.yml", "hosted", "runner-image ubuntu-latest"),
+    (".github/workflows/hosted-agent-e2e.yml", "hosted", "runner-image ubuntu-latest"),
 }
 
 # The Tailcat Go gate (2026-10-07): sidecar.yml's Go tests left with TSNet
 # and nothing replaced them; tests.yml's `tailcat` job is a new context,
 # not the retired sidecar.yml `test` job renamed.
 INTRODUCED_TAILCAT_GATE_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/tests.yml", "tailcat", "runner-image ubuntu-latest"),
+    (".github/workflows/tests.yml", "tailcat", "runner-image ubuntu-latest"),
 }
 
 # The PR-hygiene fan-in (2026-10-09): a new pull_request-only job in tests.yml
 # that is a `needs:` of the required `unit` aggregator (base freshness, merge
 # tree, registry union, Submitted-by). A new context, not a renamed job.
 INTRODUCED_PR_HYGIENE_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/tests.yml", "pr-hygiene", "runner-image ubuntu-latest"),
+    (".github/workflows/tests.yml", "pr-hygiene", "runner-image ubuntu-latest"),
 }
 
 # The Homepage changelog sync (2026-10-17): a new workflow_dispatch-only job
 # in its own workflow adds one Ubuntu runner-image context.
 INTRODUCED_CHANGELOG_SYNC_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/homepage-changelog-sync.yml", "sync", "runner-image ubuntu-latest"),
+    (".github/workflows/homepage-changelog-sync.yml", "sync", "runner-image ubuntu-latest"),
 }
 
 # Main push listener requests release-tag; it is not a second track writer.
 INTRODUCED_MAIN_RELEASE_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/main-release.yml", "dispatch", "runner-image ubuntu-latest"),
+    (".github/workflows/main-release.yml", "dispatch", "runner-image ubuntu-latest"),
 }
 
 # Direct R2 installer publication and its independent anonymous drift check.
 INTRODUCED_INSTALLER_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/install-scripts.yml", job, "runner-image ubuntu-latest")
+    (".github/workflows/install-scripts.yml", job, "runner-image ubuntu-latest")
     for job in ("publish", "drift")
 }
 
@@ -123,24 +123,24 @@ INTRODUCED_INSTALLER_IMAGE_CONTEXTS = {
 # Allen; CI runners reach github.com only intermittently): the same job keeps
 # an implicit job image, now on the new label.
 RETIRED_PUBLISH_RUNNER_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/github-publish.yml", "publish", "runner-image ubuntu-latest"),
+    (".github/workflows/github-publish.yml", "publish", "runner-image ubuntu-latest"),
 }
 INTRODUCED_PUBLISH_RUNNER_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/github-publish.yml", "publish", "runner-image publish-github"),
+    (".github/workflows/github-publish.yml", "publish", "runner-image publish-github"),
 }
 
 # The release-branch changelog gate (Allen 2026-10-29): a separate pull_request
 # workflow the runner reaches without uv, because tests.yml does not trigger on
 # release/** and its install steps do not run on a lightweight/docs-only plan.
 INTRODUCED_RELEASE_CHANGELOG_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/release-changelog.yml", "changelog", "runner-image ubuntu-latest"),
+    (".github/workflows/release-changelog.yml", "changelog", "runner-image ubuntu-latest"),
 }
 
 # The tsnet sidecar workflow retired with the sidecar itself (Tailcat
 # cutover): the whole file is gone, so its four job contexts are retired,
 # never reintroduced.
 RETIRED_SIDECAR_IMAGE_CONTEXTS = {
-    (".forgejo/workflows/sidecar.yml", job, "runner-image ubuntu-latest")
+    (".github/workflows/sidecar.yml", job, "runner-image ubuntu-latest")
     for job in ("test", "build", "e2e-official", "e2e-headscale")
 }
 
@@ -550,7 +550,7 @@ def test_each_family_uncovered_then_exact_exception(tmp_path, command, family):
 
 
 def test_new_workflow_and_called_script_discovered(tmp_path, monkeypatch):
-    directory = tmp_path / ".forgejo/workflows"
+    directory = tmp_path / ".github/workflows"
     directory.mkdir(parents=True)
     (directory / "new.yml").write_text(
         "jobs:\n  new:\n    runs-on: macos\n    steps:\n      - run: uv run --with foo python helper.py\n"
@@ -739,11 +739,11 @@ def test_real_tree_denominator_and_family_witnesses(real_inventory):
         | RETIRED_CI_LIGHT_MOVE_IMAGE_CONTEXTS | release_deltas.RETIRED_DESKTOP_RELEASE_IMAGE_CONTEXTS | release_deltas.RETIRED_HOSTED_RENAME_IMAGE_CONTEXTS | release_deltas.RETIRED_GATE_RENAME_IMAGE_CONTEXTS,
     )
     root = Path(__file__).resolve().parents[4]
-    gui_jobs = yaml.safe_load((root / ".forgejo/workflows/gate-gui.yml").read_text())["jobs"]
+    gui_jobs = yaml.safe_load((root / ".github/workflows/gate-gui.yml").read_text())["jobs"]
     assert not {job for _, job, _ in RETIRED_GUI_IMAGE_CONTEXTS}.intersection(gui_jobs)
     for file, family, command in [
         ("contract/e2e/docker/Dockerfile", "PIP", "pip install"),
-        (".forgejo/workflows/gate-gui.yml", "NPM", "npm --prefix gui ci --ignore-scripts"),
+        (".github/workflows/gate-gui.yml", "NPM", "npm --prefix gui ci --ignore-scripts"),
         ("src/hyprial/daemon/impl/harnesses/agent_sdk/__init__.py", "UV", "--with"),
     ]:
         assert any(

@@ -232,7 +232,7 @@ def test_allow_missing_development_escape_fails(
 
 
 def workflow_run_script(step_name: str) -> str:
-    lines = Path(".forgejo/workflows/wheel-release.yml").read_text().splitlines()
+    lines = Path(".github/workflows/wheel-release.yml").read_text().splitlines()
     step = next(index for index, line in enumerate(lines) if f"- name: {step_name}" in line)
     run = next(index for index in range(step + 1, len(lines)) if lines[index].strip() == "run: |")
     body = []

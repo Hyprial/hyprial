@@ -110,7 +110,7 @@ def test_new_inline_comments_are_reported_for_every_covered_language(
     _write(repo, "sidecar/main.go", "package main\n// go note\n")
     _write(
         repo,
-        ".forgejo/workflows/sample.yml",
+        ".github/workflows/sample.yml",
         "jobs:\n  build:\n    runs-on: x # yaml note\n",
     )
     _write(repo, "scripts/ci/sample.sh", "#!/bin/sh\necho hi # sh note\n")
@@ -125,7 +125,7 @@ def test_new_inline_comments_are_reported_for_every_covered_language(
         "src/gui/app.mjs": [2],
         "desktop/src-tauri/lib.rs": [2],
         "sidecar/main.go": [2],
-        ".forgejo/workflows/sample.yml": [3],
+        ".github/workflows/sample.yml": [3],
         "scripts/ci/sample.sh": [2],
         "scripts/ci/sample.toml": [1],
     }

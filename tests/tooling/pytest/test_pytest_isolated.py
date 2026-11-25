@@ -130,6 +130,6 @@ def test_repository_shards_hold_no_isolated_module(impact):
 
 
 def test_the_workflow_runs_the_isolated_lane_as_a_matrix_entry():
-    text = (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8")
+    text = (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8")
     assert "shard: [1, 2, 3, 4, isolated]" in text
     assert "--isolated" in text

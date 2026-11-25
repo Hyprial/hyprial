@@ -43,7 +43,7 @@ def publish(
     unit_selected="true",
     job_status="success",
 ):
-    workflow = yaml.safe_load((ROOT / ".forgejo/workflows/gate-python.yml").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gate-python.yml").read_text())
     steps = workflow["jobs"]["unit"]["steps"]
     step = next(
         item
@@ -93,7 +93,7 @@ def test_current_green_head_publishes_and_records_after_push(history, tag_exists
 @pytest.mark.parametrize("ref", ["refs/heads/dev", "refs/heads/main", "refs/heads/release/v0.5.5.2"])
 @pytest.mark.parametrize("enabled", ["true", "false", ""])
 def test_publication_condition_allows_only_enabled_green_dev_push(status, event, ref, enabled):
-    workflow = yaml.safe_load((ROOT / ".forgejo/workflows/gate-python.yml").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gate-python.yml").read_text())
     steps = workflow["jobs"]["unit"]["steps"]
     for step in steps:
         if step.get("id") != "internal_move" and not step["name"].startswith("Dispatch the GitHub"):
@@ -112,7 +112,7 @@ def test_publication_condition_allows_only_enabled_green_dev_push(status, event,
 
 
 def test_internal_publication_is_frozen_during_dev_first_convergence():
-    workflow = yaml.safe_load((ROOT / ".forgejo/workflows/gate-python.yml").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gate-python.yml").read_text())
     assert workflow["jobs"]["unit"].get("env", {}).get("INTERNAL_PUBLICATION_ENABLED") == "false"
 
 

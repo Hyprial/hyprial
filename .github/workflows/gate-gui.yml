@@ -1,0 +1,650 @@
+name: gate-gui
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [dev, main, "intg/**", "release/**", "refactor/reconstruct-modules"]
+  push:
+    branches: [dev, main, "intg/gui**"]
+  workflow_dispatch:
+  schedule:
+    # Revalidate the independent app and paired release inputs daily.
+    - cron: '17 3 * * *'
+
+# Shared policy lives at the repository root; product commands name their package.
+defaults:
+  run:
+    working-directory: .
+    shell: bash
+
+# A newer revision supersedes checks for the same PR or integration branch.
+# Keep dev/main, schedule and manual runs independent of each other.
+# `github.run_id` expands to an EMPTY string in this Forgejo for push/schedule/
+# workflow_dispatch, so the old `|| github.run_id` fallback produced the group
+# names `gui-push-`, `gui-schedule-` and `gui-workflow_dispatch-` (empty suffix).
+# All such runs then shared one group per event: measured 2026-10-29, 762 runs
+# across those three names, **none ever started** (started=0) and 704 of the 712
+# `gui-push-` runs ended as `cancelled`. `github.sha` is never empty.
+#
+# 2026-11-09 (WP5, gui-dev-product-parity): the GUI build moved BEFORE the test
+# step because the fail-closed production bundle boundary test and the artifact
+# parity gate require gui/dist; the bundle test used to silently skip when dist
+# was absent, which reported PASS without the artifact, and that skip channel is
+# now a failure by design. The three parity gates are wired after the tests:
+# verify:dev-product-parity (source), verify-production-copy on the built
+# gui/dist (release artifact only, never dist-parity), and
+# verify:dev-browser-parity (tests/dev-product-parity-browser.mjs). The browser
+# gate is never skipped: a missing browser test file or browser executable
+# fails the step. Chromium is pinned to the gui lockfile's playwright-core
+# version (no floating tag) and --with-deps installs the required shared
+# libraries in the container. The dist-parity artifact (HYPRIAL_GUI_PARITY=1)
+# is a test-only build for the browser gate and is not scanned by the release
+# artifact gate.
+concurrency:
+  # 2026-11-06: `|| github.run_id` expands empty for push/schedule/dispatch here,
+  # so those runs shared one group and never started (release/v0.5.5.4 627839885
+  # measured 762 such runs). `github.sha` is never empty.
+  group: gate-gui-${{ github.event_name }}-${{ github.event.pull_request.number || (startsWith(github.ref, 'refs/heads/intg/') && github.ref) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/intg/')) }}
+
+jobs:
+  gui-unit:
+    outputs:
+      gui: ${{ steps.scope.outputs.gui }}
+      package: ${{ steps.scope.outputs.package }}
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/node:24-bookworm
+    timeout-minutes: 20
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out exact commit
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="$(mktemp /tmp/gui-checkout-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Select checks from .forgejo/git-flow.json and changed files
+        id: scope
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="$(mktemp /tmp/ci-scope-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 node scripts/ci/ci-plan.mjs
+
+      - name: Verify shared CI policy
+        run: node --test --test-concurrency=2 scripts/ci/ci-scope.test.mjs scripts/ci/ci-plan.test.mjs
+
+      - name: Fetch daemon request architecture base
+        if: success() && steps.scope.outputs.gui == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ASKPASS="$(mktemp /tmp/gui-architecture-base-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          fetch_origin() {
+            GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+              git fetch --no-tags --depth=1 origin "$1"
+          }
+          case "$EVENT_NAME" in
+            pull_request)
+              test -n "$BASE_BRANCH" || { echo "::error::missing PR base branch"; exit 1; }
+              fetch_origin "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+              base_ref="origin/${BASE_BRANCH}"
+              base_branch="$BASE_BRANCH"
+              ;;
+            push)
+              case "$BEFORE_SHA" in
+                ""|*[!0]*) ;;
+                *) echo "::error::push before SHA is all zeroes"; exit 1 ;;
+              esac
+              test -n "$BEFORE_SHA" || { echo "::error::missing push before SHA"; exit 1; }
+              fetch_origin "$BEFORE_SHA"
+              base_ref="$BEFORE_SHA"
+              base_branch="$REF_NAME"
+              ;;
+            *)
+              fetch_origin "refs/heads/dev:refs/remotes/origin/dev"
+              base_ref="origin/dev"
+              base_branch="dev"
+              ;;
+          esac
+          allow=false
+          case "$base_branch" in dev|main) allow=true ;; esac
+          {
+            echo "GUI_ARCHITECTURE_BASE_REF=$base_ref"
+            echo "GUI_ARCHITECTURE_BASE_BRANCH=$base_branch"
+            echo "GUI_ARCHITECTURE_ALLOW_FIRST_SEED=$allow"
+          } >> "$GITHUB_ENV"
+
+      # GUI tests under tests/daemon-request-host spawn `uv run … daemon run`,
+      # so uv must exist before `npm --prefix gui test` starts.
+      - name: Ensure uv
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          # Cache-first, sha256-pinned (scripts/ci/ci-ensure-uv.sh).
+          # This step used to curl astral.sh/uv/<v>/install.sh directly, which is
+          # the red measured on gui-unit (curl exit 35, SSL_ERROR_SYSCALL to
+          # astral.sh:443) and made the job's outcome depend on a live fetch to a
+          # third-party host.  CI_CACHE_ROOT is mounted on this runner, so the
+          # cache path removes that dependence; the script also verifies the
+          # installed version and appends UV_BIN_DIR to $GITHUB_PATH.
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-gui-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+
+      # Writes UV_PYTHON_INSTALL_MIRROR to $GITHUB_ENV, which only reaches
+      # later steps; keep it separate from the `uv python install` step.
+      - name: Ensure pinned CPython mirror
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 6
+        run: |
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+
+      - name: Sync Python environment for GUI integration tests
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          # The real-daemon test starts isolated daemons with
+          # `uv run --no-sync`, which needs the project `.venv` before
+          # `npm --prefix gui test`. The Contract Mock is JavaScript and needs
+          # no Python.
+          # The tests give children a temporary HOME, so pin the interpreter
+          # install dir in the job env instead of relying on ~/.local/share.
+          export UV_PYTHON_INSTALL_DIR="/tmp/hyprial-gui-uv-python-${GITHUB_RUN_ID}"
+          echo "UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR}" >> "$GITHUB_ENV"
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-python uv python install 3.12
+          ci_retry_uv uv-sync uv sync --locked --python 3.12
+          uv run --locked --no-sync --python 3.12 python -m hyprial.cli --help >/dev/null
+
+      - name: Persist the npm cache
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/npm"
+            echo "npm_config_cache=$CI_CACHE_ROOT/npm" >> "$GITHUB_ENV"
+          else
+            echo "CI_CACHE_ROOT unset: npm cache stays job-local (cold)"
+          fi
+          echo "npm_config_fetch_retries=5" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_mintimeout=10000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_maxtimeout=120000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_timeout=60000" >> "$GITHUB_ENV"
+
+      - name: Install locked Node dependencies
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          node --version
+          npm --prefix gui ci --ignore-scripts --no-audit --no-fund --prefer-offline
+
+      - name: Check daemon request client generation and architecture
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          npm --prefix gui run client:reference:check
+          npm --prefix gui run client:fixture:check
+          node --test gui/tests/architecture/daemon-request.node.mjs
+          args=(--base-ref "$GUI_ARCHITECTURE_BASE_REF" --base-branch "$GUI_ARCHITECTURE_BASE_BRANCH" --json)
+          if [ "$GUI_ARCHITECTURE_ALLOW_FIRST_SEED" = "true" ]; then
+            args+=(--allow-first-seed)
+          fi
+          node scripts/ci/check_gui_request_architecture.mjs "${args[@]}"
+          node --test scripts/ci/check_gui_request_paths.selftest.mjs
+          node scripts/ci/check_gui_request_paths.mjs "${args[@]}"
+          node --test scripts/ci/check_gui_mock_source.selftest.mjs
+          node scripts/ci/check_gui_mock_source.mjs "${args[@]}"
+
+      - name: Check GUI unavailable-copy ledger against the base
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          node --test gui/tests/architecture/unavailable-copy-ledger.node.mjs
+          node scripts/ci/check_gui_unavailable_copy.mjs --base-ref "$GUI_ARCHITECTURE_BASE_REF" --base-branch "$GUI_ARCHITECTURE_BASE_BRANCH" --json
+
+      - name: Typecheck root GUI
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: npm --prefix gui run typecheck
+
+      - name: Remind on Refactoring UI findings
+        if: success() && steps.scope.outputs.gui == 'true'
+        continue-on-error: true
+        run: node gui/scripts/check-refactoring-ui.mjs --base "$GUI_ARCHITECTURE_BASE_REF" --annotations
+
+      - name: Provision pinned Chromium for the browser gates
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-playwright-cache.sh "${RUNNER_TEMP:-/tmp}/hyprial-playwright"
+
+      - name: Ensure a CJK font and fontconfig for the browser screenshots
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-cjk-font.sh
+          test -n "$(fc-list ':lang=zh')"
+
+      - name: Run independent GUI tests
+        if: success() && steps.scope.outputs.gui == 'true'
+        env:
+          CI: "true"
+        run: npm --prefix gui test
+
+      - name: Build independent GUI
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          npm --prefix gui run build
+          git diff --check
+          git diff --exit-code
+
+      - name: Verify dev/product source parity (static gate)
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: npm --prefix gui run verify:dev-product-parity
+
+      - name: Verify production bundle parity (artifact gate)
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          node gui/scripts/verify-production-copy.mjs gui/dist
+          test -s gui/dist/index.html
+
+      - name: Build the dist-parity test artifact
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: npm --prefix gui run build:dist-parity
+
+      - name: Verify dev browser parity (browser gate)
+        if: success() && steps.scope.outputs.gui == 'true'
+        env:
+          NO_COLOR: "1"
+        run: npm --prefix gui run verify:dev-browser-parity
+
+      - name: Check product source structure
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          # The shared gate also covers test modules and their helpers.
+          uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py --root .
+          uv run --no-project --python 3.12 python scripts/ci/check_module_boundaries.py --root .
+
+      - name: Verify source-mode GUI lifecycle
+        if: success() && steps.scope.outputs.gui == 'true'
+        env:
+          NO_COLOR: "1"
+          COLUMNS: "200"
+        run: |
+          set -euo pipefail
+          source_tests=(
+            tests/shell/gui/lifecycle/test_gui_apps.py
+            tests/shell/gui/lifecycle/test_gui_launcher.py tests/shell/gui/lifecycle/test_gui_signals.py
+            tests/shell/gui/lifecycle/test_gui_source_selection.py
+          )
+          for source_test in "${source_tests[@]}"; do test -f "$source_test"; done
+          uv run --locked --python 3.12 --extra test python -m pytest -q tests/shell/gui/lifecycle/ tests/shell/gui/host/
+
+      - name: Record independent GUI validation limits
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          printf '%s\n' 'Root GUI typecheck, unit tests, build, dev/product static parity, production bundle parity and dev browser parity are covered. Browser journeys require the separate recorded browser gates; real backend and native packaging remain UNKNOWN.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Retired desktop/wheel GUI packaging is not restored by this web GUI gate.'
+
+  gui-acceptance:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/node:24-bookworm
+    timeout-minutes: 45
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out exact commit
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="$(mktemp /tmp/gui-acceptance-checkout-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Select checks from .forgejo/git-flow.json and changed files
+        id: scope
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="$(mktemp /tmp/gui-acceptance-scope-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 node scripts/ci/ci-plan.mjs
+
+      - name: Ensure uv
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-gui-acceptance-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+
+      - name: Ensure pinned CPython mirror
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 6
+        run: |
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+
+      - name: Sync Python environment for GUI acceptance tests
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          export UV_PYTHON_INSTALL_DIR="/tmp/hyprial-gui-acceptance-uv-python-${GITHUB_RUN_ID}"
+          echo "UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR}" >> "$GITHUB_ENV"
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-python uv python install 3.12
+          ci_retry_uv uv-sync uv sync --locked --python 3.12
+          uv run --locked --no-sync --python 3.12 python -m hyprial.cli --help >/dev/null
+
+      - name: Persist the npm cache
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/npm"
+            echo "npm_config_cache=$CI_CACHE_ROOT/npm" >> "$GITHUB_ENV"
+          else
+            echo "CI_CACHE_ROOT unset: npm cache stays job-local (cold)"
+          fi
+          echo "npm_config_fetch_retries=5" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_mintimeout=10000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_maxtimeout=120000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_timeout=60000" >> "$GITHUB_ENV"
+
+      - name: Install locked Node dependencies
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          node --version
+          npm --prefix gui ci --ignore-scripts --no-audit --no-fund --prefer-offline
+
+      - name: Provision pinned Chromium for the browser gates
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-playwright-cache.sh "${RUNNER_TEMP:-/tmp}/hyprial-playwright"
+
+      - name: Ensure a CJK font and fontconfig for the browser screenshots
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-cjk-font.sh
+          test -n "$(fc-list ':lang=zh')"
+
+      - name: Build independent GUI
+        if: success() && steps.scope.outputs.gui == 'true'
+        run: |
+          set -euo pipefail
+          npm --prefix gui run build
+          git diff --check
+          git diff --exit-code
+
+      - name: Ensure pinned Rust 1.93.1 for nightly native acceptance
+        if: success() && github.event_name == 'schedule' && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 20
+        env:
+          HYPRIAL_E2E_ROOT: ${{ runner.temp }}/gui-acceptance-rust
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Build and verify native actor extension for nightly acceptance
+        if: success() && github.event_name == 'schedule' && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          PYO3_PYTHON="$PWD/.venv/bin/python" bash scripts/build/build_native_engine.sh
+          uv run --locked --no-sync --python 3.12 python -c "import hyprial._core.actors as actors; assert actors.ENGINE_ABI_VERSION == 1"
+
+      - name: Run browser acceptance
+        if: success() && steps.scope.outputs.gui == 'true'
+        env:
+          CI: "true"
+          NO_COLOR: "1"
+          HYPRIAL_ACCEPTANCE_ACTOR_BACKEND: ${{ github.event_name == 'schedule' && 'native' || 'reference-abi' }}
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP:-/tmp}/gui-acceptance.log"
+          status=0
+          npm --prefix gui run test:acceptance >"$log_file" 2>&1 || status=$?
+          cat "$log_file"
+          {
+            echo "## Browser acceptance (${HYPRIAL_ACCEPTANCE_ACTOR_BACKEND})"
+            echo ""
+            echo "### PASS"
+            grep -E '^(# )?PASS ' "$log_file" || echo "(none)"
+            echo ""
+            echo "### NOT_RUN"
+            grep -E '^(# )?NOT_RUN ' "$log_file" || echo "(none)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: E2E-032 org switch browser acceptance
+        if: success() && steps.scope.outputs.gui == 'true'
+        timeout-minutes: 10
+        env:
+          CI: "true"
+          NO_COLOR: "1"
+          HYPRIAL_ACTOR_BACKEND: ${{ github.event_name == 'schedule' && 'native' || 'reference-abi' }}
+          HYPRIAL_E2E_ARTIFACTS: "${{ runner.temp }}/e2e-artifacts"
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP:-/tmp}/e2e-032.log"
+          status=0
+          mkdir -p "$(dirname "$log_file")"
+          uv run --locked --no-sync --python 3.12 python contract/e2e/run-org-switch-browser.py >"$log_file" 2>&1 || status=$?
+          if [ -f "$log_file" ]; then cat "$log_file"; fi
+          {
+            echo "## E2E-032 org switch browser acceptance"
+            echo ""
+            if [ -f "$log_file" ]; then grep -E '^RESULT ' "$log_file" || echo "(none)"; else echo "(log unavailable)"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload E2E-032 acceptance artifacts
+        id: e2e032_artifacts
+        if: always() && steps.scope.outputs.gui == 'true'
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: e2e-032-${{ github.job }}
+          path: ${{ runner.temp }}/e2e-artifacts/E2E-032
+          if-no-files-found: ignore
+
+      - name: Report E2E-032 acceptance artifact upload failure
+        if: always() && steps.e2e032_artifacts.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          echo "::warning::E2E-032 acceptance artifact upload failed or timed out"
+          echo "E2E-032 acceptance artifact upload failed or timed out" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  release-package:
+    needs: [gui-unit]
+    if: needs.gui-unit.outputs.package == 'true'
+    # Current deployable GUI artifact is the root web build. The old paired
+    # wheel/native payload was retired; do not claim that release contract.
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/node:24-bookworm
+    timeout-minutes: 20
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+    steps:
+      - name: Check out exact commit
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="$(mktemp /tmp/gui-checkout-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Require committed GUI release inputs
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}" || {
+            echo "BLOCKED: release checkout is not the tested commit" >&2
+            exit 1
+          }
+          release_inputs=(gui src/hyprial .forgejo/workflows/gate-gui.yml scripts/ci scripts/build pyproject.toml uv.lock VERSION)
+          git diff --quiet -- "${release_inputs[@]}" &&
+          git diff --cached --quiet -- "${release_inputs[@]}" &&
+          test -z "$(git ls-files --others --exclude-standard -- "${release_inputs[@]}")" || {
+            echo "BLOCKED: GUI release inputs contain uncommitted source" >&2
+            exit 1
+          }
+
+      - name: Persist the npm cache
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/npm"
+            echo "npm_config_cache=$CI_CACHE_ROOT/npm" >> "$GITHUB_ENV"
+          else
+            echo "CI_CACHE_ROOT unset: npm cache stays job-local (cold)"
+          fi
+          echo "npm_config_fetch_retries=5" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_mintimeout=10000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_maxtimeout=120000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_timeout=60000" >> "$GITHUB_ENV"
+
+      - name: Verify root web GUI production artifact
+        run: |
+          set -euo pipefail
+          npm --prefix gui ci --ignore-scripts --no-audit --no-fund --prefer-offline
+          npm --prefix gui run verify:production-copy
+          test -s gui/dist/index.html
+          git diff --check
+          git diff --exit-code
+          printf '%s\n' 'PASS: root gui web build and production-copy. NOT-EVALUABLE: retired paired wheel/native GUI packaging; no release or publish performed.' >> "$GITHUB_STEP_SUMMARY"

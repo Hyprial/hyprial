@@ -37,7 +37,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOW = ROOT / ".forgejo" / "workflows" / "release-nightly-promote.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "release-nightly-promote.yml"
 
 GIT_STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$GIT_CALLS"
@@ -141,7 +141,7 @@ def test_the_writer_and_the_reader_still_agree_on_the_marker_shape() -> None:
     reader's pattern depends on: no space between key and value.
     """
 
-    writer = (ROOT / ".forgejo" / "workflows" / "e2e-macos-isolated.yml").read_text("utf-8")
+    writer = (ROOT / ".github" / "workflows" / "e2e-macos-isolated.yml").read_text("utf-8")
     assert '{"sha":"' in writer, (
         "the gate no longer writes compact JSON; nightly-promote's sed pattern "
         "requires it, and a mismatch degrades to a permanently quiet NO-PROMOTE"

@@ -48,7 +48,7 @@ daemon（前提：home 目录已存在且为私有，否则先报 `GUI_HOME_NOT_
 
 ## 分支模型
 
-人和 agent 共用的机器可读规定位于 [`.forgejo/git-flow.json`](.forgejo/git-flow.json)，
+人和 agent 共用的机器可读规定位于 [`.github/git-flow.json`](.github/git-flow.json)，
 CI planner 实际读取它；流程说明见 [dev-first PR 规则](docs/guides/dev-source-branch-rule.md)。
 
 | 分支 | 用途 | 接受的 PR 来源 |

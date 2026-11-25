@@ -55,7 +55,7 @@ LAYER_FILES = (
     "tests/biz/test_b.py", "tests/shell/test_s.py", "tests/integration/test_e2e.py",
     "tests/tooling/test_t.py", "tests/scripts/test_sc.py", "tests/support/helper.py",
     "tests/conftest.py", "scripts/ci/gate.py", "scripts/tool.py",
-    ".forgejo/workflows/gate-python.yml", "pyproject.toml", "README.md", "docs/guides/g.md",
+    ".github/workflows/gate-python.yml", "pyproject.toml", "README.md", "docs/guides/g.md",
     "gui/src/app.ts", *GUARD_FILES,
 )
 
@@ -135,7 +135,7 @@ def test_missing_cross_cutting_guard_fails_closed(impact, repo):
 @pytest.mark.parametrize("path,expected", [
     ("tests/daemon/test_d.py", ["tests/daemon"]),
     ("tests/integration/test_e2e.py", ["tests/integration"]),
-    (".forgejo/workflows/gate-python.yml", ["tests/tooling"]),
+    (".github/workflows/gate-python.yml", ["tests/tooling"]),
     ("scripts/ci/gate.py", ["tests/tooling"]),
     ("scripts/tool.py", ["tests/scripts", "tests/tooling"]),
 ])
@@ -145,7 +145,7 @@ def test_test_and_tooling_changes_run_only_their_own_tests(impact, repo, path, e
 
 
 def test_selections_union_across_changed_paths(impact, repo):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py", ".forgejo/workflows/gate-python.yml")
+    root, payload = changed(repo, "src/hyprial/shell/cli.py", ".github/workflows/gate-python.yml")
     assert dirs(impact.plan(root, payload, "pull_request")) == ["tests/integration", "tests/shell", "tests/tooling"]
 
 
@@ -463,7 +463,7 @@ def _declared_control_names(job_block: str) -> set[str]:
 
 def test_control_environment_set_matches_tests_yml(impact):
     """PYTEST_CONTROL_ENVIRONMENT must equal what gate-python.yml actually declares (no drift)."""
-    workflow = (ROOT / ".forgejo/workflows/gate-python.yml").read_text()
+    workflow = (ROOT / ".github/workflows/gate-python.yml").read_text()
     declared = _declared_control_names(_pytest_shard_job_block(workflow))
     forwarded = set(impact.PYTEST_CONTROL_ENVIRONMENT)
     missing = sorted(declared - forwarded)

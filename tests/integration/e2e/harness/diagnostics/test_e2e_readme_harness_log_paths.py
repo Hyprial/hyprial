@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[5]
 README = ROOT / "contract" / "e2e" / "README.md"
-WORKFLOW = ROOT / ".forgejo" / "workflows" / "e2e-macos-credentialed.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "e2e-macos-credentialed.yml"
 
 
 def test_the_readme_names_the_config_dir_the_controlled_gate_actually_pins() -> None:

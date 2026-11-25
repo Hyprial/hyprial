@@ -1,0 +1,307 @@
+# 发布规则唯一事实源：docs/guides/release-rules.md（三方产物必发，不设可选开关）。
+# wheel-release —— internal/nightly/stable 的固定 source SHA 构建并发布 hyprial wheel 到
+# Forgejo packages PyPI registry(code.hyprial.com,HyprialOS org)。
+#
+# 触发约定:
+#   - 字面 tag `nightly` / `stable` 用 push 事件;`internal` 由
+#     gate-python.yml workflow_dispatch,因为 CI 自己移动 tag 不会触发 push workflow。
+#     绝不含 `dev` 或 `v*`。
+#   - push 构建事件 SHA;三轨 dispatch 构建显式完整 source_sha。绝不重新解析
+#     tag 名 —— tag 在构建中途可能再次被 force-move,重解析 = 半态。
+#   - concurrency 为跨 track 的单一组 wheel-publish 且 cancel-in-progress: false
+#     (理由见下方 concurrency 注释):发布半截取消会留下半态。
+#
+# 发布链去红(2026-11-08,v0.5.5.3.4 收尾;runs 51606/51622/51727,
+# tests/tooling/release/wheel/test_release_chain_reds.py):
+#   - 同一版本(<VERSION>+g<sha7>)可被合法地发布多次:stable floor 让
+#     nightly==stable SHA(51727 的 409),或同 track 重跑。registry 步用
+#     `uv publish --check-url <index>/simple/`:同名且 sha256 相同 -> skip(幂等);
+#     sha256 不同 -> 响亮失败(registry 不覆盖,绝不删除重传)。uv 0.11.7 不把
+#     UV_PUBLISH_* 用于 check-url(匿名 401 时只按 netrc 重试),所以经 NETRC
+#     进程替换喂同一凭据:printf 是 bash builtin(不进 argv),/dev/fd 管道
+#     (不落盘);netrc 按 host 匹配。
+#   - workflow artifact 只是便利副本:三方分发面是 R2 / registry / GitHub
+#     (release-rules.md 规则 4),github-publish 从 REGISTRY 取 wheel,无人下载
+#     该 artifact。上报步只在 registry 发布 success 时降级为 ::warning +
+#     ARTIFACT_UPLOAD_RETRY(Forgejo artifact 后端 502,51240/51376/51622),
+#     否则照旧判红。
+#   - job 35 -> 55 分钟:冷的首个 target 编译 Tailcat sidecar 用了 15-25 分钟,
+#     job 在发布前被杀(51606)。构建步自有 30 分钟上限,保证慢构建在任何
+#     写入之前被杀;余下约 20 分钟留给 R2 / registry / artifact。
+#   - Go module/build、npm、uv 缓存持久化到 $CI_CACHE_ROOT(与 gate-python /
+#     github-publish 同一卷,内容寻址、并发安全);CPython 3.12.13 经
+#     ci-ensure-cpython-mirror.sh 走 file:// 镜像,因此其后每个 uv 调用都必须
+#     钉 --python 3.12(未钉时 uv 会在镜像里找 3.14 并失败)。
+#
+# 版本戳(PEP 440 本地段):<pyproject 基版>+g<事件 SHA short7>。
+# 基版永远由仓库 pyproject.toml 手工声明;+g<hash> 只存在于构建产物,
+# 命名 wheel 出自哪个 commit。registry 已实证(Forgejo 15.0.5,spike
+# 0.0.1+spike1.g8cd97b4)完整保留并接受精确 pin 本地段。
+#
+# 凭据:只按名引用 repo secret PKG_PUBLISH_USER / PKG_PUBLISH_TOKEN
+# (pkg-bot,package-scoped;值由 Allen 配置,本文件零 secret)。
+
+name: wheel-release
+on:
+  push:
+    tags: ['nightly', 'stable']
+  # CI 自己移动轨道 tag 不会再次触发 tag-push workflow；
+  # 每个轨道 writer 显式派发，并传入它已经固定的同一 source SHA。
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "wheel track (stable, nightly or internal)"
+        required: true
+      source_sha:
+        description: "full source commit selected by the track writer"
+        required: true
+
+concurrency:
+  # ⛔ 单一组（跨 track 串行），**不能**按 track 分组。
+  #   理由（2026-10-30 现场）: scripts/ci/r2_upload.py:200 `guard_changes()` 比较的是**整桶**
+  #   before/after 快照 —— 任何 changed key 不在本 run 的允许前缀内就 raise。
+  #   而发布写入的是同一个 R2 桶（wheel/stable/…、wheel/nightly/…、wheel/internal/…）。
+  #   若两个 track 的 run 同时跑，每个 run 的快照里都会出现**对方的正常写入** ⇒ 双方都判越界 ⇒ 两个 job 都红，
+  #   而 wheels 其实已上传成功（run 40721/40722 的 98687/98688 就是这样）。
+  #   ⇒ 守卫是整桶级的，发布就必须整桶级串行：group 里不能出现 track/ref。
+  group: wheel-publish
+  cancel-in-progress: false
+
+jobs:
+  build-publish:
+    runs-on: [release-ci]
+    timeout-minutes: 55
+    env:
+      WHEEL_TRACK: ${{ inputs.track || github.ref_name }}
+      WHEEL_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      # 与 gate-python.yml 相同的网络加固:DinD 容器无可用 IPv6,uv 拉取
+      # 构建后端(hatchling,来自 pypi)需走宿主代理;内网 origin
+      # (forgejo-tailscale:3000 或 tailscale:3000,即 ${GITHUB_SERVER_URL})在 NO_PROXY 内直连。
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      GOPROXY: "https://goproxy.cn|https://proxy.golang.org"
+    steps:
+      - name: Check out event SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          case "${GITHUB_EVENT_NAME}:${WHEEL_TRACK}" in
+            workflow_dispatch:internal|workflow_dispatch:nightly|workflow_dispatch:stable|push:nightly|push:stable) ;;
+            *) echo "refusing wheel invocation event=${GITHUB_EVENT_NAME} track=${WHEEL_TRACK}"; exit 1 ;;
+          esac
+          printf '%s\n' "${WHEEL_SOURCE_SHA}" | grep -Eq '^[0-9a-fA-F]{40}$' || { echo "WHEEL_SOURCE_SHA must be full 40-hex"; exit 1; }
+          # Preserve the audited live-fetch command while binding GITHUB_SHA
+          # to the validated explicit dispatch SHA for this step. `read` avoids
+          # changing the acquisition audit identity of the live fetch.
+          read -r GITHUB_SHA <<< "${WHEEL_SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${WHEEL_SOURCE_SHA}" || { echo "checkout did not resolve exact WHEEL_SOURCE_SHA"; exit 1; }
+          bash scripts/ci/ci-conditions.sh start
+
+      # This lane still rejects v* invocations at checkout. Keep a defensive
+      # pre-build gate too: extending its trigger must not bypass release notes.
+      - name: Require versioned changelog before formal release build or publish
+        run: |
+          set -euo pipefail
+          case "${WHEEL_TRACK}" in
+            v*) node scripts/ci/check-changelog.mjs --tag "${WHEEL_TRACK}" ;;
+            *) echo "changelog gate: movable track; unchanged" ;;
+          esac
+
+      - name: Ensure uv
+        run: |
+          set -o pipefail
+          # Cache-first, sha256-pinned (scripts/ci/ci-ensure-uv.sh).  This step used
+          # to curl astral.sh/uv/<v>/install.sh directly, making the job depend on a
+          # live fetch to a third-party host; the script now tries host -> cache ->
+          # the installer and prints which tier it took.
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+
+      - name: Install pinned Go toolchain (tailcat wheels)
+        run: GO_VERSION=1.27.1 bash scripts/ci/ci-ensure-go.sh
+
+      - name: Persist Go, npm and uv caches; stage the pinned CPython
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/go-mod" "$CI_CACHE_ROOT/go-build" "$CI_CACHE_ROOT/npm"
+            echo "GOMODCACHE=$CI_CACHE_ROOT/go-mod" >> "$GITHUB_ENV"
+            echo "GOCACHE=$CI_CACHE_ROOT/go-build" >> "$GITHUB_ENV"
+            echo "npm_config_cache=$CI_CACHE_ROOT/npm" >> "$GITHUB_ENV"
+            du -sh "$CI_CACHE_ROOT/go-mod" "$CI_CACHE_ROOT/go-build" "$CI_CACHE_ROOT/npm" 2>/dev/null || true
+          else
+            echo "::warning::CI_CACHE_ROOT unset: Go/npm caches stay job-local (cold)"
+          fi
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Preflight (secrets present, version base readable)
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.PKG_PUBLISH_USER }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.PKG_PUBLISH_TOKEN }}
+        run: |
+          [ -n "${UV_PUBLISH_USERNAME}" ] || { echo "secret PKG_PUBLISH_USER missing"; exit 1; }
+          [ -n "${UV_PUBLISH_PASSWORD}" ] || { echo "secret PKG_PUBLISH_TOKEN missing"; exit 1; }
+          [ -s VERSION ] || { echo "VERSION missing or empty"; exit 1; }
+          head -n 1 VERSION
+
+      - name: Stamp local version segment and build wheel
+        timeout-minutes: 30
+        env:
+          HYPRIAL_BUILD_SOURCE_REMOTE: https://github.com/Hyprial/hyprial.git
+        run: |
+          set -euo pipefail
+          # 固定 source SHA 的 short7;构建容器是一次性的,无需恢复工作树。
+          SOURCE_SHA="${WHEEL_SOURCE_SHA:-${GITHUB_SHA}}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          # Hatch reads the canonical dynamic version from VERSION; uv version
+          # cannot read/set this source. Stamp only this disposable build copy.
+          BASE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          [ -n "${BASE_VERSION}" ] || { echo "VERSION empty"; exit 1; }
+          STAMPED="${BASE_VERSION}+g${SHORT_SHA}"
+          printf '%s\n' "${STAMPED}" > VERSION
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
+            echo "Building ${target} for ${SOURCE_SHA} as ${STAMPED}"
+            HYPRIAL_TAILCAT_TARGET="${target}" uv build --wheel --python 3.12 --out-dir dist
+          done
+          HYPRIAL_TAILCAT_WHEEL_VERSION="${STAMPED}" \
+          HYPRIAL_TAILCAT_SOURCE_COMMIT="${SOURCE_SHA}" \
+            uv run --no-project --python 3.12 python scripts/ci/verify_tailcat_wheels.py dist
+          # SHA256SUMS covers exactly what this job publishes. It is named and
+          # uploaded with the wheels so a consumer never has to trust the
+          # network: the installer verifies against this file. Publishing the
+          # wheel without its sums would make verification impossible and force
+          # every installer back to "trust the transport".
+          (cd dist && { command -v sha256sum >/dev/null 2>&1 \
+                          && sha256sum *.whl \
+                          || shasum -a 256 *.whl; } | LC_ALL=C sort > SHA256SUMS)
+          echo "Checksums:" >> "$GITHUB_STEP_SUMMARY"
+          sed 's/^/  /' dist/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+          echo "Built source commit: ${SOURCE_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Wheel version: ${STAMPED}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified targets: darwin/arm64, darwin/amd64, linux/amd64, linux/arm64, windows/amd64" >> "$GITHUB_STEP_SUMMARY"
+          ls -la dist/
+
+      # Publish directly from the verified local set. This must not depend on
+      # GitHub availability; GitHub attachment is independently mandatory.
+      - name: Publish wheel track to R2 and verify anonymous read-back
+        env:
+          # R2 direct access has not been disproved; keep dependency proxy separate.
+          # Set both spellings: urllib gives lowercase no_proxy precedence.
+          NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com,.r2.cloudflarestorage.com,dl.hyprial.com
+          no_proxy: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com,.r2.cloudflarestorage.com,dl.hyprial.com
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          # Read source origin with job-local auth; never alter the immutable
+          # checkout or store credentials in Git configuration. The publisher
+          # resolves the peeled track before uploads and before each SUMS PUT.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}"
+          export GIT_TERMINAL_PROMPT=0
+          uv run --no-project --python 3.12 python scripts/ci/publish_wheels.py \
+            --track "${WHEEL_TRACK}" --source-sha "${WHEEL_SOURCE_SHA}" --directory dist
+
+      - name: Publish wheel to Forgejo PyPI registry
+        id: pypi_registry
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.PKG_PUBLISH_USER }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.PKG_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 凭据全程只在进程 env;不进 argv、不落盘、不进任何持久化 URL。
+          # env: 块不做 shell 展开,所以 ${GITHUB_SERVER_URL} 在这里拼:
+          # 实例内网 origin + 仓库包路径(注意尾斜杠归一)。
+          export UV_PUBLISH_URL="${GITHUB_SERVER_URL%/}/api/packages/HyprialOS/pypi"
+          host="${GITHUB_SERVER_URL#*://}"; host="${host%%[:/]*}"
+          NETRC=<(printf 'machine %s login %s password %s\n' "${host}" "${UV_PUBLISH_USERNAME}" "${UV_PUBLISH_PASSWORD}") \
+            uv publish dist/*.whl --check-url "${UV_PUBLISH_URL}/simple/"
+
+      - name: Upload wheel + checksums as a workflow artifact
+        # `always()` + `continue-on-error` on purpose: the registry publish has
+        # already happened by this point, so a failed copy must not red the run
+        # (a half-cancelled or half-red publish is worse than a failed one).
+        id: wheel_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: wheels-${{ env.WHEEL_TRACK }}-${{ github.run_id }}
+          # SHA256SUMS is included, and if it is missing this step fails
+          # loudly: a wheel without its sums is not a shippable artefact.
+          path: |
+            dist/*.whl
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Report wheel artifact upload failure
+        if: always() && steps.wheel_artifact.outcome == 'failure'
+        env:
+          # ⛔ 2026-10-30 现场: 「the wheels reached the registry…」这句以前是**无条件打印**的，
+          #    于是当更早的步骤（R2 发布 / 越界守卫）已经把 job 判红、registry 发布根本没跑时，
+          #    日志仍然声称"已进 registry"，把排查方向直接带偏（stable job 98409 / nightly 40654 都中招）。
+          #    ⇒ 这句只能在该步骤**确实 success** 时说；否则必须说"没进 registry"。
+          PYPI_REGISTRY_OUTCOME: ${{ steps.pypi_registry.outcome }}
+          WHEEL_ARTIFACT_NAME: wheels-${{ env.WHEEL_TRACK }}-${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          echo "artifact upload failed/timeout: wheel_artifact" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          if [ "${PYPI_REGISTRY_OUTCOME:-}" = "success" ]; then
+            echo "the wheels reached the registry but were NOT saved as a workflow artifact" >&2
+            echo "::warning title=wheel artifact not saved::${WHEEL_ARTIFACT_NAME} missing; R2 and registry publish succeeded and github-publish attaches from the registry, so distribution is unaffected"
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${WHEEL_ARTIFACT_NAME} outcome=failed attempts=1"
+            exit 0
+          fi
+          echo "the wheels did NOT reach the registry (pypi_registry outcome=${PYPI_REGISTRY_OUTCOME:-unset});" >&2
+          echo "the registry publish step did not succeed, so nothing can be fetched from it;" >&2
+          echo "re-run wheel-release after fixing the earlier failure" >&2
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact

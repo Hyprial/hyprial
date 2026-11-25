@@ -1,0 +1,1503 @@
+# KP-027-B: build-only candidate wheels for the native actor engine.
+#
+# One job per *available* host builds its own native module, imports the
+# installed module in an isolated venv, and emits a receipt.  linux/amd64 and
+# linux/arm64 then assemble the full product wheel on release-ci from that
+# prebuilt module; arm64 additionally re-installs and receipts the assembled
+# product wheel under QEMU.  darwin/arm64 builds the complete wheel on its
+# own host.  An assembly job
+# verifies the receipts against the module bytes and the shared crates/
+# digest.  This workflow never publishes: no R2, registry, release tag, or
+# release artifact upload exists here.  It exists to collect measured canary
+# evidence while W1/W2 and the missing-platform runners are still being
+# decided.
+#
+# Measured scope (2026-11-13, runs 56107/56108/56109/56181):
+# - linux/amd64: release-ci is Linux/x86_64 but its glibc is too new to build
+#   a manylinux_2_17 wheel; the native module is therefore built inside
+#   quay.io/pypa/manylinux2014_x86_64 on ubuntu-latest, and the product wheel
+#   is assembled later from the verified module on release-ci.
+# - darwin/arm64: native Mac Studio.  Complete wheel built and receipted there.
+# - linux/arm64: `release-linux-arm64` is a Linux/x86_64 host with binfmt and
+#   a cached manylinux2014_aarch64 image.  The job runs its outer container as
+#   arm64 (`container.options: --platform linux/arm64`) and builds only the
+#   worker wheel there; the product wheel is assembled later on release-ci and
+#   re-installed/receipted under QEMU by `smoke-linux-arm64`.  Canary 56181
+#   job 147160 measured Linux/aarch64 glibc 2.17, Rust 1.93.1 and a verified
+#   cp312 worker wheel in 6m16s, so the old `include_unavailable` gate is
+#   removed.  `container.options --platform` is still source-supported but
+#   undocumented in runner v12.13.2, so the job keeps its explicit
+#   `uname -s -m` and glibc asserts: a silently x86_64 container fails instead
+#   of producing a mislabeled wheel.
+# - darwin/amd64, windows/amd64: no usable build+import host yet.  No job is
+#   added for a nonexistent runner; their jobs arrive with W1 once the owner
+#   chooses the platform path.
+#
+# Build environment notes:
+# - The manylinux2014 image carries no node binary, while the runner executes
+#   actions/upload-artifact@v3 as `node <action>` inside this container.
+#   Node 16.20.2 is the last official build that supports the manylinux_2_17
+#   glibc floor, so the Linux jobs install it before uploading (the x64 build
+#   on linux/amd64 and the arm64 build on linux/arm64).
+# - This instance mirrors actions/upload-artifact but not
+#   actions/download-artifact, so jobs read their own run's artifacts through
+#   the forge REST API with scripts/ci/download_actions_artifact.py.
+#
+# The source SHA is always explicit and full 40-hex.  A push of a kp027/**
+# branch pins github.sha; workflow_dispatch requires the input.  This workflow
+# never resolves dev/internal/nightly at runtime.
+
+name: kp027-native-candidate
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "full 40-hex source commit; never a branch or tag name"
+        required: true
+  push:
+    branches: ['kp027/**']
+
+concurrency:
+  group: kp027-native-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pin:
+    runs-on: [release-ci]
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - name: Require an explicit full source SHA
+        id: pin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_SHA: ${{ inputs.source_sha }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -eu
+          trap '' PIPE
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            SHA="${INPUT_SHA}"
+          else
+            SHA="${EVENT_SHA}"
+          fi
+          case "${SHA}" in
+            *[!0-9a-f]*) echo "source SHA must be 40 lowercase hex characters; got '${SHA}'"; exit 1 ;;
+          esac
+          test "${#SHA}" -eq 40 || {
+            echo "source SHA must be 40 lowercase hex characters; got '${SHA}'"
+            exit 1
+          }
+          echo "pinned source SHA: ${SHA}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${SHA}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  native-linux-amd64:
+    needs: pin
+    runs-on: [ubuntu-latest]
+    container:
+      image: quay.io/pypa/manylinux2014_x86_64
+    timeout-minutes: 75
+    env:
+      TARGET: linux/amd64
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out explicit source SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          case "${SOURCE_SHA}" in
+            *[!0-9a-f]*) echo "invalid source sha: ${SOURCE_SHA}"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || {
+            echo "invalid source sha length: ${SOURCE_SHA}"
+            exit 1
+          }
+          GITHUB_SHA="${SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Assert manylinux2014 x86_64 build host
+        run: |
+          set -eu
+          trap '' PIPE
+          host="$(uname -s)/$(uname -m)"
+          test "${host}" = "Linux/x86_64" || {
+            echo "target ${TARGET} needs Linux/x86_64; this container reports ${host}"
+            exit 1
+          }
+          glibc="$(ldd --version | awk 'NR == 1 {print $NF}')"
+          test "${glibc}" = "2.17" || {
+            echo "manylinux2014 must report glibc 2.17; this container reports ${glibc}"
+            exit 1
+          }
+          echo "build host ${host} glibc ${glibc} matches the manylinux_2_17 floor"
+
+      - name: Ensure pinned uv and CPython
+        run: |
+          set -eu
+          trap '' PIPE
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Ensure pinned Rust 1.93.1
+        env:
+          HYPRIAL_E2E_ROOT: ${{ runner.temp }}/kp027-rust
+        run: |
+          set -eu
+          trap '' PIPE
+          bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Verify pinned Rust 1.93.1
+        run: |
+          set -eu
+          trap '' PIPE
+          cargo --version | grep 'cargo 1.93.1' >/dev/null
+
+      - name: Build the native module in a worker wheel
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          BASE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          STAMPED="${BASE_VERSION}+g${SHORT_SHA}"
+          printf '%s\n' "${STAMPED}" > VERSION
+          mkdir -p dist
+          # The worker wheel skips GUI and Tailcat on purpose: this host only
+          # owns the native module.  The full product wheel is assembled from
+          # the receipt below on release-ci.
+          HYPRIAL_BUILD_WORKER_WHEEL=1 \
+          HYPRIAL_TAILCAT_TARGET="${TARGET}" \
+            uv build --wheel --python 3.12 --out-dir dist
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          printf '%s\n' "${STAMPED}" > dist/CANDIDATE_VERSION
+
+      - name: Isolated install, ABI import and receipt
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          TARGET_SLUG="$(printf '%s' "${TARGET}" | tr '/' '-')"
+          smoke="${RUNNER_TEMP:-/tmp}/kp027-smoke-${TARGET_SLUG}"
+          uv venv --python 3.12 "${smoke}"
+          smoke_python="${smoke}/bin/python"
+          uv pip install --python "${smoke_python}" --no-deps "${wheel}"
+          installed="$("${smoke_python}" - <<'PY'
+          import pathlib
+          import sysconfig
+          root = pathlib.Path(sysconfig.get_paths()["purelib"]) / "hyprial" / "_core"
+          files = sorted(root.glob("actors.*"))
+          if len(files) != 1:
+              raise SystemExit(f"expected exactly one installed actor module, got {files!r}")
+          print(files[0])
+          PY
+          )"
+          target_dir="native-receipts/${TARGET_SLUG}"
+          "${smoke_python}" scripts/ci/assemble_native_prebuilt.py receipt \
+            --wheel "${wheel}" \
+            --target "${TARGET}" \
+            --source-sha "${SOURCE_SHA}" \
+            --output "${target_dir}" \
+            --installed-module "${installed}" \
+            --python "${smoke_python}" \
+            --smoke pass
+          mkdir -p candidate-artifact
+          cp "${wheel}" candidate-artifact/
+          cp "${target_dir}"/* candidate-artifact/
+          find candidate-artifact -maxdepth 1 -type f -print
+
+      - name: Ensure Node 16 for the artifact action
+        run: |
+          set -eu
+          trap '' PIPE
+          version=16.20.2
+          sha256=874463523f26ed528634580247f403d200ba17a31adf2de98a7b124c6eb33d87
+          root="${RUNNER_TEMP:-/tmp}/kp027-node-${version}"
+          mkdir -p "${root}"
+          archive="${root}/node-v${version}-linux-x64.tar.xz"
+          curl -fsSL --retry 3 --max-time 300 \
+            "https://nodejs.org/dist/v${version}/node-v${version}-linux-x64.tar.xz" \
+            -o "${archive}"
+          printf '%s  %s\n' "${sha256}" "${archive}" | sha256sum -c -
+          tar -xJf "${archive}" -C "${root}" --strip-components=1
+          ln -sf "${root}/bin/node" /usr/local/bin/node
+          node --version
+
+      - name: Upload module receipt and worker wheel
+        id: payload_native_linux_amd64
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: kp027-native-linux-amd64
+          path: candidate-artifact/*
+          if-no-files-found: error
+
+      - name: Report candidate artifact upload failure
+        if: always() && steps.payload_native_linux_amd64.outcome == 'failure'
+        run: |
+          echo "artifact upload failed/timeout: payload_native_linux_amd64" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  wheel-linux-amd64:
+    needs: [pin, native-linux-amd64]
+    runs-on: [release-ci]
+    timeout-minutes: 90
+    env:
+      TARGET: linux/amd64
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      GOPROXY: "https://goproxy.cn|https://proxy.golang.org"
+    steps:
+      - name: Check out explicit source SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          case "${SOURCE_SHA}" in
+            *[!0-9a-f]*) echo "invalid source sha: ${SOURCE_SHA}"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || {
+            echo "invalid source sha length: ${SOURCE_SHA}"
+            exit 1
+          }
+          GITHUB_SHA="${SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Ensure pinned uv, Go and CPython
+        run: |
+          set -eu
+          trap '' PIPE
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+          GO_VERSION=1.27.1 bash scripts/ci/ci-ensure-go.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Download the manylinux module receipt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        run: |
+          set -eu
+          trap '' PIPE
+          uv run --no-project --python 3.12 \
+            python scripts/ci/download_actions_artifact.py \
+              --name kp027-native-linux-amd64 \
+              --out-dir native-prebuilt/linux-amd64 \
+              --server http://git.internal.hyprial.com:3000
+
+      - name: Assemble the verified linux/amd64 module set
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          find native-prebuilt -maxdepth 2 -type f -print
+          uv run --no-project --python 3.12 python scripts/ci/assemble_native_prebuilt.py assemble \
+            --directory native-prebuilt \
+            --source-sha "${SOURCE_SHA}" \
+            --target linux/amd64
+          cat native-prebuilt/native-prebuilt.json
+
+      - name: Build the product wheel from the prebuilt module
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          BASE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          STAMPED="${BASE_VERSION}+g${SHORT_SHA}"
+          printf '%s\n' "${STAMPED}" > VERSION
+          mkdir -p dist
+          HYPRIAL_NATIVE_PREBUILT_DIR="${PWD}/native-prebuilt" \
+          HYPRIAL_TAILCAT_TARGET="${TARGET}" \
+            uv build --wheel --python 3.12 --out-dir dist
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          case "$(basename "${wheel}")" in
+            *-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl) ;;
+            *)
+              echo "product wheel does not carry the declared manylinux_2_17 tag: $(basename "${wheel}")"
+              exit 1
+              ;;
+          esac
+          printf '%s\n' "${STAMPED}" > dist/CANDIDATE_VERSION
+
+      - name: Isolated install, ABI import and product receipt
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          smoke="${RUNNER_TEMP:-/tmp}/kp027-product-smoke-linux-amd64"
+          uv venv --python 3.12 "${smoke}"
+          smoke_python="${smoke}/bin/python"
+          uv pip install --python "${smoke_python}" --no-deps "${wheel}"
+          installed="$("${smoke_python}" - <<'PY'
+          import pathlib
+          import sysconfig
+          root = pathlib.Path(sysconfig.get_paths()["purelib"]) / "hyprial" / "_core"
+          files = sorted(root.glob("actors.*"))
+          if len(files) != 1:
+              raise SystemExit(f"expected exactly one installed actor module, got {files!r}")
+          print(files[0])
+          PY
+          )"
+          receipt_dir="product-receipts/linux-amd64"
+          "${smoke_python}" scripts/ci/assemble_native_prebuilt.py receipt \
+            --wheel "${wheel}" \
+            --target "${TARGET}" \
+            --source-sha "${SOURCE_SHA}" \
+            --output "${receipt_dir}" \
+            --installed-module "${installed}" \
+            --python "${smoke_python}" \
+            --smoke pass
+          uv run --no-project --python 3.12 python - "${wheel}" "${receipt_dir}/receipt.json" "${SOURCE_SHA}" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import platform
+          import sys
+
+          wheel = pathlib.Path(sys.argv[1])
+          receipt = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          source_sha = sys.argv[3]
+          document = {
+              "schema": "hyprial.native-wheel-evidence/v1",
+              "source_sha": source_sha,
+              "target": "linux/amd64",
+              "build_host": f"{platform.system()}/{platform.machine()}",
+              "native_prebuilt": True,
+              "wheel": wheel.name,
+              "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+              "module_sha256": receipt["sha256"],
+              "engine_abi_version": receipt["engine_abi_version"],
+              "platform_tag": receipt["platform_tag"],
+              "smoke": "pass",
+          }
+          out = wheel.parent / "wheel-evidence.json"
+          out.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(f"{out}: {document['wheel']} {document['wheel_sha256']}")
+          PY
+          cat product-receipts/linux-amd64/receipt.json
+
+      - name: Stage product wheel and evidence
+        run: |
+          set -eu
+          trap '' PIPE
+          mkdir -p product-artifact
+          cp dist/*.whl product-artifact/
+          cp dist/wheel-evidence.json product-artifact/
+          cp product-receipts/linux-amd64/receipt.json product-artifact/product-receipt.json
+          find product-artifact -maxdepth 1 -type f -print
+
+      - name: Upload product wheel and evidence
+        id: payload_wheel_linux_amd64
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: kp027-product-wheel-linux-amd64
+          path: product-artifact/*
+          if-no-files-found: error
+
+      - name: Report candidate artifact upload failure
+        if: always() && steps.payload_wheel_linux_amd64.outcome == 'failure'
+        run: |
+          echo "artifact upload failed/timeout: payload_wheel_linux_amd64" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  native-linux-arm64:
+    needs: pin
+    # Canary measured (run 56181 job 147160): this QEMU path produced a
+    # verified arm64 module receipt in 6m16s, so the gate is removed.  The
+    # runner is Linux/x86_64; the job container is explicitly arm64, so the
+    # host assert below runs *inside* the right architecture.
+    runs-on: [release-linux-arm64]
+    container:
+      image: quay.io/pypa/manylinux2014_aarch64@sha256:db68ee9e5e879da5945dfbc8cab446f02245da6522aca0a9e4cda9256c911d2f
+      options: "--platform linux/arm64"
+    timeout-minutes: 180
+    env:
+      TARGET: linux/arm64
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out explicit source SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          case "${SOURCE_SHA}" in
+            *[!0-9a-f]*) echo "invalid source sha: ${SOURCE_SHA}"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || {
+            echo "invalid source sha length: ${SOURCE_SHA}"
+            exit 1
+          }
+          GITHUB_SHA="${SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Assert manylinux2014 aarch64 build host
+        run: |
+          set -eu
+          trap '' PIPE
+          host="$(uname -s)/$(uname -m)"
+          test "${host}" = "Linux/aarch64" || {
+            echo "target ${TARGET} needs Linux/aarch64; this container reports ${host}"
+            exit 1
+          }
+          glibc="$(ldd --version | awk 'NR == 1 {print $NF}')"
+          test "${glibc}" = "2.17" || {
+            echo "manylinux2014 must report glibc 2.17; this container reports ${glibc}"
+            exit 1
+          }
+          echo "build host ${host} glibc ${glibc} matches the manylinux_2_17 floor"
+
+      - name: Ensure pinned uv and CPython
+        run: |
+          set -eu
+          trap '' PIPE
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Ensure pinned Rust 1.93.1
+        env:
+          HYPRIAL_E2E_ROOT: ${{ runner.temp }}/kp027-rust
+        run: |
+          set -eu
+          trap '' PIPE
+          bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Verify pinned Rust 1.93.1
+        run: |
+          set -eu
+          trap '' PIPE
+          cargo --version | grep 'cargo 1.93.1' >/dev/null
+
+      - name: Build the native module in a worker wheel
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          BASE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          STAMPED="${BASE_VERSION}+g${SHORT_SHA}"
+          printf '%s\n' "${STAMPED}" > VERSION
+          mkdir -p dist
+          # This QEMU container owns the native module only.  Node 24 (required
+          # by the GUI build) cannot run on the manylinux_2_17 glibc floor, so
+          # the product wheel is assembled later on release-ci.
+          HYPRIAL_BUILD_WORKER_WHEEL=1 \
+          HYPRIAL_TAILCAT_TARGET="${TARGET}" \
+            uv build --wheel --python 3.12 --out-dir dist
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          printf '%s\n' "${STAMPED}" > dist/CANDIDATE_VERSION
+
+      - name: Isolated install, ABI import and receipt
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          TARGET_SLUG="$(printf '%s' "${TARGET}" | tr '/' '-')"
+          smoke="${RUNNER_TEMP:-/tmp}/kp027-smoke-${TARGET_SLUG}"
+          uv venv --python 3.12 "${smoke}"
+          smoke_python="${smoke}/bin/python"
+          uv pip install --python "${smoke_python}" --no-deps "${wheel}"
+          installed="$("${smoke_python}" - <<'PY'
+          import pathlib
+          import sysconfig
+          root = pathlib.Path(sysconfig.get_paths()["purelib"]) / "hyprial" / "_core"
+          files = sorted(root.glob("actors.*"))
+          if len(files) != 1:
+              raise SystemExit(f"expected exactly one installed actor module, got {files!r}")
+          print(files[0])
+          PY
+          )"
+          target_dir="native-receipts/${TARGET_SLUG}"
+          "${smoke_python}" scripts/ci/assemble_native_prebuilt.py receipt \
+            --wheel "${wheel}" \
+            --target "${TARGET}" \
+            --source-sha "${SOURCE_SHA}" \
+            --output "${target_dir}" \
+            --installed-module "${installed}" \
+            --python "${smoke_python}" \
+            --smoke pass
+          mkdir -p candidate-artifact
+          cp "${wheel}" candidate-artifact/
+          cp "${target_dir}"/* candidate-artifact/
+          find candidate-artifact -maxdepth 1 -type f -print
+
+      - name: Ensure Node 16 for the artifact action
+        run: |
+          set -eu
+          trap '' PIPE
+          version=16.20.2
+          sha256=e88d86154d1ce53dc52fd74d79d4bfdf0b05f58c0bb2639adfa36e9378b770c4
+          root="${RUNNER_TEMP:-/tmp}/kp027-node-${version}"
+          mkdir -p "${root}"
+          archive="${root}/node-v${version}-linux-arm64.tar.xz"
+          curl -fsSL --retry 3 --max-time 300 \
+            "https://nodejs.org/dist/v${version}/node-v${version}-linux-arm64.tar.xz" \
+            -o "${archive}"
+          printf '%s  %s\n' "${sha256}" "${archive}" | sha256sum -c -
+          tar -xJf "${archive}" -C "${root}" --strip-components=1
+          ln -sf "${root}/bin/node" /usr/local/bin/node
+          node --version
+
+      - name: Upload module receipt and worker wheel
+        id: payload_native_linux_arm64
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: kp027-native-linux-arm64
+          path: candidate-artifact/*
+          if-no-files-found: error
+
+      - name: Report candidate artifact upload failure
+        if: always() && steps.payload_native_linux_arm64.outcome == 'failure'
+        run: |
+          echo "artifact upload failed/timeout: payload_native_linux_arm64" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  wheel-linux-arm64:
+    needs: [pin, native-linux-arm64]
+    runs-on: [release-ci]
+    timeout-minutes: 90
+    env:
+      TARGET: linux/arm64
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      GOPROXY: "https://goproxy.cn|https://proxy.golang.org"
+    steps:
+      - name: Check out explicit source SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          case "${SOURCE_SHA}" in
+            *[!0-9a-f]*) echo "invalid source sha: ${SOURCE_SHA}"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || {
+            echo "invalid source sha length: ${SOURCE_SHA}"
+            exit 1
+          }
+          GITHUB_SHA="${SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Ensure pinned uv, Go and CPython
+        run: |
+          set -eu
+          trap '' PIPE
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+          GO_VERSION=1.27.1 bash scripts/ci/ci-ensure-go.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Download the aarch64 module receipt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        run: |
+          set -eu
+          trap '' PIPE
+          uv run --no-project --python 3.12 \
+            python scripts/ci/download_actions_artifact.py \
+              --name kp027-native-linux-arm64 \
+              --out-dir native-prebuilt/linux-arm64 \
+              --server http://git.internal.hyprial.com:3000
+
+      - name: Assemble the verified linux/arm64 module set
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          find native-prebuilt -maxdepth 2 -type f -print
+          uv run --no-project --python 3.12 python scripts/ci/assemble_native_prebuilt.py assemble \
+            --directory native-prebuilt \
+            --source-sha "${SOURCE_SHA}" \
+            --target linux/arm64
+          cat native-prebuilt/native-prebuilt.json
+
+      - name: Build the product wheel from the prebuilt module
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          BASE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          STAMPED="${BASE_VERSION}+g${SHORT_SHA}"
+          printf '%s\n' "${STAMPED}" > VERSION
+          mkdir -p dist
+          HYPRIAL_NATIVE_PREBUILT_DIR="${PWD}/native-prebuilt" \
+          HYPRIAL_TAILCAT_TARGET="${TARGET}" \
+            uv build --wheel --python 3.12 --out-dir dist
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          case "$(basename "${wheel}")" in
+            *-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl) ;;
+            *)
+              echo "product wheel does not carry the declared manylinux_2_17 aarch64 tag: $(basename "${wheel}")"
+              exit 1
+              ;;
+          esac
+          printf '%s\n' "${STAMPED}" > dist/CANDIDATE_VERSION
+
+      - name: Write assembly evidence
+        # This host is Linux/x86_64: it can assemble and tag the aarch64
+        # product wheel but cannot import it.  smoke-linux-arm64 owns the
+        # cross-architecture install, import and receipt.
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          uv run --no-project --python 3.12 python - "${wheel}" "${SOURCE_SHA}" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import platform
+          import sys
+
+          wheel = pathlib.Path(sys.argv[1])
+          source_sha = sys.argv[2]
+          receipt = json.loads(
+              (wheel.parents[1] / "native-prebuilt" / "linux-arm64" / "receipt.json")
+              .read_text(encoding="utf-8")
+          )
+          document = {
+              "schema": "hyprial.native-wheel-assembly/v1",
+              "source_sha": source_sha,
+              "target": "linux/arm64",
+              "assembly_host": f"{platform.system()}/{platform.machine()}",
+              "native_prebuilt": True,
+              "wheel": wheel.name,
+              "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+              "module_sha256": receipt["sha256"],
+              "engine_abi_version": receipt["engine_abi_version"],
+              "platform_tag": receipt["platform_tag"],
+              "smoke": "deferred:kp027-smoke-linux-arm64",
+          }
+          out = wheel.parent / "assembly-evidence.json"
+          out.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(f"{out}: {document['wheel']} {document['wheel_sha256']}")
+          PY
+          cat native-prebuilt/linux-arm64/receipt.json
+
+      - name: Stage product wheel and assembly evidence
+        run: |
+          set -eu
+          trap '' PIPE
+          mkdir -p product-artifact
+          cp dist/*.whl product-artifact/
+          cp dist/assembly-evidence.json product-artifact/
+          find product-artifact -maxdepth 1 -type f -print
+
+      - name: Upload product wheel and assembly evidence
+        id: payload_wheel_linux_arm64
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: kp027-product-wheel-linux-arm64
+          path: product-artifact/*
+          if-no-files-found: error
+
+      - name: Report candidate artifact upload failure
+        if: always() && steps.payload_wheel_linux_arm64.outcome == 'failure'
+        run: |
+          echo "artifact upload failed/timeout: payload_wheel_linux_arm64" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  smoke-linux-arm64:
+    needs: [pin, wheel-linux-arm64]
+    # The product wheel assembled on release-ci is installed and import-checked
+    # here, inside a cp312 aarch64 container, so the arm64 product receipt is
+    # produced by an actual arm64 host.
+    runs-on: [release-linux-arm64]
+    container:
+      image: quay.io/pypa/manylinux2014_aarch64@sha256:db68ee9e5e879da5945dfbc8cab446f02245da6522aca0a9e4cda9256c911d2f
+      options: "--platform linux/arm64"
+    timeout-minutes: 60
+    env:
+      TARGET: linux/arm64
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out explicit source SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          case "${SOURCE_SHA}" in
+            *[!0-9a-f]*) echo "invalid source sha: ${SOURCE_SHA}"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || {
+            echo "invalid source sha length: ${SOURCE_SHA}"
+            exit 1
+          }
+          GITHUB_SHA="${SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Assert manylinux2014 aarch64 smoke host
+        run: |
+          set -eu
+          trap '' PIPE
+          host="$(uname -s)/$(uname -m)"
+          test "${host}" = "Linux/aarch64" || {
+            echo "target ${TARGET} needs Linux/aarch64; this container reports ${host}"
+            exit 1
+          }
+          glibc="$(ldd --version | awk 'NR == 1 {print $NF}')"
+          test "${glibc}" = "2.17" || {
+            echo "manylinux2014 must report glibc 2.17; this container reports ${glibc}"
+            exit 1
+          }
+          echo "smoke host ${host} glibc ${glibc} matches the manylinux_2_17 floor"
+
+      - name: Ensure pinned uv and CPython
+        run: |
+          set -eu
+          trap '' PIPE
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Download the assembled product wheel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        run: |
+          set -eu
+          trap '' PIPE
+          uv run --no-project --python 3.12 \
+            python scripts/ci/download_actions_artifact.py \
+              --name kp027-product-wheel-linux-arm64 \
+              --out-dir product-wheel \
+              --server http://git.internal.hyprial.com:3000
+          find product-wheel -maxdepth 1 -type f -print
+
+      - name: Isolated install, ABI import, sidecar and product receipt
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          wheel="$(find product-wheel -maxdepth 1 -name '*.whl' -print -quit)"
+          smoke="${RUNNER_TEMP:-/tmp}/kp027-product-smoke-linux-arm64"
+          uv venv --python 3.12 "${smoke}"
+          smoke_python="${smoke}/bin/python"
+          uv pip install --python "${smoke_python}" --no-deps "${wheel}"
+          installed="$("${smoke_python}" - <<'PY'
+          import pathlib
+          import sysconfig
+          root = pathlib.Path(sysconfig.get_paths()["purelib"]) / "hyprial" / "_core"
+          files = sorted(root.glob("actors.*"))
+          if len(files) != 1:
+              raise SystemExit(f"expected exactly one installed actor module, got {files!r}")
+          print(files[0])
+          PY
+          )"
+          tailcat="$("${smoke_python}" - <<'PY'
+          import pathlib
+          import sysconfig
+          binary = pathlib.Path(sysconfig.get_paths()["purelib"]) / "hyprial" / "_bin" / "hyprial-tailcat"
+          if not binary.is_file():
+              raise SystemExit(f"missing installed sidecar: {binary}")
+          print(binary)
+          PY
+          )"
+          chmod +x "${tailcat}"
+          "${tailcat}" version
+          receipt_dir="product-receipts/linux-arm64"
+          "${smoke_python}" scripts/ci/assemble_native_prebuilt.py receipt \
+            --wheel "${wheel}" \
+            --target "${TARGET}" \
+            --source-sha "${SOURCE_SHA}" \
+            --output "${receipt_dir}" \
+            --installed-module "${installed}" \
+            --python "${smoke_python}" \
+            --smoke pass
+          uv run --no-project --python 3.12 python - "${wheel}" "${receipt_dir}/receipt.json" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import platform
+          import sys
+
+          wheel = pathlib.Path(sys.argv[1])
+          receipt = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          assembly = json.loads(
+              (wheel.parent / "assembly-evidence.json").read_text(encoding="utf-8")
+          )
+          wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          if assembly.get("wheel") != wheel.name:
+              raise SystemExit("assembly evidence names another wheel")
+          if assembly.get("wheel_sha256") != wheel_sha256:
+              raise SystemExit("assembly evidence wheel sha256 does not match")
+          if assembly.get("module_sha256") != receipt["sha256"]:
+              raise SystemExit("assembly module sha256 does not match the product receipt")
+          document = {
+              "schema": "hyprial.native-wheel-evidence/v1",
+              "source_sha": receipt["source_sha"],
+              "target": "linux/arm64",
+              "build_host": assembly["assembly_host"],
+              "native_prebuilt": True,
+              "wheel": wheel.name,
+              "wheel_sha256": wheel_sha256,
+              "module_sha256": receipt["sha256"],
+              "engine_abi_version": receipt["engine_abi_version"],
+              "platform_tag": receipt["platform_tag"],
+              "smoke": "pass",
+              "smoke_host": f"{platform.system()}/{platform.machine()}",
+          }
+          out = wheel.parent / "wheel-evidence.json"
+          out.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(f"{out}: {document['wheel']} {document['wheel_sha256']}")
+          PY
+          cat "${receipt_dir}/receipt.json"
+
+      - name: Stage product receipt and evidence
+        run: |
+          set -eu
+          trap '' PIPE
+          mkdir -p product-receipt-artifact
+          cp product-receipts/linux-arm64/receipt.json product-receipt-artifact/
+          cp product-wheel/wheel-evidence.json product-receipt-artifact/
+          find product-receipt-artifact -maxdepth 1 -type f -print
+
+      - name: Ensure Node 16 for the artifact action
+        run: |
+          set -eu
+          trap '' PIPE
+          version=16.20.2
+          sha256=e88d86154d1ce53dc52fd74d79d4bfdf0b05f58c0bb2639adfa36e9378b770c4
+          root="${RUNNER_TEMP:-/tmp}/kp027-node-${version}"
+          mkdir -p "${root}"
+          archive="${root}/node-v${version}-linux-arm64.tar.xz"
+          curl -fsSL --retry 3 --max-time 300 \
+            "https://nodejs.org/dist/v${version}/node-v${version}-linux-arm64.tar.xz" \
+            -o "${archive}"
+          printf '%s  %s\n' "${sha256}" "${archive}" | sha256sum -c -
+          tar -xJf "${archive}" -C "${root}" --strip-components=1
+          ln -sf "${root}/bin/node" /usr/local/bin/node
+          node --version
+
+      - name: Upload product receipt and evidence
+        id: payload_smoke_linux_arm64
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: kp027-product-receipt-linux-arm64
+          path: product-receipt-artifact/*
+          if-no-files-found: error
+
+      - name: Report candidate artifact upload failure
+        if: always() && steps.payload_smoke_linux_arm64.outcome == 'failure'
+        run: |
+          echo "artifact upload failed/timeout: payload_smoke_linux_arm64" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  native-darwin-arm64:
+    needs: pin
+    runs-on: [release-macos-arm64]
+    timeout-minutes: 75
+    env:
+      TARGET: darwin/arm64
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      GOPROXY: "https://goproxy.cn|https://proxy.golang.org"
+    steps:
+      - name: Check out explicit source SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "http://git.internal.hyprial.com:3000/${GITHUB_REPOSITORY}.git"
+          case "${SOURCE_SHA}" in
+            *[!0-9a-f]*) echo "invalid source sha: ${SOURCE_SHA}"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || {
+            echo "invalid source sha length: ${SOURCE_SHA}"
+            exit 1
+          }
+          GITHUB_SHA="${SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.http://git.internal.hyprial.com:3000/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Assert build host matches target
+        run: |
+          set -eu
+          trap '' PIPE
+          host="$(uname -s)/$(uname -m)"
+          case "${TARGET}:${host}" in
+            linux/amd64:Linux/x86_64|linux/amd64:Linux/amd64) ;;
+            linux/arm64:Linux/aarch64|linux/arm64:Linux/arm64) ;;
+            darwin/arm64:Darwin/arm64|darwin/arm64:Darwin/aarch64) ;;
+            *)
+              echo "target ${TARGET} does not match build host ${host}"
+              exit 1
+              ;;
+          esac
+          echo "build host ${host} matches target ${TARGET}"
+
+      - name: Verify the pinned macOS toolchain
+        run: |
+          set -eu
+          trap '' PIPE
+          for tool in uv cargo go npm; do
+            command -v "${tool}" || { echo "missing ${tool} on release-macos-arm64"; exit 1; }
+          done
+          uv --version | grep '0.11.7' >/dev/null || { echo "unexpected uv: $(uv --version)"; exit 1; }
+          cargo --version | grep 'cargo 1.93.1' >/dev/null || { echo "unexpected cargo: $(cargo --version)"; exit 1; }
+          go version | grep 'go1.27.1' >/dev/null || { echo "unexpected go: $(go version)"; exit 1; }
+          npm --version
+
+      - name: Build one host wheel
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          BASE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          STAMPED="${BASE_VERSION}+g${SHORT_SHA}"
+          printf '%s\n' "${STAMPED}" > VERSION
+          mkdir -p dist
+          HYPRIAL_TAILCAT_TARGET="${TARGET}" uv build --wheel --python 3.12 --out-dir dist
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          printf '%s\n' "${STAMPED}" > dist/CANDIDATE_VERSION
+
+      - name: Isolated install, ABI import and receipt
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          TARGET_SLUG="$(printf '%s' "${TARGET}" | tr '/' '-')"
+          smoke="${RUNNER_TEMP:-/tmp}/kp027-smoke-${TARGET_SLUG}"
+          uv venv --python 3.12 "${smoke}"
+          smoke_python="${smoke}/bin/python"
+          uv pip install --python "${smoke_python}" --no-deps "${wheel}"
+          installed="$("${smoke_python}" - <<'PY'
+          import pathlib
+          import sysconfig
+          root = pathlib.Path(sysconfig.get_paths()["purelib"]) / "hyprial" / "_core"
+          files = sorted(root.glob("actors.*"))
+          if len(files) != 1:
+              raise SystemExit(f"expected exactly one installed actor module, got {files!r}")
+          print(files[0])
+          PY
+          )"
+          target_dir="native-receipts/${TARGET_SLUG}"
+          "${smoke_python}" scripts/ci/assemble_native_prebuilt.py receipt \
+            --wheel "${wheel}" \
+            --target "${TARGET}" \
+            --source-sha "${SOURCE_SHA}" \
+            --output "${target_dir}" \
+            --installed-module "${installed}" \
+            --python "${smoke_python}" \
+            --smoke pass
+          mkdir -p candidate-artifact
+          cp "${wheel}" candidate-artifact/
+          cp "${target_dir}"/* candidate-artifact/
+          find candidate-artifact -maxdepth 1 -type f -print
+
+      - name: Upload candidate wheel and receipt
+        id: payload_native_darwin_arm64
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: kp027-native-darwin-arm64
+          path: candidate-artifact/*
+          if-no-files-found: error
+
+      - name: Report candidate artifact upload failure
+        if: always() && steps.payload_native_darwin_arm64.outcome == 'failure'
+        run: |
+          echo "artifact upload failed/timeout: payload_native_darwin_arm64" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+  assemble:
+    needs: [pin, native-linux-amd64, native-linux-arm64, native-darwin-arm64]
+    runs-on: [release-ci]
+    timeout-minutes: 20
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out explicit source SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          case "${SOURCE_SHA}" in
+            *[!0-9a-f]*) echo "invalid source sha: ${SOURCE_SHA}"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || {
+            echo "invalid source sha length: ${SOURCE_SHA}"
+            exit 1
+          }
+          GITHUB_SHA="${SOURCE_SHA}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Ensure pinned uv and CPython
+        run: |
+          set -eu
+          trap '' PIPE
+          UV_VERSION=0.11.7 UV_BIN_DIR="/tmp/hyprial-uv-${GITHUB_RUN_ID}" \
+            bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Download per-host receipts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        run: |
+          set -eu
+          trap '' PIPE
+          uv run --no-project --python 3.12 \
+            python scripts/ci/download_actions_artifact.py \
+              --name kp027-native-linux-amd64 \
+              --out-dir native-prebuilt/linux-amd64 \
+              --server http://git.internal.hyprial.com:3000
+
+      - name: Download linux/arm64 receipt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        run: |
+          set -eu
+          trap '' PIPE
+          uv run --no-project --python 3.12 \
+            python scripts/ci/download_actions_artifact.py \
+              --name kp027-native-linux-arm64 \
+              --out-dir native-prebuilt/linux-arm64 \
+              --server http://git.internal.hyprial.com:3000
+
+      - name: Download darwin/arm64 receipt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        run: |
+          set -eu
+          trap '' PIPE
+          uv run --no-project --python 3.12 \
+            python scripts/ci/download_actions_artifact.py \
+              --name kp027-native-darwin-arm64 \
+              --out-dir native-prebuilt/darwin-arm64 \
+              --server http://git.internal.hyprial.com:3000
+
+      - name: Assemble and verify the candidate module set
+        env:
+          SOURCE_SHA: ${{ needs.pin.outputs.sha }}
+        run: |
+          set -eu
+          trap '' PIPE
+          uv run --no-project --python 3.12 python scripts/ci/assemble_native_prebuilt.py assemble \
+            --directory native-prebuilt \
+            --source-sha "${SOURCE_SHA}" \
+            --target linux/amd64 \
+            --target linux/arm64 \
+            --target darwin/arm64
+          cat native-prebuilt/native-prebuilt.json
+          {
+            echo "kp027 candidate module set"
+            echo "source_sha=${SOURCE_SHA}"
+            echo "targets=linux/amd64,linux/arm64,darwin/arm64"
+            echo "blocked=darwin/amd64 (no host),windows/amd64 (no host)"
+            echo "publish=none (build-only)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload candidate manifest
+        id: payload_candidate_manifest
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: kp027-native-manifest
+          path: native-prebuilt/native-prebuilt.json
+          if-no-files-found: error
+
+      - name: Report candidate artifact upload failure
+        if: always() && steps.payload_candidate_manifest.outcome == 'failure'
+        run: |
+          echo "artifact upload failed/timeout: payload_candidate_manifest" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+          exit 1
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact

@@ -243,7 +243,7 @@ def test_nested_rustup_toolchains_symlink_cannot_escape_the_run(tools: dict[str,
 
 
 def test_macos_workflow_prepares_tools_before_the_gate() -> None:
-    workflow = yaml.safe_load((ROOT / ".forgejo/workflows/e2e-macos-isolated.yml").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/e2e-macos-isolated.yml").read_text())
     job = workflow["jobs"]["isolated-macos"]
     steps = job["steps"]
     rust = [i for i, step in enumerate(steps) if "scripts/ci/ci-ensure-rust.sh" in str(step.get("run", ""))]

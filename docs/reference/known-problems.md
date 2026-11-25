@@ -1081,7 +1081,7 @@
 ## KP-100 仓库里的 workflow 条件不是签名凭据的安全边界
 
 - 现象：Forgejo 运行的是被推送或被派发的那个 ref 上的 workflow 文件，workflow 里的触发条件与 `if:` 只约束这一份文件。有写权限的人推一个新分支，带一份改过的或全新的 workflow（`runs-on: [release-macos-arm64]`），就能在发布 Mac 上运行任意代码并读取任何仓库 secret；`secrets` 是仓库级的，只对 fork 来的 `pull_request` 置空。Forgejo 文档（admin/actions/security.md "Preventing Arbitrary Workflow Execution"）明说分支保护不是 workflow 的安全边界。
-- 实例读数（2026-11-17，只读 API，Forgejo 16.0.5）：dev、main 的分支保护设了 `protected_file_patterns: .forgejo/workflows/**`，但 `apply_to_admins: false`；没有 tag 保护；`release-macos-arm64` 是实例级 runner（owner、repo 都为 0）；`workflow_dispatch` 在本仓库用于过未受保护的分支。
+- 实例读数（2026-11-17，只读 API，Forgejo 16.0.5）：dev、main 的分支保护设了 `protected_file_patterns: .github/workflows/**`，但 `apply_to_admins: false`；没有 tag 保护；`release-macos-arm64` 是实例级 runner（owner、repo 都为 0）；`workflow_dispatch` 在本仓库用于过未受保护的分支。
 - 影响：如果把 Developer ID 证书或公证凭据配成本仓库的 secret，或让 CI job 能用 runner 账号 keychain 里的签名身份，就等于交给每一个有写权限的人和实例上每一个能用该 runner 标签的仓库。
 - 现状：没有任何 workflow 签名或公证，Forgejo 上没有配置签名 secret；`tauri.conf.json` 只做 ad-hoc 签名。`tests/tooling/release/shell/signing/test_no_signing_in_ci.py` 防止 workflow 重新出现签名凭据名、`notarytool`/`stapler`、keychain 导入或非 ad-hoc 的 `codesign --sign`，但它只是本仓库文件的回归检查，同样不是安全边界。打包脚本的 tauri-cli 默认装到新的临时目录并在退出时删除（CI 调用时是 `RUNNER_TEMP` 下的每次运行目录），不再复用持久的 `~/.cache` 工具目录；2026-11-17 起候选 workflow 只由 `workflow_dispatch` 手动触发，是该脚本的薄调用，打包期间由开发者本地运行脚本。
 - 决定：签名不进 CI。Developer ID 证书留在打包用的 Mac 上；签名与公证推迟到另行规划的工作。如果将来要自动签名，必须先在 Forgejo 与 runner 一侧解决（例如签名 runner 只注册给一个只有 owner 有写权限的独立仓库，或使用不跑 CI 的独立 macOS 账号），仓库里的 workflow 条件不是安全边界。runner 账号是否持有签名身份的只读核对由 owner 另行处理。

@@ -12,7 +12,7 @@ raise that turns Windows away) outside the platform seams.
 Rule ids: W001-W015 and W019-W021 are AST rules in this file; W016 is the
 import smoke (``tests/tooling/architecture/platform/test_windows_import_smoke.py``,
 its baseline entries are validated here and compared there); W017/W018 are
-review-checklist rules (``.forgejo/PULL_REQUEST_TEMPLATE.md``), not AST rules.
+review-checklist rules (``.github/PULL_REQUEST_TEMPLATE.md``), not AST rules.
 
 The baseline ``scripts/ci/windows-portability-baseline.json`` is a count map
 keyed by ``(path, rule)``; every key carries a reviewed ``reason`` and a

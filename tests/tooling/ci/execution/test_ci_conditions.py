@@ -15,7 +15,7 @@ from tests.support.ci.ci_workflow_policy import TAIL_EXEMPT_JOBS, carries_reader
 
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = ROOT / "scripts" / "ci" / "ci-conditions.sh"
-WORKFLOWS = ROOT / ".forgejo" / "workflows"
+WORKFLOWS = ROOT / ".github" / "workflows"
 
 # The runner distribution of the INSTRUMENTED set -- not of the repository.
 # The two sets are named separately on purpose: this value was correct when it

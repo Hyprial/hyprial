@@ -254,7 +254,7 @@ def test_controlled_workflow_pins_every_red_line() -> None:
     import yaml
 
     controlled = yaml.safe_load(
-        (ROOT / ".forgejo" / "workflows" / "e2e-macos-credentialed.yml").read_text()
+        (ROOT / ".github" / "workflows" / "e2e-macos-credentialed.yml").read_text()
     )
     assert controlled[True]["workflow_dispatch"] is None or True  # dispatchable
     job = controlled["jobs"]["controlled-real-env"]
@@ -306,7 +306,7 @@ def _assert_isolated_gate_presence_discipline(text: str, wiring: dict[str, str])
 
 
 def test_e2e_workflow_runs_001_and_011_and_keeps_absence_discipline() -> None:
-    text = (ROOT / ".forgejo" / "workflows" / "e2e-macos-isolated.yml").read_text()
+    text = (ROOT / ".github" / "workflows" / "e2e-macos-isolated.yml").read_text()
     spec = importlib.util.spec_from_file_location(
         "e2e_gate_driver_presence",
         ROOT / "contract" / "e2e" / "run-isolated-gate.py",
@@ -322,7 +322,7 @@ def test_isolated_gate_presence_discipline_mutation_is_rejected() -> None:
     """A driver table that silently drops or renames a named scenario must
     redden the presence guard."""
 
-    text = (ROOT / ".forgejo" / "workflows" / "e2e-macos-isolated.yml").read_text()
+    text = (ROOT / ".github" / "workflows" / "e2e-macos-isolated.yml").read_text()
     wiring = {
         "E2E-001": "run-two-machine-roundtrip.py",
         "E2E-009": "run-first-run-no-agent.py",

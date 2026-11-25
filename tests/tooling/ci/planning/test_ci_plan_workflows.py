@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 def workflow(name):
-    return yaml.safe_load((ROOT / f".forgejo/workflows/{name}.yml").read_text())
+    return yaml.safe_load((ROOT / f".github/workflows/{name}.yml").read_text())
 
 
 @pytest.mark.parametrize("name", ["gate-python", "gate-gui"])
@@ -36,7 +36,7 @@ def test_each_workflow_computes_exactly_one_common_plan():
 
 
 def test_workflows_consume_the_central_dev_first_policy():
-    policy = json.loads((ROOT / ".forgejo/git-flow.json").read_text())
+    policy = json.loads((ROOT / ".github/git-flow.json").read_text())
     assert policy["integration"] == {
         "branch": "dev", "pullRequestSources": "any",
         "suiteSelection": "changed-paths", "wipPullRequests": "draft",
@@ -48,7 +48,7 @@ def test_workflows_consume_the_central_dev_first_policy():
         planning = [step for job in data["jobs"].values() for step in job.get("steps", [])
                     if "node scripts/ci/ci-plan.mjs" in step.get("run", "")]
         assert len(planning) == expected_count
-        assert all(".forgejo/git-flow.json" in step["name"] for step in planning)
+        assert all(".github/git-flow.json" in step["name"] for step in planning)
     planner = (ROOT / "scripts/ci/ci-plan.mjs").read_text()
     assert "readGitFlow(root)" in planner
     assert "dev accepts only release" not in planner
@@ -63,7 +63,7 @@ def test_checkout_uses_the_current_repository_instead_of_the_redirected_old_name
 
 
 def test_dev_first_policy_retains_preparation_only_release_and_frozen_writers():
-    policy = json.loads((ROOT / ".forgejo/git-flow.json").read_text())
+    policy = json.loads((ROOT / ".github/git-flow.json").read_text())
     assert policy["release"]["preparationTarget"] == policy["integration"]["branch"]
     assert policy["release"]["preparationPurpose"] == "preparation-only"
     assert policy["release"]["candidateSource"] == "dev-history"
@@ -322,8 +322,8 @@ def test_required_unit_gate_matches_tailcat_result_to_the_plan(
 
 
 def test_integration_lane_local_gate_evidence_is_required_in_docs_and_template():
-    readme = (ROOT / ".forgejo/workflows/README.md").read_text(encoding="utf-8")
-    template = (ROOT / ".forgejo/PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+    readme = (ROOT / ".github/workflows/README.md").read_text(encoding="utf-8")
+    template = (ROOT / ".github/PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
     for text in (readme, template):
         assert "Local gates:" in text
         assert "pass/skip" in text
@@ -570,12 +570,12 @@ def test_python_lint_and_compile_track_only_the_python_suite_selection():
     validation stays in gate-gui, and docs-only keeps skipping both.
     """
     assert _python_static_gate_problems(
-        (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8")
+        (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8")
     ) == []
 
 
 def test_mutation_python_lint_reintroduced_via_gui_integration_is_rejected():
-    text = (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8")
+    text = (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8")
     gui_integration_form = (
         "steps.scope.outputs.docs_only != 'true' && (steps.scope.outputs.unit == 'true' "
         "|| steps.scope.outputs.gui_integration == 'true')"
@@ -701,18 +701,18 @@ def _stall_guard_problems(text: str) -> list[str]:
 
 
 def test_npm_installs_carry_the_stall_guard():
-    assert _stall_guard_problems((ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8")) == []
+    assert _stall_guard_problems((ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8")) == []
 
 
 def test_mutation_without_the_npm_fetch_timeout_is_rejected():
-    mutated = (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
+    mutated = (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
         'echo "npm_config_fetch_timeout=60000" >> "$GITHUB_ENV"', ""
     )
     assert any("fetch_timeout" in p for p in _stall_guard_problems(mutated))
 
 
 def test_mutation_unbounded_pi_sdk_install_is_rejected():
-    mutated = (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
+    mutated = (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
         "timeout -k 10 150 npm install -g --no-audit --no-fund --prefer-offline",
         "npm install -g --no-audit --no-fund --prefer-offline",
     )
@@ -723,7 +723,7 @@ def test_mutation_without_the_kill_timer_is_rejected():
     # Review 1170 on #1264: `timeout 150` alone sends only TERM; an npm that
     # ignores it still runs to the step deadline. The -k 10 SIGKILL is part
     # of the guard, not decoration.
-    mutated = (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
+    mutated = (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
         "timeout -k 10 150", "timeout 150"
     )
     assert any("timeout -k 10 150" in p for p in _stall_guard_problems(mutated))
@@ -732,7 +732,7 @@ def test_mutation_without_the_kill_timer_is_rejected():
 def test_mutation_step_timeouts_back_at_8_are_rejected():
     # 3 x (150 + 10) + 2 x 10 = 500 s plus the assertion no longer fits in
     # 8 minutes once the kill timer is part of every attempt.
-    mutated = (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
+    mutated = (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
         "timeout-minutes: 9", "timeout-minutes: 8"
     )
     assert any("timeout-minutes" in p for p in _stall_guard_problems(mutated))
@@ -757,7 +757,7 @@ def test_mutation_unguarded_checks_npm_ci_is_rejected():
     # on the same registry; reverting it to the bare unguarded form must go
     # red, not pass as an undocumented exemption.
     mutated = _mutate_checks_job(
-        (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8"),
+        (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8"),
         lambda section: section.replace(
             "timeout -k 10 150 npm --prefix src/gui ci --ignore-scripts --no-audit --no-fund --prefer-offline",
             "npm --prefix src/gui ci --ignore-scripts --no-audit --no-fund",
@@ -769,7 +769,7 @@ def test_mutation_unguarded_checks_npm_ci_is_rejected():
 
 def test_mutation_checks_without_the_npm_cache_step_is_rejected():
     mutated = _mutate_checks_job(
-        (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8"),
+        (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8"),
         lambda section: _cut_step(section, "Persist the npm cache"),
     )
     assert any(p.startswith("checks:") and "fetch_timeout" in p
@@ -778,7 +778,7 @@ def test_mutation_checks_without_the_npm_cache_step_is_rejected():
 
 def test_mutation_checks_step_timeout_back_at_6_is_rejected():
     mutated = _mutate_checks_job(
-        (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8"),
+        (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8"),
         lambda section: section.replace("timeout-minutes: 9", "timeout-minutes: 6"),
     )
     assert any(p.startswith("checks/") and "timeout-minutes" in p
@@ -786,7 +786,7 @@ def test_mutation_checks_step_timeout_back_at_6_is_rejected():
 
 
 def test_mutation_retry_without_fail_after_the_third_is_rejected():
-    mutated = (ROOT / ".forgejo/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
+    mutated = (ROOT / ".github/workflows/gate-python.yml").read_text(encoding="utf-8").replace(
         'if [ "$attempt" -eq 3 ]; then', 'if false; then'
     )
     assert any("3-attempt" in p for p in _stall_guard_problems(mutated))

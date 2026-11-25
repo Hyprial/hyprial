@@ -39,7 +39,7 @@ except ModuleNotFoundError:  # direct ``python scripts/ci/pytest_impact.py``
 DURATIONS = ROOT / "scripts/ci/pytest-durations.json"
 MAX_SHARDS = 16
 
-# .forgejo/workflows/gate-python.yml declares these to drive real test behaviour: the pinned CLI
+# .github/workflows/gate-python.yml declares these to drive real test behaviour: the pinned CLI
 # binary (contract/cli-blackbox/run.py selects the executable through HYPRIAL_BIN), the wait
 # budget, the user-namespace sandbox suppression, the tmp root, the CI profile and the Pi SDK
 # requirement. They are control inputs, not credentials, but they are also not part of the
@@ -383,7 +383,7 @@ def layer_targets(path: str) -> tuple[str, ...] | None:
         if parts[1] in LAYERS or parts[1] in ("integration", "tooling", "scripts"):
             return (f"tests/{parts[1]}/",)
         return None
-    if parts[0] in (".forgejo",) or path.startswith("scripts/ci/"):
+    if parts[0] in (".github",) or path.startswith("scripts/ci/"):
         return ("tests/tooling/",)
     if parts[0] == "scripts":
         return ("tests/tooling/", "tests/scripts/")

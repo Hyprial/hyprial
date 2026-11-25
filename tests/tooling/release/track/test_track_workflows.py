@@ -49,7 +49,7 @@ def env_for(repo, tmp_path):
 
 
 def steps(workflow, job):
-    return yaml.safe_load((ROOT / f".forgejo/workflows/{workflow}.yml").read_text())["jobs"][job]["steps"]
+    return yaml.safe_load((ROOT / f".github/workflows/{workflow}.yml").read_text())["jobs"][job]["steps"]
 
 
 def shell(script, cwd, env):

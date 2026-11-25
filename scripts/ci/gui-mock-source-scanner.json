@@ -8,7 +8,7 @@
   "dataExtensions": [".json", ".jsonl", ".ndjson", ".csv", ".yaml", ".yml"],
   "sourceRoots": ["gui/src"],
   "importScanRoots": ["gui/src", "gui/tests", "gui/scripts", "gui/server"],
-  "launchScanRoots": ["gui", "scripts", "src", "tests", ".forgejo", "contract"],
+  "launchScanRoots": ["gui", "scripts", "src", "tests", ".github", "contract"],
   "launchExtensions": [".py", ".sh", ".yml", ".yaml", ".toml", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
   "launchFiles": ["gui/package.json"],
   "launchPatterns": ["-m contract_mock", "contract_mock\\.server", "contract_mock\\.service", "MockService", "mock-host\\.py"],

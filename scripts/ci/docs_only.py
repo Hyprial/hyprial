@@ -46,7 +46,7 @@ EXACT_TEST_INPUTS = frozenset(
 # or otherwise test-owned. Keep this list broader than the positive allowlist.
 EXCLUDED_PREFIXES = (
     ".agents/",
-    ".forgejo/",
+    ".github/",
     "contract/",
     "gui/",
     "scripts/",

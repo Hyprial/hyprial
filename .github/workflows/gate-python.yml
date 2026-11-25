@@ -1,0 +1,1893 @@
+# gate-python —— Python 侧的合并门（原 tests.yml 的测试部分，2026-11-06 拆分改名）。
+# 2026-11-08 dev-first convergence freezes internal publication until candidate review.
+# .forgejo/git-flow.json admits every source into dev; the complete diff selects suites.
+# jobs: cli-help-inventory（计划 + CLI/契约/结构门）、tailcat-go（Tailcat Go sidecar）、
+#       checks（静态检查）、pytest-shard（pytest 分片）、unit（汇总 + dev 的 internal tag）。
+# PR 卫生门已拆到 gate-pr-hygiene.yml。
+# Owner 2026-11-15 (CI load): a pull request whose title starts with `WIP:` is
+# planned light by scripts/ci/ci-plan.mjs (plan output wip=true, no suite). The
+# pull_request trigger therefore adds `edited`, so removing the prefix plans the
+# full set for the same head without a push. `checks` and `unit` are skipped on
+# a WIP plan (never green without evidence); an empty `wip` output (failed plan)
+# still runs them, so a broken plan stays red. Pytest shards and tailcat-go
+# already follow the plan flags. Body-only or WIP-neutral edits replan normally
+# (re-run accepted). Decision and live checks: .forgejo/workflows/README.md.
+# 2026-11-10: checks 的 Ruff 与 compileall 只跟随 Python 选择（steps.scope.outputs.unit，
+# 保留 docs_only 排除），不再因 gui_integration 执行；GUI 验证归 gate-gui。
+# python 选择由 scripts/ci/ci-plan.mjs 按完整 diff 计算；何时需要 Python 验证的纪律
+# （只有 src/hyprial/ 变化选择全量 pytest/Ruff，手动 full validation 例外）见根 AGENTS.md。
+#
+# 在实例级 DinD runner 的 Linux 容器中跑单元测试。
+# `ubuntu-latest` 默认由实例 runner 映射到 node:22-bookworm 隔离容器；
+# unit 显式使用 Node 24，覆盖独立 GUI 的真实 Node 安装/生命周期 fixture。
+# macos-host 只承担 E2E 实测。
+#
+# checkout:手动抓取触发本次 workflow 的精确 SHA，避免依赖 runner 预装 action。
+# `uses:` 政策(Allen 2026-09-21):允许复用社区 action,但**必须钉住版本** ——
+# 只允许 `owner/repo@<版本或 40-hex SHA>`,⛔ 浮动引用(`@main` / `@HEAD` / 无 `@`)。
+# 判定与执行见 tests/support/ci/ci_workflow_policy.py 与 tests/tooling/ci/execution/test_ci_internal_origin.py;
+#
+# E2E 排除:E2E 场景在 contract/e2e/ 由独立 runner 起真实 daemon 驱动,
+# 不在 pytest 收集范围;pytest tests/ 天然只跑单测。
+
+name: gate-python
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [dev, main, "intg/**", "release/**", "refactor/reconstruct-modules"]
+  push:
+    branches: [dev, main, "intg/gui**", "intg/sidecar**"]
+
+# New revisions supersede the same PR or integration-branch push. Dev/main
+# runs retain unique groups: their publication/audit tail must not be cancelled.
+concurrency:
+  # Last segment must never be empty: this Forgejo expands `github.run_id` to an
+  # empty string for `workflow_dispatch` (and for plain `push`), which yields a
+  # group name ending in `-`. Forgejo's treatment of an invalid group name is to
+  # CANCEL the run (no error, no ignore), which is what made dispatch runs die
+  # within ~5s with created == updated and status=5. The `|| 'adhoc'` fallback
+  # keeps the group name well-formed in every event type.
+  # 2026-11-06: `|| github.run_id || 'adhoc'` put every dispatch and every plain
+  # dev/main push into ONE group (run_id expands empty here), so they queued
+  # behind each other (release/v0.5.5.4 30ec9ca93 measured it). `github.sha` is
+  # never empty: per PR, per intg branch, otherwise per commit.
+  group: gate-python-${{ github.event_name }}-${{ github.event.pull_request.number || (startsWith(github.ref, 'refs/heads/intg/') && github.ref) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/intg/')) }}
+
+jobs:
+  cli-help-inventory:
+    outputs:
+      python: ${{ steps.scope.outputs.python }}
+      gui_integration: ${{ steps.scope.outputs.gui_integration }}
+      sidecar: ${{ steps.scope.outputs.sidecar }}
+      full: ${{ steps.scope.outputs.full }}
+      light: ${{ steps.scope.outputs.light }}
+      wip: ${{ steps.scope.outputs.wip }}
+      docs_only: ${{ steps.docs_only.outputs.docs_only }}
+    # release/** 的 PR 走专用池（Allen: 发版不与其他任务混）；其它分支维持共享池
+    runs-on: ${{ startsWith(github.base_ref, 'release/') && 'release-ci' || 'ubuntu-latest' }}
+    # Cold environment setup is not a CLI/test latency assertion. Task 22414
+    # spent 227s on uv plus >353s on Python before the former 10m job cap.
+    # uv 6m + Python/deps 12m + inventory 2m + checkout/planning/tail 5m.
+    timeout-minutes: 25
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      # Custody/notice deadlines were CI-flaky at the code default (1.0s, then
+      # 5.0s). Declare the knob here so shard stability is stated, not implicit;
+      # deadlines only bound the waits (assertions check state, not speed).
+      HYPRIAL_TEST_WAIT_SECONDS: "30"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Select checks from .forgejo/git-flow.json and changed files
+        id: scope
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/ci-scope-askpass-${GITHUB_RUN_ID}"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 node scripts/ci/ci-plan.mjs
+
+      - name: Verify shared CI policy
+        run: node --test --test-concurrency=2 scripts/ci/ci-scope.test.mjs scripts/ci/ci-plan.test.mjs
+
+      - name: Classify docs-only pull request
+        id: docs_only
+        run: python3 scripts/ci/docs_only.py
+
+      - name: Ensure uv
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.full == 'true'
+        timeout-minutes: 6
+        run: |
+          source scripts/ci/ci-step.sh ensure-uv
+          # Cache-first, sha256-pinned (scripts/ci/ci-ensure-uv.sh); without
+          # CI_CACHE_ROOT it falls back to the astral.sh installer as before.
+          # Bumping uv requires re-pinning the CPython mirror in
+          # scripts/ci/ci-ensure-cpython-mirror.sh (the 20260414 / 3.12.13 pins).
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          # Cache-first, sha256-pinned CPython for `--python 3.12`: exports
+          # UV_PYTHON_INSTALL_MIRROR=file://$CI_CACHE_ROOT/cpython for the
+          # following uv steps (no-op without CI_CACHE_ROOT).
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+
+      - name: Enforce product module and file size limits
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.full == 'true'
+        run: |
+          source scripts/ci/ci-step.sh structural-limits
+          # Product and tests (including helpers/fixtures); no scope bypass.
+          uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py
+          uv run --no-project --python 3.12 python scripts/ci/check_module_boundaries.py
+          uv run --no-project --python 3.12 python scripts/ci/check_network_reachability.py
+          uv run --no-project --python 3.12 python scripts/ci/check_unbounded_waits.py
+          # Windows-portability anti-patterns (W001-W015, W019-W021), only-out baseline;
+          # the per-key ratchet against the PR base runs after the base fetch below.
+          uv run --no-project --python 3.12 python scripts/ci/check_windows_portability.py
+          # Node net-API discipline: connect only through the shared local-IPC
+          # module (pi_local_ipc.ts), never listen; no baseline, a hit is red.
+          uv run --no-project --python 3.12 python scripts/ci/check_node_net_apis.py
+          uv run --no-project --python 3.12 python scripts/ci/check_node_platform_idioms.py
+
+      - name: Install Python and locked dependencies
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.python == 'true'
+        timeout-minutes: 12
+        run: |
+          source scripts/ci/ci-step.sh dependencies
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12
+
+      - name: Compare Typer tree with generated help inventory
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.python == 'true'
+        timeout-minutes: 2
+        run: |
+          source scripts/ci/ci-step.sh cli-inventory
+          uv run --locked --python 3.12 --no-sync python scripts/verify/check_cli_help_inventory.py
+
+      - name: Fetch daemon contract comparison base
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.full == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ASKPASS="$(mktemp /tmp/contract-base-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          fetch_origin() {
+            GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+              git fetch --no-tags --depth=1 origin "$1"
+          }
+          fetch_unshallow() {
+            GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+              git fetch --no-tags --unshallow origin "$1"
+          }
+          accepted_sha="$(uv run --no-project --python 3.12 python -c 'import json,re; seed=json.load(open("scripts/ci/a03-contract-seed.json")); sha=seed["acceptedSha"]; assert re.fullmatch(r"[0-9a-f]{40}", sha); print(sha)')"
+          fetch_origin "$accepted_sha"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            test -n "$BASE_BRANCH" || { echo "::error::missing PR base branch"; exit 1; }
+            fetch_origin "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+            base_ref="origin/${BASE_BRANCH}"
+            base_branch="$BASE_BRANCH"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            case "$BEFORE_SHA" in
+              ""|*[!0]*) ;;
+              *) echo "::error::push before SHA is all zeroes"; exit 1 ;;
+            esac
+            test -n "$BEFORE_SHA" || { echo "::error::missing push before SHA"; exit 1; }
+            fetch_origin "$BEFORE_SHA"
+            base_ref="$BEFORE_SHA"
+            base_branch="$REF_NAME"
+          else
+            fetch_origin "refs/heads/dev:refs/remotes/origin/dev"
+            base_ref="origin/dev"
+            base_branch="dev"
+          fi
+          allow=false
+          # dev and main are the two protected bases a first seed can land on:
+          # dev receives the A03 seed, main receives it on the first promotion.
+          case "$base_branch" in dev|main) allow=true ;; esac
+          # A first seed (or a later deletion) needs a complete ancestry proof.
+          # This one-time path runs only when a dev or main base has no ledgers; normal
+          # PRs keep the depth=1 base fetch.  Failure here is fail-closed.
+          base_has_ledgers=true
+          for ledger in scripts/ci/import-ratchet-baseline.json scripts/ci/legacy-method-baseline.json; do
+            if ! git cat-file -e "${base_ref}:${ledger}" 2>/dev/null; then
+              base_has_ledgers=false
+            fi
+          done
+          if [ "$base_has_ledgers" = false ] && [ "$allow" = true ]; then
+            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+              case "$EVENT_NAME" in
+                pull_request|schedule|workflow_dispatch)
+                  fetch_unshallow "refs/heads/${base_branch}:refs/remotes/origin/${base_branch}"
+                  ;;
+                *)
+                  fetch_unshallow "$base_ref"
+                  ;;
+              esac
+              if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+                fetch_unshallow "$(git rev-parse HEAD)"
+              fi
+            fi
+          fi
+          {
+            echo "CONTRACT_BASE_REF=$base_ref"
+            echo "CONTRACT_BASE_BRANCH=$base_branch"
+            echo "CONTRACT_ALLOW_FIRST_SEED=$allow"
+          } >> "$GITHUB_ENV"
+
+      - name: Check daemon request architecture for Python, GUI adapter, and Native
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.full == 'true'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh daemon-request-architecture-py
+          args=(--base-ref "$CONTRACT_BASE_REF" --base-branch "$CONTRACT_BASE_BRANCH" --json)
+          if [ "$CONTRACT_ALLOW_FIRST_SEED" = "true" ]; then
+            args+=(--allow-first-seed)
+          fi
+          uv run --no-project --python 3.12 python \
+            scripts/ci/check_daemon_request_architecture.py "${args[@]}"
+
+      - name: Check daemon request contracts and ledgers
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.python == 'true'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh request-contracts
+          args=(--base-ref "$CONTRACT_BASE_REF" --base-branch "$CONTRACT_BASE_BRANCH" --json)
+          if [ "$CONTRACT_ALLOW_FIRST_SEED" = "true" ]; then
+            args+=(--allow-first-seed)
+          fi
+          uv run --locked --python 3.12 --no-sync python \
+            scripts/ci/check_request_contracts.py "${args[@]}"
+
+      # The Windows-portability baseline is a (path, rule) count map whose keys
+      # may only leave: compared with the base tip, a new key or a raised count
+      # is red even when the total stays the same (no swap of a fixed finding
+      # for a new one).  A base without the v2 map (first seed) has nothing to
+      # compare; an unavailable base ref fails closed.
+      - name: Check Windows-portability baseline against the PR base
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.python == 'true'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh windows-portability-base
+          uv run --no-project --python 3.12 python scripts/ci/check_windows_portability.py \
+            --base-ref "$CONTRACT_BASE_REF"
+          uv run --no-project --python 3.12 python scripts/ci/check_node_platform_idioms.py \
+            --base-ref "$CONTRACT_BASE_REF"
+
+      # wf-61d46aa513404f45a938d9e764f8dd55#implGRS3 (revGRS2 finding c): the
+      # committed daemon projection is diffed against the projection at
+      # merge-base(base, HEAD) -- the real PR fork point -- never against
+      # itself. The checker fails closed (exit 2) when the merge-base stays
+      # unreachable, so a shallow fetch cannot silently report a measured
+      # zero; the bounded deepen rounds are the same shape contract-impact
+      # measures on this transport. The --base == --head shape this replaces
+      # proved nothing and always passed.
+      - name: Check daemon contract projection against the PR base
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.python == 'true'
+        timeout-minutes: 10
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          PR_BODY: ${{ github.event_name == 'pull_request' && github.event.pull_request.body || '' }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh daemon-contract-diff
+          ASKPASS="$(mktemp /tmp/daemon-diff-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          fetch_at_depth() {
+            GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+              git fetch --no-tags --depth=30 origin "$@"
+          }
+          deepen() {
+            GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+              git fetch --no-tags --deepen=100 origin "$@"
+          }
+          case "$EVENT_NAME" in
+            pull_request)
+              test -n "$BASE_SHA" || { echo "::error::missing PR base SHA"; exit 1; }
+              diff_base="$BASE_SHA" ;;
+            push)
+              case "$BEFORE_SHA" in
+                ""|*[!0]*) ;;
+                *) echo "::error::push before SHA is all zeroes"; exit 1 ;;
+              esac
+              test -n "$BEFORE_SHA" || { echo "::error::missing push before SHA"; exit 1; }
+              diff_base="$BEFORE_SHA" ;;
+            *)
+              fetch_at_depth "refs/heads/dev:refs/remotes/origin/dev"
+              diff_base="origin/dev" ;;
+          esac
+          if [ "$diff_base" = "origin/dev" ]; then
+            fetch_at_depth "$HEAD_SHA"
+          else
+            fetch_at_depth "$diff_base" "$HEAD_SHA"
+          fi
+          for _ in 1 2 3; do
+            if git merge-base "$diff_base" HEAD >/dev/null 2>&1; then
+              break
+            fi
+            deepen "$diff_base" "$HEAD_SHA"
+          done
+          body_args=()
+          if [ -n "${PR_BODY:-}" ]; then
+            printf '%s' "$PR_BODY" > pr-body.txt
+            body_args+=(--pr-body-file pr-body.txt)
+          fi
+          uv run --locked --python 3.12 --no-sync python \
+            scripts/ci/check_daemon_contract_diff.py \
+            --base-ref "$diff_base" "${body_args[@]+"${body_args[@]}"}"
+
+      - name: Check Windows-missing stdlib attributes in changed files (incremental pyright)
+        if: steps.docs_only.outputs.docs_only != 'true' && steps.scope.outputs.python == 'true'
+        timeout-minutes: 10
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-step.sh pyright-windows
+          case "$EVENT_NAME" in
+            pull_request) pyright_base="$BASE_SHA" ;;
+            push) pyright_base="$BEFORE_SHA" ;;
+            *) pyright_base="$CONTRACT_BASE_REF" ;;
+          esac
+          uv run --locked --python 3.12 --no-sync python scripts/ci/check_pyright_windows.py \
+            --base-ref "$pyright_base"
+
+
+      # The CI conditions upload gets the same bounded retry (3 attempts)
+      # as the suite-result uploads: a dropped Forgejo tunnel (Cloudflare
+      # 530, run 20499) must not lose the run's diagnostics either. The
+      # three-step tail is frozen verbatim by policy 2 in
+      # tests/support/ci/ci_workflow_policy.py (last three steps, exact
+      # upload step), so attempts 1-2 sit before the end reader and the
+      # tail's own upload step is the third and final attempt; the report
+      # step therefore still fires only when that final attempt failed.
+      # Each attempt is a COMPLETE new upload (container, chunks,
+      # confirm) -- Forgejo v15 accepts the same-name re-upload because
+      # CreateArtifact is get-or-create over (run, name, path) and reuses
+      # the pending row.
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          # 2026-11-07: one upload of this telemetry artifact. The two earlier
+          # attempts (3f37f4aa6, tunnel 530s) never fired after uploads went
+          # direct to the runtime URL: 0 retries in 87 sampled jobs.
+          echo "ARTIFACT_UPLOAD_RETRY artifact=ci-conditions-${{ github.job }} outcome=failed attempts=1"
+          bash scripts/ci/ci-conditions.sh artifact
+
+  tailcat-go:
+    needs: [cli-help-inventory]
+    # 2026-11-06: pr-hygiene moved to gate-pr-hygiene.yml (its own required
+    # context); a red there no longer skips this job.
+    # The only Go unit gate: sidecar.yml left with TSNet (762e2758,
+    # 2026-10-03) and nothing ran `go test` for hyprial-tailcat after it.
+    # Runs when the plan selects the sidecar component; the `unit`
+    # aggregator requires success then and skipped otherwise.
+    if: always() && needs.cli-help-inventory.result == 'success' && needs.cli-help-inventory.outputs.sidecar == 'true'
+    # release/** 的 PR 走专用池（Allen: 发版不与其他任务混）；其它分支维持共享池
+    runs-on: ${{ startsWith(github.base_ref, 'release/') && 'release-ci' || 'ubuntu-latest' }}
+    # Toolchain 1-2 min cold, modules up to 7 min on a cold cache volume
+    # (gui.yml measured 400 s+), vet+test a few minutes.
+    timeout-minutes: 25
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      GOPROXY: "https://goproxy.cn|https://proxy.golang.org"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Install pinned Go toolchain
+        # sidecar/hyprial-tailcat/go.mod pins go 1.27.1; the script verifies
+        # the official archive against its compiled-in sha256 pin.
+        run: GO_VERSION=1.27.1 bash scripts/ci/ci-ensure-go.sh
+
+      - name: Persist the Go module and build caches
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/go-mod" "$CI_CACHE_ROOT/go-build"
+            echo "GOMODCACHE=$CI_CACHE_ROOT/go-mod" >> "$GITHUB_ENV"
+            echo "GOCACHE=$CI_CACHE_ROOT/go-build" >> "$GITHUB_ENV"
+          else
+            echo "CI_CACHE_ROOT unset: Go caches stay job-local (cold)"
+          fi
+
+      - name: Vet and test the Tailcat sidecar
+        working-directory: sidecar/hyprial-tailcat
+        run: |
+          set -euo pipefail
+          go version
+          go vet ./...
+          # internal/membershiptest runs real engines: TestRealAuthorityOutageLeaseExpiry
+          # alone takes ~300s, and E2E-029/030 (#2142) pushed the package past go
+          # test's default 10m per-binary timeout. 20m stays inside the job's 25m.
+          go test ./... -timeout 20m
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          # 2026-11-07: one upload of this telemetry artifact. The two earlier
+          # attempts (3f37f4aa6, tunnel 530s) never fired after uploads went
+          # direct to the runtime URL: 0 retries in 87 sampled jobs.
+          echo "ARTIFACT_UPLOAD_RETRY artifact=ci-conditions-${{ github.job }} outcome=failed attempts=1"
+          bash scripts/ci/ci-conditions.sh artifact
+
+  checks:
+    needs: [cli-help-inventory]
+    # 2026-11-06: pr-hygiene moved to gate-pr-hygiene.yml (its own required
+    # context); a red there no longer skips this job.
+    # Keep a failing result when planning/preflight failed; the `unit`
+    # aggregator refuses anything but success from this job.
+    if: always() && needs.cli-help-inventory.outputs.wip != 'true'
+    # release/** 的 PR 走专用池（Allen: 发版不与其他任务混）；其它分支维持共享池
+    runs-on: ${{ startsWith(github.base_ref, 'release/') && 'release-ci' || 'ubuntu-latest' }}
+    # Test temp dirs on RAM (2026-09-23).  Four intermittent reds shared one
+    # mechanism: a durable disk flush (SQLite commit, directory fsync) inside a
+    # 1 s / 2 s / busy-timeout budget, on /tmp of the CI VM's shared disk.  A
+    # tmpfs makes those flushes nearly free for TEST temp files only; product
+    # behaviour is unchanged.  Measured footprint of the full suite: ~525 MB /
+    # 29 460 files; 2g is a ceiling inside the runner's --memory=4g, not a
+    # reservation.  `exec` because tests write fake launchers into tmp and run
+    # them (docker's --tmpfs default is noexec). Keep that mount unchanged;
+    # Node 24 is required by the installed independent GUI fixtures in tests/.
+    # This job override does not change the runner label or publication jobs.
+    container:
+      image: docker.io/library/node:24-bookworm
+      options: --tmpfs /ci-tmpfs:rw,exec,size=2g,mode=1777
+    # Static gates (lint, compile, CI selection), the documentation text gates
+    # of docs-only PRs and the audited GUI subset. The full Python suite runs
+    # in `pytest-shard` (2026-10-04 CI speedup). Measured in the same
+    # container shape: lint 0.4s, compile 3.2s, CI selection tests 1.3s; the
+    # ceiling bounds cold setup (uv 6m + dependencies 12m), not these gates.
+    timeout-minutes: 30
+    env:
+      # pypi hardening (2026-08: three CI red runs in one hour, all of them
+      # uv dying on files.pythonhosted.org after ~128s of retries while the
+      # same job cloned code.hyprial.com and fetched astral.sh quickly).
+      # Measured from a real job container: this DinD network has no working
+      # IPv6, the Fastly pypi CDN is dual-stack, and uv/reqwest can bleed
+      # minutes on the dead v6 path before falling back.  The host proxy is
+      # reachable from the job container via OrbStack's host.docker.internal
+      # and resolves remotely, which also routes around the v6 problem.
+      # NO_PROXY keeps intra-org traffic direct: the origin remote is the
+      # runner-mapped internal ${GITHUB_SERVER_URL} (host name `tailscale`),
+      # which must not be handed to the host proxy.
+      # UV_HTTP_TIMEOUT turns any residual stall into a bounded,
+      # visible failure instead of a multi-minute hang.  Do not widen this
+      # list to judge failures away: rare-and-visible beats hidden.
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      # Custody/notice deadlines were CI-flaky at the code default (1.0s, then
+      # 5.0s). Declare the knob here so shard stability is stated, not implicit;
+      # deadlines only bound the waits (assertions check state, not speed).
+      HYPRIAL_TEST_WAIT_SECONDS: "30"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Accept successful CI plan
+        id: scope
+        env:
+          PLAN_RESULT: ${{ needs.cli-help-inventory.result }}
+          PYTHON_SELECTED: ${{ needs.cli-help-inventory.outputs.python }}
+          GUI_SELECTED: ${{ needs.cli-help-inventory.outputs.gui_integration }}
+          FULL_SELECTED: ${{ needs.cli-help-inventory.outputs.full }}
+          LIGHT_SELECTED: ${{ needs.cli-help-inventory.outputs.light }}
+          DOCS_ONLY: ${{ needs.cli-help-inventory.outputs.docs_only }}
+        run: |
+          set -euo pipefail
+          test "$PLAN_RESULT" = success || { echo "CI_ROUTE: upstream plan failed"; exit 1; }
+          case "$PYTHON_SELECTED:$GUI_SELECTED" in
+            true:true|true:false|false:true|false:false) ;;
+            *) echo "CI_ROUTE: incomplete plan"; exit 1 ;;
+          esac
+          case "$DOCS_ONLY" in
+            true|false) ;;
+            *) echo "CI_ROUTE: incomplete docs-only classification"; exit 1 ;;
+          esac
+          case "$FULL_SELECTED:$LIGHT_SELECTED" in
+            true:false|false:true|false:false) ;;
+            *) echo "CI_ROUTE: incomplete full/light plan"; exit 1 ;;
+          esac
+          # A docs-only diff may ride the light route: the docs-only fast
+          # path selects no suites either way, so only the suite flags
+          # must stay false when light is selected.
+          if [ "$LIGHT_SELECTED" = true ]; then
+            test "$FULL_SELECTED:$PYTHON_SELECTED:$GUI_SELECTED" = false:false:false || {
+              echo "CI_ROUTE: invalid light plan"; exit 1;
+            }
+          elif [ "$DOCS_ONLY" != true ]; then
+            test "$FULL_SELECTED" = true || { echo "CI_ROUTE: non-doc plan is neither full nor light"; exit 1; }
+          fi
+          echo "unit=$PYTHON_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "gui_integration=$GUI_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "full=$FULL_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "light=$LIGHT_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure uv
+        if: steps.scope.outputs.docs_only == 'true' || steps.scope.outputs.unit == 'true' || steps.scope.outputs.gui_integration == 'true'
+        timeout-minutes: 6
+        run: |
+          source scripts/ci/ci-step.sh ensure-uv
+          # Cache-first, sha256-pinned (scripts/ci/ci-ensure-uv.sh); without
+          # CI_CACHE_ROOT it falls back to the astral.sh installer as before.
+          # Bumping uv requires re-pinning the CPython mirror in
+          # scripts/ci/ci-ensure-cpython-mirror.sh (the 20260414 / 3.12.13 pins).
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          # Cache-first, sha256-pinned CPython for `--python 3.12`: exports
+          # UV_PYTHON_INSTALL_MIRROR=file://$CI_CACHE_ROOT/cpython for the
+          # following uv steps (no-op without CI_CACHE_ROOT).
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Put TMPDIR on the RAM disk and the uv cache on the CI cache volume
+        if: steps.scope.outputs.docs_only == 'true' || steps.scope.outputs.unit == 'true' || steps.scope.outputs.gui_integration == 'true'
+        run: |
+          source scripts/ci/ci-step.sh ram-disk-env
+          # infra-ops, 2026-09-28: daemons in unit tests stall in D state on the
+          # shared btrfs (wait_log_commit / submit_bio_wait) right after
+          # zenoh.endpoints.resolved. basetemp and HYPRIAL_TEST_TMP_ROOT live on
+          # /ci-tmpfs; bare tempfile.* calls follow TMPDIR here. Each step prints
+          # its CI_TMPFS peak_kb (scripts/ci/ci-step.sh). Same tmpfs check as gui.yml.
+          #
+          # 2026-10-04 (CI speedup): the uv WHEEL cache left the per-job tmpfs,
+          # where it was empty in every job, for the runner's persistent volume,
+          # chosen and evidenced by scripts/ci/ci-uv-cache.sh (mount, write probe
+          # and entries_before on one CI_UV_CACHE line; tmpfs fallback otherwise).
+          # Only `uv sync` reads it, before any test runs: test temp dirs stay on
+          # the tmpfs above, a persistent cache never replaces them.
+          if awk '$2 == "/ci-tmpfs" && $3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
+            mkdir -p /ci-tmpfs/tmp
+            chmod 1777 /ci-tmpfs/tmp
+            echo "TMPDIR=/ci-tmpfs/tmp" >> "$GITHUB_ENV"
+            echo "TMPDIR=/ci-tmpfs/tmp (tmpfs)"
+            bash scripts/ci/ci-uv-cache.sh /ci-tmpfs/uv-cache
+          else
+            echo "::warning::/ci-tmpfs is not a tmpfs in this container; TMPDIR stays on disk"
+            bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          fi
+          grep -E ' /ci-tmpfs | /tmp ' /proc/mounts || true
+
+      - name: Install Python and locked test dependencies
+        if: steps.scope.outputs.docs_only == 'true' || steps.scope.outputs.unit == 'true' || steps.scope.outputs.gui_integration == 'true'
+        timeout-minutes: 12
+        run: |
+          source scripts/ci/ci-step.sh dependencies
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12 --extra test
+
+      - name: Preflight diagnostics
+        if: steps.scope.outputs.docs_only == 'true' || steps.scope.outputs.unit == 'true' || steps.scope.outputs.gui_integration == 'true'
+        run: |
+          source scripts/ci/ci-step.sh preflight
+          # Use the RAM disk only if it is really a tmpfs; otherwise fall back
+          # to /tmp and say so -- a silent fallback would look like a fix that
+          # did not help.
+          if awk '$2 == "/ci-tmpfs" && $3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
+            TEST_TMP_ROOT=/ci-tmpfs
+          else
+            TEST_TMP_ROOT=/tmp
+            echo "::warning::/ci-tmpfs is not a tmpfs in this container; test temp dirs stay on disk"
+          fi
+          echo "HYPRIAL_TEST_TMP_ROOT=${TEST_TMP_ROOT}" >> "$GITHUB_ENV"
+          grep -E ' /ci-tmpfs | /tmp ' /proc/mounts || true
+          BASETEMP="${TEST_TMP_ROOT}/hyprial-pytest-${GITHUB_RUN_ID}"
+          uname -a
+          uv lock --check
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import multiprocessing
+          import os
+          import sys
+
+          print(f"python.executable={sys.executable}")
+          print(f"python.version={sys.version}")
+          print(f"multiprocessing.start_method={multiprocessing.get_start_method()}")
+          print(f"TMPDIR={os.environ.get('TMPDIR', '<unset>')}")
+          PY
+          echo "pytest.basetemp=${BASETEMP}"
+
+      - name: Verify CI change selection
+        if: steps.scope.outputs.docs_only != 'true' && (steps.scope.outputs.unit == 'true' || steps.scope.outputs.gui_integration == 'true')
+        run: |
+          source scripts/ci/ci-step.sh ci-selection-tests
+          node --test --test-concurrency=2 scripts/ci/ci-scope.test.mjs scripts/ci/ci-plan.test.mjs
+
+      - name: Persist the npm cache
+        if: steps.scope.outputs.docs_only != 'true' && steps.scope.outputs.unit != 'true' && steps.scope.outputs.gui_integration == 'true'
+        # Same settings as pytest-shard's npm consumers (review 1170 on
+        # #1264): this job's GUI-fixture npm ci downloads from the same
+        # registry with the same failure modes -- registry blips and silent
+        # stalls -- so it gets the same cache, fetch retries and fetch
+        # timeout instead of an exemption.  npm's cache (cacache) is safe
+        # for concurrent writers, as Go's is.
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/npm"
+            echo "npm_config_cache=$CI_CACHE_ROOT/npm" >> "$GITHUB_ENV"
+          else
+            echo "CI_CACHE_ROOT unset: npm cache stays job-local (cold)"
+          fi
+          echo "npm_config_fetch_retries=5" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_mintimeout=10000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_maxtimeout=120000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_timeout=60000" >> "$GITHUB_ENV"
+
+      - name: Install locked GUI fixture dependencies
+        if: steps.scope.outputs.docs_only != 'true' && steps.scope.outputs.unit != 'true' && steps.scope.outputs.gui_integration == 'true'
+        # 3 x (timeout 150 + kill 10) + 2 x sleep 10 = 500 s, plus the
+        # node --version probe; nothing more.
+        timeout-minutes: 9
+        run: |
+          source scripts/ci/ci-step.sh gui-fixture-dependencies
+          # The old GUI fixture tree was retired by #2009 (ledger R11); when its
+          # lockfile is gone there is nothing to install and npm ci fails EUSAGE.
+          if [ ! -f src/gui/package-lock.json ]; then
+            echo "src/gui/package-lock.json absent (retired GUI): skipping fixture dependencies"
+            exit 0
+          fi
+          # Python lifecycle fixtures install actual GUI bytes and link this
+          # dependency tree. A different job's node_modules cannot satisfy it.
+          node --version
+          # --prefer-offline: a warm cache needs no network for tarballs.
+          # Stall guard, same shape as pytest-shard's (review 1170 on #1264):
+          # npm's fetch retries never fire on a socket that hangs instead of
+          # erroring (#1260's run 3), so each attempt is bounded by
+          # timeout -k 10 150 -- SIGKILL 10 s after TERM, since an npm that
+          # ignores TERM must not run to the step deadline; after the 3rd
+          # failure the step is red.
+          for attempt in 1 2 3; do
+            if timeout -k 10 150 npm --prefix src/gui ci --ignore-scripts --no-audit --no-fund --prefer-offline; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::gui fixture npm ci failed or stalled in all 3 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Run Python static lint
+        if: steps.scope.outputs.docs_only != 'true' && steps.scope.outputs.unit == 'true'
+        run: |
+          source scripts/ci/ci-step.sh lint
+          uv run --locked --python 3.12 --no-sync ruff check .
+
+      - name: Compile Python sources
+        if: steps.scope.outputs.docs_only != 'true' && steps.scope.outputs.unit == 'true'
+        run: |
+          source scripts/ci/ci-step.sh compile
+          uv run --locked --python 3.12 --no-sync python -m compileall -q src tests contract
+
+      - name: Run documentation text gates
+        if: steps.scope.outputs.docs_only == 'true'
+        env:
+          NO_COLOR: "1"
+        run: |
+          source scripts/ci/ci-step.sh pytest
+          # Provider terminology and the old-product inventory remain required
+          # repository text policies even when runtime code is unchanged.
+          # The stale repository-name and retired-tag tests scan docs/ or every
+          # Markdown file. The publication snapshot test is the intranet and
+          # secret-looking identifier gate. Keep these paths explicit and fast.
+          uv run --locked --python 3.12 --no-sync pytest -q \
+            tests/tooling/architecture/lint/test_provider_term_lint.py \
+            tests/tooling/architecture/merge/test_hyprial_merge_residuals.py \
+            tests/tooling/architecture/repo/test_stale_repo_url_lint.py \
+            tests/tooling/ci/planning/test_design_doc_tag_policy.py::test_design_doc_tag_corrected \
+            tests/tooling/release/publish/github/test_snapshot.py::test_intranet_gate_on_a_real_repo_snapshot_reports_only_pending_hits \
+            -n 2 --dist=loadfile --max-worker-restart=0 \
+            --basetemp="${HYPRIAL_TEST_TMP_ROOT:-/tmp}/hyprial-pytest-${GITHUB_RUN_ID}"
+
+      - name: Ensure the pinned Rust toolchain for the editable native engine
+        if: steps.scope.outputs.unit != 'true' && steps.scope.outputs.gui_integration == 'true'
+        timeout-minutes: 12
+        run: |
+          source scripts/ci/ci-step.sh ensure-native-rust-checks
+          HYPRIAL_E2E_ROOT="${RUNNER_TEMP:-/tmp}/gate-python-native-rust-checks" \
+            bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Build and stage the editable native engine
+        if: steps.scope.outputs.unit != 'true' && steps.scope.outputs.gui_integration == 'true'
+        timeout-minutes: 15
+        run: |
+          source scripts/ci/ci-step.sh build-native-engine-checks
+          bash scripts/build/build_native_engine.sh
+
+      - name: Verify the staged native engine imports
+        if: steps.scope.outputs.unit != 'true' && steps.scope.outputs.gui_integration == 'true'
+        timeout-minutes: 5
+        run: |
+          source scripts/ci/ci-step.sh verify-native-engine-checks
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import hyprial._core.actors as actors
+
+          print(f"native extension={actors.__name__} ABI={actors.ENGINE_ABI_VERSION}")
+          PY
+
+      - name: Run Python GUI integration for audited GUI changes
+        if: steps.scope.outputs.unit != 'true' && steps.scope.outputs.gui_integration == 'true'
+        env:
+          NO_COLOR: "1"
+        run: |
+          source scripts/ci/ci-step.sh gui-integration
+          uv run --locked --python 3.12 --no-sync pytest -q \
+            tests/shell/gui/lifecycle/ \
+            tests/shell/packaging/test_gui_build_hook_worker_switch.py \
+            tests/shell/cli/installation/test_cli_install.py \
+            tests/shell/cli/org/test_cli_org.py tests/shell/cli/adapters/test_cli_adapter_add.py \
+            tests/shell/cli/workflows/test_cli_workflow.py tests/shell/cli/workflows/test_cli_routine.py \
+            tests/shell/cli/installation/test_cli_init.py \
+            tests/tooling/architecture/rename/test_hyprial_rename_contract.py tests/tooling/architecture/merge/test_hyprial_merge_residuals.py \
+            -n 2 --dist=loadfile --max-worker-restart=0 \
+            --basetemp="${HYPRIAL_TEST_TMP_ROOT:-/tmp}/hyprial-pytest-${GITHUB_RUN_ID}"
+
+      # The CI conditions upload gets the same bounded retry (3 attempts)
+      # as the suite-result uploads: a dropped Forgejo tunnel (Cloudflare
+      # 530, run 20499) must not lose the run's diagnostics either. The
+      # three-step tail is frozen verbatim by policy 2 in
+      # tests/support/ci/ci_workflow_policy.py (last three steps, exact
+      # upload step), so attempts 1-2 sit before the end reader and the
+      # tail's own upload step is the third and final attempt; the report
+      # step therefore still fires only when that final attempt failed.
+      # Each attempt is a COMPLETE new upload (container, chunks,
+      # confirm) -- Forgejo v15 accepts the same-name re-upload because
+      # CreateArtifact is get-or-create over (run, name, path) and reuses
+      # the pending row.
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          # 2026-11-07: one upload of this telemetry artifact. The two earlier
+          # attempts (3f37f4aa6, tunnel 530s) never fired after uploads went
+          # direct to the runtime URL: 0 retries in 87 sampled jobs.
+          echo "ARTIFACT_UPLOAD_RETRY artifact=ci-conditions-${{ github.job }} outcome=failed attempts=1"
+          bash scripts/ci/ci-conditions.sh artifact
+
+  pytest-shard:
+    needs: [cli-help-inventory]
+    # 2026-11-06: pr-hygiene moved to gate-pr-hygiene.yml (its own required
+    # context); a red there no longer skips this job.
+    # Only for a successful plan that selected the Python suite (not docs-only).
+    # Any other outcome -- failed, cancelled, missing, or skipped although
+    # selected -- is turned into a red required check by the `unit` aggregator.
+    if: always() && needs.cli-help-inventory.result == 'success' && needs.cli-help-inventory.outputs.python == 'true' && needs.cli-help-inventory.outputs.docs_only != 'true'
+    strategy:
+      # Report every shard's failures in one round instead of cancelling the
+      # rest: a red round that hides three quarters of the suite costs a rerun.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, isolated]
+    # release/** 的 PR 走专用池（Allen: 发版不与其他任务混）；其它分支维持共享池
+    runs-on: ${{ startsWith(github.base_ref, 'release/') && 'release-ci' || 'ubuntu-latest' }}
+    # Test temp dirs on RAM (2026-09-23).  Four intermittent reds shared one
+    # mechanism: a durable disk flush (SQLite commit, directory fsync) inside a
+    # 1 s / 2 s / busy-timeout budget, on /tmp of the CI VM's shared disk.  A
+    # tmpfs makes those flushes nearly free for TEST temp files only; product
+    # behaviour is unchanged.  Measured footprint of the full suite: ~525 MB /
+    # 29 460 files; 2g is a ceiling inside the runner's --memory=4g, not a
+    # reservation.  `exec` because tests write fake launchers into tmp and run
+    # them (docker's --tmpfs default is noexec). Keep that mount unchanged;
+    # Node 24 is required by the installed independent GUI fixtures in tests/.
+    # This job override does not change the runner label or publication jobs.
+    container:
+      image: docker.io/library/node:24-bookworm
+      options: --tmpfs /ci-tmpfs:rw,exec,size=2g,mode=1777
+    # 30 per shard. The single-job gate needed 45 because its full suite ran
+    # 14-18 minutes (history below); a shard runs about a quarter of it, and the
+    # ceiling still only ends a hang. Original reasoning for the old ceiling:
+    # 45, and here is where the number comes from -- an undocumented timeout
+    # leaves the next person guessing whether it may be touched.
+    #
+    # Measured on the same tree (3953f42), same runner, hours apart:
+    #   run #766  14m20s
+    #   run #770  18m6s
+    # That is a 26% spread with the code held fixed, so the ceiling has to
+    # cover the spread rather than the last observation. At 20 the margin over
+    # #770 was 10%, which is not a margin: run #769 (be40d89, six tests more
+    # than 3953f42) hit the limit and was reported as `cancelled` -- a word
+    # Forgejo also uses for a push-superseded run, so two unrelated causes
+    # arrive under one label and neither is a result. The Linux gate for
+    # PR #295 did not run once.
+    #
+    # 45 is ~2.5x the slowest observed run. A timeout is here to end a hang,
+    # not to police duration: it should never fire on a healthy run, and it
+    # still bounds a wedged job well inside an hour.
+    #
+    # ⚠️ Open, and deliberately not hidden by this change: nobody has
+    # explained the 26%. Candidates weighed so far -- code (excluded: #770 is
+    # the same SHA as #766), machine contention (a full suite from another
+    # worktree overlapped #770, so this is back in play and was wrongly
+    # dismissed on a load average, an aggregate too coarse to see two jobs
+    # contending for I/O and the uv cache), and the DinD network (this
+    # container has no IPv6 at all -- verified: `curl -6` fails, `curl -4`
+    # succeeds -- and a `uv sync` without the proxy below stalled 29 minutes
+    # at 0.3% CPU on this host).
+    #
+    # ⇒ Revisit when: a run exceeds ~30m, or the 26% is explained, or the
+    # suite grows enough that 45 stops being 2.5x. Raising this number again
+    # without an explanation would be turning off the signal rather than
+    # reading it.
+    timeout-minutes: 30
+    env:
+      # pypi hardening (2026-08: three CI red runs in one hour, all of them
+      # uv dying on files.pythonhosted.org after ~128s of retries while the
+      # same job cloned code.hyprial.com and fetched astral.sh quickly).
+      # Measured from a real job container: this DinD network has no working
+      # IPv6, the Fastly pypi CDN is dual-stack, and uv/reqwest can bleed
+      # minutes on the dead v6 path before falling back.  The host proxy is
+      # reachable from the job container via OrbStack's host.docker.internal
+      # and resolves remotely, which also routes around the v6 problem.
+      # NO_PROXY keeps intra-org traffic direct: the origin remote is the
+      # runner-mapped internal ${GITHUB_SERVER_URL} (host name `tailscale`),
+      # which must not be handed to the host proxy.
+      # UV_HTTP_TIMEOUT turns any residual stall into a bounded,
+      # visible failure instead of a multi-minute hang.  Do not widen this
+      # list to judge failures away: rare-and-visible beats hidden.
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "60"
+      UV_HTTP_RETRIES: "10"
+      # Custody/notice deadlines were CI-flaky at the code default (1.0s, then
+      # 5.0s). Declare the knob here so shard stability is stated, not implicit;
+      # deadlines only bound the waits (assertions check state, not speed).
+      HYPRIAL_TEST_WAIT_SECONDS: "30"
+      # TEMPORARY MASK (Allen 2026-10-16: clear dev red; re-enable tracked by the
+      # WIP PR "ci: re-enable the codex two-daemon chain"). This job container has
+      # no unprivileged user namespaces, so codex's bwrap sandbox cannot start
+      # ("bwrap: No permissions to create a new namespace", reproduced in
+      # node:24-bookworm with codex-cli 0.161.0). Only this job sets the flag;
+      # every other machine still runs the real-codex chain and fails loudly.
+      # 2026-10-17: route (a) is platform-blocked -- Forgejo does not pass
+      # `container.options --security-opt` (run 28400: Seccomp: 2, rc=1), so the
+      # mask stays until the runner-layer fix lands.
+      HYPRIAL_CI_NO_USERNS_CODEX_SANDBOX: "1"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Ensure uv
+        timeout-minutes: 6
+        run: |
+          source scripts/ci/ci-step.sh ensure-uv
+          # Cache-first, sha256-pinned (scripts/ci/ci-ensure-uv.sh); without
+          # CI_CACHE_ROOT it falls back to the astral.sh installer as before.
+          # Bumping uv requires re-pinning the CPython mirror in
+          # scripts/ci/ci-ensure-cpython-mirror.sh (the 20260414 / 3.12.13 pins).
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          # Cache-first, sha256-pinned CPython for `--python 3.12`: exports
+          # UV_PYTHON_INSTALL_MIRROR=file://$CI_CACHE_ROOT/cpython for the
+          # following uv steps (no-op without CI_CACHE_ROOT).
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Put TMPDIR on the RAM disk and the uv cache on the CI cache volume
+        run: |
+          source scripts/ci/ci-step.sh ram-disk-env
+          # infra-ops, 2026-09-28: daemons in unit tests stall in D state on the
+          # shared btrfs (wait_log_commit / submit_bio_wait) right after
+          # zenoh.endpoints.resolved. basetemp and HYPRIAL_TEST_TMP_ROOT live on
+          # /ci-tmpfs; bare tempfile.* calls follow TMPDIR here. Each step prints
+          # its CI_TMPFS peak_kb (scripts/ci/ci-step.sh). Same tmpfs check as gui.yml.
+          #
+          # 2026-10-04 (CI speedup): the uv WHEEL cache left the per-job tmpfs,
+          # where it was empty in every job, for the runner's persistent volume,
+          # chosen and evidenced by scripts/ci/ci-uv-cache.sh (mount, write probe
+          # and entries_before on one CI_UV_CACHE line; tmpfs fallback otherwise).
+          # Only `uv sync` reads it, before any test runs: test temp dirs stay on
+          # the tmpfs above, a persistent cache never replaces them.
+          if awk '$2 == "/ci-tmpfs" && $3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
+            mkdir -p /ci-tmpfs/tmp
+            chmod 1777 /ci-tmpfs/tmp
+            echo "TMPDIR=/ci-tmpfs/tmp" >> "$GITHUB_ENV"
+            echo "TMPDIR=/ci-tmpfs/tmp (tmpfs)"
+            bash scripts/ci/ci-uv-cache.sh /ci-tmpfs/uv-cache
+          else
+            echo "::warning::/ci-tmpfs is not a tmpfs in this container; TMPDIR stays on disk"
+            bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          fi
+          grep -E ' /ci-tmpfs | /tmp ' /proc/mounts || true
+
+      - name: Install Python and locked test dependencies
+        timeout-minutes: 12
+        run: |
+          source scripts/ci/ci-step.sh dependencies
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12 --extra test
+          ci_retry_uv uv-overlay uv run --locked --no-sync --python 3.12 --with libcst==1.9.0 python -c 'import libcst'
+
+      - name: Preflight diagnostics
+        run: |
+          source scripts/ci/ci-step.sh preflight
+          # Use the RAM disk only if it is really a tmpfs; otherwise fall back
+          # to /tmp and say so -- a silent fallback would look like a fix that
+          # did not help.
+          if awk '$2 == "/ci-tmpfs" && $3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
+            TEST_TMP_ROOT=/ci-tmpfs
+          else
+            TEST_TMP_ROOT=/tmp
+            echo "::warning::/ci-tmpfs is not a tmpfs in this container; test temp dirs stay on disk"
+          fi
+          echo "HYPRIAL_TEST_TMP_ROOT=${TEST_TMP_ROOT}" >> "$GITHUB_ENV"
+          grep -E ' /ci-tmpfs | /tmp ' /proc/mounts || true
+          BASETEMP="${TEST_TMP_ROOT}/hyprial-pytest-${GITHUB_RUN_ID}"
+          uname -a
+          uv lock --check
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import multiprocessing
+          import os
+          import sys
+
+          print(f"python.executable={sys.executable}")
+          print(f"python.version={sys.version}")
+          print(f"multiprocessing.start_method={multiprocessing.get_start_method()}")
+          print(f"TMPDIR={os.environ.get('TMPDIR', '<unset>')}")
+          PY
+          echo "pytest.basetemp=${BASETEMP}"
+
+      - name: Persist the npm cache
+        # npm's cache (cacache) is safe for concurrent writers, as Go's is:
+        # content-addressed entries land atomically, so the four shards and
+        # the other jobs sharing $CI_CACHE_ROOT/npm cannot corrupt it.
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_CACHE_ROOT:-}" ]; then
+            mkdir -p "$CI_CACHE_ROOT/npm"
+            echo "npm_config_cache=$CI_CACHE_ROOT/npm" >> "$GITHUB_ENV"
+          else
+            echo "CI_CACHE_ROOT unset: npm cache stays job-local (cold)"
+          fi
+          # Registry blips (ECONNRESET/ETIMEDOUT/EIDLETIMEOUT) on the SDK
+          # download killed whole matrices (#1260's runs); the retries
+          # apply on a cold cache too.
+          echo "npm_config_fetch_retries=5" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_mintimeout=10000" >> "$GITHUB_ENV"
+          echo "npm_config_fetch_retry_maxtimeout=120000" >> "$GITHUB_ENV"
+          # A socket that hangs without ever erroring (#1260's run 3: ~6 min
+          # of silence after the deprecation warning) never fires the
+          # retries above; a fetch timeout turns the stall itself into a
+          # retryable error.
+          echo "npm_config_fetch_timeout=60000" >> "$GITHUB_ENV"
+
+      - name: Install locked GUI fixture dependencies
+        # 3 x (timeout 150 + kill 10) + 2 x sleep 10 = 500 s, plus the
+        # node --version probe; nothing more.
+        timeout-minutes: 9
+        run: |
+          source scripts/ci/ci-step.sh gui-fixture-dependencies
+          # The old GUI fixture tree was retired by #2009 (ledger R11); when its
+          # lockfile is gone there is nothing to install and npm ci fails EUSAGE.
+          if [ ! -f src/gui/package-lock.json ]; then
+            echo "src/gui/package-lock.json absent (retired GUI): skipping fixture dependencies"
+            exit 0
+          fi
+          # Python lifecycle fixtures install actual GUI bytes and link this
+          # dependency tree. A different job's node_modules cannot satisfy it.
+          node --version
+          # --prefer-offline: a warm cache needs no network for tarballs.
+          # Stall guard: npm's fetch retries never fire on a socket that
+          # hangs instead of erroring (#1260's run 3), so each attempt is
+          # bounded by timeout -k 10 150 -- SIGKILL 10 s after TERM, since
+          # an npm that ignores TERM must not run to the step deadline;
+          # after the 3rd failure the step is red.
+          for attempt in 1 2 3; do
+            if timeout -k 10 150 npm --prefix src/gui ci --ignore-scripts --no-audit --no-fund --prefer-offline; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::gui fixture npm ci failed or stalled in all 3 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Install the pinned pi SDK for the real-SDK P2 guards
+        # 3 x (timeout 150 + kill 10) + 2 x sleep 10 = 500 s, plus the
+        # version assertion; nothing more.
+        timeout-minutes: 9
+        run: |
+          source scripts/ci/ci-step.sh pi-sdk
+          # tests/daemon/harnesses/pi/configuration run the controlled loader on
+          # the real pi SDK; without it they skipped in every CI run (review 1028
+          # on #1213), so a P2 launch that cannot resolve or run a model had no
+          # guard.  The pi/extension tests need its bundled typebox and skipped
+          # the same way, so #1214's own fix never ran in its CI (run 22094).
+          # Same pin as mock-model-harness-e2e.yml.  HYPRIAL_REQUIRE_PI_SDK makes all
+          # of those modules fail instead of skip if the SDK is ever missing here.
+          # Stall guard (#1260's run 3): this install hung ~6 minutes after the
+          # deprecation warning; a hung socket never errors, so npm's fetch
+          # retries cannot fire.  Each attempt is bounded by timeout -k 10 150
+          # -- SIGKILL 10 s after TERM, since an npm that ignores TERM must
+          # not run to the step deadline -- with a 10 s sleep between; the
+          # 3rd failure reddens the step.  The pin and the version assertion
+          # below stay unchanged.
+          for attempt in 1 2 3; do
+            if timeout -k 10 150 npm install -g --no-audit --no-fund --prefer-offline @earendil-works/pi-coding-agent@0.85.1; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::pi SDK install failed or stalled in all 3 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+          pi_version="$(pi --version)"
+          echo "pi SDK ${pi_version} at $(command -v pi); HYPRIAL_REQUIRE_PI_SDK=1"
+          test "${pi_version}" = "0.85.1"
+          echo "HYPRIAL_REQUIRE_PI_SDK=1" >> "$GITHUB_ENV"
+
+      # The shipped default backend becomes the native engine once S (#2726) lands.
+      # Editable installs compile nothing (uv sync never requires Rust), so without a
+      # staged module the default backend fails closed and every daemon/actor test
+      # reds with ActorBackendUnavailableError. Build the same extension
+      # scripts/build/build_native_engine.sh stages for the developer loop, with the
+      # ADR-pinned Rust 1.93.1, and prove it imports. The uv sync above stays
+      # toolchain-free; the module and its stamp are git-ignored, so the tested tree
+      # is unchanged.
+      - name: Ensure the pinned Rust toolchain for the editable native engine
+        timeout-minutes: 12
+        run: |
+          source scripts/ci/ci-step.sh ensure-native-rust
+          HYPRIAL_E2E_ROOT="${RUNNER_TEMP:-/tmp}/gate-python-native-rust-shard${{ matrix.shard }}" \
+            bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Build and stage the editable native engine
+        timeout-minutes: 15
+        run: |
+          source scripts/ci/ci-step.sh build-native-engine
+          bash scripts/build/build_native_engine.sh
+
+      - name: Verify the staged native engine imports
+        timeout-minutes: 5
+        run: |
+          source scripts/ci/ci-step.sh verify-native-engine
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import hyprial._core.actors as actors
+
+          print(f"native extension={actors.__name__} ABI={actors.ENGINE_ABI_VERSION}")
+          PY
+
+      - name: Fetch the PR base history for layered test selection
+        # The checkout above is --depth=1, so pytest_impact.py cannot compute the
+        # PR merge base and falls back to the full suite ("comparison
+        # unavailable"; first measured on #2543). Fetch the base commit and
+        # deepen both sides, in bounded steps, until they connect. Advisory: on
+        # any failure the planner still fails closed to the full suite.
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: |
+          set -uo pipefail
+          ASKPASS="$(mktemp /tmp/layer-base-askpass.XXXXXX)"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          depth=128
+          while [ "$depth" -le 4096 ]; do
+            if ! GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+                git fetch -q --no-tags --depth="$depth" origin "$BASE_SHA" "$HEAD_SHA"; then
+              echo "::notice::layered selection: base fetch failed; the shard runs the full suite"
+              exit 0
+            fi
+            if git merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1; then
+              echo "layered selection: merge base found at depth ${depth}"
+              exit 0
+            fi
+            depth=$((depth * 2))
+          done
+          echo "::notice::layered selection: no merge base within depth 4096; the shard runs the full suite"
+
+      - name: Run unit tests shard (excludes E2E)
+        env:
+          # Two help-text assertions grep CLI output for flag names; in the
+          # container the CLI emits ANSI bold codes that split the substring
+          # (run 496). Disable color so help output is plain text.
+          NO_COLOR: "1"
+        run: |
+          source scripts/ci/ci-step.sh pytest
+          export HYPRIAL_CI_PROFILE=1
+          # Pin the installed project CLI before uv creates the LibCST overlay.
+          export HYPRIAL_BIN="${PWD}/.venv/bin/hyprial"
+          test -x "${HYPRIAL_BIN}"
+          # Whole-file shard K of 4 (scripts/ci/pytest_impact.py --shard):
+          # deterministic, mutually exclusive, and the last shard is the
+          # catch-all `tests/` minus the other shards' files, so a new or
+          # unknown test file still runs exactly once. Within a shard: the
+          # job's two-CPU quota, fixtures/order kept per file, no worker restart.
+          mkdir -p "${RUNNER_TEMP}/pytest-results"
+          # tests/ also collects the one-off refactor tools. Overlay their
+          # pinned dependency without adding it to the product dependency lock.
+          # -m "not gui_acceptance" (wf-61d46aa513404f45a938d9e764f8dd55#implGRS3,
+          # revGRS2 finding a): the dev01 browser acceptance module needs
+          # DEV01_CHROMIUM_EXECUTABLE and stays out of the shard lanes; it is
+          # run explicitly with `pytest -m gui_acceptance` (opt-in, never a
+          # skip counted as PASS).
+          # The isolated lane holds the modules that start two real daemons
+          # (tests/integration/teleport). Beside a shard's two pytest workers
+          # they pushed the job past the runner's --memory=4g: on 2026-11-14
+          # every shard holding them lost a worker and read 19-101 GB from
+          # disk; shards without them read under 1 GB. pytest_impact.py keeps
+          # them out of every shard and runs them here on their own.
+          if [ "${{ matrix.shard }}" = "isolated" ]; then
+            lane=(--isolated)
+          else
+            lane=(--shard "${{ matrix.shard }}/4")
+          fi
+          uv run --locked --python 3.12 --no-sync --with libcst==1.9.0 python scripts/ci/pytest_impact.py "${lane[@]}" -- -q --no-header --durations=50 \
+            -m "not gui_acceptance" \
+            -n 2 --dist=loadfile --max-worker-restart=0 \
+            --junitxml="${RUNNER_TEMP}/pytest-results/unit.xml" \
+            --basetemp="${HYPRIAL_TEST_TMP_ROOT:-/tmp}/hyprial-pytest-${GITHUB_RUN_ID}"
+
+      # Authoritative local copy (infra-ops 2026-10-06, Allen: 直接做挂目录).
+      # The host directory /ci-artifacts is bind-mounted into every HQ
+      # runner DinD daemon and passed into job containers (valid_volumes),
+      # so the shard results exist on the host even when the Forgejo upload
+      # -- whose chunk PUTs leave through the public cloudflared tunnel --
+      # is dropped (Cloudflare 530, run 20499). Layout contract: the host
+      # retention cron deletes depth-2 run directories after 14 days
+      # (find /Users/ci-runner/ci-artifacts -mindepth 2 -maxdepth 2
+      # -type d -mtime +14), so this path must stay exactly
+      # /ci-artifacts/<repo-name>/<run-id>/<job>[-<shard>]. Off-host runners
+      # (macos-host and any future one) have no mount: the step fails on
+      # purpose there (continue-on-error keeps the job itself alive) so the
+      # final upload attempt below stays job-failing when no copy exists.
+      - name: Copy results to /ci-artifacts
+        id: copy_pytest_results
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          artifact="pytest-groups-${{ github.job }}-${{ matrix.shard }}"
+          src="${RUNNER_TEMP}/pytest-results"
+          dest="/ci-artifacts/${GITHUB_REPOSITORY#*/}/${GITHUB_RUN_ID}/pytest-shard-${{ matrix.shard }}"
+          if [ ! -d /ci-artifacts ] || [ ! -w /ci-artifacts ]; then
+            echo "CI_ARTIFACT_LOCAL artifact=${artifact} status=unavailable"
+            exit 1
+          fi
+          if [ ! -d "${src}" ]; then
+            echo "::warning::no ${src} directory to copy"
+            exit 1
+          fi
+          mkdir -p "${dest}"
+          # The same files the upload would send, keeping relative names.
+          cp -R "${src}/." "${dest}/"
+          cd "${dest}"
+          find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0r sha256sum > SHA256SUMS
+          files="$(find . -type f ! -name SHA256SUMS | wc -l | tr -d '[:space:]')"
+          bytes=0
+          while IFS= read -r -d '' f; do
+            bytes=$((bytes + $(wc -c < "$f")))
+          done < <(find . -type f ! -name SHA256SUMS -print0)
+          echo "CI_ARTIFACT_LOCAL artifact=${artifact} path=${dest} files=${files} bytes=${bytes}"
+
+      # Bounded retry (3 attempts) for the shard-results upload. Forgejo
+      # builds the chunk-upload URL from setting.AppURL, so every chunk
+      # PUT leaves through the public cloudflared tunnel; when that tunnel
+      # drops, Cloudflare answers 530 for seconds to tens of seconds (run
+      # 20499: 2729 tests green, shard red on "1 items failed to upload").
+      # upload-artifact@v3 has no retry option, so the attempts are
+      # separate steps and each is a COMPLETE new upload -- artifact
+      # container, every chunk, confirm -- never a bare re-confirm: after
+      # a 530 the server holds zero chunks and a re-confirm only re-hits
+      # the "merge chunks: lstat tmp<run>" 500. Forgejo v15 accepts the
+      # same-name re-upload in the same run: CreateArtifact is
+      # get-or-create over (run, name, path) and reuses the pending row.
+      - name: Upload Python shard results
+        id: upload_pytest_results_1
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: pytest-groups-${{ github.job }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-results/
+          if-no-files-found: warn
+
+      - name: Wait before retrying the Python shard results upload
+        if: always() && steps.upload_pytest_results_1.outcome == 'failure'
+        run: |
+          echo "ARTIFACT_UPLOAD_RETRY artifact=pytest-groups-${{ github.job }}-${{ matrix.shard }} attempt=1 outcome=failed"
+          sleep 20
+          echo "artifact upload failed/timeout: upload_pytest_results_1" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Python shard results (retry 2)
+        id: upload_pytest_results_2
+        if: always() && steps.upload_pytest_results_1.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: pytest-groups-${{ github.job }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-results/
+          if-no-files-found: warn
+
+      - name: Wait before the last Python shard results upload attempt
+        if: always() && steps.upload_pytest_results_2.outcome == 'failure'
+        run: |
+          echo "ARTIFACT_UPLOAD_RETRY artifact=pytest-groups-${{ github.job }}-${{ matrix.shard }} attempt=2 outcome=failed"
+          sleep 60
+          echo "artifact upload failed/timeout: upload_pytest_results_2" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+
+      - name: Upload Python shard results (retry 3, local copy holds)
+        # The authoritative /ci-artifacts copy succeeded, so this web copy is
+        # best-effort: continue-on-error keeps a dropped tunnel (the run
+        # 20499 failure mode) from reddening an otherwise green shard.
+        id: upload_pytest_results_3
+        if: always() && steps.upload_pytest_results_2.outcome == 'failure' && steps.copy_pytest_results.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: pytest-groups-${{ github.job }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-results/
+          if-no-files-found: warn
+
+
+      - name: Warn when the artifact upload fails or times out
+        if: always() && (steps.upload_pytest_results_3.outcome == 'failure' || steps.upload_pytest_results_3.outcome == 'cancelled')
+        run: |
+          echo "::warning::artifact upload failed/timeout (upload_pytest_results_3)"
+          echo "artifact upload failed/timeout: upload_pytest_results_3" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/ci-conditions.sh artifact || true
+      - name: Upload Python shard results (retry 3, no local copy)
+        # No continue-on-error: without the authoritative local copy, all
+        # three attempts failing must fail the shard (and with it `unit`)
+        # exactly as the single upload did. `!= 'success'` rather than
+        # `== 'failure'`: a skipped or cancelled copy step must never be
+        # read as a copy that happened.
+        id: upload_pytest_results_4
+        if: always() && steps.upload_pytest_results_2.outcome == 'failure' && steps.copy_pytest_results.outcome != 'success'
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: pytest-groups-${{ github.job }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-results/
+          if-no-files-found: warn
+
+      - name: Report the Python shard results upload retry outcome
+        # Runs only when attempt 1 failed, so the happy path adds no step
+        # and no delay. A skipped attempt keeps outcome=skipped, which
+        # never equals "success": a skipped retry cannot be read as a
+        # recovered upload (no "PASS as the else branch"). When every
+        # attempt failed, the line says which copy is authoritative:
+        # local=ok means the /ci-artifacts copy holds (the shard stays
+        # green via the continue-on-error final attempt); without it the
+        # job is red through the no-continue-on-error final attempt.
+        if: always() && steps.upload_pytest_results_1.outcome == 'failure'
+        run: |
+          artifact="pytest-groups-${{ github.job }}-${{ matrix.shard }}"
+          if [ "${{ steps.upload_pytest_results_2.outcome }}" = success ]; then
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} attempt=2 outcome=success"
+          elif [ "${{ steps.upload_pytest_results_3.outcome }}" = success ] || [ "${{ steps.upload_pytest_results_4.outcome }}" = success ]; then
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} attempt=3 outcome=success"
+          elif [ "${{ steps.copy_pytest_results.outcome }}" = success ]; then
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} outcome=failed attempts=3 local=ok"
+          else
+            echo "ARTIFACT_UPLOAD_RETRY artifact=${artifact} outcome=failed attempts=3"
+          fi
+          if [ "${{ steps.upload_pytest_results_2.outcome }}" != success ] && [ "${{ steps.upload_pytest_results_3.outcome }}" != success ] && [ "${{ steps.upload_pytest_results_4.outcome }}" != success ]; then
+            echo "artifact upload failed/timeout: upload_pytest_results_4" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          bash scripts/ci/ci-conditions.sh artifact || true
+
+      # The CI conditions upload gets the same bounded retry (3 attempts)
+      # as the shard-results upload above. The three-step tail is frozen
+      # verbatim by policy 2 in tests/support/ci/ci_workflow_policy.py
+      # (last three steps, exact upload step), so attempts 1-2 sit before
+      # the end reader and the tail's own upload step is the third and
+      # final attempt; the report step therefore still fires only when
+      # that final attempt failed. Each attempt is a COMPLETE new upload
+      # (container, chunks, confirm) -- Forgejo v15 accepts the
+      # same-name re-upload because CreateArtifact is get-or-create over
+      # (run, name, path) and reuses the pending row.
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          # 2026-11-07: one upload of this telemetry artifact. The two earlier
+          # attempts (3f37f4aa6, tunnel 530s) never fired after uploads went
+          # direct to the runtime URL: 0 retries in 87 sampled jobs.
+          echo "ARTIFACT_UPLOAD_RETRY artifact=ci-conditions-${{ github.job }}-${{ matrix.shard }} outcome=failed attempts=1"
+          bash scripts/ci/ci-conditions.sh artifact
+
+  unit:
+    needs: [cli-help-inventory, checks, pytest-shard, tailcat-go]
+    env:
+      INTERNAL_PUBLICATION_ENABLED: "false"
+    # The required Python gate (`gate-python / unit*` on dev and main). It runs no
+    # tests itself: it refuses unless the plan, the checks job and every
+    # selected shard succeeded, then owns the dev publication tail below.
+    # `always()` only lets it REPORT a red or skipped upstream; the scope step
+    # is the gate and fails closed, so this job is never green by default.
+    if: always() && needs.cli-help-inventory.outputs.wip != 'true'
+    # release/** 的 PR 走专用池（Allen: 发版不与其他任务混）；其它分支维持共享池
+    runs-on: ${{ startsWith(github.base_ref, 'release/') && 'release-ci' || 'ubuntu-latest' }}
+    # Checkout, result check and the tag mover only; no build, no download.
+    timeout-minutes: 10
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Accept the plan, the checks job and every selected pytest shard
+        id: scope
+        env:
+          PLAN_RESULT: ${{ needs.cli-help-inventory.result }}
+          PYTHON_SELECTED: ${{ needs.cli-help-inventory.outputs.python }}
+          GUI_SELECTED: ${{ needs.cli-help-inventory.outputs.gui_integration }}
+          FULL_SELECTED: ${{ needs.cli-help-inventory.outputs.full }}
+          LIGHT_SELECTED: ${{ needs.cli-help-inventory.outputs.light }}
+          DOCS_ONLY: ${{ needs.cli-help-inventory.outputs.docs_only }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          SHARDS_RESULT: ${{ needs.pytest-shard.result }}
+          SIDECAR_SELECTED: ${{ needs.cli-help-inventory.outputs.sidecar }}
+          TAILCAT_RESULT: ${{ needs.tailcat-go.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          test "$PLAN_RESULT" = success || { echo "CI_ROUTE: upstream plan failed"; exit 1; }
+          case "$PYTHON_SELECTED:$GUI_SELECTED" in
+            true:true|true:false|false:true|false:false) ;;
+            *) echo "CI_ROUTE: incomplete plan"; exit 1 ;;
+          esac
+          case "$DOCS_ONLY" in
+            true|false) ;;
+            *) echo "CI_ROUTE: incomplete docs-only classification"; exit 1 ;;
+          esac
+          case "$FULL_SELECTED:$LIGHT_SELECTED" in
+            true:false|false:true|false:false) ;;
+            *) echo "CI_ROUTE: incomplete full/light plan"; exit 1 ;;
+          esac
+          # A docs-only diff may ride the light route: the docs-only fast
+          # path selects no suites either way, so only the suite flags
+          # must stay false when light is selected.
+          if [ "$LIGHT_SELECTED" = true ]; then
+            test "$FULL_SELECTED:$PYTHON_SELECTED:$GUI_SELECTED" = false:false:false || {
+              echo "CI_ROUTE: invalid light plan"; exit 1;
+            }
+          elif [ "$DOCS_ONLY" != true ]; then
+            test "$FULL_SELECTED" = true || { echo "CI_ROUTE: non-doc plan is neither full nor light"; exit 1; }
+          fi
+          test "$CHECKS_RESULT" = success || { echo "CI_ROUTE: checks job result is '${CHECKS_RESULT}'"; exit 1; }
+          # The matrix result is the aggregate of all four shards: success only
+          # when every shard succeeded. A selected suite must be exactly
+          # `success`; an unselected one exactly `skipped` -- anything else
+          # (failure, cancelled, empty/missing, unexpected skip) is red.
+          if [ "$PYTHON_SELECTED" = true ] && [ "$DOCS_ONLY" != true ]; then
+            want=success
+          else
+            want=skipped
+          fi
+          test "$SHARDS_RESULT" = "$want" || { echo "CI_ROUTE: pytest shards result is '${SHARDS_RESULT}', expected '${want}'"; exit 1; }
+          # The Tailcat Go gate, by the same rule: success when the plan
+          # selected the sidecar component, skipped when it did not.
+          case "$SIDECAR_SELECTED" in
+            true) want=success ;;
+            false) want=skipped ;;
+            *) echo "CI_ROUTE: incomplete sidecar plan"; exit 1 ;;
+          esac
+          test "$TAILCAT_RESULT" = "$want" || { echo "CI_ROUTE: tailcat result is '${TAILCAT_RESULT}', expected '${want}'"; exit 1; }
+          echo "unit=$PYTHON_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "gui_integration=$GUI_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "full=$FULL_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "light=$LIGHT_SELECTED" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+
+      # Current release rules: docs/guides/release-rules.md; older rulings below are history.
+      # Upgrade-track contract (task 25): the movable `internal` tag is exactly
+      # "the dev branch head whose unit gate is green".  This step is the
+      # ONLY mover of refs/tags/internal; it runs solely on a successful push
+      # to dev (never on PRs, never on main, never on a red gate), and the tag
+      # is force-moved to the exact tested SHA.  `nightly` and `stable` are
+      # moved elsewhere (nightly-promote.yml / github-publish.yml) and
+      # must never be touched here.
+      #
+      # ⚠️ The tag used to be called `dev`, i.e. the same name as the branch it
+      # follows. Forgejo resolves a bare `dev` to the TAG when it computes a
+      # merge base, so two merges on 2026-09-18 were based on a stale commit
+      # while the UI looked normal. Renaming it to `internal` removes the
+      # collision at its source -- ⛔ do not name a movable tag after a branch.
+      # ⛔⛔ MIGRATION WINDOW: `dev` is force-moved here TOO, and that is
+      # deliberate. Dropping it looks like the entire point of this rename, and
+      # it breaks two separate things. Both were measured on 2026-09-18, before
+      # this line existed:
+      #
+      #  (1) Installed clients can never learn the new name. A shipped 0.4.6 has
+      #      TRACK_TAGS = ("dev","nightly","stable") and raises on anything else
+      #      (updates.py:65/:243 -- read in the INSTALLED copy, not the repo), so
+      #      a node on updateTrack=dev resolves refs/tags/dev. Freeze that tag and
+      #      the node is pinned to a commit predating this rename -- permanently,
+      #      because UPGRADING is the only way it could come to know `internal`.
+      #      Its version string stays 0.4.6 throughout, so nothing shows it.
+      #      ⇒ A rename has to keep announcing itself through the OLD channel.
+      #
+      #  (2) Merges into dev would be refused. Forgejo resolves the bare base
+      #      name to the TAG, so a frozen refs/tags/dev becomes the first parent
+      #      of every merge -- which is precisely what forgejo-config #13's
+      #      first-parent guard rejects. Replayed over the five dev landings of
+      #      2026-09-18: 3 of 5 would have been refused. The pattern is
+      #      mechanical: the first merge after the tag goes stale passes
+      #      (tag == head), each later one is refused until the tag catches up.
+      #      Freeze the tag and "until it catches up" becomes never.
+      #
+      # ⇒ Keeping `dev` moving is what holds tag == head, and tag == head is what
+      #   makes BOTH the guard and the old clients work. The collision is retired
+      #   by DELETING the tag at the end, ⛔ by abandoning it in place.
+      #
+      #
+      # Historical dispatch recovery path (retired by the 2026-10-28 push-only rule):
+      # spec-dev-tag-promote-dispatch-job, 2026-09-14:
+      # Forgejo 15.0.5 has no rerun API, so a flaky-red unit gate on a dev
+      # push freezes this tag with no way to re-run just the gate.  The
+      # recovery is to workflow_dispatch THIS workflow on refs/heads/dev: the
+      # unit evidence is still structural (same run, same workflow, same
+      # GITHUB_SHA -- `success()` + the scope actually selecting unit), so no
+      # API is read.  ⚠️ Kept as a step in `unit` rather than a separate
+      # promote job: tests/tooling/ci/execution/test_ci_conditions.py requires the artifact tail
+      # (end / upload / report) to be the LAST three steps of every job.
+      # (That contract no longer says this step must be last: the ordering key
+      # below was changed so the audit does not read step ORDER at all.)
+      #
+      # ORDERING KEY (2026-09-21): the audit that decides where
+      # `refs/tags/internal` points used to read a dev-push task's `updated_at`
+      # as the moment the tag was pushed, which is only true while this step is
+      # the unit job's LAST step -- the condition tail added 2026-09-14 is
+      # `if: always()` and sits after it, so the ordering silently absorbed the
+      # tail's duration.  The step now records its OWN push time through
+      # `scripts/ci/ci-conditions.sh mover` (the record lands in the run's
+      # conditions file, which the tail uploads), and the audit reads THAT.
+      # ⚠️ MISSING PUSH TIME: the tail is `if: always()`, so a run whose mover
+      # never executed has no such record.  "Absent" is not "the push did not
+      # happen" and not "the audit read the file too early"; the audit must
+      # REFUSE to order on a missing record instead of skipping the run.
+      # ✅ REMOVAL CONDITION -- all three, in this order:
+      #     a. every node reports a client that resolves `internal`; AND
+      #     b. that still holds after a full autoupdate cycle (a node pulled back
+      #        by autoupdate silently becomes old-name-only again); AND
+      #     c. refs/tags/dev is DELETED in the same change -- a frozen tag left
+      #        behind re-creates (2) permanently.
+      - name: Move the track tags to the unit-green dev head
+        id: internal_move
+        # Current rule (Allen 2026-10-28): only a green dev push may publish.
+        # History (superseded 2026-10-20 rule): success and unit-scope checks
+        # were removed to keep internal moving even on a red unit job.
+        # History that forced this (2026-10-18T13:15Z..2026-10-20): `internal`
+        # stayed at c5e0598e for ~2 days and 430+ commits while `dev` moved,
+        # because BOTH conditions silently skipped this step. Nothing recorded
+        # the skip, so the only symptom was clients receiving a two-day-old
+        # build. The former warning-only audit did not prevent red publication.
+        # success() checks the unit aggregator, not the planner's unit selection.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && env.INTERNAL_PUBLICATION_ENABLED == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Migration window CLOSED (Allen 2026-09-19): he deleted refs/tags/dev
+          # himself, and this step no longer recreates it -- the two `dev` lines
+          # that used to sit here (tag + push) are gone, or the next dev push
+          # would have re-created the tag he just deleted.  Clients on
+          # updateTrack=dev now resolve nothing: that is the accepted cost of
+          # closing the window, per the removal condition in the block above.
+          # Checkout deliberately leaves no credentials in origin. Authenticate
+          # this publication independently, without changing its existing guard.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}"
+          export GIT_TERMINAL_PROMPT=0
+          remote_refs="$(git ls-remote --refs origin refs/heads/dev refs/tags/internal)"
+          dev_sha=""
+          internal_sha=""
+          while IFS=$'\t' read -r sha ref; do
+            case "$ref" in
+              refs/heads/dev) dev_sha="$sha" ;;
+              refs/tags/internal) internal_sha="$sha" ;;
+            esac
+          done <<< "$remote_refs"
+          if [[ ! "$dev_sha" =~ ^[a-f0-9]{40}$ ]] || \
+             [[ ! "${GITHUB_SHA}" =~ ^[a-f0-9]{40}$ ]] || \
+             [[ -n "$internal_sha" && ! "$internal_sha" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "CI_INTERNAL: invalid/missing publication refs" >&2
+            exit 1
+          fi
+          # Compare ancestry, not equality with today's dev tip. Otherwise a
+          # busy dev branch can starve internal forever while good tests finish.
+          fetch_args=(--no-tags)
+          if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
+            fetch_args+=(--unshallow)
+          fi
+          fetch_refs=("$dev_sha")
+          if [[ -n "$internal_sha" ]]; then
+            fetch_refs+=("$internal_sha")
+          fi
+          git fetch "${fetch_args[@]}" origin "${fetch_refs[@]}"
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" "$dev_sha"; then
+            echo "CI_INTERNAL: tested commit is not in current dev history" >&2
+            exit 1
+          fi
+          if [[ -n "$internal_sha" ]]; then
+            internal_commit="$(git rev-parse "${internal_sha}^{commit}")"
+            if git merge-base --is-ancestor "${GITHUB_SHA}" "$internal_commit"; then
+              echo "CI_INTERNAL: superseded or already published result; no tag write"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$internal_commit" "${GITHUB_SHA}"; then
+              echo "CI_INTERNAL: internal and tested commit have unrelated history" >&2
+              exit 1
+            fi
+          fi
+          git tag -f internal "${GITHUB_SHA}"
+          # A newer publisher may win AFTER the snapshot above. A rejected
+          # lease remains a visible failure; never retry it with --force.
+          git push "--force-with-lease=refs/tags/internal:${internal_sha}" origin refs/tags/internal
+          if [ -n "${GITHUB_OUTPUT:-}" ]; then
+            printf 'promoted=%s\n' "${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+          # Record the push time as the audit's ordering key. Runs AFTER the
+          # push (the timestamp is the push, not the intent), and ⛔ must not
+          # be made unconditional: `set -e` aborting here means no record, and
+          # the audit is required to refuse to order without one.
+          bash scripts/ci/ci-conditions.sh mover
+
+      - name: Dispatch the GitHub publication of the moved internal tag
+        # ✅ ENABLED (deleted the leading `false &&` on 2026-10-20, per Allen's
+        # "只要 DEV 前移了 … 然后同步到 GitHub 上面的 internal 的 tab"). The
+        # comment below is the historical record of why it was disabled; it no
+        # longer describes the current state.
+        #
+        # (historical) ⛔ DISABLED until Allen enables it: delete the leading
+        # `false && ` from the `if:` below.  That one edit was the decision to
+        # publish the `internal` track to the public mirror automatically on
+        # every move; an agent was refused making it ([Create Public Surface]).
+        #
+        # github-publish.yml's contract (Allen 2026-09-14) already publishes
+        # `internal` on every move -- through its own gates: whitelist
+        # snapshot, gitleaks, intranet-name scan.  Its `push: tags:
+        # [internal]` trigger never fires: the mover above pushes as the
+        # Actions user, and Forgejo starts no workflows for that user's
+        # pushes (the same reason release-tag's v* push did not, 2026-09-16).
+        #
+        # A separate step on purpose: tests/tooling/ci/execution/test_ci_internal_publication.py
+        # runs the mover's script verbatim against a fake origin.  Dispatch
+        # only when `internal` is THIS run's commit (the mover can exit 0
+        # without writing).  `--fail` keeps a refused dispatch loud.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && env.INTERNAL_PUBLICATION_ENABLED == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOVED_INTERNAL: ${{ steps.internal_move.outputs.promoted }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraHeader"
+          export GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}"
+          export GIT_TERMINAL_PROMPT=0
+          internal_sha="$(git ls-remote --refs origin refs/tags/internal | cut -f1)"
+          if [[ "$internal_sha" != "${GITHUB_SHA}" ]]; then
+            echo "CI_PUBLISH: internal=${internal_sha:-absent} is not this run's ${GITHUB_SHA}; no dispatch"
+            exit 0
+          fi
+          # Dispatch once for a real move, not an unchanged/superseded tag.
+          # There is no second internal wheel dispatch in github-publish.yml.
+          wheel_failed=0
+          if [[ "${MOVED_INTERNAL:-}" = "${GITHUB_SHA}" ]]; then
+            wheel_body="$(printf '{"ref":"internal","inputs":{"track":"internal","source_sha":"%s"}}' "${GITHUB_SHA}")"
+            printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+              curl --config - --fail --silent --show-error --connect-timeout 10 --max-time 60 -X POST \
+                -H "Content-Type: application/json" --data "$wheel_body" \
+                "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/wheel-release.yml/dispatches" \
+              || wheel_failed=1
+          fi
+          # A refused wheel dispatch must fail this step, but must not suppress
+          # the independent GitHub publication request.
+          printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" | \
+            curl --config - --fail --silent --show-error -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"ref":"internal","inputs":{"ref":"internal","dry_run":"false","report_pr":"0"}}' \
+              "${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/github-publish.yml/dispatches"
+          echo "CI_PUBLISH: dispatched github-publish for internal=${GITHUB_SHA}"
+          [ "$wheel_failed" = 0 ] || { echo 'wheel-release dispatch failed' >&2; exit 1; }
+
+      # The CI conditions upload gets the same bounded retry (3 attempts)
+      # as the suite-result uploads: a dropped Forgejo tunnel (Cloudflare
+      # 530, run 20499) must not lose the run's diagnostics either. The
+      # three-step tail is frozen verbatim by policy 2 in
+      # tests/support/ci/ci_workflow_policy.py (last three steps, exact
+      # upload step), so attempts 1-2 sit before the end reader and the
+      # tail's own upload step is the third and final attempt; the report
+      # step therefore still fires only when that final attempt failed.
+      # Each attempt is a COMPLETE new upload (container, chunks,
+      # confirm) -- Forgejo v15 accepts the same-name re-upload because
+      # CreateArtifact is get-or-create over (run, name, path) and reuses
+      # the pending row.
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          # 2026-11-07: one upload of this telemetry artifact. The two earlier
+          # attempts (3f37f4aa6, tunnel 530s) never fired after uploads went
+          # direct to the runtime URL: 0 retries in 87 sampled jobs.
+          echo "ARTIFACT_UPLOAD_RETRY artifact=ci-conditions-${{ github.job }} outcome=failed attempts=1"
+          bash scripts/ci/ci-conditions.sh artifact
+
+  # Allen 2026-10-26: stable follows formal v* releases, not main pushes.
+  # Its sole writer is github-publish.yml::publish. internal above is unchanged.

@@ -14,7 +14,7 @@ from .support import ROOT
 
 
 def test_pr_hygiene_no_longer_calls_the_e2e_impact_checker() -> None:
-    text = (ROOT / ".forgejo/workflows/gate-pr-hygiene.yml").read_text()
+    text = (ROOT / ".github/workflows/gate-pr-hygiene.yml").read_text()
     assert "check_e2e_impact.py" not in text
     assert "e2e-impact" not in text
 
@@ -26,7 +26,7 @@ def test_the_checker_is_kept_for_the_periodic_e2e_run() -> None:
 
 
 def test_original_base_owned_hygiene_rules_remain() -> None:
-    text = (ROOT / ".forgejo/workflows/gate-pr-hygiene.yml").read_text()
+    text = (ROOT / ".github/workflows/gate-pr-hygiene.yml").read_text()
     for required in (
         'git show "${ref}:${gate}" >"${gate}"',
         "check_pr_hygiene.py \\\n            submitted-by",

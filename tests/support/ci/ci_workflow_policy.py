@@ -34,7 +34,7 @@ from typing import Any, Iterator, NamedTuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-WORKFLOW_DIR = ROOT / ".forgejo" / "workflows"
+WORKFLOW_DIR = ROOT / ".github" / "workflows"
 
 
 class JobRef(NamedTuple):

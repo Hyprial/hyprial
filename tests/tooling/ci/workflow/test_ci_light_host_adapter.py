@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOWS = Path(__file__).resolve().parents[4] / ".forgejo/workflows"
+WORKFLOWS = Path(__file__).resolve().parents[4] / ".github/workflows"
 
 CHECKOUT_STEP_NAME = "Check out the head commit with base history"
 UNRESOLVABLE_SERVER_URL = "http://host-adapter-regression.invalid:3000"

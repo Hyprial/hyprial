@@ -24,10 +24,10 @@ SCENARIOS = ROOT / "contract" / "e2e"
 VALIDATE = SCENARIOS / "validate.py"
 RUN_015 = SCENARIOS / "run-pac-workflow-unified.py"
 GATE_DRIVER = SCENARIOS / "run-isolated-gate.py"
-TESTS_WORKFLOW = ROOT / ".forgejo" / "workflows" / "gate-python.yml"
-ISOLATED_WORKFLOW = ROOT / ".forgejo" / "workflows" / "e2e-macos-isolated.yml"
-CONTROLLED_WORKFLOW = ROOT / ".forgejo" / "workflows" / "e2e-macos-credentialed.yml"
-GUI_WORKFLOW = ROOT / ".forgejo" / "workflows" / "gate-gui.yml"
+TESTS_WORKFLOW = ROOT / ".github" / "workflows" / "gate-python.yml"
+ISOLATED_WORKFLOW = ROOT / ".github" / "workflows" / "e2e-macos-isolated.yml"
+CONTROLLED_WORKFLOW = ROOT / ".github" / "workflows" / "e2e-macos-credentialed.yml"
+GUI_WORKFLOW = ROOT / ".github" / "workflows" / "gate-gui.yml"
 
 EXPECTED_IDS = (
     {f"E2E-{number:03d}" for number in range(1, 19) if number != 14}

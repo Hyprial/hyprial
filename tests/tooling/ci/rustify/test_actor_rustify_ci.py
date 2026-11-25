@@ -224,14 +224,14 @@ def test_workflow_deletions_are_red_but_additions_are_green():
 @pytest.mark.parametrize(
     ("head_ref", "paths", "audited"),
     (
-        ("release/v0.5.5.4", ["crates/x/src/lib.rs", ".forgejo/workflows/tests.yml"], True),
+        ("release/v0.5.5.4", ["crates/x/src/lib.rs", ".github/workflows/tests.yml"], True),
         ("release/v0.5.5.4", ["src/hyprial/kernel/x.py"], False),
-        ("ci/rustify-native-job", [".forgejo/workflows/tests.yml"], True),
+        ("ci/rustify-native-job", [".github/workflows/tests.yml"], True),
         ("infra-ops/rustify-engine", [], True),
         ("refactor/actor-wheel-native", ["scripts/build/build-wheel.sh"], True),
         ("refactor/actor-port-p2", ["conformance/actor_engine/cases/x.py"], True),
         ("feat/unrelated", ["crates/hyprial-core/Cargo.toml"], True),
-        ("refactor/actor-port-p2", ["src/hyprial/kernel/x.py", ".forgejo/workflows/tests.yml"], False),
+        ("refactor/actor-port-p2", ["src/hyprial/kernel/x.py", ".github/workflows/tests.yml"], False),
         ("intg/cell-model", ["src/hyprial/daemon/x.py"], False),
     ),
 )
@@ -466,7 +466,7 @@ def test_live_tree_registries_parse_as_the_closed_shape():
 
 
 def _ci_i_step() -> tuple[list[dict], int, dict]:
-    document = yaml.safe_load((ROOT / ".forgejo/workflows/gate-pr-hygiene.yml").read_text(encoding="utf-8"))
+    document = yaml.safe_load((ROOT / ".github/workflows/gate-pr-hygiene.yml").read_text(encoding="utf-8"))
     steps = document["jobs"]["pr-hygiene"]["steps"]
     for index, step in enumerate(steps):
         if step.get("name") == "Enforce the actor-rustify CI-I change surface":
@@ -505,7 +505,7 @@ NATIVE_ARM64_JOBS = ("native-linux-arm64", "native-darwin-arm64")
 
 def test_native_conformance_triggers_arm64_lanes_from_dev_pushes_and_release_pull_requests():
     document = yaml.safe_load(
-        (ROOT / ".forgejo/workflows/native-conformance.yml").read_text(encoding="utf-8")
+        (ROOT / ".github/workflows/native-conformance.yml").read_text(encoding="utf-8")
     )
     triggers = document.get("on", document.get(True))
     assert triggers["push"]["branches"] == ["dev"]
@@ -515,7 +515,7 @@ def test_native_conformance_triggers_arm64_lanes_from_dev_pushes_and_release_pul
 
 def _native_summary_step():
     document = yaml.safe_load(
-        (ROOT / ".forgejo/workflows/native-conformance.yml").read_text(encoding="utf-8")
+        (ROOT / ".github/workflows/native-conformance.yml").read_text(encoding="utf-8")
     )
     jobs = document["jobs"]
     assert set(jobs) == {"plan", "native-summary", *NATIVE_CONFORMANCE_JOBS}

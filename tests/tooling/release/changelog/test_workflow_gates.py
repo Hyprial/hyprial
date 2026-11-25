@@ -11,7 +11,7 @@ import yaml
 from tests.support.ci.ci_workflow_policy import is_gate_step, relaxed_gate_surfaces
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOWS = ROOT / ".forgejo/workflows"
+WORKFLOWS = ROOT / ".github/workflows"
 
 
 def doc(name):

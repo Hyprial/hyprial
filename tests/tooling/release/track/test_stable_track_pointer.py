@@ -14,12 +14,12 @@ from tests.support.ci.ci_workflow_policy import (
 )
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOW = ROOT / ".forgejo/workflows/gate-python.yml"
+WORKFLOW = ROOT / ".github/workflows/gate-python.yml"
 
 
 def test_only_formal_publisher_can_move_stable():
     writers = []
-    for path in (ROOT / ".forgejo/workflows").glob("*.yml"):
+    for path in (ROOT / ".github/workflows").glob("*.yml"):
         doc = yaml.safe_load(path.read_text())
         for name, job in doc.get("jobs", {}).items():
             for step in job.get("steps", []):

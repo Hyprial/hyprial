@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOWS = ROOT / ".forgejo" / "workflows"
+WORKFLOWS = ROOT / ".github" / "workflows"
 _TARGET = re.compile(r"\btests/[A-Za-z0-9_/.-]+\.py(?:::[A-Za-z0-9_]+)?")
 
 

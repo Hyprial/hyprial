@@ -277,6 +277,6 @@ def test_the_live_tree_matches_the_committed_baseline() -> None:
 
 
 def test_the_gate_runs_in_gate_python_with_the_base_ratchet() -> None:
-    workflow = (ROOT / ".forgejo" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
     assert "python scripts/ci/check_node_platform_idioms.py\n" in workflow
     assert "check_node_platform_idioms.py \\\n            --base-ref \"$CONTRACT_BASE_REF\"" in workflow

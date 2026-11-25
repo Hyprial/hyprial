@@ -1,7 +1,7 @@
 """发布失败时的日志不许声称"已进 registry"。
 
 现场（2026-10-30）:
-    `.forgejo/workflows/wheel-release.yml` 的 `Report wheel artifact upload failure` 步骤里，
+    `.github/workflows/wheel-release.yml` 的 `Report wheel artifact upload failure` 步骤里，
     `the wheels reached the registry but were NOT saved as a workflow artifact` 这句是**无条件打印**的。
     而更早的步骤（R2 发布 / 越界守卫 r2_upload.py guard_changes）把 job 判红时，
     `Publish wheel to Forgejo PyPI registry` **根本没跑** —— 日志却声称"已进 registry"，
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parents[4] / ".forgejo/workflows/wheel-release.yml"
+WORKFLOW = Path(__file__).resolve().parents[4] / ".github/workflows/wheel-release.yml"
 TEXT = WORKFLOW.read_text(encoding="utf-8")
 CLAIM = "the wheels reached the registry"
 

@@ -114,7 +114,7 @@ def test_drift_check_needs_no_credentials_or_s3(publisher, tmp_path, s3, drift, 
 
 
 def test_workflow_is_dev_only_and_policy_compliant():
-    path = ROOT / ".forgejo/workflows/release-install-scripts.yml"
+    path = ROOT / ".github/workflows/release-install-scripts.yml"
     text = path.read_text()
     doc = yaml.safe_load(text)
     triggers = doc.get("on", doc.get(True))

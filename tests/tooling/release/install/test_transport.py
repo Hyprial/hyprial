@@ -88,7 +88,7 @@ def test_r2_steps_bypass_proxy_without_changing_dependency_routing(workflow, ste
     the dependency routing and the NO_PROXY set are unchanged.
     """
 
-    doc = yaml.safe_load((ROOT / ".forgejo/workflows" / workflow).read_text())
+    doc = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())
     steps = {step["name"]: (job, step) for job in doc["jobs"].values()
              for step in job["steps"] if "name" in step}
     for name in step_names:

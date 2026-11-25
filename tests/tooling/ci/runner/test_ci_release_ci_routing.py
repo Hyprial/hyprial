@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOWS = Path(__file__).resolve().parents[4] / ".forgejo/workflows"
+WORKFLOWS = Path(__file__).resolve().parents[4] / ".github/workflows"
 
 # ① 直接钉在 release-ci 的发布 job
 RELEASE_JOBS = [

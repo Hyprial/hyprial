@@ -34,7 +34,7 @@ import yaml
 from tests.support.ci.ci_workflow_policy import unpinned_reason, unpinned_uses_offenders, unpinned_uses_offenders_in
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOW_DIR = ROOT / ".forgejo" / "workflows"
+WORKFLOW_DIR = ROOT / ".github" / "workflows"
 WORKFLOWS = sorted(WORKFLOW_DIR.glob("*.yml"))
 
 PUBLIC_HOST = "code.hyprial.com"

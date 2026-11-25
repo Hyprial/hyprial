@@ -47,7 +47,7 @@ for ``notarytool``, ``stapler``, ``spctl`` and keychain commands is
 ``policy/test_repository_scan.py`` (every tracked file, its own list); the
 workflow checks below repeat the workflow part.
 
-Workflow directories (item 3): ``.forgejo/workflows`` and, when present,
+Workflow directories (item 3): ``.github/workflows`` and, when present,
 ``.github/workflows`` (the repository moves to GitHub). Not covered: code
 that a Mac job runs through a remote action (``uses: owner/action@ref``) or a
 remote reusable workflow lives outside this repository and no scan here sees
@@ -81,7 +81,7 @@ import yaml
 
 from tests.tooling.release.shell.support import PACKAGING, ROOT
 
-WORKFLOW_DIRS = (ROOT / ".forgejo" / "workflows", ROOT / ".github" / "workflows")
+WORKFLOW_DIRS = (ROOT / ".github" / "workflows", ROOT / ".github" / "workflows")
 PACKAGE_SCRIPT = ROOT / "scripts" / "build" / "package-macos-shell.sh"
 SIGNED_COLLECT = ROOT / "scripts" / "build" / "macos-package" / "signed-collect.sh"
 SIGN_BUNDLE = PACKAGING / "sign_bundle.py"
@@ -92,7 +92,7 @@ PACKAGING_ENTRY_POINTS = ("package-macos-shell", "sign_bundle", SWITCH)
 DELETED_WORKFLOWS = ("shell-macos-candidate", "shell-macos-signed")
 SECRET_REFERENCE = re.compile(r"secrets\.([A-Za-z0-9_]+)")
 APPLE_SECRET = re.compile(r"secrets\.[A-Za-z0-9_]*(APPLE|P12|PFX|PASSWORD|CERTIFICATE|NOTAR|KEYCHAIN|SIGNING|IDENTITY|DEVELOPER)", re.I)
-SCAN_ROOTS = (".forgejo", ".github", ".agents", ".claude", "scripts", "packaging", "clients")
+SCAN_ROOTS = (".github", ".github", ".agents", ".claude", "scripts", "packaging", "clients")
 CODE_SUFFIXES = {".sh", ".py", ".yml", ".yaml", ".mjs", ".js", ".ps1", ".json", ".toml"}
 KEY_MATERIAL = re.compile(r"\.(p12|pfx|cer|der|p8|key|mobileprovision|provisionprofile|keychain|keychain-db)$", re.I)
 FORBIDDEN_IN_WORKFLOWS = (

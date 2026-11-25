@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parents[4] / ".forgejo/workflows/mock-model-harness-e2e.yml"
+WORKFLOW = Path(__file__).resolve().parents[4] / ".github/workflows/mock-model-harness-e2e.yml"
 PI = "@earendil-works/pi-coding-agent@0.85.1"
 CODEX = "@openai/codex@0.164.0"
 CLAUDE = "@anthropic-ai/claude-code@2.1.299"

@@ -11,7 +11,7 @@ builds a wheel must be declared here with what happens to the artifact.
   whose stamp decides the remote; setting the variable is a build error.
 * ``candidate``: wheels are uploaded only as evidence artifacts of the same run
   and the workflow contains no publish or attach command; the variable is left
-  unset (decisions in ``.forgejo/workflows/README.md``).
+  unset (decisions in ``.github/workflows/README.md``).
 
 The macOS package script ``package-macos-shell.sh`` still counts as a build
 step, so a workflow that called it would have to be declared here. Owner

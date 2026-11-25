@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOWS = Path(__file__).resolve().parents[4] / '.forgejo/workflows'
+WORKFLOWS = Path(__file__).resolve().parents[4] / '.github/workflows'
 REQUIRED_EXACT = ("git.internal.hyprial.com", "tailscale", "100.64.0.0/10")
 
 

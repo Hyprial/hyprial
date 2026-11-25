@@ -1,0 +1,451 @@
+# gate-pr-declarations —— 只读 PR 正文与 diff 的轻量声明门（2026-11-06 合并）。
+# 由三个原 workflow 合并而来，job id 与 job name 不变：
+#   declaration  ← skill-declaration.yml   Skill-Impact 声明须与 diff 一致
+#   impact       ← contract-impact.yml     改了已发布字段须同步 contract/ 或声明
+#   changelog    ← release-changelog.yml   release/** 的 PR 须带对应版本的 CHANGELOG 条目
+# 三者都跑在 ci-light host runner 上，不装项目依赖。
+
+name: gate-pr-declarations
+on:
+  pull_request:
+    # Union of the three former triggers. `edited` re-evaluates body
+    # declarations; `ready_for_review` came from release-changelog.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+concurrency:
+  group: gate-pr-declarations-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  declaration:
+    # ⭐ The visible name states the requirement, because the check name is the
+    # FIRST place a reader meets this gate -- the PR's checks list -- and a bare
+    # `declaration` says nothing there. The step below already prints precise
+    # instructions, but those live in the job LOG, which is a second click.
+    #
+    # Measured 2026-09-11: #463 re-ran this job SIX times (8275 8279 8281 8282
+    # 8283 8311), every run red for the same missing line. Re-running cannot make
+    # a PR body grow a line, so six attempts means the instruction never reached
+    # the person -- not that they ignored it. The same pit had already held up
+    # #454 for a day.
+    #
+    # ⚠️ Renaming a check can silently disable a branch-protection requirement
+    # that references it by name. Verified before changing it: at the time, both
+    # `main` and `dev` had enable_status_check=false and status_check_contexts=null,
+    # so no protection rule named this check.
+    #
+    # ⛔⛔ THAT PREMISE HAS EXPIRED. Allen approved required status checks on
+    # 2026-09-11, hours after the reading above. Required checks are pinned BY
+    # NAME, so:
+    #   ⇒ this name is now LOAD-BEARING and may not be edited freely
+    #   ⇒ ORDER MATTERS: merge the rename FIRST, then add the final name to
+    #     status_check_contexts. Enabling the requirement against the OLD name and
+    #     then merging a rename leaves a required check pointing at a name that no
+    #     longer reports — ⛔ and that failure is SILENT, which is the exact risk
+    #     the reading above was taken to rule out.
+    # ⇒ ⭐ The condition was written down as a condition, which is the only reason
+    #   its expiry was catchable. Caught by hq-adjutant, not by me.
+    #
+    # ⛔⛔ THIS NAME IS NOW FROZEN. Do not edit it again without also updating
+    # `status_check_contexts` in the same change.
+    #
+    # Why the statement is phrased this way: the earlier comment asserted a fact
+    # about the OUTSIDE WORLD ("no rule references this check"), which anyone can
+    # invalidate without touching this file. This one asserts a fact about THIS
+    # FILE ("the name is settled"), which is the only kind of premise its author
+    # can actually be responsible for. hq-adjutant's reframing.
+    #
+    # ⚠️ It needed saying because the name has already run under THREE values --
+    # measured in CI history: `declaration` (925 runs), one intermediate draft
+    # (1), and the current one (2). ⇒ "Merge the rename first" was therefore too
+    # weak a rule: pinning a required check while the name is still in motion
+    # fails for "still being renamed" rather than for "renamed", and fails just as
+    # silently.
+    #
+    # ⭐ And the shape is deliberate: the key token `Skill-Impact:` comes FIRST,
+    # because check names are truncated in list views -- truncation eats the tail,
+    # so the searchable part must lead. ⛔ Do not "improve" this by moving the
+    # prose in front of the token.
+    #
+    # ⛔⛔ The name must be true for ALL FOUR ways this job fails, not just the
+    # common one. An earlier draft read 'PR body must contain a "Skill-Impact:"
+    # line' -- correct for exit 1 and ACTIVELY WRONG for exits 2-4, where the
+    # line is present and something else is off. The four:
+    #   1 no Skill-Impact line in the body
+    #   2 declared `updated` but the diff touches no skill file
+    #   3 `not-needed:` with an empty reason
+    #   4 a value that is neither `updated` nor `not-needed: <reason>`
+    # ⇒ Exit 2 is reachable on the ordinary path: an author who adds the line
+    #   BEFORE the skill edit lands gets a red that, under the earlier name,
+    #   contradicted itself. Flagged by hyprial-developer on #463 before it
+    #   shipped. ⇒ So the name states the CONTRACT (declare it, and have it
+    #   match the diff) rather than one of its violations -- the same
+    #   guard-the-property rule this repo keeps relearning.
+    name: "Skill-Impact: declare it in the PR body, and make it match the diff"
+    # 2026-11-03 (Allen): skill-impact-class gates move off the shared
+    # ubuntu-latest pool onto the ci-light host runner — this job is a pure
+    # body/diff gate (grep, sed, git) and needs no project environment. The
+    # instance origin follows the pool: on the host, GITHUB_SERVER_URL names
+    # an unresolvable container-only host, so the fetch below probes and
+    # falls back to http://forgejo:3000 (MagicDNS name of the Forgejo node).
+    runs-on: ci-light
+    timeout-minutes: 5
+    steps:
+      - name: Record start CI conditions
+        env:
+          CONDITIONS_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          emit_unavailable() {
+            at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unavailable)
+            line="CI_CONDITIONS phase=start job=${GITHUB_JOB:-unknown} run=${GITHUB_RUN_ID:-unknown} scope=vm-container instrument=unavailable error=script-unavailable reason=$1 at=${at}"
+            printf '%s\n' "$line" >> "${RUNNER_TEMP}/ci-conditions-${GITHUB_JOB:-unknown}.txt" 2>/dev/null || true
+            printf '%s\n' "$line"
+          }
+          # ci-light is a host-mode runner: GITHUB_SERVER_URL names a
+          # container-only host that does not resolve there. When this runner
+          # cannot resolve it, reach the instance by its MagicDNS name instead
+          # (http://forgejo:3000, measured reachable from the HQ host). Every
+          # pool that resolves the default keeps using it unchanged; non-HTTP
+          # origins (file:// in tests) are kept verbatim.
+          origin="${GITHUB_SERVER_URL%/}"
+          origin_scheme="$(printf '%s' "${origin}" | sed -E 's#^([a-zA-Z]+)://.*$#\1#')"
+          if [ "${origin_scheme}" = "http" ] || [ "${origin_scheme}" = "https" ]; then
+            if ! python3 -c 'import socket,sys; socket.getaddrinfo(sys.argv[1],None)' \
+                 "$(printf '%s' "${origin}" | sed -E 's#^[a-zA-Z]+://##; s#[/:?].*$##')" 2>/dev/null; then
+              origin="http://forgejo:3000"
+            fi
+          fi
+          conditions_repo="${RUNNER_TEMP}/ci-conditions-repo"
+          reason=
+          rm -rf "${conditions_repo}" 2>/dev/null || true
+          if ! git init -q "${conditions_repo}" 2>/dev/null; then
+            reason=git-init-failed
+          elif ! git -C "${conditions_repo}" remote add origin \
+            "${origin:-${GITHUB_SERVER_URL%/}}/${GITHUB_REPOSITORY}.git" 2>/dev/null; then
+            reason=git-remote-failed
+          elif ! GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="http.${origin}/.extraHeader" \
+            GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+              git -C "${conditions_repo}" fetch -q --depth=1 origin "${CONDITIONS_SHA}" 2>/dev/null; then
+            reason=git-fetch-failed
+          elif ! git -C "${conditions_repo}" show \
+            "${CONDITIONS_SHA}:scripts/ci/ci-conditions.sh" \
+            > "${RUNNER_TEMP}/ci-conditions.sh" 2>/dev/null; then
+            reason=git-show-failed
+          fi
+          if [ -n "$reason" ]; then
+            emit_unavailable "$reason"
+          elif ! bash "${RUNNER_TEMP}/ci-conditions.sh" start; then
+            emit_unavailable script-exec-failed
+          fi
+          exit 0
+
+      - name: Require a Skill-Impact declaration
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # The container has no ambient git credentials; it reaches the
+          # instance over the runner-mapped internal origin
+          # (${GITHUB_SERVER_URL}, http://tailscale:3000/ on this instance),
+          # NOT the Cloudflare tunnel in front of code.hyprial.com -- the
+          # tunnel cost this gate three whole 5:00 fetch timeouts on
+          # 2026-09-14 (runs 10984/10990/11033). The run-scoped token rides
+          # in an extraHeader keyed to that same URL, never in the remote
+          # URL where it would be echoed.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          # Says which event action produced this run. Without it, "the gate did
+          # not re-run" and "the gate re-ran and still saw the old body" look
+          # identical from the outside -- and telling those two apart is the
+          # whole point of the `edited` trigger above.
+          echo "declaration gate: event action = ${EVENT_ACTION:-<none>}"
+          origin="${GITHUB_SERVER_URL%/}"
+          origin_scheme="$(printf '%s' "${origin}" | sed -E 's#^([a-zA-Z]+)://.*$#\1#')"
+          if [ "${origin_scheme}" = "http" ] || [ "${origin_scheme}" = "https" ]; then
+            if ! python3 -c 'import socket,sys; socket.getaddrinfo(sys.argv[1],None)' \
+                 "$(printf '%s' "${origin}" | sed -E 's#^[a-zA-Z]+://##; s#[/:?].*$##')" 2>/dev/null; then
+              origin="http://forgejo:3000"
+            fi
+          fi
+          line="$(printf '%s\n' "${PR_BODY:-}" | grep -iE '^[[:space:]]*Skill-Impact:' | head -1 || true)"
+          if [ -z "$line" ]; then
+            echo "::error::PR 正文缺少 Skill-Impact 声明。"
+            echo "在 PR 正文加一行:"
+            echo "  Skill-Impact: updated"
+            echo "或"
+            echo "  Skill-Impact: not-needed: <为什么这次改动不影响能力面>"
+            exit 1
+          fi
+          printf 'found declaration: %s\n' "$line"
+          value="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*[Ss]kill-[Ii]mpact:[[:space:]]*//; s/[[:space:]]+$//')"
+
+          # The diff is read for BOTH declarations, not just `updated`.
+          #
+          # ⚠️ It used to be read only inside the `updated` branch, and that
+          # asymmetry is the whole defect this block fixes: `not-needed` was
+          # accepted on the strength of a non-empty reason alone, so a PR could
+          # declare "no capability impact" while its diff edited the capability
+          # surface, and the gate went GREEN. A gate that fails in the direction
+          # of passing is worse than one that fails red: red is reported, green
+          # is believed. Found on #632, which declared `not-needed` with the
+          # reason "the gate's match surface does not include template paths" --
+          # a premise that #324 had already made false.
+          git init -q repo && cd repo
+          git remote add origin \
+            "${origin:-${GITHUB_SERVER_URL%/}}/${GITHUB_REPOSITORY}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${origin}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+            git fetch -q --depth=50 origin "$BASE_SHA" "$HEAD_SHA"
+          # The branch may be older than the advertised base tip. The gate
+          # therefore needs their common ancestor, which the first shallow
+          # slice is not guaranteed to contain. Deepen only while the repo is
+          # shallow and stop after three bounded rounds.
+          merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true)"
+          for _ in 1 2 3; do
+            if [ -n "$merge_base" ] || \
+               [ "$(git rev-parse --is-shallow-repository)" != true ]; then
+              break
+            fi
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="http.${origin}/.extraHeader" \
+            GIT_CONFIG_VALUE_0="Authorization: token ${GITHUB_TOKEN}" \
+              git fetch -q --deepen=100 origin "$BASE_SHA" "$HEAD_SHA"
+            merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true)"
+          done
+          if [ -z "$merge_base" ]; then
+            echo "::error::unable to determine merge-base for BASE_SHA and HEAD_SHA after bounded history deepening"
+            exit 2
+          fi
+          # What counts as the capability surface, stated by concept rather
+          # than by today's paths: anything that IS a skill document, anything
+          # that BECOMES one, and anything inside a skills/ tree. One pattern,
+          # used by both branches -- a second list of paths somewhere else is
+          # how the first blind spot survived (#324).
+          changed="$(git diff --name-only "$merge_base" "$HEAD_SHA" \
+            | grep -E '(^|/)(SKILL[^/]*\.md$|skills/)' || true)"
+          cd ..
+
+          case "$value" in
+            updated)
+              if [ -z "$changed" ]; then
+                echo "::error::声明为 'updated',但 diff 中没有 skill 文件改动。"
+                echo "改成 'not-needed: <理由>',或真的更新对应 skill。"
+                exit 1
+              fi
+              printf 'skill files changed:\n%s\n' "$changed"
+              ;;
+            not-needed:*)
+              reason="$(printf '%s' "$value" \
+                | sed -E 's/^not-needed:[[:space:]]*//; s/[[:space:]]+$//')"
+              if [ -z "$reason" ]; then
+                echo "::error::'not-needed' 必须给出理由:Skill-Impact: not-needed: <理由>"
+                exit 1
+              fi
+              # The reverse check. A reason is a claim about the diff, so the
+              # diff decides whether the claim can stand -- exactly as it does
+              # for `updated`. Without this, the two declarations are not
+              # symmetric: one is checked against reality and the other is
+              # taken at its word, and the unchecked one is the one that says
+              # "nothing to see here".
+              if [ -n "$changed" ]; then
+                echo "::error::声明为 'not-needed',但 diff 动了能力面文件:"
+                printf '%s\n' "$changed"
+                echo "改成 'Skill-Impact: updated',或把这些文件移出本 PR。"
+                echo "(理由写得再充分也不改变 diff —— 判据是 diff,不是理由。)"
+                exit 1
+              fi
+              printf 'declared not-needed: %s\n' "$reason"
+              ;;
+            *)
+              echo "::error::无法识别的 Skill-Impact 值: '$value'"
+              echo "只接受 'updated' 或 'not-needed: <理由>'。"
+              exit 1
+              ;;
+          esac
+
+      - name: Record end CI conditions
+        if: always()
+        run: |
+          if [ -r "${RUNNER_TEMP}/ci-conditions.sh" ]; then
+            bash "${RUNNER_TEMP}/ci-conditions.sh" end || true
+          else
+            at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unavailable)
+            line="CI_CONDITIONS phase=end job=${GITHUB_JOB:-unknown} run=${GITHUB_RUN_ID:-unknown} scope=vm-container instrument=unavailable error=script-unavailable reason=script-file-missing at=${at}"
+            printf '%s\n' "$line" >> "${RUNNER_TEMP}/ci-conditions-${GITHUB_JOB:-unknown}.txt" 2>/dev/null || true
+            printf '%s\n' "$line"
+          fi
+          exit 0
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: |
+          if [ -r "${RUNNER_TEMP}/ci-conditions.sh" ]; then
+            bash "${RUNNER_TEMP}/ci-conditions.sh" artifact || true
+          else
+            printf 'CI_CONDITIONS phase=artifact job=%s run=%s scope=vm-container instrument=unavailable error=artifact-upload-failed reason=script-file-missing at=%s\n' \
+              "${GITHUB_JOB:-unknown}" "${GITHUB_RUN_ID:-unknown}" \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unavailable)"
+          fi
+          echo "artifact upload failed/timeout: ci_conditions_artifact" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+  impact:
+    # Key token first: check names are truncated in list views, and the
+    # searchable part must lead (same shape rule as the Skill-Impact gate).
+    # The name states the contract for BOTH failure modes: drift without sync
+    # (exit 1) and an unreadable increment (exit 2, fail-closed) -- the latter
+    # is "cannot verify the sync", which this gate also refuses.
+    name: "Contract-Impact: sync contract/ when published fields change, or declare the release"
+    # 2026-11-03 (Allen): skill-impact-class gates move onto the ci-light host
+    # runner; this gate is pure body/diff + one stdlib script. The script is
+    # kept 3.9-compatible (no dataclass slots=) so plain python3 suffices —
+    # the host interpreter is 3.9.6 and the job installs nothing.
+    runs-on: ci-light
+    # 15, and the number comes from measurement, not generosity: on 2026-09-15
+    # the runner→Forgejo HTTPS fetch path was extremely slow repo-wide --
+    # this job's own runs: #10983 timed out at exactly 10:00, #11032 at
+    # exactly 10:00, #10989 SUCCEEDED in 6m48s; skill-declaration's
+    # `updated` path (same transport, depth=50) hit its 5:00 timeout three
+    # times on this very PR (#10984 #10990 #11033) while `not-needed` runs
+    # elsewhere finished in 1-3 seconds. A timeout ends a hang, not a slow
+    # fetch: 15min is ~2x the slowest SUCCESSFUL fetch observed.
+    timeout-minutes: 15
+    steps:
+      - name: Require contract sync or a declared release
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Same auth shape as tests.yml / skill-declaration.yml: the
+          # container has no ambient git credentials, so use the run-scoped
+          # token via GIT_ASKPASS.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          # Says which event action produced this run; without it, "the gate
+          # did not re-run" and "the gate re-ran and still saw the old body"
+          # look identical from the outside.
+          echo "contract-impact gate: event action = ${EVENT_ACTION:-<none>}"
+          printf '%s' "${PR_BODY:-}" > pr-body.txt
+          # Host runners cannot resolve the container-only host in
+          # GITHUB_SERVER_URL; fall back to the instance's MagicDNS name
+          # (http://forgejo:3000). The askpass below is host-agnostic.
+          # Non-HTTP origins (file:// in tests) are kept verbatim.
+          origin="${GITHUB_SERVER_URL%/}"
+          origin_scheme="$(printf '%s' "${origin}" | sed -E 's#^([a-zA-Z]+)://.*$#\1#')"
+          if [ "${origin_scheme}" = "http" ] || [ "${origin_scheme}" = "https" ]; then
+            if ! python3 -c 'import socket,sys; socket.getaddrinfo(sys.argv[1],None)' \
+                 "$(printf '%s' "${origin}" | sed -E 's#^[a-zA-Z]+://##; s#[/:?].*$##')" 2>/dev/null; then
+              origin="http://forgejo:3000"
+            fi
+          fi
+
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init -q repo
+          # 2026-09-15: fetch goes through the instance's INTERNAL endpoint
+          # rather than the public code.hyprial.com tunnel -- the tunnel was
+          # the slow path behind tonight's #508 and this job's own 10:00
+          # timeouts (#10983, #11032) while an identical run over a good
+          # window finished in 6m48s (#10989). The origin resolves per pool:
+          # the container default or http://forgejo:3000 on host runners.
+          git -C repo remote add origin \
+            "${origin:-${GITHUB_SERVER_URL%/}}/${GITHUB_REPOSITORY}.git"
+          # 2026-09-15 measurement: the runner→Forgejo HTTPS path can take
+          # minutes for what is normally seconds, so fetch the SMALLEST slice
+          # that can answer (depth=30 covers PR branches that merge dev
+          # regularly, which this repo's discipline requires), and deepen in
+          # bounded +100 rounds only when merge-base is unreachable.
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C repo fetch -q --depth=30 origin "$BASE_SHA" "$HEAD_SHA"
+          # The check diffs merge-base(base,head)..head, which a shallow fetch
+          # may not reach. Deepen in bounded rounds; if the merge-base is still
+          # unreachable the script itself fails closed (exit 2) rather than
+          # reporting a measured zero.
+          for _ in 1 2 3; do
+            if GIT_ASKPASS="${ASKPASS}" git -C repo merge-base \
+                 "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1; then
+              break
+            fi
+            GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+              git -C repo fetch -q --deepen=100 origin "$BASE_SHA" "$HEAD_SHA"
+          done
+          rm -f "${ASKPASS}"
+
+          # Run the script FROM THE HEAD TREE, not from whatever this runner
+          # has lying around: the PR under test must be judged by its own
+          # definition of the check (a PR may legitimately refine the rule in
+          # the same increment, and that refinement is part of the review).
+          git -C repo show "$HEAD_SHA:scripts/verify/check_contract_impact.py" \
+            > check_contract_impact.py
+          python3 check_contract_impact.py --repo repo \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --pr-body-file pr-body.txt
+
+  changelog:
+    # Release PRs only. It also runs on `edited`: a skipped run on an edit
+    # would otherwise replace a red changelog status for the same head.
+    if: startsWith(github.base_ref, 'release/')
+    # 2026-11-03 (Allen): skill-impact-class gates move onto the ci-light host
+    # runner. This gate is one stdlib python3 step over the checked-out tree;
+    # the host interpreter (3.9.6) satisfies the script. actions/checkout
+    # derives its fetch URL from the runner context, so the step below pins
+    # server-url to an origin the current runner can actually resolve
+    # (MagicDNS http://forgejo:3000 on host runners).
+    runs-on: ci-light
+    timeout-minutes: 5
+    steps:
+      - name: Resolve an instance origin this runner can reach
+        run: |
+          set -euo pipefail
+          origin="${GITHUB_SERVER_URL%/}"
+          origin_scheme="$(printf '%s' "${origin}" | sed -E 's#^([a-zA-Z]+)://.*$#\1#')"
+          if [ "${origin_scheme}" = "http" ] || [ "${origin_scheme}" = "https" ]; then
+            if ! python3 -c 'import socket,sys; socket.getaddrinfo(sys.argv[1],None)' \
+                 "$(printf '%s' "${origin}" | sed -E 's#^[a-zA-Z]+://##; s#[/:?].*$##')" 2>/dev/null; then
+              origin="http://forgejo:3000"
+            fi
+          fi
+          printf 'CHECKOUT_ORIGIN=%s\n' "${origin}" >> "${GITHUB_ENV}"
+          echo "checkout origin: ${origin}"
+      - name: Check out the pull request head with history
+        uses: actions/checkout@v4
+        with:
+          # The step below runs a script that comes from the pull request. With the
+          # default persist-credentials the token sits in .git/config where PR-supplied
+          # code can read it, so the credential must not survive the checkout.
+          persist-credentials: false
+          fetch-depth: 0
+          server-url: ${{ env.CHECKOUT_ORIGIN }}
+      - name: Require a changelog entry for the targeted release
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: python3 scripts/ci/check_release_changelog.py --root "$PWD"

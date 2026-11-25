@@ -203,7 +203,7 @@ def test_publish_refuses_key_outside_scope_before_any_put(wheels, s3):
 
 
 def test_wheel_ci_publishes_before_github_dependency():
-    doc = yaml.safe_load((ROOT / ".forgejo/workflows/wheel-release.yml").read_text())
+    doc = yaml.safe_load((ROOT / ".github/workflows/wheel-release.yml").read_text())
     steps = doc["jobs"]["build-publish"]["steps"]
     index = next(i for i, step in enumerate(steps) if "publish_wheels.py" in step.get("run", ""))
     assert "--track" in steps[index]["run"] and '"${WHEEL_TRACK}"' in steps[index]["run"]

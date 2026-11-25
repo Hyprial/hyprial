@@ -120,7 +120,7 @@ mock 数据只有一个来源（owner 2026-11-15）：例子只在契约 `contra
 
 ## 提交与 PR
 
-- Git flow 以 [`.forgejo/git-flow.json`](.forgejo/git-flow.json) 为机器可读规定；所有完成的
+- Git flow 以 [`.github/git-flow.json`](.github/git-flow.json) 为机器可读规定；所有完成的
   修改先进入 dev，release 分支仅作回流 dev 的发布准备。CI 按完整文件差异选择套件。
 - 从目标分支新 head 建短分支；分支名用 `<type>/<slug>`（type 与提交类型同一套：`feat/fix/docs/test/refactor/ci/design/intg…`）；
   conventional commit（`feat/fix/docs/test/refactor: …`），每个提交可读、可测试。

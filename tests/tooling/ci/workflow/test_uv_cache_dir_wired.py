@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-TESTS_WORKFLOW = ROOT / ".forgejo" / "workflows" / "gate-pr-hygiene.yml"
+TESTS_WORKFLOW = ROOT / ".github" / "workflows" / "gate-pr-hygiene.yml"
 STEP_NAME = "Point the uv cache at the shared CI cache"
 GATE_SCRIPT = "check_pr_hygiene.py"
 

@@ -10,8 +10,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
 WORKFLOWS = [
-    ROOT / ".forgejo" / "workflows" / "e2e-macos-isolated.yml",
-    ROOT / ".forgejo" / "workflows" / "e2e-macos-credentialed.yml",
+    ROOT / ".github" / "workflows" / "e2e-macos-isolated.yml",
+    ROOT / ".github" / "workflows" / "e2e-macos-credentialed.yml",
 ]
 
 SCENARIO_RE = re.compile(r"contract/e2e/run-[a-z0-9-]+\.py")

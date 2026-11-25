@@ -119,7 +119,7 @@ class Scanner(CommandMethods, SourceMethods):
             if self.root == workflows.ROOT.resolve():
                 paths = workflows.workflow_files()
             else:
-                paths = sorted((self.root / ".forgejo/workflows").glob("*.y*ml"))
+                paths = sorted((self.root / ".github/workflows").glob("*.y*ml"))
             documents = {str(p.relative_to(self.root)): p.read_text() for p in paths}
         for file, text in documents.items():
             self.workflow(file, text)

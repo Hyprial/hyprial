@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOWS = ROOT / ".forgejo/workflows"
+WORKFLOWS = ROOT / ".github/workflows"
 WIP_WORKFLOWS = ("gate-python", "gate-gui", "native-conformance", "mock-model-harness-e2e")
 NOT_WIP = "needs.cli-help-inventory.outputs.wip != 'true'"
 

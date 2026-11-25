@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 def workflow(name):
-    return yaml.safe_load((ROOT / f".forgejo/workflows/{name}.yml").read_text())
+    return yaml.safe_load((ROOT / f".github/workflows/{name}.yml").read_text())
 
 
 def git(cwd, *args):

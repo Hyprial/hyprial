@@ -28,8 +28,8 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WHEEL = ROOT / ".forgejo/workflows/wheel-release.yml"
-PUBLISH = ROOT / ".forgejo/workflows/github-publish.yml"
+WHEEL = ROOT / ".github/workflows/wheel-release.yml"
+PUBLISH = ROOT / ".github/workflows/github-publish.yml"
 
 
 def _job(path: Path, name: str) -> dict:

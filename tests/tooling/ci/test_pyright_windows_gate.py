@@ -172,7 +172,7 @@ def test_only_windows_missing_stdlib_attributes_are_kept() -> None:
 def test_the_gate_pins_pyright_without_a_lock_entry_and_runs_in_gate_python() -> None:
     assert GATE.DEFAULT_PYRIGHT.startswith("uvx --from pyright==")
     assert "pyright" not in (ROOT / "uv.lock").read_text(encoding="utf-8")
-    workflow = (ROOT / ".forgejo" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
     job = workflow.split("\n  cli-help-inventory:\n", 1)[1].split("\n  tailcat-go:\n", 1)[0]
     assert "scripts/ci/check_windows_portability.py" in job
     assert "scripts/ci/check_pyright_windows.py \\\n            --base-ref \"$pyright_base\"" in job

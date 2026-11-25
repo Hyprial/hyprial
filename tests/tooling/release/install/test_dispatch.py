@@ -14,7 +14,7 @@ from test_publish import ROOT
 @pytest.mark.parametrize("wheel_fails", [False, True])
 def test_dispatches_exactly_one_wheel_build_before_github(tmp_path, track, moved, github_fails, wheel_fails):
     workflow, job = ("gate-python", "unit") if track == "internal" else ("release-nightly-promote", "promote")
-    doc = yaml.safe_load((ROOT / f".forgejo/workflows/{workflow}.yml").read_text())
+    doc = yaml.safe_load((ROOT / f".github/workflows/{workflow}.yml").read_text())
     step = next(s for s in doc["jobs"][job]["steps"] if
                 s["name"] == f"Dispatch the GitHub publication of the moved {track} tag")
     sha = "a" * 40
@@ -44,12 +44,12 @@ def test_dispatches_exactly_one_wheel_build_before_github(tmp_path, track, moved
     assert "github-publish.yml/dispatches" in calls[1]
     body = calls[0].split("--data ", 1)[1].split(" https://", 1)[0]
     assert json.loads(body) == {"ref": track, "inputs": {"track": track, "source_sha": sha}}
-    github = (ROOT / ".forgejo/workflows/github-publish.yml").read_text()
+    github = (ROOT / ".github/workflows/github-publish.yml").read_text()
     assert "Dispatch internal wheel build for this exact source" not in github
 
 
 def test_internal_noop_does_not_rebuild_wheels(tmp_path):
-    doc = yaml.safe_load((ROOT / ".forgejo/workflows/gate-python.yml").read_text())
+    doc = yaml.safe_load((ROOT / ".github/workflows/gate-python.yml").read_text())
     steps = doc["jobs"]["unit"]["steps"]
     mover = next(s for s in steps if s["name"] == "Move the track tags to the unit-green dev head")
     dispatch = next(s for s in steps if s["name"] == "Dispatch the GitHub publication of the moved internal tag")
@@ -59,12 +59,12 @@ def test_internal_noop_does_not_rebuild_wheels(tmp_path):
     assert 'if [[ "${MOVED_INTERNAL:-}" = "${GITHUB_SHA}" ]]' in dispatch["run"]
     # Nightly already exports promoted only after a real move; an unchanged
     # pointer has an empty output and the existing job condition skips dispatch.
-    nightly = yaml.safe_load((ROOT / ".forgejo/workflows/release-nightly-promote.yml").read_text())
+    nightly = yaml.safe_load((ROOT / ".github/workflows/release-nightly-promote.yml").read_text())
     step = next(s for s in nightly["jobs"]["promote"]["steps"] if s["name"].startswith("Dispatch the GitHub"))
     assert step["if"] == "success() && env.NIGHTLY_PUBLICATION_ENABLED == 'true' && steps.move.outputs.promoted != ''"
 
 
 def test_manual_wheel_dispatch_accepts_all_tracks():
-    text = (ROOT / ".forgejo/workflows/wheel-release.yml").read_text()
+    text = (ROOT / ".github/workflows/wheel-release.yml").read_text()
     for track in ("stable", "nightly", "internal"):
         assert f"workflow_dispatch:{track}" in text

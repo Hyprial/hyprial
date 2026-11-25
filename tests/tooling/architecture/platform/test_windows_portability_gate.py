@@ -452,8 +452,8 @@ def test_the_baseline_only_shrinks_and_every_entry_is_reviewed() -> None:
 def test_rule_ids_agree_across_gate_ci_and_pr_template() -> None:
     assert GATE.ADVISORY_RULES == frozenset()
     assert sorted(GATE.AST_RULES) == [f"W{n:03d}" for n in (*range(1, 16), 19, 20, 21)]
-    workflow = (ROOT / ".forgejo" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
-    template = (ROOT / ".forgejo" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
+    template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
     assert "W001-W015, W019-W021" in workflow and "--base-ref" in workflow
     assert "kernel/impl/manysys/**" in template
     for rule in ("W015", "W017", "W018", "W019", "W020", "W021"):

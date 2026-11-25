@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-WORKFLOW = ROOT / ".forgejo/workflows/ops-cancel-on-pr-close.yml"
+WORKFLOW = ROOT / ".github/workflows/ops-cancel-on-pr-close.yml"
 REPO = "HyprialOS/harness-bridge"
 BRANCH = "hotfix/example"
 TOKEN = "isolated-actions-token"

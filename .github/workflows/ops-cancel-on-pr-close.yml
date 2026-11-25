@@ -1,0 +1,180 @@
+name: ops-cancel-on-pr-close
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: ops-cancel-on-pr-close-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Cancel unfinished runs for the closed PR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          node <<'JS'
+          const fs = require('node:fs');
+          const env = process.env;
+          const canceled = [];
+          const skipped = [];
+          const receipts = [];
+          const failures = [];
+          const active = new Set(['queued', 'in_progress', 'waiting', 'requested', 'running']);
+          const token = env.GITHUB_TOKEN;
+          const redact = text => token ? String(text).split(token).join('[REDACTED]') : String(text);
+          let endpoint;
+
+          async function request(method, suffix) {
+            const response = await fetch(`${endpoint}${suffix}`, {
+              method,
+              headers: {Authorization: `token ${token}`, Accept: 'application/json'},
+              redirect: 'error',
+              signal: AbortSignal.timeout(30000),
+            });
+            return {status: response.status, body: await response.text()};
+          }
+
+          async function read(suffix) {
+            const response = await request('GET', suffix);
+            if (response.status !== 200) {
+              throw new Error(`GET ${suffix} HTTP=${response.status}\n${response.body}`);
+            }
+            try {
+              return JSON.parse(response.body);
+            } catch {
+              throw new Error(`GET ${suffix} invalid JSON\n${response.body}`);
+            }
+          }
+
+          function skipReason(run) {
+            const event = run.event || run.trigger_event || '';
+            if (event !== 'pull_request' && !event.startsWith('pull_request_')) {
+              return 'not-pull-request';
+            }
+            if (run.workflow_id === 'ops-cancel-on-pr-close.yml' || String(run.id) === env.GITHUB_RUN_ID) {
+              return 'cancellation-workflow';
+            }
+            if (!active.has(run.status)) return `inactive:${run.status}`;
+            if (run.is_fork_pull_request) return 'fork-pr';
+            let payload;
+            try {
+              payload = typeof run.event_payload === 'string'
+                ? JSON.parse(run.event_payload) : run.event_payload;
+            } catch {
+              return 'invalid-event-payload';
+            }
+            const pr = payload?.pull_request;
+            const headBranch = run.head_branch ?? pr?.head?.ref;
+            if (headBranch !== env.PR_HEAD_REF) return 'head-branch-mismatch';
+            if (pr?.head?.ref && pr.head.ref !== headBranch) return 'head-branch-conflict';
+            if (String(pr?.number ?? payload?.number) !== env.PR_NUMBER) return 'different-pr';
+            if (pr?.head?.repo?.full_name !== env.GITHUB_REPOSITORY) return 'head-repository-mismatch';
+            return null;
+          }
+
+          async function main() {
+            for (const name of ['GITHUB_TOKEN', 'GITHUB_API_URL', 'GITHUB_REPOSITORY',
+                                'GITHUB_STEP_SUMMARY', 'PR_HEAD_REF', 'PR_HEAD_REPO', 'PR_NUMBER']) {
+              if (!env[name]) throw new Error(`Missing ${name}`);
+            }
+            if (!/^[1-9][0-9]*$/.test(env.PR_NUMBER)) throw new Error('Invalid PR_NUMBER');
+            if (env.PR_HEAD_REPO !== env.GITHUB_REPOSITORY) {
+              skipped.push([null, 'fork-pr']);
+              return;
+            }
+            const api = new URL(env.GITHUB_API_URL);
+            if (api.username || api.password || api.search || api.hash) {
+              throw new Error('Invalid GITHUB_API_URL');
+            }
+            endpoint = `${api.href.replace(/\/$/, '')}/repos/` +
+              env.GITHUB_REPOSITORY.split('/').map(encodeURIComponent).join('/') + '/actions/runs';
+            const snapshot = [];
+            const seen = new Set();
+            for (let page = 1; ; page++) {
+              const query = new URLSearchParams({
+                ref: `refs/pull/${env.PR_NUMBER}/head`, page: String(page), limit: '50',
+              });
+              const result = await read(`?${query}`);
+              if (!Array.isArray(result.workflow_runs)) {
+                throw new Error('List response has no workflow_runs array');
+              }
+              if (!result.workflow_runs.length) break;
+              let added = 0;
+              for (const run of result.workflow_runs) {
+                if (!Number.isSafeInteger(run.id) || run.id <= 0) {
+                  throw new Error('List response has an invalid run ID');
+                }
+                if (seen.has(run.id)) {
+                  skipped.push([run.id, 'duplicate-list-entry']);
+                  continue;
+                }
+                seen.add(run.id);
+                snapshot.push(run);
+                added++;
+              }
+              if (!added) throw new Error('Pagination made no progress');
+            }
+            for (const run of snapshot) {
+              const reason = skipReason(run);
+              if (reason) {
+                skipped.push([run.id, reason]);
+                continue;
+              }
+              try {
+                const current = await read(`/${run.id}`);
+                if (current.id !== run.id) throw new Error(`run_id=${run.id} detail ID mismatch`);
+                const changed = skipReason(current);
+                if (changed) {
+                  skipped.push([run.id, `recheck:${changed}`]);
+                  continue;
+                }
+                let response;
+                try {
+                  response = await request('POST', `/${run.id}/cancel`);
+                } catch (error) {
+                  receipts.push(`run_id=${run.id} HTTP=transport-error`);
+                  throw error;
+                }
+                const receipt = `run_id=${run.id} HTTP=${response.status}`;
+                console.log(receipt);
+                receipts.push(receipt);
+                if (response.status !== 204) {
+                  failures.push(`${receipt}\n${response.body}`);
+                  continue;
+                }
+                const settled = await read(`/${run.id}`);
+                if (settled.id !== run.id) throw new Error(`run_id=${run.id} detail ID mismatch`);
+                if (settled.status === 'cancelled') {
+                  canceled.push(run.id);
+                } else if (['success', 'failure', 'skipped', 'completed'].includes(settled.status)) {
+                  skipped.push([run.id, `completed-during-cancel:${settled.status}`]);
+                } else {
+                  failures.push(`run_id=${run.id} cancellation not confirmed: ${settled.status}`);
+                }
+              } catch (error) {
+                failures.push(`run_id=${run.id} ${error.message}`);
+              }
+            }
+          }
+
+          main().catch(error => failures.push(error.message)).finally(() => {
+            const lines = [
+              `canceled=${JSON.stringify(canceled)}`,
+              `skipped=${JSON.stringify(skipped)}`,
+              ...receipts,
+            ];
+            for (const failure of failures) lines.push('failure:\n````\n' + failure + '\n````');
+            const summary = redact(lines.join('\n') + '\n');
+            fs.appendFileSync(env.GITHUB_STEP_SUMMARY, summary);
+            console.log(redact(`canceled=${JSON.stringify(canceled)}`));
+            if (failures.length) process.exitCode = 1;
+          });
+          JS

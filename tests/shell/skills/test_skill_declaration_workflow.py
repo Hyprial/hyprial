@@ -10,7 +10,7 @@ import yaml
 
 
 WORKFLOW = (
-    Path(__file__).resolve().parents[3] / '.forgejo/workflows/gate-pr-declarations.yml'
+    Path(__file__).resolve().parents[3] / '.github/workflows/gate-pr-declarations.yml'
 )
 
 
@@ -300,7 +300,7 @@ def test_the_gate_does_not_see_ordinary_files() -> None:
         "docs/reference/p4-squire.md",
         "notes/e2e-review-pr324.md",
         # The gate's own machinery is not capability-surface documentation.
-        ".forgejo/workflows/gate-pr-declarations.yml",
+        ".github/workflows/gate-pr-declarations.yml",
         'tests/shell/plugins/test_plugin_load.py',
     ]
     assert _gate_sees(ordinary) == set()

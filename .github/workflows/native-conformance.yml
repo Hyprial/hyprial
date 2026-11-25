@@ -1,0 +1,816 @@
+# native-conformance —— actor engine ABI v1 conformance gate (KP-027 W2, 2026-11-14).
+#
+# Decision record (file header; no inline comments by repository rule):
+# - Owner 2026-11-15 (CI load): the emulated linux/arm64 lane and the single
+#   macOS arm64 lane run only when `plan` outputs native_arm64=true, i.e. the
+#   native scope is selected AND the event is a dev push, schedule, manual
+#   dispatch or a pull_request into main or release/** (rule in
+#   scripts/ci/ci-plan.mjs, one place). Any other pull_request does not select
+#   them; `native-summary` then requires both to be `skipped` and says
+#   NOT_RUN for them instead of counting them as passed. A WIP pull request
+#   (title starts with `WIP:`) selects no lane at all (plan wip=true, native
+#   false, rule in ci-plan.mjs) and the summary says NOT_RUN. `edited` is a
+#   trigger so that removing the prefix plans the full set. Details and the
+#   Forgejo assumptions live in .forgejo/workflows/README.md.
+# - Mandatory backend: `reference-abi` stays green whenever the verified diff
+#   selects the native ABI scope; dispatch, schedule, main and release routes
+#   always select it (native-abi-spec §14/§15). It runs here on release-ci
+#   against the locked test environment. P8 removed the pykka backend, so its
+#   job is gone with it.
+# - `plan` reuses scripts/ci/ci-plan.mjs and the complete merge-base diff.
+#   Unknown inputs fail closed to the full matrix; a failed PR comparison fails
+#   `plan` and `native-summary` instead of selecting documentation-only. The five
+#   existing suite job names are unchanged, and the summary distinguishes an
+#   unselected scope from executed evidence.
+# - Native release gate: three consecutive `CONFORMANCE VERDICT: PASS` runs on
+#   linux/amd64, linux/arm64 (QEMU; owner ruling 2026-11-13) and darwin/arm64.
+#   A BLOCKED run is a red job, never skipped.
+# - FREE-03 requires a free-threaded interpreter: the native jobs install the
+#   uv-managed 3.14t and export HYPRIAL_CONFORMANCE_FT_PYTHON/PATH from the
+#   `--free-threaded --conformance` build before the three native runs.
+# - The 3.15t free-threaded reference-abi job is non-blocking (spec §14 D12):
+#   it is job-level continue-on-error so an interpreter/toolchain regression
+#   cannot hide a mandatory failure, and it never tolerates a red mandatory job.
+# - `plan` and the five suite jobs carry the shared CI conditions tail; its upload
+#   is bounded and a failed/timeout upload is written to the job summary. The
+#   routing-only summary has no checkout or payload artifact.
+# - Checkout uses the internal origin: the literal host origin on macOS
+#   (release-macos-arm64 is a host runner; `tailscale` does not resolve there)
+#   and ${GITHUB_SERVER_URL} inside job containers. Authenticated git steps
+#   carry their own step-level GITHUB_TOKEN.
+name: native-conformance
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [dev, main, "intg/**", "release/**", "refactor/reconstruct-modules"]
+  push:
+    branches: [dev]
+
+concurrency:
+  group: native-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: [release-ci]
+    timeout-minutes: 15
+    outputs:
+      native: ${{ steps.scope.outputs.native }}
+      native_arm64: ${{ steps.scope.outputs.native_arm64 }}
+      wip: ${{ steps.scope.outputs.wip }}
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Select native conformance from the verified change scope
+        id: scope
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/ci-scope-askpass-${GITHUB_RUN_ID}"
+          trap 'rm -f "$ASKPASS"' EXIT
+          cat >"$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 node scripts/ci/ci-plan.mjs
+
+      - name: Verify shared CI policy
+        run: node --test --test-concurrency=2 scripts/ci/ci-scope.test.mjs scripts/ci/ci-plan.test.mjs
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  reference-abi:
+    needs: [plan]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.native == 'true'
+    runs-on: [release-ci]
+    timeout-minutes: 30
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "300"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Ensure uv and the pinned CPython
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Install Python and locked test dependencies
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12 --extra test
+
+      - name: Run the reference-abi conformance suite
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          uv run --locked --python 3.12 --no-sync pytest conformance/actor_engine \
+            --actor-backend=reference-abi -q
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  native-linux-amd64:
+    needs: [plan]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.native == 'true'
+    runs-on: [release-ci]
+    timeout-minutes: 90
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "300"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Assert the build host is Linux/x86_64
+        run: |
+          set -euo pipefail
+          host="$(uname -s)/$(uname -m)"
+          test "${host}" = "Linux/x86_64" || {
+            echo "native-linux-amd64 needs Linux/x86_64; this host reports ${host}"
+            exit 1
+          }
+          echo "build host ${host}"
+
+      - name: Ensure uv and the pinned CPython
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Install Python and locked test dependencies
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12 --extra test
+
+      - name: Ensure pinned Rust 1.93.1
+        timeout-minutes: 20
+        env:
+          HYPRIAL_E2E_ROOT: ${{ runner.temp }}/native-conformance-rust
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Install free-threaded CPython 3.14t for FREE-03
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-cpython-mirror.sh 3.14t
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-python uv python install 3.14t
+
+      - name: Build and stage the conformance native module
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          PYO3_PYTHON="$PWD/.venv/bin/python" \
+            bash scripts/build/build_native_engine.sh --conformance
+
+      - name: Verify the staged native extension imports
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import hyprial._core.actors as actors
+          assert actors.ENGINE_ABI_VERSION == 1, actors.ENGINE_ABI_VERSION
+          print(f"native extension={actors.__name__} ABI={actors.ENGINE_ABI_VERSION}")
+          PY
+
+      - name: Build the free-threaded conformance module
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          out="$(bash scripts/build/build_native_engine.sh --free-threaded --conformance)"
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -E '^HYPRIAL_CONFORMANCE_FT_(PYTHON|PATH)=' >> "$GITHUB_ENV"
+
+      - name: Run native conformance three consecutive times
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "--- native conformance run ${attempt}/3 ---"
+            output="$(uv run --locked --python 3.12 --no-sync pytest conformance/actor_engine \
+              --actor-backend=native -q --verdict-json="native-verdict-${attempt}.json" 2>&1)" || {
+              code=$?
+              printf '%s\n' "$output"
+              echo "native conformance run ${attempt} exited ${code}"
+              exit "${code}"
+            }
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | grep -q 'CONFORMANCE VERDICT: PASS' || {
+              echo "native conformance run ${attempt} did not print CONFORMANCE VERDICT: PASS"
+              exit 1
+            }
+          done
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  native-linux-arm64:
+    needs: [plan]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.native_arm64 == 'true'
+    runs-on: [release-linux-arm64]
+    container:
+      image: quay.io/pypa/manylinux2014_aarch64@sha256:db68ee9e5e879da5945dfbc8cab446f02245da6522aca0a9e4cda9256c911d2f
+      options: "--platform linux/arm64"
+    timeout-minutes: 180
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "300"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Assert the build host is Linux/aarch64
+        run: |
+          set -euo pipefail
+          host="$(uname -s)/$(uname -m)"
+          test "${host}" = "Linux/aarch64" || {
+            echo "native-linux-arm64 needs Linux/aarch64; this container reports ${host}"
+            exit 1
+          }
+          glibc="$(ldd --version | awk 'NR == 1 {print $NF}')"
+          test "${glibc}" = "2.17" || {
+            echo "manylinux2014 must report glibc 2.17; this container reports ${glibc}"
+            exit 1
+          }
+          echo "build host ${host} glibc ${glibc}"
+
+      - name: Ensure uv and the pinned CPython
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh
+
+      - name: Install Python and locked test dependencies
+        # The aarch64 host has no persistent uv cache, so every run rebuilds
+        # eclipse-zenoh from its sdist. Run 57032 measured 30m40s at loadavg
+        # ~12; run 57063 exceeded the old 40m budget at loadavg 16-20 and was
+        # killed mid-build. This bounds dependency installation only; the
+        # conformance verdicts below are unchanged.
+        timeout-minutes: 75
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12 --extra test
+
+      - name: Ensure pinned Rust 1.93.1
+        timeout-minutes: 30
+        env:
+          HYPRIAL_E2E_ROOT: ${{ runner.temp }}/native-conformance-rust
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Install free-threaded CPython 3.14t for FREE-03
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-cpython-mirror.sh 3.14t
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-python uv python install 3.14t
+
+      - name: Build and stage the conformance native module
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          PYO3_PYTHON="$PWD/.venv/bin/python" \
+            bash scripts/build/build_native_engine.sh --conformance
+
+      - name: Verify the staged native extension imports
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import hyprial._core.actors as actors
+          assert actors.ENGINE_ABI_VERSION == 1, actors.ENGINE_ABI_VERSION
+          print(f"native extension={actors.__name__} ABI={actors.ENGINE_ABI_VERSION}")
+          PY
+
+      - name: Build the free-threaded conformance module
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          out="$(bash scripts/build/build_native_engine.sh --free-threaded --conformance)"
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -E '^HYPRIAL_CONFORMANCE_FT_(PYTHON|PATH)=' >> "$GITHUB_ENV"
+
+      - name: Run native conformance three consecutive times
+        timeout-minutes: 120
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "--- native conformance run ${attempt}/3 ---"
+            output="$(uv run --locked --python 3.12 --no-sync pytest conformance/actor_engine \
+              --actor-backend=native -q --verdict-json="native-verdict-${attempt}.json" 2>&1)" || {
+              code=$?
+              printf '%s\n' "$output"
+              echo "native conformance run ${attempt} exited ${code}"
+              exit "${code}"
+            }
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | grep -q 'CONFORMANCE VERDICT: PASS' || {
+              echo "native conformance run ${attempt} did not print CONFORMANCE VERDICT: PASS"
+              exit 1
+            }
+          done
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  native-darwin-arm64:
+    needs: [plan]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.native_arm64 == 'true'
+    runs-on: [release-macos-arm64]
+    timeout-minutes: 120
+    env:
+      UV_HTTP_TIMEOUT: "300"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "http://git.internal.hyprial.com:3000/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Assert the build host is Darwin/arm64
+        run: |
+          set -euo pipefail
+          host="$(uname -s)/$(uname -m)"
+          test "${host}" = "Darwin/arm64" || {
+            echo "native-darwin-arm64 needs Darwin/arm64; this host reports ${host}"
+            exit 1
+          }
+          echo "build host ${host}"
+
+      - name: Ensure uv and the uv cache
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          # No ci-ensure-cpython-mirror.sh here: it stages the Linux
+          # python-build-standalone archives only (uname -m maps to a GNU
+          # triple) and on this macOS host fetched the linux archive and
+          # failed (curl HTTP/2 framing, run 56986). The host already carries
+          # CPython 3.12.13 -- the KP-027 candidate darwin job built with
+          # exactly that interpreter -- so uv sync resolves it locally.
+
+      - name: Install Python and locked test dependencies
+        # The macOS host has no persistent uv cache, so every run re-downloads
+        # the full locked set from the network. Run 57004 took 22m15s inside
+        # the old 25m budget (<3m headroom); run 57032 hit that deadline
+        # mid-download. This bounds dependency installation only; the
+        # conformance verdicts below are unchanged.
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-sync uv sync --locked --python 3.12 --extra test
+
+      - name: Ensure pinned Rust 1.93.1
+        timeout-minutes: 25
+        env:
+          HYPRIAL_E2E_ROOT: ${{ runner.temp }}/native-conformance-rust
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ci-ensure-rust.sh
+
+      - name: Install free-threaded CPython 3.14t for FREE-03
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          unset UV_PYTHON_INSTALL_MIRROR
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-python uv python install 3.14t
+
+      - name: Build and stage the conformance native module
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          PYO3_PYTHON="$PWD/.venv/bin/python" \
+            bash scripts/build/build_native_engine.sh --conformance
+
+      - name: Verify the staged native extension imports
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          uv run --locked --python 3.12 --no-sync python - <<'PY'
+          import hyprial._core.actors as actors
+          assert actors.ENGINE_ABI_VERSION == 1, actors.ENGINE_ABI_VERSION
+          print(f"native extension={actors.__name__} ABI={actors.ENGINE_ABI_VERSION}")
+          PY
+
+      - name: Build the free-threaded conformance module
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          out="$(bash scripts/build/build_native_engine.sh --free-threaded --conformance)"
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -E '^HYPRIAL_CONFORMANCE_FT_(PYTHON|PATH)=' >> "$GITHUB_ENV"
+
+      - name: Run native conformance three consecutive times
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "--- native conformance run ${attempt}/3 ---"
+            output="$(uv run --locked --python 3.12 --no-sync pytest conformance/actor_engine \
+              --actor-backend=native -q --verdict-json="native-verdict-${attempt}.json" 2>&1)" || {
+              code=$?
+              printf '%s\n' "$output"
+              echo "native conformance run ${attempt} exited ${code}"
+              exit "${code}"
+            }
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | grep -q 'CONFORMANCE VERDICT: PASS' || {
+              echo "native conformance run ${attempt} did not print CONFORMANCE VERDICT: PASS"
+              exit 1
+            }
+          done
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  free-threaded-3-15t:
+    needs: [plan]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.native == 'true'
+    runs-on: [release-ci]
+    continue-on-error: true
+    timeout-minutes: 40
+    env:
+      HTTPS_PROXY: http://host.docker.internal:7896
+      HTTP_PROXY: http://host.docker.internal:7896
+      NO_PROXY: localhost,127.0.0.1,::1,tailscale,forgejo-tailscale,.ts.net,.internal.hyprial.com,code.hyprial.com
+      UV_HTTP_TIMEOUT: "300"
+      UV_HTTP_RETRIES: "10"
+    steps:
+      - name: Check out commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASKPASS="/tmp/hyprial-git-askpass-${GITHUB_RUN_ID}"
+          cat >"${ASKPASS}" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${ASKPASS}"
+          git init .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --depth=1 origin "${GITHUB_SHA}"
+          rm -f "${ASKPASS}"
+          git checkout --detach FETCH_HEAD
+          bash scripts/ci/ci-conditions.sh start
+
+      - name: Ensure uv
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          UV_VERSION=0.11.7 bash scripts/ci/ci-ensure-uv.sh
+          bash scripts/ci/ci-uv-cache.sh "${RUNNER_TEMP:-/tmp}/uv-cache"
+          bash scripts/ci/ci-ensure-cpython-mirror.sh 3.15t
+
+      - name: Install free-threaded CPython 3.15t
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-python uv python install 3.15t
+
+      - name: Run the reference-abi suite under 3.15t
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          venv="${RUNNER_TEMP:-/tmp}/native-conformance-315t"
+          uv venv --python 3.15t "${venv}"
+          source scripts/ci/ci-retry.sh
+          ci_retry_uv uv-pip uv pip install --python "${venv}/bin/python" 'pytest>=8.4,<9'
+          "${venv}/bin/python" -m pytest conformance/actor_engine \
+            --actor-backend=reference-abi -q
+
+      - name: Record end CI conditions
+        if: always()
+        run: bash scripts/ci/ci-conditions.sh end
+
+      - name: Upload CI conditions artifact
+        id: ci_conditions_artifact
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v3
+        env:
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+        with:
+          name: ci-conditions-${{ github.job }}
+          path: ${{ runner.temp }}/ci-conditions-${{ github.job }}.txt
+          if-no-files-found: error
+
+      - name: Report CI conditions artifact upload failure
+        if: always() && steps.ci_conditions_artifact.outcome == 'failure'
+        run: bash scripts/ci/ci-conditions.sh artifact
+
+  native-summary:
+    needs: [plan, reference-abi, native-linux-amd64, native-linux-arm64, native-darwin-arm64, free-threaded-3-15t]
+    if: always()
+    runs-on: ci-light
+    timeout-minutes: 2
+    steps:
+      - name: Aggregate native conformance results
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          NATIVE_SELECTED: ${{ needs.plan.outputs.native }}
+          NATIVE_ARM64_SELECTED: ${{ needs.plan.outputs.native_arm64 }}
+          WIP_SELECTED: ${{ needs.plan.outputs.wip }}
+          EVENT_NAME: ${{ github.event_name }}
+          RESULT_REFERENCE_ABI: ${{ needs.reference-abi.result }}
+          RESULT_NATIVE_LINUX_AMD64: ${{ needs.native-linux-amd64.result }}
+          RESULT_NATIVE_LINUX_ARM64: ${{ needs.native-linux-arm64.result }}
+          RESULT_NATIVE_DARWIN_ARM64: ${{ needs.native-darwin-arm64.result }}
+          RESULT_FREE_THREADED_3_15T: ${{ needs.free-threaded-3-15t.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "NATIVE_CONFORMANCE plan=${PLAN_RESULT} selected=${NATIVE_SELECTED} arm64-selected=${NATIVE_ARM64_SELECTED} wip=${WIP_SELECTED} event=${EVENT_NAME}"
+            echo "NATIVE_CONFORMANCE reference-abi=${RESULT_REFERENCE_ABI}"
+            echo "NATIVE_CONFORMANCE native-linux-amd64=${RESULT_NATIVE_LINUX_AMD64} native-linux-arm64=${RESULT_NATIVE_LINUX_ARM64} native-darwin-arm64=${RESULT_NATIVE_DARWIN_ARM64}"
+            echo "NATIVE_CONFORMANCE free-threaded-3-15t=${RESULT_FREE_THREADED_3_15T} policy=non-blocking"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$PLAN_RESULT" = success || { echo "NATIVE_CONFORMANCE verdict=FAIL reason=plan-${PLAN_RESULT}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+          case "$NATIVE_SELECTED" in true|false) ;; *) echo "NATIVE_CONFORMANCE verdict=FAIL reason=invalid-selection" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1 ;; esac
+          case "$NATIVE_ARM64_SELECTED:$NATIVE_SELECTED" in
+            true:true|false:true|false:false) ;;
+            *) echo "NATIVE_CONFORMANCE verdict=FAIL reason=invalid-arm64-selection" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1 ;;
+          esac
+          if [ "$NATIVE_SELECTED" = false ]; then
+            for result in "$RESULT_REFERENCE_ABI" "$RESULT_NATIVE_LINUX_AMD64" "$RESULT_NATIVE_LINUX_ARM64" "$RESULT_NATIVE_DARWIN_ARM64" "$RESULT_FREE_THREADED_3_15T"; do
+              test "$result" = skipped || { echo "NATIVE_CONFORMANCE verdict=FAIL reason=unexpected-job-${result}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+            done
+            if [ "$WIP_SELECTED" = true ]; then
+              echo "NATIVE_CONFORMANCE selected=false verdict=NOT_RUN reason=wip-pull-request" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "NATIVE_CONFORMANCE selected=false verdict=NOT_SELECTED reason=outside-native-abi-scope" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+          for result in "$RESULT_REFERENCE_ABI" "$RESULT_NATIVE_LINUX_AMD64"; do
+            test "$result" = success || { echo "NATIVE_CONFORMANCE verdict=FAIL reason=mandatory-job-${result}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+          done
+          if [ "$NATIVE_ARM64_SELECTED" = false ]; then
+            for result in "$RESULT_NATIVE_LINUX_ARM64" "$RESULT_NATIVE_DARWIN_ARM64"; do
+              test "$result" = skipped || { echo "NATIVE_CONFORMANCE verdict=FAIL reason=unexpected-arm64-job-${result}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+            done
+            case "$RESULT_FREE_THREADED_3_15T" in success|failure) ;; *) echo "NATIVE_CONFORMANCE verdict=FAIL reason=free-threaded-job-${RESULT_FREE_THREADED_3_15T}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1 ;; esac
+            echo "NATIVE_CONFORMANCE native-linux-arm64=NOT_RUN native-darwin-arm64=NOT_RUN reason=arm64-lanes-run-on-dev-push-schedule-or-dispatch-only event=${EVENT_NAME}" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "NATIVE_CONFORMANCE selected=true verdict=PARTIAL_NO_ARM64 mandatory=2/4 not-run=native-linux-arm64,native-darwin-arm64 free-threaded-3-15t=${RESULT_FREE_THREADED_3_15T}(non-blocking)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          for result in "$RESULT_NATIVE_LINUX_ARM64" "$RESULT_NATIVE_DARWIN_ARM64"; do
+            test "$result" = success || { echo "NATIVE_CONFORMANCE verdict=FAIL reason=mandatory-job-${result}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+          done
+          case "$RESULT_FREE_THREADED_3_15T" in success|failure) ;; *) echo "NATIVE_CONFORMANCE verdict=FAIL reason=free-threaded-job-${RESULT_FREE_THREADED_3_15T}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1 ;; esac
+          echo "NATIVE_CONFORMANCE selected=true verdict=PASS mandatory=4/4 free-threaded-3-15t=${RESULT_FREE_THREADED_3_15T}(non-blocking)" | tee -a "$GITHUB_STEP_SUMMARY"
