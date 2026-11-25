@@ -105,10 +105,38 @@
 # - Package S: the journal-only runtime calls (``broadcast_pending``,
 #   ``broadcast_records``, retirement and replica reconciliation) are deleted
 #   together with the journal facade that made them.
+# - Package F8 (real-node finding R5-1): a join has two outcomes only.
+#   Joined: listed, ``join.pending`` removed, the resident sync running and
+#   pulling.  Not joined: not listed, no directory, and the next join is a
+#   first join.  The temporary sync's close (which discards its queued
+#   broadcasts, ``sync/space.py``) can still fail on an apply or handler
+#   that outlives its budget; that failure is logged
+#   (``orgfs.join.temporary-close-failed``) and never changes the outcome,
+#   since every broadcast it dropped is recovered by the resident sync's
+#   pull.  Anything that fails after ``complete_join`` (the marker removal,
+#   the resident sync) rolls the space back to "not joined"
+#   (``orgfs.join.rolled-back``) and is reported as ``unavailable`` with
+#   ``reason: join-incomplete`` and a message (an ``OrgFsError`` raised there
+#   keeps its own code), never as a bare runtime error.
+# - Joins of one space are serialized by a per-space lock held for the whole
+#   join, so a second join waits for the first and then sees its outcome.
+#   Under the lock a listed space with an owner is finished, not skipped:
+#   a leftover ``join.pending`` is removed, a missing resident sync is
+#   created and pulls from the online holders, so a repeated join repairs a
+#   space a failed tail left behind without a restart.  A space still hidden
+#   as joining while no join holds the lock is a leftover temporary space:
+#   it is dropped (``orgfs.join.leftover-discarded``) and joined afresh.
+#   Finishing a space that was already listed never rolls it back (it may
+#   hold local writes): a failure there is raised and the next join retries,
+#   and a runtime with no transport bound (no resident sync can exist)
+#   simply returns the listed space, as the facade did before.
+#   ``join`` answers a finished space (listed, resident sync, no marker)
+#   without queueing on the lifecycle when no join of it is running.
 """Per-space sync assembly, node gate and join of the state runtime."""
 
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any, Callable
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError, SpaceInfo
@@ -442,10 +470,49 @@ class StateLifecycle:
         )
         return True
 
-    def _join_sync(self, space_id: str) -> SpaceInfo:
+    def _join_lock(self, space_id: str) -> Lock:
+        with self._join_locks_guard:
+            return self._join_locks.setdefault(space_id, Lock())
+
+    def _joined_info(self, space_id: str) -> SpaceInfo | None:
+        """A listed space whose join finished: no marker and a resident sync."""
+
+        if space_id not in {info.space_id for info in self.facade.spaces()}:
+            return None
         existing = self.facade._existing_space(space_id)
-        if existing is not None and existing.info.owner:
-            return existing.info
+        if existing is None or not existing.info.owner:
+            return None
+        with self._resource_lock:
+            resident = space_id in self._meshes or self._session is None
+        if not resident or (self._spaces_root / space_id / JOIN_MARKER).exists():
+            return None
+        return existing.info
+
+    def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
+        lock = self._join_lock(space_id)
+        if lock.acquire(blocking=False):
+            try:
+                info = self._joined_info(space_id)
+            finally:
+                lock.release()
+            if info is not None:
+                return info
+        return super().join(space_id, timeout=timeout)
+
+    def _join_sync(self, space_id: str) -> SpaceInfo:
+        with self._join_lock(space_id):
+            return self._join_locked(space_id)
+
+    def _join_locked(self, space_id: str) -> SpaceInfo:
+        existing = self.facade._existing_space(space_id)
+        if existing is not None:
+            listed = space_id in {info.space_id for info in self.facade.spaces()}
+            if listed and existing.info.owner:
+                return self._finish_join(space_id, existing.info, None, fresh=False)
+            if not listed:
+                self._log("warn", "orgfs.join.leftover-discarded", spaceId=space_id)
+                self._forget_device_index(space_id)
+                self.facade.abandon_join(space_id)
         if not is_space_directory_name(space_id):
             raise OrgFsError("unknown-space", {"spaceId": space_id, "reason": "not-a-uuid"})
         holders = sorted(
@@ -462,17 +529,74 @@ class StateLifecycle:
             atomic_json_write(marker, {"spaceId": space_id})
             fsync_directory(marker.parent)
             info, holder = self._fill_joined_space(space_id, holders)
-            marker.unlink()
-            fsync_directory(marker.parent)
         except BaseException:
             self._forget_device_index(space_id)
             self.facade.abandon_join(space_id)
             raise
-        sync = self._mesh(space_id)
-        if sync is not None:
-            sync.schedule_sync_from(holder)
+        return self._finish_join(space_id, info, holder)
+
+    def _finish_join(
+        self, space_id: str, info: SpaceInfo, holder: str | None, *, fresh: bool = True
+    ) -> SpaceInfo:
+        """Remove the marker and start the resident sync (F8).
+
+        A ``fresh`` join that cannot finish leaves no space; finishing a space
+        that was already listed never drops it.
+        """
+
+        marker = self._spaces_root / space_id / JOIN_MARKER
+        try:
+            if marker.exists():
+                marker.unlink()
+                fsync_directory(marker.parent)
+            sync = self._mesh(space_id)
+            if sync is None and fresh:
+                raise OrgFsError("unavailable", {"spaceId": space_id, "reason": "orgfs-closing",
+                                                 "message": "orgfs is closing; the space was not joined"})
+            gate = self._node_gate(space_id)
+            sources = [] if sync is None else [holder] if holder is not None else [
+                node for node in self._holder_discovery(space_id)()
+                if node != self.node_id and self._supplier_online(node) and gate(node)
+            ]
+            for node in sources:
+                sync.schedule_sync_from(node)
+        except BaseException as exc:
+            if fresh:
+                self._rollback_join(space_id)
+            if isinstance(exc, (OrgFsError, KeyboardInterrupt, SystemExit)):
+                raise
+            undone = " and was undone" if fresh else ""
+            raise OrgFsError(
+                "unavailable",
+                {"spaceId": space_id, "reason": "join-incomplete",
+                 "message": f"the join could not finish{undone}: {exc}"},
+            ) from exc
         self._announce_all()
         return info
+
+    def _rollback_join(self, space_id: str) -> None:
+        """Drop a space whose join tail failed: no listing, sync or directory."""
+
+        with self._resource_lock:
+            mesh = self._meshes.pop(space_id, None)
+        self.facade.detach_sync(space_id)
+        if mesh is not None:
+            try:
+                mesh.close()
+            except Exception as exc:  # noqa: BLE001 - the rollback must still drop the space
+                self._log("warn", "orgfs.join.rollback-close-failed", spaceId=space_id, detail=str(exc))
+        self._forget_device_index(space_id)
+        try:
+            self.facade.abandon_join(space_id, completed=True)
+        finally:
+            self._log("warn", "orgfs.join.rolled-back", spaceId=space_id)
+            self._announce_all()
+
+    def _close_temporary(self, space_id: str, temporary: StateSpaceSync) -> None:
+        try:
+            temporary.close()
+        except Exception as exc:  # noqa: BLE001 - F8 ruling 2: the join outcome stands
+            self._log("warn", "orgfs.join.temporary-close-failed", spaceId=space_id, detail=str(exc))
 
     def _fill_joined_space(self, space_id: str, holders: list[str]) -> tuple[SpaceInfo, str]:
         temporary = self._new_sync(space_id, lambda _node: True, node_level=False)
@@ -511,7 +635,7 @@ class StateLifecycle:
                     continue
                 break
         finally:
-            temporary.close()
+            self._close_temporary(space_id, temporary)
         if result is None:
             raise best
         return result

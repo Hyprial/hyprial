@@ -106,6 +106,8 @@ class OrgFsRuntime(
         self._device_owner_hint = device_owner_hint
         self._directory_index_keys: dict[str, tuple[bytes, bytes]] = {}
         self._catalog_retries: dict[str, tuple[int, float]] = {}
+        self._join_locks: dict[str, Lock] = {}
+        self._join_locks_guard = Lock()
         self._excluded_orgs = excluded_orgs or (lambda: frozenset())
         self._space_binding_state = space_binding_state or (lambda _space_id: None)
         self._actor_hosts = OrgFsActorHostCustody(actor_host)

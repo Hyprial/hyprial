@@ -53,6 +53,14 @@
 #   with ``refuse_space``; every lookup of it raises that error
 #   (``ORGFS_LAYOUT_UNSUPPORTED`` with its ``reason``) instead of
 #   ``unknown-space``.
+# - Package F8 (real-node finding R5-1): with a runtime bound (``mesh``),
+#   ``join`` always asks the runtime, even for a space that is already
+#   listed or still joining: only the runtime knows whether the join's tail
+#   (marker removal, resident sync) finished, and it serializes joins of one
+#   space.  The early returns and the "join in progress" refusal remain for
+#   a facade without a runtime.  ``abandon_join(completed=True)`` also drops
+#   a space whose ``complete_join`` ran, so a join whose tail failed can
+#   leave no space behind.
 """Spaces, members and status of the state host."""
 
 from __future__ import annotations
@@ -222,14 +230,14 @@ class StateSpaces:
 
     @_facade_locked
     def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
-        with self._lock:
-            joining = space_id in self._joining
-        if joining:
-            raise OrgFsError("unavailable", {"spaceId": space_id, "message": "join in progress"})
-        existing = self._existing_space(space_id)
-        if existing is not None:
-            return existing.info
         if self.mesh is None:
+            with self._lock:
+                joining = space_id in self._joining
+            if joining:
+                raise OrgFsError("unavailable", {"spaceId": space_id, "message": "join in progress"})
+            existing = self._existing_space(space_id)
+            if existing is not None:
+                return existing.info
             raise OrgFsError("no-holder-online")
         info = self.mesh.join(space_id) if timeout is None else self.mesh.join(space_id, timeout=timeout)
         if not isinstance(info, SpaceInfo):
@@ -303,16 +311,18 @@ class StateSpaces:
                 self._joining.discard(space_id)
             return space.info
 
-    def abandon_join(self, space_id: str, timeout: float = 5.0) -> bool:
+    def abandon_join(self, space_id: str, timeout: float = 5.0, *, completed: bool = False) -> bool:
         """Drop a temporary space and its directory (design §9 R5).
 
         It runs inside the caller's own ``join``, whose effect reservation is
         still open, so it stops the space's command loop itself instead of
         ``detach_space`` (which waits for every effect of the facade).
+        ``completed`` also drops a space whose ``complete_join`` already ran,
+        for a join whose tail failed (package F8).
         """
 
         with self._lock:
-            if space_id not in self._joining:
+            if space_id not in self._joining and not (completed and space_id in self._spaces):
                 return False
             self._syncs.pop(space_id, None)
             owner = self._space_state_owners.get(space_id)
