@@ -1,3 +1,6 @@
+# Decision record (OrgFS package D4b, 2026-11-25, design §1.1 / §1.2):
+# ``orgfs_remove`` takes ``permanent`` (default false, a soft removal) and
+# always forwards it; ``orgfs_restore`` takes no ``version``.
 """Official MCP Python SDK facade for Harness daemon operations.
 
 Decision (2026-11-19, slice GH): an agent reads a conversation's history,
@@ -449,26 +452,32 @@ def create_mcp_server(
             mutation=True,
         )
 
-    @server.tool(description="Soft-delete an orgfs node; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_remove(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
-        return await invoke(ctx, "orgfs.remove", {"spaceId": spaceId, "node": node}, mutation=True)
+    @server.tool(description="Remove an orgfs node into the trash, or delete it for good with permanent=true; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
+    async def orgfs_remove(
+        spaceId: NonEmpty, node: NonEmpty, ctx: Context, permanent: bool = False
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            "orgfs.remove",
+            {"spaceId": spaceId, "node": node, "permanent": permanent},
+            mutation=True,
+        )
 
     @server.tool(description="List soft-deleted orgfs nodes.")
     async def orgfs_trash(spaceId: NonEmpty, ctx: Context, limit: int = 100) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.trash", {"spaceId": spaceId, "limit": limit}, mutation=False)
 
-    @server.tool(description="Restore an orgfs node as a new attributed operation; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
+    @server.tool(description="Restore a removed orgfs node from the trash as a new attributed operation; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_restore(
         spaceId: NonEmpty,
         node: NonEmpty,
-        version: NonEmpty,
         ctx: Context,
         recursive: bool = True,
     ) -> dict[str, Any]:
         return await invoke(
             ctx,
             "orgfs.restore",
-            {"spaceId": spaceId, "node": node, "version": version, "recursive": recursive},
+            {"spaceId": spaceId, "node": node, "recursive": recursive},
             mutation=True,
         )
 

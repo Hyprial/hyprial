@@ -1,3 +1,8 @@
+# Decision record (phase D, package D4b, 2026-11-25, design §1.1 / §1.2):
+# ``orgfs.remove`` takes an optional boolean ``permanent``; ``orgfs.restore``
+# takes no ``version`` (unknown keys are refused by the schema);
+# ``orgfs.checkout`` declares ``ORGFS_LAYOUT_UNSUPPORTED`` and passes the
+# refusal through with its data instead of wrapping it as ``checkout-io``.
 """Write ``orgfs.*`` MethodSpecs (batch 4).
 
 Handlers forward to ``DaemonApplication._handle_orgfs``.  Export/import are
@@ -170,7 +175,7 @@ _MOVE_PARAMS = {
 }
 
 _REMOVE_PARAMS = _params(
-    {"spaceId": _SPACE_ID, "path": String, "node": String},
+    {"spaceId": _SPACE_ID, "path": String, "node": String, "permanent": _BOOL},
     required=("spaceId",),
 )
 
@@ -178,10 +183,9 @@ _RESTORE_PARAMS = _params(
     {
         "spaceId": _SPACE_ID,
         "node": _NODE_REF,
-        "version": _NODE_REF,
         "recursive": _BOOL,
     },
-    required=("spaceId", "node", "version"),
+    required=("spaceId", "node"),
 )
 
 _SPACE_PARAMS = _params({"spaceId": _SPACE_ID}, required=("spaceId",))
@@ -308,7 +312,7 @@ ORGFS_SPACE_PURGE_SPEC = _write_spec(
     "orgfs.space_purge", _SPACE_PARAMS, _SPACE_PURGE_RESULT, errors=PURGE_ERRORS
 )
 ORGFS_CHECKOUT_SPEC = _write_spec(
-    "orgfs.checkout", _CHECKOUT_PARAMS, _CHECKOUT_RESULT
+    "orgfs.checkout", _CHECKOUT_PARAMS, _CHECKOUT_RESULT, errors=_SPACE_WRITE_ERRORS
 )
 ORGFS_INVITE_SPEC = _write_spec("orgfs.invite", _INVITE_PARAMS, MEMBER, errors=_SPACE_WRITE_ERRORS)
 ORGFS_REMOVE_MEMBER_SPEC = _write_spec(

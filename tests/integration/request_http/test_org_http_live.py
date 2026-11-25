@@ -20,6 +20,11 @@ Decision record (org lifecycle batch 2, 2026-11-02)
 - ``org.join`` success needs a redeemable invite and an online holder; neither
   exists inside one isolated daemon, so the live cases pin parameter rejection
   and the real pre-redemption domain errors instead of faking a join.
+
+Decision record (OrgFS package D4b, 2026-11-25)
+- ``orgfs.restore`` lost its ``version`` (design §1.1), so the domain error
+  that keeps its data through the registry and HTTP is now the restore of a
+  node removed with ``permanent: true``: ``unknown-doc`` naming the node.
 """
 
 from __future__ import annotations
@@ -343,15 +348,11 @@ def test_orgfs_domain_error_keeps_data_through_registry_and_http(
     written = _write_text(isolation, space_id, "note.md", "body\n")
     daemon_request_once(
         "orgfs.remove",
-        {"spaceId": space_id, "path": "note.md"},
+        {"spaceId": space_id, "path": "note.md", "permanent": True},
         socket_path=isolation.socket_path,
         timeout=15,
     )
-    params = {
-        "spaceId": space_id,
-        "node": f"id:{written['node_id']}",
-        "version": "missing-version",
-    }
+    params = {"spaceId": space_id, "node": f"id:{written['node_id']}"}
 
     with pytest.raises(RequestPortError) as direct:
         daemon_request_once(
@@ -361,7 +362,7 @@ def test_orgfs_domain_error_keeps_data_through_registry_and_http(
             timeout=15,
         )
     assert direct.value.code == "unknown-doc"
-    assert direct.value.data == {"version": "missing-version"}
+    assert direct.value.data == {"node": f"id:{written['node_id']}"}
 
     status, _, payload = http_server.request(
         "POST", "/daemon/request/orgfs.restore", body=params

@@ -11,6 +11,10 @@
 # - The methods listed in ``LAYOUT_REFUSED`` are every ``orgfs.*`` method that
 #   looks a space up by ``spaceId`` and answers with the refusal; each must
 #   carry the declared data (``spaceId``, ``reason``, ``guide``).
+# Decisions (phase D, package D4b, 2026-11-25): ``orgfs.restore`` takes no
+# ``version``; ``orgfs.checkout`` joins the table: it passes the refusal and
+# its data through instead of wrapping it as ``checkout-io`` with empty data,
+# and creates no checkout directory in the refused space.
 from __future__ import annotations
 
 import uuid
@@ -68,10 +72,11 @@ LAYOUT_REFUSED = {
     "orgfs.write": {"path": "a.md", "text": "x"},
     "orgfs.mkdir": {"path": "d"},
     "orgfs.move": {"source": "a.md", "destination": "b.md"},
-    "orgfs.restore": {"node": "a.md", "version": "v"},
+    "orgfs.restore": {"node": "a.md"},
     "orgfs.remove": {"node": "a.md"},
     "orgfs.invite": {"user": "user:bob", "mode": "rw"},
     "orgfs.remove_member": {"user": "user:bob"},
+    "orgfs.checkout": {"enabled": True},
 }
 
 

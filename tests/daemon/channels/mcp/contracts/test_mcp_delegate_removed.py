@@ -171,11 +171,7 @@ _TOOL_ARGS: dict[str, dict[str, Any]] = {
     },
     "orgfs_remove": {"spaceId": "missing-space", "node": "missing"},
     "orgfs_trash": {"spaceId": "missing-space"},
-    "orgfs_restore": {
-        "spaceId": "missing-space",
-        "node": "missing",
-        "version": "missing-version",
-    },
+    "orgfs_restore": {"spaceId": "missing-space", "node": "missing"},
     "orgfs_watch": {"spaceId": "missing-space"},
     "orgfs_status": {"spaceId": "missing-space"},
     "orgfs_invite": {"spaceId": "missing-space", "user": "user:bob"},

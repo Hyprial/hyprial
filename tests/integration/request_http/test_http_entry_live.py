@@ -651,7 +651,7 @@ def test_orgfs_write_rejects_text_and_binary_payloads_together(
     assert payload["result"]["contentB64"] == original
 
 
-def test_orgfs_restore_uses_the_trash_node_version(
+def test_orgfs_restore_takes_the_trash_node_without_a_version(
     http_server, isolation: Isolation
 ) -> None:
     space_id = _create_space(isolation, "restore-team")
@@ -675,7 +675,6 @@ def test_orgfs_restore_uses_the_trash_node_version(
         body={
             "spaceId": space_id,
             "node": f"id:{item['node_id']}",
-            "version": item["version"],
             "recursive": item["kind"] == "dir",
         },
     )

@@ -14,8 +14,8 @@
 # - Design §3.4: local writes need a current ``rw`` member
 #   (``not-a-member``) and, per written row, the protected-path rule of
 #   ``membership.check_local_write``; member and meta changes are owner only.
-# - Design §1.1 / §4.6: ``status`` returns ``StateSpaceStatus`` (the
-#   ``OrgFs`` Protocol and its ``SpaceStatus`` change in package D4b).
+# - Design §1.1 / §4.6: ``status`` returns the one ``api.SpaceStatus``
+#   (package D4b merged the state host's own status type into it).
 #   ``synced`` is ``None`` without an online holder observation, ``True`` when
 #   one observation covers the local meta and tree vectors and nothing is
 #   pending or unverified, else ``False``.
@@ -40,7 +40,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import time
 import uuid
@@ -56,6 +55,7 @@ from hyprial.daemon.impl.orgfs.api import (
     NodeRef,
     OrgFsError,
     SpaceInfo,
+    SpaceStatus,
     require_space_owner,
 )
 from hyprial.daemon.impl.orgfs.document.coordinator.host import (
@@ -84,17 +84,6 @@ def timestamp() -> str:
     """Microsecond ISO-8601 UTC timestamp ending in ``Z``."""
 
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-@dataclass(frozen=True, slots=True)
-class StateSpaceStatus:
-    """Design §1.1 space status of the state host."""
-
-    space_id: str
-    synced: bool | None
-    holders_online: tuple[str, ...]
-    content_pending: int
-    rejected_updates: int
 
 
 class MemoryStores:
@@ -450,7 +439,7 @@ class StateSpaces:
         return document_authors(self._content_doc(space, item.doc_id).doc)
 
     @_facade_locked
-    def status(self, space_id: str) -> StateSpaceStatus:
+    def status(self, space_id: str) -> SpaceStatus:
         space = self._space(space_id)
         registry = self._registry(space_id)
         with self._lock:
@@ -474,7 +463,7 @@ class StateSpaces:
                 for observation in observations
             )
             synced = covered and not behind and pending == 0
-        return StateSpaceStatus(
+        return SpaceStatus(
             space_id,
             synced,
             tuple(sorted({observation.node for observation in observations})),
@@ -526,4 +515,4 @@ class StateSpaces:
         return SpaceSyncHost(self, space_id, node_gate or (lambda _node: True))
 
 
-__all__ = ["MemoryStores", "StateSpaceStatus", "StateSpaces", "timestamp"]
+__all__ = ["MemoryStores", "StateSpaces", "timestamp"]

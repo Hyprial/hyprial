@@ -1,3 +1,7 @@
+# Decisions (D4b, 2026-11-25): ``orgfs.remove`` passes a boolean
+# ``permanent`` (default a soft removal; any other type is
+# ``invalid-argument``) and ``orgfs.restore`` sends no ``version`` (design
+# §1.1).
 # Decisions (F1, node gate ruling, 2026-11-25):
 # - The state runtime's node gate takes a ``device_owner_hint`` as its
 #   bootstrap source.  The org cell roster cannot serve: only the owner holds
@@ -585,7 +589,16 @@ class _OrgFsBridgeMixin:
                     )
                 )
             if method == "orgfs.remove":
-                fs.remove(required("spaceId"), str(params.get("node", params.get("path", ""))))
+                permanent = params.get("permanent", False)
+                if type(permanent) is not bool:
+                    raise OrgFsError(
+                        "invalid-argument", {"message": "permanent must be a boolean"}
+                    )
+                fs.remove(
+                    required("spaceId"),
+                    str(params.get("node", params.get("path", ""))),
+                    permanent=permanent,
+                )
                 return {"ok": True}
             if method == "orgfs.trash":
                 return {"nodes": self._orgfs_json(fs.trash(required("spaceId"), int(params.get("limit", 100))))}
@@ -594,7 +607,6 @@ class _OrgFsBridgeMixin:
                     fs.restore(
                         required("spaceId"),
                         required("node"),
-                        required("version"),
                         recursive=bool(params.get("recursive", True)),
                     )
                 )

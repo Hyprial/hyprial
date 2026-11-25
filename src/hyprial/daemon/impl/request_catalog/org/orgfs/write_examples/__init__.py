@@ -21,7 +21,7 @@ _EMPTY_GAPS = {
     "orgfs.remove": "A successful removal returns ok=true; missing targets and the root are refused.",
     "orgfs.invite": "Inviting or updating a member returns MemberInfo; there is no absent-member success.",
     "orgfs.remove_member": "Removing a member returns ok=true; absent members and the owner are refused.",
-    "orgfs.join": "A local/remote join returns SpaceInfo; no holder is a typed error, not an empty success.",
+    "orgfs.join": "A local/remote join returns SpaceInfo; an unknown space is a typed error, not an empty success.",
 }
 _REASONS = {
     "empty-document": "A zero-byte text document remains legal when moved or restored; NodeInfo reports size=0.",
@@ -42,7 +42,7 @@ _DESCRIPTIONS = {
     "relative-source": "The real local-file path policy refuses a relative import source.",
     "absolute-path": "The OrgFS path resolver refuses absolute filesystem-style paths.",
     "root-refused": "Removing the OrgFS root is refused even though the request is schema-valid.",
-    "missing-version": "The selected node has no snapshot at this version.",
+    "permanent": "A permanent removal deletes the node instead of moving it to the trash.",
     "unsafe-space": "Local space purging refuses an unsafe path component before filesystem access.",
     "other-members": "Local space purging refuses a space with another live member.",
     "disabled": "An unconfigured checkout can be explicitly disabled.",

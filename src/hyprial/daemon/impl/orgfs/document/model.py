@@ -1,3 +1,6 @@
+# Decision record (phase D, package D4b, 2026-11-25): the frozen ``_Restore``
+# command carries no ``version``; restoring by version left with the history
+# (design §6 / Q5) and ``restore`` no longer takes one (design §1.1).
 """The local orgfs document and tree engine.
 
 The tree is represented by a pycrdt document containing node metadata and an
@@ -172,7 +175,6 @@ class _RemoveNode:
 class _Restore:
     space_id: str
     node: NodeRef
-    version: str
     recursive: bool
 
 

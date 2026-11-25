@@ -22,8 +22,8 @@
 # - Design §6, plan §2.7: soft removal gives one fresh ``deletedBatch`` to the
 #   rows that this removal turns from live to deleted only; ``restore`` brings
 #   back the target, its descendants of the same batch when recursive, and the
-#   deleted parent chain, and accepts and ignores the legacy positional
-#   ``version``.  Permanent removal deletes the keys of the node and every
+#   deleted parent chain; it takes no ``version`` (D4b, design §1.1: the
+#   legacy positional version left the surface).  Permanent removal deletes the keys of the node and every
 #   descendant and their content documents in one batch, then releases blob
 #   references no remaining row retains (§9 R13).
 # - D2: a ``content-pending`` error suggests the runtime's known holders
@@ -531,11 +531,10 @@ class StateTreeOps:
         self,
         space_id: str,
         node: NodeRef,
-        version: str | None = None,
         *,
         recursive: bool = True,
     ) -> NodeInfo:
-        """Restore a removed node's last state; ``version`` is accepted and ignored."""
+        """Restore a removed node's last state."""
 
         space = self._space(space_id)
         self._ensure_writable(space)

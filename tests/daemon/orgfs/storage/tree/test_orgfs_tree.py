@@ -85,7 +85,7 @@ def test_restore_recovers_deleted_parent_chain() -> None:
     parent = fs.mkdir(space.space_id, "parent")
     child = fs.write_text(space.space_id, "parent/child.txt", "content")
     fs.remove(space.space_id, f"id:{parent.node_id}")
-    fs.restore(space.space_id, f"id:{child.node_id}", child.version)
+    fs.restore(space.space_id, f"id:{child.node_id}")
     assert fs.stat(space.space_id, f"id:{parent.node_id}").deleted is False
     assert fs.read_text(space.space_id, "parent/child.txt")[0] == "content"
 

@@ -28,7 +28,6 @@ from hyprial.daemon.impl.orgfs.document.coordinator.remote import StateRemote
 from hyprial.daemon.impl.orgfs.document.coordinator.spaces import (
     MemoryStores,
     StateSpaces,
-    StateSpaceStatus,
 )
 from hyprial.daemon.impl.orgfs.document.coordinator.tree_ops import StateTreeOps
 from hyprial.daemon.impl.orgfs.document.effects import FacadeEffects
@@ -127,5 +126,4 @@ __all__ = [
     "MemoryStores",
     "SpaceSyncHost",
     "LocalOrgFs",
-    "StateSpaceStatus",
 ]

@@ -1,3 +1,9 @@
+# Decisions (phase D, package D4b, 2026-11-25):
+# - Design §1.2: ``orgfs.remove`` takes an optional boolean ``permanent``;
+#   ``orgfs.restore`` has no ``version`` and refuses one (closed params).
+# - ``orgfs.checkout`` declares ``ORGFS_LAYOUT_UNSUPPORTED`` with its data
+#   schema now that the bridge passes the refusal through (S report §9-3).
+# - The journal-only codes without a producer are no longer declared.
 """Batch 4: write ``orgfs.*`` MethodSpec declarations."""
 
 from __future__ import annotations
@@ -50,7 +56,7 @@ _PARAMS = {
         "destinationPath": "docs/b.md",
     },
     "orgfs.remove": {"spaceId": "space-x", "path": "docs/a.md"},
-    "orgfs.restore": {"spaceId": "space-x", "node": "id:n1", "version": "v1"},
+    "orgfs.restore": {"spaceId": "space-x", "node": "id:n1"},
     "orgfs.space_purge": {"spaceId": "space-x"},
     "orgfs.checkout": {"spaceId": "space-x", "enabled": True},
     "orgfs.invite": {"spaceId": "space-x", "user": "user:bob", "mode": "ro"},
@@ -317,3 +323,41 @@ def test_mcp_session_envelope_reaches_the_write_bridge_unchanged() -> None:
         App(), "orgfs.write", params
     )
     assert calls == [("orgfs.write", params)]
+
+
+def test_remove_takes_an_optional_boolean_permanent() -> None:
+    schema = _plain(_spec("orgfs.remove").params_schema)
+    assert schema["properties"]["permanent"] == {"type": "boolean"}
+    assert "permanent" not in schema["required"]
+    validator = Draft202012Validator(schema)
+    assert not list(validator.iter_errors({**_PARAMS["orgfs.remove"], "permanent": True}))
+    assert not list(validator.iter_errors({**_PARAMS["orgfs.remove"], "permanent": False}))
+    assert list(validator.iter_errors({**_PARAMS["orgfs.remove"], "permanent": "yes"}))
+
+
+def test_restore_has_no_version() -> None:
+    schema = _plain(_spec("orgfs.restore").params_schema)
+    assert "version" not in schema["properties"]
+    assert schema["required"] == ["spaceId", "node"]
+    validator = Draft202012Validator(schema)
+    assert not list(validator.iter_errors(_PARAMS["orgfs.restore"]))
+    assert list(validator.iter_errors({**_PARAMS["orgfs.restore"], "version": "v1"}))
+
+
+def test_checkout_declares_the_layout_refusal_with_its_data() -> None:
+    errors = {error.code: error for error in _spec("orgfs.checkout").errors}
+    refusal = errors[ipc_errors.ORGFS_LAYOUT_UNSUPPORTED]
+    assert refusal.data_schema is not None
+    validator = Draft202012Validator(_plain(refusal.data_schema))
+    assert not list(
+        validator.iter_errors(
+            {"spaceId": "space-x", "reason": "legacy-journal", "guide": "docs/guide.md"}
+        )
+    )
+
+
+def test_retired_journal_codes_are_not_declared() -> None:
+    retired = {"log-key-conflict", "purged", "snapshot-barrier", "stale-plan"}
+    for spec, *_handler in ORG_BINDINGS:
+        if spec.name.startswith("orgfs."):
+            assert retired.isdisjoint(error.code for error in spec.errors), spec.name

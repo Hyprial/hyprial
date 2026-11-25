@@ -7,6 +7,12 @@
 #   facade's ``store_factory`` seam (a test store that parks one commit) and the
 #   remote edit arrives through ``sync_host(space_id).apply_remote`` as a C2
 #   ``forge_content`` frame; nothing reads the store or registry internals.
+# Decisions (phase D, package D4b, 2026-11-25):
+# - The public surface of design §1.1 is pinned by signature: ``remove`` takes
+#   keyword ``permanent``, ``restore`` has no ``version`` (nor does the frozen
+#   ``_Restore`` command), ``status`` returns the one ``SpaceStatus``.
+# - The retired codes are the journal-only ones without a producer (S report
+#   §5); the frozen kernel list is the integrator's (D4b report).
 from __future__ import annotations
 
 import inspect
@@ -158,3 +164,74 @@ def test_structured_documents_are_not_part_of_the_orgfs_surface() -> None:
         assert name not in orgfs_package.__all__
         assert not hasattr(orgfs_package, name)
         assert not hasattr(api, name)
+
+
+def test_remove_takes_permanent_and_restore_takes_no_version() -> None:
+    """Design §1.1: ``remove(permanent=)`` and ``restore`` without ``version``."""
+
+    for owner in (OrgFs, LocalOrgFs):
+        remove = inspect.signature(owner.remove).parameters
+        assert tuple(remove) == ("self", "space_id", "node", "permanent")
+        assert remove["permanent"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert remove["permanent"].default is False
+        restore = inspect.signature(owner.restore).parameters
+        assert tuple(restore) == ("self", "space_id", "node", "recursive")
+        assert restore["recursive"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert restore["recursive"].default is True
+
+
+def test_restore_command_carries_no_version() -> None:
+    """Design §6 / Q5: restoring by version left with the history."""
+
+    from dataclasses import fields
+
+    from hyprial.daemon.impl.orgfs.document.model import _Restore
+
+    assert tuple(field.name for field in fields(_Restore)) == ("space_id", "node", "recursive")
+
+
+def test_space_status_is_the_one_status_type() -> None:
+    """Design §1.1 / §9.1 §6-7: one ``SpaceStatus`` with the state fields."""
+
+    from dataclasses import fields
+
+    import hyprial.daemon.impl.orgfs.document.coordinator as coordinator
+    from hyprial.daemon.impl.orgfs import SpaceStatus
+    from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+
+    assert tuple(field.name for field in fields(SpaceStatus)) == (
+        "space_id",
+        "synced",
+        "holders_online",
+        "content_pending",
+        "rejected_updates",
+    )
+    assert inspect.signature(OrgFs.status).return_annotation in (SpaceStatus, "SpaceStatus")
+    assert not hasattr(coordinator, "StateSpaceStatus")
+    fs = LocalOrgFs(author="user:owner", actor="agent:owner:test")
+    try:
+        space = fs.create_space("team")
+        status = fs.status(space.space_id)
+        assert type(status) is SpaceStatus
+        assert status == SpaceStatus(space.space_id, None, (), 0, 0)
+    finally:
+        assert fs.close_effects()
+    assert inspect.signature(OrgFsRuntime.status).return_annotation in (SpaceStatus, "SpaceStatus")
+
+
+def test_codes_without_a_producer_are_not_registered() -> None:
+    """D4b: the journal-only codes have no producer left in the package."""
+
+    from hyprial.daemon.impl.orgfs.api import ORGFS_ERROR_CODES
+
+    retired = {
+        "log-key-conflict",
+        "purged",
+        "snapshot-barrier",
+        "stale-plan",
+        "pending-meta",
+        "projection-behind",
+        "snapshot-unavailable",
+        "sync-peer-incompatible",
+    }
+    assert ORGFS_ERROR_CODES.isdisjoint(retired)

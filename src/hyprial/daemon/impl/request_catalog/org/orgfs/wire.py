@@ -9,6 +9,12 @@
 #   are the ones that reach a space the startup scan refused.  Its data names
 #   the space, the ``reason`` and the migration ``guide``; a corrupt file also
 #   names its ``path``.
+# Decision record (phase D, package D4b, 2026-11-25): the journal-only codes
+# ``log-key-conflict``, ``purged``, ``snapshot-barrier`` and ``stale-plan``
+# have no producer on the state host and leave the declaration groups with
+# ``ORGFS_ERROR_CODES``; the unreferenced ``PURGE_STATUS`` schema and its
+# error group go with them.  ``orgfs.checkout`` declares
+# ``ORGFS_LAYOUT_UNSUPPORTED`` like the other space-scoped writes.
 """Shared JSON schemas and error vocabulary for the orgfs.* MethodSpecs.
 
 The orgfs runtime exposes one closed error vocabulary (``ORGFS_ERROR_CODES``)
@@ -246,35 +252,18 @@ CHANGE_EVENT = {
     "additionalProperties": False,
 }
 
-PURGE_STATUS = {
-    "type": "object",
-    "properties": {
-        # ``_orgfs_json`` serialises the dataclass with ``asdict``; the real
-        # PurgeStatus therefore keeps the snake_case field name.  ``planId``
-        # is only the request parameter spelling.
-        "plan_id": String,
-        "acknowledged": {"type": "array", "items": String},
-        "pending": {"type": "array", "items": String},
-    },
-    "required": ["plan_id", "acknowledged", "pending"],
-    "additionalProperties": False,
-}
-
 _READ_CODES = frozenset(
     {
         "ambiguous-path",
         "ambiguous-space",
         "blob-unavailable",
         "closed",
-        "log-key-conflict",
         "no-holder-online",
         "not-a-member",
         "not-owner",
         "out-of-range",
         "protected-path",
-        "purged",
         "resource-exhausted",
-        "snapshot-barrier",
         "stale-write",
         "too-large",
         "unavailable",
@@ -292,7 +281,6 @@ _READ_CODES = frozenset(
 _WRITE_EXTRA = frozenset(
     {
         "checkout-io",
-        "stale-plan",
         "space-purge-incomplete",
         "space-purge-refused",
         ipc_errors.ORGFS_ACL_SPACE_EXTERNAL_MUTATION,
@@ -326,7 +314,6 @@ def _errors(codes: frozenset[str]) -> tuple[MethodError, ...]:
 
 
 READ_ERRORS = _errors(_READ_CODES)
-PURGE_STATUS_ERRORS = _errors(_READ_CODES | {"stale-plan"})
 WRITE_ERRORS = _errors(_READ_CODES | _WRITE_EXTRA)
 PATH_ERRORS = _errors(_READ_CODES | _WRITE_EXTRA | _PATH_EXTRA)
 PURGE_ERRORS = _errors(_READ_CODES | _WRITE_EXTRA)

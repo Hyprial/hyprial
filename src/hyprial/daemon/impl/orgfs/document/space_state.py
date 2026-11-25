@@ -1,3 +1,5 @@
+# Decision record (phase D, package D4b, 2026-11-25): ``restore`` and its
+# frozen ``_Restore`` command carry no ``version`` (design §1.1).
 from __future__ import annotations
 
 
@@ -73,10 +75,7 @@ class FacadeSpaceState:
         if name == "remove":
             return _RemoveNode(values["space_id"], values["node"])
         if name == "restore":
-            return _Restore(
-                values["space_id"], values["node"], values["version"],
-                bool(values["recursive"]),
-            )
+            return _Restore(values["space_id"], values["node"], bool(values["recursive"]))
         raise ValueError(f"no frozen OrgSpace command for {name}")
 
 
@@ -188,8 +187,7 @@ class FacadeSpaceState:
             return type(self).remove.__wrapped__(self, operation.space_id, operation.node)
         if isinstance(operation, _Restore):
             return type(self).restore.__wrapped__(
-                self, operation.space_id, operation.node, operation.version,
-                recursive=operation.recursive,
+                self, operation.space_id, operation.node, recursive=operation.recursive,
             )
         raise TypeError(f"unsupported OrgSpace operation: {type(operation).__name__}")
 

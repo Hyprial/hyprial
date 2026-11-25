@@ -187,7 +187,7 @@ def test_recursive_restore_follows_the_removal_batch_only() -> None:
 
         assert {item.node_id for item in node.fs.listdir(space_id, "folder")} == {late.node_id}
         assert [entry.node_id for entry in node.fs.trash(space_id)] == [early.node_id]
-        node.fs.restore(space_id, f"id:{early.node_id}", "ignored-legacy-version")
+        node.fs.restore(space_id, f"id:{early.node_id}")
         assert node.fs.trash(space_id) == ()
     finally:
         node.close()

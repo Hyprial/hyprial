@@ -1,3 +1,9 @@
+# Decision record (phase D, package D4b, 2026-11-25): a checkout first looks
+# the space up through the facade; a space the startup scan refused raises
+# ``ORGFS_LAYOUT_UNSUPPORTED`` with its data unchanged and no checkout
+# directory is created (design §2.7).  Every other lookup failure keeps the
+# existing path, so an unknown space still answers ``checkout-io`` from the
+# checkout authority (reported as a design issue in the D4b report).
 from __future__ import annotations
 
 
@@ -5,6 +11,8 @@ import json
 
 
 
+
+from hyprial.kernel import ipc_errors
 
 from hyprial.daemon.impl.orgfs.api  import OrgFsError
 
@@ -107,4 +115,9 @@ class RuntimeCheckout:
 
 
     def _checkout_sync(self, space_id: str, enabled: bool) -> dict[str, object]:
+        try:
+            self.facade.space_meta(space_id)
+        except OrgFsError as exc:
+            if exc.code == ipc_errors.ORGFS_LAYOUT_UNSUPPORTED:
+                raise
         return self._set_checkout(space_id, bool(enabled), persist=True)

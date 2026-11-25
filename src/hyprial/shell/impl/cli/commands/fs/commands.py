@@ -1,3 +1,6 @@
+# Decision record (OrgFS package D4b, 2026-11-25, design §1.2): ``fs rm``
+# sends ``permanent: true`` only with ``--permanent``; ``fs trash restore``
+# takes no version argument.
 """``hyprial fs`` organization folder commands."""
 
 from __future__ import annotations
@@ -167,10 +170,16 @@ def fs_mv(
 def fs_rm(
     space_id: str = typer.Argument(..., help="Space UUID."),
     path: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
+    permanent: bool = typer.Option(
+        False, "--permanent", help="Delete for good instead of moving the node to the trash."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Soft-delete a node."""
-    _fs_run("orgfs.remove", {"spaceId": space_id, "path": path}, json_output=json_output)
+    """Move a node to the trash, or delete it for good with --permanent."""
+    params: JsonObject = {"spaceId": space_id, "path": path}
+    if permanent:
+        params["permanent"] = True
+    _fs_run("orgfs.remove", params, json_output=json_output)
 
 
 @fs_app.command("watch")
@@ -425,14 +434,13 @@ def fs_trash(
 def fs_restore(
     space_id: str = typer.Argument(..., help="Space UUID."),
     node: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
-    version: str = typer.Argument(..., help="Version to restore."),
     recursive: bool = typer.Option(True, "--recursive/--no-recursive", help="Restore directory descendants too."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Restore a node as a new operation."""
+    """Restore a removed node from the trash as a new operation."""
     _fs_run(
         "orgfs.restore",
-        {"spaceId": space_id, "node": node, "version": version, "recursive": recursive},
+        {"spaceId": space_id, "node": node, "recursive": recursive},
         json_output=json_output,
     )
 

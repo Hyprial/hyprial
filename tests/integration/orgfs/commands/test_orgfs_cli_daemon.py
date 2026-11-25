@@ -1,3 +1,8 @@
+# Decision (OrgFS package D4b, 2026-11-25): the CLI is the built app of
+# ``hyprial.shell.impl.cli.runtime.entry``; ``commands.common.root.app`` holds
+# no command until ``build_app`` has run, so a run of this file alone (or an
+# xdist worker that collected nothing else) failed with "Could not get a
+# command for this Typer instance".
 # Decision (phase D, package T3, 2026-11-25): the daemon surface test builds
 # the daemon's OrgFS runtime as ``OrgFsRuntime`` (the bridge's runtime
 # class is replaced for the test, independent of ``HYPRIAL_ORGFS_IMPL``) and
@@ -11,7 +16,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.runtime.entry import app
 from hyprial.kernel.impl.contracts.daemon.ipc_errors import DaemonRequestError
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.application.messaging import orgfs_bridge

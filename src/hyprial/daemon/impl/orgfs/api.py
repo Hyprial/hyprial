@@ -1,3 +1,12 @@
+# Decision record (phase D, package D4b, 2026-11-25):
+# - Design §1.1: ``remove`` takes keyword ``permanent`` (default a soft
+#   removal into the trash); ``restore`` has no ``version`` (restoring by
+#   version left with the history, design §6 / Q5).
+# - Design §1.1 / §4.6: ``SpaceStatus`` is the state host's status and the
+#   only status type; the journal fields left with the journal store.
+# - The journal-only codes ``log-key-conflict``, ``purged``,
+#   ``snapshot-barrier`` and ``stale-plan`` have no producer and are not
+#   registered; the frozen kernel vocabulary is left to the integrator.
 """Public API for the org shared-folder document store.
 
 The protocol in this module is deliberately dependency free.  The concrete
@@ -57,18 +66,14 @@ ORGFS_ERROR_CODES = frozenset(
         ipc_errors.ORGFS_CROSS_SPACE_URI,
         "invalid-argument",
         ipc_errors.ORGFS_INVALID_URI,
-        "log-key-conflict",
         "no-holder-online",
         "not-a-member",
         "not-owner",
         "out-of-range",
         "protected-path",
-        "purged",
         "resource-exhausted",
-        "snapshot-barrier",
         "space-purge-incomplete",
         "space-purge-refused",
-        "stale-plan",
         "stale-write",
         "too-large",
         "unknown-blob",
@@ -141,12 +146,13 @@ class ChangeEvent:
 
 @dataclass(frozen=True, slots=True)
 class SpaceStatus:
+    """Design §1.1 space status: sync state, online holders and held content."""
+
     space_id: str
-    unconfirmed_commits: int
-    durable_holders_seen: tuple[str, ...]
+    synced: bool | None
     holders_online: tuple[str, ...]
-    # (author, count) of received commits parked behind a missing predecessor.
-    parked_commits: tuple[tuple[str, int], ...] = ()
+    content_pending: int
+    rejected_updates: int
 
 
 class Registration(Protocol):
@@ -216,7 +222,7 @@ class OrgFs(Protocol):
         self, space_id: str, source: NodeRef, destination: NodeRef
     ) -> NodeInfo: ...
 
-    def remove(self, space_id: str, node: NodeRef) -> None: ...
+    def remove(self, space_id: str, node: NodeRef, *, permanent: bool = False) -> None: ...
 
     def watch(
         self, space_id: str, glob: str, callback: Callable[[ChangeEvent], None]
@@ -225,7 +231,7 @@ class OrgFs(Protocol):
     def trash(self, space_id: str, limit: int = 100) -> tuple[NodeInfo, ...]: ...
 
     def restore(
-        self, space_id: str, node: NodeRef, version: str, *, recursive: bool = True
+        self, space_id: str, node: NodeRef, *, recursive: bool = True
     ) -> NodeInfo: ...
 
     def status(self, space_id: str) -> SpaceStatus: ...

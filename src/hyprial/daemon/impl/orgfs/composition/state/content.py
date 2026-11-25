@@ -1,6 +1,6 @@
 # Decision record (phase D, package D2, 2026-11-25):
 # - Design §1.1 / §9.1 §6-7: ``status`` returns the facade's
-#   ``StateSpaceStatus`` with ``holders_online`` replaced by the runtime's
+#   ``SpaceStatus`` with ``holders_online`` replaced by the runtime's
 #   view, as the legacy runtime did: announced holders that are online now
 #   (liveliness when this runtime observes it, else the presence predicate),
 #   plus the holders whose pull observation is current.  This node is never
@@ -29,16 +29,15 @@ import time
 
 from hyprial.kernel import ORGFS_CONTENT_PENDING
 
-from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.orgfs.api import OrgFsError, SpaceStatus
 from hyprial.daemon.impl.orgfs.composition.vocabulary import ORGFS_AWAIT_RETRY_SECONDS
-from hyprial.daemon.impl.orgfs.document.coordinator import StateSpaceStatus
 from hyprial.daemon.impl.orgfs.sync import SyncError
 
 
 class StateContent:
     """Status and content provisioning of ``OrgFsRuntime``."""
 
-    def status(self, space_id: str) -> StateSpaceStatus:
+    def status(self, space_id: str) -> SpaceStatus:
         base = self.facade.status(space_id)
         with self._pending_announces_lock:
             announced = set(self._holders.get(space_id, ()))
@@ -50,7 +49,7 @@ class StateContent:
             if node != self.node_id
             and (node in lively if observes_liveliness else self._supplier_online(node))
         }
-        return StateSpaceStatus(
+        return SpaceStatus(
             base.space_id,
             base.synced,
             tuple(sorted(online)),
