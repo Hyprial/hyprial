@@ -615,6 +615,13 @@ Yjs 的 `get_update(sv)` 总是带上完整的删除集合，所以删除会随�
   在线观察（目录没有落后于任何在线持有方），且 `content_pending == 0` → `True`；
 - 否则 `False`。
 
+这里的“在线持有方”只算过得了节点门的节点，也就是当前成员的节点。被移除成员的节点即使在线，
+它的观察也不参与计算，`holders_online` 也不列它。
+
+`synced` 依据的是本节点已经拿到的观察。一个节点持有别人没有的更新、而它的广播丢了时，其余
+节点在下一次与它交换向量之前（至多约一个 60 s 的定时 tick）仍会报 `True`。这个窗口不消除，
+记入已知问题。
+
 `content_pending` 只计内容文档（`doc-*`）的待取与未核对数。二进制文件按需取回，不计入，它是否可读
 见 `stat().content_state`。
 
@@ -630,7 +637,9 @@ class SyncHost(Protocol):                      # 由 facade 的提交协调者�
     def apply_remote(self, doc_id: str, update: bytes, expected_vector: bytes,
                      peer: str) -> Accepted | Pending | Rejected: ...
     def requester_allowed(self, author: str) -> bool: ...
+    def requester_removed(self, author: str) -> bool: ...                       # 成员行仍在且已移除：只回 meta
     def supplier_allowed(self, node: str) -> bool: ...                          # 节点门（§3.5）
+    def local_member(self) -> bool: ...                                         # 本节点的作者是否是当前成员
     def local_generation(self) -> int: ...                                      # §4.6 的本地提交代次
 
 @dataclass(frozen=True, slots=True)
@@ -957,3 +966,16 @@ D2 的报告提出七个设计问题。已裁定的写在这里，待查证的�
 | 旧布局空间上的 `orgfs.space_purge` 与 `orgfs.checkout` | 两者都报 `ORGFS_LAYOUT_UNSUPPORTED`（与其他方法同一份错误数据），不改动旧目录的任何字节。`space_purge` 此前对旧布局空间静默返回成功而目录不动，现改为明确拒绝；旧目录按迁移指南手工删除。`checkout` 对不存在的空间仍报 `checkout-io`（已知问题，见 known-problems） |
 | `directory/user-keys/**` 的保护范围 | 只在 org 目录空间受保护：那里该分区在签名落地之前对任何作者都拒绝写入。其他空间里同名路径是普通路径；旧实现经 facade 在这些空间里同样生成普通节点，且没有任何代码从 OrgFS 读取 `directory/user-keys/**`，因此不构成回归 |
 | `org.fetch` 的节点来源 | 只认 org 目录空间里的 live 设备行；trash 历史里的设备行（已移除成员、已撤销设备）不作为可取用的节点来源 |
+
+#### 真实节点第三、四轮之后的裁定（包 F6、F7）
+
+| 问题 | 裁定 |
+| --- | --- |
+| 被移除成员仍收到 tree、内容广播，并能取到 blob | 被移除成员的节点只保留 meta：丢弃 tree 与内容广播，不发起内容与 blob 的拉取，定时 tick 只比 meta。blob 请求帧加 `requester {node, author}`，供给方按拉取的同一条规则拒绝非成员。这只约束未改动的软件：节点名与作者都是自报的，广播不加密，真正的切断在传输层（移出组织即移出 tailnet）；不属于任何组织的空间没有这一层。记入已知问题 |
+| `holders_online` 与 `rejected_updates` 的含义 | `holders_online` 只列当前成员的节点。`rejected_updates` = 准入拒绝的更新数 + 被节点门拒绝的广播数，是进程内计数，重启归零 |
+| 一次失败让供给方长时间被搁置 | 一次成功的探测即结束搁置：成功后失败数减半并压到阈值以下 |
+| 一个节点持有别人没有的更新、广播丢了（或当时被拒、之后才可接受），没有后续写入就永不收敛 | 三条规则，都复用现有的拉取与退避，不加帧种类：供给方处理拉取请求时，请求方的向量不被本地覆盖就向请求方反向拉取（日志 `orgfs.sync.requester-ahead`）；定时 tick 除了向领先于本地的持有方拉取，也向“落后的持有方”拉取——在线、持有该空间、过得了节点门、且没有任何观察覆盖本地 meta 与 tree 向量的节点；向它发起拉取会让它反向拉回本地多出的更新。两者共用每空间退避（首次立即，之后 60 s 起翻倍，上限 960 s）；重新成为成员的节点在 meta 被接受后向成员拉取。无进展即停，进程内三节点测试钉住“收敛后拉取与公告次数不再增长” |
+| 向被移除的节点发起拉取 | 选择供给方之前先过节点门。被移除节点不作候选，不产生失败记录，不计入供给方退避；重新成为成员后恢复为候选 |
+| 被移除成员读本地没有正文的内容 | 立即报 `not-a-member`，不给持有方建议。本地已有的内容仍可读，不追回 |
+| 被移除但尚不知情时做的本地写入 | 重新邀请之后按当前成员表被接受，作者是该成员。这是结果状态准入的既定语义，不改；是否应当丢弃这类写入留给负责人 |
+| 错误消息 | 没有说明的错误，消息只显示错误码，不再出现 `unknown-doc: unknown-doc` |
