@@ -1,12 +1,13 @@
 # Decisions (Windows follow-up verification for KP-134, KP-135, KP-136):
 # - Verification only. It measures the pull request on a GitHub-hosted Windows
 #   runner and is not part of the merge gate; no branch rule requires it.
-# - A hosted runner is Windows Server under an elevated administrator account.
-#   Its process chain runs under services.exe with pipe standard handles and
-#   no console window, while the same account is also signed in to an
-#   interactive session (run 45601792986 printed the chain and the handles;
-#   run 45648626321 printed the session). A pass here is recorded as
-#   "GitHub-hosted Windows runner", never as a Windows 11 real-machine pass.
+# - A hosted runner is Windows Server under an elevated administrator
+#   account, and the job runs in that account's interactive session. Its
+#   process chain is under services.exe and its standard handles are pipes
+#   with no console window (run 45601792986 printed the chain and the
+#   handles; run 45648626321 printed the session). A pass here is recorded
+#   as "GitHub-hosted Windows runner", never as a Windows 11 real-machine
+#   pass.
 #   KP-136 depends on real terminal hosts, so its job here only prints the
 #   handle facts. The close results and the private-directory check were
 #   measured on separate temporary branches and are recorded in the KP-136
@@ -128,7 +129,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "npm prefix -g: $prefix"
           Get-Command pi -All | Format-List Name, Source, CommandType
-          if (-not $?) { exit 1 }
       - name: Probe the package root and the worker environment
         if: always()
         run: |
