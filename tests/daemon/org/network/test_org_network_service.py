@@ -75,7 +75,6 @@ class FakeFs:
     invited: list[tuple[str, str, str]] = field(default_factory=list)
     join_failures_left: int = 0
     content_pending: set[str] = field(default_factory=set)  # device file names
-    parked: tuple[tuple[str, int], ...] = ()
 
     def create_space(self, name: str) -> Any:
         self.calls.append(f"create_space:{name}")
@@ -218,10 +217,7 @@ class FakeFs:
         )
 
     def status(self, space_id: str) -> SpaceStatus:
-        return SpaceStatus(space_id, 0, (), (), self.parked)
-
-    def parked_commits(self, space_id: str) -> tuple[tuple[str, int], ...]:
-        return self.parked
+        return SpaceStatus(space_id, 0, (), ())
 
     def read_text(self, space_id: str, node: str) -> tuple[str, str]:
         name = node.removeprefix("id:").rsplit("/", 1)[-1]

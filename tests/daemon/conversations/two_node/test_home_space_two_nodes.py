@@ -23,9 +23,12 @@ Decision notes (OrgFS package S, 2026-11-25):
 
 - Protocol 3 joins fetch the catalog first and content on demand (design
   Q7), so a reader waits for content: reads after a join are re-tried until
-  they converge.  Product code currently turns a pending read into
-  ``RecordUnavailable`` (the absent-code spelling), so the explicit-join
-  probe is a strict xfail until that is fixed.
+  they converge.  A pending read (``content-pending``) is an absent
+  segment, read again on the next refresh.
+- Package O (2026-11-25): the conversation readers name the wire code
+  through ``hyprial.kernel.ORGFS_CONTENT_PENDING``, so the explicit-join
+  probe is a plain test again (it was a strict xfail while the readers
+  spelled the code ``content_pending``/``ORGFS_CONTENT_PENDING``).
 - A lost live update is no longer parked until an explicit sync: the next
   update of the same space that depends on it makes the receiver pull
   (T2 report §7-3), and the supplier-online edge still pulls.  The lost-update
@@ -116,12 +119,6 @@ def test_two_homes_created_before_any_join_stay_separate_and_writers_diverge(tmp
         close(b, a)
 
 
-@pytest.mark.xfail(strict=True, raises=Exception, reason=(
-    "conversations/document.py:68 (and groups/log.py:62) list content_pending and "
-    "ORGFS_CONTENT_PENDING as absent codes, but the wire code is content-pending; a read "
-    "of content that has not arrived yet is RecordUnavailable instead of an empty segment "
-    "read again on the next refresh (S report §12)"
-))
 def test_an_explicit_join_needs_no_invite_and_converges_reads_and_writes(tmp_path) -> None:
     _bus, a, b = start_pair(tmp_path)
     try:

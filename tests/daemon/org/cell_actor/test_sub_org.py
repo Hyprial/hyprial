@@ -48,29 +48,12 @@ from tests.daemon.org.cell_actor.test_org_cell_actor import (
     BOB_UID,
     _OrgApp,
 )
+from tests.daemon.org.cell_actor.replica_support import link_replicas
 from tests.support.tailnet_membership import FakeMembershipSidecar, confirm_ipc_removal
 
 CAROL_OWNER = "carol@example.com"
 CAROL_UID = uid_for(f"user:{CAROL_OWNER}")
 CAROL_DEVICE_UID = "c" * 12 + "4" + "c" * 3 + "8" + "c" * 15
-
-
-def _bridge_member_orgfs(owner_app: _OrgApp, member_app: _OrgApp) -> None:
-    """Connect member_app's LocalOrgFs to read/join spaces committed on owner_app."""
-    owner_fs = owner_app._require_orgfs_runtime().facade
-    member_fs = member_app._require_orgfs_runtime().facade
-
-    def bridged_join(sid: str, timeout: float = 0.0) -> Any:
-        src = owner_fs._spaces[sid]
-        member_fs._spaces[sid] = src
-        return src
-
-    member_fs.join = bridged_join
-    member_fs.members = lambda sid: owner_fs.members(sid)
-    member_fs.space_meta = lambda sid: owner_fs.space_meta(sid)
-    member_fs.read_text = lambda sid, path: owner_fs.read_text(sid, path)
-    member_fs.listdir = lambda sid, path: owner_fs.listdir(sid, path)
-    member_fs.document_authors = lambda sid, path: owner_fs.document_authors(sid, path)
 
 
 def _network_orgs(app: _OrgApp) -> dict[str, dict[str, Any]]:
@@ -246,7 +229,7 @@ def test_sub_org_membership_requires_parent_and_is_non_transitive(tmp_path: Path
         runtime=bob_runtime,
         sidecar=sidecar.for_device(BOB_OWNER, "node-b"),
     )
-    _bridge_member_orgfs(app_a, app_b)
+    link_replicas(app_a, app_b)
     try:
         root = ipc_org_create(app_a, {"org": "group-root"})
         root_space = root["spaceId"]
@@ -365,7 +348,7 @@ def test_parent_removal_and_leave_converge_without_auto_pruning_or_revoking_on_s
         runtime=bob_runtime,
         sidecar=sidecar.for_device(BOB_OWNER, "node-b"),
     )
-    _bridge_member_orgfs(app, app_b)
+    link_replicas(app, app_b)
     try:
         root = ipc_org_create(app, {"org": "group-root"})
         root_space = root["spaceId"]
@@ -465,7 +448,7 @@ def test_sub_org_leave_and_repair_preserve_inherited_tailnet(tmp_path: Path) -> 
         runtime=bob_runtime,
         sidecar=sidecar.for_device(BOB_OWNER, "node-b"),
     )
-    _bridge_member_orgfs(app_a, app_b)
+    link_replicas(app_a, app_b)
     try:
         root = ipc_org_create(app_a, {"org": "group-root"})
         root_space = root["spaceId"]
@@ -554,7 +537,7 @@ def test_member_readonly_lookup_does_not_initialize_cell_runtime_or_write_cell(
         runtime=bob_runtime,
         sidecar=sidecar.for_device(BOB_OWNER, "node-b"),
     )
-    _bridge_member_orgfs(app_a, app_b)
+    link_replicas(app_a, app_b)
     try:
         root = ipc_org_create(app_a, {"org": "group-root"})
         _seed_root_membership(app_a, "group-root")

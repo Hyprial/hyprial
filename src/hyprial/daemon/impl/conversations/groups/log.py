@@ -55,11 +55,11 @@ from hyprial.daemon.impl.conversations.record.segments import (
     writer_name,
 )
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.kernel import is_group_id_segment
+from hyprial.kernel import ORGFS_CONTENT_PENDING, is_group_id_segment
 
 GROUPS_ROOT = "conversations"
 WRITER_PREFIX = "log-"
-_ABSENT_CODES = frozenset({"unknown-doc", "content_pending", "ORGFS_CONTENT_PENDING"})
+_ABSENT_CODES = frozenset({"unknown-doc", ORGFS_CONTENT_PENDING})
 _SEGMENT = re.compile(r"(\d{6})\.jsonl")
 _APPEND_LOCK = threading.Lock()
 

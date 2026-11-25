@@ -301,7 +301,6 @@ def test_directory_pending_accepts_the_real_pending_object() -> None:
                         "reason": "content-pending",
                     }
                 ],
-                "parkedCommits": [{"author": "user:owner", "commits": 2}],
                 "dataProblems": [
                     {
                         "org": "group-x",
@@ -322,8 +321,17 @@ def test_directory_pending_rejects_string_items() -> None:
         "directoryPending": {
             "group-x": {
                 "contentPending": ["device-a"],
-                "parkedCommits": [],
             }
+        },
+    }
+    assert not _accepts(result)
+
+
+def test_directory_pending_rejects_the_removed_parked_commits_field() -> None:
+    result = {
+        **_NETWORK_RESULT,
+        "directoryPending": {
+            "group-x": {"contentPending": [], "parkedCommits": []}
         },
     }
     assert not _accepts(result)

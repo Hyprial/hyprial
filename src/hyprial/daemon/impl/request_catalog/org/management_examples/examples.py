@@ -62,7 +62,7 @@ _NETWORK_RESULT = {
             }
         ]
     },
-    "directoryPending": {_ORG: {"contentPending": [], "parkedCommits": None}},
+    "directoryPending": {_ORG: {"contentPending": []}},
     "self": {
         "deviceId": "node-1",
         # Null until P1 provisioning mints the device uid; a provisioned,

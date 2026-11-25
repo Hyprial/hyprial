@@ -14,9 +14,15 @@ from hyprial.kernel.impl.contracts.daemon.ipc_errors import DaemonRequestError
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.org.document import parse_document, serialize_document, validate_document
 from hyprial.daemon.impl.org.mesh import OrgFetchResult
-from hyprial.daemon.impl.org.orgfs_migration import ORG_CONTEXT_SPACE_NAME, write_org_fetch_source
+from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.orgfs_migration import (
+    ORG_CONTEXT_SPACE_NAME,
+    OrgMigrationError,
+    write_org_fetch_source,
+)
 from hyprial.daemon.impl.org.store import OrgContextStore
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.identity.impl.org_directory import DirectoryDevice, directory_device_path
 from hyprial.kernel.impl.primitives.uri import parse_orgfs_uri
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 from hyprial.shell.impl.cli.commands.common import support as _cli_support
@@ -113,6 +119,31 @@ def _space(application: DaemonApplication) -> str:
     space = runtime.facade.create_space(ORG_CONTEXT_SPACE_NAME)
     runtime.facade.mkdir(space.space_id, "candidates")
     return space.space_id
+
+
+def _device(device_id: str, owner: str) -> DirectoryDevice:
+    return DirectoryDevice(
+        device_id=device_id,
+        owner=owner,
+        server_public="nodekey:" + "1" * 64,
+        client_public="nodekey:" + "2" * 64,
+        address="tcp://127.0.0.1:7447#synthetic",
+        key_generation=1,
+        updated_at="2026-11-25T00:00:00+00:00",
+    )
+
+
+def _publish_device(
+    application: DaemonApplication, org: str, device_id: str, owner: str
+) -> None:
+    """Register ``device_id`` for ``owner`` in ``org``'s directory space."""
+
+    facade = application._require_orgfs_runtime().facade
+    if not any(info.name == org for info in facade.spaces()):
+        facade.create_space(org)
+    store = OrgFsDirectoryStore(facade)
+    store.ensure_org_directory_roots(org)
+    store.put_device(org, _device(device_id, owner))
 
 
 def _close(application: DaemonApplication) -> None:
@@ -430,9 +461,7 @@ def test_morg_6_node_and_user_sources_keep_result_keys_and_offline_resolution(
 
         _enable_m1(application)
         application._presence = _Presence()  # type: ignore[assignment]
-        monkeypatch.setattr(
-            runtime, "writer_attributions", lambda _space: {"node-b": ("user:owner",)}
-        )
+        _publish_device(application, "group-acme", "node-b", "owner")
         by_node = application.handle("org.fetch", {"from": "agent:node-b"})
         by_user = application.handle("org.fetch", {"from": "user:owner"})
         assert core <= by_node.keys()
@@ -441,6 +470,120 @@ def test_morg_6_node_and_user_sources_keep_result_keys_and_offline_resolution(
         assert by_node["deprecatedSourceTarget"] is True
         assert by_user["requestedSources"] == ["user:owner"]
         assert by_user["source"] == "orgfs"
+    finally:
+        _close(application)
+
+
+def test_node_source_resolves_through_the_org_directory_device_record(
+    tmp_path: Path,
+) -> None:
+    """``--from agent:<node>`` maps the node to the user who registered it."""
+
+    application = _application(tmp_path)
+    try:
+        space_id = _space(application)
+        runtime = application._require_orgfs_runtime()
+        runtime.facade.write_text(space_id, "candidates/owner.md", _document(2))
+        _enable_m1(application)
+        _publish_device(application, "group-acme", "node-b", "owner")
+
+        result = application.handle("org.fetch", {"from": "node-b"})
+
+        assert result["requestedSources"] == ["user:owner"]
+        assert result["receivedCount"] == 1
+        assert result["deprecatedSourceTarget"] is True
+        assert result["sourceTargetHint"] == "use --from user:<name>"
+    finally:
+        _close(application)
+
+
+def test_node_source_without_a_published_owner_lists_the_publishing_nodes(
+    tmp_path: Path,
+) -> None:
+    """A node whose owner never published is unreachable; the error names the nodes that can answer."""
+
+    application = _application(tmp_path)
+    try:
+        space_id = _space(application)
+        runtime = application._require_orgfs_runtime()
+        runtime.facade.write_text(space_id, "candidates/owner.md", _document(2))
+        _enable_m1(application)
+        _publish_device(application, "group-acme", "node-b", "owner")
+
+        with pytest.raises(DaemonRequestError) as unknown:
+            application.handle("org.fetch", {"from": "node-z"})
+
+        assert unknown.value.code == ipc_errors.ORG_SOURCE_UNREACHABLE
+        assert unknown.value.data == {"availableSources": ["node-b"]}
+    finally:
+        _close(application)
+
+
+def test_node_source_whose_directories_disagree_is_unresolved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two org directories naming different owners for one node resolve to no one."""
+
+    application = _application(tmp_path)
+    events: list[tuple[str, dict[str, object]]] = []
+    try:
+        space_id = _space(application)
+        runtime = application._require_orgfs_runtime()
+        runtime.facade.write_text(space_id, "candidates/owner.md", _document(2))
+        runtime.facade.write_text(space_id, "candidates/bob.md", _document(2, "bob"))
+        runtime.facade.create_space("group-acme")
+        runtime.facade.create_space("group-beta")
+        _enable_m1(application)
+        owners = {"group-acme": "owner", "group-beta": "bob"}
+        monkeypatch.setattr(
+            OrgFsDirectoryStore,
+            "list_devices",
+            lambda _store, org: [_device("node-b", owners[org])],
+        )
+        bridge = application._require_org_context_bridge()
+        bridge.logger = lambda _level, event, **fields: events.append((event, fields))
+
+        with pytest.raises(OrgMigrationError) as unresolved:
+            bridge.fetch(source="node-b", timeout=0.01)
+
+        assert unresolved.value.code == ipc_errors.ORG_SOURCE_UNREACHABLE
+        assert unresolved.value.data == {"availableSources": []}
+        assert events == [
+            (
+                "org.context.source_owner_conflict",
+                {"node": "node-b", "principals": ["user:bob", "user:owner"]},
+            )
+        ]
+    finally:
+        _close(application)
+
+
+def test_node_source_fetches_log_an_invalid_directory_row_once(tmp_path: Path) -> None:
+    """Repeated node-form fetches share one invalid-device quarantine."""
+
+    application = _application(tmp_path)
+    events: list[str] = []
+    try:
+        space_id = _space(application)
+        runtime = application._require_orgfs_runtime()
+        runtime.facade.write_text(space_id, "candidates/owner.md", _document(2))
+        _enable_m1(application)
+        _publish_device(application, "group-acme", "node-b", "owner")
+        _publish_device(application, "group-acme", "broken", "owner")
+        org_space = next(
+            info.space_id for info in runtime.facade.spaces() if info.name == "group-acme"
+        )
+        runtime.facade.write_text(
+            org_space, directory_device_path("owner", "broken"), "not json"
+        )
+        bridge = application._require_org_context_bridge()
+        bridge.logger = lambda _level, event, **_fields: events.append(event)
+
+        for _ in range(2):
+            result = bridge.fetch(source="node-b", timeout=0.01)
+            assert result["requestedSources"] == ["user:owner"]
+
+        assert events.count("directory.device_invalid") == 1
     finally:
         _close(application)
 

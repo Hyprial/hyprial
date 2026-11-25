@@ -4,13 +4,12 @@
 #   user's current member row.  A missing or malformed field, or no member row,
 #   is not covered.  The journal's causal relation is no longer consulted, so
 #   the check survives the removal of document_covers_member_add.
-# - 2026-11-25 (C5): parkedCommits is read only through
-#   parked_commits_diagnostic, the one place phase D re-sources from
-#   status.rejected_updates before the field is removed.
-# - 2026-11-25 (package S, minimal change for package O): the journal facade
-#   that answered parked_commits is deleted; on the state host the read
-#   raises an explicit OrgFsError("unavailable"), which the diagnostic logs
-#   as directory.parked_unavailable and reports as unknown (None).
+# - 2026-11-25 (package O, orgfs-minimal design section 5): the directory
+#   status no longer carries parkedCommits.  The state host parks nothing, so
+#   the field, its diagnostic read and the directory.parked_unavailable log
+#   are deleted rather than kept as an always-empty placeholder.  Held-back
+#   updates are diagnosed through orgfs.status (rejected_updates); the
+#   directory pane reads no space status at all.
 """The OrgFS-backed ``DirectoryStore``: org directories as OrgFS documents.
 
 Each organization occupies one OrgFS directory space named ``group-NAME``
@@ -150,16 +149,11 @@ class OrgFsDirectoryStore:
         """Readable device rows, plus what has not arrived yet ("not caught up").
 
         ``contentPending`` names devices whose tree node is here but whose
-        content is not; ``parkedCommits`` counts, per author, commits held
-        behind a missing predecessor (such a device may have no node at all).
-        A reader must be able to tell either apart from a device that does
-        not exist.
+        content is not.  A reader must be able to tell such a device apart
+        from one that does not exist.
         """
         devices, content_pending, data_problems = self._scan(org)
-        status: dict[str, Any] = {
-            "contentPending": content_pending,
-            "parkedCommits": self.parked_commits_diagnostic(org),
-        }
+        status: dict[str, Any] = {"contentPending": content_pending}
         if data_problems:
             status["dataProblems"] = data_problems
         return devices, status
@@ -308,46 +302,6 @@ class OrgFsDirectoryStore:
         pending.sort(key=lambda row: (row["deviceId"], row["owner"]))
         problems.sort(key=lambda row: str(row["path"]))
         return devices, pending, problems
-
-    def parked_commits_diagnostic(self, org: str) -> list[dict[str, Any]] | None:
-        """The ``parkedCommits`` value of the directory status for ``org``.
-
-        The only place the directory status reads OrgFS for held-back
-        updates.  ``None`` means the read failed: unknown, never "nothing
-        parked"; the failure is logged and never hides the device listing.
-        """
-
-        try:
-            return self.parked_commits(org)
-        except Exception as error:  # noqa: BLE001 - must not hide the device listing
-            fields = {"org": org, "detail": str(error)}
-            if self._logger is not None:
-                self._logger("warn", "org", "directory.parked_unavailable", **fields)
-            else:
-                _LOG.warning("org.directory.parked_unavailable org=%s detail=%s", org, error)
-            return None
-
-    def parked_commits(self, org: str) -> list[dict[str, Any]]:
-        """Commits received for ``org``'s directory but parked behind a gap.
-
-        Read the pending table directly.  ``fs.status`` also computes
-        ``unconfirmed_commits`` by scanning every committed envelope, which
-        made this pane linear in the journal's history (group-internal had
-        320k rows); parked rows are independent of that history.
-        """
-
-        space_id = self._space_id(org)
-        read = getattr(self._fs, "parked_commits", None)
-        if read is None:
-            raise OrgFsError(
-                "unavailable",
-                {"spaceId": space_id, "message": "the OrgFS state host keeps no parked commits"},
-            )
-        return [
-            # Rows parked before the author column existed carry ''.
-            {"author": author or "unknown", "commits": count}
-            for author, count in read(space_id)
-        ]
 
     def put_device(self, org: str, device: DirectoryDevice) -> None:
         space_id = self._space_id(org)
