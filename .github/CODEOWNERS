@@ -1,0 +1,6 @@
+* @Hyprial/dev
+/gui/docs/ @Hyprial/dev @Hyprial/prod
+/docs/guides/ @Hyprial/dev @Hyprial/prod
+/README.md @Hyprial/dev @Hyprial/prod
+/CHANGELOG.md @Hyprial/dev @Hyprial/prod @Hyprial/operator
+/.github/ @Hyprial/dev
