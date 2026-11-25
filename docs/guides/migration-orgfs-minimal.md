@@ -30,13 +30,16 @@ hyprial org fs space list --json
 `spaces` 为空的安装不需要做任何事，直接升级即可。
 
 在磁盘上，旧格式的空间是 `<state>/orgfs/spaces/<spaceId>/` 下带 `journal.sqlite3` 的目录
-（`<state>` 默认是 `$HYPRIAL_HOME/state`；设置了 `HARNESS_STATE_DIR` 时以它为准）：
+（`<state>` 默认是 `~/.hyprial/state`；设置了 `HYPRIAL_HOME` 时是它下面的 `state`，设置了
+`HARNESS_STATE_DIR` 时以它为准）：
 
 ```sh
-HYPRIAL_HOME="${HYPRIAL_HOME:-$HOME/.hyprial}"
-STATE="${HARNESS_STATE_DIR:-$HYPRIAL_HOME/state}"
+STATE="${HARNESS_STATE_DIR:-${HYPRIAL_HOME:-$HOME/.hyprial}/state}"
 ls "$STATE"/orgfs/spaces/*/journal.sqlite3 2>/dev/null
 ```
+
+本指南里凡是用到 `STATE` 的代码段都用这一行定义它：没有设置 `HYPRIAL_HOME` 时（默认安装就是
+这样）取 `~/.hyprial`。不要把 `HYPRIAL_HOME` 设为空串。
 
 ## 3. 改了什么，哪些不兼容
 
@@ -103,11 +106,18 @@ jq -r '.spaces[] | "\(.space_id)\t\(.name)\t\(.owner)"' spaces.json
 升级前还要整体备份 OrgFS 数据目录，它是回退（第 9 节）的唯一依据。先停 daemon，再复制：
 
 ```sh
-STATE="${HARNESS_STATE_DIR:-$HYPRIAL_HOME/state}"; : "${STATE:?}"
-hyprial daemon stop
-cp -a "$STATE/orgfs" "$HOME/orgfs-backup-$(date +%Y%m%d)"
-hyprial daemon start
+STATE="${HARNESS_STATE_DIR:-${HYPRIAL_HOME:-$HOME/.hyprial}/state}"
+BK="$HOME/orgfs-backup-$(date +%Y%m%d)"
+if [ -d "$STATE/orgfs/spaces" ] && [ ! -e "$BK" ]; then
+  hyprial daemon stop && { cp -a "$STATE/orgfs" "$BK"; rc=$?; hyprial daemon start
+    [ "$rc" -eq 0 ] && echo "backup ok: $BK" || echo "backup FAILED (cp exit $rc)"; }
+else
+  echo "stop: no $STATE/orgfs/spaces, or $BK already exists"
+fi
 ```
+
+只有看到 `backup ok` 才继续升级。看到 `stop:` 时先弄清原因：`$STATE` 指的不是实际的数据目录，
+或者同名备份已经存在（不会覆盖）。
 
 ### 5.2 每个空间：留底成员表与回收站
 
@@ -224,11 +234,14 @@ done < "nodes-$OLD.tsv"
 
 ### 6.4 重新邀请成员
 
-按留底的成员表逐个邀请，跳过你自己（新空间此时只有创建者一个成员）。成员表里的 `user` 带
-`user:` 前缀，原样传给邀请命令。对方在自己的节点上加入：
+按留底的成员表逐个邀请，跳过你自己。成员表里的 `user` 带 `user:` 前缀，原样传给邀请命令。
+“你自己”取新空间成员表里创建者那一行（`added_by` 等于自己的那一行），这样循环中途失败后可以
+原样重跑。对方在自己的节点上加入：
 
 ```sh
-ME=$(hyprial org fs member list "$NEW" --json | jq -r '.members[0].user')
+ME=$(hyprial org fs member list "$NEW" --json |
+  jq -r '[.members[] | select(.user == .added_by) | .user] | if length == 1 then .[0] else error("creator not unique") end')
+[ -n "$ME" ] || echo "stop: cannot tell which member is you"
 jq -r --arg me "$ME" '.members[] | select(.user != $me) | "\(.user)\t\(.mode)"' "members-$OLD.json" |
   while IFS=$'\t' read -r user mode; do
     hyprial org fs member invite "$NEW" "$user" --mode "$mode" --no-notify --json < /dev/null
@@ -283,12 +296,13 @@ done < "nodes-$OLD.tsv"
 diff "sha256-old-$OLD.txt" "sha256-new-$OLD.txt" && echo "PASS $OLD"
 ```
 
-`diff` 没有输出即文件的哈希与路径集合都一致。这一步只比较文件；空目录另行核对（这段核对脚本
-**未验证**，`resolve` 对目录路径的返回以实际输出为准）：
+`diff` 没有输出即文件的哈希与路径集合都一致。这一步只比较文件；空目录另行核对。只看
+`resolve` 的退出码不够：同一路径上是文件而不是目录时它也返回成功，所以要看返回的 `kind`：
 
 ```sh
 awk -F'\t' '$1=="dir"{print $2}' "nodes-$OLD.tsv" | while IFS= read -r path; do
-  hyprial org fs resolve "$NEW" "$path" --json < /dev/null > /dev/null || echo "missing dir: $path"
+  hyprial org fs resolve "$NEW" "$path" --json < /dev/null 2>/dev/null |
+    jq -e 'any(.nodes[]?; .kind == "dir" and .deleted != true)' > /dev/null || echo "missing dir: $path"
 done
 ```
 
@@ -305,9 +319,14 @@ done
   3. 把当前的 OrgFS 目录移开，换回升级前的备份：
 
      ```sh
-     STATE="${HARNESS_STATE_DIR:-$HYPRIAL_HOME/state}"; : "${STATE:?}"
-     mv "$STATE/orgfs" "$STATE/orgfs.after-upgrade-$(date +%Y%m%d)"
-     cp -a "$HOME/orgfs-backup-<日期>" "$STATE/orgfs"
+     STATE="${HARNESS_STATE_DIR:-${HYPRIAL_HOME:-$HOME/.hyprial}/state}"
+     BK="$HOME/orgfs-backup-<日期>"
+     if [ -d "$STATE/orgfs" ] && [ -d "$BK/spaces" ]; then
+       mv "$STATE/orgfs" "$STATE/orgfs.after-upgrade-$(date +%Y%m%d)" && cp -a "$BK" "$STATE/orgfs" &&
+         echo "restore ok"
+     else
+       echo "stop: no $STATE/orgfs, or no backup at $BK"
+     fi
      ```
 
   4. 按原来的安装方式装回升级前的版本，再 `hyprial daemon start`。
@@ -328,7 +347,8 @@ done
 3. 确定不再回退，且第 5.1 节的备份已另存到别处。
 
 ```sh
-STATE="${HARNESS_STATE_DIR:-$HYPRIAL_HOME/state}"; : "${STATE:?}"
+STATE="${HARNESS_STATE_DIR:-${HYPRIAL_HOME:-$HOME/.hyprial}/state}"
+[ -d "$STATE/orgfs/spaces" ] || echo "stop: no $STATE/orgfs/spaces"
 hyprial daemon stop
 for d in "$STATE"/orgfs/spaces/*/; do
   [ -f "$d/journal.sqlite3" ] && echo "$d"
