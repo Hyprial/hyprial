@@ -30,9 +30,10 @@ A member without `allow` and `deny` declares no policy.
 The daemon has no built-in allow or deny list. When a `claude` harness member
 declares neither `allow` nor `deny`, the agent cell registrar writes the
 `managed-worker` template rules into the document once (`allow`: the
-`mcp__harness-bridge__*` tools plus `Bash(hyprial:*)`; `deny`: the daemon,
-init, org, agent-destroy and upgrade commands). It does this when the
-member's harness becomes known (its local launch record) and right before
+`mcp__harness-bridge__*` tools plus `Bash(hyprial:*)`; `deny`: only the
+irreversible `Bash(hyprial daemon:*)`, `Bash(hyprial agent destroy:*)`,
+`Bash(hyprial init:*)` and `Bash(hyprial org fs:*)` commands). It does this
+when the member's harness becomes known (its local launch record) and right before
 `hyprial agent start` launches it. An owner edit is never overwritten: a member
 that declares either key is left alone. Members of other harnesses are not
 seeded. A seed that cannot be written (cell runtime unavailable, slow or

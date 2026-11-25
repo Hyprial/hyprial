@@ -169,10 +169,9 @@ MANAGED_ALLOW = [
 ]
 MANAGED_DENY = [
     "Bash(hyprial agent destroy:*)",
-    "Bash(hyprial daemon upgrade:*)",
     "Bash(hyprial daemon:*)",
     "Bash(hyprial init:*)",
-    "Bash(hyprial org:*)",
+    "Bash(hyprial org fs:*)",
 ]
 
 
