@@ -6,6 +6,10 @@
 #   The presence ordering they pin is ``RuntimeDirectory``'s and unchanged.
 #   The other tests pass on both runtimes and still name ``OrgFsRuntime``,
 #   which package S points at the new runtime.
+# - Package F7 (ruling 4): the node gate now runs before a supplier is
+#   scheduled, and ``node-a`` is a device no member owns here, so the tests
+#   that pull from it run with ``trust_tailnet_members`` (the admitted-node
+#   case); the ordering they pin is unchanged.
 """Catch-up must survive either ordering of two independent actor mailboxes."""
 
 import json
@@ -84,7 +88,9 @@ def test_query_confirmed_delete_notifies_orgfs_and_preserves_inbox_slot(
 
     monkeypatch.setattr(session, "get_liveliness", query)
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     try:
         space = runtime.facade.create_space("query confirmed supplier")
         inbox_observer = inbox_wakes.append
@@ -168,7 +174,9 @@ def test_catchup_survives_presence_settlement_order(tmp_path, monkeypatch, prese
     monkeypatch.setattr(PresenceAuthority, "_receive", controlled_receive)
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     try:
         space = runtime.facade.create_space("restart")
         runtime.bind_transport(
@@ -229,7 +237,9 @@ def test_catchup_survives_presence_settlement_order(tmp_path, monkeypatch, prese
 def test_committed_supplier_delete_still_fences_queued_sync(tmp_path, monkeypatch):
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     entered, release, finished = (threading.Event() for _ in range(3))
     calls = []
     try:
@@ -278,7 +288,9 @@ def test_committed_supplier_delete_still_fences_queued_sync(tmp_path, monkeypatc
 def test_late_binding_replays_supplier_without_replacing_inbox_wake(tmp_path, monkeypatch):
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     observed = threading.Event()
     inbox_wakes = []
     try:

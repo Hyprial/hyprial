@@ -36,6 +36,32 @@
 #   entry that re-admits this node lets the rest of the same reply through);
 #   it reruns only when that meta made this node a member again, and never
 #   for leftovers it was not allowed to take.
+# - Package F7 (real-node finding R4-3, ruling 1, option (a)): a broadcast is
+#   sent once, at commit, so updates whose broadcast was lost (or refused
+#   then, acceptable now) live on one node until somebody pulls it.  The
+#   request of a pull carries the requester's meta and tree vectors; when the
+#   supplier is a current member, the requester's node passes presence and the
+#   node gate, and the local vectors do not cover the requester's, the
+#   supplier records them as the requester's observation (so its ``synced``
+#   is false while the requester is ahead, ruling 3) and schedules a pull
+#   from the requester through the usual coalescing and supplier backoff.
+#   "No progress, stop": the vectors that triggered a pull back are kept per
+#   requester, and the same vectors never trigger again; the entry is dropped
+#   once the local vectors cover a request.  Without new writes a requester
+#   can therefore trigger at most one pull back per distinct vector pair, so
+#   two nodes cannot keep triggering each other.  A removed or never-invited
+#   requester is answered as before and never pulled from.
+# - Package F7 (ruling 2): an accepted meta update, broadcast or pulled, that
+#   makes this node a member again schedules pulls from its sender and from
+#   every peer known to hold the space (synced with, broadcast from or
+#   observed) that passes the node gate, so each of them sees the vectors
+#   this node wrote while it was refused and pulls them back.  One that
+#   makes another member's known node pass the node gate again schedules a
+#   pull from that node, so the re-admission converges whichever side
+#   applies the new member table first.  Those updates are admitted under
+#   the member table current when they arrive (result-state admission): a
+#   write made while this node was already removed but did not know it is
+#   accepted after a re-invite.
 """Requester rounds and the supplier's sync query handler."""
 
 from __future__ import annotations
@@ -251,8 +277,13 @@ class SyncPullMixin:
                     continue
             if self._closed:
                 break
+            meta = entry.doc_id == "meta"
+            was_member = self._local_member() if meta else True
+            before = self._member_peers() if meta else frozenset()
             outcome = self.host.apply_remote(entry.doc_id, update, entry.vector, supplier)
             kind = outcome_kind(outcome)
+            if kind == "accepted" and meta:
+                self._meta_accepted(supplier, was_member, before)
             if kind == "accepted":
                 accepted += 1
             elif kind == "pending":
@@ -288,11 +319,46 @@ class SyncPullMixin:
                 request = replace(request, vectors=tuple(
                     (doc_id, since) for doc_id, since in request.vectors if doc_id == "meta"
                 ))
+            else:
+                self._pull_back_if_ahead(request)
             return encode_reply(self._build_page(request))
         except Exception as exc:  # noqa: BLE001 - a query handler must answer
             self._log("warn", "orgfs.sync.serve-failed", requester=request.requester_node,
                       reason=getattr(exc, "code", type(exc).__name__))
             return refuse(str(getattr(exc, "code", "unavailable")), str(exc))
+
+    def _pull_back_if_ahead(self, request: SyncRequest) -> None:
+        """Pull from a member requester whose catalog vectors this node does not cover."""
+
+        node = request.requester_node
+        sent = dict(request.vectors)
+        if (
+            node == self.node_id
+            or any(doc_id not in sent for doc_id in CATALOG_DOC_IDS)
+            or not self._local_member()
+            or not self._supplier_allowed(node)
+            or not self._member_node(node)
+        ):
+            return
+        theirs = (sent["meta"], sent["tree"])
+        generation = self.host.local_generation()
+        local = self.host.read_vectors(CATALOG_DOC_IDS)
+        if all(covers(local.get(doc_id) or EMPTY_VECTOR, vector)
+               for doc_id, vector in zip(CATALOG_DOC_IDS, theirs)):
+            with self._worker_lock:
+                self._pull_backs.pop(node, None)
+            return
+        with self._worker_lock:
+            if self._closed or self._pull_backs.get(node) == theirs:
+                return
+            self._pull_backs[node] = theirs
+            seen = self._observations.get(node)
+            if seen is None or not (covers(seen.meta_vector, theirs[0])
+                                    and covers(seen.tree_vector, theirs[1])):
+                self._observations[node] = PeerObservation(node, theirs[0], theirs[1], generation)
+            self._remember_peer(node)
+        self._log("info", "orgfs.sync.requester-ahead", spaceId=self.space_id, requester=node)
+        self.schedule_sync_from(node)
 
     def _build_page(self, request: SyncRequest) -> SyncReply:
         budget = min(request.max_bytes, ORGFS_PAGE_BYTES)

@@ -3,6 +3,11 @@
 #   for no content and applies only the meta entry of a reply, even when the
 #   supplier still sends tree and content; a reply whose meta re-admits it
 #   lets the rest of the same reply through.
+# - Package F7 (R4-3, rulings 1 and 4): a supplier whose local vectors do not
+#   cover a member requester's pulls back from it, once per distinct
+#   requester vectors ("no progress, stop"), and never from a removed
+#   requester; a supplier that fails the node gate is never scheduled and
+#   leaves no failure record.
 """Pull rounds: catalog first, paged content, blob fallback, supplier gates."""
 
 from __future__ import annotations
@@ -292,6 +297,87 @@ def test_requester_refuses_a_supplier_that_fails_the_node_gate(bus: Bus) -> None
         b.sync.sync_from("node-a")
     assert raised.value.details.get("reason") == "supplier-not-member"
     assert bus.queries == []
+    _close(a, b)
+
+
+def test_a_supplier_that_fails_the_node_gate_is_never_scheduled(bus: Bus) -> None:
+    a = make_node(bus, "node-a")
+    b = make_node(bus, "node-b")
+    a.host.write_text("doc-1", "x", publish=False)
+    b.host.denied_suppliers.add("node-a")
+
+    assert b.sync.schedule_sync_from("node-a") is False
+    b.sync.request_content("doc-1")
+    settle(a, b)
+
+    assert bus.queries == []
+    assert b.sync._supplier_sync_health.failure_count("node-a") == 0  # noqa: SLF001
+    assert b.sync._supplier_sync_local_health.failure_count("node-a") == 0  # noqa: SLF001
+    b.host.denied_suppliers.discard("node-a")
+    assert b.sync.schedule_sync_from("node-a") is True
+    settle(a, b)
+    assert same_state(a, b)
+    _close(a, b)
+
+
+def _pulls_by(bus: Bus, node: str) -> int:
+    return sum(1 for key, sender, _sent, _received in bus.queries if sender == node and "/org/fs3/sync/" in key)
+
+
+def test_a_supplier_pulls_back_from_a_member_requester_that_is_ahead(bus: Bus) -> None:
+    a = make_node(bus, "node-a")
+    b = make_node(bus, "node-b")
+    a.host.write_text("doc-1", "base")
+    settle(a, b)
+    a.host.write_text("doc-1", "only on a, broadcast lost", publish=False)
+
+    a.sync.sync_from("node-b")
+    settle(a, b)
+
+    assert b.host.text("doc-1") == "only on a, broadcast lost"
+    assert same_state(a, b)
+    [seen] = [item for item in b.sync.observations() if item.node == "node-a"]
+    assert seen.tree_vector == a.host.read_vectors(["meta", "tree"])["tree"]
+    _close(a, b)
+
+
+def test_a_requester_ahead_of_a_supplier_that_refuses_it_triggers_one_pull_back(bus: Bus) -> None:
+    a = make_node(bus, "node-a")
+    b = make_node(bus, "node-b")
+    a.host.write_text("doc-1", "base")
+    settle(a, b)
+    b.host.decide = lambda doc, _u, _p: Rejected("protected-path") if doc == "tree" else None
+    a.host.write_text("doc-1", "refused by b", publish=False)
+
+    for _round in range(5):
+        a.sync.sync_from("node-b")
+        settle(a, b)
+    assert _pulls_by(bus, "node-b") == 1
+
+    a.host.write_text("doc-2", "new progress", publish=False)
+    for _round in range(3):
+        a.sync.sync_from("node-b")
+        settle(a, b)
+    assert _pulls_by(bus, "node-b") == 2
+    _close(a, b)
+
+
+def test_a_removed_requester_ahead_of_the_supplier_is_never_pulled_from(bus: Bus) -> None:
+    a = make_node(bus, "node-a")
+    b = make_node(bus, "node-b")
+    a.host.write_text("doc-1", "base")
+    settle(a, b)
+    a.host.write_text("doc-1", "written by a removed member", publish=False)
+    b.host.members.discard("user:a")
+    b.host.removed.add("user:a")
+    b.host.denied_suppliers.add("node-a")
+
+    a.sync.sync_from("node-b")
+    settle(a, b)
+
+    assert _pulls_by(bus, "node-b") == 0
+    assert b.host.text("doc-1") == "base"
+    assert all(item.node != "node-a" for item in b.sync.observations())
     _close(a, b)
 
 

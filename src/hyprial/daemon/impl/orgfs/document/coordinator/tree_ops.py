@@ -46,6 +46,11 @@
 #   seen.  Without a usable registry both fall back to the shared scan.
 # - A new node and a recorded row are registered in the index (``note``)
 #   instead of dropping it.
+# - Package F7 (ruling 5): while this node's author is not a current member,
+#   a read, export or wait that needs content not held locally fails with
+#   ``not-a-member`` (no ``suggestedHolders``, no content request) instead of
+#   ``content-pending``: no member serves it content.  Content already held
+#   locally stays readable.
 """Versions, reads, removal and restore of the state host."""
 
 from __future__ import annotations
@@ -347,6 +352,13 @@ class StateTreeOps:
     def _content_pending(
         self, space: _Space, node: _Node, *, local_state: str | None = None
     ) -> OrgFsError:
+        if self.author not in space.members:
+            return OrgFsError("not-a-member", {
+                "spaceId": space.info.space_id,
+                "node": f"id:{node.node_id}",
+                "path": self._path(space, node.node_id),
+                "message": "this node's author is not a current member; content it does not hold is not served",
+            })
         error = super()._content_pending(space, node, local_state=local_state)
         if node.kind == "doc" and node.doc_id:
             with self._lock:

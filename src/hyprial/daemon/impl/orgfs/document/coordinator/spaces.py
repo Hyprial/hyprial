@@ -28,6 +28,19 @@
 #   counted here plus the broadcasts the attached sync's receive gate refused
 #   (its ``rejected_updates``, absent on a fake), so a removed member's pushes
 #   are visible to the owner.
+#   Package F7 (rulings 3 and 6): the observations are the attached sync's
+#   ``observations()``, which holds only online nodes whose device owner is a
+#   current member, so a removed member's node never decides ``synced``; a
+#   member requester whose pull showed vectors ahead of the local ones is
+#   among them until it is pulled, so ``synced`` is not ``True`` while a
+#   peer is known to be ahead.  ``rejected_updates`` counts updates refused,
+#   not updates missing: (1) updates this space's admission rejected
+#   (``Rejected`` from ``apply_remote``, broadcast or pulled, a remembered
+#   duplicate not counted again) and (2) broadcasts the sync's receive gate
+#   refused because the sender's device owner is not a current member.  An
+#   update that never arrived (a lost broadcast, a pull never made) or a
+#   broadcast dropped by a node that is not a member itself is not counted,
+#   so 0 does not mean "nothing is missing"; ``synced`` says that.
 # - D2, design §9 R5: a join first opens a temporary space (``begin_join``):
 #   a v3 directory, an empty registry and a placeholder root, hidden from
 #   ``spaces()`` and from ``join``'s early return.  Accepted meta adopts the

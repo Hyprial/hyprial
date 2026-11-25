@@ -26,6 +26,11 @@
 #   that pass the space's node gate (``_node_gate``, the same rule the sync
 #   applies to suppliers), so a removed member's node drops out at once even
 #   while it stays online and its old pull observation is still held.
+# - Package F7 (ruling 5): ``await_content`` on content this node does not
+#   hold raises ``not-a-member`` at once while its author is not a current
+#   member (a text read raises it from the facade, a blob is checked before
+#   any request), instead of waiting for a ``request_blob`` that returns at
+#   once and ending in ``content-pending``.  Held content still answers True.
 """Status, content provisioning and blob fetch of the state runtime."""
 
 from __future__ import annotations
@@ -118,6 +123,7 @@ class StateContent:
                 return True
             if not info.blob_hash:
                 return False
+            self._require_local_member(space_id, node_id)
             sync = self._mesh(space_id)
             if sync is None:
                 return False
@@ -145,6 +151,16 @@ class StateContent:
             if remaining <= 0:
                 return False
             time.sleep(min(ORGFS_AWAIT_RETRY_SECONDS, remaining))
+
+    def _require_local_member(self, space_id: str, node_id: str) -> None:
+        """Refuse provisioning content for a space this node's author left (F7 ruling 5)."""
+
+        if not self.facade.sync_host(space_id).local_member():
+            raise OrgFsError("not-a-member", {
+                "spaceId": space_id,
+                "node": f"id:{node_id}",
+                "message": "this node's author is not a current member; content it does not hold is not served",
+            })
 
     def _report_blob(self, space_id: str, digest: str) -> None:
         """Let the facade announce a fetched blob's nodes (F4, R2-10)."""

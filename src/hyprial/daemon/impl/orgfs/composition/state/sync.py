@@ -58,6 +58,27 @@
 #   ahead, and never for pending content or a tree it will not receive.  A
 #   space this node was removed from therefore stops being "behind" after one
 #   meta-only round and no longer takes the shared supplier's single probe.
+# - Package F7 (real-node finding R4-3, rulings 1 and 4): a node can hold
+#   updates no other node has (their broadcast was lost, or refused then and
+#   acceptable now).  The supplier side of a pull already pulls back from a
+#   requester that is ahead (``sync/pull.py``), so the due tick makes the
+#   node that is ahead the requester of every peer that may lack them: a
+#   "lagging" holder is an online node that announced the space, or that the
+#   sync knows holds it (``member_peers``: synced with, broadcast from or
+#   observed), and passes the node gate, and has no observation covering
+#   the local meta and tree vectors.  Lagging and ahead holders are pulled
+#   together under the same per-space backoff as the F4 catalog retry (first
+#   pull immediate, then CATALOG_RETRY_BASE_SECONDS doubling to
+#   CATALOG_RETRY_MAX_SECONDS, forgotten once no holder is ahead or
+#   lagging); the "behind" pull above keeps its own rule, now through the
+#   node gate, and a lagging holder it already pulled is not pulled twice.
+#   Merely online hosts that never announced the space are not lagging
+#   holders, since a node that does not hold the space never answers.
+#   A space whose author is not a current member has no lagging holders.
+#   Storm bound: without new writes, a pair whose observations cover each
+#   other schedules nothing; a pair that cannot converge (an update one side
+#   keeps refusing) pulls at the backoff rate, and the supplier's pull back
+#   fires once per distinct requester vectors.
 # - Design §9 R5 join: a temporary space (``facade.begin_join``) is filled by
 #   a temporary ``StateSpaceSync`` whose node gate is presence only, from each
 #   candidate holder in turn; the space is kept only when its meta names an
@@ -337,21 +358,26 @@ class StateLifecycle:
                 pending = host.pending_content(VERIFY_BATCH) if len(catalog) > 1 else ()
                 behind = bool(pending) or not self._observed(host, sync, catalog)
                 ahead = self._ahead_holders(host, sync, catalog)
+                lagging = self._lagging_holders(space_id, host, sync) if len(catalog) > 1 else []
+                gate = self._node_gate(space_id)
             except Exception as exc:
                 self._log("warn", "orgfs.sync.maintain-failed", spaceId=space_id, detail=str(exc))
                 continue
-            if not ahead:
+            if not ahead and not lagging:
                 self._catalog_retries.pop(space_id, None)
+            pulled: list[str] = []
             if behind:
-                holders = [
+                pulled = [
                     node
                     for node in self._holder_discovery(space_id)()
-                    if node != self.node_id and self._supplier_online(node)
-                ]
-                if holders:
-                    sync.schedule_sync_from(holders[0])
-            elif ahead and self._catalog_retry_due(space_id, ahead[0], now):
-                sync.schedule_sync_from(ahead[0])
+                    if node != self.node_id and self._supplier_online(node) and gate(node)
+                ][:1]
+                for node in pulled:
+                    sync.schedule_sync_from(node)
+            targets = [node for node in dict.fromkeys([*ahead, *lagging]) if node not in pulled]
+            if targets and self._catalog_retry_due(space_id, targets[0], now):
+                for node in targets:
+                    sync.schedule_sync_from(node)
 
     @staticmethod
     def _observed(host: Any, sync: Any, catalog: tuple[str, ...] = CATALOG_DOC_IDS) -> bool:
@@ -376,6 +402,26 @@ class StateLifecycle:
             and self._supplier_online(item.node)
             and not all(covers(mine, seen) for seen, mine in zip(_observed_vectors(item, catalog), local))
         )
+
+    def _lagging_holders(self, space_id: str, host: Any, sync: Any) -> list[str]:
+        """Online member holders with no observation covering the local meta and tree."""
+
+        local = _catalog_vectors(host.read_vectors(CATALOG_DOC_IDS), CATALOG_DOC_IDS)
+        seen = {item.node: item for item in sync.observations()}
+        gate = self._node_gate(space_id)
+        known = getattr(sync, "member_peers", tuple)()
+        return [
+            node
+            for node in dict.fromkeys([*self._holder_snapshot(space_id), *known, *sorted(seen)])
+            if node != self.node_id
+            and self._supplier_online(node)
+            and gate(node)
+            and (
+                node not in seen
+                or not all(covers(theirs, mine) for theirs, mine in
+                           zip(_observed_vectors(seen[node], CATALOG_DOC_IDS), local))
+            )
+        ]
 
     def _catalog_retry_due(self, space_id: str, holder: str, now: float) -> bool:
         """Back off pulls for a catalog an online holder is ahead of (F4, R2-1)."""

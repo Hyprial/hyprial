@@ -42,6 +42,18 @@
 #   sender's device owner is not a current member is counted in
 #   ``rejected_updates``, which the coordinator adds to the space status.
 #   Offline senders and undecodable frames are logged, not counted.
+# - Package F7 (real-node finding R4-3, rulings 3 and 4): the node gate runs
+#   before a supplier is chosen.  ``schedule_sync_from`` returns False for a
+#   node whose device owner is not a current member, before any admission,
+#   so such a node is never queued, never fails a round and never enters the
+#   shared supplier backoff; ``_candidate_peers`` and ``observations()`` skip
+#   it the same way, so a removed member's observation takes no part in
+#   ``synced``, "behind" or "ahead".  The gate is read at every call, so a
+#   re-admitted member's node is a candidate again at once.
+# - Package F7 (ruling 2): the F6 re-admission pull now goes to the sender
+#   and every known member peer of the space, and an accepted meta update
+#   that re-admits another member's known node pulls from it
+#   (``_meta_accepted``; the rule is written out in ``sync/pull.py``).
 """StateSpaceSync: the protocol 3 SpaceSync implementation for one space."""
 
 from __future__ import annotations
@@ -135,6 +147,7 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
         self._supplier_sync_local_health = SupplierSyncHealth()
         self._supplier_sync_held_until_total = 0
         self._observations: dict[str, PeerObservation] = {}
+        self._pull_backs: dict[str, tuple[bytes, bytes]] = {}
         self._priority: list[str] = []
         self._known_peers: dict[str, None] = {}
         self._dependency_retries: dict[str, int] = {}
@@ -269,8 +282,14 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
         while len(self._known_peers) > _KNOWN_PEER_LIMIT:
             self._known_peers.pop(next(iter(self._known_peers)))
 
+    def _member_node(self, node: str) -> bool:
+        try:
+            return bool(self.host.supplier_allowed(node))
+        except Exception:  # noqa: BLE001 - an unresolvable owner fails closed
+            return False
+
     def schedule_sync_from(self, peer: str) -> bool:
-        if not peer or peer == self.node_id:
+        if not peer or peer == self.node_id or self._closed or not self._member_node(peer):
             return False
         return super().schedule_sync_from(peer)
 
@@ -375,15 +394,39 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
             if not covers(local, frame.vector):
                 self.schedule_sync_from(peer)
             return
+        before = self._member_peers() if frame.doc_id == "meta" else None
         outcome = self.host.apply_remote(frame.doc_id, frame.update, frame.vector, peer)
         kind = outcome_kind(outcome)
         if kind == "pending":
             self.schedule_sync_from(peer)
-        elif kind == "accepted" and not member and self._local_member():
-            self.schedule_sync_from(peer)
+        elif kind == "accepted" and before is not None:
+            self._meta_accepted(peer, member, before)
         elif kind == "rejected":
             self._log("warn", "orgfs.update.rejected", docId=frame.doc_id,
                       code=getattr(outcome, "code", "rejected"), peer=peer)
+
+    def _member_peers(self) -> frozenset[str]:
+        """Peers known to hold this space whose device owner is a current member."""
+
+        with self._worker_lock:
+            known = (*self._known_peers, *self._observations)
+        return frozenset(node for node in known if self._member_node(node))
+
+    def member_peers(self) -> tuple[str, ...]:
+        """Online peers known to hold this space that pass the node gate, sorted."""
+
+        return tuple(sorted(node for node in self._member_peers() if self._supplier_allowed(node)))
+
+    def _meta_accepted(self, sender: str, was_member: bool, before: frozenset[str]) -> None:
+        """Pull from nodes an accepted meta update re-admitted (F7 ruling 2)."""
+
+        if self._closed or not self._local_member():
+            return
+        after = self._member_peers()
+        targets = [sender, *sorted(after)] if not was_member else sorted(after - before)
+        for node in dict.fromkeys(targets):
+            if self._supplier_allowed(node):
+                self.schedule_sync_from(node)
 
     def _candidate_peers(self) -> list[str]:
         discovered: list[str] = []
@@ -395,7 +438,10 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
                 discovered = []
         with self._worker_lock:
             seen = list(reversed(self._known_peers))
-        return [peer for peer in dict.fromkeys([*discovered, *seen]) if self._supplier_allowed(peer)]
+        return [
+            peer for peer in dict.fromkeys([*discovered, *seen])
+            if self._supplier_allowed(peer) and self._member_node(peer)
+        ]
 
     def request_content(self, doc_id: str) -> None:
         if self._closed or not self._local_member():
@@ -430,7 +476,10 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
     def observations(self) -> tuple[PeerObservation, ...]:
         with self._worker_lock:
             current = sorted(self._observations.values(), key=lambda item: item.node)
-        return tuple(item for item in current if self._supplier_allowed(item.node))
+        return tuple(
+            item for item in current
+            if self._supplier_allowed(item.node) and self._member_node(item.node)
+        )
 
     def close(self, timeout: float = 5.0) -> None:
         if self._close_done:
@@ -466,6 +515,7 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
         with self._worker_lock:
             self._sync_pending.clear()
             self._sync_rerun.clear()
+            self._pull_backs.clear()
             self._priority.clear()
             waiters = [waiter for batch in self._blob_waiters.values() for waiter in batch]
             self._blob_waiters.clear()
