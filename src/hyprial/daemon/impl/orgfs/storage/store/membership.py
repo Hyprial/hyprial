@@ -17,7 +17,7 @@ from typing import Any, Iterable, Mapping
 
 from pycrdt import Doc, Map, merge_updates
 from hyprial.daemon.impl.orgfs.storage.store.snapshots import _FrontierSnapshot
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import DocMutator, PYCRDT_CLIENT_ID_MAX, RetirementRecord, StoreError, _LOG, _MEMBERSHIP_MEMO_LIMIT, _changed_meta_entries, _decode_state_vector, _doc_roots, _empty_meta, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import DocMutator, PYCRDT_CLIENT_ID_MAX, RetirementRecord, StoreError, _LOG, _MEMBERSHIP_MEMO_LIMIT, _changed_meta_entries, _decode_state_vector, _doc_root, _doc_roots, _empty_meta, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
 _MEMBER_ADD_FRONTIER_SCHEMA_VERSION = 1
 
 class StoreMembership:
@@ -28,10 +28,7 @@ class StoreMembership:
 
     def active_tree_doc_id(self) -> str | None:
         with self._lock:
-            meta = self._docs.get("meta")
-            if meta is None:
-                return None
-            docs = _doc_roots(meta).get("docs")
+            docs = self._meta_root("docs")
         tree = docs.get("tree") if isinstance(docs, dict) else None
         active = tree.get("active") if isinstance(tree, dict) else None
         if isinstance(active, str) and active.startswith("tree-"):
@@ -43,21 +40,7 @@ class StoreMembership:
 
     def retired(self, doc_id: str) -> RetirementRecord | None:
         with self._lock:
-            meta = self._docs.get("meta")
-            if meta is None:
-                return None
-            records = _doc_roots(meta).get("retirements")
-        raw = records.get(doc_id) if isinstance(records, dict) else None
-        if not isinstance(raw, dict):
-            return None
-        replacement = raw.get("replacementDocId")
-        plan_id = raw.get("planId")
-        snapshot_id = raw.get("snapshotId")
-        retired_at = raw.get("retiredAt")
-        values = (replacement, plan_id, snapshot_id, retired_at)
-        if not all(isinstance(item, str) for item in values):
-            return None
-        return RetirementRecord(doc_id, replacement, plan_id, snapshot_id, retired_at)
+            return self._meta_view.retirements(self._docs.get("meta")).get(doc_id)
 
     def _raise_if_retired(self, doc_id: str) -> None:
         record = self.retired(doc_id)
@@ -87,14 +70,14 @@ class StoreMembership:
         # the doc's open transaction, which is bound to the thread that opened
         # it, so every read of a store doc must hold the lock writers hold.
         with self._lock:
-            values = _doc_roots(self._docs["meta"]).get("purgeList")
+            values = self._meta_root("purgeList")
         raw = values.get(sha) if isinstance(values, dict) else None
         return isinstance(raw, dict) and raw.get("unbannedAt") is None
 
     def purge_projection(self) -> frozenset[str]:
         """Return the current immutable set of active replicated blob bans."""
 
-        values = _doc_roots(self._docs["meta"]).get("purgeList")
+        values = self._meta_root("purgeList")
         return frozenset(
             sha
             for sha, entry in (values.items() if isinstance(values, dict) else ())
@@ -111,7 +94,7 @@ class StoreMembership:
 
     def snapshot_point(self, doc_id: str) -> bytes | None:
         with self._lock:
-            values = _doc_roots(self._docs["meta"]).get("snapshotPoints")
+            values = self._meta_root("snapshotPoints")
         raw = values.get(doc_id) if isinstance(values, dict) else None
         frontier = raw.get("frontier") if isinstance(raw, dict) else None
         return _unb64(frontier) if isinstance(frontier, str) else None
@@ -162,8 +145,7 @@ class StoreMembership:
         return self._lanes[key]
 
     def _owner(self) -> str | None:
-        meta = _doc_roots(self._docs["meta"])
-        space = meta.get("space") or {}
+        space = self._meta_root("space") or {}
         owner = space.get("owner") if isinstance(space, dict) else None
         if owner:
             return str(owner)
@@ -173,8 +155,7 @@ class StoreMembership:
         return str(row[0]) if row is not None else None
 
     def _membership(self) -> dict[str, dict[str, Any]]:
-        roots = _doc_roots(self._docs["meta"])
-        members = roots.get("members")
+        members = self._meta_root("members")
         return members if isinstance(members, dict) else {}
 
     def _author_removed_wins(self, author: str, token: bytes) -> bool:
@@ -254,12 +235,12 @@ class StoreMembership:
                         continue
                     probe = Doc()
                     probe.apply_update(snapshot[2].get_update())
-                    before = _doc_roots(probe).get("members")
+                    before = _doc_root(probe, "members")
                     prior = before.get(user) if isinstance(before, dict) else None
                     probe.apply_update(self._update_bytes(envelope))
                 except (KeyError, StoreError, TypeError, ValueError):
                     continue
-                after = _doc_roots(probe).get("members")
+                after = _doc_root(probe, "members")
                 current = after.get(user) if isinstance(after, dict) else None
                 active = isinstance(current, dict) and not current.get("removedAt")
                 prior_active = isinstance(prior, dict) and not prior.get("removedAt")
@@ -284,7 +265,7 @@ class StoreMembership:
         """Project one causal probe without depending on the live meta doc."""
 
         owner_ids = self._journal_client_ids(owner)
-        writers = _doc_roots(doc).get("writers")
+        writers = _doc_root(doc, "writers")
         if isinstance(writers, dict):
             for writer, details in writers.items():
                 if isinstance(details, dict) and str(details.get("author")) == owner:
@@ -337,12 +318,12 @@ class StoreMembership:
         probe = Doc()
         try:
             probe.apply_update(baseline_update)
-            before = _doc_roots(probe).get("members")
+            before = _doc_root(probe, "members")
             probe.apply_update(self._update_bytes(envelope))
         except (StoreError, TypeError, ValueError):
             return ()
         before = before if isinstance(before, dict) else {}
-        after = _doc_roots(probe).get("members")
+        after = _doc_root(probe, "members")
         after = after if isinstance(after, dict) else {}
         changed: list[tuple[str, str, bytes]] = []
         candidate: bytes | None = None
@@ -598,7 +579,7 @@ class StoreMembership:
 
     def _known_non_owner_client_ids(self, owner: str) -> set[int]:
         ids: set[int] = set()
-        writers = _doc_roots(self._docs["meta"]).get("writers")
+        writers = self._meta_root("writers")
         if not isinstance(writers, dict):
             return ids
         for writer, details in writers.items():
@@ -615,7 +596,7 @@ class StoreMembership:
         if cached is not None and cached[0] == key:
             return cached[1]
         ids: set[int] = set()
-        writers = _doc_roots(meta).get("writers")
+        writers = self._meta_root("writers")
         if isinstance(writers, dict):
             for writer, details in writers.items():
                 if isinstance(details, dict) and str(details.get("author")) == owner:
@@ -818,7 +799,7 @@ class StoreMembership:
         return owner, membership, probe
 
     def _writer_registered(self, writer: str) -> bool:
-        writers = _doc_roots(self._docs["meta"]).get("writers")
+        writers = self._meta_root("writers")
         return isinstance(writers, dict) and writer in writers
 
     @staticmethod
@@ -858,11 +839,15 @@ class StoreMembership:
             and 0 <= int(value) <= PYCRDT_CLIENT_ID_MAX
         }
 
-    def _registered_client_ids(self, writer: str) -> set[int]:
-        writers = _doc_roots(self._docs["meta"]).get("writers")
-        if not isinstance(writers, dict):
-            return set()
-        return self._row_client_ids(writers.get(writer))
+    def _registered_client_ids(self, writer: str) -> frozenset[int]:
+        def build() -> frozenset[int]:
+            writers = self._meta_root("writers")
+            row = writers.get(writer) if isinstance(writers, dict) else None
+            return frozenset(self._row_client_ids(row))
+
+        return self._meta_view.derived(
+            self._docs.get("meta"), f"client-ids:{writer}", build
+        )
 
     def writer_client_id(self, author: str, actor: str | None) -> int:
         """Return the stable client id used by this incarnation's writer lane."""
@@ -874,7 +859,7 @@ class StoreMembership:
         """Project the replicated writer table as node -> author URIs."""
 
         with self._lock:
-            writers = _doc_roots(self._docs["meta"]).get("writers")
+            writers = self._meta_root("writers")
             if not isinstance(writers, dict):
                 return {}
             by_node: dict[str, set[str]] = {}
