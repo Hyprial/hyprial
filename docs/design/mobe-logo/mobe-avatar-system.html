@@ -1,0 +1,133 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mobe · 头像设计系统</title><style>
+/* layout: 纸面单栏；先讲思路再给三个方向，每个方向一块平面色块，左浅右深，下方四格真实用法 */
+:root {
+  --ground: #FAFBF6; --ground-2: #F2F4EA; --surface: #FFFFFF;
+  --ink: #17131F; --ink-2: #4B4857; --ink-3: #6F6B7A; --line: #E2E2E6;
+  --periwinkle: #7192D8; --periwinkle-wash: #C9D2E7; --lime: #D7F279;
+  --spec-light: #FAFBF6; --spec-dark: #101014; --spec-edge: #E2E2E6;
+  --font-text: "Geist", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r-sm: 12px; --r-md: 20px; --r-lg: 28px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --ground: #101014; --ground-2: #14131A; --surface: #1E1C26;
+  --ink: #F3F2EC; --ink-2: #B6B4AC; --ink-3: #8E8C84; --line: #2C2A36;
+  --periwinkle-wash: #2A3350; --lime: #DFF493; --spec-edge: #2C2A36; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --ground: #101014; --ground-2: #14131A; --surface: #1E1C26;
+  --ink: #F3F2EC; --ink-2: #B6B4AC; --ink-3: #8E8C84; --line: #2C2A36;
+  --periwinkle-wash: #2A3350; --lime: #DFF493; --spec-edge: #2C2A36; color-scheme: dark }
+
+body { background: var(--ground); color: var(--ink); font-family: var(--font-text); font-size: 15px; line-height: 1.65;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; }
+.page { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px; }
+h1 { font-size: clamp(28px, 5vw, 44px); line-height: 1.1; font-weight: 700; letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+h2 { font-size: 22px; line-height: 1.25; font-weight: 700; margin: 0; }
+h3 { font-size: 13px; font-weight: 500; letter-spacing: 0.08em; color: var(--ink-3); margin: 0; }
+p { margin: 0; }
+.lede { max-width: 62ch; color: var(--ink-2); font-size: 16px; }
+.intro, .block { display: flex; flex-direction: column; gap: 16px; }
+.block > p { max-width: 66ch; }
+
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+th { text-align: left; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; color: var(--ink-3); padding: 0 16px 8px 0; }
+td { vertical-align: top; padding: 12px 16px 12px 0; border-top: 1px solid var(--line); }
+td:first-child { font-weight: 500; white-space: nowrap; }
+
+.concept { background: var(--periwinkle-wash); border-radius: var(--r-lg); padding: 28px; display: flex; flex-direction: column; gap: 20px; }
+.formula { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; }
+.prim { background: var(--spec-light); color: #17131F; border-radius: var(--r-md); padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; flex: 1 1 150px; min-width: 0; text-align: center; font-size: 13px; }
+.prim svg { display: block; }
+.prim b { font-weight: 500; }
+.prim span { color: #6F6B7A; font-size: 12px; }
+
+.cand { background: var(--surface); border-radius: var(--r-lg); padding: 28px; display: flex; flex-direction: column; gap: 24px; }
+.cand-head { display: flex; align-items: center; gap: 14px; }
+.tag { width: 44px; height: 44px; flex: none; background: var(--lime); color: #17131F; font-family: var(--font-mono); font-weight: 500; font-size: 20px; display: grid; place-items: center; }
+.meta { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); }
+.cand-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: stretch; }
+.spec { border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; box-shadow: inset 0 0 0 1px var(--spec-edge); }
+.spec.light { background: var(--spec-light); color: #17131F; }
+.spec.dark { background: var(--spec-dark); }
+.spec.big { padding: 20px; min-height: 250px; }
+.spec svg { max-width: 100%; height: auto; display: block; flex: none; }
+.notes { display: flex; flex-direction: column; gap: 12px; justify-content: center; min-width: 0; }
+.kv { color: var(--ink-2); font-size: 14px; }
+.kv b { display: inline-block; font-weight: 500; font-size: 12px; letter-spacing: 0.06em; color: var(--ink-3); margin-right: 8px; }
+.uses { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+.use { margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.use figcaption { font-size: 12px; color: var(--ink-3); }
+.spec.row { gap: 18px; padding: 20px; min-height: 112px; flex-wrap: wrap; }
+.icon { width: 64px; height: 64px; border-radius: 16px; display: grid; place-items: center; flex: none; }
+.icon.ink { background: #17131F; } .icon.paper { background: #FFFFFF; box-shadow: inset 0 0 0 1px #E2E2E6; } .icon.round { border-radius: 50%; }
+.st-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.st { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.st figcaption { font-size: 12px; color: var(--ink-3); }
+.st-tile { width: 76px; height: 76px; border-radius: var(--r-sm); background: var(--spec-dark); box-shadow: inset 0 0 0 1px var(--spec-edge); display: grid; place-items: center; }
+.termwrap { justify-content: flex-start; padding: 20px; overflow-x: auto; min-height: 112px; }
+.term { margin: 0; font-family: var(--font-mono); font-size: 13px; line-height: 2ch; color: #B6B4AC; }
+.term .prompt, .term .hl { color: #DFF493; }
+.lock { gap: 14px; }
+.wm { font-family: var(--font-text); font-weight: 700; font-size: 40px; letter-spacing: -0.04em; line-height: 1; color: #17131F; }
+.wm-x { color: #7192D8; font-family: var(--font-mono); font-weight: 500; letter-spacing: -0.06em; }
+
+.anim .f { opacity: 0; animation: cyc 4.8s steps(1) infinite; }
+.anim .f0 { animation-delay: 0s; } .anim .f1 { animation-delay: 1.2s; } .anim .f2 { animation-delay: 2.4s; } .anim .f3 { animation-delay: 3.6s; }
+@keyframes cyc { 0% { opacity: 1; } 25% { opacity: 0; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .anim .f { animation: none; } .anim .f0 { opacity: 1; } }
+
+/* option D: stable B skeleton with C's lower-right arrival dot */
+.cand-d .cand-body { align-items: stretch; }
+.d-mark-panel { overflow: hidden; }
+.d-principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.d-principles > div { background: var(--ground-2); border-radius: var(--r-sm); padding: 14px; display: flex; flex-direction: column; gap: 5px; }
+.d-principles b { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--ink); }
+.d-principles span { font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+.d-row { gap: 14px; }
+.d-tile { background: var(--spec-dark); }
+/* D: the five fixed circles are drawn once; only the arriving circle moves and flickers slightly. */
+.d-anim .d-arrival { transform-origin: center; animation: d-arrive 4.8s ease-in-out infinite; }
+@keyframes d-arrive {
+  0%, 12% { transform: translate(1.85px, 0.95px); opacity: 1; }
+  18% { transform: translate(1.85px, 0.95px); opacity: .35; }
+  24% { transform: translate(1.85px, 0.95px); opacity: 1; }
+  34% { transform: translate(1.4px, 0.7px); opacity: .4; }
+  44% { transform: translate(1.1px, 0.55px); opacity: 1; }
+  56% { transform: translate(0.7px, 0.35px); opacity: .45; }
+  68% { transform: translate(0.35px, 0.18px); opacity: 1; }
+  78%, 100% { transform: translate(0px, 0px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .d-anim .d-arrival { animation: none; } }
+
+.av-row { display: flex; flex-wrap: wrap; gap: 16px; }
+.av { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 76px; }
+.av figcaption { font-size: 12px; color: var(--ink-3); text-align: center; }
+.av-tile { width: 72px; height: 72px; border-radius: var(--r-sm); background: var(--ground-2); display: grid; place-items: center; flex: none; }
+.av-tile.sm { width: 44px; height: 44px; border-radius: 10px; }
+.inbox { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-width: 520px; }
+.inbox li { display: grid; grid-template-columns: auto 1fr auto; grid-template-areas: "a who time" "a msg msg"; column-gap: 12px; align-items: center; padding: 8px; border-radius: var(--r-sm); }
+.inbox li:first-child { background: var(--ground-2); }
+.inbox li:first-child .av-tile { background: var(--surface); }
+.inbox .av-tile { grid-area: a; }
+.inbox .who { grid-area: who; font-weight: 500; font-size: 14px; }
+.inbox .time { grid-area: time; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.inbox .msg { grid-area: msg; font-size: 13px; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+.next ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 8px; max-width: 66ch; }
+
+.wm-o { color: #7192D8; }
+.acro { display: flex; flex-wrap: wrap; gap: 10px 28px; align-items: baseline; font-size: clamp(26px, 5vw, 40px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; }
+.acro .lit { background: var(--lime); color: #17131F; padding: 0 0.12em; }
+.acro .rest { color: var(--ink-3); font-weight: 400; }
+.acro .eq { color: var(--ink-3); font-weight: 400; }
+.prim b { font-weight: 500; }
+
+.comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.compare{background:var(--ground-2);border-radius:var(--r-md);padding:24px 12px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}.compare .sample{display:grid;place-items:center;min-height:132px}.compare svg{display:block;max-width:100%;height:auto}.compare span{font-size:13px;color:var(--ink-2)}.compare b{font-size:16px}.av-row{gap:16px 20px}.av-tile{background:transparent}.inbox .av-tile,.inbox li:first-child .av-tile{background:transparent}.inbox{max-width:650px}.cand{padding:clamp(16px,4vw,28px)}.page{max-width:880px;gap:24px}@media(max-width:480px){.compare{padding:16px 8px}.compare .sample{min-height:108px}.compare svg{width:84px;height:84px}.compare span{font-size:12px}.av-row{gap:12px}}</style></head><body style="margin:0"><main class="page"><section class="intro"><h3>MOBE · AVATAR SYSTEM</h3><h1>人是圆的，Agent 是方的</h1><p class="lede">统一内外几何形态，用两层视觉线索区分身份。</p></section><section class="cand" id="avatars">
+    <header class="cand-head"><span class="tag">头</span><div><h2>头像：人是圆的，Agent 是方的</h2><p class="meta">圆形与方形 · 双重身份编码</p></div></header>
+    <div class="notes">
+      <p>头像和标志用同一种东西：点。每个头像是一块实色底，上面三乘三的点阵由名字算出来，谁都不重样，没有表情脸。</p>
+      <p>统一规则：人的底图和内部点阵都使用圆形；Agent 的底图和内部点阵都使用方形。外轮廓与内部形态共同传递身份信息，颜色与点阵位置沿用原方案。</p>
+    </div>
+    <div class="comparison"><div class="compare"><div class="sample"><svg viewBox="0 0 8 8" width="104" height="104" role="img" aria-label="人：外圆内圆"><circle cx="4" cy="4" r="4" fill="#7192D8"/><circle cx="2" cy="2" r="0.55" fill="#17131F"/><circle cx="6" cy="2" r="0.55" fill="#17131F"/><circle cx="4" cy="4" r="0.55" fill="#17131F"/><circle cx="2" cy="6" r="0.55" fill="#17131F"/><circle cx="6" cy="6" r="0.55" fill="#17131F"/></svg></div><b>Human / 人</b><span>圆形底图 + 圆形点阵</span></div><div class="compare"><div class="sample"><svg viewBox="0 0 8 8" width="104" height="104" role="img" aria-label="Agent：外方内方"><rect x="0" y="0" width="8" height="8" fill="#7192D8"/><rect x="1.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="1.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></div><b>Agent / 智能体</b><span>方形底图 + 方形点阵</span></div></div><p class="kv"><b>设计原则</b>冗余编码（Redundant Encoding）：通过外轮廓与内部点阵两种线索表达同一身份，在小尺寸或外轮廓不明显时仍提供辅助识别。</p><h3>头像示例 · 原配色与点位</h3><div class="av-row"><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="Allen 头像"><circle cx="4" cy="4" r="4" fill="#7192D8"/><circle cx="6" cy="2" r="0.55" fill="#17131F"/><circle cx="2" cy="6" r="0.55" fill="#17131F"/><circle cx="4" cy="6" r="0.55" fill="#17131F"/><circle cx="6" cy="6" r="0.55" fill="#17131F"/></svg></span><figcaption>Allen</figcaption></figure><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="设计师 头像"><circle cx="4" cy="4" r="4" fill="#C9D2E7"/><circle cx="2" cy="2" r="0.55" fill="#17131F"/><circle cx="2" cy="4" r="0.55" fill="#17131F"/><circle cx="6" cy="4" r="0.55" fill="#17131F"/><circle cx="2" cy="6" r="0.55" fill="#17131F"/><circle cx="4" cy="6" r="0.55" fill="#17131F"/><circle cx="6" cy="6" r="0.55" fill="#17131F"/></svg></span><figcaption>设计师</figcaption></figure><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="协调者 头像"><rect x="0" y="0" width="8" height="8" fill="#7192D8"/><rect x="3.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><figcaption>协调者</figcaption></figure><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="worker-1 头像"><rect x="0" y="0" width="8" height="8" fill="#C9D2E7"/><rect x="3.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><figcaption>worker-1</figcaption></figure><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="worker-2 头像"><rect x="0" y="0" width="8" height="8" fill="#8FD0AE"/><rect x="1.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="1.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><figcaption>worker-2</figcaption></figure><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="Claude Code 头像"><rect x="0" y="0" width="8" height="8" fill="#F0A3AE"/><rect x="5.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><figcaption>Claude Code</figcaption></figure><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="Codex 头像"><rect x="0" y="0" width="8" height="8" fill="#F0A3AE"/><rect x="1.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="1.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><figcaption>Codex</figcaption></figure><figure class="av"><span class="av-tile"><svg viewBox="0 0 8 8" width="46" height="46" role="img" aria-label="Pi 头像"><rect x="0" y="0" width="8" height="8" fill="#7192D8"/><rect x="1.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="1.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><figcaption>Pi</figcaption></figure></div>
+    <h3>实际应用 · 收件箱</h3><figure class="use"><ul class="inbox"><li><span class="av-tile sm"><svg viewBox="0 0 8 8" width="28" height="28" role="img" aria-label="协调者 头像"><rect x="0" y="0" width="8" height="8" fill="#7192D8"/><rect x="3.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><span class="who">协调者</span><span class="msg">PAC-214 已派给 worker-2，等待回执</span><span class="time">09:42</span></li><li><span class="av-tile sm"><svg viewBox="0 0 8 8" width="28" height="28" role="img" aria-label="worker-2 头像"><rect x="0" y="0" width="8" height="8" fill="#8FD0AE"/><rect x="1.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="1.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><span class="who">worker-2</span><span class="msg">已接单。先跑焦点测试，再跑全量</span><span class="time">09:43</span></li><li><span class="av-tile sm"><svg viewBox="0 0 8 8" width="28" height="28" role="img" aria-label="Allen 头像"><circle cx="4" cy="4" r="4" fill="#7192D8"/><circle cx="6" cy="2" r="0.55" fill="#17131F"/><circle cx="2" cy="6" r="0.55" fill="#17131F"/><circle cx="4" cy="6" r="0.55" fill="#17131F"/><circle cx="6" cy="6" r="0.55" fill="#17131F"/></svg></span><span class="who">Allen</span><span class="msg">这条先放一放，等 logo 定了再说</span><span class="time">10:05</span></li><li><span class="av-tile sm"><svg viewBox="0 0 8 8" width="28" height="28" role="img" aria-label="Claude Code 头像"><rect x="0" y="0" width="8" height="8" fill="#F0A3AE"/><rect x="5.45" y="1.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="3.45" width="1.1" height="1.1" fill="#17131F"/><rect x="3.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/><rect x="5.45" y="5.45" width="1.1" height="1.1" fill="#17131F"/></svg></span><span class="who">Claude Code</span><span class="msg">全量 pytest 通过，ruff 无告警</span><span class="time">10:17</span></li></ul><figcaption>收件箱列表里的样子</figcaption></figure>
+  </section></main></body></html>
