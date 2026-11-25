@@ -1,17 +1,17 @@
 # Decisions (Windows follow-up verification for KP-134, KP-135, KP-136):
 # - Verification only. It measures the pull request on a GitHub-hosted Windows
 #   runner and is not part of the merge gate; no branch rule requires it.
-# - A hosted runner is Windows Server under an administrator account in an
-#   interactive session. A pass here is recorded as "GitHub-hosted Windows
-#   runner", never as a Windows 11 real-machine pass. KP-136 depends on real
-#   terminal hosts, so its job only prints the handle facts. Starting the GUI
-#   here with its home under RUNNER_TEMP stopped at the home check
-#   (GUI_HOME_UNSAFE), so the close steps were removed; they produced no
-#   evidence about stdin-stop. Measured later on separate runs: a home made by
-#   pwsh New-Item is refused under RUNNER_TEMP and accepted under the user
-#   profile, and directories made by pytest are refused in both places. Why
-#   is not yet known. The KP-136 reproduction is recorded in the
-#   known-problems entry, not in this workflow.
+# - A hosted runner is Windows Server under an elevated administrator account.
+#   Its process chain runs under services.exe with pipe standard handles and
+#   no console window, while the same account is also signed in to an
+#   interactive session (run 45601792986 printed the chain and the handles;
+#   run 45648626321 printed the session). A pass here is recorded as
+#   "GitHub-hosted Windows runner", never as a Windows 11 real-machine pass.
+#   KP-136 depends on real terminal hosts, so its job here only prints the
+#   handle facts. The close results and the private-directory check were
+#   measured on separate temporary branches and are recorded in the KP-136
+#   and KP-123 entries of docs/reference/known-problems.md, not in this
+#   workflow.
 # - KP-134 runs on three Node majors because the real-machine symptom (the
 #   worker starts, then exits at the random call) may depend on the version.
 # - KP-135 runs the exact reproduction on the base commit and on the head. The
@@ -124,8 +124,11 @@ jobs:
         run: |
           npm install -g --no-audit --no-fund $env:PI_PACKAGE
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "npm prefix -g: $(npm prefix -g)"
+          $prefix = npm prefix -g
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "npm prefix -g: $prefix"
           Get-Command pi -All | Format-List Name, Source, CommandType
+          if (-not $?) { exit 1 }
       - name: Probe the package root and the worker environment
         if: always()
         run: |

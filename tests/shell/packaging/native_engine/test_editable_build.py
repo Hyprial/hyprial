@@ -13,6 +13,10 @@ skips it, so the build hook reported "Rust 1.93.1 is not available" and a
 direct start failed with WinError 193.  Both entries are written on every
 platform and the platform's lookup picks one, so no test branches on the
 platform; a test names a fake tool by the path ``shutil.which`` returns.
+The fake cargo writes its JSON message as unescaped UTF-8, as the real
+``cargo`` does, so that the two non-ASCII path tests measure the decode.
+The ``.cmd`` entry names the script through its own directory, so that the
+batch text holds no path from ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -60,10 +64,14 @@ if name == "cargo":
         handle.write(" ".join(args) + "\\n")
     message = {"reason": "compiler-artifact", "target": {"name": "actors", "kind": ["cdylib"]},
                "filenames": [library]}
-    sys.stdout.buffer.write(json.dumps(message).encode("utf-8") + b"\\n")
+    sys.stdout.buffer.write(
+        json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\\n"
+    )
 elif name == "rustup":
-    if args[:1] == ["run"] and args[2:3] == ["rustc"]:
-        sys.exit(1 if args[1] != version else report(sys.stdout, version))
+    if args[:2] != ["run", version]:
+        sys.exit(1)
+    if args[2:3] == ["rustc"]:
+        sys.exit(report(sys.stdout, version))
     del args[:2]
     tool = shutil.which(args[0])
     if tool is None:
@@ -209,14 +217,16 @@ def _fake_bin(
     decide which one ``shutil.which`` selects, so the test has no platform
     branch.  ``rustup`` and ``rustc`` take the Rust version they answer with:
     a rustup of another version refuses the pinned-toolchain probe, and
-    ``rustup=None`` leaves rustup out.
+    ``rustup=None`` leaves rustup out.  The ``.cmd`` entry names the script by
+    its own directory (``%~dp0``), so the batch file stays ASCII whatever the
+    path of ``tmp_path`` and however ``cmd.exe`` decodes bytes.
     """
 
     fake = tmp_path / "bin"
     fake.mkdir()
     tool = fake / "tool.py"
     tool.write_text(FAKE_TOOL, encoding="utf-8")
-    interpreter = f'"{sys.executable}" -X utf8 "{tool}"'
+    interpreter = f'"{sys.executable}" -X utf8 "%~dp0tool.py"'
     shell_interpreter = "'" + sys.executable.replace("'", "'\\''") + "'"
     shell_tool = "'" + str(tool).replace("'", "'\\''") + "'"
     for name, version in (("cargo", ""), ("rustup", rustup), ("rustc", rustc)):
