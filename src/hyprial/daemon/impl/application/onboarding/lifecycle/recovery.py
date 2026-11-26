@@ -123,11 +123,18 @@
 #   device record; ``device_key.encryption_key_reader`` holds what counts as
 #   a complete account.  A relogin reads them again, so the key belongs to the
 #   account that is committed now and never to the one recovery started with.
-# - The step takes no identity transaction lock: the key store has its own
-#   lock and its records are filed per account and device, so a concurrent
-#   login cannot make this step write under the other account.  It never
-#   changes the outcome of the pass: a device that cannot have a key, or a
-#   step that fails, is still a recovered device.
+# - The step takes the home identity transaction lock with the same bounded
+#   wait as the signing-key step and skips on busy, like it.  The key store's
+#   own file lock does not cover the identity files: without the transaction
+#   lock a concurrent login could swap ``settings.json`` and ``device.json``
+#   between the two reads.  The step reads the committed account and the device
+#   uid in that one locked read and never re-reads ``device.json``.  A
+#   relogin calls it while that relogin still holds the transaction lock in
+#   this process, so there the wait is zero.  The owner is read again under
+#   the lock, so a change of account aborts the step.  It never changes the
+#   outcome of the pass: a device that cannot have a key, a busy lock, or a
+#   step that fails is still a recovered device.  A skipped key is made by
+#   the next serving start, relogin or cache-miss publish, never by a loop.
 """Complete unfinished device registration and initialize when serving starts."""
 
 from __future__ import annotations
