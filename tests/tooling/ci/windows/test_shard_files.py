@@ -3,6 +3,17 @@
 Decision (2026-11-26, tier 1 smoke).  Locks both the tier 1 (smoke)
 single-shard/single-wave layout and the tier 2 (full suite) four-shard/120-file-per-wave
 layout so moving to tier 2 only changes arguments.
+
+Decision (2026-11-27, tier 2 full suite).  The keep rule for a class is "named Test*
+or has any base", because the syntax tree cannot tell where a base name comes from.
+The class cases are one temp file each and assert has_test_definitions directly.
+Five are kept only by the base rule: an imported alias, a multiple inheritance with
+an alias mixin, and a class with a base under an if, a try or a function.  Four are
+guards that the earlier rule already kept or dropped: a base naming TestCase followed
+by its subclass (two spellings), a class without a base beside a plain function, and
+a class without a base.  A generic base written as a subscript sits in bases and
+keeps the file on purpose; there is no name exclusion for it.  The one real test file
+that the rule still drops is read from the repository by relative path.
 """
 
 from __future__ import annotations
@@ -14,6 +25,7 @@ import pytest
 
 from scripts.ci.windows.shard_files import (
     build_suite_plan,
+    has_test_definitions,
     load_file_list,
     main,
     plan_shards,
@@ -377,6 +389,67 @@ def test_plan_tier1_next_and_arm_next(tmp_path: Path) -> None:
     )
     assert arm_plan["requiredLegs"] == ["arm-next"]
     assert arm_plan["shards"] == [["tests/test_a.py", "tests/test_c.py"]]
+
+
+CLASS_WITH_BASE_CASES = {
+    "alias-base": (
+        "from tests.support.base import SharedCase\n\n\nclass SmokeCase(SharedCase):\n    pass\n",
+        True,
+    ),
+    "mixin-multiple-inheritance": (
+        "from tests.support.mixins import Mixin, Other\n\n\nclass combined(Mixin, Other):\n    pass\n",
+        True,
+    ),
+    "class-in-if": ("if True:\n    class Inside(SomeBase):\n        pass\n", True),
+    "class-in-try": (
+        "try:\n    class Inside(Y):\n        pass\nexcept Exception:\n    pass\n",
+        True,
+    ),
+    "class-in-function": (
+        "def outer():\n    class Inner(object):\n        pass\n\n    return Inner\n",
+        True,
+    ),
+    "base-names-testcase-then-subclass": (
+        "class Base(unittest.TestCase):\n    pass\n\n\nclass Case(Base):\n    pass\n",
+        True,
+    ),
+    "support-names-testcase-then-subclass": (
+        "class Support(unittest.TestCase):\n    pass\n\n\nclass Case(Support):\n    pass\n",
+        True,
+    ),
+    "helper-without-base-and-plain-function": (
+        "class Helper:\n    pass\n\n\ndef plain():\n    return 1\n",
+        False,
+    ),
+    "class-without-base": ("class Box:\n    pass\n", False),
+}
+DROPPED_REAL_FILE = "tests/daemon/channels/mcp/lifecycle/test_mcp_channel_owner_migration_e2e.py"
+
+@pytest.mark.parametrize(
+    "content, expected",
+    list(CLASS_WITH_BASE_CASES.values()),
+    ids=list(CLASS_WITH_BASE_CASES),
+)
+def test_has_test_definitions_class_base_rule(tmp_path: Path, content: str, expected: bool) -> None:
+    path = tmp_path / "sample_test.py"
+    path.write_text(content, encoding="utf-8")
+
+    assert has_test_definitions(path) is expected
+
+
+def test_has_test_definitions_keeps_a_subscript_base(tmp_path: Path) -> None:
+    path = tmp_path / "sample_test.py"
+    path.write_text(
+        "from typing import Generic\n\n\nclass Box(Generic[T]):\n    pass\n", encoding="utf-8"
+    )
+
+    assert has_test_definitions(path) is True
+
+
+def test_has_test_definitions_drops_the_real_file_whose_only_class_has_no_base() -> None:
+    repo_root = Path(__file__).parents[4]
+
+    assert has_test_definitions(repo_root / DROPPED_REAL_FILE) is False
 
 
 def test_dispatch_targets_file_is_empty_in_mergeable_tree() -> None:

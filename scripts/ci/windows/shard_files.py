@@ -15,13 +15,22 @@ selection drops it statically and records every dropped path under
 noTestDefinitionsIgnored.  has_test_definitions is computed from the syntax tree,
 never from a hand-written list, and keeps the file when any of these hold: a
 function anywhere whose name starts with "test"; a class anywhere whose name starts
-with "Test" or whose bases name a TestCase; a module-scope binding (assignment,
+with "Test" or that has any base at all; a module-scope binding (assignment,
 annotated or augmented assignment, walrus, loop target, from-import alias) whose
 name starts with "test" or "Test"; a star import; or a syntax error.  The prefixes
 are the pytest defaults; the project sets no python_functions or python_classes.
 Only the full selection drops files; explicit lists (targets, tier1-next, arm-next)
 are never filtered.  count_def_tests is unchanged and is only a trend count for
 POSIX_ONLY_IGNORED.
+
+Decision (2026-11-27, tier 2 full suite).  A class is kept for having any base, not
+only for a base whose name contains TestCase.  A syntax tree cannot follow where a
+base name comes from, so a class whose base is an imported name cannot be told apart
+from one that inherits test methods from a TestCase subclass defined elsewhere.  The
+earlier rule dropped such a file from the full plan without any red.  Because the
+tree alone cannot decide, the file is kept.  The cost is that a helper class with an
+unrelated base, for example a generic container, also keeps its file, which the wave
+then reports as unreported.
 """
 
 from __future__ import annotations
@@ -180,14 +189,6 @@ def _module_scope_nodes(nodes: Iterable[ast.AST]) -> Iterator[ast.AST]:
         yield from _module_scope_nodes(ast.iter_child_nodes(node))
 
 
-def _names_test_case_base(node: ast.ClassDef) -> bool:
-    for base in node.bases:
-        name = base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", "")
-        if "TestCase" in name:
-            return True
-    return False
-
-
 def has_test_definitions(path: Path) -> bool:
     text = path.read_text(encoding="utf-8", errors="replace")
     try:
@@ -200,7 +201,7 @@ def has_test_definitions(path: Path) -> bool:
         ):
             return True
         if isinstance(node, ast.ClassDef) and (
-            node.name.startswith(TEST_CLASS_PREFIX) or _names_test_case_base(node)
+            node.name.startswith(TEST_CLASS_PREFIX) or bool(node.bases)
         ):
             return True
     for node in _module_scope_nodes(tree.body):
