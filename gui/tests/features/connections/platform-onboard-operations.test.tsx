@@ -141,9 +141,24 @@ it('submits a unique operation key when randomUUID is unavailable on HTTP', asyn
     await api.beginAdd!({ name: 'demo', provider: 'lark', mode: 'create' });
     const keys = invoke.mock.calls.map(call => (call[1] as { operationKey: string }).operationKey);
     expect(keys).toHaveLength(2);
-    expect(keys[0]).toMatch(/^[0-9a-f]{32}$/);
-    expect(keys[1]).toMatch(/^[0-9a-f]{32}$/);
+    const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    expect(keys[0]).toMatch(uuidV4);
+    expect(keys[1]).toMatch(uuidV4);
     expect(keys[0]).not.toBe(keys[1]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('uses the native UUID when the browser provides randomUUID', async () => {
+  const { api, invoke } = setup();
+  const operationKey = '23fcac67-4682-4b65-8dec-21f84e4b1581';
+  const randomUUID = vi.fn(() => operationKey);
+  vi.stubGlobal('crypto', { randomUUID });
+  try {
+    await api.beginAdd!({ name: 'demo', provider: 'lark', mode: 'create' });
+    expect(randomUUID).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith('adapter.onboard.begin', expect.objectContaining({ operationKey }), expect.anything());
   } finally {
     vi.unstubAllGlobals();
   }
