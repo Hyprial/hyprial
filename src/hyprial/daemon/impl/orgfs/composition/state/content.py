@@ -31,6 +31,13 @@
 #   member (a text read raises it from the facade, a blob is checked before
 #   any request), instead of waiting for a ``request_blob`` that returns at
 #   once and ending in ``content-pending``.  Held content still answers True.
+# - Package F10 (R6-1 and F9 review item 7, 2026-11-26): ``await_text`` reads
+#   first and only waits via ``await_content`` when the error is
+#   ``content-pending`` and ``timeout > 0`` (non-pending errors and non-positive
+#   timeouts re-raise immediately without ``stat`` or waiting).  ``await_content``
+#   checks runtime closing/closed and space sync detachment before and during
+#   waits (sleeping on ``_closed_event`` without holding OrgFS locks) and raises
+#   ``unavailable`` with ``orgfs-closing`` or ``sync-detached`` immediately.
 """Status, content provisioning and blob fetch of the state runtime."""
 
 from __future__ import annotations
@@ -112,9 +119,57 @@ class StateContent:
         known = {node for node in self._known_holder_snapshot(space_id) if node != self.node_id}
         return tuple(sorted(online | known, key=lambda node: (node not in online, node)))
 
+    def _check_await_available(
+        self, space_id: str, *, require_facade_sync: bool = False
+    ) -> None:
+        with self._resource_lock:
+            closing = self._closing or self._closed
+        if closing:
+            raise OrgFsError(
+                "unavailable",
+                {
+                    "spaceId": space_id,
+                    "reason": "orgfs-closing",
+                    "message": "orgfs is closing",
+                },
+            )
+        if require_facade_sync and not self.facade.has_sync(space_id):
+            raise OrgFsError(
+                "unavailable",
+                {
+                    "spaceId": space_id,
+                    "reason": "sync-detached",
+                    "message": "space sync was detached",
+                },
+            )
+
+    def _wait_retry_interval(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        self._closed_event.wait(seconds)
+
+    def await_text(
+        self, space_id: str, ref: str, *, timeout: float
+    ) -> tuple[str, str]:
+        """Read a text document, waiting up to ``timeout`` seconds when pending."""
+
+        try:
+            return self.facade.read_text(space_id, ref)
+        except OrgFsError as exc:
+            if exc.code != ORGFS_CONTENT_PENDING or timeout <= 0:
+                raise
+            info = self.facade.stat(space_id, ref)
+            if info.kind != "doc":
+                raise
+            deadline = time.monotonic() + timeout
+            if not self.await_content(space_id, info.node_id, deadline_monotonic=deadline):
+                raise
+        return self.facade.read_text(space_id, ref)
+
     def await_content(self, space_id: str, node_id: str, *, deadline_monotonic: float) -> bool:
         """Provision one node's content through the space's sync until the deadline."""
 
+        self._check_await_available(space_id)
         if deadline_monotonic - time.monotonic() <= 0:
             return False
         info = self.facade.stat(space_id, f"id:{node_id}")
@@ -126,20 +181,33 @@ class StateContent:
             self._require_local_member(space_id, node_id)
             sync = self._mesh(space_id)
             if sync is None:
+                self._check_await_available(space_id)
                 return False
+            had_facade_sync = self.facade.has_sync(space_id)
             while True:
+                self._check_await_available(space_id, require_facade_sync=had_facade_sync)
                 event = sync.request_blob(info.blob_hash)
-                event.wait(max(0.0, deadline_monotonic - time.monotonic()))
+                while not event.is_set():
+                    remaining = deadline_monotonic - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if event.wait(min(ORGFS_AWAIT_RETRY_SECONDS, remaining)):
+                        break
+                    self._check_await_available(space_id, require_facade_sync=had_facade_sync)
                 if self.blobs.contains(info.blob_hash):
                     self._report_blob(space_id, info.blob_hash)
                     return True
+                self._check_await_available(space_id, require_facade_sync=had_facade_sync)
                 remaining = deadline_monotonic - time.monotonic()
                 if remaining <= 0:
                     return False
-                time.sleep(min(ORGFS_AWAIT_RETRY_SECONDS, remaining))
+                self._wait_retry_interval(min(ORGFS_AWAIT_RETRY_SECONDS, remaining))
         if info.kind != "doc":
             return True
-        self._mesh(space_id)
+        sync = self._mesh(space_id)
+        if sync is None:
+            self._check_await_available(space_id)
+        require_sync = sync is not None
         while True:
             try:
                 self.facade.read_text(space_id, f"id:{node_id}")
@@ -147,10 +215,12 @@ class StateContent:
             except OrgFsError as exc:
                 if exc.code != ORGFS_CONTENT_PENDING:
                     raise
+            self._check_await_available(space_id, require_facade_sync=require_sync)
             remaining = deadline_monotonic - time.monotonic()
             if remaining <= 0:
                 return False
-            time.sleep(min(ORGFS_AWAIT_RETRY_SECONDS, remaining))
+            self._wait_retry_interval(min(ORGFS_AWAIT_RETRY_SECONDS, remaining))
+            self._check_await_available(space_id, require_facade_sync=require_sync)
 
     def _require_local_member(self, space_id: str, node_id: str) -> None:
         """Refuse provisioning content for a space this node's author left (F7 ruling 5)."""

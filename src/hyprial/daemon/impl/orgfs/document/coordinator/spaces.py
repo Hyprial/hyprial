@@ -551,6 +551,12 @@ class StateSpaces:
         with self._lock:
             self._syncs.pop(space_id, None)
 
+    def has_sync(self, space_id: str) -> bool:
+        """Whether ``space_id`` currently has a sync attached."""
+
+        with self._lock:
+            return space_id in self._syncs
+
     def sync_host(
         self, space_id: str, node_gate: Callable[[str], bool] | None = None
     ) -> SpaceSyncHost:

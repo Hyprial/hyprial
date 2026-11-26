@@ -131,6 +131,7 @@ class OrgFsRuntime(
         self._resource_lock = RLock()
         self._closing = False
         self._closed = False
+        self._closed_event = threading.Event()
         self._close_lock = Lock()
         self._checkouts: dict[str, CheckoutAuthority] = {}
         self._checkout_lock = Lock()
@@ -260,6 +261,7 @@ class OrgFsRuntime(
                 if self._closed:
                     return
                 self._closing = True
+            self._closed_event.set()
             self._close_impl()
 
     def _close_impl(self) -> None:
@@ -271,6 +273,7 @@ class OrgFsRuntime(
         with self._resource_lock:
             self._closing = True
             creations = tuple(self._mesh_creations.values())
+        self._closed_event.set()
         deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS
         for creation in creations:
             if not creation.done.wait(max(0.0, deadline - time.monotonic())):

@@ -11,7 +11,8 @@ class JoinBudget:
     def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
         self.clock = clock or time.monotonic
         self.seconds = MEMBERSHIP_BUDGETS["join"].seconds
-        self.deadline = self.clock() + self.seconds
+        self.started = self.clock()
+        self.deadline = self.started + self.seconds
 
     def remaining(self, leg: str, maximum: float | None = None) -> float:
         remaining = self.deadline - self.clock()

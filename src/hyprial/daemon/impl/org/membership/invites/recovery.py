@@ -12,6 +12,13 @@
 #   recorded in the journal (``unfinishedJoins``) and joined again on resume
 #   whatever the listing says; the entry goes once a join of it returns.
 #   A crash inside a join records nothing and keeps resuming without a rejoin.
+# - 2026-11-26 (orgfs package F10, R6-1 and F9 review findings): after both org
+#   spaces are joined in ``join-org`` (or before post-join steps when ``join-org``
+#   is already marked completed on recovery), wait once via
+#   ``await_org_join_bodies`` within the shared ``JoinBudget`` ``join-orgfs``
+#   leg for ``directory/org.json`` and ``policy/role-grants.json``.  Read-only
+#   ``missing_membership_step`` stays non-waiting so ``org.invites.list`` and
+#   accept's short-circuit check never block on pending bodies.
 """Resume the existing org bootstrap with read-back checks at durable boundaries.
 
 A space listing is discovery only. Directory and ACL membership, the ACL
@@ -23,7 +30,11 @@ from __future__ import annotations
 
 import json
 
-from hyprial.daemon.impl.org.network.binding import INVITE_SPACE_MODES, resolve_org_acl_space
+from hyprial.daemon.impl.org.network.binding import (
+    INVITE_SPACE_MODES,
+    await_org_join_bodies,
+    resolve_org_acl_space,
+)
 from hyprial.daemon.impl.org.network.policy import ACL_POLICY_DOC
 from hyprial.daemon.impl.org.network.tailnet.budget import JoinBudget
 from hyprial.daemon.impl.orgfs.api import OrgFsError
@@ -94,6 +105,16 @@ def _join_space(service, journal, space: str) -> None:
         journal.save()
 
 
+def _await_join_bodies(service, journal, parsed) -> None:
+    try:
+        await_org_join_bodies(service, parsed.space_id, parsed.acl_space_id)
+    except OrgFsError as error:
+        missing_step = error.details.get("missingStep")
+        if isinstance(missing_step, str) and missing_step:
+            journal.begin(missing_step)
+        raise
+
+
 def run_bootstrap(service, parsed, journal):
     """Use the normal step executor under one shared join budget."""
 
@@ -119,6 +140,8 @@ def _run_bootstrap(service, parsed, journal, budget):
                 budget.remaining("member-announce")
             action()
             journal.complete_step(kind)
+    if "join-org" in completed:
+        _await_join_bodies(service, journal, parsed)
     executed = journal.record["steps"]
     for step in parse_bootstrap_yaml(parsed.workflow_yaml):
         if step.kind in completed:
@@ -136,6 +159,7 @@ def _run_bootstrap(service, parsed, journal, budget):
                     _join_space(service, journal, space)
                 if space_committed(service, space, required_mode=mode):
                     journal.complete_step(kind)
+            _await_join_bodies(service, journal, parsed)
             journal.begin("space-bound")
             missing = missing_membership_step(service, parsed)
             if missing:
