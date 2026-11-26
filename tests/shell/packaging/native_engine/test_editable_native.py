@@ -59,33 +59,41 @@ def _editable_tools(monkeypatch: pytest.MonkeyPatch, verify):
     return tools
 
 
+def _fake_build(monkeypatch: pytest.MonkeyPatch, calls: list, on_build=None) -> None:
+    editable = dict(_build_hook._NATIVE_EDITABLE)
+
+    def build(root: Path, *, python: str):
+        calls.append(("build", root, python))
+        if on_build is not None:
+            on_build()
+        return root / "module", root / "library", root / "stamp"
+
+    editable["build_editable"] = build
+    monkeypatch.setattr(_build_hook, "_NATIVE_EDITABLE", editable)
+
+
 def test_opt_in_rebuilds_missing_module_with_the_build_interpreter(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(sys, "_base_executable", str(tmp_path / "stable-python"))
-    script = tmp_path / "scripts/build/build_native_engine.sh"
-    script.parent.mkdir(parents=True)
-    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    script.chmod(0o755)
-    calls: list[tuple[Path, str | None]] = []
+    calls: list[tuple] = []
 
     def verify(root: Path, *, python: str) -> str | None:
-        calls.append((root, python))
+        calls.append(("verify", root, python))
         return None if len(calls) == 1 else "native module is valid"
 
     _editable_tools(monkeypatch, verify)
+    _fake_build(monkeypatch, calls)
     monkeypatch.setenv(BUILD_NATIVE_ENV, "1")
-    completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(_build_hook.subprocess, "run", lambda command, **kwargs: (
-        calls.append((Path(command[0]), kwargs["env"]["PYO3_PYTHON"])), completed
-    )[1])
 
     _hook(tmp_path).initialize("editable", {})
 
     expected_python = os.path.realpath(tmp_path / "stable-python")
-    assert calls[0] == (tmp_path, expected_python)
-    assert calls[1] == (script, expected_python)
-    assert calls[2] == (tmp_path, expected_python)
+    assert calls == [
+        ("verify", tmp_path, expected_python),
+        ("build", tmp_path, expected_python),
+        ("verify", tmp_path, expected_python),
+    ]
 
 
 def test_opt_in_rebuilds_a_stale_module_but_default_preserves_failure(
@@ -101,15 +109,8 @@ def test_opt_in_rebuilds_a_stale_module_but_default_preserves_failure(
         return "native module is valid"
 
     _editable_tools(monkeypatch, verify)
+    _fake_build(monkeypatch, [])
     monkeypatch.setenv(BUILD_NATIVE_ENV, "1")
-    script = tmp_path / "scripts/build/build_native_engine.sh"
-    script.parent.mkdir(parents=True)
-    script.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        _build_hook.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
     _hook(tmp_path).initialize("editable", {})
     assert attempts == 2
 
@@ -148,22 +149,15 @@ def test_uv_cache_keys_include_native_switches() -> None:
 def test_opt_in_build_touches_the_epoch_before_it_builds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    script = tmp_path / "scripts/build/build_native_engine.sh"
-    script.parent.mkdir(parents=True)
-    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     epoch = tmp_path / "scripts/build/native-engine.epoch"
+    epoch.parent.mkdir(parents=True)
     epoch.write_text("epoch\n", encoding="utf-8")
     os.utime(epoch, (1000, 1000))
     seen: list[float] = []
     states = iter([None, "native module is valid"])
     _editable_tools(monkeypatch, lambda _root, *, python: next(states))
+    _fake_build(monkeypatch, [], on_build=lambda: seen.append(epoch.stat().st_mtime))
     monkeypatch.setenv(BUILD_NATIVE_ENV, "1")
-    completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(
-        _build_hook.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (seen.append(epoch.stat().st_mtime), completed)[1],
-    )
 
     _hook(tmp_path).initialize("editable", {})
 
