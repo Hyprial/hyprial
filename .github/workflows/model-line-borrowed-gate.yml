@@ -43,7 +43,7 @@
 # - `gate` is the single job a branch rule requires. It fails unless every
 #   other job succeeded, so adding a job does not need a rule change.
 name: model-line-borrowed-gate
-run-name: Model line PR84 at eb83ecd2
+run-name: Model line PR85 at 25d6667b
 
 on:
   pull_request:
@@ -58,8 +58,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MODEL_CANDIDATE_SHA: "eb83ecd2f2c7c450cedb4cb349aba7311099b37a"
-  MODEL_CANDIDATE_PR: "84"
+  MODEL_CANDIDATE_SHA: "25d6667b946e4032cdbe4aa505a4777e86c56a91"
+  MODEL_CANDIDATE_PR: "85"
   UV_VERSION: "0.11.7"
   PYTHON_VERSION: "3.12"
   RUST_VERSION: "1.93.1"
