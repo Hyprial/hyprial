@@ -52,7 +52,11 @@ def _device(device_uid: str | None = DEVICE_UID) -> DeviceRecord:
 
 
 class KeyHome:
-    """A home with a committed account, a device record and an empty journal."""
+    """A home with a committed account, a device record and an empty journal.
+
+    The journal sits at ``<state_dir>/onboarding``, the production layout: the
+    pass derives the state directory as the parent of the journal root.
+    """
 
     def __init__(self, tmp_path: Path, *, user_id: str | None = USER_ID) -> None:
         self.dir = tmp_path / "home"
@@ -66,7 +70,6 @@ class KeyHome:
         self.identity = IdentitySnapshot(OWNER, "casdoor", ISSUER)
         self.device: DeviceRecord | None = None
         self.provisioned = 0
-        # The production layout: the journal is ``<state_dir>/onboarding``.
         self.service = OperationService.open(self.state / "onboarding")
 
     def registered(self, device_uid: str | None = DEVICE_UID) -> "KeyHome":

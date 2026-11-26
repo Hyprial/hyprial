@@ -96,6 +96,8 @@ def test_the_service_takes_an_injected_key_reader() -> None:
 def test_without_a_complete_account_no_key_is_generated_and_the_row_has_no_pair(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, user_id, device_uid
 ) -> None:
+    """Nothing is minted by a publish or by a read: an incomplete account has no key."""
+
     home = _home(tmp_path, user_id=user_id, device_uid=device_uid)
     state = tmp_path_factory.mktemp("state")
     fs = FakeFs()
@@ -108,7 +110,6 @@ def test_without_a_complete_account_no_key_is_generated_and_the_row_has_no_pair(
     assert "encryptionKeyId" not in row
     assert "encryptionPublicKey" not in row
     assert _key_files(state) == []
-    # Nothing is minted on read either: an incomplete account has no key at all.
     assert reader() is None
     assert _key_files(state) == []
 
@@ -116,6 +117,12 @@ def test_without_a_complete_account_no_key_is_generated_and_the_row_has_no_pair(
 def test_a_generated_key_is_published_with_its_id_and_public_key(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
+    """The id is the store's digest of the published public key.
+
+    A reader can therefore tell the two belong together without trusting
+    either alone.
+    """
+
     home = _home(tmp_path, user_id=USER_ID)
     state = tmp_path_factory.mktemp("state")
     fs = FakeFs()
@@ -131,8 +138,6 @@ def test_a_generated_key_is_published_with_its_id_and_public_key(
     record = json.loads(stored.read_text(encoding="utf-8"))
     assert row["encryptionKeyId"] == record["keyId"]
     assert row["encryptionPublicKey"] == record["publicKey"]
-    # The id is the store's digest of the published public key, so a reader can
-    # tell the two belong together without trusting either alone.
     assert row["encryptionKeyId"] == _digest_id(row["encryptionPublicKey"])
     assert record["keyKind"] == "user"
     assert record["casdoorSub"] == USER_ID
@@ -185,13 +190,16 @@ def test_a_row_published_before_the_key_existed_is_upgraded_once(
 def test_a_key_the_store_refuses_publishes_no_pair_and_is_not_a_publish_error(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """A quarantined or unsafe store is "no key", never a failed publish."""
+    """A quarantined or unsafe store is "no key", never a failed publish.
+
+    The store is seeded first, then its directory is made unsafe so the fence
+    refuses it.
+    """
 
     home = _home(tmp_path, user_id=USER_ID)
     state = tmp_path_factory.mktemp("state")
     fs = FakeFs()
     _create_org_spaces(fs)
-    # Seed the store, then make the directory unsafe so the fence refuses it.
     reader = encryption_key_reader(home=home, state_dir=state)
     assert reader() is not None
     (state / "identity" / "encryption-keys").chmod(0o755)
@@ -258,6 +266,11 @@ def test_a_refused_publish_never_reads_the_key(tmp_path: Path) -> None:
 def test_the_private_half_is_never_published(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
+    """The row holds the public pair and nothing else that is new.
+
+    ``deviceUid`` is on the row only while id-form minting is on.
+    """
+
     home = _home(tmp_path, user_id=USER_ID)
     state = tmp_path_factory.mktemp("state")
     fs = FakeFs()
@@ -271,7 +284,6 @@ def test_the_private_half_is_never_published(
     text = fs.docs[("space-" + ORG, ROW_PATH)]
     assert private not in text
     row = _row(fs)
-    # ``deviceUid`` is on the row only while id-form minting is on.
     expected = {
         "deviceId", "owner", "serverPublic", "clientPublic", "clientPublicByServer",
         "address", "keyGeneration", "updatedAt", "machineFingerprint",
