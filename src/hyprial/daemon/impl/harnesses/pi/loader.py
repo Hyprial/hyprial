@@ -17,10 +17,18 @@ workspace root.  On POSIX the kernel check is the owner plus the same
 group/other bits, so only the owner requirement is new.  It is deliberately
 not ``private_metadata_violation(..., mode=...)``: that compares for equality
 and would refuse a private directory that also carries a setgid or sticky
-bit.  When the kernel cannot inspect privacy at all (its descriptor check
-raises ``OSError``), the root is refused as a trust error, a permanent start
-failure, instead of letting the ``OSError`` escape and be retried until the
-startup deadline; an ``OSError`` from ``stat`` of the root is left as it was.
+bit.  Judging by the kernel check makes the workspace scope reachable where
+it was refused for every directory before, so the chain check before it has
+to hold there too: the workspace and its agent-home ancestors must be real
+directories, refusing a reparse point of any kind as well as a symlink, as
+the other harnesses' directory checks do.  The symlink term alone does not
+cover a reparse point that ``lstat`` reports as a directory, and ``resolve``
+follows a reparse point onto its target, where the privacy check would judge
+the target and sign it as the workspace.  When the kernel cannot inspect
+privacy at all (its descriptor check raises ``OSError``), the root is refused
+as a trust error, a permanent start failure, instead of letting the
+``OSError`` escape and be retried until the startup deadline; an
+``OSError`` from ``stat`` of the root is left as it was.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping
 from hyprial.daemon.impl.harnesses.model_provider import pi_model_definitions
 from hyprial.kernel import git_subprocess_environment
 from hyprial.kernel import ipc_errors
+from hyprial.kernel import path_is_reparse
 from hyprial.kernel import private_tree_violation
 
 if TYPE_CHECKING:
@@ -343,11 +352,12 @@ def _lexical_path(path: Path) -> Path:
 
 
 def _reject_workspace_symlink_chain(workspace: Path) -> None:
-    """Refuse a workspace whose root or agent-home ancestors are symlinks.
+    """Refuse a workspace whose root or agent-home ancestors are links.
 
     Anchored at the agent collection (``workspace.parent.parent``) so that
     system-level ancestors such as macOS ``/var`` are outside the check; the
-    components the runtime context owns must be real directories.
+    components the runtime context owns must be real directories.  A symlink
+    and any other reparse point are both refused.
     """
 
     if not workspace.is_absolute():
@@ -359,7 +369,11 @@ def _reject_workspace_symlink_chain(workspace: Path) -> None:
             raise ValueError(
                 f"Pi workspace trust path {directory} cannot be inspected: {error}"
             ) from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or path_is_reparse(metadata)
+            or not stat.S_ISDIR(metadata.st_mode)
+        ):
             raise ValueError(
                 "Pi workspace trust root must be a real directory, not a symlink"
             )

@@ -28,11 +28,23 @@ A forged ``stat_result`` keeps the real file-type bits and changes only the
 field under test, so the surrounding directory checks still run against the
 real filesystem.  Every case records what the product handed to the check and
 asserts on it, so a product that stops consulting ``stat`` cannot turn a
-forgery into a silent no-op.  No case skips: an unexpected skip fails the
-suite on the platform these cases exist for.
+forgery into a silent no-op.  No case skips on the platform it exists for:
+an unexpected skip fails the suite there.
 
 An ``OSError`` raised by the check itself is a trust refusal; an ``OSError``
 from ``stat`` of the root is not wrapped and still escapes as it did before.
+
+The workspace root and its agent-home ancestors must also be real
+directories.  A reparse point is refused like a symlink: ``resolve`` follows
+it onto its target, and the privacy check then judges the target instead of
+the workspace.  A directory junction is one and needs no privilege to create.
+Two cases share that proof.  A stand-in that reports the workspace as a
+reparse point runs on every platform and is the before/after evidence for
+the refusal.  A real directory junction is created only on Windows, where it
+exists, and shows that a real junction is refused.  It records what ``lstat``
+and ``path_is_reparse`` report for that junction without asserting on those
+values, so the run itself answers whether the symlink term or the reparse
+term refused it; it is therefore not before/after evidence for one term.
 """
 
 from __future__ import annotations
@@ -40,6 +52,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,8 +63,12 @@ from hyprial.daemon.impl.harnesses.pi.loader import (
     PiProjectTrustReceipt,
     resolve_approved_pi_project,
 )
-from hyprial.kernel import current_uid
+from hyprial.kernel import current_uid, link_directory, path_is_reparse
 from hyprial.kernel.impl.manysys.fs import private_access
+
+_WIN32_ONLY = pytest.mark.skipif(
+    sys.platform != "win32", reason="a real directory junction is Windows only"
+)
 
 
 def _workspace(root: Path, name: str) -> Path:
@@ -437,3 +454,73 @@ def test_an_unreadable_workspace_root_still_raises_its_own_os_error(
 
     assert raised.value is failure
     assert seen == []
+
+
+def _identity(metadata: os.stat_result) -> tuple[int, int]:
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def test_a_workspace_reported_as_a_reparse_point_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The chain check refuses a workspace reported as a reparse point.
+
+    ``path_is_reparse`` is replaced by a stand-in that answers true for the
+    workspace alone and hands every other directory to the real function.
+    The workspace is a real private directory, so with the reparse term
+    removed from the check it passes every step and is signed; the ancestors
+    are never reported as reparse points, so an earlier term of the check
+    cannot refuse first and stand in for the term under test.
+    """
+
+    workspace = _workspace(tmp_path, "be-dev-1")
+    chain = [path.lstat() for path in (tmp_path / "agents", workspace.parent, workspace)]
+    real_reparse = loader.path_is_reparse
+    seen: list[os.stat_result] = []
+
+    def judged(metadata: os.stat_result) -> bool:
+        seen.append(metadata)
+        if _identity(metadata) == _identity(chain[-1]):
+            return True
+        return real_reparse(metadata)
+
+    monkeypatch.setattr(loader, "path_is_reparse", judged)
+
+    with pytest.raises(PiProjectTrustError, match="real directory, not a symlink"):
+        _trust(workspace)
+
+    assert [_identity(metadata) for metadata in seen] == [
+        _identity(metadata) for metadata in chain
+    ]
+
+
+@_WIN32_ONLY
+def test_a_workspace_junction_to_another_private_directory_is_refused(
+    record_property, tmp_path: Path
+) -> None:
+    """A real directory junction pointing elsewhere is refused as a trust root.
+
+    Creating a junction needs neither elevation nor Developer Mode, so a
+    workspace can be replaced by a link to a private directory that is not
+    this agent's workspace.  This case shows that such a junction is refused.
+    It is not before/after evidence for one term of the chain check: if
+    ``lstat`` reports the junction as a symlink, the symlink term refused it
+    as well.  What ``lstat`` and ``path_is_reparse`` report for the junction
+    is recorded as properties, so the run itself answers which term refused
+    it; nothing is asserted about those values.
+    """
+
+    own = tmp_path / "agents" / "be-dev-1" / "workspace"
+    own.parent.mkdir(parents=True)
+    intruder = _workspace(tmp_path, "be-dev-2")
+    link_directory(intruder, own)
+
+    metadata = own.lstat()
+    record_property("junction_s_islnk", str(stat.S_ISLNK(metadata.st_mode)))
+    record_property("junction_s_isdir", str(stat.S_ISDIR(metadata.st_mode)))
+    record_property("junction_is_reparse", str(path_is_reparse(metadata)))
+
+    with pytest.raises(PiProjectTrustError):
+        resolve_approved_pi_project(
+            cwd=str(intruder), runtime_args=("--approve",), own_workspace=own
+        )
