@@ -1,0 +1,223 @@
+# Borrowed validation only, 2026-11-27: gate.yml from PR78 edd4354b.
+# The wrapper stays outside product PRs; each checkout pins one reviewed candidate SHA.
+# Trigger and concurrency changes permit a stacked-branch validation PR without merging CI.
+# Test selection, versions, assertions and gate aggregation stay unchanged.
+# Decisions (GitHub migration plan, docs/design/github-development-migration-2026-11-15.md,
+# section 6.0 step 5; cutover record docs/guides/github-migration-cutover.md):
+# - This is the minimal merge gate for the public repository: static gates,
+#   Ruff, the Python suite and the Submitted-by line. It is a new workflow, not
+#   a translation of the internal gate-python.yml: no host cache, no proxy, no
+#   layered test selection, no artifact mount.
+# - GitHub-hosted runners only. No self-hosted runner is registered to this
+#   repository (plan W3), so nothing here may assume one.
+# - Triggers are pull_request and push to dev and main. pull_request_target is
+#   never used: a fork's code must not run with this repository's token.
+#   pull_request names its activity types so that editing the title or the body
+#   (edited) starts a run as well as opening, pushing to and reopening one; the
+#   omitted types (assigned, unassigned, labeled, unlabeled, review_requested,
+#   review_request_removed) change nothing this gate reads.
+# - The token is read-only. No secret is referenced.
+# - Actions are pinned to full commit SHAs, read from the tags on 2026-11-25:
+#   actions/checkout v7.0.1, astral-sh/setup-uv v10.4.0, actions/setup-node
+#   v7.1.0, actions/upload-artifact v7.0.2. The artifact action is v7: the v3
+#   line is shut down on GitHub.
+# - No `env:` block of this workflow repeats a name in another letter case.
+#   Windows environment variable names are case-insensitive, so two keys that
+#   differ only in case are two variables on Linux and one on Windows; a
+#   workflow that must run on both cannot carry that difference.
+# - The artifact upload step clears no proxy variables. This workflow sets no
+#   HTTP(S) proxy at the workflow or job level, so there is nothing to clear.
+#   An artifact step only clears them when a workflow or job above it sets a
+#   proxy (v3 was measured tunnelling through a job proxy, 2026-10-30, run
+#   40608). When clearing, write one letter case per variable (e.g. HTTP_PROXY
+#   and HTTPS_PROXY), never both HTTP_PROXY and http_proxy in the same `env:`.
+# - No job and no step of this workflow carries continue-on-error. The gate is
+#   the one job a branch rule requires, and a relaxed job or step here would be
+#   a green run that proved nothing. Reporting steps use `if: always()`.
+# - The suite is split into four shards by position in the sorted list of test
+#   files, so a new test file is always in exactly one shard. Each shard runs
+#   every file given to it; collection errors do not hide the remaining tests.
+# - The Pi SDK is installed at the version the internal gate pinned (0.85.1):
+#   tests that need it report BLOCKED as a failure when it is absent.
+# - `gate` is the single job a branch rule requires. It fails unless every
+#   other job succeeded, so adding a job does not need a rule change.
+name: model-line-borrowed-gate
+run-name: Model line PR59 at 78a1b473
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [fix/lark-closed-completion]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-line-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+env:
+  MODEL_CANDIDATE_SHA: "78a1b4738242f87e2df505b4b7e5d9322515f448"
+  MODEL_CANDIDATE_PR: "59"
+  UV_VERSION: "0.11.7"
+  PYTHON_VERSION: "3.12"
+  RUST_VERSION: "1.93.1"
+  NO_COLOR: "1"
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.MODEL_CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Verify fixed candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "${MODEL_CANDIDATE_SHA}"
+          echo "candidate PR=${MODEL_CANDIDATE_PR} sha=$(git rev-parse HEAD) tree=$(git rev-parse HEAD^{tree})"
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Structural and boundary gates
+        run: |
+          set -euo pipefail
+          for gate in check_structural_limits check_module_boundaries \
+              check_network_reachability check_unbounded_waits \
+              check_windows_portability check_node_net_apis \
+              check_node_platform_idioms check_import_ratchet; do
+            echo "== ${gate}"
+            uv run --no-project --python "${PYTHON_VERSION}" python "scripts/ci/${gate}.py"
+          done
+      - name: Install the locked environment
+        run: uv sync --locked --python "${PYTHON_VERSION}" --extra test
+      - name: Ruff
+        run: uv run --locked --no-sync ruff check .
+      - name: Compile every Python file
+        run: uv run --locked --no-sync python -m compileall -q src tests contract
+
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.MODEL_CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Verify fixed candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "${MODEL_CANDIDATE_SHA}"
+          echo "candidate PR=${MODEL_CANDIDATE_PR} sha=$(git rev-parse HEAD) tree=$(git rev-parse HEAD^{tree})"
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - name: Install the pinned Pi SDK
+        run: |
+          set -euo pipefail
+          npm install -g --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1
+          test "$(pi --version)" = "0.85.1"
+          echo "HYPRIAL_REQUIRE_PI_SDK=1" >> "${GITHUB_ENV}"
+      - name: Install the locked environment
+        run: |
+          set -euo pipefail
+          uv sync --locked --python "${PYTHON_VERSION}" --extra test
+          uv run --locked --no-sync --with libcst==1.9.0 python -c 'import libcst'
+      - name: Build and stage the native engine
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          bash scripts/build/build_native_engine.sh
+          uv run --locked --no-sync python -c 'import hyprial._core.actors as a; print(a.ENGINE_ABI_VERSION)'
+      - name: Select this shard's test files
+        run: |
+          set -euo pipefail
+          git ls-files 'tests/**/test_*.py' 'tests/test_*.py' | LC_ALL=C sort \
+            | awk -v n=4 -v k="${{ matrix.shard }}" 'NR % n == k - 1' > "${RUNNER_TEMP}/shard-files.txt"
+          echo "shard ${{ matrix.shard }}: $(wc -l < "${RUNNER_TEMP}/shard-files.txt") test files"
+          test -s "${RUNNER_TEMP}/shard-files.txt"
+      - name: Run the shard
+        env:
+          HYPRIAL_CI_PROFILE: "1"
+        run: |
+          set -euo pipefail
+          export HYPRIAL_BIN="${PWD}/.venv/bin/hyprial"
+          test -x "${HYPRIAL_BIN}"
+          mkdir -p "${RUNNER_TEMP}/pytest-results"
+          uv run --locked --no-sync --with libcst==1.9.0 pytest -q \
+            -m "not gui_acceptance" \
+            -n 4 --dist=loadfile --max-worker-restart=0 \
+            --continue-on-collection-errors \
+            -p no:cacheprovider \
+            --junitxml="${RUNNER_TEMP}/pytest-results/shard-${{ matrix.shard }}.xml" \
+            --basetemp="${RUNNER_TEMP}/pytest-tmp" \
+            "@${RUNNER_TEMP}/shard-files.txt"
+      - name: Upload the JUnit result
+        id: upload_junit
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pytest-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  pr-hygiene:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.MODEL_CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Verify fixed candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "${MODEL_CANDIDATE_SHA}"
+          echo "candidate PR=${MODEL_CANDIDATE_PR} sha=$(git rev-parse HEAD) tree=$(git rev-parse HEAD^{tree})"
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Require the Submitted-by identity line
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY:-}" > "${RUNNER_TEMP}/pr-body.txt"
+          uv run --no-project --python "${PYTHON_VERSION}" python scripts/ci/check_pr_hygiene.py \
+            submitted-by --body-file "${RUNNER_TEMP}/pr-body.txt" \
+            --pr-number "${PR_NUMBER}" --created-at "${PR_CREATED_AT}"
+
+  gate:
+    if: always()
+    needs: [static, pytest, pr-hygiene]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to have succeeded
+        env:
+          STATIC: ${{ needs.static.result }}
+          PYTEST: ${{ needs.pytest.result }}
+          HYGIENE: ${{ needs.pr-hygiene.result }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          echo "static=${STATIC} pytest=${PYTEST} pr-hygiene=${HYGIENE} event=${EVENT}"
+          test "${STATIC}" = success
+          test "${PYTEST}" = success
+          if [ "${EVENT}" = pull_request ]; then
+            test "${HYGIENE}" = success
+          else
+            test "${HYGIENE}" = skipped
+          fi
+
