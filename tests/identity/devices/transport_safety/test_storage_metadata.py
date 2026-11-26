@@ -49,20 +49,44 @@ def test_secure_directory_accepts_non_posix_mode_when_kernel_secures_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "home"
-    root.mkdir(mode=0o700)
-    target = root / "secrets" / "transport"
+    target = root / "secrets" / "transport" / "tailnets"
     calls: list[tuple[Path, bool]] = []
+    touched: list[str] = []
 
     def fake_secure(path: Path, *, create: bool = False, mode: int | None = 0o700) -> Path:
         del mode
         calls.append((path, create))
-        path.mkdir(parents=True, exist_ok=True)
-        path.chmod(0o755)
         return path
 
+    def guard(name: str):
+        def forbidden(*args, **kwargs):
+            del args, kwargs
+            touched.append(name)
+            raise AssertionError(f"_secure_directory must not call {name}")
+
+        return forbidden
+
     monkeypatch.setattr(transport_storage, "secure_private_directory", fake_secure)
-    transport_storage._secure_directory(target, root=root)
-    assert calls == [(root / "secrets", True), (target, True)]
+    with monkeypatch.context() as patched:
+        for owner, name in (
+            (os, "lstat"),
+            (os, "stat"),
+            (os, "chmod"),
+            (os, "mkdir"),
+            (Path, "lstat"),
+            (Path, "stat"),
+            (Path, "chmod"),
+            (Path, "mkdir"),
+        ):
+            patched.setattr(owner, name, guard(f"{owner.__name__}.{name}"))
+        transport_storage._secure_directory(target, root=root)
+    assert touched == []
+    assert calls == [
+        (root / "secrets", True),
+        (root / "secrets" / "transport", True),
+        (target, True),
+    ]
+    assert not root.exists()
 
 
 def test_secure_directory_wraps_private_access_unsupported(
