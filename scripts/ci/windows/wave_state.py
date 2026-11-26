@@ -32,6 +32,16 @@ one error-only case, neither skipped) is merged into a single failed case.  Any
 other repeated name, any third occurrence, and any repeat across XML files is still
 rejected as duplicate-result.  summarize.py applies the same rule and keeps both
 messages.
+
+Decision (2026-11-27, tier 2 full suite).  pytest 8.4.2 exits 5 when it collected no
+test.  That is the exit code of a run whose only planned files are skipped at
+collection time, which the four conditions above already report, so exit code 5 is
+passed only when the planned set is not empty and every planned file is in
+collection_skipped_files.  Measured on pytest 8.4.2 without xdist: a collection-time
+skip next to a passing test exits 0, next to a failing test exits 1, and next to a
+file that collects nothing exits 5.  The last shape never reaches this condition:
+the file that collects nothing is missing from the reported files, so the
+unreported-files branch has already ended the classification.
 """
 
 from __future__ import annotations
@@ -481,7 +491,9 @@ def classify_run(
         if uncovered:
             details.append(f"ledger-uncovered:{len(uncovered)}")
             status = "unreported-files"
-        elif returncode != 0 or result.failures or result.errors:
+        elif returncode != 0 and not (
+            returncode == 5 and planned and planned <= result.collection_skipped_files
+        ):
             status = "failed"
         else:
             status = "passed"

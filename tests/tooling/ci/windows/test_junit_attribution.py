@@ -10,6 +10,20 @@ The XML here is written by hand in exactly those shapes so a single testcase can
 carry several children.  Only the skipped shape that satisfies all four conditions
 counts as reported, and only the failure-then-error pair inside one file merges;
 every other shape stays red.
+
+Decision (2026-11-27, tier 2 full suite).  pytest exit code 5 is passed only when
+every planned file is reported as collection-skipped.  The eight exit-code rows are
+one table: (exit code, strict skips, planned files, expected status).  Two rows are
+the fix (one and two collection-skipped files, exit 5, now passed).  Six are guards:
+the same exit code still fails when a planned file has no testcase; a failing test
+beside the skipped module keeps the run failed; a collection error is red on exit
+code 2 and on exit code 1; and tier 1 still reports the skip as unexpected.  One
+guard pairs exit code 5 with a passing test, which pytest does not produce (that run
+exits 0); it pins the rule itself, that exit 5 passes only for an all-skipped plan.
+The second file in those rows is a name of its own, so the ordinary cases sit
+outside REAL_MODULE and need their own ledger; classify takes the exit code, the
+planned list and the ledger as keyword arguments that default to what the earlier
+tests used.
 """
 
 from __future__ import annotations
@@ -28,6 +42,7 @@ from tests.tooling.ci.windows.test_run_waves import write_events
 
 SKIPPED_MODULE = "tests/pkg/test_optional.py"
 REAL_MODULE = "tests/pkg/test_real.py"
+OTHER_MODULE = "tests/pkg/test_other.py"
 PLANNED = [REAL_MODULE, SKIPPED_MODULE]
 REAL_CASE = '<testcase classname="tests.pkg.test_real" name="test_ok" time="0.01" />'
 SKIP_BODY = '<skipped type="pytest.skip" message="collection skipped">optional dependency missing</skipped>'
@@ -62,15 +77,36 @@ def write_ledger(ledger: Path, *names: str) -> Path:
     return ledger
 
 
-def classify(tmp_path: Path, junit: Path, *, strict_skips: bool = False) -> RunOutcome:
+def classify(
+    tmp_path: Path,
+    junit: Path,
+    *,
+    strict_skips: bool = False,
+    returncode: int = 0,
+    planned: list[str] | None = None,
+    ledger: Path | None = None,
+) -> RunOutcome:
     return classify_run(
-        returncode=0,
+        returncode=returncode,
         junit_paths=[junit],
-        ledger_dir=write_ledger(tmp_path / "ledger"),
-        planned_files=PLANNED,
+        ledger_dir=ledger if ledger is not None else write_ledger(tmp_path / "ledger"),
+        planned_files=PLANNED if planned is None else planned,
         root=tmp_path,
         strict_skips=strict_skips,
     )
+
+
+def write_ledger_for(ledger: Path, nodeid: str, outcome: str) -> Path:
+    ledger.mkdir(parents=True, exist_ok=True)
+    write_events(
+        ledger / "gw0.jsonl",
+        [
+            {"event": "collect", "collected": 1, "errors": []},
+            {"event": "start", "nodeid": nodeid},
+            {"event": "end", "nodeid": nodeid, "outcome": outcome},
+        ],
+    )
+    return ledger
 
 
 def test_module_level_importorskip_counts_as_reported(tmp_path: Path) -> None:
@@ -86,6 +122,69 @@ def test_module_level_importorskip_counts_as_reported(tmp_path: Path) -> None:
     strict = classify(tmp_path, junit, strict_skips=True)
     assert strict.status == "failed"
     assert f"unexpected-skip:{SKIPPED_MODULE}:collection skipped" in strict.details
+
+
+EXIT_CODE_PLANNED = [SKIPPED_MODULE, OTHER_MODULE]
+SECOND_SKIPPED_MODULE = "tests/pkg/test_second.py"
+OTHER_PASSING_CASE = '<testcase classname="tests.pkg.test_other" name="test_ok" time="0.01" />'
+OTHER_FAILING_CASE = module_case(
+    "test_bad", '<failure message="assert 1 == 2">call trace</failure>', classname="tests.pkg.test_other"
+)
+EXIT_CODE_ROWS = {
+    "one-collection-skipped-file": (5, False, [SKIPPED_MODULE], "passed"),
+    "two-collection-skipped-files": (5, False, [SKIPPED_MODULE, SECOND_SKIPPED_MODULE], "passed"),
+    "collection-skipped-and-file-without-testcase": (5, False, EXIT_CODE_PLANNED, "unreported-files"),
+    "collection-skipped-and-passing-test": (5, False, EXIT_CODE_PLANNED, "failed"),
+    "collection-skipped-and-failing-test": (1, False, EXIT_CODE_PLANNED, "failed"),
+    "collection-error-exit-two": (2, False, [SKIPPED_MODULE], "collection-error"),
+    "collection-error-exit-one": (1, False, [SKIPPED_MODULE], "collection-error"),
+    "one-collection-skipped-file-tier-1": (0, True, [SKIPPED_MODULE], "failed"),
+}
+EXIT_CODE_CASES = {
+    "one-collection-skipped-file": [module_case("tests.pkg.test_optional", SKIP_BODY)],
+    "two-collection-skipped-files": [
+        module_case("tests.pkg.test_optional", SKIP_BODY),
+        module_case("tests.pkg.test_second", SKIP_BODY),
+    ],
+    "collection-skipped-and-file-without-testcase": [module_case("tests.pkg.test_optional", SKIP_BODY)],
+    "collection-skipped-and-passing-test": [
+        module_case("tests.pkg.test_optional", SKIP_BODY),
+        OTHER_PASSING_CASE,
+    ],
+    "collection-skipped-and-failing-test": [
+        module_case("tests.pkg.test_optional", SKIP_BODY),
+        OTHER_FAILING_CASE,
+    ],
+    "collection-error-exit-two": [module_case("tests.pkg.test_optional", COLLECTION_ERROR)],
+    "collection-error-exit-one": [module_case("tests.pkg.test_optional", COLLECTION_ERROR)],
+    "one-collection-skipped-file-tier-1": [module_case("tests.pkg.test_optional", SKIP_BODY)],
+}
+EXIT_CODE_LEDGERS = {
+    "collection-skipped-and-passing-test": (f"{OTHER_MODULE}::test_ok", "passed"),
+    "collection-skipped-and-failing-test": (f"{OTHER_MODULE}::test_bad", "failed"),
+}
+
+
+@pytest.mark.parametrize("row", list(EXIT_CODE_ROWS), ids=list(EXIT_CODE_ROWS))
+def test_exit_code_five_passes_only_when_every_planned_file_is_collection_skipped(
+    tmp_path: Path, row: str
+) -> None:
+    returncode, strict, planned, expected = EXIT_CODE_ROWS[row]
+    junit = write_xml(tmp_path / "r.xml", *EXIT_CODE_CASES[row])
+    if row in EXIT_CODE_LEDGERS:
+        ledger = write_ledger_for(tmp_path / "ledger", *EXIT_CODE_LEDGERS[row])
+    else:
+        ledger = write_ledger(tmp_path / "ledger")
+
+    outcome = classify(
+        tmp_path, junit, returncode=returncode, planned=planned, ledger=ledger, strict_skips=strict
+    )
+
+    assert outcome.status == expected, outcome.details
+    if row == "collection-skipped-and-file-without-testcase":
+        assert outcome.details == ("unreported:1",)
+    if row == "one-collection-skipped-file-tier-1":
+        assert outcome.details == (f"unexpected-skip:{SKIPPED_MODULE}:collection skipped",)
 
 
 @pytest.mark.parametrize("error_count", [1, 4])
