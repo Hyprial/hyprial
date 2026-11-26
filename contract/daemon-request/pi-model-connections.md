@@ -72,6 +72,6 @@ model capability nor that an external gateway avoided internal substitution.
 
 Acceptance lives in `tests/daemon/harnesses/pi/connections/`,
 `tests/daemon/ipc/contracts/agent/inventory/test_pi_connection_start.py` and
-`tests/kernel/manysys/test_fs_locality.py`. It uses actual Pi SDKs, synthetic Keys,
+`tests/kernel/manysys/filesystem/test_locality.py`. It uses actual Pi SDKs, synthetic Keys,
 isolated homes and loopback upstreams. It does not establish real vendor,
 production binding, browser, custom TUI or cross-device acceptance.
