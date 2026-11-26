@@ -121,7 +121,13 @@
 | KP-131 | 成员 reconcile 重启时新旧配置都起不来，agent 停到下次启动或 `hyprial agent start` | 接受（I6-5 critic V3 P1-1 裁定；cm 线） |
 | KP-134 | Windows 上 Pi agent 起不来：npm 全局布局下找不到 Pi SDK 包根；绕过探测后 SDK worker 在 Node `Crypto.getRandomValues` 生成 session ID 时退出 | 第 1 点已修复（包根探测，#3139；GitHub 托管 Windows runner 验证；真机未测）；第 2 点待 owner 裁定（worker 退出，runner 上实测缺 `SYSTEMROOT` 时 Node 22/24 无法启动，代码未改）；负责人 Windows 可移植性线 |
 | KP-135 | Windows 源码开发构建：PowerShell 中 `HYPRIAL_BUILD_NATIVE=1 uv sync` 直接执行 `.sh` 报 WinError 193；editable 安装跳过 `_stage_tailcat()`，没有 `hyprial-tailcat.exe` | 第 1 点已修复（native 构建不再执行 `.sh`，#3139；GitHub 托管 Windows runner 验证；真机未测）；第 2 点 editable 缺 sidecar 待 owner 裁定；负责人 Windows 可移植性线 |
-| KP-136 | Windows 上 `hyprial gui --stdin-stop` 在 PTY 关闭方式下退出复现不稳定；管道单独关闭 stdin 正常退出（退出码 0、无残留进程） | 已复现，未修复（GitHub 托管 Windows runner：ConPTY 关闭时根进程以 `0xC000013A` 被结束，清理未运行；#3139 的控制台句柄检查不处理这一事件；另一分支上的修复尝试两次未通过，修复方向待 owner 决定；负责人 GUI 启动维护者 / Windows 可移植性线） |
+| KP-136 | Windows 上 `hyprial gui --stdin-stop` 在 PTY 关闭方式下退出复现不稳定；管道单独关闭 stdin 正常退出（退出码 0、无残留进程） | 已复现，未修复（GitHub 托管 Windows runner：ConPTY 关闭时根进程以 `0xC000013A` 被结束，清理未运行；#3139 的控制台句柄检查不处理这一事件；另一分支上的修复尝试两次未通过，修复不在 #69 里做，另行单独处理；负责人 GUI 启动维护者 / Windows 可移植性线） |
+| KP-137 | Windows 上 MCP channel 的父进程监视默认用 `os.kill(pid, 0)` 查 owner 是否存活；Windows 上信号 0 即 `CTRL_C_EVENT`，发出的是 Ctrl+C 而不是存活探测 | 已合入（PR #89，合并提交 `3c47b3e7bb`：父进程监视默认改走内核探针；Linux 测试机上先失败后通过；Windows 上未测；负责人 Windows 可移植性线） |
+| KP-138 | Windows 命名管道服务端 `accept` 与 `close` 并发时访问违例（`0xC0000005`），整个 pytest worker 崩溃 | 已合入（PR #87，合并提交 `1030b8da1b`：命名管道监听端 accept 与 close 的并发修复；GitHub 托管 Windows runner 上 `test_win32_pipe.py` 11 条全部通过；崩溃已实测，竞态是读码推断；负责人 Windows 可移植性线） |
+| KP-139 | device transport 存储与 tailnet `Slot` 在 Windows 上用 POSIX 模式位判定私有性，而 Windows 上模式位不代表访问控制 | 待修（修后转绿条数未实测；负责人 Windows 可移植性线） |
+| KP-140 | 管理员账户下 tailnet `Slot` 的 `operation.lock` 建好后没有加固，随后的私有性检查必然失败（`TAILNET_STORAGE_UNSAFE`） | 待修（负责人 Windows 可移植性线） |
+| KP-141 | Pi workspace 信任根只看 `st_mode & 0o077`：不查属主，Windows 上模式位不代表访问控制，这项判定没有意义，Windows 上 workspace 信任根恒被拒绝（推断） | 待修（Windows 上的后果是读码推断；POSIX 上同时新增属主检查（owner 已于 2026-11-26 批准）；负责人 Windows 可移植性线） |
+| KP-142 | Windows 上读 agent 配置项报 `changed while being read`（实测 15 条），原因推断为 CRLF 与缺 `O_BINARY`，未实测 | 待探测（先探测再修；假设不成立则关闭本条；负责人 Windows 可移植性线） |
 
 ## KP-001 tailscale.com derphttp 经 HTTP 代理时被拒区域慢失败
 
@@ -1493,8 +1499,67 @@
 - 状态更新（2026-11-25，PR #69）：状态仍为待测，runner 上没有取得证据。GitHub 托管 Windows runner（Windows Server、管理员账户，作业运行在该账户的交互式会话里，进程链在 `services.exe` 之下、标准句柄是管道、没有控制台窗口；不是 Windows 11 真机），运行 https://github.com/Hyprial/hyprial/actions/runs/45601792986（提交 f7dc519b2b），工作流 `.github/workflows/windows-followup.yml`：runner 的三个标准句柄都不是控制台。在预先建好的隔离目录上以 `gui --no-open --json --port 0 --stdin-stop` 启动（源码安装，经管道和经 ConPTY 各一次），两次都在启动阶段返回 `GUI_HOME_UNSAFE`、退出码 1，没有运行到 stdin 监听。哪些目录会被这项检查拒绝，见下一条更新。真实终端宿主下的行为仍需真机矩阵。
 - 状态更新（2026-11-26，PR #69）：状态改为“已复现，未修复”。以下都在 GitHub 托管 Windows runner 上测得（`windows-latest` 是 Windows Server 2025 x64，`windows-11-arm` 是 Windows 11 Enterprise ARM64、在仿真下运行 x64 wheel；都不是 Windows 11 真机）。
   - 复现：wheel 安装后，以 `hyprial gui --no-open --json --port 0 --stdin-stop` 在 ConPTY 里启动，再关闭 ConPTY。根进程 `hyprial.exe`（console-script 启动器）在 0.047–0.062 秒内以退出码 `0xC000013A`（3221225786，进程被控制台关闭事件结束）退出；其下的 python 进程，包括 GUI 宿主，全部同样以 `0xC000013A` 退出，没有一个以 0 退出，清理没有运行。运行 https://github.com/Hyprial/hyprial/actions/runs/45624289669 只有 x64 跑到关闭这一步（0.062 秒，`0xC000013A`；ARM 那个作业在启动阶段因 `DAEMON_START_FAILED` 退出，没有运行到关闭）；运行 https://github.com/Hyprial/hyprial/actions/runs/45625537163 的 x64 与 ARM 都跑到关闭这一步，结果相同（均为 0.047 秒，`0xC000013A`）。同样启动、只关闭管道 stdin 时，根进程在 0.31–0.45 秒内以 0 退出。两种关闭方式之后都剩 2 个 `python.exe`：一个是 daemon（`--stdin-stop` 只结束 GUI，不停 daemon），另一个的身份未查明。本 PR 加的 `GetConsoleMode` 复查不处理这个事件，本 PR 不修复 KP-136。
-  - 修复尝试（另一个分支，未并入本 PR）：stdin 是控制台时注册一个只处理 `CTRL_CLOSE_EVENT` 的处理函数，走与 stdin 读到 EOF 相同的停止路径，并让 GUI 宿主子进程不再共用控制台。两次 runner 运行（https://github.com/Hyprial/hyprial/actions/runs/45638227710 只有 x64 跑到关闭这一步；https://github.com/Hyprial/hyprial/actions/runs/45640875858 x64 与 ARM 都跑到）结果相同：GUI 宿主进程树在关闭后 0.1–0.2 秒内被正常清理收掉，有一个 python 进程在 0.34–0.42 秒时以 0 退出，但根进程 `hyprial.exe` 和另一个 python 仍以 `0xC000013A` 退出（x64 0.391 秒，ARM 0.343 秒）。日志没有记录父进程和命令行，哪个 python 是运行命令的解释器、哪个是 venv 的跳板没有区分；“以 0 退出的是解释器”是推断。绕开启动器直接用解释器启动的对照未测。修复方向（验收以解释器的退出码为准，还是改入口启动器）待 owner 决定。
+  - 修复尝试（另一个分支，未并入本 PR）：stdin 是控制台时注册一个只处理 `CTRL_CLOSE_EVENT` 的处理函数，走与 stdin 读到 EOF 相同的停止路径，并让 GUI 宿主子进程不再共用控制台。两次 runner 运行（https://github.com/Hyprial/hyprial/actions/runs/45638227710 只有 x64 跑到关闭这一步；https://github.com/Hyprial/hyprial/actions/runs/45640875858 x64 与 ARM 都跑到）结果相同：GUI 宿主进程树在关闭后 0.1–0.2 秒内被正常清理收掉，有一个 python 进程在 0.34–0.42 秒时以 0 退出，但根进程 `hyprial.exe` 和另一个 python 仍以 `0xC000013A` 退出（x64 0.391 秒，ARM 0.343 秒）。日志没有记录父进程和命令行，哪个 python 是运行命令的解释器、哪个是 venv 的跳板没有区分；“以 0 退出的是解释器”是推断。绕开启动器直接用解释器启动的对照未测。修复不在 #69 里做，另行单独处理。
   - 私有目录检查：用 pwsh `New-Item` 建的 GUI home，放在 `RUNNER_TEMP` 下被拒（`GUI_HOME_UNSAFE`，上一条的运行 45601792986），放在用户目录 `%USERPROFILE%` 下通过（上面两次复现运行）。由 pytest 新建的目录在两个位置都被私有目录检查拒绝（见 KP-135 的 2026-11-26 更新）。运行 https://github.com/Hyprial/hyprial/actions/runs/45645487342 读取了 Python 在两个位置新建的目录的安全描述符：属主都是 `BUILTIN\Administrators`，只有 SYSTEM、Administrators、OWNER RIGHTS 三条访问项，两个位置逐项相同。这一项的原因已查明，写在 KP-123 的 2026-11-26 更新里。
   - 未测（没有真机）：Windows Terminal、mintty（Git Bash）、可见 conhost 窗口点关闭、标准用户账户。
 - 依据：PR #3106 第二轮真机验收评论（2026-11-24）第 2 项；KP-080 的 2026-11-21 状态更新；跟进 WIP PR `fix/windows-followup-pi-and-dev-build`。
 - 负责人：GUI 启动维护者；Windows 可移植性线。
+
+## KP-137 Windows 上 MCP channel 父进程监视用 `os.kill(pid, 0)` 查 owner，实际发出 Ctrl+C
+
+- 现象：修复前（`5201456950`）：`src/hyprial/daemon/impl/mcp/channel/loops.py:322 @ 5201456950` 的 `signal_process` 默认值是 `os.kill`，经 `src/hyprial/daemon/impl/mcp/channel/ownership.py:310` 以 `signal_process(pid, 0)` 查 owner 进程是否存活；生产路径 `src/hyprial/daemon/impl/mcp/channel/session.py:203-208` 调用时同样不传这个参数，走的就是默认值。POSIX 上信号 0 只做存在性检查；Windows 上 Python 把 0 当作 `signal.CTRL_C_EVENT`，这次调用向目标发出控制台 Ctrl+C，而不是探测存活。同一函数在 `signal_process is None` 时已有走 `hyprial.kernel` 的 `probe_process` 的分支，只是默认值没有用它。
+- 影响：只有 Windows。产品的 owner 存活判定本身仍然成立（调用正常返回，目标进程继续存活），但这次调用不是无害的存在性检查，而是向控制台发 Ctrl+C。信号 0 在 Windows 上的行为在 GitHub 托管 Windows runner 上实测过（https://github.com/Hyprial/hyprial/actions/runs/45651791091，x64 与 ARM64 结果一致）：目标不在新进程组里时，与它共用控制台的其他进程收到 `CTRL_C_EVENT`，没有装处理函数的进程被结束；目标在新进程组里启动、或有独立控制台时，其他进程不受影响。被监视的是启动 daemon 的 owner 进程，产品里实际会影响哪些进程取决于 daemon 与 owner 的控制台与进程组布局，这一点没有在产品路径上实测。测试里这条路径的默认参数在模块加载时已绑定原始 `os.kill`，运行期替换 `os.kill` 的拦截桩拦不到它，标 xfail 也照样会发 Ctrl+C，所以它是 Windows 全量测试的前置修复。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：`signal_process` 默认值改为 `None`，走 `probe_process`，不加平台分支；在 `tests/daemon/channels/mcp/lifecycle/supersession/handoff/test_handoff.py` 追加一条修复前失败、修复后通过的测试，证明默认路径不再调用 `os.kill`。合入时以 Linux 验收为准；Windows 上的验收（该文件全部用例出结果、没有归因于它的 worker 自行退出或挂起）要等这个测试文件进入 Windows 的 CI 运行后补做。修完把本条状态改为“已修复（GitHub 托管 Windows runner 验证；真机未测）”，并如实写未测范围。
+- 状态：已合入（PR #89，合并提交 `3c47b3e7bb`）。Linux 测试机上新增的用例先失败后通过，`test_handoff.py` 25 条全部通过；Windows 上没有运行过这条用例，也没有在产品路径上验证过修复的效果（信号 0 的行为只在 runner 上用自建的进程布局单独实测过，见上文影响段）；Windows 11 真机未测。
+- 依据：2026-11-26 Windows 测试分诊时读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-138 Windows 命名管道服务端 `accept` 与 `close` 并发时访问违例，pytest worker 崩溃
+
+- 现象：修复前（`5201456950`）：GitHub 托管 Windows runner 全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457（`windows-latest`，Windows Server 2025 x64，管理员账户；不是 Windows 11 真机）中，分片 2 与分片 3 的日志都记录了 `Windows fatal exception: access violation`（`0xC0000005` / 3221225477），崩溃栈在 `src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py:331 @ 5201456950` 的 `accept`（`GetOverlappedResult`），主线程同时在测试 teardown 里调用服务端的 `close()`。`accept` 在 `:331` 用 `self.handle`、`self.operation` 等待，`close()`（`:346-358`）不加锁地取消、关闭 `hEvent` 并把两者置空。崩溃是实测；它由这一竞态造成是读码推断，未实测。
+- 影响：只有 Windows。崩溃的是整个 xdist worker 进程，不只是一条用例；上述运行的分片 2、3 因崩溃与挂起没有产出结果文件，其中测试在 Windows 上的真实状态未知。产品里并发关闭服务端时同样可能崩溃（推断，未实测）。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：`accept` 与 `close` 用同一把锁保护 `operation`/`handle`，`close` 取消后等 `accept` 退出 overlapped 等待，再释放 `hEvent` 与 `handle`；在 `tests/kernel/ipc/local_ipc/test_win32_pipe.py` 追加伪造 overlapped 加 `threading.Event` 栅栏的确定性测试，修复前失败。合入时以 Linux 上的栅栏测试为准；Windows 上原生 worker 崩溃数为 0 的验收要等 Windows 上的全量测试进入 CI 后补做。修完更新本条状态，并如实写未测范围。
+- 状态：已合入（PR #87，合并提交 `1030b8da1b`）。GitHub 托管 Windows runner 上（https://github.com/Hyprial/hyprial/actions/runs/45811284348 的 w1-x64 作业，windows-latest）这个测试文件 11 条全部通过，其中 4 条用真实的命名管道；崩溃由这一竞态造成是读码推断，没有单独复现；Windows 上全量分片的原生崩溃数是否归零没有验证（Windows 上的全量测试还没有 CI 运行）；Windows 11 真机未测。
+- 依据：上述 runner 运行的分片 2、3 原始日志；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-139 device transport 存储与 tailnet `Slot` 在 Windows 上用 POSIX 模式位判定私有性
+
+- 现象：Windows 上模式位不代表访问控制，GitHub 托管 Windows runner 上实测目录恒报 `0o777`、文件恒报 `0o666`。下列产品代码拿模式位（以及 `st_uid`）做私有性判定：
+  1. `src/hyprial/identity/impl/device/transport_storage.py:84-85`：`_secure_directory` 对末级目录比较 `S_IMODE != 0o700`；`:120-127`：`_complete_paths_present` 比较 `st_uid` 与 `S_IMODE != mode`。
+  2. `src/hyprial/identity/impl/device/tailnet/runtime/slot.py:61-65`：`_file_safe` 比较 `st_uid != current_uid()` 与 `S_IMODE != mode`；它在读写文件、写后自检、`_existing_target` 以及 `locked()` 前后对 `operation.lock` 的检查中被调用。同文件 `:35` 的 `_directory_safe` 已经用 `private_metadata_violation`。
+- 影响：只有 Windows，两种账户下拦路点不同。标准账户下实测 transport 104 条、tailnet 73 条失败，原因是模式位比较，这是本条要修的对象。管理员账户（提升令牌，即托管 runner 的实际账户）下，全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457 分片 1、4 的 163 条 `transport storage directory is unsafe` 全部止于 `transport_storage.py:70` 的描述符检查 `unsafe-acl`（`src/hyprial/kernel/impl/manysys/fs/private_access.py:334`，被拒的是测试建的继承目录），没有走到 `:84` 的模式位比较；54 条 `TAILNET_STORAGE_UNSAFE` 全部落在经 `Slot` 存储的两个测试文件里（`tests/identity/devices/tailnet/runtime/test_journal.py` 23 条、`tests/identity/devices/tailnet/authority/test_receipt.py` 31 条），拦路点是锁文件描述符（见 KP-140）。这一点取自管理员账户下的分诊实测，该运行的结果文件里只有这一个错误码、看不到原因（`public_gate` 换掉了底层异常链，`src/hyprial/identity/impl/device/tailnet/runtime/schema.py:26-38`）。修完之后 Windows 上转绿多少条未实测；在托管 runner 上，本条单独修完转绿的条数可能是 0，要等测试夹具的私有目录加固与 KP-140 也修完才显出效果。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：无条件调用 `hyprial.kernel` 公共面，不写平台分支：删除 `transport_storage.py:84-85`（前一行 `secure_private_directory(create=True)` 默认 `mode=0o700`，返回前已用同一模式做过 `private_metadata_violation`，POSIX 上这是不可达的重复检查；调用方本来就把 `PrivateAccessUnsupported` 包装成同一个公开错误）；`_complete_paths_present` 把 `st_uid` 加模式位比较换成 `private_metadata_violation(path, metadata, mode=mode)`，符号链接、类型与 `st_nlink` 判断保留；`slot._file_safe` 增加 `path` 参数，保留 `S_ISREG` 与 `st_nlink == 1`，以 `private_metadata_violation` 替换 `st_uid` 加模式位比较。公开错误码与消息不变，POSIX 语义不变（属主加精确模式位，`private_access.py:173-178`），Windows 可移植性门禁基线不新增条目。现有用例里 `chmod(0o644)`/`chmod(0o755)` 仍须被拒（如 `tests/identity/devices/tailnet/runtime/test_slot.py:64-66`），作为回归保护。修完后更新本条状态，并如实写 Windows 上实测转绿的条数或未测范围。
+- 依据：上述 runner 运行分片 1、4 的结果文件；GitHub 托管 Windows runner 上标准账户与管理员账户的私有目录分诊实测（https://github.com/Hyprial/hyprial/actions/runs/45651791091、https://github.com/Hyprial/hyprial/actions/runs/45658042708）；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-140 管理员账户下 tailnet `Slot` 的 `operation.lock` 建好后没有加固，私有性检查必然失败
+
+- 现象：`src/hyprial/identity/impl/device/tailnet/runtime/slot.py:117-127` 的 `locked()` 里，`operation.lock` 由 `filelock` 以 `mode=0o600` 新建，Windows 上得到受保护的描述符，只有 SYSTEM、Administrators、OWNER RIGHTS 三条访问项。提升令牌下新建对象的默认属主是 `BUILTIN\Administrators`，`OWNER RIGHTS` 不算当前用户可读，随后的 `_file_safe(path.lstat(), 0o600)` 必然失败。GitHub 托管 Windows runner 上实测：管理员账户下 `Slot` 的 `locked()`、`write()`、`read()` 全部报 `TAILNET_STORAGE_UNSAFE`，原因正是锁文件描述符；标准账户下描述符检查通过，失败在模式位比较（即 KP-139）。
+- 影响：只有 Windows 管理员账户（提升令牌），包括 GitHub 托管 runner。全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457 分片 1、4 的 54 条 `TAILNET_STORAGE_UNSAFE` 的拦路点即此（归因见 KP-139）。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：`locked()` 在 `lock.acquire()` 成功之后、第一次 `_file_safe` 之前，对锁文件调一次 `harden_private_path(path, mode=0o600)`。此刻本进程持有该锁，加固自家锁文件的访问控制表不改变互斥语义；`src/hyprial/daemon/impl/provider_keys/storage/local.py:292-299` 对 `.cas.lock` 已是同样做法。这是修正访问控制表，不放宽检查，`_file_safe` 原样保留。它是这几条里唯一要改产品“建完再加固”行为的一处，所以单列；若 owner 认为应归入 KP-123，可整体挪走，不影响 KP-139。修完后更新本条状态，并如实写未测范围。
+- 依据：GitHub 托管 Windows runner 上管理员账户与标准账户的私有目录分诊实测（https://github.com/Hyprial/hyprial/actions/runs/45651791091、https://github.com/Hyprial/hyprial/actions/runs/45658042708）；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-141 Pi workspace 信任根只看 `st_mode & 0o077`，不查属主，Windows 上这项判定没有意义
+
+- 现象：`src/hyprial/daemon/impl/harnesses/pi/loader.py:394` 以 `root.stat().st_mode & 0o077` 判定 workspace 信任根是否私有：只看组与其他用户位，不看属主；Windows 上 `stat` 的模式位不代表访问控制，这项判定没有意义：该式恒为非零（目录模式位为 `0o777`），workspace 范围的信任根会被拒绝（读码推断，未在 GitHub 托管 Windows runner 上实测）。KP-134 的 2026-11-25 更新已记下这处同类问题。
+- 影响：POSIX 上属主不是当前用户的目录也可能被当作私有信任根。Windows 上的具体后果是推断，未在全量试跑里分出这一类：`tests/daemon/harnesses/pi/configuration/launch_trust/test_pi_workspace_trust.py:89` 用 `chmod(0o755)` 构造的拒绝用例与接受私有 workspace 的用例不能按预期区分。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：无条件改为 `private_tree_violation(root, metadata) is not None`（`hyprial.kernel` 已导出，`src/hyprial/kernel/__init__.py:84`）。POSIX 上它正是“属主为当前 uid 且 `S_IMODE & 0o077 == 0`”，模式位语义与原式逐位相同；Windows 上走同一套安全描述符判定。不用 `private_metadata_violation(..., mode=S_IMODE & 0o700)`：那是相等比较，会多拒带 setgid 或 sticky 位的目录（如 `0o2700`）。POSIX 上唯一的变化是新增属主检查（变严），owner 已于 2026-11-26 批准。Windows 可移植性门禁基线不新增条目。修完后更新本条状态，并如实写未测范围。
+- 依据：2026-11-26 Windows 测试分诊时读代码核对上述行号；KP-134 的 2026-11-25 更新。
+- 负责人：Windows 可移植性线。
+
+## KP-142 Windows 上读 agent 配置项报 `changed while being read`（待探测）
+
+- 现象：`src/hyprial/identity/impl/agents/home/config.py:787-815` 的 `_read_regular_file` 报 `config item … changed while being read`。GitHub 托管 Windows runner 全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457（管理员账户）分片 1、4 实测 15 条，全在 `tests/identity/agents/configuration/test_agent_config_loading.py`，全部停在 `:814` 的 `len(body) != after.st_size` 或 `st_mtime_ns` 比较（前一道 `:794-798` 的 inode 比较通过）；标准账户下另见 8 条（`test_pi_provider_credentials`、`test_pi_sdk_required`）。
+- 原因（推断，未实测）：测试用 `Path.write_text(body, encoding="utf-8")` 写源文件，Windows 文本模式把 `\n` 写成 `\r\n`；产品以 `os.open(..., O_RDONLY)` 读原始字节，标志里没有 `O_BINARY` 时 CRT 文本模式把 `\r\n` 折成 `\n`，`len(body)` 就小于 `after.st_size`。
+- 影响：只有 Windows。若推断成立，含 CRLF 的配置项在 Windows 上一律读不出来。
+- 规避：无（推断成立时，配置文件只用 `\n` 换行可以避开，未实测）。
+- 决定：待探测：先探测再修；探测确认后再修，不用 xfail。首个提交在 `test_agent_config_loading.py` 加一条用例：写入含 `\r\n` 的源文件后断言读回字节与 `lstat().st_size` 相等（Linux 上本来相等），在 GitHub 托管 Windows runner 上实测先失败。假设成立则把标志改为 `flags |= getattr(os, "O_BINARY", 0)`（与同一行的 `O_NOFOLLOW` 同形，非平台分支；POSIX 上 `getattr` 返回 0，行为不变），修完把本条状态改为“已修复（GitHub 托管 Windows runner 验证；真机未测）”；假设不成立则把实测到的比较项写进本条，关闭本条并退回分诊。
+- 依据：上述 runner 运行分片 1、4 的结果文件；标准账户下的分诊实测（https://github.com/Hyprial/hyprial/actions/runs/45651791091、https://github.com/Hyprial/hyprial/actions/runs/45658042708）；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
