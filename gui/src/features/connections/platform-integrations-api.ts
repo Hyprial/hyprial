@@ -311,7 +311,9 @@ export function createPlatformIntegrationsApiFromClient(
     },
     async beginAdd(input) {
       if (input.mode !== 'create') throw new TypeError('onboarding takes the create mode only');
-      const params = { provider: 'lark' as const, name: input.name, operationKey: crypto.randomUUID() };
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      const operationKey = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+      const params = { provider: 'lark' as const, name: input.name, operationKey };
       assertMethodAvailable(access, 'adapter.onboard.begin', params);
       return client.adapter.onboard.begin(params);
     },
