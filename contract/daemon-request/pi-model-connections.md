@@ -2,8 +2,9 @@
 
 This stage implements the Pi runtime seam from [design PR #3134](https://code.hyprial.com/HyprialOS/hyprial/pulls/3134).
 Only a trusted daemon-built `PiModelBinding` can enter it. Public `agent.start`
-does not accept a connection reference yet; production binding composition is
-owned by the later launch/Cell stage. Existing native auth and owner-key methods
+does not accept a connection reference. Stage 4a resolves internally persisted
+bindings and existing grants at the common launch seam; public configuration waits
+for stage 4b. Existing native auth and owner-key methods
 are unchanged. No new daemon-request method or HTTP endpoint is introduced.
 
 ## Exact request

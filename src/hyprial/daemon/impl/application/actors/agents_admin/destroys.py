@@ -87,6 +87,9 @@ class _AgentDestroyMixin:
         if not cleaned.changed:
             self.agents.require(requested)
             raise AssertionError("require() returned for a missing agent")
+        from hyprial.daemon.impl.application.model_binding.cleanup import recover_destroyed
+
+        recover_destroyed(self)
         cleaned_actor = self.agents.actor_key(requested)
         actor = self._agent_address(cleaned_actor)
         self._log(
@@ -321,6 +324,11 @@ class _AgentDestroyMixin:
                 reason="agent-destroyed",
             ),
         )
+        from hyprial.daemon.impl.application.model_binding.cleanup import (
+            mark_destroy, purge_deleted, rollback_destroy,
+        )
+
+        model_marker = None
         try:
             # A GC scan is only an observation. Recheck its exact incarnation and
             # eligibility after reserving the existing launch/destroy boundary,
@@ -349,6 +357,7 @@ class _AgentDestroyMixin:
                 )
                 self._release_agent_destroy_reservation(reservation.reservation_token)
                 return {"ok": True, "destroyed": False, "reason": reason}
+            model_marker = mark_destroy(self, current, reservation.reservation_token)
             if before_effect is not None:
                 before_effect(current)
             workspace = self._read_workspace_summary_for_destroy(name)
@@ -361,7 +370,11 @@ class _AgentDestroyMixin:
             removed = self.agents.destroy(
                 name, expected_entity_token=agent.entity_token
             )
+            purge_deleted(self, agent.agent_id, agent.entity_token,
+                          reservation.reservation_token)
         except BaseException:
+            if model_marker is not None:
+                rollback_destroy(self, agent, reservation.reservation_token)
             if self.agents.get(name) is not None:
                 try:
                     rolled_back = self.agents.rollback_retired_session_refs(

@@ -330,4 +330,6 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/cells/reconcile/core.py": ("resident", ("new-module: per-cell reconcile state machine split from the actor (cell model I6-5a)",)),
     "daemon/impl/cells/reconcile/policy.py": ("resident", ("new-module: cell member launch policy applied through reconcile (cell model I6-5a)",)),
     "daemon/impl/harnesses/agent_sdk/authority_model.py": ("resident", ("new-module: stdlib-only launch policy digest the isolated worker exec-loads (cell model I6-5a)",)),
+    "daemon/impl/harnesses/model_routes/connection.py": ("resident", ("new-module: local model binding runtime admission",)),
+    "daemon/impl/harnesses/model_routes/errors.py": ("resident", ("new-module: local model binding runtime admission",)),
 }

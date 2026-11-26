@@ -685,6 +685,7 @@ def _launch_projection(spec: HarnessLaunchSpec) -> HarnessLaunchProjection:
         model_provider=spec.model_provider,
         model=spec.model,
         member=spec.member,
+        model_binding=spec.model_binding,
     )
 
 
@@ -708,4 +709,5 @@ def _launch_spec(spec: HarnessLaunchProjection) -> HarnessLaunchSpec:
         model_provider=spec.model_provider,
         model=spec.model,
         member=spec.member,
+        model_binding=spec.model_binding,
     )

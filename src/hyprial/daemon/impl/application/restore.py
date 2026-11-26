@@ -668,6 +668,9 @@ class _RestoreMixin:
         on the main thread.
         """
 
+        from hyprial.daemon.impl.application.model_binding.cleanup import recover_destroyed
+
+        recover_destroyed(self)
         if self._harnesses is None:
             return
         if self.stop_event.is_set():

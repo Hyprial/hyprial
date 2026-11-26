@@ -1,8 +1,9 @@
-# Local model binding storage (implementation stage 3)
+# Local model binding storage and runtime admission (stages 3 and 4a)
 
 The authority is the existing desired-state SQLite database. This stage adds no
 MethodSpec, daemon request, IPC wire method, HTTP route, settings writer or GUI.
-Production admission for new model bindings remains closed until stage 4.
+Public configuration remains unavailable until stage 4b. Stage 4a composes
+internally persisted Pi connection bindings into the common managed launch path.
 
 `DesiredStateStore.model_binding_store` provides prepare/finalize/cancel, status,
 agent cleanup marking/takeover/rollback and destroyed-agent purge. The caller must
@@ -64,4 +65,41 @@ invalid-connection or operation-limit-setting), conflict (bind / revision-mismat
 operation-digest-mismatch, operation-already-completed), incomplete (bind /
 operation-in-progress, destroy-cleanup-pending), capacity-exceeded (bind /
 operation-capacity). Data is a closed classification, never exception/upstream text.
-Transport mapping and Cell/destroy recovery are stage 4, not delivered here.
+Stage 4a maps incomplete configuration to HTTP 409. The existing `agent.start`
+MethodSpec declares its closed phase/reason diagnostics; no new transport is added.
+
+## Runtime admission and destruction (stage 4a)
+
+Application writes use typed commands through the existing StatePersistenceAuthority.
+An accepted cleanup write joins its original settlement before releasing the destroy
+reservation. The caller cannot time out and leave an unobserved late marker.
+
+Agent start resolves the saved binding. Lifecycle projections, desired-state launch
+rows and Cell config digests retain bindingRef/bindingRevision. Restore refuses an
+absent/stale snapshot. Cell facts also read the binding before the first successful
+launch; the selected member's harness/model must match its recorded intent digest.
+The digest includes binding revision, never grant state or Key bytes. Key rotation
+and revocation do not become configuration drift or trigger a reconcile restart.
+The runtime resolves the existing Secret/grant exactly once per launch, requiring
+one matching authorized connection and configRevision, then rechecks binding admission.
+No legacy model default or ambient credential fallback is allowed for bound launches.
+
+This increment accepts only Pi/headless connection bindings. New native-auth bindings,
+custom TUI and unsupported combinations refuse MODEL_COMBINATION_UNSUPPORTED;
+existing unbound native Auth behavior is unchanged. Native-auth selection and the
+public configure/status/cancel coordination belong to stage 4b.
+
+Destroy marks cleanupPending by immutable Agent.agent_id before destructive effects,
+even with zero bindings; every member's new configure/start is blocked. Failure before
+entity deletion can roll back only the same live incarnation and destroy attempt.
+After authoritative deletion, purge removes bindings, operation receipts and marker
+in one transaction. Recovery retains markers when the registry is unreadable and
+purges only proven absent incarnations; a same-name replacement is untouched.
+Ordinary stop leaves bindings and receipts intact. Cleanup marking promotes schema 4
+even for a legacy agent without bindings, with the downgrade refusal described above.
+
+`agent.destroy.preview` adds optional modelBindingCleanup counts. Confirmation hashes
+include non-secret binding/operation state, so intervening configuration invalidates
+the preview. Failed destroy and idempotent replay preserve
+MODEL_CONFIGURATION_INCOMPLETE / bind / destroy-cleanup-pending and entityDeleted
+(true, false, or null when registry outcome is unknown). No Key enters that result.

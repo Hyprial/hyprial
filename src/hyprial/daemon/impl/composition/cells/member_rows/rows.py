@@ -159,6 +159,7 @@ def live_member_digest(
         approval="approved" if "--approve" in args else None,
         env_ref=env_ref,
         policy_digest=policy_digest,
+        model_binding=getattr(live_spec, "model_binding", None),
     )
 
 

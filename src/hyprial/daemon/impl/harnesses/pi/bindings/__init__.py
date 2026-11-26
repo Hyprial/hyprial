@@ -1,8 +1,8 @@
 """Typed Pi connection projection; callers supply already-authorized credentials.
 
-PR2 has no production caller: PR4 must resolve the durable binding and grant
-before passing this value to the P2 launch builder. Tests inject synthetic
-bindings. No binding is inferred from legacy provider arguments or environment.
+The common daemon launch composition resolves the durable binding and existing
+grant before passing this value to the P2 launch builder. No binding is inferred
+from legacy provider arguments or environment.
 The SDK's zero price is a required placeholder, never known accounting data.
 """
 
@@ -18,6 +18,11 @@ from hyprial.identity import ModelConnection
 
 KEY_ENV = "HYPRIAL_PI_CONNECTION_KEY"
 TEMPLATE = "openai-chat-text/v1"
+
+
+def connection_provider_id(connection_ref: str, config_revision: int) -> str:
+    material = json.dumps([connection_ref, config_revision], separators=(",", ":"))
+    return "hyprial-connection-" + sha256(material.encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +58,7 @@ class PiModelBinding:
 
     @property
     def provider_id(self) -> str:
-        material = json.dumps([self.connection.connection_ref, self.connection.config_revision], separators=(",", ":"))
-        return "hyprial-connection-" + sha256(material.encode()).hexdigest()
+        return connection_provider_id(self.connection.connection_ref, self.connection.config_revision)
 
     def snapshot(self) -> dict[str, object]:
         return {

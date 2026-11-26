@@ -83,7 +83,13 @@ class _AgentStartMixin:
         requested_model = _optional_string_param(params.get("model"), "model")
         requested_member = _optional_string_param(params.get("member"), "member")
         requested_cwd = _optional_string_param(params.get("cwd"), "cwd")
+        from hyprial.daemon.impl.application.model_binding.admission import pin, status
+
+        binding = (None if agent is None else status(
+            self, agent, requested_member if requested_member not in (None, name) else agent.uri,
+        ).binding)
         harness = requested_harness or (
+            binding.configuration.harness if binding is not None else
             agent.preferred_harness if agent is not None else None
         )
         if harness is None:
@@ -100,6 +106,8 @@ class _AgentStartMixin:
                 "agent.start needs a harness: pass harness, or register a "
                 "preferred harness by creating the agent first",
             )
+        selected = pin(self, HarnessLaunchSpec(harness, name, True, member=requested_member,
+                       model=requested_model, model_provider=requested_provider))
         if "approve" in params:
             if harness != "pi" or not isinstance(params["approve"], bool):
                 raise DaemonRequestError(
@@ -190,9 +198,9 @@ class _AgentStartMixin:
             "cwd": str(cwd),
             "member": requested_member or name,
         }
-        if requested_provider is not None and harness != "jev":
+        if binding is None and requested_provider is not None and harness != "jev":
             create_params["provider"] = requested_provider
-        if requested_model is not None and harness != "jev":
+        if binding is None and requested_model is not None and harness != "jev":
             create_params["model"] = requested_model
         METHOD_REGISTRY.invoke(self, "agent.create", create_params)
         launch: JsonObject = {
@@ -211,6 +219,11 @@ class _AgentStartMixin:
             launch["modelProvider"] = requested_provider
         if requested_model is not None and harness != "jev":
             launch["model"] = requested_model
+        if selected.model_binding is not None:
+            launch.update(modelBinding=dict(selected.model_binding), model=selected.model,
+                          modelProvider=selected.model_provider)
+        if requested_member is not None:
+            launch["member"] = requested_member
         started = self._ipc_lifecycle_start("lifecycle.start", launch)
         running = isinstance(started, dict) and started.get("readiness") != "unconfirmed"
         warnings = [

@@ -117,17 +117,51 @@ def compose_daemon_worker_launch(
     from hyprial.daemon.impl.provider_keys.launch import launch_resolver
     from hyprial.daemon.impl.harnesses.model_routes import route_environment
 
-    return compose_worker_child_launch(
-        registry=registry,
-        hyprial_home=hyprial_home,
-        channel=channel,
-        environ=environ,
-        agent_name=spec.name,
-        harness=spec.harness,
-        worker_proxy=launch_worker_proxy_route(hyprial_home, spec),
-        owner_secrets=None if app is None else launch_resolver(app, registry=registry),
-        model_service_admission=lambda secrets: route_environment(spec, secrets),
-    )
+    from hyprial.daemon.impl.application.model_binding.admission import select
+    from hyprial.daemon.impl.harnesses.model_routes.connection import attach, resolve
+    from hyprial.daemon.impl.harnesses.pi.bindings.errors import PiModelBindingError
+    from hyprial.error import codes
+    from hyprial.identity import SecretResolutionError
+    from hyprial.kernel import DaemonRequestError
+
+    if app is None and spec.model_binding is not None:
+        raise PiModelBindingError(codes.MODEL_AUTH_UNAVAILABLE, "authorize", "unreadable")
+    binding = None if app is None else select(app, spec)
+    resolved_binding = None
+
+    def admit(secrets):
+        nonlocal resolved_binding
+        if binding is None:
+            return route_environment(spec, secrets)
+        resolved_binding = resolve(binding, secrets)
+        return {"HYPRIAL_OPENAI_BASE_URL": resolved_binding.connection.endpoint}
+
+    try:
+        launch = compose_worker_child_launch(
+            registry=registry,
+            hyprial_home=hyprial_home,
+            channel=channel,
+            environ=environ,
+            agent_name=spec.name,
+            harness=spec.harness,
+            worker_proxy=launch_worker_proxy_route(hyprial_home, spec),
+            owner_secrets=None if app is None else launch_resolver(app, registry=registry),
+            model_service_admission=admit,
+        )
+    except SecretResolutionError as error:
+        if binding is None:
+            raise
+        reason = "revoked" if error.category in {"revoked", "grant-revoked"} else "unreadable"
+        raise PiModelBindingError(codes.MODEL_AUTH_UNAVAILABLE, "authorize", reason) from None
+    if binding is None:
+        return launch
+    if resolved_binding is None:
+        raise PiModelBindingError(codes.MODEL_AUTH_UNAVAILABLE, "authorize", "missing")
+    try:
+        select(app, spec)
+    except DaemonRequestError as error:
+        raise PiModelBindingError(error.code, error.data["phase"], error.data["reason"]) from None
+    return attach(launch, resolved_binding)
 
 def _resolve_forwarding(
     hyprial_home: Path,

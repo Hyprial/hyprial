@@ -156,4 +156,5 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/user_agent/naming.py": ("resident", ("new-module: UA1b per-machine user agent identity",)),
     "daemon/impl/user_agent/runtime.py": ("resident", ("new-module: UA1b per-machine user agent identity",)),
     "daemon/impl/user_key/login_key.py": ("resident", ("new-module: Z-5 daemon-driven first login; no credentials",)),
+    "daemon/impl/state_persistence/model_bindings.py": ("resident", ("new-module: local model binding runtime admission",)),
 }

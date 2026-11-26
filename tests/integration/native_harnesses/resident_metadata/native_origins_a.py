@@ -335,4 +335,8 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/application/messaging/inbox_surface/send_receipts.py": ("resident", ("new-module: send receipts, stamps and the reply-association check after the link gate removal (T1b)",)),
     "daemon/impl/application/actors/cell_admin/__init__.py": ("resident", ("new-module: cell editing core service (cell model I6-3)",)),
     "daemon/impl/application/actors/cell_admin/service.py": ("resident", ("new-module: cell editing core service (cell model I6-3)",)),
+    "daemon/impl/application/model_binding/__init__.py": ("resident", ("new-module: local model binding runtime admission",)),
+    "daemon/impl/application/model_binding/admission.py": ("resident", ("new-module: local model binding runtime admission",)),
+    "daemon/impl/application/model_binding/cleanup.py": ("resident", ("new-module: local model binding runtime admission",)),
+    "daemon/impl/application/model_binding/facts.py": ("resident", ("new-module: local model binding runtime admission",)),
 }

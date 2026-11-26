@@ -5,12 +5,14 @@ stderr and lifecycle diagnostics never become structured model failure data.
 """
 
 from hyprial.error import codes
+from hyprial.daemon.impl.harnesses.model_routes.errors import MODEL_BINDING_FAILURES
 
 MODEL_START_FAILURES = {
+    **MODEL_BINDING_FAILURES,
     codes.MODEL_SESSION_BUSY: ("admission", ("session-reserved",)),
     codes.MODEL_RESUME_MISMATCH: ("resume", ("binding-changed", "model-changed", "provenance-missing")),
     codes.MODEL_COMBINATION_UNSUPPORTED: ("admission", ("mode", "sdk-version", "runtime-option", "session-storage")),
-    codes.MODEL_AUTH_UNAVAILABLE: ("authorize", ("missing",)),
+    codes.MODEL_AUTH_UNAVAILABLE: ("authorize", ("missing", "revoked", "ambiguous", "unreadable")),
 }
 
 

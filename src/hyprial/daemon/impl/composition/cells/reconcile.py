@@ -301,6 +301,13 @@ class AppLocalMemberFacts(LocalMemberFactsPort):
         except Exception:  # noqa: BLE001 - unreadable desired state degrades affected member
             return None
         row = _matching_desired_spec(harnesses, agent, member)
+        from hyprial.daemon.impl.application.model_binding.facts import launch_row
+        from hyprial.kernel import DaemonRequestError
+
+        try:
+            row = launch_row(self._app, agent, member, row)
+        except DaemonRequestError as error:
+            return LocalMemberLaunchFacts(agent_id, member, binding_error=str(error))
         if row is None:
             return None
         spec = _restore_launch_row(self._app, row)
@@ -319,6 +326,7 @@ class AppLocalMemberFacts(LocalMemberFactsPort):
             custody=CUSTODY_DAEMON,
             launch_member=member_name(spec),
             held=getattr(spec, "status", "running") != "running",
+            model_binding=spec.model_binding,
         )
 
 
@@ -556,6 +564,8 @@ class AppMemberEffectPort(OwnMemberEffects, MemberEffectPort):
             base,
             harness=spec.harness,
             model=spec.model,
+            model_provider=spec.model_vendor,
+            model_binding=spec.model_binding,
             cwd=spec.cwd,
             command=spec.command,
             args=spec.args,
@@ -565,6 +575,8 @@ class AppMemberEffectPort(OwnMemberEffects, MemberEffectPort):
     def _persist_document_fields(
         self, intent: MemberEffectIntent, row: Any | None, launch_spec: Any
     ) -> None:
+        if launch_spec.model_binding is not None:
+            return
         if row is None or row.harness != launch_spec.harness or row.model == launch_spec.model:
             return
         upsert = getattr(getattr(self._app, "desired_state", None), "upsert_harness", None)
