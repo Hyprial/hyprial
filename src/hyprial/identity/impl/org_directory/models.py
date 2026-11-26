@@ -125,7 +125,17 @@ MAX_PROTECTED_DOC_ID_LENGTH = 1024
 _LEGACY_RECEIVERS_SECTION = "receivers"
 _LEGACY_RECEIVERS_LEAF = "receivers.json"
 _PROTECTED_DOC_SECTIONS = frozenset(
-    {"devices", "people", "leaves", "invites", "org", "agents", "receivers", "user-keys"}
+    {
+        "devices",
+        "people",
+        "leaves",
+        "invites",
+        "org",
+        "agents",
+        "receivers",
+        "user-keys",
+        "service-grants",
+    }
 )
 
 #: The exact camelCase keys of the frozen wire shape (§4.1).
@@ -377,7 +387,7 @@ def _protected_tree_principal(path: str, space_owner: str | None) -> str | None:
         return None if space_owner is None else directory_owner_principal(space_owner)
     if parts[0] != "directory" or space_owner is None:
         return None
-    if len(parts) >= 3 and parts[1] in {"devices", "people", "user-keys"}:
+    if len(parts) >= 3 and parts[1] in {"devices", "people", "user-keys", "service-grants"}:
         return directory_owner_principal(parts[2])
     if len(parts) >= 3 and parts[1] == "leaves":
         return directory_owner_principal(parts[2].removesuffix(".json"))
@@ -401,6 +411,8 @@ def protected_section_for_path(path: str, *, space_owner: str | None = None) -> 
         return "people"
     if len(parts) >= 3 and parts[:2] == ["directory", "user-keys"]:
         return "user-keys"
+    if len(parts) >= 3 and parts[:2] == ["directory", "service-grants"]:
+        return "service-grants"
     if len(parts) == 3 and parts[:2] == ["directory", "leaves"] and parts[2].endswith(".json"):
         return "leaves"
     if len(parts) == 3 and parts[:2] == ["directory", "invites"] and parts[2].endswith(".json"):
@@ -476,7 +488,11 @@ def protected_directory_doc_id(
         section = "devices"
         principal = directory_owner_principal(parts[2])
         leaf = "/".join(parts[3:])
-    elif len(parts) >= 4 and parts[0] == "directory" and parts[1] in {"people", "user-keys"}:
+    elif (
+        len(parts) >= 4
+        and parts[0] == "directory"
+        and parts[1] in {"people", "user-keys", "service-grants"}
+    ):
         section = parts[1]
         principal = directory_owner_principal(parts[2])
         leaf = "/".join(parts[3:])

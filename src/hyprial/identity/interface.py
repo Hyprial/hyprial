@@ -15,7 +15,7 @@ if TYPE_CHECKING:
         InviteSelection as InviteSelection, InviteView as InviteView, JoinIdentityError as JoinIdentityError, JoinTokenLedger as JoinTokenLedger, MAX_REQUEST_BYTES as MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES,
         ManagementAuthorizationRefV1 as ManagementAuthorizationRefV1, OUTCOME_NOT_SENT as OUTCOME_NOT_SENT, OUTCOME_REJECTED as OUTCOME_REJECTED, OUTCOME_UNKNOWN as OUTCOME_UNKNOWN,
         OrgMembership as OrgMembership, OrgRef as OrgRef, OrganizationAuthorizationLeaseV1 as OrganizationAuthorizationLeaseV1, PROFILE as PROFILE,
-        ProviderKeys as ProviderKeys, RETIRE_BINDING_ROUTE as RETIRE_BINDING_ROUTE, StagedTransportCredential as StagedTransportCredential, TailnetAuthorityBinding as TailnetAuthorityBinding,
+        ProviderKeys as ProviderKeys, RETIRE_BINDING_ROUTE as RETIRE_BINDING_ROUTE, SealedEnvelope as SealedEnvelope, StagedTransportCredential as StagedTransportCredential, TailnetAuthorityBinding as TailnetAuthorityBinding,
         TailnetAuthorityPin as TailnetAuthorityPin, TailnetCredentialAssociation as TailnetCredentialAssociation, TailnetCredentialContext as TailnetCredentialContext, TailnetCredentialError as TailnetCredentialError,
         TailnetCredentialOperation as TailnetCredentialOperation, TailnetCredentialWorkflow as TailnetCredentialWorkflow, TailnetCredentials as TailnetCredentials, TailnetMember as TailnetMember,
         TailnetMembership as TailnetMembership, TransportClientError as TransportClientError, TransportCredential as TransportCredential, TransportCredentialError as TransportCredentialError,
@@ -312,6 +312,7 @@ _FACADE_EXPORTS = {
     'RuntimeHomePreparers': ('hyprial.identity.impl.agents.home.effects', 'RuntimeHomePreparers'),
     'SEE_ACTORS': ('hyprial.identity.impl.agents.runtime.visibility', 'SEE_ACTORS'),
     'SEND_TO': ('hyprial.identity.impl.agents.runtime.visibility', 'SEND_TO'),
+    'SealedEnvelope': ('hyprial.identity.impl.sealed_envelope', 'SealedEnvelope'),
     'SecretResolver': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolver'),
     'SecretResolutionError': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolutionError'),
     'SecretSource': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretSource'),
@@ -487,6 +488,7 @@ def __dir__() -> list[str]:
 
 __all__ = [
     'ProviderKeys',
+    'SealedEnvelope',
     'UserKey',
     'EncryptionKey',
     'AgentIdentitySnapshot',

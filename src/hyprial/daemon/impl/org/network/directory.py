@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Mapping
 from threading import Lock
 from typing import Any, Callable, Iterable
 
@@ -55,15 +56,17 @@ from hyprial.identity import (
     org_space_name,
     protected_directory_doc_id,
 )
-from hyprial.kernel import ORGFS_CONTENT_PENDING, canonical_user_uri
+from hyprial.kernel import ORGFS_CONTENT_PENDING, canonical_user_uri, parse_user_uri
 
 _LOG = logging.getLogger(__name__)
+_SERVICE_GRANTS_DIR = "directory/service-grants"
 _OWNER_CREATED_DIRS = (
     "directory",
     DIRECTORY_DIR,
     PEOPLE_DIR,
     INVITES_DIR,
     LEAVES_DIR,
+    _SERVICE_GRANTS_DIR,
 )
 
 
@@ -331,6 +334,118 @@ class OrgFsDirectoryStore:
         space_id = self._space_id(org)
         for path in _OWNER_CREATED_DIRS:
             self._mkdir_if_absent(space_id, path)
+
+    def put_service_grant(
+        self, org: str, owner: str, grant_id: str, record: Mapping[str, Any]
+    ) -> None:
+        """Write one owner-scoped service grant under ``directory/service-grants/<owner>/``."""
+
+        bare, path = self._service_grant_path(owner, grant_id)
+        space_id = self._space_id(org)
+        self._mkdir_if_absent(space_id, f"{_SERVICE_GRANTS_DIR}/{bare}")
+        payload = json.dumps(dict(record), sort_keys=True, separators=(",", ":"))
+        self._fs.write_text(space_id, path, payload)
+
+    def read_service_grant(self, org: str, owner: str, grant_id: str) -> dict[str, Any] | None:
+        """Read one verified service-grant document, or ``None`` when absent."""
+
+        bare, path = self._service_grant_path(owner, grant_id)
+        space_id = self._space_id(org)
+        try:
+            entry = self._fs.stat(space_id, path)
+        except OrgFsError as error:
+            if error.code == "unknown-doc":
+                return None
+            raise
+        if entry.kind != "doc":
+            return None
+        return self._read_verified_service_grant(
+            space_id, path, entry.node_id, entry.doc_id, directory_owner_principal(bare)
+        )
+
+    def list_service_grants(
+        self, org: str, *, owner: str | None = None
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        """List verified ``(bare_owner, grant_id, record)`` tuples for one org."""
+
+        space_id = self._space_id(org)
+        if owner is not None:
+            bare = self._bare_owner_segment(owner)
+            targets = [(bare, f"{_SERVICE_GRANTS_DIR}/{bare}")]
+        else:
+            try:
+                owner_entries = self._fs.listdir(space_id, _SERVICE_GRANTS_DIR)
+            except OrgFsError as error:
+                if error.code == "unknown-doc":
+                    return []
+                raise
+            targets = []
+            for item in owner_entries:
+                if item.kind == "dir":
+                    try:
+                        if self._bare_owner_segment(item.name) == item.name:
+                            targets.append((item.name, f"id:{item.node_id}"))
+                    except ValueError:
+                        continue
+        results: list[tuple[str, str, dict[str, Any]]] = []
+        for bare, ref in targets:
+            try:
+                principal = directory_owner_principal(bare)
+                docs = self._fs.listdir(space_id, ref)
+            except OrgFsError as error:
+                if error.code == "unknown-doc":
+                    continue
+                raise
+            except ValueError:
+                continue
+            for entry in docs:
+                if entry.kind != "doc" or not entry.name.endswith(".json"):
+                    continue
+                path = f"{_SERVICE_GRANTS_DIR}/{bare}/{entry.name}"
+                rec = self._read_verified_service_grant(
+                    space_id, path, entry.node_id, entry.doc_id, principal
+                )
+                if rec is not None:
+                    results.append((bare, entry.name.removesuffix(".json"), rec))
+        return sorted(results, key=lambda item: (item[0], item[1]))
+
+    @staticmethod
+    def _bare_owner_segment(owner: str) -> str:
+        bare = parse_user_uri(directory_owner_principal(owner))
+        if not bare or bare in {".", ".."} or any(ch in bare for ch in ("/", "\\", ":")):
+            raise ValueError("service grant owner is not a safe path segment")
+        return bare
+
+    @classmethod
+    def _service_grant_path(cls, owner: str, grant_id: str) -> tuple[str, str]:
+        bare = cls._bare_owner_segment(owner)
+        if not isinstance(grant_id, str) or not grant_id or grant_id in {".", ".."} or any(
+            ch in grant_id for ch in ("/", "\\", ":")
+        ):
+            raise ValueError("service grant id is not a safe path segment")
+        return bare, f"{_SERVICE_GRANTS_DIR}/{bare}/{grant_id}.json"
+
+    def _read_verified_service_grant(
+        self, space_id: str, path: str, node_id: str, doc_id: str | None, path_principal: str
+    ) -> dict[str, Any] | None:
+        try:
+            expected = protected_directory_doc_id(
+                space_id, path, space_owner=self._space_owner(space_id)
+            )
+            if doc_id != expected:
+                self._warn_doc_id_mismatch(path, expected=expected, actual=doc_id)
+                return None
+            text, _version = self._fs.read_text(space_id, f"id:{node_id}")
+            record = json.loads(text)
+            if not isinstance(record, dict):
+                return None
+            authors = {
+                directory_owner_principal(author)
+                for author in self._fs.document_authors(space_id, f"id:{node_id}")
+            }
+        except (OrgFsError, TypeError, ValueError):
+            return None
+        return record if authors == {path_principal} else None
 
     def orgs(self) -> list[str]:
         orgs = [
