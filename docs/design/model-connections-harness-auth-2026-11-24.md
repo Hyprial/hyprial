@@ -542,7 +542,7 @@ HQ 上下文是 Docker Magpie 供另一台 host 使用；这是独立的远程�
 
 ## 7. PR 施工拆分
 
-当前 **PR 0 为持续更新的 WIP 设计文档**，首轮评审后调整为 **6 个实现 PR**；用户已授权按下列阶段串行实施。
+当前 **PR 0 为持续更新的 WIP 设计文档**，首轮评审后定为六个实现阶段；阶段 4 按实际文件预算再拆 4a/4b，当前为 **7 个实现 PR**。用户已授权持续实施及必要拆片。
 各 PR 独立可测、兼容先行，再开放界面；前置未就绪时新组合仍拒绝。
 
 | PR | 范围/主要目录 | 必须交付的验收 | 目标文件数 |
@@ -551,7 +551,8 @@ HQ 上下文是 Docker Magpie 供另一台 host 使用；这是独立的远程�
 | 1 | identity model_records/Secret、连接 request_catalog、error/codes、shell/impl/request_http、probe params/期限、contract、生成客户端/mock | v2 原子 route+Key；旧 routed DeepSeek 显式迁移/失败回读；flat/Auth 回归；按方法 carrier 预算与 schema 同步，其他方法不变 | 30–44 |
 | 2 | harnesses/model_routes、model_provider、Pi loader/actor、model_probe、kernel manysys/fs 本机存储检查 | 通用模板/版本/隔离；新旧快照负例；跨资源单 writer 与两个 start 终局/无孤儿；RPC 真实 stop/finally 释放；本机 root 准入；错误映射到 start 契约 | 30–44 |
 | 3 | kernel LaunchSpec 类型、desired-state 表/序列化/迁移、解析公共面、对应契约 | 首次启动前配置/回执；schema 4 降级；事务条件写/唯一索引；可注入容量与优先级；agent 级 cleanupPending/双表及标记 purge/roundtrip | 25–40 |
-| 4 | agents_admin/agent_start/destroy、Cell facts/reconcile、CLI/config、restore/teleport/routines、契约/生成物及 skill | configure/status/cancel；短锁+CAS/prepared；真实绑定；agent 级销毁准入/恢复/preview；operationLimit 运维入口；故障注入/default seed/旧 CLI | 30–44 |
+| 4a | 运行时绑定解析、agents_admin/destroy、启动/restore/Cell facts、既有销毁契约/生成物 | 精确绑定与 grant 复验；prepared/cleanup 阻断；无默认回退；真实销毁/恢复/preview；保持新配置入口关闭 | 30–44 |
+| 4b | 配置协调、agent.model MethodSpecs、create/CLI/config、生成物及 skill | configure/status/cancel；短锁+Cell CAS/finalize/补偿；持久恢复资料；operationLimit；新入口只在 4a 保护之上开放 | 35–44 |
 | 5 | GUI connections 共享组件/控制器、mock/source ledger、测试与操作说明 | 官方预设/自定义；无模型目录；测试 ID 临时手填；期限/错误/未验证状态；共享入口实点证据 | 15–30 |
 | 6 | GUI agents 共享表单/详情/启动、mock/source ledger、测试及旅程证据 | Harness+认证+手填模型一次保存；启动不重复选择；未支持模式拒绝；未完成配置 status/cancel；新建/编辑/恢复与旧 Auth 旅程 | 20–35 |
 
@@ -566,7 +567,7 @@ GUI 两片同步 source ledger、mock conformance 和 UI 交接，不把 mock �
 按上述顺序串行交付到 dev，每片保持旧调用兼容；用现有能力声明控制新入口，不增加
 绕过校验的 flag。当前文档 PR 不累积实现变更。若评审决定采用 intg 容器，每个最终
 容器 PR 也必须小于 50 文件；不能用多个小 PR 掩盖一个超过限制的总 PR，需重拆阶段。
-实际文件清单在每片开工前登记，45 文件时预警，达到 50 必须拆片；超过预算应更新本表，
+阶段 4 开工核对了启动 projection、生命周期重建、销毁预检和生成物：运行/销毁至少 21 个产品路径，公开协调/CLI 至少 15 个，再加 6 个生成/清单、3 个说明与至少 10 个测试路径，合计超过 55，故拆 4a/4b。两片不另汇成超限容器。实际文件清单在每片开工前登记，45 文件时预警，达到 50 必须拆片；超过预算应更新本表，
 不承诺仅靠估算就一定是六片。PR 4 开工前按真实文件清单核算，超预算则先拆 CLI 与 Cell，
 不削掉恢复/契约/生成物来维持六片。生成物不得移出计数。
 
@@ -611,8 +612,9 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 | PR 1：连接记录与请求契约 | [#3141](https://code.hyprial.com/HyprialOS/hyprial/pulls/3141)，评审/CI head `cb9eb3bf74df398524030365969239ff0fa50f90`；用户手动合并 `4766a1f1be4de1c8e84e1330dc30fa903946c3da` | v2 Secret/CAS/迁移、旧目录兼容、精确探针、取消、HTTP 预算与契约已交付；Linux CI run 58214 全部选定 lane 成功。GUI/真实厂商不在本片验收范围 | 已合并 |
 | PR 2：Pi runtime 与会话保护 | [#61](https://github.com/Hyprial/hyprial/pull/61)，固定 `e40a634f92fe98ca646569808acee833e16ab2f0`，base 为 #59 `bbe20799`，46 文件 | 通用模板、精确模型、会话快照/单 writer/退出释放及错误分类。组合焦点与独立复评 PASS；GH full 被 4 个迁移收集错误阻断，corpus FAIL 11/14；真实服务/浏览器尚未验收 | 本地焦点 PASS，可推进后续片；CI/e2e 后补，未合并 |
 | CI 阻断修复：Lark completion | [#59](https://github.com/Hyprial/hyprial/pull/59)，固定 `bbe20799fd0631bdfc9f0ae2001d37d8ed3aba17`，base dev `ef4f983a`，2 文件 | CLOSED 立即进入原保留 receipt/失败分支，OVERLOADED 重试不变。旧实现确定性 2F/1P，新实现 3P、原用例 10/10、Lark 815P；迁移和最新 dev 组合已独立复核。full/corpus 限制同上 | 修复范围本地 PASS；CI/e2e 后补，未合并 |
-| PR 3：绑定存储与事务 | [WIP #81](https://github.com/Hyprial/hyprial/pull/81)，固定 `716099e1f28008194529c62103ad3364acc36282`，tree `0a45e222fcf377ea7bd517e130dd52712c1f50f9`，base #61 `e40a634f`，22 文件 | §5.1 已实现 schema 4、CAS/持久回执/容量、Agent 级 cleanup/purge、启动快照。初版 884P/9skip；后续自查发现损坏 prepared 引用提交后才拒绝，已补读取不变量、写前引用校验及事务内回读回滚（3+1 红例）。旧 reader 拒绝 schema4，同时可读新增 nullable 列的 legacy schema3。新固定树回归与复评进行中；full/corpus 保持未通过 | 初版 PASS 已撤回；修复已送 cc-gui-orgs，WIP/Draft，生产绑定仍关闭 |
-| PR 4：启动/Cell/CLI 接线 | 未开实现 PR | §2/§5：configure/status/cancel、prepared/Cell CAS/finalize、restore/routines、销毁恢复、生成物与操作说明 | 未开始，依赖 PR 3；新生产绑定仍关闭 |
+| PR 3：绑定存储与事务 | [#81](https://github.com/Hyprial/hyprial/pull/81)，固定 `716099e1f28008194529c62103ad3364acc36282`，tree `0a45e222fcf377ea7bd517e130dd52712c1f50f9`，base #61 `e40a634f`，22 文件 | §5.1 存储/回执/容量/cleanup/快照已实现。修复操作历史不一致与提交后报错，3+1 红例→固定回归469P/9skip；cc 独立38P及318P/9skip、门禁通过。059b 初次 PASS 撤回，新 head 复评 PASS；full仍4迁移收集错误，corpus仍11/14 FAIL | 本地实现范围 PASS，后续开发继续；全量/CI/e2e 未通过，未合并 |
+| PR 4a：运行准入与销毁恢复 | 隔离 `feat/model-binding-runtime`，base #81 `716099e1` | 运行绑定解析与共同准入；销毁标记/恢复与已有契约。实际调用路径与文件预算已核对 | 本地开发开始；新配置入口仍关闭 |
+| PR 4b：配置协调与公开操作 | 待 4a 本地评审通过 | configure/status/cancel、Cell CAS/补偿、create/CLI/config、生成物与操作说明 | 未开始 |
 | PR 5：连接 GUI | 未开实现 PR | §2.1/§3.2：预设/自定义、测试时手填 ID、显式 30s 预算、真实点击及错误/取消旅程 | 未开始 |
 | PR 6：Agent GUI | 未开实现 PR | §2.2/§2.3：Harness+认证+手填 ID 一次保存、启动复用、status/cancel、创建/编辑/恢复实点验收 | 未开始 |
 
