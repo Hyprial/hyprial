@@ -30,6 +30,9 @@ real filesystem.  Every case records what the product handed to the check and
 asserts on it, so a product that stops consulting ``stat`` cannot turn a
 forgery into a silent no-op.  No case skips: an unexpected skip fails the
 suite on the platform these cases exist for.
+
+An ``OSError`` raised by the check itself is a trust refusal; an ``OSError``
+from ``stat`` of the root is not wrapped and still escapes as it did before.
 """
 
 from __future__ import annotations
@@ -373,3 +376,64 @@ def test_a_workspace_the_kernel_cannot_verify_is_refused(
 
     with pytest.raises(PiProjectTrustError, match="private to its owner"):
         _trust(workspace)
+
+
+def test_a_workspace_whose_privacy_cannot_be_inspected_is_a_trust_refusal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An ``OSError`` from the kernel check is a permanent trust refusal.
+
+    The descriptor check raises ``OSError`` when it cannot read the security
+    descriptor or the current account.  Escaping bare, it would carry no
+    permanent-failure flag and the streaming pump would retry it until the
+    startup deadline.
+    """
+
+    workspace = _workspace(tmp_path, "be-dev-1")
+    seen: list[tuple[Path, os.stat_result]] = []
+
+    def uninspectable(root: Path, metadata: os.stat_result) -> str | None:
+        seen.append((root, metadata))
+        raise OSError("cannot inspect the Windows security descriptor for workspace")
+
+    monkeypatch.setattr(loader, "private_tree_violation", uninspectable)
+
+    with pytest.raises(PiProjectTrustError, match="privacy cannot be inspected") as raised:
+        _trust(workspace)
+
+    assert raised.value.permanent_start_failure is True
+    assert _handed_roots(seen) == [workspace.resolve()]
+
+
+def test_an_unreadable_workspace_root_still_raises_its_own_os_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only the kernel check is wrapped; ``stat`` of the root keeps its error.
+
+    ``Path.stat`` of the resolved root fails while the directory checks before
+    it still see the real filesystem through ``os.path.isdir``.  The kernel is
+    never reached.
+    """
+
+    workspace = _workspace(tmp_path, "be-dev-1")
+    resolved = workspace.resolve()
+    real_stat = Path.stat
+    failure = OSError("stat of the workspace root failed")
+
+    def failing(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if follow_symlinks and path == resolved:
+            raise failure
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    def real_is_dir(path: Path, *, follow_symlinks: bool = True) -> bool:
+        return os.path.isdir(path)
+
+    monkeypatch.setattr(Path, "stat", failing)
+    monkeypatch.setattr(Path, "is_dir", real_is_dir)
+    seen = _replace_kernel(monkeypatch, None)
+
+    with pytest.raises(OSError) as raised:
+        _trust(workspace)
+
+    assert raised.value is failure
+    assert seen == []

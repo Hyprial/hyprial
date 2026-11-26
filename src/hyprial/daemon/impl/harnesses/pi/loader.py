@@ -17,7 +17,10 @@ workspace root.  On POSIX the kernel check is the owner plus the same
 group/other bits, so only the owner requirement is new.  It is deliberately
 not ``private_metadata_violation(..., mode=...)``: that compares for equality
 and would refuse a private directory that also carries a setgid or sticky
-bit.
+bit.  When the kernel cannot inspect privacy at all (its descriptor check
+raises ``OSError``), the root is refused as a trust error, a permanent start
+failure, instead of letting the ``OSError`` escape and be retried until the
+startup deadline; an ``OSError`` from ``stat`` of the root is left as it was.
 """
 
 from __future__ import annotations
@@ -403,7 +406,14 @@ class PiProjectTrustReceipt:
             # non-Git: a wider or repository-backed root is out of contract.
             if cwd != root:
                 raise ValueError("Pi workspace trust root must equal cwd")
-            if private_tree_violation(root, root.stat()) is not None:
+            metadata = root.stat()
+            try:
+                violation = private_tree_violation(root, metadata)
+            except OSError as error:
+                raise ValueError(
+                    f"Pi workspace trust root privacy cannot be inspected: {error}"
+                ) from error
+            if violation is not None:
                 raise ValueError("Pi workspace trust root must be private to its owner")
             if (root / ".git").exists():
                 raise ValueError("Pi workspace trust root must not be a Git worktree")
