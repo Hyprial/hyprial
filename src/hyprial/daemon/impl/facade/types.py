@@ -315,6 +315,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.transfer.archive.envelope import write_envelope as write_envelope
     from hyprial.daemon.impl.autoupdate.alert import write_failure_marker as write_failure_marker
     from hyprial.daemon.impl.forwarding_config import write_forwarding_mode as write_forwarding_mode
+    from hyprial.daemon.impl.application.model_binding.configure.settings import write_model_binding_operation_limit as write_model_binding_operation_limit
     from hyprial.daemon.impl.autoupdate import write_last_run as write_last_run
     from hyprial.daemon.impl.org.orgfs_migration import write_org_fetch_source as write_org_fetch_source
     from hyprial.daemon.impl.configuration.network_profile import write_profile as write_profile
@@ -361,7 +362,7 @@ __all__ = [
     'snapshot', 'start_failure_line', 'summary_from_text', 'support', 'sync_identities', 'tcp_probe', 'transfer_container',
     'unavailable_notice', 'updates', 'upgrade_step_status', 'url_opener', 'valid_scope_name', 'validate_bundle', 'validate_claude_auth_environment', 'validate_document',
     'validate_legacy_claude_auth', 'validate_profile', 'verify_tailcat_sidecar', 'views_missions', 'views_overview', 'views_work_items', 'wait_for_state_ownership', 'with_human_web_urls',
-    'workflow_reminders', 'write_envelope', 'write_failure_marker', 'write_forwarding_mode', 'write_last_run', 'write_org_fetch_source', 'write_profile',
+    'workflow_reminders', 'write_envelope', 'write_failure_marker', 'write_forwarding_mode', 'write_model_binding_operation_limit', 'write_last_run', 'write_org_fetch_source', 'write_profile',
     'write_settings_identity', 'write_settings_owner', 'write_workflow_reminder',
     'UserKey', 'OwnerScope', 'OwnerStorePort', 'OwnerStoreUnavailable',
     'LocalOwnerStore', 'OWNER_SCOPE_LOCAL',

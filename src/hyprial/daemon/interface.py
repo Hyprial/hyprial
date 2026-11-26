@@ -66,6 +66,7 @@ if TYPE_CHECKING:
         verify_tailcat_sidecar as verify_tailcat_sidecar, views_missions as views_missions, views_overview as views_overview, views_work_items as views_work_items, wait_for_state_ownership as wait_for_state_ownership, with_human_web_urls as with_human_web_urls, workflow_reminders as workflow_reminders,
         write_envelope as write_envelope, write_failure_marker as write_failure_marker, write_forwarding_mode as write_forwarding_mode, write_last_run as write_last_run, write_org_fetch_source as write_org_fetch_source, write_profile as write_profile, write_settings_identity as write_settings_identity,
         write_settings_owner as write_settings_owner, write_workflow_reminder as write_workflow_reminder,
+        write_model_binding_operation_limit as write_model_binding_operation_limit,
     )
 
 _FACADE_EXPORTS = {
@@ -333,6 +334,7 @@ _FACADE_EXPORTS = {
     'write_envelope': ('hyprial.daemon.impl.transfer.archive.envelope', 'write_envelope'),
     'write_failure_marker': ('hyprial.daemon.impl.autoupdate.alert', 'write_failure_marker'),
     'write_forwarding_mode': ('hyprial.daemon.impl.forwarding_config', 'write_forwarding_mode'),
+    'write_model_binding_operation_limit': ('hyprial.daemon.impl.application.model_binding.configure.settings', 'write_model_binding_operation_limit'),
     'write_last_run': ('hyprial.daemon.impl.autoupdate', 'write_last_run'),
     'write_org_fetch_source': ('hyprial.daemon.impl.org.orgfs_migration', 'write_org_fetch_source'),
     'write_profile': ('hyprial.daemon.impl.configuration.network_profile', 'write_profile'),
@@ -634,6 +636,7 @@ __all__ = [
     'write_envelope',
     'write_failure_marker',
     'write_forwarding_mode',
+    'write_model_binding_operation_limit',
     'write_last_run',
     'write_org_fetch_source',
     'write_profile',

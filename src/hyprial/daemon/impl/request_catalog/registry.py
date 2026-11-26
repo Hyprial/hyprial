@@ -390,6 +390,7 @@ def _build_registry() -> MethodRegistry:
     from .pac_gc import BINDINGS as PAC_GC_BINDINGS
     from .session import SESSION_BINDINGS
     from .setup import SETUP_BINDINGS
+    from .model import BINDINGS as MODEL_BINDINGS, admit as model_admit
     from .setup.routes import SPEC as ROUTE_SPEC, handle as route_handle, admit as route_admit
     from .setup.probe import SPEC as PROBE_SPEC, handle as probe_handle, admit as probe_admit
     from .teleport import TELEPORT_BINDINGS
@@ -431,6 +432,7 @@ def _build_registry() -> MethodRegistry:
         *CONVERSATION_BINDINGS, *GROUP_BINDINGS, *UPGRADE_BINDINGS, *TELEPORT_BINDINGS,
         *user_keys, *owner_keys,
         BoundMethod(PROBE_SPEC, probe_handle, preauthorize=probe_admit),
+        *(BoundMethod(spec, handler, preauthorize=model_admit) for spec, handler in MODEL_BINDINGS),
     ))
 
     validate_migration_coverage(registry.specs)
@@ -516,6 +518,7 @@ def daemon_openapi() -> JsonObject:
     from .routine.plan_examples import EXAMPLES as ROUTINE_PLAN_EXAMPLES
     from .workflow.examples import EXAMPLES as WORKFLOW_CONTEXT_EXAMPLES
     from .setup import SETUP_EXAMPLES
+    from .model.examples import EXAMPLES as MODEL_EXAMPLES
     from .setup.routes import EXAMPLES as ROUTE_EXAMPLES
     from .setup.probe import EXAMPLES as PROBE_EXAMPLES
     from .conversations.examples import CONVERSATION_EXAMPLES
@@ -536,5 +539,6 @@ def daemon_openapi() -> JsonObject:
             *ONBOARDING_EXAMPLES, *SERVICE_EXAMPLES, *ROUTINE_EXAMPLES, *ROUTINE_PLAN_EXAMPLES, *WORKFLOW_CONTEXT_EXAMPLES,
             *PAC_GC_EXAMPLES, *WORKFLOW_HISTORY_EXAMPLES,
             *CONVERSATION_EXAMPLES, *PROVIDER_KEY_EXAMPLES,
+            *MODEL_EXAMPLES,
         ),
     )

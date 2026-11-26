@@ -4,7 +4,7 @@ import json
 
 from hyprial.kernel import DesiredStateError
 from .codec import ROOTS, parse, project
-from .models import Binding, Cleanup, Configuration, Operation, canonical, fail
+from .models import Binding, Cleanup, Configuration, Coordination, Operation, canonical, fail, record
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS model_bindings (
@@ -56,8 +56,26 @@ def binding(row):
 def operation(row):
     if row is None:
         return None
-    value = Operation(*row[:6], Configuration.from_json(json.loads(row[6])), *row[7:])
+    raw = json.loads(row[6])
+    coordination = None
+    if isinstance(raw, dict) and "$schema" in raw:
+        raw = record(raw, ("$schema", "configuration", "coordination"))
+        if raw["$schema"] != "hyprial-model-operation/v2":
+            from .models import invalid
+
+            invalid()
+        coordination = Coordination.from_json(raw["coordination"])
+        raw = raw["configuration"]
+    value = Operation(*row[:6], Configuration.from_json(raw), *row[7:], coordination)
     return Operation.from_json(value.to_json())
+
+
+def candidate_payload(item):
+    raw = item.candidate.to_json()
+    if item.coordination is not None:
+        raw = {"$schema": "hyprial-model-operation/v2", "configuration": raw,
+               "coordination": item.coordination.to_json()}
+    return canonical(raw)
 
 
 def read(db):
@@ -110,7 +128,7 @@ def insert_operation(db, item):
             item.request_digest,
             item.expected_revision,
             item.binding_ref,
-            canonical(item.candidate.to_json()),
+            candidate_payload(item),
             item.phase,
             item.result_revision,
         ),

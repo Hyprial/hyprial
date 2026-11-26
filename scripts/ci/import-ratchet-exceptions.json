@@ -537,6 +537,14 @@
       "count": 1,
       "category": "bootstrap",
       "condition": "pre-launch endpoint path budget for the local daemon listener only; replaces the raw AF_UNIX bind probe that gate W020 forbids outside the platform seam; no other seam symbol"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+      "module": "hyprial.daemon",
+      "symbol": "write_model_binding_operation_limit",
+      "count": 1,
+      "category": "offline-maintenance",
+      "condition": "Model connection design stage 4b: config set modelBinding.operationLimit remains offline, atomically preserving private settings.json. No daemon connection, credential/grant or binding mutation; remove when this offline setting is retired or its authority moves."
     }
   ]
 }

@@ -162,7 +162,7 @@
     "hyprial.shell.impl.gui.apps",
     "hyprial.shell.impl.gui.errors"
   ],
-  "primedModuleCount": 624,
+  "primedModuleCount": 625,
   "primedModules": [
     "hyprial",
     "hyprial.biz",
@@ -633,6 +633,7 @@
     "hyprial.shell.impl.cli.commands.agent.grant",
     "hyprial.shell.impl.cli.commands.agent.harness_args",
     "hyprial.shell.impl.cli.commands.agent.home",
+    "hyprial.shell.impl.cli.commands.agent.model",
     "hyprial.shell.impl.cli.commands.agent.provider",
     "hyprial.shell.impl.cli.commands.agent.provider.access",
     "hyprial.shell.impl.cli.commands.agent.provider.commands",

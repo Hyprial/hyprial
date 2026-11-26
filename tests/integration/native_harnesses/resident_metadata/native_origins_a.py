@@ -339,4 +339,9 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/application/model_binding/admission.py": ("resident", ("new-module: local model binding runtime admission",)),
     "daemon/impl/application/model_binding/cleanup.py": ("resident", ("new-module: local model binding runtime admission",)),
     "daemon/impl/application/model_binding/facts.py": ("resident", ("new-module: local model binding runtime admission",)),
+    "daemon/impl/application/model_binding/configure/__init__.py": ("resident", ("new-module: model configuration coordination and request contract",)),
+    "daemon/impl/application/model_binding/configure/cell.py": ("resident", ("new-module: model configuration coordination and request contract",)),
+    "daemon/impl/application/model_binding/configure/coordinator.py": ("resident", ("new-module: model configuration coordination and request contract",)),
+    "daemon/impl/application/model_binding/configure/service.py": ("resident", ("new-module: model configuration coordination and request contract",)),
+    "daemon/impl/application/model_binding/configure/settings.py": ("resident", ("new-module: model configuration coordination and request contract",)),
 }

@@ -19,8 +19,7 @@ class BoundChildEnvironmentLaunch(ChildEnvironmentLaunch):
     )
 
 
-def resolve(binding, secrets):
-    config = binding.configuration
+def select_secret(config, secrets):
     routed = tuple(secret for secret in secrets if secret.route is not None)
     selected = tuple(
         secret
@@ -47,6 +46,12 @@ def resolve(binding, secrets):
         raise PiModelBindingError(
             codes.MODEL_AUTH_UNAVAILABLE, "authorize", "ambiguous"
         )
+    return secret
+
+
+def resolve(binding, secrets):
+    config = binding.configuration
+    secret = select_secret(config, secrets)
     try:
         return PiModelBinding(
             binding.binding_ref,

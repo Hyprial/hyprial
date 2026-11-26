@@ -22,6 +22,28 @@ def candidate():
     }
 
 
+def test_coordinated_cancellation_uses_the_same_authority(tmp_path, actor_host):
+    from tests.daemon.desired_state.bindings.test_coordination import plan
+
+    authority = _authority(tmp_path, actor_host)
+    try:
+        port = authority.desired.model_binding_store
+        operation = port.prepare("agent", "member", "operation", 0, candidate(),
+                                 coordination=plan())
+        args = ("agent", "member", "operation", operation.request_digest, 0)
+        cancelling = port.checkpoint(*args, plan(), {**plan(), "phase": "cancelling"})
+        assert authority.desired.load().model_binding_operations == (cancelling,)
+        with pytest.raises(DesiredStateError, match="operation-in-progress"):
+            port.finalize(*args)
+        port.checkpoint(*args, cancelling.coordination.to_json(),
+                        {**plan(), "phase": "compensated", "observedRevision": 4})
+        result = port.cancel(*args)
+        assert result.phase == "cancelled"
+        assert authority.desired.load().model_binding_operations == (result,)
+    finally:
+        assert authority.close()
+
+
 def test_binding_lifecycle_publishes_and_survives_authority_restart(
     tmp_path, actor_host
 ):

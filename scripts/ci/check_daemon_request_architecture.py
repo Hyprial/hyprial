@@ -56,6 +56,11 @@ a future daemon method `agent.tiers.probe` (with the recorded view served by
 a read method) runs the probe in the daemon; both rows are deleted then.
 Approved by the repository owner: Allen 2026-11-24 11:34 (cm-coord3
 TRACK-C-QUESTIONS-FOR-ALLEN.md).
+
+Model configuration stage 4b retains the design's offline operation-capacity
+setting. One config/settings.py import writes that private setting through its
+public authority; no online business method, credential or binding write is
+exempted. Remove this row if the offline setting is retired or its authority moves.
 """
 
 from __future__ import annotations
@@ -106,6 +111,7 @@ REVIEWED_NATIVE_EXCEPTIONS: dict[tuple[str, str, str], int] = {
 REVIEWED_CLI_EXCEPTIONS: dict[tuple[str, str, str], int] = {
     ("backend-import", "src/hyprial/shell/impl/cli/commands/agent/runtime/tiers.py", "hyprial.daemon:probe_capabilities"): 1,
     ("command-without-request", "src/hyprial/shell/impl/cli/commands/agent/runtime/tiers.py", "tiers.py"): 1,
+    ("backend-import", "src/hyprial/shell/impl/cli/commands/config/settings.py", "hyprial.daemon:write_model_binding_operation_limit"): 1,
 }
 
 

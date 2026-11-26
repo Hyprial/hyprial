@@ -19,7 +19,7 @@ def config_set(
         help=(
             "Config key (supported: autoUpgrade, lsRemoteTimeoutSeconds, "
             "forwarding.mode, org.fetchSource, workerProxy.url, "
-            "workerProxy.vendors, workerProxy.noProxy, dispatch.reminder)."
+            "workerProxy.vendors, workerProxy.noProxy, dispatch.reminder, modelBinding.operationLimit)."
         ),
     ),
     value: str = typer.Argument(
@@ -75,6 +75,16 @@ def config_set(
         )
 
         forwarding_key = f"{FORWARDING_SETTINGS_KEY}.mode"
+        if key == "modelBinding.operationLimit":
+            from hyprial.daemon import write_model_binding_operation_limit
+
+            try:
+                limit = int(value)
+                path = write_model_binding_operation_limit(limit, services._hyprial_home())
+            except (ValueError, OSError):
+                raise services.CliError("INVALID_CONFIGURATION", "Invalid model binding operation limit or settings file.") from None
+            return {"ok": True, "key": key, "value": limit, "path": str(path),
+                    "appliesOn": "next new model configuration operation"}
         org_fetch_source_key = "org.fetchSource"
         worker_proxy_keys = {
             f"{WORKER_PROXY_SETTINGS_KEY}.{field}": field
@@ -162,6 +172,7 @@ def config_set(
                         forwarding_key,
                         org_fetch_source_key,
                         "dispatch.reminder",
+                        "modelBinding.operationLimit",
                         *worker_proxy_keys,
                     )
                 ),
@@ -185,4 +196,5 @@ def config_set(
             "path": str(path),
         }
 
-    services.runtime.execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output,
+                             ensure_daemon=key != "modelBinding.operationLimit")

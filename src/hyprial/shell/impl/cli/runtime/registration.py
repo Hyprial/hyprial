@@ -64,6 +64,7 @@ from hyprial.shell.impl.cli.commands.agent import home as _agent_home  # noqa: F
 from hyprial.shell.impl.cli.commands.agent import restore as _agent_restore  # noqa: F401
 from hyprial.shell.impl.cli.commands.agent import secret as _agent_secret  # noqa: F401
 from hyprial.shell.impl.cli.commands.agent.cell import cell_app
+from hyprial.shell.impl.cli.commands.agent.model import model_app
 from hyprial.shell.impl.cli.commands.agent.harness_args import (
     args_app as agent_args_app,
     register_harness_args_commands,
@@ -126,6 +127,7 @@ def build_app(runtime: CliRuntime) -> typer.Typer:
     runtime.add_family(tiers_app, name="tiers", parent=agent_app)
     runtime.add_family(provider_app, name="provider", parent=agent_app)
     runtime.add_family(cell_app, name="cell", parent=agent_app)
+    runtime.add_family(model_app, name="model", parent=agent_app)
     runtime.add_registrar(register_harness_args_commands, parent=agent_args_app)
     runtime.add_family(agent_args_app, name="args", parent=agent_app)
     runtime.add_family(adapter_app, name="adapter")

@@ -43,7 +43,7 @@ EXCEPTIONS_RELATIVE_PATH = "scripts/ci/import-ratchet-exceptions.json"
 EXCEPTIONS_VERSION = 1
 # Reviewed digest of the exact bootstrap/offline/protocol/CLI input-output exception manifest.
 # Updating the manifest without updating this anchor fails closed.
-REVIEWED_EXCEPTION_DIGEST = "d7b7db4c8f3052f716125f42366c0b891bbd7ec692a7c924129e8b763a4a3db0"
+REVIEWED_EXCEPTION_DIGEST = "ab5af63c88a8b6f2040ff7881a0de3e880ee19d1a75f6f613da6f77dd0a7a010"
 EXCEPTION_CATEGORIES = frozenset({"bootstrap", "offline-maintenance", "protocol", "cli-input-output"})
 EXCEPTION_FIELDS = frozenset({"path", "module", "symbol", "count", "category", "condition"})
 ENTRY_FIELDS = frozenset({"path", "module", "symbol", "count"})

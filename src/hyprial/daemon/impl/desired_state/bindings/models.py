@@ -142,16 +142,18 @@ class Configuration:
 
 
 def request_digest(
-    agent_id: str, member_id: str, expected_revision: int, config: Configuration
+    agent_id: str, member_id: str, expected_revision: int, config: Configuration,
+    coordination=None,
 ) -> str:
     return sha256(
         canonical(
             {
-                "version": 1,
+                "version": 1 if coordination is None else 2,
                 "agentId": agent_id,
                 "memberId": member_id,
                 "expectedRevision": expected_revision,
                 "configuration": config.to_json(),
+                **({} if coordination is None else {"cell": coordination.plan_json()}),
             }
         ).encode()
     ).hexdigest()
@@ -204,6 +206,49 @@ class Binding:
 
 
 @dataclass(frozen=True, slots=True)
+class Coordination:
+    cell_id: str
+    expected_revision: int
+    previous_intent: tuple[tuple[str, str | None], ...]
+    phase: str = "planned"
+    observed_revision: int | None = None
+
+    def plan_json(self):
+        return {
+            "schemaVersion": 1, "cellId": self.cell_id,
+            "expectedRevision": self.expected_revision,
+            "previousIntent": dict(self.previous_intent),
+        }
+
+    def to_json(self):
+        return {**self.plan_json(), "phase": self.phase,
+                "observedRevision": self.observed_revision}
+
+    @classmethod
+    def from_json(cls, value):
+        raw = record(value, ("schemaVersion", "cellId", "expectedRevision",
+                             "previousIntent", "phase", "observedRevision"))
+        if type(raw["schemaVersion"]) is not int or raw["schemaVersion"] != 1:
+            invalid()
+        previous = record(raw["previousIntent"], (), ("kind", "model"))
+        for value in previous.values():
+            if value is not None:
+                text(value)
+        result = cls(text(raw["cellId"]), integer(raw["expectedRevision"], 1),
+                     tuple(sorted(previous.items())), text(raw["phase"]),
+                     raw["observedRevision"])
+        if result.phase not in {"planned", "applied", "cancelling", "compensated"}:
+            invalid()
+        if result.observed_revision is not None:
+            integer(result.observed_revision, result.expected_revision)
+        if (result.phase == "planned" and result.observed_revision is not None
+                or result.phase in {"applied", "compensated"}
+                and result.observed_revision is None):
+            invalid()
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class Operation:
     agent_id: str
     member_id: str
@@ -214,6 +259,7 @@ class Operation:
     candidate: Configuration
     phase: str = "prepared"
     result_revision: int | None = None
+    coordination: Coordination | None = None
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -226,6 +272,9 @@ class Operation:
             "candidate": self.candidate.to_json(),
             "phase": self.phase,
             "resultRevision": self.result_revision,
+            **({} if self.coordination is None else {
+                "coordination": self.coordination.to_json(),
+            }),
         }
 
     @classmethod
@@ -243,6 +292,7 @@ class Operation:
                 "phase",
                 "resultRevision",
             ),
+            ("coordination",),
         )
         result = cls(
             text(raw["agentId"]),
@@ -254,6 +304,7 @@ class Operation:
             Configuration.from_json(raw["candidate"]),
             text(raw["phase"]),
             raw["resultRevision"],
+            Coordination.from_json(raw["coordination"]) if "coordination" in raw else None,
         )
         if result.phase not in {
             "prepared",
@@ -264,6 +315,7 @@ class Operation:
             result.member_id,
             result.expected_revision,
             result.candidate,
+            result.coordination,
         ):
             invalid()
         if result.phase == "prepared":
@@ -273,6 +325,11 @@ class Operation:
             result.phase == "finalized"
         ):
             invalid()
+        if result.coordination is not None and result.phase != "prepared":
+            if result.coordination.phase != (
+                "applied" if result.phase == "finalized" else "compensated"
+            ):
+                invalid()
         return result
 
 
