@@ -92,7 +92,11 @@ def test_configured_record_without_field_name_requires_one(harness: dict[str, An
     _write_raw_provider(
         harness["home"],
         "configured",
-        {"$schema": "hyprial-model-secret/v1", "values": {"K": SYNTHETIC_SECRET}, "routes": {}},
+        {
+            "$schema": "hyprial-model-secret/v1",
+            "values": {"K": SYNTHETIC_SECRET},
+            "routes": {"K": {"endpoint": "https://models.example.invalid/v1", "protocol": "openai-completions", "vendorId": "deepseek"}},
+        },
     )
     error = _refused(harness["service"], device="bob/device-b", credential={"entryId": "configured"})
     assert error.code == ipc_errors.AGENT_SECRET_RESOLUTION_FAILED

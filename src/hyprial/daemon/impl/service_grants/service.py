@@ -1,21 +1,25 @@
 # Decision notes (service grant S3, 2026-11-26):
-# - Credential sealing reads only from <home>/secrets/providers/<entryId>.json
-#   through private-file checks and seals via identity.SealedEnvelope using bare
-#   owner strings. Plaintext bytes never enter logs, events, return payloads, or
-#   exception messages.
-# - User-provider files support both legacy flat maps and configured
-#   hyprial-model-secret/v1|v2 records. When fieldName is omitted, the entry
-#   must contain exactly one field; ambiguous entries fail with INVALID_ARGUMENT.
+# - Credential sealing reads the value only through identity's public
+#   read_user_provider_value, so record decoding, route consistency, privacy
+#   checks and field selection are identity's rules (S3 fix, critic S4). Without
+#   fieldName an unconfigured entry yields its whole file text and a configured
+#   record is refused as field-required. Plaintext bytes never enter logs,
+#   events, return payloads, or exception messages.
 # - No new error codes are introduced; every refusal uses existing frozen codes
 #   in hyprial.kernel.ipc_errors.
+# - S3 fix (2026-11-26, critic S1, S2, S3, N3, N4): a grant is refused unless
+#   this device has a row under the caller in that org's directory; identifiers
+#   are validated before any secret is read. At most one effective grant exists
+#   per (local device, port, recipient): a new grant revokes the earlier ones
+#   first and reports them in "superseded". Revocation never depends on parsing
+#   the old document: an unreadable own document is replaced by a revoked
+#   tombstone that keeps whatever fields still validate.
 """Service-grant domain service: ``service.grant``, ``service.revoke``, ``service.grants``."""
 
 from __future__ import annotations
 
 import base64
-import json
-import re
-import stat
+import dataclasses
 import time
 from collections.abc import Callable, Mapping, Set as AbstractSet
 from pathlib import Path
@@ -23,13 +27,13 @@ from typing import Any
 
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.identity import SealedEnvelope, org_space_name
-from hyprial.kernel import (
-    DaemonRequestError,
-    PrivateAccessUnsupported,
-    ipc_errors,
-    read_private_file,
+from hyprial.identity import (
+    SealedEnvelope,
+    SecretResolutionError,
+    org_space_name,
+    read_user_provider_value,
 )
+from hyprial.kernel import DaemonRequestError, ipc_errors
 
 from .models import (
     ALL_MEMBERS,
@@ -52,12 +56,8 @@ from .queries import (
     recipient_matches,
 )
 
-_ENTRY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _CREDENTIAL_KEYS = frozenset({"entryId", "fieldName"})
-_PROVIDER_RECORD_SCHEMAS = frozenset(
-    {"hyprial-model-secret/v1", "hyprial-model-secret/v2"}
-)
-_MAX_PROVIDER_BYTES = 1024 * 1024
+_UNPARSEABLE = (ValueError, TypeError, KeyError, RecursionError)
 
 
 def _now_ms() -> int:
@@ -78,7 +78,8 @@ def _translate_orgfs_error(error: OrgFsError, *, context: str) -> DaemonRequestE
     if error.code == "unknown-doc":
         return DaemonRequestError(
             ipc_errors.SERVICE_UNAVAILABLE,
-            "org service-grants directory is not initialized; the org owner must run an upgraded daemon once",
+            "org service-grants directory is not initialized yet; it is created the next time "
+            "the org owner's upgraded daemon publishes its device row",
         )
     return DaemonRequestError(
         ipc_errors.SERVICE_UNAVAILABLE,
@@ -99,122 +100,36 @@ def _parse_credential_ref(credential: object) -> tuple[str, str | None]:
         )
     entry_id = credential.get("entryId")
     field_name = credential.get("fieldName")
-    if not isinstance(entry_id, str) or _ENTRY_RE.fullmatch(entry_id) is None:
+    if type(entry_id) is not str or (field_name is not None and type(field_name) is not str):
         raise DaemonRequestError(
-            ipc_errors.INVALID_ARGUMENT, "credential.entryId is invalid"
-        )
-    if field_name is not None and (
-        not isinstance(field_name, str) or _ENTRY_RE.fullmatch(field_name) is None
-    ):
-        raise DaemonRequestError(
-            ipc_errors.INVALID_ARGUMENT, "credential.fieldName is invalid"
+            ipc_errors.INVALID_ARGUMENT, "credential.entryId and credential.fieldName must be strings"
         )
     return entry_id, field_name
 
 
-def _validate_provider_ancestors(home: Path, entry_id: str) -> Path:
-    root = Path(home)
-    if not root.is_absolute():
-        raise DaemonRequestError(
-            ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-            f"provider secret unavailable for entry {entry_id!r}",
-        )
-    for directory in (root, root / "secrets", root / "secrets" / "providers"):
-        try:
-            meta = directory.lstat()
-        except FileNotFoundError:
-            raise DaemonRequestError(
-                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-                f"provider secret missing for entry {entry_id!r}",
-            ) from None
-        except OSError:
-            raise DaemonRequestError(
-                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-                f"provider secret unavailable for entry {entry_id!r}",
-            ) from None
-        if stat.S_ISLNK(meta.st_mode) or not stat.S_ISDIR(meta.st_mode):
-            raise DaemonRequestError(
-                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-                f"provider secret path is unsafe for entry {entry_id!r}",
-            )
-    return root / "secrets" / "providers" / f"{entry_id}.json"
-
-
-def _extract_provider_values(document: object, entry_id: str) -> dict[str, str]:
-    if not isinstance(document, dict):
-        raise DaemonRequestError(
-            ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-            f"provider secret format invalid for entry {entry_id!r}",
-        )
-    raw_values: object
-    if "$schema" in document:
-        schema = document.get("$schema")
-        if schema not in _PROVIDER_RECORD_SCHEMAS or set(document) != {
-            "$schema",
-            "values",
-            "routes",
-        }:
-            raise DaemonRequestError(
-                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-                f"provider secret format invalid for entry {entry_id!r}",
-            )
-        raw_values = document.get("values")
-    else:
-        raw_values = document
-    if not isinstance(raw_values, dict):
-        raise DaemonRequestError(
-            ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-            f"provider secret format invalid for entry {entry_id!r}",
-        )
-    values: dict[str, str] = {}
-    for key, val in raw_values.items():
-        if not isinstance(key, str) or not isinstance(val, str):
-            raise DaemonRequestError(
-                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-                f"provider secret format invalid for entry {entry_id!r}",
-            )
-        values[key] = val
-    return values
-
-
-def _read_user_provider_secret(
-    home: Path, *, entry_id: str, field_name: str | None
-) -> bytes:
-    path = _validate_provider_ancestors(home, entry_id)
+def _read_secret(home: Path, entry_id: str, field_name: str | None) -> bytes:
     try:
-        data, _meta = read_private_file(path, max_bytes=_MAX_PROVIDER_BYTES)
-        document = json.loads(data.decode("utf-8"))
-    except FileNotFoundError:
+        value = read_user_provider_value(home, entry_id, field_name)
+    except SecretResolutionError as error:
+        raise DaemonRequestError(error.code, str(error)) from None
+    except ValueError:
         raise DaemonRequestError(
-            ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-            f"provider secret missing for entry {entry_id!r}",
+            ipc_errors.INVALID_ARGUMENT, "credential.entryId or credential.fieldName is invalid"
         ) from None
-    except (OSError, PrivateAccessUnsupported, UnicodeError, json.JSONDecodeError):
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError:
         raise DaemonRequestError(
             ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-            f"provider secret unavailable for entry {entry_id!r}",
+            f"secret resolution invalid: entry={entry_id!r} phase='encode'",
         ) from None
-    values = _extract_provider_values(document, entry_id)
-    if field_name is None:
-        if len(values) != 1:
-            raise DaemonRequestError(
-                ipc_errors.INVALID_ARGUMENT,
-                f"credential.fieldName is required for entry {entry_id!r}",
-            )
-        selected_value = next(iter(values.values()))
-    else:
-        if field_name not in values:
-            raise DaemonRequestError(
-                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-                f"provider secret field missing for entry {entry_id!r}",
-            )
-        selected_value = values[field_name]
-    if not selected_value:
-        raise DaemonRequestError(
-            ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
-            f"provider secret value is empty for entry {entry_id!r}",
-        )
-    return selected_value.encode("utf-8")
+
+
+def _row_owner(row: Any) -> str | None:
+    try:
+        return normalize_bare_owner(row.owner)
+    except ValueError:
+        return None
 
 
 class ServiceGrantService:
@@ -292,18 +207,27 @@ class ServiceGrantService:
                 f"port {port} is not currently exposed on this device",
             )
 
+        try:
+            devices = self._store.list_devices(org)
+        except OrgFsError as error:
+            raise _translate_orgfs_error(error, context="read org directory") from None
+        if not any(
+            row.device_id == self._local_device_id and _row_owner(row) == self._owner
+            for row in devices
+        ):
+            raise DaemonRequestError(
+                ipc_errors.SERVICE_DEVICE_UNAVAILABLE,
+                "this device has not published its row under the caller in that org directory",
+            )
+
         recipient_public_bytes: bytes | None = None
         if isinstance(recipient, GrantRecipient):
-            try:
-                devices = self._store.list_devices(org)
-            except OrgFsError as error:
-                raise _translate_orgfs_error(error, context="read org directory") from None
             target_row = next(
                 (
                     row
                     for row in devices
                     if row.device_id == recipient.device_id
-                    and normalize_bare_owner(row.owner) == recipient.owner
+                    and _row_owner(row) == recipient.owner
                 ),
                 None,
             )
@@ -337,9 +261,7 @@ class ServiceGrantService:
             assert isinstance(recipient, GrantRecipient)
             assert recipient_public_bytes is not None
             entry_id, field_name = cred_ref
-            secret_bytes = _read_user_provider_secret(
-                self._home, entry_id=entry_id, field_name=field_name
-            )
+            secret_bytes = _read_secret(self._home, entry_id, field_name)
             try:
                 sealed_credential = SealedEnvelope.seal_service_grant(
                     secret_bytes,
@@ -365,6 +287,13 @@ class ServiceGrantService:
             revoked_at_ms=None,
             credential=sealed_credential,
         )
+        superseded = [
+            item.grant.grant_id
+            for item in self._own_effective(org, port=port, now=now)
+            if item.grant.recipient == recipient
+        ]
+        for old_id in superseded:
+            self.revoke(org=org, grant_id=old_id)
         try:
             self._store.put_service_grant(org, self._owner, grant_id, grant.as_record())
         except OrgFsError as error:
@@ -386,11 +315,22 @@ class ServiceGrantService:
             ),
             hasCredential=sealed_credential is not None,
             expiresAtMs=expires_at_ms,
+            superseded=superseded,
         )
-        return {"grant": grant_view(stored, now_ms=now, effective=is_grant_effective(grant, now_ms=now))}
+        return {
+            "grant": grant_view(stored, now_ms=now, effective=is_grant_effective(grant, now_ms=now)),
+            "superseded": superseded,
+        }
 
     def revoke(self, *, org: str, grant_id: str) -> dict[str, Any]:
-        """Revoke one of the caller's grants by setting ``revokedAtMs`` and clearing ``credential``."""
+        """Revoke one of the caller's grants by setting ``revokedAtMs`` and clearing ``credential``.
+
+        Revocation does not depend on parsing the stored document. When the
+        caller's own document exists but cannot be read or validated, a
+        minimal revoked tombstone replaces it, keeping each field that still
+        validates; the reader lists it as revoked. An absent document returns
+        ``revoked: false``; a write failure is a request error.
+        """
 
         try:
             org_space_name(org)
@@ -400,10 +340,13 @@ class ServiceGrantService:
 
         try:
             raw_doc = self._store.read_service_grant(org, self._owner, grant_id)
+            exists = raw_doc is not None or self._store.service_grant_exists(
+                org, self._owner, grant_id
+            )
         except OrgFsError as error:
             raise _translate_orgfs_error(error, context="read service grant") from None
 
-        if raw_doc is None:
+        if not exists:
             try:
                 others = self._store.list_service_grants(org)
             except OrgFsError as error:
@@ -418,27 +361,21 @@ class ServiceGrantService:
                 )
             return {"grantId": grant_id, "revoked": False}
 
+        existing: ServiceGrant | None
         try:
-            existing = ServiceGrant.from_record(raw_doc)
-        except ValueError:
-            raise DaemonRequestError(
-                ipc_errors.SERVICE_REGISTRY_INVALID,
-                "stored service grant document is invalid",
-            ) from None
-
-        if existing.revoked_at_ms is not None:
+            existing = None if raw_doc is None else ServiceGrant.from_record(raw_doc)
+        except _UNPARSEABLE:
+            existing = None
+        if existing is not None and existing.grant_id != grant_id:
+            existing = None
+        if existing is not None and existing.revoked_at_ms is not None:
             return {"grantId": grant_id, "revoked": False}
 
         now = self._now_ms()
-        revoked_grant = ServiceGrant(
-            schema_version=existing.schema_version,
-            grant_id=existing.grant_id,
-            service=existing.service,
-            recipient=existing.recipient,
-            granted_at_ms=existing.granted_at_ms,
-            expires_at_ms=existing.expires_at_ms,
-            revoked_at_ms=now,
-            credential=None,
+        revoked_grant = (
+            ServiceGrant.tombstone(grant_id, raw_doc, revoked_at_ms=now)
+            if existing is None
+            else dataclasses.replace(existing, revoked_at_ms=now, credential=None)
         )
         try:
             self._store.put_service_grant(
@@ -454,8 +391,57 @@ class ServiceGrantService:
             grantId=grant_id,
             grantor=self._owner,
             revokedAtMs=now,
+            tombstone=existing is None,
         )
         return {"grantId": grant_id, "revoked": True}
+
+    def revoke_all_for_port(self, port: int) -> dict[str, Any]:
+        """Revoke every effective grant this device issued for ``port``, in every org.
+
+        Meant for the path that stops exposing ``port`` (wired by a later
+        slice). "Exposed" is the desired state in the exposure store, not
+        whether a listener is up, so callers invoke this when the desired
+        exposure is removed. Only grants authored by the caller whose
+        ``service.deviceId`` is this device are touched. A failure in one org
+        is reported in ``failed`` with its error code and does not stop the
+        other orgs.
+        """
+
+        if type(port) is not int or not (1 <= port <= 65535):
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT, "port must be an integer in 1..65535"
+            )
+        now = self._now_ms()
+        try:
+            orgs = self._store.orgs()
+        except OrgFsError as error:
+            raise _translate_orgfs_error(error, context="list orgs") from None
+        revoked: list[dict[str, str]] = []
+        failed: list[dict[str, str]] = []
+        for org in orgs:
+            try:
+                for item in self._own_effective(org, port=port, now=now):
+                    if self.revoke(org=org, grant_id=item.grant.grant_id)["revoked"]:
+                        revoked.append({"org": org, "grantId": item.grant.grant_id})
+            except DaemonRequestError as error:
+                failed.append({"org": org, "code": error.code})
+        return {"port": port, "revoked": revoked, "failed": failed}
+
+    def _own_effective(
+        self, org: str, *, port: int, now: int
+    ) -> list[StoredServiceGrant]:
+        try:
+            loaded = load_org_service_grants(self._store, org, owner=self._owner)
+        except OrgFsError as error:
+            raise _translate_orgfs_error(error, context="list service grants") from None
+        return [
+            item
+            for item in loaded
+            if is_grant_effective(item.grant, now_ms=now)
+            and item.grant.service is not None
+            and item.grant.service.device_id == self._local_device_id
+            and item.grant.service.port == port
+        ]
 
     def grants(
         self,
@@ -477,7 +463,10 @@ class ServiceGrantService:
             raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from None
 
         now = self._now_ms()
-        orgs = [org] if org is not None else self._store.orgs()
+        try:
+            orgs = [org] if org is not None else self._store.orgs()
+        except OrgFsError as error:
+            raise _translate_orgfs_error(error, context="list orgs") from None
         granted_items: list[StoredServiceGrant] = []
         received_items: list[StoredServiceGrant] = []
 
@@ -494,7 +483,7 @@ class ServiceGrantService:
             other_items = [item for item in loaded if item.grantor != self._owner]
 
             for item in own_items:
-                if port is not None and item.grant.service.port != port:
+                if port is not None and (item.grant.service is None or item.grant.service.port != port):
                     continue
                 if include_revoked or is_grant_effective(item.grant, now_ms=now):
                     granted_items.append(item)
@@ -519,7 +508,7 @@ class ServiceGrantService:
                     )
                 )
             for item in matched_received:
-                if port is not None and item.grant.service.port != port:
+                if port is not None and (item.grant.service is None or item.grant.service.port != port):
                     continue
                 received_items.append(item)
 
