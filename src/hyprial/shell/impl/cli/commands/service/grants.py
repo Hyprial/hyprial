@@ -79,9 +79,11 @@ def _render_grant_row(grant: Mapping[str, Any]) -> str:
 
 def _render_grant_created(data: Mapping[str, Any]) -> str:
     grant = data.get("grant")
-    if not isinstance(grant, Mapping):
-        return "Grant created."
-    return f"Granted: {_render_grant_row(grant)}"
+    lines = [f"Granted: {_render_grant_row(grant)}" if isinstance(grant, Mapping) else "Grant created."]
+    superseded = data.get("superseded")
+    if isinstance(superseded, list) and superseded:
+        lines.append("Superseded (revoked): " + ", ".join(str(item) for item in superseded))
+    return "\n".join(lines)
 
 
 def _render_revoke(data: Mapping[str, Any]) -> str:

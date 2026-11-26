@@ -83,7 +83,7 @@ SERVICE_EXAMPLES = (
                     "protocol": "http",
                     "credential": {"entryId": "magpie", "fieldName": "API_KEY"},
                 },
-                result={"grant": GRANT_VIEW},
+                result={"grant": GRANT_VIEW, "superseded": ["sg.bbbbbbbbbbbbbbbbbbbbbbbbbb"]},
             ),
             case(
                 "invalid-params",

@@ -147237,7 +147237,10 @@
               },
               "grantedAtMs": {
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "grantor": {
                 "type": "string"
@@ -147250,6 +147253,9 @@
               },
               "recipient": {
                 "anyOf": [
+                  {
+                    "type": "null"
+                  },
                   {
                     "const": "@members"
                   },
@@ -147283,43 +147289,50 @@
                 "type": "integer"
               },
               "service": {
-                "additionalProperties": false,
-                "properties": {
-                  "deviceId": {
-                    "type": "string"
+                "anyOf": [
+                  {
+                    "type": "null"
                   },
-                  "name": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "note": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "port": {
-                    "maximum": 65535,
-                    "minimum": 1,
-                    "type": "integer"
-                  },
-                  "protocol": {
-                    "enum": [
-                      "tcp",
-                      "http"
-                    ]
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "deviceId": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "note": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "port": {
+                        "maximum": 65535,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "protocol": {
+                        "enum": [
+                          "tcp",
+                          "http"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "deviceId",
+                      "port",
+                      "name",
+                      "protocol",
+                      "note"
+                    ],
+                    "type": "object"
                   }
-                },
-                "required": [
-                  "deviceId",
-                  "port",
-                  "name",
-                  "protocol",
-                  "note"
-                ],
-                "type": "object"
+                ]
               }
             },
             "required": [
@@ -147336,10 +147349,17 @@
               "effective"
             ],
             "type": "object"
+          },
+          "superseded": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
-          "grant"
+          "grant",
+          "superseded"
         ],
         "type": "object"
       },
@@ -147385,7 +147405,10 @@
                 "port": 8447,
                 "protocol": "http"
               }
-            }
+            },
+            "superseded": [
+              "sg.bbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ]
           }
         },
         {
@@ -147524,7 +147547,10 @@
                 },
                 "grantedAtMs": {
                   "minimum": 0,
-                  "type": "integer"
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "grantor": {
                   "type": "string"
@@ -147537,6 +147563,9 @@
                 },
                 "recipient": {
                   "anyOf": [
+                    {
+                      "type": "null"
+                    },
                     {
                       "const": "@members"
                     },
@@ -147570,43 +147599,50 @@
                   "type": "integer"
                 },
                 "service": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "deviceId": {
-                      "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "null"
                     },
-                    "name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "note": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "port": {
-                      "maximum": 65535,
-                      "minimum": 1,
-                      "type": "integer"
-                    },
-                    "protocol": {
-                      "enum": [
-                        "tcp",
-                        "http"
-                      ]
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deviceId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "note": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "port": {
+                          "maximum": 65535,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "protocol": {
+                          "enum": [
+                            "tcp",
+                            "http"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "deviceId",
+                        "port",
+                        "name",
+                        "protocol",
+                        "note"
+                      ],
+                      "type": "object"
                     }
-                  },
-                  "required": [
-                    "deviceId",
-                    "port",
-                    "name",
-                    "protocol",
-                    "note"
-                  ],
-                  "type": "object"
+                  ]
                 }
               },
               "required": [
@@ -147645,7 +147681,10 @@
                 },
                 "grantedAtMs": {
                   "minimum": 0,
-                  "type": "integer"
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "grantor": {
                   "type": "string"
@@ -147658,6 +147697,9 @@
                 },
                 "recipient": {
                   "anyOf": [
+                    {
+                      "type": "null"
+                    },
                     {
                       "const": "@members"
                     },
@@ -147691,43 +147733,50 @@
                   "type": "integer"
                 },
                 "service": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "deviceId": {
-                      "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "null"
                     },
-                    "name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "note": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "port": {
-                      "maximum": 65535,
-                      "minimum": 1,
-                      "type": "integer"
-                    },
-                    "protocol": {
-                      "enum": [
-                        "tcp",
-                        "http"
-                      ]
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deviceId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "note": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "port": {
+                          "maximum": 65535,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "protocol": {
+                          "enum": [
+                            "tcp",
+                            "http"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "deviceId",
+                        "port",
+                        "name",
+                        "protocol",
+                        "note"
+                      ],
+                      "type": "object"
                     }
-                  },
-                  "required": [
-                    "deviceId",
-                    "port",
-                    "name",
-                    "protocol",
-                    "note"
-                  ],
-                  "type": "object"
+                  ]
                 }
               },
               "required": [

@@ -37,14 +37,15 @@ GRANT_RECIPIENT = {
         obj({"owner": STR, "deviceId": STR}),
     ]
 }
+TOMBSTONE_RECIPIENT = {"anyOf": [{"type": "null"}, *GRANT_RECIPIENT["anyOf"]]}
 GRANT_VIEW = obj({
     "org": STR,
     "grantor": STR,
     "schemaVersion": {"type": "integer", "const": 1},
     "grantId": STR,
-    "service": GRANT_ENDPOINT,
-    "recipient": GRANT_RECIPIENT,
-    "grantedAtMs": {"type": "integer", "minimum": 0},
+    "service": {"anyOf": [{"type": "null"}, GRANT_ENDPOINT]},
+    "recipient": TOMBSTONE_RECIPIENT,
+    "grantedAtMs": {"type": ["integer", "null"], "minimum": 0},
     "expiresAtMs": {"type": ["integer", "null"], "minimum": 0},
     "revokedAtMs": {"type": ["integer", "null"], "minimum": 0},
     "hasCredential": {"type": "boolean"},
@@ -105,7 +106,7 @@ RESULTS = {
     "service.disconnect": obj({"name": STR, "removed": {"type": "boolean"}}),
     "service.guide": obj({"entry": ENTRY, "source": STR}),
     "service.list": obj({"services": {"type": "array", "items": ROW}, "registry": REGISTRY}),
-    "service.grant": obj({"grant": GRANT_VIEW}),
+    "service.grant": obj({"grant": GRANT_VIEW, "superseded": {"type": "array", "items": STR}}),
     "service.revoke": obj({"grantId": STR, "revoked": {"type": "boolean"}}),
     "service.grants": obj({
         "granted": {"type": "array", "items": GRANT_VIEW},
