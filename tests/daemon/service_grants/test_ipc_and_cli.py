@@ -109,7 +109,9 @@ def test_ipc_specs_have_local_operator_audience_and_http_disabled() -> None:
 
     for name in ("service.grant", "service.revoke", "service.grants"):
         assert name in METHOD_REGISTRY
-        spec = METHOD_REGISTRY.spec(name)
+        binding = METHOD_REGISTRY.get(name)
+        assert binding is not None
+        spec = binding.spec
         assert spec.audience == ("local-operator",)
         assert spec.http_exposed is False
 
