@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from scripts.ci.windows import run_waves as run_waves_module
+from scripts.ci.windows import wave_state as wave_state_module
 from scripts.ci.windows.run_waves import (
     CONTRACT_TEST_FILE,
     HARD_STATES,
@@ -32,7 +33,9 @@ from scripts.ci.windows.run_waves import (
 from scripts.ci.windows.summarize import (
     inspect_contract_skips,
     junit_failure_nodeids,
+    main as summarize_main,
     summarize_leg,
+    summarize_suite,
     validate_smoke,
     validate_waves,
 )
@@ -691,3 +694,255 @@ def test_summary_validates_contract_skips_only_when_contract_file_is_planned(
     unplanned_ok, unplanned_errors, _ = summarize_leg(unplanned_leg, "w1", waves=True)
     assert unplanned_ok is False
     assert "contract skips found for an unplanned file" in unplanned_errors
+
+
+def test_ledger_events_excludes_acl_probe_and_interceptor_hits(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+    write_complete_ledger(ledger, ["tests/a.py::test_ok"])
+    write_events(
+        ledger / "acl-probe.jsonl",
+        [
+            {"event": "os.mkdir", "path": "C:/tmp/a", "nodeid": "tests/a.py::test_ok"},
+            {"event": "start", "nodeid": "tests/a.py::never_ended"},
+        ],
+    )
+    write_events(ledger / "interceptor-hits.jsonl", [])
+
+    events = wave_state_module._ledger_events(ledger)
+    assert all(event.get("event") in {"collect", "end"} for event in events)
+    outcome = classify_run(
+        returncode=0, junit_paths=[junit], ledger_dir=ledger, planned_files=["tests/a.py"]
+    )
+    assert outcome.status == "passed"
+
+
+def test_run_waves_tier2_multi_wave_and_allows_conditional_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_path = tmp_path / "plan-manifest.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "selection": "full",
+                "suiteRequired": True,
+                "requiredLegs": ["shard-0", "shard-1"],
+                "shards": [["tests/z.py"], ["tests/a.py", "tests/b.py", "tests/c.py"]],
+                "waves": [[["tests/z.py"]], [["tests/a.py", "tests/b.py"], ["tests/c.py"]]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    seen_waves: list[tuple[int, list[str]]] = []
+
+    def fake_run_one(
+        *, files: list[str], deselect: list[str], args: argparse.Namespace,
+        run_number: int, wave_number: int, wave_deadline: float, job_deadline: float, root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        seen_waves.append((wave_number, list(files)))
+        junit = args.results / f"shard-1-wave-{wave_number}-run-{run_number}.xml"
+        ledger = args.ledger_root / f"wave-{wave_number}-run-{run_number}"
+        ledger.mkdir(parents=True, exist_ok=True)
+        if wave_number == 1:
+            write_junit(
+                junit,
+                [
+                    {"classname": "tests.a", "name": "test_ok"},
+                    {
+                        "classname": "tests.b",
+                        "name": "test_cond_skip",
+                        "outcome": "skipped",
+                        "message": "platform conditional skip",
+                    },
+                ],
+            )
+            write_complete_ledger(ledger, ["tests/a.py::test_ok", "tests/b.py::test_cond_skip"])
+        else:
+            write_junit(junit, [{"classname": "tests.c", "name": "test_ok"}])
+            write_complete_ledger(ledger, ["tests/c.py::test_ok"])
+        return 0, junit, ledger, None, []
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+    args = argparse.Namespace(
+        tier="2", files=None, plan_manifest=plan_path, shard=1, acl_probe=True, workers=4,
+        watchdog_seconds=600, idle_seconds=900, wave_minutes=40, deadline_minutes=140,
+        step_minutes=150, job_minutes=170, basetemp_root=tmp_path / "bt",
+        results=tmp_path / "results", ledger_root=tmp_path / "ledger",
+        report=tmp_path / "results" / "run-manifest.json",
+    )
+
+    manifest = run_waves(args, tmp_path)
+
+    assert manifest["status"] == "passed"
+    assert (manifest["tier"], manifest["shard"], manifest["waveCount"]) == ("2", 1, 2)
+    assert manifest["aclProbe"] is True
+    assert manifest["plannedFiles"] == ["tests/a.py", "tests/b.py", "tests/c.py"]
+    assert manifest["reportedFiles"] == ["tests/a.py", "tests/b.py", "tests/c.py"]
+    assert seen_waves == [(1, ["tests/a.py", "tests/b.py"]), (2, ["tests/c.py"])]
+    assert [entry["wave"] for entry in manifest["runs"]] == [1, 2]
+
+
+def test_run_one_propagates_acl_probe_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_envs: list[dict[str, str]] = []
+
+    class FakeChild:
+        def __init__(self, *, command: list[str], output: Path, env: dict[str, str], cwd: Path) -> None:
+            captured_envs.append(dict(env))
+
+    monkeypatch.setattr(run_waves_module, "_ManagedChild", FakeChild)
+    monkeypatch.setattr(run_waves_module, "_wait_with_watchdogs", lambda child, **kw: (0, None))
+    monkeypatch.setattr(run_waves_module, "_query_windows_processes", lambda needles: [])
+    monkeypatch.delenv("HYPRIAL_TEST_ACL_PROBE", raising=False)
+
+    base_args = argparse.Namespace(
+        tier="2", files=None, plan_manifest=tmp_path / "plan.json", shard=0, acl_probe=True,
+        workers=2, watchdog_seconds=300, idle_seconds=600, wave_minutes=20, deadline_minutes=25,
+        step_minutes=30, job_minutes=45, basetemp_root=tmp_path / "bt",
+        results=tmp_path / "results", ledger_root=tmp_path / "ledger",
+        report=tmp_path / "results" / "run-manifest.json",
+    )
+    run_waves_module._run_one(
+        files=["tests/a.py"], deselect=[], args=base_args, run_number=1, wave_number=1,
+        wave_deadline=1000.0, job_deadline=2000.0, root=tmp_path,
+    )
+    base_args.acl_probe = False
+    run_waves_module._run_one(
+        files=["tests/a.py"], deselect=[], args=base_args, run_number=2, wave_number=1,
+        wave_deadline=1000.0, job_deadline=2000.0, root=tmp_path,
+    )
+    assert captured_envs[0].get("HYPRIAL_TEST_ACL_PROBE") == "1"
+    assert "HYPRIAL_TEST_ACL_PROBE" not in captured_envs[1]
+
+
+def _write_suite_leg(
+    leg_dir: Path, *, planned: list[str], status: str, run_status: str,
+    cases: list[dict[str, str]], ledger_events: list[dict[str, object]],
+) -> None:
+    results = leg_dir / "results"
+    ledger = leg_dir / "ledger" / "wave-1-run-1"
+    results.mkdir(parents=True, exist_ok=True)
+    ledger.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "tier": "2", "status": status, "offsettable": status == "failed",
+        "selfCheck": {"passed": True}, "plannedFiles": planned, "reportedFiles": planned,
+        "runs": [{"wave": 1, "run": 1, "status": run_status, "duration": 2.5}], "leaks": [],
+    }
+    (results / "run-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (results / "waves.log").write_text(f"WINDOWS_WAVES_DONE {json.dumps(manifest)}\n", encoding="utf-8")
+    write_junit(results / "shard-0-wave-1-run-1.xml", cases)
+    write_events(ledger / "gw0.jsonl", ledger_events)
+
+
+def test_summarize_suite_green_missing_hard_red_and_expected_failures(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan-manifest.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "version": 1, "selection": "full", "suiteRequired": True,
+                "requiredLegs": ["shard-0", "shard-1"], "posixOnlyIgnored": {"files": 2, "tests": 5},
+                "shards": [["tests/a.py"], ["tests/b.py"]],
+                "waves": [[["tests/a.py"]], [["tests/b.py"]]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard0, shard1 = tmp_path / "shard-0", tmp_path / "shard-1"
+    _write_suite_leg(
+        shard0, planned=["tests/a.py"], status="passed", run_status="passed",
+        cases=[{"classname": "tests.a", "name": "test_ok"}],
+        ledger_events=[
+            {"event": "collect", "collected": 1, "errors": []},
+            {"event": "end", "nodeid": "tests/a.py::test_ok", "phase": "call", "outcome": "passed"},
+        ],
+    )
+    _write_suite_leg(
+        shard1, planned=["tests/b.py"], status="passed", run_status="passed",
+        cases=[{"classname": "tests.b", "name": "test_ok"}],
+        ledger_events=[
+            {"event": "collect", "collected": 1, "errors": []},
+            {"event": "end", "nodeid": "tests/b.py::test_ok", "phase": "call", "outcome": "passed"},
+        ],
+    )
+    ok_green, green_lines = summarize_suite(
+        plan_manifest_path=plan_path, leg_roots={"shard-0": shard0, "shard-1": shard1}
+    )
+    assert ok_green is True
+    assert any("POSIX_ONLY_IGNORED files=2 tests=5" in line for line in green_lines)
+
+    ok_missing, missing_lines = summarize_suite(
+        plan_manifest_path=plan_path, leg_roots={"shard-0": shard0}
+    )
+    assert ok_missing is False
+    assert any("missing required leg artifact: shard-1" in line for line in missing_lines)
+
+    fail_case = [{"classname": "tests.a", "name": "test_acl", "outcome": "failed", "message": "unsafe-acl on temp dir"}]
+    fail_ledger: list[dict[str, object]] = [
+        {"event": "collect", "collected": 1, "errors": []},
+        {
+            "event": "end", "nodeid": "tests/a.py::test_acl", "phase": "call", "outcome": "failed",
+            "excinfo": {"type": "builtins.AssertionError", "message": "unsafe-acl on temp dir"},
+        },
+    ]
+    shard0_fail, shard0_crash = tmp_path / "shard-0-fail", tmp_path / "shard-0-crash"
+    _write_suite_leg(shard0_fail, planned=["tests/a.py"], status="failed", run_status="failed", cases=fail_case, ledger_events=fail_ledger)
+    _write_suite_leg(shard0_crash, planned=["tests/a.py"], status="native-worker-crash", run_status="native-worker-crash", cases=fail_case, ledger_events=fail_ledger)
+
+    def write_expected(name: str, phase: str) -> Path:
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "entries": [{
+                        "nodeid": "tests/a.py::test_acl", "kp": "KP-123", "phase": phase,
+                        "exception": "builtins.AssertionError", "match": "unsafe-acl",
+                        "leg": "windows-x64", "since": "1",
+                    }],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    expected_ok = write_expected("expected-ok.json", "call")
+    expected_bad = write_expected("expected-bad.json", "setup")
+
+    ok_offset, offset_lines = summarize_suite(
+        plan_manifest_path=plan_path, leg_roots={"shard-0": shard0_fail, "shard-1": shard1},
+        expected_failures_path=expected_ok,
+    )
+    assert ok_offset is True, offset_lines
+    assert any("matched=1 stale=0 unexpectedShape=0" in line for line in offset_lines)
+    assert any("unsafe-acl=1" in line for line in offset_lines)
+
+    ok_stale, stale_lines = summarize_suite(
+        plan_manifest_path=plan_path, leg_roots={"shard-0": shard0, "shard-1": shard1},
+        expected_failures_path=expected_ok,
+    )
+    assert ok_stale is False and any("stale-expected-failure" in line for line in stale_lines)
+
+    ok_shape, shape_lines = summarize_suite(
+        plan_manifest_path=plan_path, leg_roots={"shard-0": shard0_fail, "shard-1": shard1},
+        expected_failures_path=expected_bad,
+    )
+    assert ok_shape is False and any("unexpected-failure-shape" in line for line in shape_lines)
+
+    ok_crash, crash_lines = summarize_suite(
+        plan_manifest_path=plan_path, leg_roots={"shard-0": shard0_crash, "shard-1": shard1},
+        expected_failures_path=expected_ok,
+    )
+    assert ok_crash is False and any("native-worker-crash" in line for line in crash_lines)
+
+    assert summarize_main(
+        [
+            "--mode", "suite", "--plan-manifest", str(plan_path),
+            "--expected-failures", str(tmp_path / "nonexistent-expected.json"),
+            "--input", f"{shard0}=shard-0", "--input", f"{shard1}=shard-1",
+        ]
+    ) == 0

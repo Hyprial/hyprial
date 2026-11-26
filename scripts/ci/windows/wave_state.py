@@ -1,11 +1,16 @@
 """Ten-state classification, ledger reading, and JUnit reconciliation for Windows waves.
 
-Decision (2026-11-26, tier 1 smoke).  Split from run_waves.py to keep every script well
-under the 1000-line structural gate.  Ledger field names follow the ledger contract
-between the test harness and this runner (collect.errors, crash.reason, non-empty hang-gw<N>.txt, and non-fatal
-leak events recorded in manifest.leaks).  JUnit parsing supports both xunit2
-(classname-only) and xunit1 (file attribute), rejects duplicate nodeids, and
-synthesizes unreported::<path> errors for files still missing after reruns.
+Decision (2026-11-26, tier 1 smoke and tier 2 full suite).  Split from run_waves.py
+to keep every script well under the 1000-line structural gate.  Ledger field names
+follow the ledger contract between the test harness and this runner (collect.errors,
+crash.reason, non-empty hang-gw<N>.txt without a "hyprial watchdog: leak-timeout"
+header, and non-fatal leak events recorded in manifest.leaks).  Non-ledger JSONL
+side files (interceptor-hits.jsonl and acl-probe.jsonl) are excluded from ledger
+event streams.  JUnit parsing supports both xunit2 (classname-only) and xunit1
+(file attribute), rejects duplicate nodeids, and synthesizes unreported::<path>
+errors for files still missing after reruns.  Tier 1 enforces strict contract and
+non-contract skip rules; tier 2 keeps full ten-state classification without failing
+on legitimate conditional skips.
 """
 
 from __future__ import annotations
@@ -222,7 +227,7 @@ def _ledger_events(ledger_dir: Path) -> list[dict[str, Any]]:
     if not ledger_dir.exists():
         return events
     for path in sorted(ledger_dir.glob("*.jsonl")):
-        if path.name == "interceptor-hits.jsonl":
+        if path.name in {"interceptor-hits.jsonl", "acl-probe.jsonl"}:
             continue
         events.extend(read_jsonl(path))
     return events
@@ -307,6 +312,7 @@ def classify_run(
     planned_files: Sequence[str],
     root: Path | None = None,
     forced_status: str | None = None,
+    strict_skips: bool = True,
 ) -> RunOutcome:
     junit_list = list(junit_paths)
     planned = frozenset(normalise_path(path) for path in planned_files)
@@ -396,25 +402,28 @@ def classify_run(
             status = "failed"
         else:
             status = "passed"
-    if result.contract_skip_errors:
-        details.extend(f"invalid-contract-skip:{reason}" for reason in result.contract_skip_errors)
-        if status == "passed":
-            status = "failed"
-    if (
-        CONTRACT_TEST_FILE in planned
-        and CONTRACT_TEST_FILE in result.files
-        and CONTRACT_TEST_FILE not in partial_files
-        and result.contract_skips != 13
-    ):
-        details.append(f"contract-skips:{result.contract_skips}")
-        if status == "passed":
-            status = "failed"
-    if result.other_skips:
-        details.extend(
-            f"unexpected-skip:{nodeid}:{reason}" for nodeid, reason in result.other_skips
-        )
-        if status == "passed":
-            status = "failed"
+    if strict_skips:
+        if result.contract_skip_errors:
+            details.extend(
+                f"invalid-contract-skip:{reason}" for reason in result.contract_skip_errors
+            )
+            if status == "passed":
+                status = "failed"
+        if (
+            CONTRACT_TEST_FILE in planned
+            and CONTRACT_TEST_FILE in result.files
+            and CONTRACT_TEST_FILE not in partial_files
+            and result.contract_skips != 13
+        ):
+            details.append(f"contract-skips:{result.contract_skips}")
+            if status == "passed":
+                status = "failed"
+        if result.other_skips:
+            details.extend(
+                f"unexpected-skip:{nodeid}:{reason}" for nodeid, reason in result.other_skips
+            )
+            if status == "passed":
+                status = "failed"
     return RunOutcome(
         status,
         returncode,
@@ -426,6 +435,66 @@ def classify_run(
         tuple(details),
         is_offsettable(status),
     )
+
+
+def merge_wave_status(current: str, incoming: str) -> str:
+    if incoming in HARD_STATES:
+        return incoming
+    if incoming == "failed" and current not in HARD_STATES:
+        return "failed"
+    return current
+
+
+def load_planned_waves(
+    files_path: Path | None,
+    plan_manifest: Path | None,
+    shard: int | None,
+) -> list[list[str]]:
+    if files_path is not None and plan_manifest is not None:
+        raise ValueError("pass either --files or --plan-manifest, not both")
+    if plan_manifest is not None:
+        raw = json.loads(plan_manifest.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("plan manifest must be a JSON object")
+        raw_waves = raw.get("waves")
+        if not isinstance(raw_waves, list) or not raw_waves:
+            raise ValueError("plan manifest has no waves")
+        index = 0 if shard is None else int(shard)
+        if index < 0 or index >= len(raw_waves):
+            raise ValueError(f"shard index {index} out of range for {len(raw_waves)} shards")
+        shard_waves = raw_waves[index]
+        if not isinstance(shard_waves, list):
+            raise ValueError(f"shard {index} waves must be a list")
+        waves: list[list[str]] = []
+        seen: set[str] = set()
+        for wave in shard_waves:
+            if not isinstance(wave, list):
+                raise ValueError(f"shard {index} contains non-list wave")
+            items: list[str] = []
+            for entry in wave:
+                normalised = normalise_path(str(entry).strip())
+                if not normalised:
+                    continue
+                if normalised in seen:
+                    raise ValueError(f"duplicate test path across waves: {normalised}")
+                seen.add(normalised)
+                items.append(normalised)
+            if items:
+                waves.append(items)
+        if not waves:
+            raise ValueError(f"planned test file list is empty for shard {index}")
+        return waves
+    if files_path is None:
+        raise ValueError("either --files or --plan-manifest is required")
+    planned = [
+        normalise_path(line.strip())
+        for line in files_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    planned = sorted(dict.fromkeys(planned))
+    if not planned:
+        raise ValueError("planned test file list is empty")
+    return [planned]
 
 
 def synthesize_unreported(path: Path, missing: Sequence[str]) -> None:
