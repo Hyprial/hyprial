@@ -26,7 +26,7 @@ from hyprial.daemon.impl.application.onboarding.account_lifecycle import (
 )
 from hyprial.daemon.impl.application.onboarding.lifecycle import ServingRecovery
 from hyprial.daemon.impl.onboarding.operations import OperationService, journal
-from hyprial.daemon.impl.org.network.device_key import encryption_key_reader
+from hyprial.daemon.impl.org.network.device_key import ensure_encryption_key
 from hyprial.identity import (
     DeviceRecord,
     IdentitySnapshot,
@@ -89,7 +89,7 @@ class KeyHome:
         records = () if state is None else state.snapshot.records
         return [(r.account_owner, r.state) for r in records if r.kind == "initialize"]
 
-    def recovery(self, encryption_key=encryption_key_reader) -> ServingRecovery:
+    def recovery(self, encryption_key=ensure_encryption_key) -> ServingRecovery:
         return ServingRecovery(
             operations=self.service,
             home=self.dir,
@@ -255,6 +255,50 @@ def test_a_stuck_key_step_does_not_hold_serving_start(tmp_path: Path) -> None:
     gateway._recovery = recovery
     try:
         gateway.on_daemon_ready()
-        assert entered.wait(30)
+        assert entered.wait(10)
     finally:
         gateway.close()
+
+
+def test_the_pass_hands_the_key_step_the_home_and_the_daemon_state_directory(
+    tmp_path: Path,
+) -> None:
+    """The production step takes its two paths positionally, like the signing-key step.
+
+    A step that is called with another convention raises ``TypeError``; the
+    pass contains it and only logs, so the device would silently never get a
+    key.  This pins the convention the production default is called with.
+    """
+
+    home = KeyHome(tmp_path).registered()
+    calls: list[tuple[Path, ...]] = []
+
+    def record(*paths: Path) -> dict[str, str] | None:
+        calls.append(paths)
+        return ensure_encryption_key(*paths)
+
+    assert home.recovery(record).run() == "initialized"
+
+    assert calls == [(home.dir, home.state)]
+    assert len(home.keys()) == 1
+
+
+def test_the_serving_key_is_a_user_key_bound_to_the_account_and_the_device(
+    tmp_path: Path,
+) -> None:
+    """Only a ``user`` kind key can open a sealed credential on this device."""
+
+    home = KeyHome(tmp_path).registered()
+    home.recovery().run()
+
+    [record] = [
+        json.loads(path.read_text("utf-8"))
+        for path in (home.state / "identity" / "encryption-keys").glob("*/key.json")
+    ]
+    assert record["keyKind"] == "user"
+    assert record["algorithm"] == "X25519"
+    assert (record["casdoorSub"], record["deviceUid"]) == (USER_ID, DEVICE_UID)
+    assert record["state"] == "local"
+    assert list(home.state.joinpath("identity").iterdir()) == [
+        home.state / "identity" / "encryption-keys"
+    ]

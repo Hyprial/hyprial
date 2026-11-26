@@ -20,10 +20,13 @@ import pytest
 
 import hyprial.identity as identity
 from hyprial.daemon.impl.org.network.device_key import encryption_key_reader
+from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine
 from hyprial.daemon.impl.org.network.service import OrgNetworkService
+from hyprial.identity import id_form_minting
 from hyprial.identity.impl.device import DeviceRecord, write_device_record
 from tests.daemon.org.network.test_org_network_service import (
     NODE_ID,
+    OWN_ADDRESS,
     OWNER,
     FakeFs,
     _create_org_spaces,
@@ -199,11 +202,8 @@ def test_a_key_the_store_refuses_publishes_no_pair_and_is_not_a_publish_error(
     assert "encryptionKeyId" not in _row(fs)
 
 
-def test_a_reader_that_raises_is_not_a_publish_error(
-    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
-) -> None:
+def test_a_reader_that_raises_is_not_a_publish_error(tmp_path: Path) -> None:
     home = _home(tmp_path, user_id=USER_ID)
-    state = tmp_path_factory.mktemp("state")
     fs = FakeFs()
     _create_org_spaces(fs)
 
@@ -214,6 +214,45 @@ def test_a_reader_that_raises_is_not_a_publish_error(
 
     assert result == {"published": [ORG], "skipped": [], "errors": []}
     assert "encryptionKeyId" not in _row(fs)
+
+
+class _NoDirectoryGrant:
+    """A policy that grants nothing, so another owner's row may not be written."""
+
+    def allows(self, *, org: str, subject: str, action: str, resource: str) -> bool:
+        return False
+
+
+def test_a_refused_publish_never_reads_the_key(tmp_path: Path) -> None:
+    """A daemon without the right to write the row must not touch the key store."""
+
+    home = _home(tmp_path, user_id=USER_ID)
+    fs = FakeFs()
+    _create_org_spaces(fs)
+    reads = 0
+
+    def reader() -> None:
+        nonlocal reads
+        reads += 1
+        return None
+
+    result = OrgNetworkService(
+        fs=fs,
+        home=home,
+        node_id=NODE_ID,
+        owner="bob@example",
+        invalid_devices=InvalidDeviceQuarantine(),
+        policy=_NoDirectoryGrant(),
+        read_own_address=lambda: OWN_ADDRESS,
+        encryption_key=reader,
+    ).publish_self()
+
+    assert result == {
+        "published": [],
+        "skipped": [{"org": ORG, "reason": "ORG_ACTION_NOT_AUTHORIZED"}],
+        "errors": [],
+    }
+    assert reads == 0
 
 
 def test_the_private_half_is_never_published(
@@ -231,8 +270,11 @@ def test_the_private_half_is_never_published(
     private = json.loads(stored.read_text(encoding="utf-8"))["privateKey"]
     text = fs.docs[("space-" + ORG, ROW_PATH)]
     assert private not in text
-    assert set(_row(fs)) == {
+    row = _row(fs)
+    # ``deviceUid`` is on the row only while id-form minting is on.
+    expected = {
         "deviceId", "owner", "serverPublic", "clientPublic", "clientPublicByServer",
         "address", "keyGeneration", "updatedAt", "machineFingerprint",
         "firstPublishedAt", "encryptionKeyId", "encryptionPublicKey",
-    }
+    } | ({"deviceUid"} if id_form_minting() else set())
+    assert set(row) == expected

@@ -22,7 +22,12 @@ import pytest
 
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.org.network.ipc import _build_service, ipc_org_create
-from hyprial.identity import DeviceRecord, address_path, write_device_record
+from hyprial.identity import (
+    DeviceRecord,
+    address_path,
+    remove_logout_artifacts,
+    write_device_record,
+)
 from tests.daemon.org.network.test_org_network_ipc import NODE_ID, OWNER, _FakeApp
 from tests.support.tailnet_membership import key
 
@@ -48,7 +53,11 @@ def _app(
         ),
     )
     address_path(tmp_path).write_text("tcp://10.0.0.9:7447#ipc-psk")
-    settings = {"owner": OWNER, "identityIssuer": "https://issuer.example.test"}
+    settings = {
+        "owner": OWNER,
+        "identityMode": "casdoor",
+        "identityIssuer": "https://issuer.example.test",
+    }
     if user_id is not None:
         settings["userId"] = user_id
     (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
@@ -150,3 +159,18 @@ def test_an_application_without_a_state_directory_gets_no_reader(tmp_path: Path)
 
     assert created["devicePublished"] is True
     assert "encryptionKeyId" not in row
+
+
+def test_after_a_logout_the_service_no_longer_offers_a_key(tmp_path: Path) -> None:
+    """The key belongs to an account, so a logged-out home gives none and makes none."""
+
+    app, key_state = _app(tmp_path, user_id=USER_ID)
+    try:
+        ipc_org_create(app, {"org": ORG})
+        remove_logout_artifacts(tmp_path)
+
+        assert _build_service(app)._encryption_key() is None
+    finally:
+        app._runtime.close()
+
+    assert len(_key_records(key_state)) == 1

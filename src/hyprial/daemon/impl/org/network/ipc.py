@@ -5,6 +5,21 @@ The handlers are module-level functions over the application object
 (``app._require_orgfs_runtime().facade``).  The forwarding seams W-C owns
 — ``map_peer(peer, address)``, redial, the sidecar status — are injected
 here as callbacks, never imported.
+
+Decision record (service grant S1, 2026-11-26: the published encryption key):
+- ``_build_service`` injects this device's encryption key reader.  It is the
+  one construction point of the network service, so the ``org.*`` handlers,
+  ``publish_self_for_app`` at startup and on every refresh of the directory,
+  and the per-org actor all publish the pair and no caller has to remember it.
+- The reader is bound to the home and the state directory of this build and
+  reads the committed account on every call.  It is therefore rebuilt with the
+  service, and a login or logout in the running daemon is followed by the next
+  publish under the account that is committed then.
+- An application without a state directory gets no reader.  Private state is
+  where the key lives; without it the row is published without the pair, which
+  is the same answer the reader gives for any missing prerequisite.
+- The key is ensured at serving start by the onboarding recovery pass, not
+  here: this path needs an org to publish into and a sidecar address.
 """
 
 from __future__ import annotations
@@ -49,6 +64,7 @@ from hyprial.daemon.impl.org.network.directory import (
     OrgFsDirectoryStore,
 )
 from hyprial.daemon.impl.org.membership.invites import InviteService
+from hyprial.daemon.impl.org.network.device_key import encryption_key_reader
 from hyprial.daemon.impl.org.network.service import (
     OrgNetworkError,
     OrgNetworkService,
@@ -223,6 +239,7 @@ def _build_service(
         except Exception:  # noqa: BLE001 - an unreadable cell runtime degrades to unknown
             return None
 
+    state_dir = getattr(app, "state_dir", None)
     service = OrgNetworkService(
         fs=fs,
         home=Path(app.hyprial_home),
@@ -234,6 +251,13 @@ def _build_service(
             logger=lambda level, domain, event, **fields: app._log(
                 level, domain, event, **fields
             ),
+        ),
+        encryption_key=(
+            None
+            if state_dir is None
+            else encryption_key_reader(
+                home=Path(app.hyprial_home), state_dir=Path(state_dir)
+            )
         ),
         map_peer=map_peer,
         unmap_peer=unmap_peer,

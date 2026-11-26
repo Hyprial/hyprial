@@ -5,6 +5,8 @@
 # - The published directory row carries it only once id-form minting is on:
 #   an older reader rejects a device row with an unknown key, so the switch
 #   keeps today's published document byte-identical until the flip.
+# - Service grant S1 (2026-11-26): the row also carries this device's published
+#   encryption key; the decisions live in ``network/device_key``.
 """Org lifecycle and network views over OrgFS with injected transport hooks."""
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ from hyprial.daemon.impl.org.network.create.sub_org import (
     validate_join_identity_flow,
     walk_parent_chain,
 )
+from hyprial.daemon.impl.org.network.device_key import published_pair
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
@@ -166,6 +169,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         oidc_roster: Callable[[str], Mapping[str, Mapping[str, Any]]] | None = None,
         org_cell_bound: Callable[[str, str], bool | None] | None = None,
         owner_cell_binding: Callable[[str], Mapping[str, Any] | None] | None = None,
+        encryption_key: Callable[[], Mapping[str, str] | None] | None = None,
     ) -> None:
         self._fs = fs
         self._home = Path(home)
@@ -211,6 +215,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         self._oidc_issuer, self._oidc_roster = oidc_issuer, oidc_roster
         self._org_cell_bound = org_cell_bound
         self._owner_cell_binding = owner_cell_binding
+        self._encryption_key = encryption_key
         self._join_tokens = JoinTokenLedger(self._home / "org" / "join-consumed.json")
 
     @serialized_create
@@ -815,6 +820,19 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             ),
             None,
         )
+        # A member writes only their *own* device row (the owner check is
+        # the caller's half of "member 只能写自己的设备记录"); anything
+        # beyond that needs the directory-wide write grant.
+        if record.owner != self._owner and not self._policy.allows(
+            org=org,
+            subject=self._owner,
+            action=ACTION_WRITE,
+            resource=RESOURCE_DIRECTORY_ALL,
+        ):
+            raise OrgNetworkError(
+                "ORG_ACTION_NOT_AUTHORIZED",
+                f"writing device {record.device_id!r} in org {org!r} is not allowed",
+            )
         # Directory publication is business metadata, never transport admission.
         client_public_by_server: dict[str, str] = {}
         device = DirectoryDevice(
@@ -829,20 +847,8 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             machine_fingerprint=binding.machine_fingerprint,
             first_published_at=binding.first_published_at,
             device_uid=record.device_uid if id_form_minting() else None,
+            **published_pair(self._encryption_key),
         )
-        # A member writes only their *own* device row (the owner check is
-        # the caller's half of "member 只能写自己的设备记录"); anything
-        # beyond that needs the directory-wide write grant.
-        if device.owner != self._owner and not self._policy.allows(
-            org=org,
-            subject=self._owner,
-            action=ACTION_WRITE,
-            resource=RESOURCE_DIRECTORY_ALL,
-        ):
-            raise OrgNetworkError(
-                "ORG_ACTION_NOT_AUTHORIZED",
-                f"writing device {device.device_id!r} in org {org!r} is not allowed",
-            )
         if current is not None and (
             current.server_public == device.server_public
             and current.client_public == device.client_public
@@ -852,6 +858,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             and current.machine_fingerprint == device.machine_fingerprint
             and current.first_published_at == device.first_published_at
             and current.device_uid == device.device_uid
+            and (current.encryption_key_id, current.encryption_public_key) == (device.encryption_key_id, device.encryption_public_key)
         ):
             return False
         self._store.put_device(org, device)

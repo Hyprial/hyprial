@@ -109,6 +109,25 @@
 #   made by the next login or recovery, never by a loop here.  The owner is read
 #   again under the lock, so a change of account aborts the step.  The state
 #   directory is the parent of the journal root the pass already owns.
+# Decision record (service grant S1, 2026-11-26: the device encryption key):
+# - This pass is where serving start ensures the device's encryption key, the
+#   one other member devices seal a service credential to.  It runs on every
+#   serving start and on every relogin, ahead of the early ``already-complete``
+#   return: a device registered before the key existed has nothing else to
+#   recover and would otherwise never get one.  The publish path alone is not
+#   enough, because it needs an org to publish into and a sidecar address.
+# - Unlike the signing key the step runs for a device that is already
+#   registered, not only for one this pass provisions: the signing key is made
+#   by login, the encryption key has no earlier caller at all.
+# - The key is a ``user`` kind key, bound to the committed account and this
+#   device record; ``device_key.encryption_key_reader`` holds what counts as
+#   a complete account.  A relogin reads them again, so the key belongs to the
+#   account that is committed now and never to the one recovery started with.
+# - The step takes no identity transaction lock: the key store has its own
+#   lock and its records are filed per account and device, so a concurrent
+#   login cannot make this step write under the other account.  It never
+#   changes the outcome of the pass: a device that cannot have a key, or a
+#   step that fails, is still a recovered device.
 """Complete unfinished device registration and initialize when serving starts."""
 
 from __future__ import annotations
@@ -130,6 +149,7 @@ from hyprial.identity import (
 
 from hyprial.daemon.impl.onboarding.operations import journal
 from hyprial.daemon.impl.onboarding.operations.service import OperationService
+from hyprial.daemon.impl.org.network.device_key import ensure_encryption_key
 from hyprial.daemon.impl.request_catalog.onboarding.specs import DEVICE_ENSURE_FAILED
 from hyprial.daemon.impl.request_catalog.onboarding.state import (
     CallContext,
@@ -171,10 +191,12 @@ class ServingRecovery:
         journal_reader: Callable[[Path], Any] = journal.read_journal,
         provisioner: Any | None = None,
         user_key: Callable[[Path, Path, str, Any], Any] = ensure_login_user_key,
+        encryption_key: Callable[[Path, Path], Any] | None = ensure_encryption_key,
     ) -> None:
         self._operations = operations
         self._home = Path(home)
         self._user_key = user_key
+        self._encryption_key = encryption_key
         self._identity_reader = identity_reader
         self._device_reader = device_reader
         self._journal_reader = journal_reader
@@ -264,6 +286,7 @@ class ServingRecovery:
                         ready=False,
                         error=authored_error(ipc_errors.IDENTITY_UNBOUND),
                     )
+            self._ensure_encryption_key(owner, device)
             key_state = self._ensure_user_key(owner, device)
             resumed = [record for record in mine if record.state in _RESUMABLE]
             for record in resumed:
@@ -304,6 +327,7 @@ class ServingRecovery:
         if device is not None and getattr(device, "owner", None) != owner:
             _LOG.info("device record belongs to another owner; re-provisioning")
             device = None
+        self._ensure_encryption_key(owner, device)
         state = self._journal_reader(self._operations.root)
         records = () if state is None else tuple(state.snapshot.records)
         mine = [
@@ -320,6 +344,7 @@ class ServingRecovery:
             if self._owner() != owner:
                 _LOG.info("owner changed during device provisioning; stopping")
                 return "owner-changed"
+            self._ensure_encryption_key(owner, device)
             self._ensure_user_key(owner, device)
         resumed = [record for record in mine if record.state in _RESUMABLE]
         for record in resumed:
@@ -328,6 +353,24 @@ class ServingRecovery:
             self._initialize_fresh(owner)
             return "initialized"
         return "resumed" if resumed else "nothing-to-resume"
+
+    def _ensure_encryption_key(self, owner: str, device: Any) -> None:
+        """Ensure this device's encryption key; never raises and never blocks the pass.
+
+        The reader re-reads the committed account and the device record itself,
+        so it binds the key to what is committed now.  A device record that is
+        not there yet is left to the step after provisioning.
+        """
+
+        if self._encryption_key is None or device is None:
+            return
+        try:
+            if self._owner() != owner:
+                _LOG.info("owner changed before the encryption key; skipping")
+                return
+            self._encryption_key(self._home, Path(self._operations.root).parent)
+        except Exception as error:
+            _LOG.warning("encryption key was not ensured: %s", type(error).__name__)
 
     def _ensure_user_key(self, owner: str, device: Any) -> dict[str, Any] | None:
         try:
