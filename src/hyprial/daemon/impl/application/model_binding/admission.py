@@ -114,7 +114,9 @@ def select(app, spec, *, allow_unpinned=False):
         or config.harness != spec.harness
     ):
         refuse(codes.MODEL_COMBINATION_UNSUPPORTED, "admission", "runtime-option")
-    if config.auth_kind == "native" and spec.args:
+    if config.auth_kind == "native" and spec.args and not (
+        config.harness == "pi" and spec.args == ("--approve",)
+    ):
         refuse(codes.MODEL_COMBINATION_UNSUPPORTED, "admission", "runtime-option")
     if config.auth_kind == "native" and config.harness != "pi" and spec.session_ref is not None:
         refuse(codes.MODEL_RESUME_MISMATCH, "resume", "binding-changed")

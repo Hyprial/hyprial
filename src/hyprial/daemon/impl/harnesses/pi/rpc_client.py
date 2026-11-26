@@ -19,10 +19,12 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import Self, cast
+from typing import TYPE_CHECKING, Self, cast
 from uuid import uuid4
 
 from .bindings import KEY_ENV, PiModelBinding
+if TYPE_CHECKING:
+    from ..model_routes.native import NativeModelBinding
 from .bindings.launch import p2_rpc_launch, start_failure
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import HarnessLaunchSpec
@@ -74,7 +76,7 @@ class PiRpcClient:
             ) = None,
             trust_receipt: PiProjectTrustReceipt | None = None,
             provider_environment: Mapping[str, str] | None = None,
-            model_binding: PiModelBinding | None = None,
+            model_binding: PiModelBinding | NativeModelBinding | None = None,
             require_existing_session: bool = False,
         ) -> None:
             self.spec = spec
@@ -98,7 +100,8 @@ class PiRpcClient:
             if model_binding is not None:
                 if runtime_context is None:
                     raise ValueError("Pi model binding requires a trusted P2 runtime context")
-                self._provider_environment[KEY_ENV] = model_binding.key
+                if isinstance(model_binding, PiModelBinding):
+                    self._provider_environment[KEY_ENV] = model_binding.key
             if runtime_context is not None:
                 if self._complete_launch is None or complete_environment is None:
                     raise ValueError("Pi P2 SDK bridge requires a complete environment")

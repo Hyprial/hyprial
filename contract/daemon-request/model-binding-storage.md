@@ -176,6 +176,15 @@ for the authoritative per-code reason lists.
 
 ## Native target and explicit creation
 
+Native Pi headless start accepts the single controlled runtime argument `--approve`
+emitted by `agent.start` with `approve:true` and an explicit working directory.
+The existing project trust check still runs before spawning: missing approval is
+not inferred from a saved native login. Other runtime arguments, including provider
+or model overrides, refuse `MODEL_COMBINATION_UNSUPPORTED` with
+`admission/runtime-option`; native Claude/Codex do not accept runtime arguments.
+Native Pi process/client drivers retain the binding snapshot without projecting a
+connection Key; the selected per-Agent native credential remains the only source.
+
 `agent.provider.auth.list` retains its legacy result when targetsVersion is absent.
 Opting into targetsVersion=1 adds metadata-only targets to each row, each containing
 nativeAuthRef, target and kind. References have the exact form

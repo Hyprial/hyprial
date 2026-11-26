@@ -12,6 +12,7 @@ from hyprial.kernel import Logger
 
 if TYPE_CHECKING:
     from hyprial.kernel import ActorHost
+    from ..model_routes.native import NativeModelBinding
 
 from hyprial.daemon.impl.harnesses.streaming.process  import (
     StreamingTurnProcess,
@@ -61,7 +62,7 @@ class PiRpcProcess(StreamingTurnProcess):
             Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
         ) = None,
         actor_host: ActorHost | None = None,
-        model_binding: PiModelBinding | None = None,
+        model_binding: PiModelBinding | NativeModelBinding | None = None,
     ) -> None:
         if spec.harness != "pi" or not spec.headless:
             raise ValueError("pi RPC requires a managed headless spec")
@@ -105,7 +106,9 @@ class PiRpcProcess(StreamingTurnProcess):
         # launch with no grant refuses here instead of running secretless and
         # being blocked credential-invalid after its first failed turns.
         proof = getattr(complete_launch, "native_auth_launch", None)
-        self._provider_environment = {KEY_ENV: model_binding.key} if model_binding is not None else pi_provider_environment(
+        self._provider_environment = (
+            {KEY_ENV: model_binding.key} if isinstance(model_binding, PiModelBinding) else {}
+        ) if model_binding is not None else pi_provider_environment(
             spec,
             (
                 complete_launch.environment.for_exec()

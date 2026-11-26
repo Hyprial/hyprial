@@ -4,15 +4,20 @@ Only the runtime-context builder may supply the managed home/root. Public
 projections and legacy launch selection do not acquire a model binding here.
 """
 
+from __future__ import annotations
+
 import json
 import stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hyprial.error import codes
 from hyprial.identity import AgentRuntimeContext
 from hyprial.kernel import manysys
 from . import KEY_ENV, PiModelBinding
 from .errors import PiModelBindingError as PiModelBindingError, start_failure as start_failure
+if TYPE_CHECKING:
+    from ...model_routes.native import NativeModelBinding
 
 
 def p2_rpc_launch(*, context, spec, session_id, command, environment,
@@ -36,7 +41,7 @@ def p2_rpc_launch(*, context, spec, session_id, command, environment,
 
 
 def bind_launch(payload: dict[str, object], environment: dict[str, str], *,
-                binding: PiModelBinding, agent_home: Path, mode: str,
+                binding: PiModelBinding | NativeModelBinding, agent_home: Path, mode: str,
                 session_root: object = None) -> None:
     from ..loader import pi_version_supported
 
