@@ -561,15 +561,27 @@ def test_real_native_tree_has_exactly_the_reviewed_process_invocations() -> None
     assert kept == []
 
 
-def test_reviewed_cli_exceptions_are_exactly_the_tiers_probe_rows() -> None:
+def test_reviewed_cli_exceptions_are_exactly_tiers_probe_and_offline_capacity() -> None:
     tiers = "src/hyprial/shell/impl/cli/commands/agent/runtime/tiers.py"
 
     assert GATE.REVIEWED_CLI_EXCEPTIONS == {
         ("backend-import", tiers, "hyprial.daemon:probe_capabilities"): 1,
         ("command-without-request", tiers, "tiers.py"): 1,
+        ("backend-import", "src/hyprial/shell/impl/cli/commands/config/settings.py",
+         "hyprial.daemon:write_model_binding_operation_limit"): 1,
     }
     assert not set(GATE.REVIEWED_CLI_EXCEPTIONS) & set(GATE.REVIEWED_NATIVE_EXCEPTIONS)
     assert all(key[1].startswith("clients/native/") for key in GATE.REVIEWED_NATIVE_EXCEPTIONS)
+
+
+def test_offline_capacity_exception_does_not_admit_extra_or_other_imports() -> None:
+    row = {"kind": "backend-import", "path": "src/hyprial/shell/impl/cli/commands/config/settings.py",
+           "subject": "hyprial.daemon:write_model_binding_operation_limit", "count": 1}
+    for change in ({"count": 2}, {"path": "src/hyprial/shell/impl/cli/commands/agent/model/__init__.py"},
+                   {"subject": "hyprial.daemon:ModelBindingStore"}):
+        candidate = {**row, **change}
+        kept, _ = GATE._reviewed_rows([candidate])
+        assert kept, candidate
 
 
 def test_real_cli_tree_reports_exactly_the_reviewed_cli_rows() -> None:

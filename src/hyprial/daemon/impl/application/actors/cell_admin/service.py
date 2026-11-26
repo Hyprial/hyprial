@@ -450,6 +450,7 @@ def update_agent_cell(
     params: Mapping[str, Any],
     *,
     trusted_message_origin: str | None = None,
+    expected_agent_id: str | None = None,
 ) -> dict[str, Any]:
     """CAS-guarded cell document update over ``cellName``/``members``/``params``."""
 
@@ -486,6 +487,11 @@ def update_agent_cell(
         changes["params"] = _parse_params(params["params"])
 
     agent = _resolve_agent(app, name)
+    if expected_agent_id is not None and agent.agent_id != expected_agent_id:
+        raise DaemonRequestError(
+            ipc_errors.MODEL_CONFIGURATION_CONFLICT, "Agent incarnation changed before Cell write.",
+            data={"phase": "bind", "reason": "agent-incarnation-changed"},
+        )
     runtime = getattr(app, "_cell_runtime", None)
     _ensure_orgfs_connected(app, runtime)
     cell = _require_agent_cell(runtime, agent)

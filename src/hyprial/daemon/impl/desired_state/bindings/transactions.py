@@ -9,9 +9,10 @@ from .models import (
     Operation,
     MODEL_BINDING_OPERATION_LIMIT,
     fail,
+    invalid,
     request_digest,
 )
-from .schema import activate, binding, operation, insert_binding, insert_operation
+from .schema import activate, binding, operation, insert_binding, insert_operation, candidate_payload
 
 
 def require_open(db, agent_id):
@@ -47,9 +48,12 @@ def prepare(
     expected_revision,
     candidate,
     operation_limit=MODEL_BINDING_OPERATION_LIMIT,
+    coordination=None,
 ):
     require_open(db, agent_id)
-    digest = request_digest(agent_id, member_id, expected_revision, candidate)
+    if coordination is not None and coordination.phase != "planned":
+        invalid()
+    digest = request_digest(agent_id, member_id, expected_revision, candidate, coordination)
     previous = receipt(db, agent_id, member_id, operation_id)
     if previous is not None:
         if previous.request_digest != digest:
@@ -83,6 +87,7 @@ def prepare(
         expected_revision,
         old.binding_ref if old else f"mb.{uuid4().hex}",
         candidate,
+        coordination=coordination,
     )
     activate(db)
     insert_operation(db, item)
@@ -104,6 +109,10 @@ def finish(
         if item.phase != ("cancelled" if cancel else "finalized"):
             fail("operation-already-completed")
         return item
+    if item.coordination is not None and item.coordination.phase != (
+        "compensated" if cancel else "applied"
+    ):
+        fail("operation-in-progress", codes.MODEL_CONFIGURATION_INCOMPLETE)
     old = current(db, agent_id, member_id)
     if (old.binding_revision if old else 0) != expected_revision:
         fail("revision-mismatch")
@@ -129,5 +138,36 @@ def finish(
     db.execute(
         "UPDATE model_binding_operations SET phase=?,result_revision=? WHERE agent_id=? AND member_id=? AND operation_id=? AND phase='prepared'",
         (result.phase, result.result_revision, agent_id, member_id, operation_id),
+    )
+    return result
+
+
+def checkpoint(db, agent_id, member_id, operation_id, digest, expected_revision,
+               expected, replacement):
+    require_open(db, agent_id)
+    item = receipt(db, agent_id, member_id, operation_id)
+    if item is None or item.expected_revision != expected_revision:
+        fail("revision-mismatch")
+    if item.request_digest != digest:
+        fail("operation-digest-mismatch")
+    if item.phase != "prepared":
+        fail("operation-already-completed")
+    if item.coordination != expected:
+        fail("revision-mismatch")
+    if expected.plan_json() != replacement.plan_json():
+        invalid()
+    if expected == replacement:
+        return item
+    if (expected.phase, replacement.phase) not in {
+        ("planned", "applied"), ("planned", "cancelling"),
+        ("applied", "cancelling"), ("cancelling", "compensated"),
+    } or (replacement.phase == "cancelling"
+          and replacement.observed_revision != expected.observed_revision):
+        invalid()
+    result = replace(item, coordination=replacement)
+    db.execute(
+        "UPDATE model_binding_operations SET candidate_json=? "
+        "WHERE agent_id=? AND member_id=? AND operation_id=? AND phase='prepared'",
+        (candidate_payload(result), agent_id, member_id, operation_id),
     )
     return result

@@ -275,4 +275,7 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/request_catalog/agent/cell/__init__.py": ("resident", ("new-module: unregistered agent.cell request specs (cell model I6-3)",)),
     "daemon/impl/request_catalog/agent/cell/specs.py": ("resident", ("new-module: unregistered agent.cell request specs (cell model I6-3)",)),
     "daemon/impl/request_catalog/agent/cell/examples.py": ("resident", ("new-module: unregistered agent.cell request examples (cell model I6-3)",)),
+    "daemon/impl/request_catalog/model/__init__.py": ("resident", ("new-module: model configuration coordination and request contract",)),
+    "daemon/impl/request_catalog/model/examples.py": ("resident", ("new-module: model configuration coordination and request contract",)),
+    "daemon/impl/request_catalog/model/schemas.py": ("resident", ("new-module: model configuration coordination and request contract",)),
 }

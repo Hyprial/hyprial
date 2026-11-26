@@ -4,6 +4,7 @@ from . import cleanup, transactions
 from .schema import read
 from .models import (
     Configuration,
+    Coordination,
     Status,
     MODEL_BINDING_OPERATION_LIMIT,
     digest,
@@ -46,6 +47,7 @@ class ModelBindingStore:
         candidate,
         *,
         operation_limit=MODEL_BINDING_OPERATION_LIMIT,
+        coordination=None,
     ):
         config = Configuration.from_json(candidate)
         return self._write(
@@ -56,6 +58,15 @@ class ModelBindingStore:
             integer(expected_revision),
             config,
             operation_limit,
+            None if coordination is None else Coordination.from_json(coordination),
+        )
+
+    def checkpoint(self, agent_id, member_id, operation_id, request_digest,
+                   expected_revision, expected, replacement):
+        return self._write(
+            transactions.checkpoint, text(agent_id), text(member_id), text(operation_id),
+            digest(request_digest), integer(expected_revision),
+            Coordination.from_json(expected), Coordination.from_json(replacement),
         )
 
     def finalize(

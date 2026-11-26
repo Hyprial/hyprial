@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from hyprial.daemon.impl.desired_state.bindings.models import (
     Configuration,
+    Coordination,
     MODEL_BINDING_OPERATION_LIMIT,
 )
 from hyprial.daemon.impl.desired_state.bindings.store import ModelBindingStore
@@ -24,6 +25,7 @@ class PrepareModelBinding:
     expected_revision: int
     candidate: Configuration
     operation_limit: int
+    coordination: Coordination | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +41,12 @@ class FinalizeModelBinding:
 @dataclass(frozen=True, slots=True)
 class CancelModelBinding(FinalizeModelBinding):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointModelBinding(FinalizeModelBinding):
+    expected: Coordination
+    replacement: Coordination
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +75,7 @@ ModelBindingCommand = (
     PrepareModelBinding
     | FinalizeModelBinding
     | CancelModelBinding
+    | CheckpointModelBinding
     | MarkModelCleanup
     | RollbackModelCleanup
     | PurgeModelBindings
@@ -83,6 +92,14 @@ def execute(store, command):
             command.expected_revision,
             command.candidate.to_json(),
             operation_limit=command.operation_limit,
+            coordination=(None if command.coordination is None
+                          else command.coordination.to_json()),
+        )
+    if isinstance(command, CheckpointModelBinding):
+        return store.checkpoint(
+            command.agent_id, command.member_id, command.operation_id,
+            command.request_digest, command.expected_revision,
+            command.expected.to_json(), command.replacement.to_json(),
         )
     if isinstance(command, FinalizeModelBinding):
         finish = (
@@ -130,6 +147,7 @@ class ModelBindingPort:
         candidate,
         *,
         operation_limit=MODEL_BINDING_OPERATION_LIMIT,
+        coordination=None,
     ):
         return self._call(
             PrepareModelBinding,
@@ -139,6 +157,15 @@ class ModelBindingPort:
             expected_revision,
             Configuration.from_json(candidate),
             operation_limit,
+            None if coordination is None else Coordination.from_json(coordination),
+        )
+
+    def checkpoint(self, agent_id, member_id, operation_id, request_digest,
+                   expected_revision, expected, replacement):
+        return self._call(
+            CheckpointModelBinding, agent_id, member_id, operation_id,
+            request_digest, expected_revision, Coordination.from_json(expected),
+            Coordination.from_json(replacement),
         )
 
     def finalize(

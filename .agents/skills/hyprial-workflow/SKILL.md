@@ -250,6 +250,27 @@ or reconfigure infrastructure merely to gain subagents.
 
 ## Select execution resources
 
+For a locally owned agent using a saved Pi connection, configure the exact manual
+model ID before starting. `agent model status NAME --json` returns current binding,
+operation receipt and Cell revision. Obtain the authorized connectionRef and
+configRevision from the existing Secret connection catalog; do not paste Key bytes
+into commands or Cell params. For example (replace every revision/reference):
+
+```bash
+hyprial agent model configure NAME --model hy4-flash --connection REF --config-revision 1 --binding-revision 0 --cell-revision 3 --operation-id configure-unique-1 --json
+hyprial agent model status NAME --operation-id configure-unique-1 --json
+```
+
+This first slice supports Pi/headless connections. Configure saves intent; it does
+not start the agent or prove model availability. Start uses the saved binding and
+rechecks authorization. Pending configuration blocks launch. If a response is lost,
+read status or retry the exact same ID/payload. To abandon a prepared operation,
+use `hyprial agent model cancel NAME --operation-id ID --binding-revision REV --json`;
+it restores the previous member intent before clearing the blocker. Unknown Cell
+results stay blocked. Do not replace the operation ID to bypass that state. Native
+Auth selection and integrated creation are a later slice; unbound legacy behavior
+remains available. See `contract/daemon-request/model-binding-storage.md`.
+
 For a manual Codex or Claude launch, set reasoning with the public
 `hyprial agent start ... --effort <level>` option before `--`; it also works with
 `--headless`, `--resume`, and a Codex/Claude tier. Omission preserves provider

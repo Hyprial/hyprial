@@ -3052,6 +3052,556 @@
         }
       ]
     },
+    "agent.model.cancel": {
+      "path": "/daemon/request/agent.model.cancel",
+      "paramsSchema": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "expectedBindingRevision": 0,
+            "name": "worker",
+            "operationId": "configure-example"
+          },
+          {
+            "expectedBindingRevision": 0,
+            "name": "worker",
+            "operationId": "configure-example"
+          },
+          {
+            "expectedBindingRevision": 0,
+            "name": "worker",
+            "operationId": "configure-example"
+          }
+        ],
+        "properties": {
+          "expectedBindingRevision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "member": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "operationId": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "operationId",
+          "expectedBindingRevision"
+        ],
+        "type": "object"
+      },
+      "selectors": [
+        "expectedBindingRevision",
+        "member",
+        "operationId"
+      ],
+      "echo": {},
+      "mutates": true,
+      "gaps": {
+        "empty": "An operation returns its durable receipt."
+      },
+      "examples": [
+        {
+          "description": "Synthetic local receipt; process activation is unverified.",
+          "kind": "success",
+          "name": "read-back",
+          "params": {
+            "expectedBindingRevision": 0,
+            "name": "worker",
+            "operationId": "configure-example"
+          },
+          "result": {
+            "agentId": "a.example",
+            "binding": null,
+            "cell": {
+              "cellId": "c.example",
+              "intentMatches": null,
+              "revision": 1
+            },
+            "cleanupPending": false,
+            "member": "member-example",
+            "ok": true,
+            "operation": {
+              "coordinationPhase": "compensated",
+              "expectedBindingRevision": 0,
+              "expectedCellRevision": 1,
+              "observedCellRevision": 3,
+              "operationId": "configure-example",
+              "phase": "cancelled",
+              "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "resultBindingRevision": 0
+            },
+            "runtime": "not-verified"
+          }
+        },
+        {
+          "description": "Target is required.",
+          "error": {
+            "code": "INVALID_ARGUMENT",
+            "message": "Invalid target."
+          },
+          "kind": "invalid-params",
+          "name": "missing-name",
+          "params": {}
+        },
+        {
+          "description": "Worker denied before reads.",
+          "error": {
+            "code": "CALLER_NOT_AUTHORIZED",
+            "message": "Local operator required."
+          },
+          "kind": "domain-error",
+          "name": "foreign-caller",
+          "params": {
+            "expectedBindingRevision": 0,
+            "name": "worker",
+            "operationId": "configure-example"
+          }
+        },
+        {
+          "description": "State is not guessed.",
+          "error": {
+            "code": "MODEL_CONFIGURATION_INCOMPLETE",
+            "data": {
+              "phase": "bind",
+              "reason": "state-unreadable"
+            },
+            "message": "Binding state is unreadable."
+          },
+          "kind": "domain-error",
+          "name": "unreadable-binding",
+          "params": {
+            "expectedBindingRevision": 0,
+            "name": "worker",
+            "operationId": "configure-example"
+          }
+        }
+      ]
+    },
+    "agent.model.configure": {
+      "path": "/daemon/request/agent.model.configure",
+      "paramsSchema": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "configuration": {
+              "authKind": "connection",
+              "configRevision": 1,
+              "connectionRef": "example-connection",
+              "harness": "pi",
+              "mode": "headless",
+              "model": "hy4-flash"
+            },
+            "expectedBindingRevision": 0,
+            "expectedCellRevision": 1,
+            "name": "worker",
+            "operationId": "configure-example"
+          },
+          {
+            "configuration": {
+              "authKind": "connection",
+              "configRevision": 1,
+              "connectionRef": "example-connection",
+              "harness": "pi",
+              "mode": "headless",
+              "model": "hy4-flash"
+            },
+            "expectedBindingRevision": 0,
+            "expectedCellRevision": 1,
+            "name": "worker",
+            "operationId": "configure-example"
+          },
+          {
+            "configuration": {
+              "authKind": "connection",
+              "configRevision": 1,
+              "connectionRef": "example-connection",
+              "harness": "pi",
+              "mode": "headless",
+              "model": "hy4-flash"
+            },
+            "expectedBindingRevision": 0,
+            "expectedCellRevision": 1,
+            "name": "worker",
+            "operationId": "configure-example"
+          }
+        ],
+        "properties": {
+          "configuration": {
+            "additionalProperties": false,
+            "properties": {
+              "authKind": {
+                "const": "connection"
+              },
+              "configRevision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "connectionRef": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "harness": {
+                "enum": [
+                  "pi",
+                  "claude",
+                  "codex"
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "headless",
+                  "interactive"
+                ]
+              },
+              "model": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "authKind",
+              "model",
+              "harness",
+              "mode",
+              "connectionRef",
+              "configRevision"
+            ],
+            "type": "object"
+          },
+          "expectedBindingRevision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expectedCellRevision": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "member": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "operationId": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "operationId",
+          "expectedBindingRevision",
+          "expectedCellRevision",
+          "configuration"
+        ],
+        "type": "object"
+      },
+      "selectors": [
+        "configuration",
+        "expectedBindingRevision",
+        "expectedCellRevision",
+        "member",
+        "operationId"
+      ],
+      "echo": {},
+      "mutates": true,
+      "gaps": {
+        "empty": "An operation returns its durable receipt."
+      },
+      "examples": [
+        {
+          "description": "Synthetic local receipt; process activation is unverified.",
+          "kind": "success",
+          "name": "read-back",
+          "params": {
+            "configuration": {
+              "authKind": "connection",
+              "configRevision": 1,
+              "connectionRef": "example-connection",
+              "harness": "pi",
+              "mode": "headless",
+              "model": "hy4-flash"
+            },
+            "expectedBindingRevision": 0,
+            "expectedCellRevision": 1,
+            "name": "worker",
+            "operationId": "configure-example"
+          },
+          "result": {
+            "agentId": "a.example",
+            "binding": {
+              "bindingRef": "mb.example",
+              "bindingRevision": 1,
+              "configuration": {
+                "authKind": "connection",
+                "configRevision": 1,
+                "connectionRef": "example-connection",
+                "harness": "pi",
+                "intentDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "mode": "headless",
+                "model": "hy4-flash"
+              }
+            },
+            "cell": {
+              "cellId": "c.example",
+              "intentMatches": true,
+              "revision": 2
+            },
+            "cleanupPending": false,
+            "member": "member-example",
+            "ok": true,
+            "operation": {
+              "coordinationPhase": "applied",
+              "expectedBindingRevision": 0,
+              "expectedCellRevision": 1,
+              "observedCellRevision": 2,
+              "operationId": "configure-example",
+              "phase": "finalized",
+              "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "resultBindingRevision": 1
+            },
+            "runtime": "not-verified"
+          }
+        },
+        {
+          "description": "Target is required.",
+          "error": {
+            "code": "INVALID_ARGUMENT",
+            "message": "Invalid target."
+          },
+          "kind": "invalid-params",
+          "name": "missing-name",
+          "params": {}
+        },
+        {
+          "description": "Worker denied before reads.",
+          "error": {
+            "code": "CALLER_NOT_AUTHORIZED",
+            "message": "Local operator required."
+          },
+          "kind": "domain-error",
+          "name": "foreign-caller",
+          "params": {
+            "configuration": {
+              "authKind": "connection",
+              "configRevision": 1,
+              "connectionRef": "example-connection",
+              "harness": "pi",
+              "mode": "headless",
+              "model": "hy4-flash"
+            },
+            "expectedBindingRevision": 0,
+            "expectedCellRevision": 1,
+            "name": "worker",
+            "operationId": "configure-example"
+          }
+        },
+        {
+          "description": "State is not guessed.",
+          "error": {
+            "code": "MODEL_CONFIGURATION_INCOMPLETE",
+            "data": {
+              "phase": "bind",
+              "reason": "state-unreadable"
+            },
+            "message": "Binding state is unreadable."
+          },
+          "kind": "domain-error",
+          "name": "unreadable-binding",
+          "params": {
+            "configuration": {
+              "authKind": "connection",
+              "configRevision": 1,
+              "connectionRef": "example-connection",
+              "harness": "pi",
+              "mode": "headless",
+              "model": "hy4-flash"
+            },
+            "expectedBindingRevision": 0,
+            "expectedCellRevision": 1,
+            "name": "worker",
+            "operationId": "configure-example"
+          }
+        }
+      ]
+    },
+    "agent.model.status": {
+      "path": "/daemon/request/agent.model.status",
+      "paramsSchema": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "name": "worker"
+          },
+          {
+            "name": "worker"
+          },
+          {
+            "name": "worker"
+          },
+          {
+            "name": "worker"
+          }
+        ],
+        "properties": {
+          "member": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "operationId": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "selectors": [
+        "member",
+        "operationId"
+      ],
+      "echo": {},
+      "mutates": false,
+      "gaps": {},
+      "examples": [
+        {
+          "description": "Synthetic local receipt; process activation is unverified.",
+          "kind": "empty",
+          "name": "read-back",
+          "params": {
+            "name": "worker"
+          },
+          "reason": "An agent may have no saved model configuration.",
+          "result": {
+            "agentId": "a.example",
+            "binding": null,
+            "cell": {
+              "cellId": "c.example",
+              "intentMatches": null,
+              "revision": 1
+            },
+            "cleanupPending": false,
+            "member": "member-example",
+            "ok": true,
+            "operation": null,
+            "runtime": "not-verified"
+          }
+        },
+        {
+          "description": "Target is required.",
+          "error": {
+            "code": "INVALID_ARGUMENT",
+            "message": "Invalid target."
+          },
+          "kind": "invalid-params",
+          "name": "missing-name",
+          "params": {}
+        },
+        {
+          "description": "Worker denied before reads.",
+          "error": {
+            "code": "CALLER_NOT_AUTHORIZED",
+            "message": "Local operator required."
+          },
+          "kind": "domain-error",
+          "name": "foreign-caller",
+          "params": {
+            "name": "worker"
+          }
+        },
+        {
+          "description": "State is not guessed.",
+          "error": {
+            "code": "MODEL_CONFIGURATION_INCOMPLETE",
+            "data": {
+              "phase": "bind",
+              "reason": "state-unreadable"
+            },
+            "message": "Binding state is unreadable."
+          },
+          "kind": "domain-error",
+          "name": "unreadable-binding",
+          "params": {
+            "name": "worker"
+          }
+        },
+        {
+          "description": "Previously saved configuration.",
+          "kind": "success",
+          "name": "bound",
+          "params": {
+            "name": "worker"
+          },
+          "result": {
+            "agentId": "a.example",
+            "binding": {
+              "bindingRef": "mb.example",
+              "bindingRevision": 1,
+              "configuration": {
+                "authKind": "connection",
+                "configRevision": 1,
+                "connectionRef": "example-connection",
+                "harness": "pi",
+                "intentDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "mode": "headless",
+                "model": "hy4-flash"
+              }
+            },
+            "cell": {
+              "cellId": "c.example",
+              "intentMatches": true,
+              "revision": 2
+            },
+            "cleanupPending": false,
+            "member": "member-example",
+            "ok": true,
+            "operation": {
+              "coordinationPhase": "applied",
+              "expectedBindingRevision": 0,
+              "expectedCellRevision": 1,
+              "observedCellRevision": 2,
+              "operationId": "configure-example",
+              "phase": "finalized",
+              "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "resultBindingRevision": 1
+            },
+            "runtime": "not-verified"
+          }
+        }
+      ]
+    },
     "agent.provider.allow": {
       "path": "/daemon/request/agent.provider.allow",
       "paramsSchema": {

@@ -1,9 +1,9 @@
-# Local model binding storage and runtime admission (stages 3 and 4a)
+# Local model binding storage, runtime admission and configuration
 
-The authority is the existing desired-state SQLite database. This stage adds no
-MethodSpec, daemon request, IPC wire method, HTTP route, settings writer or GUI.
-Public configuration remains unavailable until stage 4b. Stage 4a composes
-internally persisted Pi connection bindings into the common managed launch path.
+The authority is the existing desired-state SQLite database. Stage 4a composes
+persisted Pi connection bindings into the common managed launch path. Stage 4b
+adds three MethodSpecs projected through the existing IPC/HTTP transport and CLI;
+it adds no separate transport or storage authority. GUI integration is later.
 
 `DesiredStateStore.model_binding_store` provides prepare/finalize/cancel, status,
 agent cleanup marking/takeover/rollback and destroyed-agent purge. The caller must
@@ -86,8 +86,9 @@ No legacy model default or ambient credential fallback is allowed for bound laun
 
 This increment accepts only Pi/headless connection bindings. New native-auth bindings,
 custom TUI and unsupported combinations refuse MODEL_COMBINATION_UNSUPPORTED;
-existing unbound native Auth behavior is unchanged. Native-auth selection and the
-public configure/status/cancel coordination belong to stage 4b.
+existing unbound native Auth behavior is unchanged. Native-auth selection belongs
+to stage 4c. Public configure/status/cancel
+coordination for Pi connections is described below.
 
 Destroy marks cleanupPending by immutable Agent.agent_id before destructive effects,
 even with zero bindings; every member's new configure/start is blocked. Failure before
@@ -105,3 +106,66 @@ include non-secret binding/operation state, so intervening configuration invalid
 the preview. Failed destroy and idempotent replay preserve
 MODEL_CONFIGURATION_INCOMPLETE / bind / destroy-cleanup-pending and entityDeleted
 (true, false, or null when registry outcome is unknown). No Key enters that result.
+
+## Public configuration (stage 4b)
+
+`agent.model.configure`, `agent.model.status` and `agent.model.cancel` require the
+trusted local operator and an owned local agent. `name` resolves to its immutable
+incarnation. Optional `member` defaults to the agent URI; the actor-name alias is
+normalized to that URI. A supplied member must be a harness member in that Cell.
+All three have module-level MethodSpecs, closed params/results/errors and HTTP POST
+projections. There is no worker permission or caller-provided trusted identity.
+
+Configure requires `operationId`, `expectedBindingRevision` (zero for an initial
+binding), `expectedCellRevision` and `configuration`: `authKind=connection`,
+`harness=pi`, `mode=headless`, exact manually supplied `model`, `connectionRef`
+and `configRevision`. The server derives intentDigest. Other declared harness/mode
+combinations refuse `MODEL_COMBINATION_UNSUPPORTED`; no defaults or alternate Key
+are substituted. Secret/grant authorization precedes preparation and is repeated
+when a pending operation resumes. Saving does not start a process or call a model.
+
+Preparation atomically stores the candidate and the original Cell member's kind/model
+(including absent keys). Its immutable coordination plan contains schemaVersion=1,
+cellId, expectedRevision and previousIntent. Digest version=2 includes that plan.
+Existing uncoordinated operations keep digest version=1 and remain readable; public
+cancel refuses them with `coordination-unavailable` because compensation is unproven.
+SQLite candidate_json uses a `hyprial-model-operation/v2` envelope containing
+configuration and coordination. JSON operations include the closed coordination
+object. Readers from stage 4a reject these new operation shapes instead of ignoring
+the recovery data; no automatic downgrade is available after the first such write.
+
+Configure performs prepare → Cell CAS → proof read → applied checkpoint → finalize.
+Cell writes use the existing Cell editing service with the original incarnation ID.
+The global persistence fence never spans Cell I/O. Per-Cell coordination serializes
+this daemon's configure/cancel requests; external writers are checked by Cell CAS.
+A failed/unknown Cell effect leaves prepared durable and launch blocked. A retry
+with the same ID, digest and expected revisions resumes; a different digest conflicts.
+The operation's terminal receipt is immutable even after a later configuration.
+
+Cancel requires operationId and expectedBindingRevision. It first persists the
+cancelling choice, then restores only kind/model while retaining other Cell changes.
+Unknown results or conflicting member intent keep the blocker. A proof read permits
+the compensated checkpoint and atomic cancelled receipt. A crash between compensation
+and its checkpoint can be retried without another Cell write. Configure cannot finalize
+an operation already cancelling; a finalized operation cannot be cancelled.
+
+Status is read-only: current binding and the requested/pending operation receipt are
+distinct. Cell revision and intentMatches are null when observation is unavailable.
+`runtime=not-verified` never claims a running process. cleanupPending is observable;
+it refuses new configure/cancel and start across every member of that incarnation.
+No operation response contains Key bytes. Transport deadlines do not cancel durable
+configuration writes; after a lost response, inspect status or explicitly retry the
+same operation ID and payload, never a newly generated ID.
+
+`hyprial config set modelBinding.operationLimit 20000` writes the existing private
+settings.json atomically and offline, preserving other settings. Default=10000;
+valid range=10000..2147483647. It affects the next new operation. Invalid/unreadable
+settings refuse new IDs; replay/cancel/finalize of existing operations remain usable.
+The offline writer has a single exact import exception in both CLI architecture
+gates; the shrink-only baselines are unchanged. Its count, path and public symbol
+are pinned, and extra imports remain violations. No configure/status/cancel business
+operation is exempted from daemon requests.
+Capacity refusal maps to HTTP 409 with bind/operation-capacity. Additional closed
+diagnostics include bind/cell-revision-mismatch, cell-intent-mismatch,
+agent-incarnation-changed, state-unreadable and cell-outcome-unknown; see MethodSpec
+for the authoritative per-code reason lists.
