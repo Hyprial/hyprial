@@ -1,0 +1,401 @@
+"""Linux tests for Windows wave accounting, rerun reconciliation, and summaries.
+
+Decision (2026-11-26, tier 1 smoke).  Exercises the ten-state ledger classifier
+(the ledger contract between the test harness and the runner), xunit2 classname resolution, duplicate-result
+rejection, unreported-file error synthesis, rerun --deselect flow, and
+fail-closed summarize.py validation using synthetic ledgers and JUnit XMLs on
+Linux.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from scripts.ci.windows import run_waves as run_waves_module
+from scripts.ci.windows.run_waves import (
+    CONTRACT_TEST_FILE,
+    HARD_STATES,
+    build_pytest_command,
+    classify_run,
+    is_offsettable,
+    read_junit,
+    run_waves,
+    synthesize_unreported,
+    validate_durations,
+)
+from scripts.ci.windows.summarize import (
+    inspect_contract_skips,
+    junit_failure_nodeids,
+    summarize_leg,
+    validate_smoke,
+    validate_waves,
+)
+
+
+def write_events(path: Path, events: list[dict[str, object]]) -> None:
+    path.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+
+
+def write_junit(
+    path: Path,
+    cases: list[dict[str, str]],
+    *,
+    suite_error: str | None = None,
+) -> None:
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite", name="pytest")
+    if suite_error is not None:
+        ET.SubElement(suite, "error", message=suite_error)
+    for item in cases:
+        attrs = {
+            "classname": item["classname"],
+            "name": item["name"],
+        }
+        if "file" in item:
+            attrs["file"] = item["file"]
+        case = ET.SubElement(suite, "testcase", attrib=attrs)
+        outcome = item.get("outcome", "passed")
+        if outcome == "failed":
+            ET.SubElement(case, "failure", message=item.get("message", "failure"))
+        elif outcome == "error":
+            ET.SubElement(case, "error", message=item.get("message", "error"))
+        elif outcome == "skipped":
+            ET.SubElement(case, "skipped", message=item.get("message", "skipped"))
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+
+
+def test_watchdog_requires_non_empty_hang_file(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+    (ledger / "hang-gw0.txt").write_text("", encoding="utf-8")
+
+    outcome = classify_run(
+        returncode=0,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py"],
+    )
+
+    assert outcome.status == "passed"
+    assert outcome.reported_files == frozenset({"tests/a.py"})
+
+    (ledger / "hang-gw0.txt").write_text("Timeout (0:05:00)!\n", encoding="utf-8")
+    outcome = classify_run(
+        returncode=1,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py"],
+    )
+    assert outcome.status == "test-watchdog-timeout"
+    assert outcome.offsettable is False
+
+
+def test_leak_event_is_non_fatal_until_leak_timeout_crash(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+    write_events(
+        ledger / "gw0.jsonl",
+        [{"event": "leak", "worker": "gw0", "threads": ["thread-a"]}],
+    )
+
+    clean = classify_run(
+        returncode=0,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py"],
+    )
+    assert clean.status == "passed"
+    assert clean.leaks == ({"worker": "gw0", "threads": ["thread-a"]},)
+
+    write_events(
+        ledger / "gw0.jsonl",
+        [
+            {"event": "leak", "worker": "gw0", "threads": ["thread-a"]},
+            {"event": "crash", "worker": "gw0", "reason": "leak-timeout", "exit_code": 97},
+        ],
+    )
+    crashed = classify_run(
+        returncode=97,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py"],
+    )
+    assert crashed.status == "worker-crash"
+    assert crashed.offsettable is False
+
+
+def test_native_crash_interceptor_collection_and_partial_states(tmp_path: Path) -> None:
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+
+    native_ledger = tmp_path / "native"
+    native_ledger.mkdir()
+    native = classify_run(
+        returncode=3221225477,
+        junit_paths=[junit],
+        ledger_dir=native_ledger,
+        planned_files=["tests/a.py"],
+    )
+    assert native.status == "native-worker-crash"
+
+    hit_ledger = tmp_path / "hits"
+    hit_ledger.mkdir()
+    write_events(
+        hit_ledger / "interceptor-hits.jsonl",
+        [{"pid": 123, "sig": 0, "nodeid": "tests/a.py::test_ok"}],
+    )
+    terminated = classify_run(
+        returncode=0,
+        junit_paths=[junit],
+        ledger_dir=hit_ledger,
+        planned_files=["tests/a.py"],
+    )
+    assert terminated.status == "worker-self-terminated"
+
+    collect_ledger = tmp_path / "collect"
+    collect_ledger.mkdir()
+    write_events(
+        collect_ledger / "gw0.jsonl",
+        [{"event": "collect", "errors": [{"nodeid": "tests/a.py", "summary": "bad import"}]}],
+    )
+    collected = classify_run(
+        returncode=1,
+        junit_paths=[junit],
+        ledger_dir=collect_ledger,
+        planned_files=["tests/a.py"],
+    )
+    assert collected.status == "collection-error"
+
+    partial_ledger = tmp_path / "partial"
+    partial_ledger.mkdir()
+    write_events(
+        partial_ledger / "gw0.jsonl",
+        [
+            {"event": "start", "nodeid": "tests/a.py::test_ok"},
+            {"event": "end", "nodeid": "tests/a.py::test_ok", "outcome": "passed"},
+            {"event": "start", "nodeid": "tests/a.py::test_hung"},
+        ],
+    )
+    partial = classify_run(
+        returncode=0,
+        junit_paths=[junit],
+        ledger_dir=partial_ledger,
+        planned_files=["tests/a.py"],
+    )
+    assert partial.status == "unreported-files"
+    assert partial.partial_files == frozenset({"tests/a.py"})
+
+
+def test_offsettable_only_allows_failed_and_duration_order() -> None:
+    assert is_offsettable("failed") is True
+    assert is_offsettable("passed") is False
+    for state in HARD_STATES:
+        assert is_offsettable(state) is False
+
+    validate_durations(300, 600, 20, 25, 30, 60)
+    with pytest.raises(ValueError, match="duration order"):
+        validate_durations(600, 300, 20, 25, 30, 60)
+    with pytest.raises(ValueError, match="duration order"):
+        validate_durations(300, 600, 20, 25, 50, 60)
+
+
+def test_xunit2_duplicate_detection_and_unreported_synthesis(tmp_path: Path) -> None:
+    first = tmp_path / "run1.xml"
+    second = tmp_path / "run2.xml"
+    write_junit(first, [{"classname": "tests.pkg.test_mod.TestGroup", "name": "test_one"}])
+    write_junit(second, [{"classname": "tests.pkg.test_mod.TestGroup", "name": "test_one"}])
+
+    parsed = read_junit([first], ["tests/pkg/test_mod.py"])
+    assert parsed.files == frozenset({"tests/pkg/test_mod.py"})
+    assert parsed.nodeids == frozenset({"tests/pkg/test_mod.py::TestGroup::test_one"})
+
+    with pytest.raises(ValueError, match="duplicate-result"):
+        read_junit([first, second], ["tests/pkg/test_mod.py"])
+
+    unreported = tmp_path / "unreported.xml"
+    synthesize_unreported(unreported, ["tests/missing.py"])
+    cases = list(ET.parse(unreported).getroot().iter("testcase"))
+    assert len(cases) == 1
+    assert cases[0].attrib["classname"] == "hyprial.ci.windows_watchdog"
+    assert cases[0].attrib["name"] == "unreported::tests/missing.py"
+    assert "file" not in cases[0].attrib
+    assert cases[0].find("error") is not None
+
+
+def test_build_pytest_command_keeps_argsfile_paths_and_deselect_on_argv(tmp_path: Path) -> None:
+    command = build_pytest_command(
+        workers=2,
+        junit=tmp_path / "out.xml",
+        basetemp=tmp_path / "bt",
+        argsfile=tmp_path / "wave.args",
+        deselect=["tests/a.py::test_done"],
+    )
+    assert "-o" in command and "junit_family=xunit2" in command
+    assert "--deselect=tests/a.py::test_done" in command
+    assert command[-1] == f"@{tmp_path / 'wave.args'}"
+
+
+def test_run_waves_reruns_with_deselect_and_synthesizes_remaining_unreported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = tmp_path / "tier.txt"
+    listing.write_text("tests/a.py\ntests/b.py\n", encoding="utf-8")
+    seen_calls: list[tuple[list[str], list[str]]] = []
+
+    def fake_run_one(
+        *,
+        files: list[str],
+        deselect: list[str],
+        args: argparse.Namespace,
+        run_number: int,
+        wave_number: int,
+        wave_deadline: float,
+        job_deadline: float,
+        root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        seen_calls.append((list(files), list(deselect)))
+        junit = args.results / f"shard-1-wave-{wave_number}-run-{run_number}.xml"
+        ledger = args.ledger_root / f"wave-{wave_number}-run-{run_number}"
+        ledger.mkdir(parents=True, exist_ok=True)
+        if run_number == 1:
+            write_junit(junit, [{"classname": "tests.a", "name": "test_part1"}])
+            write_events(
+                ledger / "gw0.jsonl",
+                [
+                    {"event": "start", "nodeid": "tests/a.py::test_part1"},
+                    {"event": "end", "nodeid": "tests/a.py::test_part1", "outcome": "passed"},
+                    {"event": "start", "nodeid": "tests/a.py::test_part2"},
+                ],
+            )
+            return 1, junit, ledger, None, []
+        if run_number == 2:
+            write_junit(junit, [{"classname": "tests.a", "name": "test_part2"}])
+            return 0, junit, ledger, None, []
+        write_junit(junit, [])
+        return 0, junit, ledger, None, []
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+    args = argparse.Namespace(
+        tier="1",
+        files=listing,
+        workers=2,
+        watchdog_seconds=300,
+        idle_seconds=600,
+        wave_minutes=20,
+        deadline_minutes=25,
+        step_minutes=30,
+        job_minutes=60,
+        basetemp_root=tmp_path / "bt",
+        results=tmp_path / "results",
+        ledger_root=tmp_path / "ledger",
+        report=tmp_path / "results" / "run-manifest.json",
+    )
+
+    manifest = run_waves(args, tmp_path)
+
+    assert manifest["status"] == "unreported-files"
+    assert manifest["duplicateResult"] is None
+    assert manifest["plannedFiles"] == ["tests/a.py", "tests/b.py"]
+    assert manifest["reportedFiles"] == ["tests/a.py"]
+    assert seen_calls[0] == (["tests/a.py", "tests/b.py"], [])
+    assert seen_calls[1] == (["tests/a.py", "tests/b.py"], ["tests/a.py::test_part1"])
+    assert seen_calls[2] == (["tests/b.py"], [])
+    assert (args.results / "unreported.xml").is_file()
+    assert (args.results / "run-manifest.json").is_file()
+    assert "WINDOWS_WAVES_DONE " in (args.results / "waves.log").read_text(encoding="utf-8")
+
+
+def test_summary_rejects_missing_evidence_bad_states_and_invalid_contract_skips(
+    tmp_path: Path,
+) -> None:
+    valid, _, errors = validate_smoke("SMOKE_STEP 1 passed\n", "x64")
+    assert not valid and "missing SMOKE_DONE" in errors
+
+    valid, _, errors = validate_smoke(
+        'SMOKE_DONE {"leg":"x64","steps":{"1":"passed","2":"passed"}}\n',
+        "x64",
+    )
+    assert not valid and "missing smoke step 3" in errors
+
+    valid_arm, _, arm_errors = validate_smoke(
+        'SMOKE_DONE {"leg":"arm","steps":{"1":"passed","2":"passed","6":"passed"},"exitCode":0}\n',
+        "arm",
+    )
+    assert valid_arm and arm_errors == []
+
+    valid_w, wave_errors = validate_waves(
+        {
+            "status": "failed",
+            "selfCheck": {"passed": True},
+            "plannedFiles": ["a"],
+            "reportedFiles": [],
+            "runs": [],
+        },
+        'WINDOWS_WAVES_DONE {"status": "failed"}\n',
+    )
+    assert not valid_w
+    assert "wave status is 'failed'" in wave_errors
+    assert "plannedFiles != reportedFiles" in wave_errors
+
+    good_xml = tmp_path / "good.xml"
+    skip_cases = [
+        {
+            "classname": "tests.kernel.ipc.local_ipc.test_contract",
+            "name": f"test_skip_{idx}",
+            "outcome": "skipped",
+            "message": (
+                "the AF_UNIX backend is POSIX only"
+                if idx < 10
+                else "POSIX file modes are the contract"
+            ),
+        }
+        for idx in range(13)
+    ]
+    skip_cases.append(
+        {
+            "classname": "tests.tooling.architecture.platform.test_windows_portability_gate",
+            "name": "test_rule_ids_agree_across_gate_ci_and_pr_template",
+            "outcome": "failed",
+            "message": "missing forgejo workflow",
+        }
+    )
+    write_junit(good_xml, skip_cases)
+
+    reasons, skip_errors = inspect_contract_skips([good_xml])
+    assert len(reasons) == 13 and skip_errors == []
+    assert junit_failure_nodeids([good_xml]) == [
+        "tests.tooling.architecture.platform.test_windows_portability_gate::test_rule_ids_agree_across_gate_ci_and_pr_template"
+    ]
+
+    bad_xml = tmp_path / "bad.xml"
+    write_junit(
+        bad_xml,
+        [
+            {
+                "classname": "tests.kernel.ipc.local_ipc.test_contract",
+                "name": "test_unexpected_skip",
+                "outcome": "skipped",
+                "message": "unexpected reason",
+            }
+        ],
+    )
+    _, bad_skip_errors = inspect_contract_skips([bad_xml])
+    assert any("invalid contract skip reason" in error for error in bad_skip_errors)
+    assert any("expected 13" in error for error in bad_skip_errors)
+
+    leg_ok, leg_errors, _ = summarize_leg(tmp_path / "missing-dir", "w1", waves=True)
+    assert not leg_ok
+    assert any("missing WINDOWS_WAVES_DONE" in error for error in leg_errors)
+    assert CONTRACT_TEST_FILE == "tests/kernel/ipc/local_ipc/test_contract.py"
