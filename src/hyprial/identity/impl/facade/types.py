@@ -289,6 +289,7 @@ if TYPE_CHECKING:
         agent_secret_store_exists,
     )
     from hyprial.identity.impl.agents.runtime.secrets import secret_environment_name_is_allowed as secret_environment_name_is_allowed
+    from hyprial.identity.impl.agents.runtime.secrets import read_user_provider_value as read_user_provider_value
     from hyprial.identity.impl.agents.secret_store import secret_fingerprint as secret_fingerprint
     from hyprial.identity.impl.agents.actor.ports import (
         SetRestoreDispositionCommand as SetRestoreDispositionCommand, SettleAgentDestroyCommand as SettleAgentDestroyCommand,
@@ -429,7 +430,7 @@ __all__ = [
     'load_packaged_support_matrix', 'machine_binding_path', 'machine_fingerprint', 'mark_first_published', 'may_send', 'migrate_legacy_agent_keep_list', 'name_taken_remedy', 'native_secrets_root', 'node_owner_or_none',
     'home_account_conflict_message', 'legacy_business_data_present', 'normalize_capabilities', 'normalize_harness_args', 'normalize_issuer', 'official_agent_uri', 'option_value', 'org_from_space_name', 'org_space_name', 'parse_bootstrap_yaml', 'parse_principal', 'parse_protected_directory_doc_id',
     'parse_protected_directory_node_id', 'parse_tool_declaration', 'preflight_codex_credential', 'prepare_legacy_claude_native_root', 'principal_kind', 'principal_matches_local_actor',
-    'protected_directory_author_allowed', 'protected_directory_doc_id', 'protected_directory_node_id', 'read_device_record', 'read_home_binding', 'read_identity_admission', 'read_identity_credential',
+    'protected_directory_author_allowed', 'protected_directory_doc_id', 'protected_directory_node_id', 'read_device_record', 'read_user_provider_value', 'read_home_binding', 'read_identity_admission', 'read_identity_credential',
     'read_identity_snapshot', 'read_login_generation', 'read_onboarding_identity', 'read_onboarding_subject', 'read_machine_binding', 'read_settings_identity', 'read_settings_identity_metadata', 'read_settings_username', 'read_worker_proxy', 'remove_logout_artifacts', 'remove_native_credentials',
     'reserve_identity_generation', 'resolve_agent_runtime_context', 'capture_native_auth_launch', 'resolve_agent_secrets', 'resolve_agent_tool_profile', 'resolve_local_actor', 'resolve_node_owner', 'resolve_node_user_id', 'role_grants_from_document', 'runtime_capabilities',
     'secret_environment_name_is_allowed', 'secret_fingerprint', 'settings_path', 'shared_credential_status', 'snapshot_home_payload', 'validate_oidc_join', 'validate_shared_credential_binding',

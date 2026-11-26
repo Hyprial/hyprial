@@ -39,6 +39,7 @@ __all__ = [
     "SecretResolver",
     "SecretResolutionError",
     "SecretSource",
+    "read_user_provider_value",
     "secret_environment_name_is_allowed",
     "validate_secret_environment_name",
 ]
@@ -760,6 +761,35 @@ class SecretResolver:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def read_user_provider_value(
+    hyprial_home: Path, entry_id: str, field_name: str | None = None
+) -> str:
+    """Read one user-provider value by ``(entryId, fieldName)`` under the resolver's rules.
+
+    The lookup is the one :meth:`SecretResolver.resolve` performs for a
+    user-provider grant: the same ancestor and file privacy checks, the same
+    record decoding, the same route consistency derived from saved state, and
+    the same field selection. It is meant for an owner-side daemon operation
+    that is not an agent launch, so no registry grant is consulted. Failures
+    raise :class:`SecretResolutionError` (never the value or a path); an
+    invalid ``entry_id`` or ``field_name`` raises ``ValueError``.
+    """
+
+    resolver = SecretResolver(hyprial_home, None)  # type: ignore[arg-type]
+    grant = SecretGrant(
+        actor="user",
+        entity_token="user",
+        grant_id=entry_id,
+        source=SecretSource.USER_PROVIDER,
+        entry_id=entry_id,
+        field_name=field_name,
+        environment_names=(),
+        revision=1,
+        route_required=resolver.model_route_required(entry_id, field_name),
+    )
+    return resolver._read_value(resolver._entry_path("user", grant), grant)[0]
 
 
 def _validate_entry(entry_id: str) -> None:
