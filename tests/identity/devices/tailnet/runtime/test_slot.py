@@ -6,6 +6,11 @@ reaches after it changes the descriptor, so they observe hardening without
 depending on how ``slot`` imports the function and fail on code that never
 hardens.  The refusal tests replace ``slot.harden_private_path`` directly
 because hardening a refused entry may fail before that verification runs.
+The vanished-lock test removes ``operation.lock`` at the first ``lstat`` of it
+after the OS lock is acquired, which is the same call in code with and without
+the hardening step, so the real ``FileNotFoundError`` decides the outcome.  It
+runs only where POSIX mode bits are enforced: removing a file while a lock is
+held on it is not established on Windows.
 """
 
 import os
@@ -370,3 +375,28 @@ def test_locked_refuses_lock_it_does_not_own_without_hardening(tmp_path, monkeyp
     assert caught.value.code == "TAILNET_STORAGE_UNSAFE"
     assert entered == []
     assert hardened == []
+
+
+@pytest.mark.skipif(not posix_metadata_enforced(), reason="removing a held lock file is POSIX only")
+def test_locked_refuses_a_lock_file_removed_after_acquisition(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from hyprial.identity import TailnetCredentialError
+
+    slot, path = _lock_slot(tmp_path)
+    real_lstat = Path.lstat
+    removed = []
+
+    def remove_then_lstat(self):
+        if self == path and not removed:
+            path.unlink()
+            removed.append(True)
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", remove_then_lstat)
+    with pytest.raises(TailnetCredentialError) as caught:
+        with slot.locked():
+            pass
+    assert caught.value.code == "TAILNET_STORAGE_UNSAFE"
+    assert removed == [True]
+    assert ProcessFileLock(path).probe() == "free"

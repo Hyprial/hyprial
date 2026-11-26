@@ -1,20 +1,40 @@
 """Descriptor-relative safe storage and per-slot OS ownership.
 
 Decision (2026-11-26, KP-140): ``locked()`` hardens ``operation.lock`` after
-the OS lock is acquired and before the first ``_file_safe`` check.  On Windows
-``filelock``'s ``mode`` has no effect and an elevated token makes
-``BUILTIN\\Administrators`` the owner of the new file, so the inherited
-descriptor never lets the current user read it and ``_file_safe`` always
-rejected it.  The lock file may have been created by another process or placed
-in advance, so changing its permissions is only allowed for an entry this
-account owns: it must be a regular file (no symlink or reparse point) with
+the OS lock is acquired and before the first ``_file_safe`` check.  On
+Windows ``filelock`` creates the file with ``mode=0o600``, which applies a
+protected descriptor that grants access only to ``SYSTEM``,
+``BUILTIN\\Administrators`` and ``OWNER RIGHTS``; it is not inherited from the
+parent directory.  Under an elevated token the new file is owned by
+``BUILTIN\\Administrators``, and the kernel counts an ``OWNER RIGHTS`` entry as
+current-user access only when the current user is the owner, so ``_file_safe``
+rejected every such lock file.  ``harden_private_path`` replaces the
+descriptor with a protected one for the current user.
+
+The lock file may have been created by another process or placed in advance,
+so changing its permissions is allowed only for an entry whose owner the
+kernel accepts (this account; on Windows also ``SYSTEM`` and
+``BUILTIN\\Administrators``, which the platform trusts regardless of the
+descriptor): it must be a regular file (no symlink or reparse point) with
 exactly one link, and ``private_metadata_violation`` must not report
 ``wrong-owner``, ``unsafe-reparse`` or ``unsupported-private-acl``; otherwise
-the slot is rejected without touching the file.  Unlike the ``.cas.lock``
-preparation in provider-key storage, hardening runs even when no violation is
-reported, so both platforms take the same path and an already private file is
-re-applied to the same mode.  ``_file_safe`` stays unchanged before and after
-the body; hardening corrects the descriptor and never relaxes that check.
+the slot is rejected without touching the file.
+
+This is a known change of behaviour on POSIX, not a defect or an open item.  An
+existing lock file owned by this account with a mode other than ``0600`` used
+to be refused by ``_file_safe``; it is now repaired to ``0600`` and accepted.
+What is newly accepted is exactly: a regular file, single link, owned by the
+current account, mode not ``0600``, whose ``chmod`` succeeds.  A wrong owner,
+a symlink, a hard link or a failed repair is still refused.
+
+Unlike the ``.cas.lock`` preparation in provider-key storage, hardening runs
+even when no violation is reported, so both platforms take the same path and
+an already private file is re-applied to the same mode.  ``_file_safe`` stays
+unchanged before and after the body; hardening corrects the permissions and
+never relaxes that check itself.  A lock file that disappears between
+acquiring the lock and this check (``lstat`` raising ``FileNotFoundError``) is
+now refused as ``TAILNET_STORAGE_UNSAFE`` instead of surfacing the bare
+``FileNotFoundError``; failing closed is intended.
 """
 
 from contextlib import contextmanager
@@ -138,7 +158,7 @@ class Slot:
 
     @staticmethod
     def _harden_lock(path):
-        """Make this account's lock file private; refuse an entry it does not own."""
+        """Make the lock file private; refuse an entry whose owner the kernel rejects."""
         try:
             metadata = path.lstat()
             if (
