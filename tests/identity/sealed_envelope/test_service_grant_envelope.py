@@ -34,6 +34,10 @@ LOW_ORDER = [bytes.fromhex(value) for value in (
 )]
 
 
+def b64(value):
+    return base64.b64encode(value).decode()
+
+
 def public(private):
     return X25519PrivateKey.from_private_bytes(private).public_key().public_bytes_raw()
 
@@ -104,7 +108,6 @@ def test_seal_matches_independent_fixed_vector(sealed, header, entropy):
         X25519PrivateKey.from_private_bytes(BOB_PRIVATE).public_key())
     kek = HKDF(algorithm=hashes.SHA256(), length=32, salt=epk + recipient,
                info=b"hyprial/service-grant/wrap/v1\0" + aad + b"\0" + key_id.encode()).derive(shared)
-    b64 = lambda value: base64.b64encode(value).decode()
     assert result == {
         "header": header,
         "recipients": [{"recipientKeyId": key_id, "epk": b64(epk), "nonce": b64(wrap_nonce),
