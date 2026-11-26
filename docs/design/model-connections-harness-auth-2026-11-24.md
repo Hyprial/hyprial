@@ -627,6 +627,8 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 | PR 5：连接 GUI | 未开实现 PR | §2.1/§3.2：预设/自定义、测试时手填 ID、显式 30s 预算、真实点击及错误/取消旅程 | 未开始 |
 | PR 6：Agent GUI | 未开实现 PR | §2.2/§2.3：Harness+认证+手填 ID 一次保存、启动复用、status/cancel、创建/编辑/恢复实点验收 | 未开始 |
 
+PR4b 本地 hygiene：registry-union、合成树结构/模块/unbounded/import 门和 term/resident 87P 通过；Node CI-policy 因已删除的 `.forgejo/git-flow.json` 缺失失败。相同去凭据子进程环境下，父61a与固定35aec均91P/81F，失败名称一致，相关策略源码/测试无diff；hygiene仍FAIL，仅可作为本片未新增该失败的证据。对照已送评审4a1036a8。
+
 PR4b 的离线容量设置经 daemon 公共原子 settings writer 完成，不启动 daemon。其 CLI 导入在两个架构门各登记一个精确 path/module/symbol/count 例外，配套越界负例；两份只减不增基线未改。此例外本身列入独立实现评审，尚未由作者自判通过。Cell 内部 writer 同时核验不可变 Agent ID，防止旧操作在同名新 incarnation 上生效。731P 为开发工作树阶段证据；固定 35aec 的71P及契约门另行记录，不将两者混称同一 SHA 全量通过。
 
 实现证据按各 PR 的固定 SHA 记录。历史 FJ 的本地/CI 结果不自动迁移到 GitHub；
