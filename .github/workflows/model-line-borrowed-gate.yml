@@ -1,7 +1,8 @@
 # Borrowed validation only, 2026-11-27: gate.yml from PR78 edd4354b.
 # The wrapper stays outside product PRs; each checkout pins one reviewed candidate SHA.
 # Trigger and concurrency changes permit a stacked-branch validation PR without merging CI.
-# Test selection, versions, assertions and gate aggregation stay unchanged.
+# Original full shards remain unchanged at Pi 0.85.1. A separate Pi 1.2.0 suite
+# covers the explicitly supported native binding version without replacing full failures.
 # Decisions (GitHub migration plan, docs/design/github-development-migration-2026-11-15.md,
 # section 6.0 step 5; cutover record docs/guides/github-migration-cutover.md):
 # - This is the minimal merge gate for the public repository: static gates,
@@ -171,6 +172,66 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  pi-supported-sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.MODEL_CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Verify fixed candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "${MODEL_CANDIDATE_SHA}"
+          echo "candidate PR=${MODEL_CANDIDATE_PR} sha=$(git rev-parse HEAD) tree=$(git rev-parse HEAD^{tree})"
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - name: Install the pinned Pi SDK
+        run: |
+          set -euo pipefail
+          npm install -g --no-audit --no-fund @earendil-works/pi-coding-agent@1.2.0
+          test "$(pi --version)" = "1.2.0"
+          echo "HYPRIAL_REQUIRE_PI_SDK=1" >> "${GITHUB_ENV}"
+      - name: Install the locked environment
+        run: |
+          set -euo pipefail
+          uv sync --locked --python "${PYTHON_VERSION}" --extra test
+          uv run --locked --no-sync --with libcst==1.9.0 python -c 'import libcst'
+      - name: Build and stage the native engine
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          bash scripts/build/build_native_engine.sh
+          uv run --locked --no-sync python -c 'import hyprial._core.actors as a; print(a.ENGINE_ABI_VERSION)'
+      - name: Run the Pi implementation suite on the native binding SDK
+        env:
+          HYPRIAL_CI_PROFILE: "1"
+          HYPRIAL_E2E_EXPECT_SHA: ${{ env.MODEL_CANDIDATE_SHA }}
+        run: |
+          set -euo pipefail
+          export HYPRIAL_BIN="${PWD}/.venv/bin/hyprial"
+          git ls-files 'tests/daemon/harnesses/pi/**/test_*.py' \
+            'tests/daemon/application/actors/model_binding/test_*.py' \
+            | LC_ALL=C sort > "${RUNNER_TEMP}/pi-files.txt"
+          test -s "${RUNNER_TEMP}/pi-files.txt"
+          mkdir -p "${RUNNER_TEMP}/pi-results"
+          uv run --locked --no-sync pytest -q \
+            --junitxml="${RUNNER_TEMP}/pi-results/pi-sdk-1.2.0.xml" \
+            --basetemp="${RUNNER_TEMP}/pi-tmp" "@${RUNNER_TEMP}/pi-files.txt"
+      - name: Upload the Pi JUnit result
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pi-sdk-1.2.0
+          path: ${{ runner.temp }}/pi-results/
+          retention-days: 7
+          if-no-files-found: warn
+
   pr-hygiene:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -201,7 +262,7 @@ jobs:
 
   gate:
     if: always()
-    needs: [static, pytest, pr-hygiene]
+    needs: [static, pytest, pi-supported-sdk, pr-hygiene]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
