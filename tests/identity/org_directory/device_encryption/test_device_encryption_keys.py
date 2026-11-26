@@ -12,6 +12,7 @@ import base64
 import hashlib
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 
 from hyprial.identity.impl.org_directory.models import DirectoryDevice
 
@@ -158,6 +159,86 @@ def test_a_low_order_point_is_rejected_as_a_public_key(public_key: str) -> None:
 
     with pytest.raises(ValueError, match="encryptionPublicKey"):
         DirectoryDevice.from_record(_row(encryptionKeyId=KEY_ID, encryptionPublicKey=public_key))
+
+
+_P = 2**255 - 19
+_LOW_ORDER_U = (
+    0,
+    1,
+    _P - 1,
+    39382357235489614581723060781553021112529911719440698176882885853963445705823,
+    325606250916557431795983626356110631294008115727848805560023387167927233504,
+)
+
+
+def _encodings(u: int) -> list[bytes]:
+    """Every 32-byte string X25519 reads as ``u``, for a canonical ``u < p``.
+
+    Bit 255 is dropped and the value is then reduced modulo ``p``, so one
+    point has up to four spellings: canonical, with bit 255 set, one ``p`` too
+    large, and both.  A value one ``p`` too large is only the same point while
+    bit 255 is still clear, which is why few points have the last two.
+    """
+
+    high = 1 << 255
+    values = [u, u + high]
+    if u + _P < high:
+        values += [u + _P, u + _P + high]
+    assert all(value < (1 << 256) for value in values)
+    return [value.to_bytes(32, "little") for value in values]
+
+
+def _x25519_refuses(raw: bytes) -> bool:
+    """Whether the X25519 in use refuses this public key or yields an all-zero secret.
+
+    That library is the oracle for this test and shares nothing with the
+    model.  A low-order peer is refused by some releases and gives a zero
+    shared secret on others; both are read as refused.
+    """
+
+    try:
+        shared = X25519PrivateKey.generate().exchange(X25519PublicKey.from_public_bytes(raw))
+    except ValueError:
+        return True
+    return not any(shared)
+
+
+def _model_refuses(raw: bytes) -> bool:
+    public_key = base64.b64encode(raw).decode("ascii")
+    record = _row(encryptionKeyId=_true_id(public_key), encryptionPublicKey=public_key)
+    try:
+        DirectoryDevice.from_record(record)
+    except ValueError as error:
+        assert "low-order point" in str(error), str(error)
+        return True
+    return False
+
+
+@pytest.mark.parametrize("index", range(len(_LOW_ORDER_U)))
+def test_a_low_order_point_is_refused_in_every_spelling(index: int) -> None:
+    """A low-order point makes every shared secret public, whichever bytes carry it."""
+
+    spellings = _encodings(_LOW_ORDER_U[index])
+
+    assert len(spellings) >= 2
+    assert all(_x25519_refuses(raw) for raw in spellings)
+    assert [_model_refuses(raw) for raw in spellings] == [True] * len(spellings)
+
+
+def test_an_ordinary_point_is_not_mistaken_for_a_low_order_one() -> None:
+    """Refusing an ordinary point would refuse a real device's key.
+
+    ``p + 2`` reads as ``2``: the model used to refuse it from a list of raw
+    bytes.  The rest are spellings of small ordinary values and keys made by
+    the store.
+    """
+
+    ordinary = _encodings(2) + _encodings(9) + _encodings(_P + 3)
+    for _ in range(8):
+        ordinary.append(X25519PrivateKey.generate().public_key().public_bytes_raw())
+
+    assert not any(_x25519_refuses(raw) for raw in ordinary)
+    assert not any(_model_refuses(raw) for raw in ordinary)
 
 
 def test_the_pair_does_not_relax_the_closed_key_set() -> None:
