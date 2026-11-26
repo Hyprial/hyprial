@@ -151,6 +151,23 @@
 #   returns the listed space, as the facade did before.
 #   ``_join_shortcut`` (asked by ``join``) answers a finished space (listed, resident sync, no marker)
 #   without queueing on the lifecycle when no join of it is running.
+# - Package F8c (review of F8b items 1-3 and 8):
+#   A join first clears what an unfinished join left: a hidden space in
+#   memory, and a directory not open in memory that holds ``join.pending`` or
+#   no ``space.json`` (the startup scan's discard rule; a refused space is
+#   never touched).  A discard whose directory removal failed leaves exactly
+#   such a directory, and opening it as the new temporary space would skip
+#   the member table and tree that ``load_space`` materializes.  When the
+#   leftover cannot be removed the join stops with ``join-incomplete``.
+#   ``begin_join`` runs inside the join's error handling: an ``OSError``
+#   while it creates the directory is ``join-incomplete`` with the errno
+#   text, and a directory it created is marked and removed (each failed step
+#   logged).  A ``StoreError`` from ``begin_join`` (a refused layout) is
+#   raised as it is and its directory is never removed.
+#   The due maintenance tick starts the resident sync of every listed space
+#   that has none (skipping spaces being purged or joined), so a space a
+#   failed tail left listed syncs again without another join.
+#   The join shortcut does not answer for a space being purged.
 """Per-space sync assembly, node gate and join of the state runtime."""
 
 from __future__ import annotations
@@ -166,7 +183,8 @@ from typing import Any, Callable
 from hyprial.daemon.impl.orgfs.api import OrgFsError, SpaceInfo
 from hyprial.daemon.impl.orgfs.composition.state.stores import JOIN_MARKER
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _SpaceResourceHandle
-from hyprial.daemon.impl.orgfs.state import is_space_directory_name
+from hyprial.daemon.impl.orgfs.state import is_space_directory_name, space_directory_kind
+from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError
 from hyprial.daemon.impl.orgfs.sync import SyncError, covers
 from hyprial.daemon.impl.orgfs.sync.interface import CATALOG_DOC_IDS
 from hyprial.daemon.impl.orgfs.sync.space import StateSpaceSync
@@ -195,6 +213,12 @@ def _failure_detail(exc: BaseException) -> str:
         return f"{type(exc).__name__}: {reason}" if reason else type(exc).__name__
     message = str(exc)
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+def _join_incomplete(space_id: str, message: str) -> OrgFsError:
+    return OrgFsError(
+        "unavailable", {"spaceId": space_id, "reason": "join-incomplete", "message": message}
+    )
 
 
 def _catalog_vectors(vectors: Any, catalog: tuple[str, ...]) -> tuple[bytes, ...]:
@@ -414,9 +438,28 @@ class StateLifecycle:
                 left = now_left
         return batches
 
+    def _start_missing_syncs(self) -> None:
+        """Start the resident sync of a listed space that has none (F8c item 3)."""
+
+        with self._resource_lock:
+            if self._closing or self._session is None:
+                return
+            skipped = {*self._meshes, *self._purging_spaces}
+        with self._join_locks_guard:
+            skipped.update(self._join_locks)
+        for info in self.facade.spaces():
+            if info.space_id in skipped:
+                continue
+            try:
+                self._mesh(info.space_id)
+            except Exception as exc:
+                self._log("warn", "orgfs.sync.maintain-failed", spaceId=info.space_id,
+                          detail=_failure_detail(exc))
+
     def _maintain_spaces(self, now: float) -> None:
         """Hook: ``SpaceSync.maintain``, verification, and a pull when behind."""
 
+        self._start_missing_syncs()
         with self._resource_lock:
             syncs = tuple(self._meshes.items())
         for space_id, sync in syncs:
@@ -542,6 +585,13 @@ class StateLifecycle:
         atomic_json_write(marker, {"spaceId": space_id})
         fsync_directory(marker.parent)
 
+    def _restore_join_marker(self, space_id: str) -> None:
+        """Mark a directory being discarded so a restart discards it too."""
+
+        marker = self._join_marker(space_id)
+        if marker.parent.is_dir() and not marker.exists():
+            self._write_join_marker(space_id)
+
     def _drop_join_marker(self, space_id: str) -> None:
         marker = self._join_marker(space_id)
         if marker.exists():
@@ -558,7 +608,8 @@ class StateLifecycle:
             return None
         with self._resource_lock:
             resident = space_id in self._meshes or self._session is None
-        if not resident or self._join_marker(space_id).exists():
+            purging = space_id in self._purging_spaces
+        if purging or not resident or self._join_marker(space_id).exists():
             return None
         return existing.info
 
@@ -578,8 +629,7 @@ class StateLifecycle:
             listed = space_id in {info.space_id for info in self.facade.spaces()}
             if listed and existing.info.owner:
                 return self._finish_join(space_id, existing.info, None)
-            if not listed:
-                self._discard_temporary(space_id, "orgfs.join.leftover-discarded")
+        self._clear_leftover(space_id)
         holders = sorted(
             {
                 *(node for node in self._holder_snapshot(space_id) if node != self.node_id),
@@ -588,21 +638,77 @@ class StateLifecycle:
         )
         if not holders:
             raise OrgFsError("no-holder-online", {"spaceId": space_id})
-        self.facade.begin_join(space_id)
+        created = not (self._spaces_root / space_id).exists()
+        begun = False
         try:
+            self.facade.begin_join(space_id)
+            begun = True
             self._write_join_marker(space_id)
             info, holder = self._fill_joined_space(space_id, holders)
         except BaseException as exc:
             refused = isinstance(exc, OrgFsError) or not isinstance(exc, Exception)
-            self._discard_temporary(space_id, None if refused else "orgfs.join.rolled-back")
+            if begun:
+                self._discard_temporary(space_id, None if refused else "orgfs.join.rolled-back")
+            else:
+                refused = refused or isinstance(exc, StoreError)
+                if created:
+                    self._discard_unbegun(space_id)
             if refused:
                 raise
-            raise OrgFsError(
-                "unavailable",
-                {"spaceId": space_id, "reason": "join-incomplete",
-                 "message": f"the join could not finish and nothing was joined: {_failure_detail(exc)}"},
+            raise _join_incomplete(
+                space_id, f"the join could not finish and nothing was joined: {_failure_detail(exc)}"
             ) from exc
         return self._finish_join(space_id, info, holder)
+
+    def _leftover_space(self, space_id: str) -> bool:
+        if self.facade._existing_space(space_id) is None:
+            return False
+        return space_id not in {info.space_id for info in self.facade.spaces()}
+
+    def _leftover_directory(self, space_id: str) -> bool:
+        directory = self._spaces_root / space_id
+        if self.facade._existing_space(space_id) is not None or not directory.is_dir():
+            return False
+        if space_id in self.facade._refused_spaces:
+            return False
+        return (directory / JOIN_MARKER).exists() or space_directory_kind(directory) == "uninitialized"
+
+    def _clear_leftover(self, space_id: str) -> None:
+        """Drop what an unfinished join left in memory or on disk (F8c item 1)."""
+
+        if self._leftover_space(space_id):
+            self._discard_temporary(space_id, "orgfs.join.leftover-discarded")
+        try:
+            if self._leftover_directory(space_id):
+                self._forget_device_index(space_id)
+                self._discard_space_directory(space_id)
+                self._log("warn", "orgfs.join.leftover-discarded", spaceId=space_id)
+            left = self._leftover_space(space_id) or self._leftover_directory(space_id)
+        except Exception as exc:
+            raise _join_incomplete(
+                space_id,
+                "an earlier join left files that could not be removed "
+                f"({_failure_detail(exc)}); nothing was joined",
+            ) from exc
+        if left:
+            raise _join_incomplete(
+                space_id, "an earlier join left a space that could not be removed; nothing was joined"
+            )
+
+    def _discard_unbegun(self, space_id: str) -> None:
+        """Remove the directory a failed ``begin_join`` created; never raises (F8c item 2)."""
+
+        steps: tuple[tuple[str, Callable[[], object]], ...] = (
+            ("marker", lambda: self._restore_join_marker(space_id)),
+            ("directory", lambda: self._discard_space_directory(space_id)),
+        )
+        for step, action in steps:
+            try:
+                action()
+            except Exception as exc:
+                self._log("warn", "orgfs.join.discard-failed", spaceId=space_id, step=step,
+                          detail=_failure_detail(exc))
+        self._log("warn", "orgfs.join.rolled-back", spaceId=space_id)
 
     def _finish_join(self, space_id: str, info: SpaceInfo, holder: str | None) -> SpaceInfo:
         """Start the resident sync of a listed space and pull (F8, F8b).
@@ -653,12 +759,6 @@ class StateLifecycle:
     def _discard_temporary(self, space_id: str, event: str | None) -> None:
         """Drop a join space that was never listed; never raises (F8b items 5, 8)."""
 
-        marker = self._join_marker(space_id)
-
-        def restore_marker() -> None:
-            if marker.parent.is_dir() and not marker.exists():
-                self._write_join_marker(space_id)
-
         def await_creation() -> None:
             with self._resource_lock:
                 creation = self._mesh_creations.get(space_id)
@@ -673,7 +773,7 @@ class StateLifecycle:
                 mesh.close()
 
         steps: tuple[tuple[str, Callable[[], object]], ...] = (
-            ("marker", restore_marker),
+            ("marker", lambda: self._restore_join_marker(space_id)),
             ("sync-creation", await_creation),
             ("device-index", lambda: self._forget_device_index(space_id)),
             ("space", lambda: self.facade.abandon_join(space_id)),

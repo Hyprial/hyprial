@@ -10,6 +10,10 @@
 #   (``running`` / ``aliases``).  Repeated joins of one space (a caller's
 #   retries after a lifecycle wait timeout, repeated clicks) therefore hold
 #   at most one of the four workers, however long that join takes.
+# - Package F8c (review of F8b item 4): a command the effect lane refuses as
+#   ``CLOSED``, whether at its first submit or from the deferred queue, is
+#   answered "effects are closed" together with every command waiting on it,
+#   and its ``running`` entry goes, so a later command is not parked on it.
 from __future__ import annotations
 
 
@@ -229,6 +233,35 @@ class RuntimeLifecycle:
             if all(item.operation_id != command.operation_id for item in authority.deferred):
                 authority.deferred.append(command)
             return
+        if admission is AdmissionResult.CLOSED:
+            authority.deferred = [
+                item for item in authority.deferred
+                if item.operation_id != command.operation_id
+            ]
+            self._fail_closed_command(authority, command)
+
+
+    def _fail_closed_command(self, authority: _LifecycleAuthority, command: _LifecycleCommand) -> None:
+        """Answer a command the closed effect lane refused, and every command waiting on it."""
+
+        operation_id = command.operation_id
+        with self._lifecycle_lock:
+            authority.commands.pop(operation_id, None)
+            authority.submitted.discard(operation_id)
+            waiters = [authority.waiters.pop(operation_id, None)]
+            for alias_id in authority.aliases.pop(operation_id, ()):
+                authority.commands.pop(alias_id, None)
+                waiters.append(authority.waiters.pop(alias_id, None))
+            key = _coalescing_key(command.operation)
+            if key is not None and authority.running.get(key) == operation_id:
+                authority.running.pop(key, None)
+        for waiter in waiters:
+            if waiter is None:
+                continue
+            waiter.error = _LifecycleFailure(
+                "OrgFsError", "unavailable", "directory lifecycle effects are closed", ()
+            )
+            waiter.done.set()
 
 
     def _pump_lifecycle(self, authority: _LifecycleAuthority) -> None:
@@ -244,14 +277,7 @@ class RuntimeLifecycle:
                 authority.submitted.add(command.operation_id)
         elif admission is AdmissionResult.CLOSED:
             authority.deferred.pop(0)
-            with self._lifecycle_lock:
-                authority.commands.pop(command.operation_id, None)
-                waiter = authority.waiters.pop(command.operation_id, None)
-            if waiter is not None:
-                waiter.error = _LifecycleFailure(
-                    "OrgFsError", "unavailable", "directory lifecycle effects are closed", ()
-                )
-                waiter.done.set()
+            self._fail_closed_command(authority, command)
 
 
     def _on_lifecycle_event(self, event: ActorEvent) -> None:

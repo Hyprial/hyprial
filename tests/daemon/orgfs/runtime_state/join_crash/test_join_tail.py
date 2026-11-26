@@ -14,6 +14,20 @@
 #   of each holding a lifecycle worker: six joins of a slow space must not
 #   delay the join of another space.
 # - Join errors are ``OrgFsError`` with a message that names no local path.
+# Decisions (package F8c, review of F8b items 1-5 and 8, 2026-11-26):
+# - A discard whose directory removal failed leaves ``join.pending`` on disk
+#   and nothing in memory; a join in the same process (no restart) removes
+#   that leftover first and joins afresh, or stops with ``join-incomplete``
+#   when it cannot remove it.  Both review repros are covered: the holder's
+#   meta unchanged (was ``not-invited``) and moved (was an empty tree).
+# - A failure while ``begin_join`` creates the directory is an
+#   ``OrgFsError`` without a path and leaves no directory.
+# - A listed space without a resident sync gets one from the due
+#   maintenance tick, with no further join.
+# - A lifecycle effect lane that answers ``CLOSED`` wakes the command and
+#   every join waiting on it at once and frees the space for the next join.
+# - The discard of an unlisted space waits for an in-flight resident sync
+#   creation (a ``_MeshCreation`` that registers its sync later).
 """A join's tail never drops a listed space; repeated joins share one worker."""
 
 from __future__ import annotations
@@ -31,7 +45,9 @@ from hyprial.daemon.impl.orgfs import OrgFsError
 from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.composition.state import sync as join_module
 from hyprial.daemon.impl.orgfs.composition.state.stores import JOIN_MARKER
-from hyprial.kernel import atomic_json_write
+from hyprial.daemon.impl.orgfs.composition.vocabulary import _MeshCreation
+from hyprial.daemon.impl.orgfs.state.fileops import FileOps
+from hyprial.kernel import AdmissionResult, EffectCompleted, atomic_json_write
 
 from ..support import Events, Peer, Peers, eventually, text
 from .writes import assert_joined, assert_not_joined, space_ids
@@ -100,6 +116,10 @@ def _write_in_tail(peer: Peer, path: str, content: str, after: Any = None) -> li
 def _reaches(peers: Peers, holder: Peer, space_id: str, path: str, content: str) -> None:
     peers.pull_all(space_id)
     assert text(holder.fs, space_id, path) == content
+
+
+def _reads(peer: Peer, space_id: str, path: str, content: str) -> None:
+    assert text(peer.fs, space_id, path) == content
 
 
 def _strip_resident_sync(peer: Peer, space_id: str) -> None:
@@ -290,6 +310,240 @@ def test_a_failed_join_leaves_no_sync_registered(peers: Peers) -> None:
     assert space_id not in runtime._meshes  # noqa: SLF001
     assert closed
     assert_not_joined(member, space_id)
+
+
+def test_a_failed_join_waits_for_a_sync_creation_in_flight(peers: Peers) -> None:
+    owner = peers.add("node-owner", OWNER)
+    member = peers.add("node-member", MEMBER)
+    space_id = owner.fs.create_space("closed").space_id
+    runtime = member.runtime
+    assert runtime is not None
+    closed: list[bool] = []
+
+    class Stray:
+        def close(self, timeout: float = 5.0) -> None:
+            closed.append(True)
+
+    original = member.fs.begin_join
+    finishers: list[threading.Thread] = []
+
+    def begin_join(space: str) -> None:
+        original(space)
+        creation = _MeshCreation()
+        with runtime._resource_lock:  # noqa: SLF001
+            runtime._mesh_creations[space] = creation  # noqa: SLF001
+
+        def finish() -> None:
+            time.sleep(0.5)
+            with runtime._resource_lock:  # noqa: SLF001
+                runtime._meshes[space] = Stray()  # noqa: SLF001
+                runtime._mesh_creations.pop(space, None)  # noqa: SLF001
+                creation.done.set()
+
+        finishers.append(threading.Thread(target=finish))
+        finishers[-1].start()
+
+    member.fs.begin_join = begin_join
+
+    with pytest.raises(OrgFsError) as error:
+        member.fs.join(space_id)
+
+    for finisher in finishers:
+        finisher.join(timeout=5.0)
+    assert error.value.code == "not-a-member"
+    assert space_id not in runtime._meshes  # noqa: SLF001
+    assert closed
+    assert_not_joined(member, space_id)
+
+
+def _fail_first_join_and_its_discard(
+    member: Peer, space_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = join_module.fsync_directory
+    calls: list[Path] = []
+
+    def fsync_directory(path: Path) -> None:
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError(errno.EIO, "Input/output error", str(path))
+        original(path)
+
+    def discard(_space: str) -> None:
+        raise RuntimeError("discard refused")
+
+    monkeypatch.setattr(join_module, "fsync_directory", fsync_directory)
+    monkeypatch.setattr(member.fs, "_store_discard", discard)
+    with pytest.raises(OrgFsError) as error:
+        member.fs.join(space_id)
+    assert (error.value.code, error.value.details.get("reason")) == ("unavailable", "join-incomplete")
+    assert space_id not in space_ids(member)
+    assert (member.spaces_root / space_id / JOIN_MARKER).exists()
+    monkeypatch.undo()
+
+
+@pytest.mark.parametrize("meta_moved", [False, True])
+def test_a_retry_after_a_failed_discard_joins_afresh_without_a_restart(
+    peers: Peers, monkeypatch: pytest.MonkeyPatch, meta_moved: bool
+) -> None:
+    owner, member, (space_id,) = _pair(peers)
+    _fail_first_join_and_its_discard(member, space_id, monkeypatch)
+    if meta_moved:
+        owner.fs.update_space_meta(space_id, {"topic": "updated"})
+
+    info = member.fs.join(space_id)
+
+    assert info.space_id == space_id
+    assert_joined(member, space_id)
+    assert [entry for entry in member.fs.listdir(space_id, "", recursive=True) if "base.md" in str(entry)]
+    eventually(lambda: _reads(member, space_id, "base.md", "base"), timeout=30.0)
+    assert "orgfs.join.leftover-discarded" in member.events.names()
+
+
+def test_a_leftover_that_cannot_be_removed_stops_the_retry(
+    peers: Peers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _owner, member, (space_id,) = _pair(peers)
+    runtime = member.runtime
+    assert runtime is not None
+    _fail_first_join_and_its_discard(member, space_id, monkeypatch)
+
+    def refuse(_space: str) -> None:
+        raise OSError(errno.EBUSY, "Device or resource busy", str(member.spaces_root / space_id))
+
+    monkeypatch.setattr(runtime, "_discard_space_directory", refuse)
+    with pytest.raises(OrgFsError) as error:
+        member.fs.join(space_id)
+
+    assert (error.value.code, error.value.details.get("reason")) == ("unavailable", "join-incomplete")
+    assert str(member.state_dir) not in str(error.value)
+    assert space_id not in space_ids(member)
+    assert (member.spaces_root / space_id / JOIN_MARKER).exists()
+    monkeypatch.undo()
+    member.fs.join(space_id)
+    assert_joined(member, space_id)
+    eventually(lambda: _reads(member, space_id, "base.md", "base"), timeout=30.0)
+
+
+def test_a_space_directory_that_cannot_be_created_is_an_orgfs_error(
+    peers: Peers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _owner, member, (space_id,) = _pair(peers)
+
+    def refuse(_ops: FileOps, _fd: int, _data: bytes, _label: str) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device",
+                      str(member.spaces_root / space_id / "space.json.tmp"))
+
+    monkeypatch.setattr(FileOps, "write", refuse)
+
+    with pytest.raises(OrgFsError) as error:
+        member.fs.join(space_id)
+
+    assert (error.value.code, error.value.details.get("reason")) == ("unavailable", "join-incomplete")
+    assert str(member.state_dir) not in str(error.value)
+    assert_not_joined(member, space_id)
+    monkeypatch.undo()
+    member.fs.join(space_id)
+    assert_joined(member, space_id)
+
+
+def test_maintenance_starts_the_missing_resident_sync_of_a_listed_space(peers: Peers) -> None:
+    owner, member, (space_id,) = _pair(peers)
+    runtime = member.runtime
+    assert runtime is not None
+    failure = _ResidentFailure(member, RuntimeError("transient sync failure"))
+    failure.failing.set()
+    with pytest.raises(OrgFsError) as error:
+        member.fs.join(space_id)
+    failure.failing.clear()
+    assert (error.value.code, error.value.details.get("reason")) == ("unavailable", "join-incomplete")
+    assert space_id in space_ids(member)
+    assert space_id not in runtime._meshes  # noqa: SLF001
+    owner.fs.write_text(space_id, "later.md", "later")
+
+    now = time.monotonic()
+    runtime.anti_entropy_tick(now)
+    runtime.anti_entropy_tick(now + 10_000.0)
+
+    assert space_id in runtime._meshes  # noqa: SLF001
+
+    def arrived() -> None:
+        runtime.anti_entropy_tick(time.monotonic() + 20_000.0)
+        assert text(member.fs, space_id, "later.md") == "later"
+
+    eventually(arrived, timeout=30.0)
+
+
+def _overloaded_then_closed(peer: Peer, answers: list[AdmissionResult]) -> Any:
+    runtime = peer.runtime
+    assert runtime is not None
+    authority = runtime._ensure_lifecycle_authority()  # noqa: SLF001
+    original = authority.effects.submit
+    queue = list(answers)
+    authority.effects.submit = lambda request: queue.pop(0) if queue else original(request)
+    return authority
+
+
+def test_a_closed_effect_lane_wakes_the_join_and_frees_the_space(peers: Peers) -> None:
+    _owner, member, (space_id,) = _pair(peers)
+    authority = _overloaded_then_closed(member, [AdmissionResult.CLOSED])
+
+    started = time.monotonic()
+    with pytest.raises(OrgFsError) as error:
+        member.runtime.join(space_id, timeout=5.0)  # type: ignore[union-attr]
+
+    assert time.monotonic() - started < 2.0
+    assert "effects are closed" in error.value.message
+    assert ("join", space_id) not in authority.running
+    member.fs.join(space_id)
+    assert_joined(member, space_id)
+
+
+def test_a_closed_effect_lane_wakes_the_joins_waiting_on_a_deferred_one(peers: Peers) -> None:
+    _owner, member, (space_id,) = _pair(peers)
+    runtime = member.runtime
+    assert runtime is not None
+    authority = _overloaded_then_closed(member, [AdmissionResult.OVERLOADED, AdmissionResult.CLOSED])
+    outcomes: dict[str, object] = {}
+
+    def join(tag: str) -> None:
+        started = time.monotonic()
+        try:
+            runtime.join(space_id, timeout=5.0)
+            outcomes[tag] = "joined"
+        except OrgFsError as exc:
+            outcomes[tag] = (exc.message, time.monotonic() - started)
+
+    threads = [threading.Thread(target=join, args=(tag,)) for tag in ("leader", "alias")]
+    for thread in threads:
+        thread.start()
+        time.sleep(0.1)
+    authority.runtime.tell(EffectCompleted("nothing", authority.generation, None))
+    for thread in threads:
+        thread.join(timeout=10.0)
+
+    for tag in ("leader", "alias"):
+        message, waited = outcomes[tag]  # type: ignore[misc]
+        assert "effects are closed" in message, tag
+        assert waited < 2.0, tag
+    assert ("join", space_id) not in authority.running
+    member.fs.join(space_id)
+    assert_joined(member, space_id)
+
+
+def test_the_join_shortcut_does_not_answer_for_a_space_being_purged(peers: Peers) -> None:
+    _owner, member, (space_id,) = _pair(peers)
+    runtime = member.runtime
+    assert runtime is not None
+    member.fs.join(space_id)
+    with runtime._resource_lock:  # noqa: SLF001
+        runtime._purging_spaces.add(space_id)  # noqa: SLF001
+    try:
+        with pytest.raises(OrgFsError) as error:
+            member.fs.join(space_id)
+    finally:
+        with runtime._resource_lock:  # noqa: SLF001
+            runtime._purging_spaces.discard(space_id)  # noqa: SLF001
+    assert error.value.code == "unknown-space"
 
 
 def test_repeated_joins_of_one_space_do_not_hold_up_another(peers: Peers) -> None:

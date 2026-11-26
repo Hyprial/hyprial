@@ -5,6 +5,13 @@
 #   budget over the same legs (``member-announce``, each step kind and the
 #   ``join-orgfs`` waits) and clears it on exit; a resumed attempt starts a
 #   fresh budget because completed checkpoints are not re-executed.
+# - 2026-11-26 (orgfs package F8c, review of F8b item 3): an OrgFS join that
+#   fails with ``unavailable`` / ``join-incomplete`` may leave the space listed
+#   (and a member) without its sync running; only a repeated join finishes it.
+#   The listing would pass ``space_committed`` on resume, so that space is
+#   recorded in the journal (``unfinishedJoins``) and joined again on resume
+#   whatever the listing says; the entry goes once a join of it returns.
+#   A crash inside a join records nothing and keeps resuming without a rejoin.
 """Resume the existing org bootstrap with read-back checks at durable boundaries.
 
 A space listing is discovery only. Directory and ACL membership, the ACL
@@ -66,6 +73,27 @@ def device_committed(service, link) -> bool:
     )
 
 
+def _join_space(service, journal, space: str) -> None:
+    """Join ``space``; one OrgFS left unfinished is joined again on resume."""
+
+    unfinished = list(journal.record.get("unfinishedJoins", ()))
+    try:
+        service._join_with_retry(space)
+    except OrgFsError as error:
+        if (error.code == "unavailable" and error.details.get("reason") == "join-incomplete"
+                and space not in unfinished):
+            journal.record["unfinishedJoins"] = [*unfinished, space]
+            journal.save()
+        raise
+    if space in unfinished:
+        unfinished.remove(space)
+        if unfinished:
+            journal.record["unfinishedJoins"] = unfinished
+        else:
+            journal.record.pop("unfinishedJoins", None)
+        journal.save()
+
+
 def run_bootstrap(service, parsed, journal):
     """Use the normal step executor under one shared join budget."""
 
@@ -103,8 +131,9 @@ def _run_bootstrap(service, parsed, journal, budget):
                 ("acl-applied", parsed.acl_space_id, INVITE_SPACE_MODES["acl"]),
             ):
                 journal.begin(kind)
-                if not space_committed(service, space, required_mode=mode):
-                    service._join_with_retry(space)
+                if (not space_committed(service, space, required_mode=mode)
+                        or space in journal.record.get("unfinishedJoins", ())):
+                    _join_space(service, journal, space)
                 if space_committed(service, space, required_mode=mode):
                     journal.complete_step(kind)
             journal.begin("space-bound")
