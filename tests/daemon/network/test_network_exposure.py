@@ -498,3 +498,47 @@ def test_fake_sidecar_validates_v7_expose_admission_and_key_count(tmp_path: Path
     assert by_request["keys-upper"]["event"] == "error"
     assert by_request["keys-upper"]["code"] == "BAD_REQUEST"
 
+
+def test_controller_expose_sends_explicit_allow_admission() -> None:
+    """Protocol v7 requires explicit admission on expose; existing controller path sends allow."""
+
+    controller = object.__new__(ForwardingSidecarController)
+    controller._expose_capable = True
+    sent: list[dict[str, object]] = []
+
+    def fake_request(payload: dict[str, object], expected_event: str) -> dict[str, object]:
+        sent.append(dict(payload))
+        assert expected_event == "exposed"
+        return {
+            "v": payload["v"],
+            "event": "exposed",
+            "port": payload["port"],
+            "target": payload["target"],
+            "proxyProtocol": payload["proxyProtocol"],
+            "admission": payload["admission"],
+        }
+
+    controller._request = fake_request  # type: ignore[method-assign]
+    result = controller.expose(
+        {
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "none",
+        }
+    )
+    assert sent == [
+        {
+            "v": 7,
+            "op": "expose",
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "",
+            "admission": "allow",
+        }
+    ]
+    assert result == {
+        "port": 8443,
+        "target": "tcp:127.0.0.1:9443",
+        "proxyProtocol": "none",
+    }
+

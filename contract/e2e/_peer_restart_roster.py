@@ -1,4 +1,4 @@
-"""E2E-024's physical peer ordering within the shared protocol-v6 fixture."""
+"""E2E-024's physical peer ordering within the shared protocol-v7 fixture."""
 
 from collections.abc import Callable
 from datetime import UTC, datetime

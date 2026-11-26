@@ -73,10 +73,10 @@ type Mapping struct {
 	Slot string
 }
 
-const (
-	AdmissionAny  = exposuregate.ModeAny
-	AdmissionKeys = exposuregate.ModeKeys
-)
+// AdmissionAny marks an exposure that admits every authenticated key
+// (the join endpoint). Any other value restricts the exposure to the allow
+// set or the exposure's explicit key set.
+const AdmissionAny = exposuregate.ModeAny
 
 // Exposure describes one exposed Tailcat port.
 type Exposure struct {
@@ -419,10 +419,9 @@ func (e *Engine) Allow(list []string, allowAny bool) (int, error) {
 	}
 	for _, exposed := range e.exposed {
 		for pair := range exposed.pairs {
-			haveKey := !pair.peerKey.IsZero()
-			if !exposed.gate.Admits(haveKey && set.Contains(pair.peerKey), haveKey, pair.peerKey) {
-				pair.close()
+			if !e.admitsExposureLocked(exposed.gate, pair.peerKey, !pair.peerKey.IsZero()) {
 				e.disconnected.Add(1)
+				pair.close()
 			}
 		}
 	}
@@ -625,6 +624,8 @@ func (e *Engine) Down() {
 	}
 }
 
+// admits reports whether the active membership roster or legacy allow set
+// admits pub.
 func (e *Engine) admits(pub key.NodePublic) bool {
 	if e.allowAny.Load() {
 		return true
@@ -639,6 +640,8 @@ func (e *Engine) admits(pub key.NodePublic) bool {
 	return set != nil && set.Contains(pub)
 }
 
+// admitsLocked reports whether the active membership roster or legacy allow
+// set admits pub while e.mu is held.
 func (e *Engine) admitsLocked(pub key.NodePublic) bool {
 	if e.allowAny.Load() {
 		return true
@@ -647,6 +650,16 @@ func (e *Engine) admitsLocked(pub key.NodePublic) bool {
 		return e.membership.Admits(pub.String())
 	}
 	return e.allowKeys != nil && e.allowKeys.Contains(pub)
+}
+
+// admitsExposure evaluates an exposure gate against one peer without holding e.mu.
+func (e *Engine) admitsExposure(gate exposuregate.Gate, peer key.NodePublic, haveKey bool) bool {
+	return gate.Admits(haveKey && e.admits(peer), haveKey, peer)
+}
+
+// admitsExposureLocked evaluates an exposure gate against one peer under e.mu.
+func (e *Engine) admitsExposureLocked(gate exposuregate.Gate, peer key.NodePublic, haveKey bool) bool {
+	return gate.Admits(haveKey && e.admitsLocked(peer), haveKey, peer)
 }
 
 // inboundPeerKey resolves the authenticated tunnel key behind an

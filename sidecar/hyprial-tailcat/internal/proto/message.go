@@ -9,12 +9,16 @@
 // docs/design/design-stable-zenoh-session-slots-2026-10-08.md §4
 // (v4: fixed slot pool — up.slots, map-peer.slot, hold mode).
 //
-// Decision record (service grant line, plan v2 §3.3, slice S4-go):
-//   - v7 adds admission "keys" with a "keys" array on expose. A closed
-//     format takes a new field only with a version bump, so daemon and
-//     sidecar upgrade together (docs/guides/migration-sidecar-protocol-v7.md).
-//   - The "exposed" event echoes admission but never the key set: the set
-//     is derived from grant documents and is not part of the observation.
+// Decision record:
+//   - v7 adds admission "keys" with a "keys" array on expose and makes
+//     admission required on every expose command so callers cannot silently
+//     open a port to all roster members. A closed format takes a new field
+//     only with a version bump, so daemon and sidecar upgrade together
+//     (docs/guides/migration-sidecar-protocol-v7.md).
+//   - keys accepts at most exposuregate.MaxKeys (4096) distinct canonical
+//     nodekeys ("nodekey:" + 64 lowercase hex).
+//   - The "exposed" event echoes admission and, in "keys" mode only, echoes
+//     keyCount (never the full key set).
 package proto
 
 import (
@@ -34,14 +38,15 @@ import (
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/privatefs"
 )
 
-const Version = 7
+// Version is the only accepted stdio protocol version.
+const Version = membership.ProtocolVersion
 
-// MaxRequestIDLength bounds correlation data accepted or echoed by v5.
+// MaxRequestIDLength bounds correlation data accepted or echoed by v7.
 const MaxRequestIDLength = 128
 
-// Admission policy values accepted on expose commands. Absent means
-// AdmissionAllow: an exposure is restricted to the allow set unless the
-// daemon explicitly opens it.
+// Admission policy values for expose commands. Protocol v7 requires an
+// explicit admission value on every expose command ("allow" or "keys");
+// public "any" admission is rejected on stdio.
 const (
 	AdmissionAny   = "any"
 	AdmissionAllow = "allow"
@@ -93,6 +98,9 @@ type UpRequest struct {
 	SlotHoldMs      int
 }
 
+// Command is a parsed protocol-v7 command. Which fields are populated
+// depends on Op. Address is secret (it embeds the peer pre-shared key)
+// and must never be logged or echoed back.
 type Command struct {
 	Op               string
 	Membership       *membership.Request
@@ -188,6 +196,7 @@ type Event struct {
 	Target              string                `json:"target,omitempty"`
 	ProxyProtocol       *string               `json:"proxyProtocol,omitempty"`
 	Admission           *string               `json:"admission,omitempty"`
+	KeyCount            *int                  `json:"keyCount,omitempty"`
 	Addr                string                `json:"addr,omitempty"`
 	Found               *bool                 `json:"found,omitempty"`
 	Key                 *string               `json:"key,omitempty"`
@@ -240,7 +249,7 @@ func RunningState(serverPublic, clientPublic string, peers []PeerMapping, slots 
 }
 
 // SlotMapped is the peer-mapped event: a slot binding reporting the
-// resolved slot wire id (there is no localPort shape in v5).
+// resolved slot wire id (there is no localPort shape in v7).
 func SlotMapped(peer, slot string) Event {
 	return Event{V: Version, Event: "peer-mapped", Peer: peer, Slot: slot}
 }
@@ -256,13 +265,18 @@ func ClientKeyDerived(serverPublic, clientPublic string) Event {
 	}
 }
 
-// Exposed always serializes proxyProtocol (even when empty, per §3.3)
-// and admission.
-func Exposed(port int, target, proxyProtocol, admission string) Event {
-	return Event{
+// Exposed always serializes proxyProtocol (even when empty) and admission;
+// in keys mode it also serializes keyCount and never echoes the key list.
+func Exposed(port int, target, proxyProtocol, admission string, keyCount *int) Event {
+	event := Event{
 		V: Version, Event: "exposed", Port: port, Target: target,
 		ProxyProtocol: &proxyProtocol, Admission: &admission,
 	}
+	if admission == AdmissionKeys && keyCount != nil {
+		count := *keyCount
+		event.KeyCount = &count
+	}
+	return event
 }
 
 func Unexposed(port int) Event {
@@ -307,7 +321,7 @@ func ProtocolError(message string) error { return fmt.Errorf("%w: %s", errProtoc
 func IsProtocolError(err error) bool     { return errors.Is(err, errProtocol) }
 
 // ParseCommand rejects malformed, version-mismatched, unknown-op,
-// missing, and extra fields, keeping v5 a closed wire contract.
+// missing, and extra fields, keeping v7 a closed wire contract.
 func ParseCommand(line []byte) (Command, error) {
 	var raw map[string]json.RawMessage
 	if err := decodeExact(line, &raw); err != nil {
@@ -617,7 +631,7 @@ func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if err := onlyKeys(raw, "v", "op", "requestId", "port", "target", "proxyProtocol", "admission", "keys"); err != nil {
 		return Command{}, err
 	}
-	for _, key := range []string{"port", "target", "proxyProtocol"} {
+	for _, key := range []string{"port", "target", "proxyProtocol", "admission"} {
 		if _, ok := raw[key]; !ok {
 			return Command{}, ProtocolError("missing " + key)
 		}
@@ -629,14 +643,11 @@ func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
 		Port          int      `json:"port"`
 		Target        string   `json:"target"`
 		ProxyProtocol string   `json:"proxyProtocol"`
-		Admission     string   `json:"admission,omitempty"`
+		Admission     string   `json:"admission"`
 		Keys          []string `json:"keys,omitempty"`
 	}
 	if err := decodeExact(line, &wire); err != nil {
 		return Command{}, ProtocolError("invalid expose fields")
-	}
-	if _, ok := raw["admission"]; !ok {
-		wire.Admission = AdmissionAllow
 	}
 	if err := ValidateExposure(wire.Port, wire.Target, wire.ProxyProtocol, wire.Admission); err != nil {
 		return Command{}, err
@@ -650,9 +661,12 @@ func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
 		if err := json.Unmarshal(rawKeys, &elems); err != nil {
 			return Command{}, ProtocolError("keys must be an array")
 		}
+		if len(elems) > exposuregate.MaxKeys {
+			return Command{}, ProtocolError(fmt.Sprintf("keys exceeds maximum of %d entries", exposuregate.MaxKeys))
+		}
 		for _, elem := range elems {
 			if bytes.Equal(bytes.TrimSpace(elem), []byte("null")) {
-				return Command{}, ProtocolError("keys entries must be nodekeys")
+				return Command{}, ProtocolError("keys entries must be canonical nodekeys")
 			}
 		}
 		if _, err := exposuregate.New(wire.Admission, wire.Keys); err != nil {
@@ -746,7 +760,7 @@ var eventFields = map[string][]string{
 	"peer-unmapped":      {"peer", "requestId"},
 	"allowed":            {"count", "allowAny", "requestId"},
 	"client-key-derived": {"serverPublic", "clientPublic", "requestId"},
-	"exposed":            {"port", "target", "proxyProtocol", "admission", "requestId"},
+	"exposed":            {"port", "target", "proxyProtocol", "admission", "keyCount", "requestId"},
 	"unexposed":          {"port", "requestId"},
 	"peer-key":           {"addr", "found", "key", "requestId"},
 	"service-mapped":     {"requestId", "service"},
@@ -760,6 +774,10 @@ var eventFields = map[string][]string{
 	"exited":             {},
 }
 
+// ParseEvent validates one protocol-v7 event line: version 7, a known
+// event name, and only the fields defined for that event. Tests and
+// contract golden checkers use it to exercise the same closed contract
+// on the event side.
 func ParseEvent(line []byte) (Event, error) {
 	var raw map[string]json.RawMessage
 	if err := decodeExact(line, &raw); err != nil {
@@ -814,6 +832,19 @@ func ParseEvent(line []byte) (Event, error) {
 	if name == "membership-changed" {
 		if !membership.ID(event.TailnetID, 1024) || event.Revision == nil || *event.Revision > membership.MaxNumber || raw["code"] == nil {
 			return Event{}, ProtocolError("invalid membership change")
+		}
+	}
+	if name == "exposed" {
+		if event.Admission == nil || (*event.Admission != AdmissionAllow && *event.Admission != AdmissionKeys) {
+			return Event{}, ProtocolError("invalid exposed admission")
+		}
+		rawCount, hasCount := raw["keyCount"]
+		if *event.Admission == AdmissionKeys {
+			if !hasCount || bytes.Equal(bytes.TrimSpace(rawCount), []byte("null")) || event.KeyCount == nil || *event.KeyCount < 0 || *event.KeyCount > exposuregate.MaxKeys {
+				return Event{}, ProtocolError("exposed keys event requires valid keyCount")
+			}
+		} else if hasCount {
+			return Event{}, ProtocolError("keyCount is only valid on keys-mode exposed events")
 		}
 	}
 	invalidDerived := event.RequestID == "" ||

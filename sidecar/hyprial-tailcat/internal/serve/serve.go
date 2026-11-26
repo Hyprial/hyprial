@@ -186,7 +186,12 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		if err != nil {
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)
 		}
-		return writeResponse(writer, proto.Exposed(exposure.Port, exposure.Target, exposure.ProxyProtocol, exposure.Admission), command.RequestID)
+		var keyCount *int
+		if exposure.Admission == proto.AdmissionKeys {
+			count := len(exposure.Keys)
+			keyCount = &count
+		}
+		return writeResponse(writer, proto.Exposed(exposure.Port, exposure.Target, exposure.ProxyProtocol, exposure.Admission, keyCount), command.RequestID)
 	case "unexpose":
 		if err := eng.Unexpose(command.Port); err != nil {
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)

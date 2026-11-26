@@ -11,7 +11,7 @@ ports and alice's real Zenoh listener never appears in bob's connect set.
 
 Prerequisites (RESULT BLOCKED when missing, never a silent skip):
 
-* ``HYPRIAL_TAILCAT_BINARY``   -- the pinned protocol-v6 sidecar build
+* ``HYPRIAL_TAILCAT_BINARY``   -- the pinned protocol-v7 sidecar build
 * ``HYPRIAL_TAILCAT_LABRELAY`` -- the local DERP relay fixture
 """
 
@@ -191,7 +191,7 @@ def _configure_tailcat(
     binary: str,
     derp: dict[str, Any],
 ) -> None:
-    """Provision a device and private Unix backend before the v6 control startup."""
+    """Provision a device and private Unix backend before the v7 control startup."""
 
     from hyprial.daemon import ensure_device_key
 

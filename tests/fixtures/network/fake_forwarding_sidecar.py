@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protocol-v5 fixture pinned to sidecar/hyprial-tailcat's stdio JSON lines."""
+"""Protocol-v7 fixture pinned to sidecar/hyprial-tailcat's stdio JSON lines."""
 
 from __future__ import annotations
 
@@ -7,8 +7,29 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
+
+_CANONICAL_NODEKEY_RE = re.compile(r"^nodekey:[0-9a-f]{64}$")
+_ZERO_NODEKEY = "nodekey:" + ("0" * 64)
+_MAX_EXPOSE_KEYS = 4096
+
+
+def _validate_expose_keys(raw_keys: object) -> tuple[bool, int]:
+    if not isinstance(raw_keys, list) or len(raw_keys) > _MAX_EXPOSE_KEYS:
+        return False, 0
+    seen: set[str] = set()
+    for entry in raw_keys:
+        if (
+            not isinstance(entry, str)
+            or not _CANONICAL_NODEKEY_RE.match(entry)
+            or entry == _ZERO_NODEKEY
+            or entry in seen
+        ):
+            return False, 0
+        seen.add(entry)
+    return True, len(seen)
 
 
 def emit(command: dict[str, object] | None = None, **event: object) -> None:
@@ -181,11 +202,41 @@ for raw in sys.stdin:
         allow_any = bool(command.get("allowAny"))
         emit(command, event="allowed", count=len(allow_keys), allowAny=allow_any)
     elif op == "expose":
+        admission = command.get("admission")
+        if admission not in {"allow", "keys"}:
+            emit(
+                command,
+                event="error",
+                code="BAD_REQUEST",
+                message="Invalid protocol-v7 request.",
+            )
+            continue
+        has_keys = "keys" in command
         exposure = {
             "port": command["port"],
             "target": command["target"],
             "proxyProtocol": command["proxyProtocol"],
+            "admission": admission,
         }
+        if admission == "keys":
+            valid_keys, key_count = _validate_expose_keys(command.get("keys"))
+            if not has_keys or not valid_keys:
+                emit(
+                    command,
+                    event="error",
+                    code="BAD_REQUEST",
+                    message="Invalid protocol-v7 request.",
+                )
+                continue
+            exposure["keyCount"] = key_count
+        elif has_keys:
+            emit(
+                command,
+                event="error",
+                code="BAD_REQUEST",
+                message="Invalid protocol-v7 request.",
+            )
+            continue
         exposures[int(command["port"])] = exposure
         emit(command, event="exposed", **exposure)
     elif op == "unexpose":

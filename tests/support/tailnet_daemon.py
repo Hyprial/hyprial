@@ -39,7 +39,7 @@ def bind_admitted(runtime, transport, **kwargs):
 
 @contextmanager
 def membership_services():
-    """Supply a local authority double; org.create must still issue v6 init.
+    """Supply a local authority double; org.create must still issue v7 init.
 
     The test double persists its own tables and receipts across CLI restarts.
     It never reconstructs admission from OrgFS. Separate owner identities get

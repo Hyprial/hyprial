@@ -3,7 +3,7 @@
 {"v":7,"op":"up","requestId":"up-map","keyFile":"/tmp/hr-home/device.key","addressFile":"/tmp/hr-home/device.addr","membershipStore":"/tmp/hr-home/tailnet/membership.json","owner":"alice","deviceId":"laptop","inboundTarget":"unix:/tmp/hr-home/private/zenoh.sock","derpMapURL":"https://derpmap.hyprial.ai/map.json","derpMapCacheDir":"/tmp/hr-home/cache"}
 {"v":7,"op":"map-peer","requestId":"request-map-slot","peer":"dev-alice-laptop","address":"tcPlaceholderAddressNotASecret","slot":"/run/hyprial/slots/slot-00","port":7447}
 {"v":7,"op":"unmap-peer","requestId":"request-unmap-peer","peer":"dev-alice-laptop"}
-{"v":7,"op":"expose","requestId":"request-expose-tcp","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":""}
+{"v":7,"op":"expose","requestId":"request-expose-tcp","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow"}
 {"v":7,"op":"expose","requestId":"request-expose-unix","port":9000,"target":"unix:/run/hyprial/app.sock","proxyProtocol":"v2","admission":"allow"}
 {"v":7,"op":"expose","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys","keys":["nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]}
 {"v":7,"op":"expose","requestId":"request-expose-keys-empty","port":8449,"target":"tcp:127.0.0.1:8082","proxyProtocol":"","admission":"keys","keys":[]}

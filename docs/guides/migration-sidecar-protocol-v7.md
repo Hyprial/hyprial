@@ -1,14 +1,15 @@
 # 迁移说明：hyprial-tailcat stdio 协议升级到 v7
 
-适用：升级到包含 service grant 线 S4-go（`expose` 按公钥集合准入）的版本。
-本变更是封闭线协议的大版本升级，代码里不保留 v6 兼容路径；daemon 与 `hyprial-tailcat` 边车必须同批升级。
+适用：升级到支持 `expose` 按公钥集合准入（`admission: "keys"`）的 `hyprial-tailcat` 版本。
+本变更是封闭线协议的大版本升级，代码里不保留 v6 兼容路径；同一台机器上的 daemon 与 `hyprial-tailcat` 边车必须同批升级。
+边车之间的远端控制协议仍为 v1，跨机器的升级先后不影响节点间互通。
 
 ## 变化
 
 - `hyprial-tailcat` 的 stdio JSON 协议、`version` 输出以及 `genkey` 输出的版本号由 `6` 升为 `7`。
-- `expose` 命令在现有 `admission: "allow"` 之外新增 `admission: "keys"`，同时要求提供 `keys` 数组（对端针对本机 `serverPublic` 派生的节点公钥列表；空数组拒绝所有连接）。
+- `expose` 命令必须显式提供 `admission`（`"allow"` 或 `"keys"`，缺省直接拒绝返回 `BAD_REQUEST`），并在 `admission: "keys"` 时提供 `keys` 数组（对端针对本机 `serverPublic` 派生的节点公钥列表，须使用规范写法 `nodekey:<64位小写十六进制>`、不可重复、上限 4096 项；空数组拒绝所有连接）。
   - 同一端口以相同 `target` 与 `proxyProtocol` 再次 `expose` 时，边车就地替换准入规则并关闭已建连接中不再被新规则放行的连接。
-  - `exposed` 事件回显 `admission`，但不回显 `keys`。
+  - `exposed` 事件回显 `admission`，并在 `keys` 模式下回显 `keyCount`（整数），不回显完整 `keys` 列表。
 - 任何版本不是 `7` 的 stdio 命令（包括旧版 v6）一律被边车拒绝并返回 `SIDECAR_PROTOCOL_MISMATCH`。
 
 ## 需要做的

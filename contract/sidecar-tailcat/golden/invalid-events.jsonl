@@ -1,6 +1,11 @@
 {"v":5,"event":"exited"}
 {"v":6,"event":"exited"}
 {"v":7,"event":"exposed","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys","keys":[]}
+{"v":7,"event":"exposed","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys"}
+{"v":7,"event":"exposed","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys","keyCount":null}
+{"v":7,"event":"exposed","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys","keyCount":-1}
+{"v":7,"event":"exposed","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys","keyCount":4097}
+{"v":7,"event":"exposed","requestId":"request-expose-tcp","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow","keyCount":0}
 {"v":7,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"derp","cause":"deadline-exceeded","proxy":"configured","bytesReceived":33}}
 {"v":7,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"control","cause":"proxy-rejected","proxy":"configured","bytesReceived":33}}
 {"v":7,"event":"error","requestId":"partial-response","op":"roster-fetch","code":"AUTHORITY_UNREACHABLE","message":"unreachable","data":{"stage":"control","cause":"deadline-exceeded","proxy":"configured","bytesReceived":-1}}

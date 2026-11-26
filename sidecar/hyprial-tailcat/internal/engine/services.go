@@ -1,3 +1,18 @@
+// Service mappings and inbound port exposures for Engine.
+//
+// Decision record (inbound exposure admission):
+//   - Identity-carrying and restricted exposures fail closed: a connection
+//     whose authenticated peer key cannot be established is closed and never
+//     forwarded to a local target.
+//   - Exposure admission is checked twice on each accepted connection: once
+//     before dialing the local target, and again under e.mu against the
+//     current gate right before registering the connection in exposed.pairs.
+//     Connections rejected by either check increment deniedCount so shrinking
+//     a key set or revoking a member cannot race a fresh connection past the
+//     gate without accounting.
+//   - In-place re-exposure on the same port with identical target and
+//     proxyProtocol atomically replaces the gate under e.mu and closes every
+//     active pair no longer admitted by the new gate.
 package engine
 
 import (
@@ -336,6 +351,12 @@ func (e *Engine) handleServiceConnection(ctx context.Context, service *mappedSer
 	})
 }
 
+// Expose listens on the Tailcat server port and proxies each connection
+// to target. With proxyProtocol "v2" a PROXY v2 header precedes the
+// stream: source is the peer's Tailcat IP and TLV 0xE0 carries the
+// peer's nodekey text. Re-exposing an active port with the same target
+// and proxyProtocol updates its admission gate in place and closes any
+// established connections no longer admitted by the new gate.
 func (e *Engine) Expose(ctx context.Context, exposure Exposure) (Exposure, error) {
 	mode := exposure.Admission
 	if mode == "" {
@@ -343,7 +364,8 @@ func (e *Engine) Expose(ctx context.Context, exposure Exposure) (Exposure, error
 	}
 	gate, err := exposuregate.New(mode, exposure.Keys)
 	if err != nil {
-		return Exposure{}, fmt.Errorf("%w: %v", ErrBadInput, err)
+		msg := strings.TrimPrefix(err.Error(), exposuregate.ErrBadInput.Error()+": ")
+		return Exposure{}, fmt.Errorf("%w: %s", ErrBadInput, msg)
 	}
 	exposure.Admission = mode
 	if exposure.Keys != nil {
@@ -381,10 +403,9 @@ func (e *Engine) Expose(ctx context.Context, exposure Exposure) (Exposure, error
 		existing.exposure = exposure
 		existing.gate = gate
 		for pair := range existing.pairs {
-			haveKey := !pair.peerKey.IsZero()
-			if !gate.Admits(haveKey && e.admitsLocked(pair.peerKey), haveKey, pair.peerKey) {
-				pair.close()
+			if !e.admitsExposureLocked(gate, pair.peerKey, !pair.peerKey.IsZero()) {
 				e.disconnected.Add(1)
+				pair.close()
 			}
 		}
 		e.mu.Unlock()
@@ -425,6 +446,7 @@ func (e *Engine) Expose(ctx context.Context, exposure Exposure) (Exposure, error
 	return exposure, nil
 }
 
+// Unexpose tears down an exposed port.
 func (e *Engine) Unexpose(port int) error {
 	e.mu.Lock()
 	if !e.up {
@@ -446,6 +468,8 @@ func (e *Engine) Unexpose(port int) error {
 	return nil
 }
 
+// PeerKey resolves the node public key of the peer behind addr, an
+// ip:port as seen by an exposed target.
 func (e *Engine) PeerKey(addr string) (found bool, public string, err error) {
 	e.mu.Lock()
 	if !e.up {
@@ -501,8 +525,7 @@ func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remot
 	e.mu.Unlock()
 
 	pub, havePub := e.inboundPeerKey(remote)
-	member := havePub && e.admits(pub)
-	if !gate.Admits(member, havePub, pub) {
+	if !e.admitsExposure(gate, pub, havePub) {
 		e.deniedCount.Add(1)
 		_ = remote.Close()
 		return
@@ -537,8 +560,14 @@ func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remot
 	}
 	pair := &connPair{left: remote, right: local, peerKey: pub}
 	e.mu.Lock()
-	if !e.up || e.exposed[port] != exposed || !exposed.gate.Admits(havePub && e.admitsLocked(pub), havePub, pub) {
+	if !e.up || e.exposed[port] != exposed {
 		e.mu.Unlock()
+		pair.close()
+		return
+	}
+	if !e.admitsExposureLocked(exposed.gate, pub, havePub) {
+		e.mu.Unlock()
+		e.deniedCount.Add(1)
 		pair.close()
 		return
 	}
@@ -553,6 +582,10 @@ func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remot
 
 var proxyV2Signature = [12]byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
 
+// buildProxyV2Header builds a PROXY v2 header for an accepted Tailcat
+// connection. Tailcat addresses are IPv6, so the header always uses the
+// TCP6 family (version 2 PROXY command 0x21, TCP over IPv6 0x21); TLV
+// 0xE0 carries the peer nodekey text.
 func buildProxyV2Header(source, destination net.Addr, port int, peerKeyText string) ([]byte, error) {
 	sourceAP, err := addrToAddrPort(source)
 	if err != nil {

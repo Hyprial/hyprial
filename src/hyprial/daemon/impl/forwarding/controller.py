@@ -551,18 +551,19 @@ class ForwardingSidecarController(MembershipWireMixin):
             )
 
     def expose(self, exposure: Mapping[str, object]) -> dict[str, object]:
-        """Expose a target; protocol v7 writes canonical ``"none"`` proxyProtocol as ``""``."""
+        """Expose a target; protocol v7 writes canonical ``"none"`` proxyProtocol as ``""`` and requires explicit admission."""
         self._require_expose_capability()
         normalized = _normalize_exposure(exposure)
         wire = dict(normalized)
         if wire["proxyProtocol"] == "none":
             wire["proxyProtocol"] = ""
+        wire["admission"] = "allow"
         event = self._request(
             {"v": FORWARD_PROTOCOL_VERSION, "op": "expose", **wire},
             "exposed",
         )
         answer = _normalize_exposure(event)
-        if answer != normalized:
+        if answer != normalized or event.get("admission") != "allow":
             raise ForwardingSidecarError("exposed event does not match request")
         return answer
 

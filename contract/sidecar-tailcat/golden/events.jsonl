@@ -7,7 +7,8 @@
 {"v":7,"event":"peer-unmapped","requestId":"request-unmap-peer","peer":"dev-alice-laptop"}
 {"v":7,"event":"exposed","requestId":"request-expose-tcp","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow"}
 {"v":7,"event":"exposed","requestId":"request-expose-unix","port":9000,"target":"unix:/run/hyprial/app.sock","proxyProtocol":"v2","admission":"allow"}
-{"v":7,"event":"exposed","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys"}
+{"v":7,"event":"exposed","requestId":"request-expose-keys","port":8448,"target":"tcp:127.0.0.1:8081","proxyProtocol":"","admission":"keys","keyCount":1}
+{"v":7,"event":"exposed","requestId":"request-expose-keys-empty","port":8449,"target":"tcp:127.0.0.1:8082","proxyProtocol":"","admission":"keys","keyCount":0}
 {"v":7,"event":"unexposed","requestId":"request-unexpose","port":8447}
 {"v":7,"event":"peer-key","requestId":"request-peer-key","addr":"[fd7a:115c:a1e0::1]:51023","found":true,"key":"nodekey:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}
 {"v":7,"event":"client-key-derived","requestId":"request-derive-client-key","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","clientPublic":"nodekey:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}
