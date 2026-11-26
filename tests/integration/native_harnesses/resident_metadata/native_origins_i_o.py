@@ -399,4 +399,7 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/orgfs/composition/state/stores.py": ("resident", ("new-module: OrgFS state runtime (orgfs-minimal D2)",)),
     "daemon/impl/orgfs/composition/state/sync.py": ("resident", ("new-module: OrgFS state runtime (orgfs-minimal D2)",)),
     "daemon/impl/orgfs/storage/vocabulary.py": ("resident", ("new-module: OrgFS storage vocabulary moved out of the deleted journal store (orgfs-minimal S)",)),
+    "daemon/impl/org/network/device_key/__init__.py": ("resident", ("new-module: service grant S1 device encryption key reader",)),
+    "daemon/impl/org/network/device_key/pair.py": ("resident", ("new-module: service grant S1 published encryption key pair",)),
+    "daemon/impl/org/network/device_key/cache.py": ("resident", ("new-module: service grant S1 cached published encryption key",)),
 }
