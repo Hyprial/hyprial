@@ -64,6 +64,7 @@ from hyprial.kernel import (
 from .relations import RELATIONS_EXAMPLES
 from ..destroy.examples import EXAMPLES as DESTROY_EXAMPLES
 from ..provider_auth import EXAMPLES as NATIVE_AUTH_EXAMPLES
+from ...model.examples import GUI_CONFIG, GUI_OPERATION, GUI_SAVED
 
 __all__ = ["REQUEST_EXAMPLES"]
 
@@ -131,6 +132,10 @@ _CREATE_AGENT_ROW = {
     for key, value in _AGENT_ROW.items()
     if key not in {"activityHints", "lastActiveAtMs"}
 }
+
+_MODEL_AGENT_ROW = {**_AGENT_ROW, "agentId": "a.example", "preferredHarness": "pi",
+                    "provider": None, "model": "hy4-flash", "harness": None, "lastHarness": None,
+                    "status": "offline", "capabilities": {"modelConfigurationRequired": True}}
 
 _DEFAULT_CREDENTIAL = {
     "ownerActor": _AGENT_URI,
@@ -228,6 +233,8 @@ _AGENT_LIST = MethodExampleSet(
                 AgentError.code, "the agent registry could not be read"
             ),
         ),
+        MethodExample(name="manual-model-agent", kind="success", description="Configured identity; not yet started.",
+                      params={}, result={"ok": True, "agents": [_MODEL_AGENT_ROW], "agentsWithoutRoutine": []}),
     ),
 )
 
@@ -522,6 +529,13 @@ _AGENT_CREATE = MethodExampleSet(
                 data=_ALREADY_RUNNING_DATA,
             ),
         ),
+        MethodExample(name="manual-model-created", kind="success", description="Identity and explicit binding saved; no start.",
+                      params={"name": "worker", "preferredHarness": "pi", "modelConfiguration": {
+                          "operationId": GUI_OPERATION, "configuration": GUI_CONFIG}},
+                      result={"ok": True, "created": True, "agent": {
+                          key: value for key, value in _MODEL_AGENT_ROW.items()
+                          if key not in {"activityHints", "lastActiveAtMs"}},
+                          "providerDefault": None, "modelConfiguration": GUI_SAVED}),
     ),
 )
 

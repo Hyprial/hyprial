@@ -174,13 +174,16 @@ it('shows and submits the supported default for an ordinary Pi DeepSeek Key', as
   expect(configureAgent.mock.calls[0][0]).toMatchObject({ model: 'deepseek-flash' });
 });
 
-it('adds a first Key through the shared credentials form without losing the Agent draft', async () => {
+it('adds a connection through the shared form without losing the Agent draft', async () => {
   let keys: readonly CredentialEntry[] = [];
+  const connection = { version: 1 as const, connectionRef: '0123456789abcdef0123456789abcdef', configRevision: 1,
+    endpoint: 'https://model.example/v1', protocol: 'openai-completions' as const, profile: 'openai-chat-completions/v1' as const, preset: { id: 'custom', version: 1 } };
   const api: SharedCredentialsApi = {
     ...credentials([]),
     listKeys: async () => keys,
-    addKey: vi.fn(async () => {
-      keys = [entry()];
+    listConnectionPresets: async () => [],
+    configureKey: vi.fn(async () => {
+      keys = [entry({ provider: 'connection', label: 'gateway', connection })];
       return { status: 'saved' as const };
     }),
   };
@@ -189,25 +192,30 @@ it('adds a first Key through the shared credentials form without losing the Agen
   await walkToRuntime(user, {
     authenticateAccount: async () => ({ status: 'authenticated' }),
     initializeDevice: async () => ({ status: 'ready' }),
-    configureAgent, runtimeCredentials: api,
+    configureAgent, runtimeCredentials: api, modelConfigurationApi: { configureModel: vi.fn() } as never,
   });
   expect(screen.getByLabelText('名称')).toHaveValue('');
   await user.type(screen.getByLabelText('名称'), 'first-agent');
-  await user.click(await screen.findByRole('button', { name: '添加 Key' }));
-  const dialog = within(screen.getByRole('dialog', { name: '添加 Key' }));
+  await choose(user, 'harness', 'pi');
+  await user.type(screen.getByLabelText('模型 ID'), 'hy4-flash');
+  await user.click(await screen.findByRole('button', { name: '添加连接' }));
+  const dialog = within(screen.getByRole('dialog', { name: '添加连接' }));
+  await user.type(dialog.getByLabelText('名称'), 'gateway');
+  await user.type(dialog.getByLabelText('服务地址'), connection.endpoint);
   await user.type(dialog.getByLabelText('Key', { exact: true }), 'synthetic-key');
   await user.click(dialog.getByRole('button', { name: '保存' }));
-  await waitForKey(user);
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '添加连接' })).toBeNull());
+  await choose(user, '连接', `gateway · ${connection.endpoint}`);
   expect(screen.getByLabelText('名称')).toHaveValue('first-agent');
   expect(screen.queryByRole('heading', { name: 'Auth' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '查看详情' })).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '创建 Agent' }));
   await waitFor(() => expect(configureAgent).toHaveBeenCalledTimes(1));
   expect(configureAgent.mock.calls[0][0]).toMatchObject({
-    displayName: 'first-agent', model: 'deepseek-flash',
-    credential: { kind: 'key', keyId: 'deepseek-official' },
+    displayName: 'first-agent', model: 'hy4-flash',
+    modelConfiguration: { configuration: { connectionRef: connection.connectionRef, model: 'hy4-flash' } },
   });
-  expect(api.addKey).toHaveBeenCalledTimes(1);
+  expect(api.configureKey).toHaveBeenCalledTimes(1);
 });
 
 it('clears the Key-specific model when switching to native Auth', async () => {

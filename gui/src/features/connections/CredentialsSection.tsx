@@ -234,6 +234,7 @@ export function CredentialsSection({ api, model, onKeysChanged, creationOnly = f
 
   function openForm(): void {
     if (!permitted('add', CREDENTIALS_SECTION_COPY.add)) return;
+    if (!api?.configureKey) { notifyUnavailable(CREDENTIALS_SECTION_COPY.add, { code: 'GUI_CAPABILITY_UNAVAILABLE', source: 'agent.secret.provider-configure' }); return; }
     setWrite(null);
     setFormOpen(true);
   }
@@ -260,6 +261,7 @@ export function CredentialsSection({ api, model, onKeysChanged, creationOnly = f
 
   function openRotate(entry: CredentialEntry): void {
     if (!permitted('replace', CREDENTIALS_SECTION_COPY.replaceKey, entry)) return;
+    if (entry.connection && !api?.replaceConnection) { notifyUnavailable(CREDENTIALS_SECTION_COPY.replaceKey, { code: 'GUI_CAPABILITY_UNAVAILABLE', source: 'agent.secret.provider-configure' }); return; }
     setRotateTarget(entry);
     setRotateValue('');
     setRotateTesting(false);
@@ -273,14 +275,14 @@ export function CredentialsSection({ api, model, onKeysChanged, creationOnly = f
 
   async function saveReplacement(event: FormEvent): Promise<void> {
     event.preventDefault();
-    if (!api || busy || locked || rotateTesting || !rotateTarget) return;
+    if (!api || busy || locked || rotateTesting || !rotateTarget || (rotateTarget.connection && !api.replaceConnection)) return;
     const current=generation.current;
     const target = rotateTarget;
     const value = rotateValue;
     setBusy('rotate');
     try {
       const outcome = target.connection
-        ? await api.replaceConnection?.(target,value) ?? {status:'failed' as const,message:'当前服务不支持更换连接 Key。'}
+        ? await api.replaceConnection!(target,value)
         : await api.replaceKey(target.keyId, value);
       if(generation.current!==current)return;
       if (outcome.status === 'unavailable') {
@@ -561,7 +563,7 @@ export function CredentialsSection({ api, model, onKeysChanged, creationOnly = f
         <p>{nameOf(probeTarget)}</p><p className="credentials-row__meta">{probeTarget.endpoint}</p>
         <ConnectionProbe api={api} id="saved-model" identity={probeTarget.keyId} request={model=>{
           const target=parseSecretEntryReference(probeTarget.keyId);
-          if(!target || !probeTarget.connection)throw new Error('连接不可用');
+          if(!target || !probeTarget.connection)throw new Error('Connection reference is invalid');
           return {connection:{...target,connectionRef:probeTarget.connection.connectionRef,configRevision:probeTarget.connection.configRevision},model};
         }} />
       </Dialog>}

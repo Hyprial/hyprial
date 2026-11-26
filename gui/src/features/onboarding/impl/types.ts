@@ -2,7 +2,7 @@ import type { MethodRefusal } from '../../../client';
 import type { AccountCredentialValues } from '../../../components/forms';
 import type { ConversationMessage } from '../../../state/gui-view-model';
 import type { AuthCancelResult, AuthOpenResult } from '../../../platform/auth';
-import type { AgentDraft } from '../../agents';
+import type { AgentDraft, AgentsApi } from '../../agents';
 import type { ProviderLoginFile } from '../../agent-provider';
 import type { SharedCredentialsApi } from '../../connections';
 import type { ChatIntent } from '../../agent-chat';
@@ -198,7 +198,7 @@ export interface SetupSnapshot {
 export type RuntimeConfigurationStage = 'credential-key' | 'credential-auth';
 
 export interface RuntimeConfigurationResult {
-  readonly status: 'configured' | 'failed' | 'unavailable' | 'unknown';
+  readonly status: 'configured' | 'incomplete' | 'failed' | 'unavailable' | 'unknown';
   readonly message?: string;
   readonly refusal?: MethodRefusal;
   readonly actorUri?: string;
@@ -220,6 +220,7 @@ export interface AccountLogoutResult {
 }
 
 export interface FirstRunActions {
+  readonly modelConfigurationApi?: AgentsApi;
   readonly logoutAccount?: () => Promise<AccountLogoutResult>;
   readonly getSetupState?: () => Promise<SetupSnapshot>;
   readonly saveModelKey?: (key: string) => Promise<ModelKeySaveResult>;

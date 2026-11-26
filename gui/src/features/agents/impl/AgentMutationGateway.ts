@@ -29,6 +29,8 @@ export type AgentCredentialPlan =
     };
 
 export interface AgentDraft {
+  readonly modelConfiguration?: import('../../../client/generated/types').AgentCreateParams['modelConfiguration'];
+  readonly requireModelConfiguration?: boolean;
   readonly displayName: string;
   readonly role: string;
   readonly modelServiceId: string;
@@ -53,6 +55,7 @@ export type AgentMutationResult =
       /** Optional page notice; the default wording stays with the page. */
       readonly notice?: string;
     }
+  | { readonly kind: 'incomplete'; readonly actorUri: string; readonly agentId: string; readonly operationId: string; readonly message: string }
   | { readonly kind: 'updated'; readonly agent: ManagedAgentView }
   | { readonly kind: 'deleted'; readonly agentId: string }
   | { readonly kind: 'failed'; readonly message: string; readonly code?: string; readonly diagnostics?: RequestDiagnostics | null }

@@ -191,6 +191,9 @@ export function createFirstRunConfigureAgent(
     if (result.kind === 'refused') {
       return { status: 'unavailable', refusal: result.refusal };
     }
+    if (result.kind === 'incomplete') {
+      return { status: 'incomplete', message: result.message, actorUri: result.actorUri, created: true };
+    }
     if (result.kind === 'failed' || result.kind === 'unknown') {
       return { status: result.kind, message: result.message };
     }
@@ -206,6 +209,10 @@ export function createFirstRunConfigureAgent(
         message: '同名 Agent 已存在；请换一个名称，未改动现有凭据。',
       };
     }
+    if (draft.requireModelConfiguration) return { status: 'incomplete', created: true, actorUri: result.actorUri,
+      message: '身份已创建，模型尚未配置。请在下方导入登录文件并保存配置，再启动。' };
+    if (draft.modelConfiguration) return { status: 'incomplete', created: true, actorUri: result.actorUri,
+      message: 'Agent 和模型配置已保存。请核对后显式启动；尚未验证模型响应。' };
     let applyCredential: ((actorUri: string) => Promise<unknown>) | undefined;
     if (credential?.kind === 'key') {
       const key = credential;
@@ -288,9 +295,11 @@ export function createFirstRunConfigureAgent(
     }
     try {
       const started = await startAgent(result.agent.id, {
-        ...(draft.preferredHarness ? { harness: draft.preferredHarness } : {}),
-        ...(draft.provider ? { provider: draft.provider } : {}),
-        ...(draft.model ? { model: draft.model } : {}),
+        ...(!draft.modelConfiguration ? {
+          ...(draft.preferredHarness ? { harness: draft.preferredHarness } : {}),
+          ...(draft.provider ? { provider: draft.provider } : {}),
+          ...(draft.model ? { model: draft.model } : {}),
+        } : {}),
         ...(workspace ? { cwd: workspace } : {}),
         ...(draft.preferredHarness === 'pi' ? { approve: true } : {}),
       });
@@ -378,7 +387,12 @@ export function createConnectedGuiCapabilities(connection: BackendConnection): G
   const groupReadable = served('conversations.list') && served('conversations.get');
   const groupAdminAvailable = groupReadable || served('conversations.create')
     || served('conversations.members.add') || served('conversations.members.remove');
-  const directory = createAgentsApi(client, methodAccess);
+  const allAgentMethods = createAgentsApi(client, methodAccess);
+  const { modelStatus, configureModel, cancelModel, nativeTargets, ...legacyAgentMethods } = allAgentMethods;
+  const modelDeclared = connection.methods?.some(entry => entry.name.startsWith('agent.model.')) === true;
+  const directory = modelDeclared
+    ? { ...legacyAgentMethods, modelStatus, configureModel, cancelModel, nativeTargets }
+    : legacyAgentMethods;
   const agents = directory.list !== undefined && accessRefusal(methodAccess, 'agent.list') === null
     ? directory : undefined;
   const sharedCredentials = accessRefusal(methodAccess, 'agent.secret.provider-list') === null
@@ -422,6 +436,7 @@ export function createConnectedGuiCapabilities(connection: BackendConnection): G
         connection.beginTransition ? () => connection.beginTransition?.('initialize') : undefined),
     } : {}),
     ...(agentGateway ? {
+      modelConfigurationApi: directory,
       configureAgent: createFirstRunConfigureAgent(
         agentGateway, allowProvider, loginNative, methodAccess, directory.start?.bind(directory),
       ),

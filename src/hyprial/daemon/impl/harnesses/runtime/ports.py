@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from .observation import RuntimeFactsGrant
 
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, fields, replace
 from collections.abc import Mapping
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.adapters.spec import AdapterSpec
 import hashlib
 import json
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Protocol, Self, TypeAlias
 
 from hyprial.kernel import CommandSink, EventSink, PortCommandRejected
 
@@ -49,6 +50,16 @@ class HarnessLaunchProjection:
             validated = HarnessLaunchSpec(self.harness, self.name, self.headless,
                                           model_binding=self.model_binding)
             object.__setattr__(self, "model_binding", validated.model_binding)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        """Keep the binding reference immutable across persistence admission."""
+        values = {field.name: deepcopy(
+            dict(self.model_binding) if field.name == "model_binding" and self.model_binding is not None
+            else getattr(self, field.name), memo,
+        ) for field in fields(self)}
+        result = replace(self, **values)
+        memo[id(self)] = result
+        return result
 
     def to_payload(self) -> dict[str, object]:
         return {

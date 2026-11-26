@@ -27,6 +27,7 @@
  *   默认 harness 与“保存修改”），只服务隔离演示，不作为后端能力证据。
  */
 
+import { Fields, choiceError, choiceConfiguration, type ModelChoice } from './model-configuration/Fields';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { methodRefusal } from '../../../client';
@@ -38,6 +39,7 @@ import { AgentAvatar } from '../../../components/AgentAvatar';
 import { Button, Card, InfoTip, Select } from '../../../components/primitives';
 
 export interface AgentFormProps {
+  readonly explicitModel?: boolean;
   readonly mode: 'create' | 'edit';
   readonly initial: AgentDraft;
   readonly organizations?: readonly AgentOrganization[];
@@ -103,6 +105,7 @@ export function keyCompatibleWithHarness(harness: string, provider: string, endp
 
 
 export function AgentForm({
+  explicitModel = false,
   mode,
   initial,
   organizations = [],
@@ -118,6 +121,8 @@ export function AgentForm({
   onSubmit,
   onCancel,
 }: AgentFormProps) {
+  const [choice, setChoice] = useState<ModelChoice>({ harness: initial.preferredHarness ?? '', authKind: 'connection', model: initial.model ?? '' });
+  const [explicitError, setExplicitError] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState(initial.displayName);
   const [role, setRole] = useState(initial.role);
   const [organizationId, setOrganizationId] = useState(initial.organizationId ?? '');
@@ -154,7 +159,7 @@ export function AgentForm({
   }, [autoFocusName]);
 
   useEffect(() => {
-    if (previewMode || mode !== 'create' || credentialsApi === undefined) {
+    if (explicitModel || previewMode || mode !== 'create' || credentialsApi === undefined) {
       setKeys({ state: 'none' });
       return;
     }
@@ -180,7 +185,7 @@ export function AgentForm({
     return () => {
       cancelled = true;
     };
-  }, [credentialsApi, credentialsRevision, mode, previewMode]);
+  }, [credentialsApi, credentialsRevision, mode, previewMode, explicitModel]);
 
   const compatibleKeys = keys.state === 'ready'
     ? keys.entries.filter((entry) => !entry.provider && !entry.endpoint || keyCompatibleWithHarness(preferredHarness, entry.provider, entry.endpoint, entry.protocol))
@@ -251,6 +256,17 @@ export function AgentForm({
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
     if (pending || submitDisabled || pickingAuth) {
+      return;
+    }
+    if (explicitModel && !previewMode && mode === 'create') {
+      const invalid = agentNameError(displayName.trim()) ?? choiceError(choice, true);
+      setExplicitError(invalid);
+      if (invalid) return;
+      const common = { displayName: displayName.trim(), role: '', organizationId: null, modelServiceId: initial.modelServiceId,
+        preferredHarness: choice.harness, model: choice.model, cwd: cwd.trim() || null };
+      onSubmit(choice.authKind === 'connection'
+        ? { ...common, modelConfiguration: { configuration: choiceConfiguration(choice), operationId: crypto.randomUUID() } }
+        : { ...common, requireModelConfiguration: true });
       return;
     }
     const name = displayName.trim();
@@ -442,8 +458,12 @@ export function AgentForm({
               ]}
             />
           </>
-        ) : (
+        ) : explicitModel && mode === 'create' ? <>
+          <Fields value={choice} onChange={setChoice} credentials={credentialsApi} revision={credentialsRevision} disabled={pending || submitDisabled} creating />
+          {explicitError && <p className="agent-field-error" role="alert">{explicitError}</p>}
+        </> : (
           <>
+          <p className="agent-field-hint">当前入口采用旧版配置。</p>
             <label htmlFor="agent-harness">harness</label>
             <Select
               id="agent-harness"

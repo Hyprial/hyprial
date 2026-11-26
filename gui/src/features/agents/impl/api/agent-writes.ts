@@ -115,6 +115,8 @@ export function toAgentRequestError(error: unknown): AgentRequestError {
 }
 
 export interface AgentCreateInput {
+  readonly modelConfiguration?: import('../../../../client/generated/types').AgentCreateParams['modelConfiguration'];
+  readonly requireModelConfiguration?: boolean;
   readonly name: string;
   readonly org?: string | null;
   readonly cwd?: string | null;
@@ -124,6 +126,7 @@ export interface AgentCreateInput {
 }
 
 export interface AgentCreateOutcome {
+  readonly modelConfiguration?: import('../../../../client/generated/types').AgentModelStatusResult;
   readonly created: boolean;
   readonly orgMembership?: { readonly state: 'pending' | 'approved' | 'unassigned'; readonly org: string };
   readonly actor: string;
@@ -180,6 +183,9 @@ const SHARED_DECLARED_ERROR_TEXT: Readonly<Record<string, string>> = {
 };
 
 const CREATE_ONLY_ERROR_TEXT: Readonly<Record<string, string>> = {
+  MODEL_CONFIGURATION_INVALID: '模型配置未通过校验，创建未完成。',
+  MODEL_COMBINATION_UNSUPPORTED: '当前 harness、凭据与运行方式的组合不能使用，创建未完成。',
+  MODEL_CONFIGURATION_INCOMPLETE: '模型配置尚未完成；请核对已创建的 Agent，不要重复创建。',
   AGENT_DEFAULT_ROUTINE_PENDING: 'Agent 已创建；默认例程登记仍在后台进行。',
   AGENT_DEFAULT_ROUTINE_FAILED: '创建已回滚：默认例程登记失败。',
 };
@@ -221,6 +227,9 @@ export const STOP_DECLARED_ERROR_TEXT: Readonly<Record<string, string>> = {
 };
 
 const START_ONLY_ERROR_TEXT: Readonly<Record<string, string>> = {
+  MODEL_CONFIGURATION_CONFLICT: '模型配置与当前状态不一致，启动未完成；请刷新并核对配置。',
+  MODEL_CONFIGURATION_INCOMPLETE: '模型配置尚未完成，启动未完成；请核对或取消未完成的配置操作。',
+  MODEL_CONFIGURATION_INVALID: '模型配置未通过校验，启动未完成。',
   MODEL_SESSION_BUSY: '该会话正在使用或保留占用，启动未完成。请确认运行状态，或新建会话。',
   MODEL_RESUME_MISMATCH: '会话保存的模型配置与当前配置不一致，或无法核验来源，启动未完成。请恢复原配置或新建会话。',
   MODEL_COMBINATION_UNSUPPORTED: '当前运行程序、运行方式与模型连接的组合不受支持，启动未完成。请调整配置。',

@@ -337,7 +337,7 @@ export function createSharedCredentialsApiFromClient(
           message:
             error.code === "MODEL_CONFIGURATION_CONFLICT"
               ? "连接已变更或名称已存在，未写入；请刷新后重试。"
-              : "配置或凭据不可用，未写入；请核对后重试。",
+              : "配置校验或凭据读取失败，未写入；请核对后重试。",
         };
       }
       return writeOutcome(error);
@@ -367,7 +367,7 @@ export function createSharedCredentialsApiFromClient(
             )
               return Promise.resolve({
                 status: "failed",
-                message: "连接标识不可用，请刷新清单。",
+                message: "连接标识未通过校验，请刷新清单。",
               });
             return saveConnection(
               target.entryId,

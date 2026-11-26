@@ -38,6 +38,7 @@
  *   actor 为键，改名不改变操作对象。
  */
 
+import { modelActions, type ModelActions } from '../model-configuration/api';
 import { secretProviderActions } from './secret-keys';
 import { callAgentMethod, withPresentHandlers, type AgentsClient } from './client';
 import type { AgentDestroyPreviewResult, AgentDestroyResult } from '../../../../client/generated/types';
@@ -102,6 +103,7 @@ export interface AgentDirectoryRow {
   readonly preferredHarness: string | null;
   /** Only curated product capabilities belong in visible badges. */
   readonly capabilities: readonly string[];
+  readonly modelConfigurationRequired?: boolean;
   readonly runState: AgentRunStateFacts;
   readonly startupFailure?: { readonly operationId: string; readonly message: string };
   /** agent.list 本线消费的 home / 活动事实；未提供时为 null（不推测）。 */
@@ -269,7 +271,7 @@ export interface AgentNativeLoginOutcome {
   readonly files: readonly AgentNativeFileWrite[];
 }
 
-export interface AgentsApi {
+export interface AgentsApi extends Partial<ModelActions> {
   previewDestroy?(name: string): Promise<AgentDestroyPreviewResult>;
   destroy?(operationId: string): Promise<AgentDestroyResult>;
   list?(): Promise<readonly AgentDirectoryRow[]>;
@@ -415,6 +417,7 @@ function rowOfAgentEntity(raw: unknown): AgentDirectoryRow {
     harness: asNullableString(row.harness),
     preferredHarness: asNullableString(row.preferredHarness),
     capabilities: [],
+    modelConfigurationRequired: (row.capabilities as Record<string, unknown> | null)?.modelConfigurationRequired === true,
     runState: runStateFactsOf(row.runState),
     ...(row.startupFailure && typeof row.startupFailure === 'object'
       && typeof (row.startupFailure as { operationId?: unknown }).operationId === 'string'
@@ -656,16 +659,28 @@ export function createAgentsApi(client?: AgentsClient, access?: MethodAccess): A
         const result = await callAgentMethod('agent.create', client?.agent?.create, {
           name: input.name,
           ...(input.cwd ? { cwd: input.cwd } : {}),
-          provider: input.provider,
-          model: input.model,
           preferredHarness: input.preferredHarness,
+          ...(input.modelConfiguration ? { modelConfiguration: input.modelConfiguration }
+            : input.requireModelConfiguration ? { capabilities: { modelConfigurationRequired: true } }
+              : { provider: input.provider, model: input.model }),
         }, access);
         const entity = rowOfAgentEntity(result.agent);
+        if (input.modelConfiguration) {
+          const expected = input.modelConfiguration;
+          const receipt = result.modelConfiguration;
+          if (!receipt?.binding || receipt.cleanupPending || receipt.cell.intentMatches !== true
+            || receipt.operation?.phase !== 'finalized' || receipt.operation.operationId !== expected.operationId
+            || Object.entries(expected.configuration).some(([key, value]) => (receipt.binding!.configuration as unknown as Record<string, unknown>)[key] !== value)) {
+            throw new AgentRequestError('MODEL_CONFIGURATION_INCOMPLETE', 'Model configuration receipt is incomplete.', 'dispatched',
+              { reason: 'configuration-required', actor: entity.uri, agentId: entity.agentId ?? entity.actor, operationId: expected.operationId });
+          }
+        }
         return {
           created: result.created === true,
           actor: entity.actor,
           entity,
           providerDefault: providerDefaultOf(result.providerDefault),
+          ...(result.modelConfiguration ? { modelConfiguration: result.modelConfiguration } : {}),
         } satisfies AgentCreateOutcome;
       } catch (error) {
         throw toAgentRequestError(error);
@@ -715,6 +730,7 @@ export function createAgentsApi(client?: AgentsClient, access?: MethodAccess): A
       }
     },
     ...secretProviderActions(client, access),
+    ...modelActions(client, access),
     async loginNative(
       actor: string,
       provider: string,

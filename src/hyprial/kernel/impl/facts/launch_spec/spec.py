@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import os
 import shutil
+from copy import deepcopy
 from types import MappingProxyType
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Any, Self
 
 from .args import _HARNESS_ARG_OPTIONS
@@ -225,6 +226,16 @@ class HarnessLaunchSpec:
     def with_default_args(self, stored: tuple[str, ...]) -> Self:
         """Apply stored defaults while retaining explicit launch precedence."""
         return replace(self, args=merge_harness_launch_args(stored, self.args, harness=self.harness))
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        """Snapshot launch intent without pickling its immutable binding reference."""
+        values = {field.name: deepcopy(
+            dict(self.model_binding) if field.name == "model_binding" and self.model_binding is not None
+            else getattr(self, field.name), memo,
+        ) for field in fields(self)}
+        result = replace(self, **values)
+        memo[id(self)] = result
+        return result
 
     @classmethod
     def from_json(cls, value: object, label: str) -> Self:

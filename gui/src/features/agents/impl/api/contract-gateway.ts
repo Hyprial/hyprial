@@ -45,7 +45,7 @@ export interface ContractGatewayOptions {
 }
 
 export function createContractAgentGateway(
-  options: ContractGatewayOptions & { readonly api: Required<AgentsApi> },
+  options: ContractGatewayOptions & { readonly api: AgentsApi & Required<Pick<AgentsApi, 'create'>> },
 ): AgentMutationGateway;
 export function createContractAgentGateway(
   options: ContractGatewayOptions,
@@ -62,6 +62,8 @@ export function createContractAgentGateway(
       try {
         outcome = await createAgent({
           name: draft.displayName,
+          ...(draft.modelConfiguration ? { modelConfiguration: draft.modelConfiguration } : {}),
+          ...(draft.requireModelConfiguration ? { requireModelConfiguration: true } : {}),
           ...(draft.cwd ? { cwd: draft.cwd } : {}),
           provider: draft.provider ?? null,
           model: draft.model ?? null,
@@ -73,6 +75,13 @@ export function createContractAgentGateway(
           return { kind: 'refused', refusal };
         }
         const failure = toAgentRequestError(error);
+        const partial = failure.data as Record<string, unknown> | null;
+        if (failure.code === 'MODEL_CONFIGURATION_INCOMPLETE' && partial?.reason === 'configuration-required'
+          && typeof partial.actor === 'string' && typeof partial.agentId === 'string' && typeof partial.operationId === 'string') {
+          afterCreate?.();
+          return { kind: 'incomplete', actorUri: partial.actor, agentId: partial.agentId, operationId: partial.operationId,
+            message: 'Agent 身份已创建，模型配置未完成；请在详情继续配置，不要重复创建。' };
+        }
         const message = agentFailureMessage(failure);
         if (message.dispatch !== 'not-dispatched') {
           afterCreate?.();
@@ -104,6 +113,7 @@ export interface RuntimeActionOutcome {
   readonly text: string;
   readonly dispatched: boolean;
   readonly awaitingObservation?: boolean;
+  readonly running?: boolean;
   readonly code?: string;
   readonly diagnostics?: RequestDiagnostics | null;
   /** Set when the call was refused before dispatch; text is then empty and the page notifies. */
@@ -121,7 +131,7 @@ export type RuntimeActionHandler = (
 ) => Promise<RuntimeActionOutcome>;
 
 export function createRuntimeActionHandler(
-  api: Required<AgentsApi>,
+  api: AgentsApi & Required<Pick<AgentsApi, 'start' | 'stop'>>,
   afterSettled?: () => void,
 ): RuntimeActionHandler;
 export function createRuntimeActionHandler(
@@ -149,6 +159,7 @@ export function createRuntimeActionHandler(
             : 'daemon 未受理启动；请核对运行状态，不要盲目重复启动。',
           dispatched: true,
           awaitingObservation: outcome.accepted,
+          running: outcome.accepted && outcome.running,
           warnings: outcome.warnings,
         };
       } catch (error) {

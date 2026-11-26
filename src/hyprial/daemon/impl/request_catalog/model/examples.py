@@ -19,6 +19,14 @@ SAVED = {**EMPTY, "binding": {"bindingRef": "mb.example", "bindingRevision": 1,
          "cell": {"cellId": "c.example", "revision": 2, "intentMatches": True}}
 CANCELLED = {**EMPTY, "operation": {**RECEIPT, "phase": "cancelled",
              "resultBindingRevision": 0, "coordinationPhase": "compensated", "observedCellRevision": 3}}
+GUI_OPERATION = "00000000-0000-4000-8000-000000000001"
+GUI_CONFIG = {**CONFIG, "connectionRef": "0123456789abcdef0123456789abcdef"}
+GUI_SAVED = {**SAVED, "member": "agent:acme:node-1:worker", "binding": {**SAVED["binding"], "configuration": {
+    **GUI_CONFIG, "intentDigest": "b" * 64}}, "operation": {**RECEIPT, "operationId": GUI_OPERATION}}
+GUI_PENDING = {**EMPTY, "member": "agent:acme:node-1:worker", "operation": {**RECEIPT, "operationId": GUI_OPERATION,
+    "phase": "prepared", "coordinationPhase": "planned", "resultBindingRevision": None,
+    "observedCellRevision": None}}
+GUI_CANCELLED = {**CANCELLED, "member": "agent:acme:node-1:worker", "operation": {**CANCELLED["operation"], "operationId": GUI_OPERATION}}
 
 
 def examples(method, params, result, *, empty=False):
@@ -36,7 +44,12 @@ def examples(method, params, result, *, empty=False):
             MethodExample(name="unreadable-binding", kind="domain-error", description="State is not guessed.",
                           params=params, error=MethodExampleError(codes.MODEL_CONFIGURATION_INCOMPLETE,
                               "Binding state is unreadable.", {"phase": "bind", "reason": "state-unreadable"})),
-        ) + ((MethodExample(name="bound", kind="success", description="Previously saved configuration.",
+        ) + ((MethodExample(name="manual-connection", kind="success",
+                            description="Manual model and a versioned saved connection, without activation.",
+                            params=params, result=GUI_SAVED),
+              MethodExample(name="pending-connection", kind="success", description="Durable configuration awaits reconciliation.",
+                            params=params, result=GUI_PENDING),
+              MethodExample(name="bound", kind="success", description="Previously saved configuration.",
                             params=params, result=SAVED),) if empty else ()),
     )
 
@@ -44,5 +57,8 @@ def examples(method, params, result, *, empty=False):
 EXAMPLES = (
     examples("agent.model.configure", CONFIGURE, SAVED),
     examples("agent.model.status", {"name": "worker"}, EMPTY, empty=True),
-    examples("agent.model.cancel", CANCEL, CANCELLED),
+    MethodExampleSet(method="agent.model.cancel", empty_not_applicable="Cancellation returns its durable receipt.",
+        cases=examples("agent.model.cancel", CANCEL, CANCELLED).cases + (
+            MethodExample(name="cancel-manual-connection", kind="success", description="Confirmed compensation of a prepared operation.",
+                          params={**CANCEL, "operationId": GUI_OPERATION}, result=GUI_CANCELLED),)),
 )

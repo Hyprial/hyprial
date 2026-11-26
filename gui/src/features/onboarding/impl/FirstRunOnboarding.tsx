@@ -174,6 +174,7 @@ export function FirstRunOnboarding(props: FirstRunOnboardingProps) {
             runtimeCredentials={actions.runtimeCredentials}
             pickRuntimeLoginFiles={actions.pickRuntimeLoginFiles}
             onRuntimeConfigured={continueFromRuntimeConfiguration}
+            modelApi={actions.modelConfigurationApi}
             runtimeWriteLocked={runtimeWritePending || runtimeWriteUnknown !== null}
             runtimeWritePending={runtimeWritePending}
             runtimeUnknown={runtimeWriteUnknown}
