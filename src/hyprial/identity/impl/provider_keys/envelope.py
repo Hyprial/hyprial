@@ -40,6 +40,11 @@ PROFILE = sealed_envelope.Profile(
 )
 
 
+def _unwrap(row: dict, private_key: bytes, header_bytes: bytes) -> bytes:
+    """Unwrap one recipient row's DEK under the provider-key profile; no verification."""
+    return sealed_envelope.unwrap_row(PROFILE, row, private_key, header_bytes)
+
+
 def seal(secret: bytes, *, header: dict, recipients: list[Recipient], signer: SigningKey) -> dict:
     """Seal one payload with a fresh DEK. Use reseal for an existing key version.
 

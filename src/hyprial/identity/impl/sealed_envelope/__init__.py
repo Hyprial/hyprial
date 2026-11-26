@@ -1,7 +1,7 @@
 """Profile-parameterized sealed envelopes: provider keys (signed) and service grants (unsigned)."""
 from .core import (
     is_weak_public_key as is_weak_public_key, open as open, seal as seal,
-    unwrap_check as unwrap_check, verify as verify,
+    unwrap_check as unwrap_check, unwrap_row as unwrap_row, verify as verify,
 )
 from .profile import Profile, Recipient, Signature
 from .service_grant import (
