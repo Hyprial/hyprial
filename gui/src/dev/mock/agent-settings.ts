@@ -56,7 +56,7 @@ export function createMockSharedCredentialsApi(seed: { entries?: readonly Creden
       return (seed.authGrants ?? DEFAULT_AUTH_GRANTS).map(grant => ({ ...grant }));
     },
     async testKey(request) {
-      if (!request.model.trim() || !request.secret.trim()) throw new Error('请填写 Key 和测试模型。');
+      if (!request.model.trim() || ('secret' in request && !request.secret.trim())) throw new Error('请填写 Key 和测试模型。');
       return { kind: 'model', status: 200, ok: true, latencyMs: 0, simulated: true };
     },
     async addKey(provider, label) {

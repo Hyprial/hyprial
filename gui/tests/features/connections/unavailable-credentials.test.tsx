@@ -71,26 +71,28 @@ describe('credentials section: refused operations', () => {
     renderWithNotifications(<CredentialsSection api={api} />);
     await screen.findByRole('list', { name: '凭据列表' });
 
-    await user.click(screen.getByRole('button', { name: '添加 Key' }));
+    await user.click(screen.getByRole('button', { name: '添加连接' }));
 
-    expectUnavailableToast('添加 Key暂不可用。');
+    expectUnavailableToast('添加连接暂不可用。');
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('button', { name: '添加 Key' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '添加连接' })).toBeEnabled();
     expect(addKey).not.toHaveBeenCalled();
   });
 
   it('reports a refused save once, keeps the form editable and keeps the typed key', async () => {
     const user = userEvent.setup();
-    const api = createApi({ addKey: vi.fn(async () => REFUSED) });
+    const api = createApi({ configureKey: vi.fn(async () => REFUSED) });
     renderWithNotifications(<CredentialsSection api={api} />);
     await screen.findByRole('list', { name: '凭据列表' });
-    await user.click(screen.getByRole('button', { name: '添加 Key' }));
+    await user.click(screen.getByRole('button', { name: '添加连接' }));
     const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('名称'), 'gateway');
+    await user.type(within(dialog).getByLabelText('服务地址'), 'https://gateway.example/v1');
     await user.type(within(dialog).getByLabelText('Key'), 'synthetic-key');
 
     await user.click(within(dialog).getByRole('button', { name: '保存' }));
 
-    expectUnavailableToast('保存暂不可用。');
+    expectUnavailableToast('保存连接暂不可用。');
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '保存' })).toBeEnabled();
     expect(within(dialog).getByLabelText('Key')).toHaveValue('synthetic-key');
@@ -215,7 +217,7 @@ describe('credentials section: refused reads', () => {
     renderWithNotifications(<CredentialsSection api={api} />);
     await vi.waitFor(() => expect(screen.queryByText('正在读取凭据')).toBeNull());
     expect(screen.queryByText('暂无 Key')).toBeNull();
-    expect(screen.queryByRole('button', { name: '添加 Key' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '添加连接' })).toBeNull();
   });
 });
 
@@ -224,11 +226,11 @@ describe('credentials section: absent capabilities are not rendered', () => {
     const user = userEvent.setup();
     renderWithNotifications(<CredentialsSection api={createApi()} />);
     await screen.findByRole('list', { name: '凭据列表' });
-    await user.click(screen.getByRole('button', { name: '添加 Key' }));
+    await user.click(screen.getByRole('button', { name: '添加连接' }));
     const dialog = await screen.findByRole('dialog');
 
     expect(within(dialog).queryByRole('button', { name: /测试/ })).toBeNull();
-    expect(within(dialog).queryByLabelText('测试模型')).toBeNull();
+    expect(within(dialog).queryByLabelText('测试模型 ID')).toBeNull();
     expect(within(dialog).queryByText(/尚未接入/)).toBeNull();
   });
 
@@ -237,26 +239,22 @@ describe('credentials section: absent capabilities are not rendered', () => {
     const api = createApi({ async testKey() { return { kind: 'model', status: 200, ok: true, latencyMs: 1 }; } });
     renderWithNotifications(<CredentialsSection api={api} />);
     await screen.findByRole('list', { name: '凭据列表' });
-    await user.click(screen.getByRole('button', { name: '添加 Key' }));
+    await user.click(screen.getByRole('button', { name: '添加连接' }));
     const dialog = await screen.findByRole('dialog');
 
     expect(within(dialog).getByRole('button', { name: '测试' })).toBeInTheDocument();
-    expect(within(dialog).getByLabelText('测试模型')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('测试模型 ID')).toBeInTheDocument();
   });
 
-  it('lists only real providers and no custom option', async () => {
-    const user = userEvent.setup();
-    renderWithNotifications(<CredentialsSection api={createApi()} />);
-    await screen.findByRole('list', { name: '凭据列表' });
-    await user.click(screen.getByRole('button', { name: '添加 Key' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByLabelText('模型服务商'));
-
-    const options = screen.getAllByRole('option').map(option => option.textContent);
-    expect(options).toEqual(['DeepSeek', 'OpenAI', 'Anthropic', 'Google', 'Kimi Code', 'Moonshot AI']);
-    expect(screen.queryByText(/自定义/)).toBeNull();
-    expect(within(dialog).queryByLabelText('服务地址')).toBeNull();
-    expect(within(dialog).queryByLabelText('兼容协议')).toBeNull();
+  it('offers custom supported protocol without claiming unavailable official presets', async () => {
+    const user=userEvent.setup();renderWithNotifications(<CredentialsSection api={createApi()}/>);
+    await screen.findByRole('list',{name:'凭据列表'});await user.click(screen.getByRole('button',{name:'添加连接'}));
+    const dialog=screen.getByRole('dialog');
+    expect(within(dialog).queryByLabelText('模型服务商')).toBeNull();
+    expect(within(dialog).getByLabelText('服务地址')).toBeVisible();
+    expect(within(dialog).getByLabelText('兼容协议')).toHaveTextContent('OpenAI Chat Completions');
+    expect(within(dialog).getByRole('button',{name:'保存'})).toBeDisabled();
+    expect(within(dialog).getByText('官方地址预设暂不可用，可填写自定义地址。')).toBeVisible();
   });
 
   it('renders a fixture model without any operation control', async () => {
@@ -268,7 +266,7 @@ describe('credentials section: absent capabilities are not rendered', () => {
     expect(within(item).queryByRole('button', { name: '更换 Key' })).toBeNull();
     expect(within(item).queryByRole('button', { name: '删除凭据' })).toBeNull();
     expect(within(item).queryByRole('button', { name: /撤销 .* 的授权/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: '添加 Key' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '添加连接' })).toBeNull();
   });
 
   it('renders nothing without a port and without a model', () => {
@@ -285,7 +283,7 @@ describe('credentials connected port', () => {
 
     await expect(api.listKeys()).rejects.toBeInstanceOf(MethodRefusedError);
     await expect(api.listSecretGrants()).rejects.toMatchObject({ code: 'METHOD_NOT_FOUND', method: 'agent.secret.list' });
-    expect(api.refusal?.('add')).toEqual({ code: 'METHOD_NOT_FOUND', source: 'agent.secret.provider-write' });
+    expect(api.refusal?.('add')).toEqual({ code: 'METHOD_NOT_FOUND', source: 'agent.secret.provider-configure' });
     expect(api.refusal?.('replace')).toEqual({ code: 'METHOD_NOT_FOUND', source: 'agent.secret.provider-write' });
     expect(api.deleteKey).toBeUndefined();
     expect(api.refusal?.('revoke')).toEqual({ code: 'METHOD_NOT_FOUND', source: 'agent.secret.revoke' });

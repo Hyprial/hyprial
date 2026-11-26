@@ -4,6 +4,7 @@ from hyprial.kernel import ipc_errors
 from hyprial.kernel import HttpBinding, IdentityBinding, IdempotencySpec, MethodError, MethodExample, MethodExampleError, MethodExampleSet, MethodSpec
 
 from ..agent import _SECRET_GRANT_ROW
+from ...model_probe.request import DEFAULTS
 
 SECRET_PROVIDER_WRITE = "agent.secret.provider-write"
 
@@ -37,6 +38,14 @@ MODEL_CONNECTION = {"type": "object", "properties": {
 MODEL_ROUTES = {"type": "object", "propertyNames": {
     "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "additionalProperties": MODEL_ROUTE}
 MODEL_CONNECTIONS = {**MODEL_ROUTES, "additionalProperties": MODEL_CONNECTION}
+
+CONNECTION_PRESETS = [
+    {"label": label, "connection": {"version": 1, "endpoint": DEFAULTS[name][0],
+     "protocol": DEFAULTS[name][1], "profile": "openai-chat-completions/v1",
+     "preset": {"id": name, "version": 1}}}
+    for name, label in (("deepseek", "DeepSeek"), ("openai", "OpenAI"))
+]
+
 
 _ERRORS = tuple(MethodError(code, description="Existing daemon rejection; no data payload.") for code in (
     ipc_errors.INVALID_ARGUMENT, ipc_errors.DAEMON_ERROR, ipc_errors.DAEMON_RESTORING, ipc_errors.CALLER_NOT_AUTHORIZED,
@@ -107,7 +116,10 @@ SECRET_PROVIDER_LIST_SPEC = MethodSpec(
     name=SECRET_PROVIDER_LIST, owner="daemon.agent.secret",
     params_schema={"type": "object", "properties": {"connectionVersion": {"type": "integer", "const": 1}}, "additionalProperties": False},
     result_schema={"type": "object", "properties": {
-        "ok": {"const": True}, "entries": {"type": "array", "maxItems": 1000, "items": {
+        "ok": {"const": True}, "presets": {"type": "array", "items": {
+            "type": "object", "properties": {"label": _STRING, "connection": MODEL_CONNECTION_INPUT},
+            "required": ["label", "connection"], "additionalProperties": False}},
+        "entries": {"type": "array", "maxItems": 1000, "items": {
             "type": "object", "properties": {"entryId": _STRING,
                 "fieldNames": {"type": "array", "items": _STRING}, "routes": MODEL_ROUTES, "connections": MODEL_CONNECTIONS},
             "required": ["entryId", "fieldNames"], "additionalProperties": False}}},
@@ -155,8 +167,16 @@ SECRET_WRITE_EXAMPLES = (
                           params={"path": "outside"}, error=MethodExampleError(ipc_errors.INVALID_ARGUMENT, "Invalid catalog params.")),
             MethodExample(name="unavailable", kind="domain-error", description="Unsafe storage or a different authority refuses observation.",
                           params={}, error=MethodExampleError(ipc_errors.AGENT_SECRET_RESOLUTION_FAILED, "Saved secret catalog is unavailable.")),
+            MethodExample(name="versioned-empty", kind="empty", description="No connection yet; official endpoint presets remain available.",
+                          params={"connectionVersion": 1}, result={"ok": True, "entries": [], "presets": CONNECTION_PRESETS},
+                          reason="The connection catalog is empty."),
+            MethodExample(name="versioned-rotated", kind="success", description="Same connection after an explicit Key rotation; no secret is returned.",
+                          params={"connectionVersion": 1}, result={"ok": True, "presets": CONNECTION_PRESETS, "entries": [{"entryId": "example-custom", "fieldNames": ["key"],
+                          "connections": {"key": {"version": 1, "endpoint": "https://model.example/v1", "protocol": "openai-completions",
+                          "profile": "openai-chat-completions/v1", "preset": {"id": "custom", "version": 1},
+                          "connectionRef": "0123456789abcdef0123456789abcdef", "configRevision": 2}}}]}),
             MethodExample(name="versioned-connection", kind="success", description="Explicit metadata version; no credential value or model catalog.",
-                          params={"connectionVersion": 1}, result={"ok": True, "entries": [{"entryId": "example-custom", "fieldNames": ["key"],
+                          params={"connectionVersion": 1}, result={"ok": True, "presets": CONNECTION_PRESETS, "entries": [{"entryId": "example-custom", "fieldNames": ["key"],
                           "connections": {"key": {"version": 1, "endpoint": "https://model.example/v1", "protocol": "openai-completions",
                           "profile": "openai-chat-completions/v1", "preset": {"id": "custom", "version": 1},
                           "connectionRef": "0123456789abcdef0123456789abcdef", "configRevision": 1}}}]}),
