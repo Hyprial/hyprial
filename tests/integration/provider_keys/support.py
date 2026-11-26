@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401
 from hyprial.daemon.impl.application import DaemonApplication, compose_daemon_worker_launch
+from hyprial.daemon.impl.desired_state.store import DesiredStateStore
 from hyprial.daemon.impl.harnesses.worker_channel import build_worker_channel
 from hyprial.daemon.impl.provider_keys import storage
 from hyprial.daemon.impl.request_catalog.registry import METHOD_REGISTRY
@@ -55,6 +56,7 @@ def ipc_app(world: World, *, fresh_signer: bool = False) -> Any:
     instance = make_app(world.tmp)
     for name in ("hyprial_home", "state_dir", "owner", "agents", *INJECTED):
         setattr(instance, name, getattr(world.app, name))
+    instance.desired_state = DesiredStateStore(world.state / "desired-state.json")
     if fresh_signer:
         wire(instance, world, bound_signer(world.state))
     return instance
