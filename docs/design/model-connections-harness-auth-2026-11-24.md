@@ -1,6 +1,6 @@
 # 模型连接、手填模型 ID 与 Agent 启动统一方案（WIP）
 
-状态：CLI developer 第七轮设计复核已闭合，用户已授权串行实施；PR 1 已合入 dev。GitHub #59 的 Lark 修复范围已通过独立本地评审；按 2026-11-26 用户更新，本地实现与独立评审持续推进，CI 与远程合并后补。#61 与 #81 的固定组合已获本地实现范围 PASS，#82 已获固定产品及增量独立 PASS；#83 配置协调已送固定独立评审。执行状态见 §7.2。
+状态：CLI developer 第七轮设计复核已闭合，用户已授权串行实施；PR 1 已合入 dev。GitHub #59 的 Lark 修复范围已通过独立本地评审；按 2026-11-26 用户更新，本地实现与独立评审持续推进，CI 与远程合并后补。#61 与 #81 的固定组合已获本地实现范围 PASS，#82 已获固定产品及增量独立 PASS；#83 配置协调已获固定独立实现范围 PASS。执行状态见 §7.2。
 设计结论是实现验收焦点，不代替独立实现评审或合并门禁。未交付阶段的字段、方法和错误码仍为拟议契约。
 设计固定基线：`8ccaf513ec23de3bc39a53a1cc23cddf9fb34e15`。
 PR 目标为移动的 `dev`；第二轮评审时 base 为 `ef7c2e26173d6e2dda59d71b775265af9fb2deb5`，
@@ -622,14 +622,14 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 | CI 阻断修复：Lark completion | [#59](https://github.com/Hyprial/hyprial/pull/59)，固定 `bbe20799fd0631bdfc9f0ae2001d37d8ed3aba17`，base dev `ef4f983a`，2 文件 | CLOSED 立即进入原保留 receipt/失败分支，OVERLOADED 重试不变。旧实现确定性 2F/1P，新实现 3P、原用例 10/10、Lark 815P；迁移和最新 dev 组合已独立复核。full/corpus 限制同上 | 修复范围本地 PASS；CI/e2e 后补，未合并 |
 | PR 3：绑定存储与事务 | [#81](https://github.com/Hyprial/hyprial/pull/81)，固定 `716099e1f28008194529c62103ad3364acc36282`，tree `0a45e222fcf377ea7bd517e130dd52712c1f50f9`，base #61 `e40a634f`，22 文件 | §5.1 存储/回执/容量/cleanup/快照已实现。修复操作历史不一致与提交后报错，3+1 红例→固定回归469P/9skip；cc 独立38P及318P/9skip、门禁通过。059b 初次 PASS 撤回，新 head 复评 PASS；full仍4迁移收集错误，corpus仍11/14 FAIL | 本地实现范围 PASS，后续开发继续；全量/CI/e2e 未通过，未合并 |
 | PR 4a：运行准入与销毁恢复 | [#82](https://github.com/Hyprial/hyprial/pull/82)，产品固定 `94bca292` / tree `d40fa80e`，后续测试/契约提交 `61a44c5a4f40355cfe789f39c303d19048b9b380`，tree `3c0c0fed`，base #81 `716099e1`，49 文件 | fixed 焦点1466P；cc 独立167P/9skip、369P、548P、268P及架构门通过，回执33949bc6。补成员别名正例6P、preview兼容说明，产品代码未改；增量复评回执3c7bda7f为PASS（评审独立6P）。全量4迁移收集错误/BLOCKED；94b corpus实际11/14 FAIL | 本地产品实现范围 PASS；WIP，CI/e2e 后补，未合并 |
-| PR 4b：配置协调与公开操作 | [#83](https://github.com/Hyprial/hyprial/pull/83)，固定 `35aec090cfd6a3e214d086072ee9006ac23866eb`，tree `0352f67df3c7cc9952017d4392d679ba60a38481`，base #82 `61a44c5a`，46 文件 | Pi/headless configure/status/cancel、持久 Cell 计划/取消选择/补偿、CLI/settings 与契约。固定直接71P、request-contract PASS；开发扩展731P、架构344P、GUI client66P/mock371P。fixed full因4个旧wheel workflow收集错误BLOCKED，corpus11/14 FAIL；真实GUI/厂商UNKNOWN | WIP；固定独立评审已送达 e99f2893，尚无结论；CI/e2e 后补，未合并 |
-| PR 4c：原生 Auth 与集成创建 | 待4b本地评审 | 原生目标清单/引用与启动、create 调同一协调器、默认 seed 抑制；不把旧 native legacy 路径当新绑定验收 | 待开始，4b先拒绝这些新组合 |
+| PR 4b：配置协调与公开操作 | [#83](https://github.com/Hyprial/hyprial/pull/83)，固定 `35aec090cfd6a3e214d086072ee9006ac23866eb`，tree `0352f67df3c7cc9952017d4392d679ba60a38481`，base #82 `61a44c5a`，46 文件 | Pi/headless configure/status/cancel、持久 Cell 计划/取消选择/补偿、CLI/settings 与契约。固定直接71P、request-contract PASS；开发扩展731P、架构344P、GUI client66P/mock371P。fixed full因4个旧wheel workflow收集错误BLOCKED，corpus11/14 FAIL；真实GUI/厂商UNKNOWN | WIP；固定固定独立实现范围 PASS（19ae9f08，独立96P+143P及门禁）；CI/e2e 后补，未合并 |
+| PR 4c：原生 Auth 与集成创建 | 隔离分支 `feat/native-model-binding`，基于已评审 #83 `35aec090` | 原生目标清单/引用与启动、create 调同一协调器、默认 seed 抑制；不把旧 native legacy 路径当新绑定验收 | 开始本地开发；4b仍拒绝这些新组合 |
 | PR 5：连接 GUI | 未开实现 PR | §2.1/§3.2：预设/自定义、测试时手填 ID、显式 30s 预算、真实点击及错误/取消旅程 | 未开始 |
 | PR 6：Agent GUI | 未开实现 PR | §2.2/§2.3：Harness+认证+手填 ID 一次保存、启动复用、status/cancel、创建/编辑/恢复实点验收 | 未开始 |
 
 PR4b 本地 hygiene：registry-union、合成树结构/模块/unbounded/import 门和 term/resident 87P 通过；Node CI-policy 因已删除的 `.forgejo/git-flow.json` 缺失失败。相同去凭据子进程环境下，父61a与固定35aec均91P/81F，失败名称一致，相关策略源码/测试无diff；hygiene仍FAIL，仅可作为本片未新增该失败的证据。对照已送评审4a1036a8。
 
-PR4b 的离线容量设置经 daemon 公共原子 settings writer 完成，不启动 daemon。其 CLI 导入在两个架构门各登记一个精确 path/module/symbol/count 例外，配套越界负例；两份只减不增基线未改。此例外本身列入独立实现评审，尚未由作者自判通过。Cell 内部 writer 同时核验不可变 Agent ID，防止旧操作在同名新 incarnation 上生效。731P 为开发工作树阶段证据；固定 35aec 的71P及契约门另行记录，不将两者混称同一 SHA 全量通过。
+PR4b 的离线容量设置经 daemon 公共原子 settings writer 完成，不启动 daemon。其 CLI 导入在两个架构门各登记一个精确 path/module/symbol/count 例外，配套越界负例；两份只减不增基线未改。此例外已由独立评审19ae9f08核实边界与负例。Cell 内部 writer 同时核验不可变 Agent ID，防止旧操作在同名新 incarnation 上生效。731P 为开发工作树阶段证据；固定 35aec 的71P及契约门另行记录，不将两者混称同一 SHA 全量通过。
 
 实现证据按各 PR 的固定 SHA 记录。历史 FJ 的本地/CI 结果不自动迁移到 GitHub；
 新基组合、存储变更与后续真实运行分别验收。PR3 的存储契约见实施分支中的
