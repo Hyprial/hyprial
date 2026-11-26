@@ -5,6 +5,11 @@ An isolated home with an owner and no daemon, an installed-shaped asset tree
 ``hyprial gui --no-open --json`` command.  The GUI process starts the daemon
 through the one launch primitive, a second invocation reuses it, and ending a
 GUI never stops it; the test shuts the daemon down itself.
+
+Decision (2026-11-26): the teardown signals the GUI's process group where
+``os.killpg`` exists and the GUI process itself otherwise, waits for the daemon
+through ``pid_alive`` and hard-stops it with ``SIGKILL`` where it exists
+(``TerminateProcess`` through ``os.kill`` on Windows).
 """
 
 from __future__ import annotations
@@ -24,6 +29,9 @@ import pytest
 
 from hyprial.kernel import daemon_request_once
 from hyprial.shell.impl.gui.install import resources
+from tests.support.windows_suite.host import pid_alive
+
+KILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 GUI_CHILD = r'''
 import sys
@@ -110,13 +118,26 @@ def _assert_started(record: dict[str, Any], stderr_path: Path, started: float) -
     )
 
 
+def _signal_group(process: subprocess.Popen[str], *, hard: bool) -> None:
+    """Teardown signal to the process group a child leads; a Windows child, which leads no group, is terminated itself."""
+
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        if hard:
+            process.kill()
+        else:
+            process.terminate()
+        return
+    killpg(process.pid, KILL if hard else signal.SIGTERM)
+
+
 def _end_gui(child: subprocess.Popen[str]) -> int:
     if child.poll() is None:
         child.send_signal(signal.SIGTERM)
     try:
         return child.wait(timeout=60)
     except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
+        _signal_group(child, hard=True)
         child.wait(timeout=10)
         raise
 
@@ -125,7 +146,7 @@ def _release(child: subprocess.Popen[str]) -> None:
     """Kill what is left of one GUI process group, reap it and close its pipe."""
     if child.poll() is None:
         try:
-            os.killpg(child.pid, signal.SIGKILL)
+            _signal_group(child, hard=True)
         except ProcessLookupError:
             pass
     child.wait(timeout=10)
@@ -156,14 +177,12 @@ def _stop_daemon(socket_path: Path) -> None:
         pass
     deadline = time.monotonic() + 30
     while isinstance(pid, int) and time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not pid_alive(pid):
             return
         time.sleep(0.1)
     if isinstance(pid, int):
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, KILL)
         except ProcessLookupError:
             pass
 

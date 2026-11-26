@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import queue
+import signal
 import sys
 import threading
 import time
@@ -16,6 +18,7 @@ from hyprial.daemon.impl.harnesses.pi.rpc_process import PiRpcProcess
 from hyprial.daemon.impl.harnesses.streaming import StreamingTurnProcess
 from hyprial.daemon.impl.harnesses.streaming import process as streaming_process
 from hyprial.daemon.impl.harnesses.streaming.protocol import _OBSERVER_STOP
+from tests.support.windows_suite.host import pid_alive
 from ..support import (
     FAKE_PI,
     SlowQueryPiRpcClient,
@@ -51,6 +54,13 @@ class _HeldEnterClient:
 
     async def interrupt(self) -> None:
         return None
+
+
+def _kill_hard(pid: int) -> None:
+    """Teardown kill: ``SIGKILL`` on POSIX, ``TerminateProcess`` on Windows; an already gone pid is fine."""
+
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def _failed_stop_process(
@@ -297,7 +307,7 @@ def test_stop_during_query_latches_abort_until_prompt_is_accepted(
         if process._thread.is_alive():
             pid = process.pid
             if pid is not None:
-                os.kill(pid, 9)
+                _kill_hard(pid)
             process._thread.join(timeout=2.0)
 
 
@@ -361,13 +371,12 @@ def test_pi_stop_force_terminates_an_unresponsive_child() -> None:
         process.stop()
 
         assert not process._thread.is_alive()
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
+        assert not pid_alive(child_pid)
     finally:
         if process._thread.is_alive():
             pid = child_pid if child_pid is not None else process.pid
             if pid is not None:
-                os.kill(pid, 9)
+                _kill_hard(pid)
             process._thread.join(timeout=2.0)
 
 

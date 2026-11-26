@@ -11,6 +11,10 @@ empty, and the runtime directory never holds ``server.json``,
 from ``ps`` and ``process_birth_identity`` (portable beyond Linux); a child is
 signalled only after its birth identity matched what the record showed.  The
 daemon is never stopped by a GUI: its pid and epoch are compared after the stop.
+Decision (2026-11-26): liveness goes through ``pid_alive`` before the listing,
+and the teardown signals the launcher's process group where ``os.killpg``
+exists and the launcher itself otherwise; leftovers are hard-stopped with
+``SIGKILL`` where it exists (``TerminateProcess`` through ``os.kill`` on Windows).
 """
 
 from __future__ import annotations
@@ -35,7 +39,9 @@ import pytest
 from tests.integration.daemon_lifecycle.conftest import pytestmark  # noqa: F401
 from tests.integration.daemon_lifecycle.support import LifecycleHome
 from tests.integration.gui_daemon_first.support import OWNER, wheel_assets
+from tests.support.windows_suite.host import pid_alive
 
+KILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 START_BOUND_SECONDS = 120
 STOP_BOUND_SECONDS = 60
 REBIND_BOUND_SECONDS = 60
@@ -80,12 +86,24 @@ def children_of(pid: int) -> list[int]:
 
 def alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
+        if not pid_alive(pid):
+            return False
     except PermissionError:
         return True
     return pid in processes()
+
+
+def _signal_group(process: subprocess.Popen[str], *, hard: bool) -> None:
+    """Teardown signal to the process group a child leads; a Windows child, which leads no group, is terminated itself."""
+
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        if hard:
+            process.kill()
+        else:
+            process.terminate()
+        return
+    killpg(process.pid, KILL if hard else signal.SIGTERM)
 
 
 class Gui:
@@ -129,18 +147,18 @@ class Gui:
     def release(self) -> None:
         if self.process.poll() is None:
             try:
-                os.killpg(self.process.pid, signal.SIGTERM)
+                _signal_group(self.process, hard=False)
             except ProcessLookupError:
                 pass
             try:
                 self.process.wait(timeout=STOP_BOUND_SECONDS)
             except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
+                _signal_group(self.process, hard=True)
                 self.process.wait(timeout=STOP_BOUND_SECONDS)
         for pid, birth in self.known.items():
             if pid != self.process.pid and birth is not None and alive(pid) and process_birth_identity(pid) == birth:
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    os.kill(pid, KILL)
                 except ProcessLookupError:
                     pass
         for stream in (self.process.stdout, self.process.stdin):

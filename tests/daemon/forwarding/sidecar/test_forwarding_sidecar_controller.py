@@ -13,6 +13,7 @@ from hyprial.daemon.impl.forwarding import (
 )
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
+from tests.support.windows_suite.host import pid_alive
 
 
 FIXTURE = Path(__file__).resolve().parents[4] / 'tests/fixtures/network/fake_forwarding_sidecar.py'
@@ -300,9 +301,7 @@ def test_controller_close_is_idempotent_and_owns_only_its_child(tmp_path: Path) 
     controller.close()
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not pid_alive(pid):
             break
         time.sleep(0.01)
     else:

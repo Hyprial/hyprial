@@ -20,6 +20,7 @@ from hyprial.daemon.impl.composition import HarnessPortClient
 from hyprial.daemon.impl.harnesses.actor.contracts import HarnessRuntimeClosed, _default_identity_reader
 from hyprial.daemon.impl.processes.orphan_processes import OrphanProcessRegistry
 from hyprial.daemon.impl.harnesses.codex.process import _OwnedProcessGroup
+from tests.support.windows_suite.host import pid_alive
 
 
 def _observed_group(*, pid: int = 4242, marker: str | None) -> _OwnedProcessGroup:
@@ -363,7 +364,7 @@ def test_persistent_collector_does_not_accumulate_or_kill_live_controls_across_r
                 orphan_count_before_driver_cleanup = int(child.poll() is None)
                 control_alive_from_os = _pid_exists(control.pid)
                 if orphan_count_before_driver_cleanup:
-                    os.killpg(child.pid, 9)
+                    _kill_session(child)
                     child.wait(timeout=3.0)
                     driver_cleanup_count = 1
 
@@ -384,21 +385,27 @@ def test_persistent_collector_does_not_accumulate_or_kill_live_controls_across_r
                 )
             finally:
                 if child.poll() is None:
-                    os.killpg(child.pid, 9)
+                    _kill_session(child)
                     child.wait(timeout=3.0)
         assert readings == [(0, 0, 0, True)] * 3
     finally:
         if control.poll() is None:
-            os.killpg(control.pid, 9)
+            _kill_session(control)
             control.wait(timeout=3.0)
 
 
 def _pid_exists(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    return pid_alive(pid)
+
+
+def _kill_session(process: subprocess.Popen[bytes]) -> None:
+    """Teardown kill of a child started in its own session: its process group where groups exist, the child otherwise."""
+
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        process.kill()
+        return
+    killpg(process.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def test_unprobeable_inherited_orphans_are_retired_once_and_loudly(

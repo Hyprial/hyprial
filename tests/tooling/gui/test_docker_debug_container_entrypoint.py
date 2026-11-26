@@ -28,6 +28,7 @@ import urllib.request
 import pytest
 
 from tests.support.runtime._tmp import hyprial_test_tmp_root
+from tests.support.windows_suite.host import pid_alive
 
 
 DOCKER_FILES = Path(__file__).resolve().parents[3] / "scripts/build/docker"
@@ -140,8 +141,6 @@ def test_container_entrypoint_starts_gui_which_ensures_the_daemon_and_reclaims_i
         process.communicate(timeout=5)
     for name in ("gui.pid",):
         pid = int((runtime / name).read_text())
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not pid_alive(pid):
             continue
         raise AssertionError(f"{name} remained alive after entrypoint exit")
