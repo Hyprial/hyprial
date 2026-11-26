@@ -94,7 +94,7 @@ def test_signature_is_checked_before_unwrap(core, vector, materials, monkeypatch
     changed["sealedBy"]["sig"] = base64.b64encode(bytes(64)).decode()
     def no_decrypt(*args, **kwargs):
         pytest.fail("must verify before any decrypt")
-    monkeypatch.setattr("hyprial.identity.impl.provider_keys.envelope._unwrap", no_decrypt)
+    monkeypatch.setattr("hyprial.identity.impl.sealed_envelope.core._unwrap", no_decrypt)
     row = vector["recipients"][0]
     with pytest.raises(core.Error) as caught:
         core.open_envelope(changed, owner_key=materials[1], recipient_key_id=row["keyId"],
