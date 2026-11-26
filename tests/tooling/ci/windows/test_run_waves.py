@@ -42,6 +42,22 @@ def write_events(path: Path, events: list[dict[str, object]]) -> None:
     path.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
 
 
+def write_complete_ledger(
+    ledger: Path,
+    nodeids: list[str],
+    extra: list[dict[str, object]] | None = None,
+) -> None:
+    events: list[dict[str, object]] = [
+        {"event": "collect", "collected": len(nodeids), "errors": []},
+        *(
+            {"event": "end", "nodeid": nodeid, "outcome": "passed"}
+            for nodeid in nodeids
+        ),
+        *(extra or []),
+    ]
+    write_events(ledger / "gw0.jsonl", events)
+
+
 def write_junit(
     path: Path,
     cases: list[dict[str, str]],
@@ -75,6 +91,7 @@ def test_watchdog_requires_non_empty_hang_file(tmp_path: Path) -> None:
     ledger.mkdir()
     junit = tmp_path / "result.xml"
     write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+    write_complete_ledger(ledger, ["tests/a.py::test_ok"])
     (ledger / "hang-gw0.txt").write_text("", encoding="utf-8")
 
     outcome = classify_run(
@@ -103,9 +120,10 @@ def test_leak_event_is_non_fatal_until_leak_timeout_crash(tmp_path: Path) -> Non
     ledger.mkdir()
     junit = tmp_path / "result.xml"
     write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
-    write_events(
-        ledger / "gw0.jsonl",
-        [{"event": "leak", "worker": "gw0", "threads": ["thread-a"]}],
+    write_complete_ledger(
+        ledger,
+        ["tests/a.py::test_ok"],
+        extra=[{"event": "leak", "worker": "gw0", "threads": ["thread-a"]}],
     )
 
     clean = classify_run(
@@ -117,9 +135,10 @@ def test_leak_event_is_non_fatal_until_leak_timeout_crash(tmp_path: Path) -> Non
     assert clean.status == "passed"
     assert clean.leaks == ({"worker": "gw0", "threads": ["thread-a"]},)
 
-    write_events(
-        ledger / "gw0.jsonl",
-        [
+    write_complete_ledger(
+        ledger,
+        ["tests/a.py::test_ok"],
+        extra=[
             {"event": "leak", "worker": "gw0", "threads": ["thread-a"]},
             {"event": "crash", "worker": "gw0", "reason": "leak-timeout", "exit_code": 97},
         ],
@@ -399,3 +418,276 @@ def test_summary_rejects_missing_evidence_bad_states_and_invalid_contract_skips(
     assert not leg_ok
     assert any("missing WINDOWS_WAVES_DONE" in error for error in leg_errors)
     assert CONTRACT_TEST_FILE == "tests/kernel/ipc/local_ipc/test_contract.py"
+
+
+def test_run_waves_catches_duplicate_result_inside_rerun_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = tmp_path / "tier.txt"
+    listing.write_text("tests/a.py\n", encoding="utf-8")
+    calls = 0
+
+    def fake_run_one(
+        *,
+        files: list[str],
+        deselect: list[str],
+        args: argparse.Namespace,
+        run_number: int,
+        wave_number: int,
+        wave_deadline: float,
+        job_deadline: float,
+        root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        nonlocal calls
+        calls += 1
+        junit = args.results / f"shard-1-wave-{wave_number}-run-{run_number}.xml"
+        ledger = args.ledger_root / f"wave-{wave_number}-run-{run_number}"
+        ledger.mkdir(parents=True, exist_ok=True)
+        write_junit(
+            junit,
+            [
+                {"classname": "tests.a", "name": "test_dup"},
+                {"classname": "tests.a", "name": "test_dup"},
+            ],
+        )
+        write_complete_ledger(ledger, ["tests/a.py::test_dup"])
+        return 0, junit, ledger, None, []
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+    args = argparse.Namespace(
+        tier="1",
+        files=listing,
+        workers=2,
+        watchdog_seconds=300,
+        idle_seconds=600,
+        wave_minutes=20,
+        deadline_minutes=25,
+        step_minutes=30,
+        job_minutes=60,
+        basetemp_root=tmp_path / "bt",
+        results=tmp_path / "results",
+        ledger_root=tmp_path / "ledger",
+        report=tmp_path / "results" / "run-manifest.json",
+    )
+
+    manifest = run_waves(args, tmp_path)
+
+    assert calls == 1
+    assert manifest["status"] == "unreported-files"
+    assert manifest["offsettable"] is False
+    assert isinstance(manifest["duplicateResult"], str)
+    assert manifest["duplicateResult"].startswith("duplicate-result:")
+    assert manifest["plannedFiles"] == ["tests/a.py"]
+    assert len(manifest["runs"]) == 1
+    assert manifest["runs"][0]["status"] == "unreported-files"
+    assert any(
+        detail.startswith("duplicate-result:")
+        for detail in manifest["runs"][0]["details"]
+    )
+
+
+def test_leak_timeout_with_a_hang_file_is_a_worker_crash(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+    write_complete_ledger(
+        ledger,
+        ["tests/a.py::test_ok"],
+        extra=[
+            {"event": "crash", "worker": "gw0", "reason": "leak-timeout", "exit_code": 97},
+        ],
+    )
+    (ledger / "hang-gw0.txt").write_text(
+        "hyprial watchdog: leak-timeout worker=gw0 exit_code=97 {}\nThread 0x1:\n",
+        encoding="utf-8",
+    )
+
+    outcome = classify_run(
+        returncode=97,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py"],
+    )
+
+    assert outcome.status == "worker-crash"
+    assert outcome.offsettable is False
+    assert "crash:leak-timeout" in outcome.details
+
+
+def test_leak_timeout_fallback_exit_is_a_worker_crash(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+    write_complete_ledger(ledger, ["tests/a.py::test_ok"])
+    (ledger / "hang-gw0.txt").write_text(
+        "hyprial watchdog: leak-timeout worker=gw0 exit_code=97 {}\nTimeout (0:02:30)!\n",
+        encoding="utf-8",
+    )
+
+    outcome = classify_run(
+        returncode=1,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py"],
+    )
+
+    assert outcome.status == "worker-crash"
+    assert outcome.offsettable is False
+    assert "leak-timeout-fallback" in outcome.details
+
+
+def test_unexpected_skip_outside_contract_file_marks_run_failed(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(
+        junit,
+        [
+            {"classname": "tests.a", "name": "test_ok"},
+            {
+                "classname": "tests.b",
+                "name": "test_skipped",
+                "outcome": "skipped",
+                "message": "skipped outside contract",
+            },
+        ],
+    )
+    write_complete_ledger(ledger, ["tests/a.py::test_ok", "tests/b.py::test_skipped"])
+
+    outcome = classify_run(
+        returncode=0,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py", "tests/b.py"],
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.offsettable is True
+    assert any(
+        detail.startswith("unexpected-skip:tests/b.py::test_skipped:")
+        for detail in outcome.details
+    )
+
+    leg_dir = tmp_path / "leg"
+    leg_dir.mkdir()
+    manifest = {
+        "status": "failed",
+        "selfCheck": {"passed": True},
+        "plannedFiles": ["tests/a.py", "tests/b.py"],
+        "reportedFiles": ["tests/a.py", "tests/b.py"],
+        "runs": [{"run": 1, "status": "failed", "duration": 1.0}],
+        "leaks": [],
+    }
+    (leg_dir / "run-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (leg_dir / "waves.log").write_text(
+        f"WINDOWS_WAVES_DONE {json.dumps(manifest)}\n",
+        encoding="utf-8",
+    )
+    (leg_dir / "result.xml").write_text(junit.read_text(encoding="utf-8"), encoding="utf-8")
+    _, _, lines = summarize_leg(leg_dir, "w1", waves=True)
+    assert any("test_skipped" in line and "skipped outside contract" in line for line in lines)
+
+
+def test_missing_ledger_directory_is_unreported_files(tmp_path: Path) -> None:
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+
+    outcome = classify_run(
+        returncode=0,
+        junit_paths=[junit],
+        ledger_dir=tmp_path / "missing-ledger",
+        planned_files=["tests/a.py"],
+    )
+
+    assert outcome.status == "unreported-files"
+    assert outcome.offsettable is False
+    assert "ledger-missing" in outcome.details
+
+
+def test_ledger_missing_end_event_for_junit_case_is_unreported_files(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(
+        junit,
+        [
+            {"classname": "tests.a", "name": "test_one"},
+            {"classname": "tests.a", "name": "test_two"},
+        ],
+    )
+    write_events(
+        ledger / "gw0.jsonl",
+        [
+            {"event": "collect", "collected": 2, "errors": []},
+            {"event": "end", "nodeid": "tests/a.py::test_one", "outcome": "passed"},
+        ],
+    )
+
+    outcome = classify_run(
+        returncode=0,
+        junit_paths=[junit],
+        ledger_dir=ledger,
+        planned_files=["tests/a.py"],
+    )
+
+    assert outcome.status == "unreported-files"
+    assert outcome.offsettable is False
+    assert "ledger-uncovered:1" in outcome.details
+
+
+def test_summary_validates_contract_skips_only_when_contract_file_is_planned(
+    tmp_path: Path,
+) -> None:
+    clean_leg = tmp_path / "w1-clean"
+    clean_leg.mkdir()
+    clean_manifest = {
+        "status": "passed",
+        "selfCheck": {"passed": True},
+        "plannedFiles": ["tests/a.py"],
+        "reportedFiles": ["tests/a.py"],
+        "runs": [{"run": 1, "status": "passed", "duration": 1.0}],
+        "leaks": [],
+    }
+    (clean_leg / "run-manifest.json").write_text(json.dumps(clean_manifest), encoding="utf-8")
+    (clean_leg / "waves.log").write_text(
+        f"WINDOWS_WAVES_DONE {json.dumps(clean_manifest)}\n",
+        encoding="utf-8",
+    )
+    write_junit(
+        clean_leg / "shard-1-wave-1-run-1.xml",
+        [{"classname": "tests.a", "name": "test_ok"}],
+    )
+
+    ok, errors, _ = summarize_leg(clean_leg, "w1", waves=True)
+    assert ok is True, errors
+    assert errors == []
+
+    unplanned_leg = tmp_path / "w1-unplanned"
+    unplanned_leg.mkdir()
+    (unplanned_leg / "run-manifest.json").write_text(
+        json.dumps(clean_manifest), encoding="utf-8"
+    )
+    (unplanned_leg / "waves.log").write_text(
+        f"WINDOWS_WAVES_DONE {json.dumps(clean_manifest)}\n",
+        encoding="utf-8",
+    )
+    write_junit(
+        unplanned_leg / "shard-1-wave-1-run-1.xml",
+        [
+            {"classname": "tests.a", "name": "test_ok"},
+            {
+                "classname": "tests.kernel.ipc.local_ipc.test_contract",
+                "name": "test_skip_0",
+                "outcome": "skipped",
+                "message": "the AF_UNIX backend is POSIX only",
+            },
+        ],
+    )
+
+    unplanned_ok, unplanned_errors, _ = summarize_leg(unplanned_leg, "w1", waves=True)
+    assert unplanned_ok is False
+    assert "contract skips found for an unplanned file" in unplanned_errors
