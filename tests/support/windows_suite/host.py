@@ -17,6 +17,11 @@ hit in the file, which the summary treats as a hard failure.
 
 Decision (same date): ``pid_alive`` wraps ``hyprial.kernel.probe_process``,
 which answers without signalling on every platform.
+
+Decision (same date, self-test rework): the platform check lives in the
+module-level ``is_windows`` so the self-test can replace it on POSIX.  Setting
+``os.name`` to ``"nt"`` instead makes ``pathlib.Path`` pick ``WindowsPath``,
+which cannot be instantiated off Windows.
 """
 
 from __future__ import annotations
@@ -30,6 +35,12 @@ from pathlib import Path
 from hyprial.kernel import probe_process
 
 HITS_FILE = "interceptor-hits.jsonl"
+
+
+def is_windows() -> bool:
+    """Whether the interceptor applies to this interpreter."""
+
+    return os.name == "nt"
 
 
 def pid_alive(pid: int) -> bool:
@@ -83,7 +94,7 @@ def install_kill_interceptor(
 ) -> KillInterceptor | None:
     """Replace ``os.kill`` on Windows; return the interceptor, or ``None`` elsewhere."""
 
-    if os.name != "nt":
+    if not is_windows():
         return None
     if isinstance(os.kill, KillInterceptor):
         return os.kill

@@ -16,10 +16,16 @@ read by a probe-local ``conftest.py`` from xdist's worker ``Popen`` objects
 after the controller has torn its workers down.
 
 Decision (same date): the ``os.kill`` interceptor is installed only on
-Windows, so on other platforms its behaviour is tested by setting ``os.name``
-to ``"nt"`` just for the install call and checking it against a fake original
+Windows, so on other platforms its behaviour is tested by replacing the
+module's ``is_windows`` check and checking it against a fake original
 ``os.kill``.  The ACL probe's audit hook cannot be removed, so it is installed
-in a throwaway interpreter, never in the test process.
+in a throwaway interpreter, never in the test process, with its ``is_windows``
+replaced the same way.
+
+Decision (same date, self-test rework): ``os.name`` is never changed.  With
+``os.name == "nt"`` on Linux, ``pathlib.Path`` picks ``WindowsPath`` and raises
+``NotImplementedError`` inside the install functions, and any other thread
+that builds a path in that window would fail the same way.
 """
 
 from __future__ import annotations
@@ -431,17 +437,14 @@ def test_the_current_nodeid_exists_only_while_a_test_runs(tmp_path: Path) -> Non
 def test_the_kill_interceptor_refuses_probes_and_self_signals_and_forwards_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    assert host.is_windows() is (os.name == "nt")
     if os.name != "nt":
         assert host.install_kill_interceptor(tmp_path, lambda: None) is None
     forwarded: list[tuple[int, int]] = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: forwarded.append((pid, sig)))
-    real_name = os.name
-    monkeypatch.setattr(os, "name", "nt")
-    try:
-        interceptor = host.install_kill_interceptor(tmp_path, lambda: "probe.py::test")
-        again = host.install_kill_interceptor(tmp_path, lambda: "other")
-    finally:
-        monkeypatch.setattr(os, "name", real_name)
+    monkeypatch.setattr(host, "is_windows", lambda: True)
+    interceptor = host.install_kill_interceptor(tmp_path, lambda: "probe.py::test")
+    again = host.install_kill_interceptor(tmp_path, lambda: "other")
 
     assert isinstance(os.kill, host.KillInterceptor)
     assert again is interceptor is os.kill
@@ -482,12 +485,8 @@ sys.path.insert(0, sys.argv[2])
 from tests.support.windows_suite import acl_probe
 
 ledger = Path(sys.argv[1])
-real_name = os.name
-os.name = "nt"
-try:
-    assert acl_probe.install_acl_probe(ledger, lambda: "probe.py::test")
-finally:
-    os.name = real_name
+acl_probe.is_windows = lambda: True
+assert acl_probe.install_acl_probe(ledger, lambda: "probe.py::test")
 os.mkdir(ledger / "made-by-mkdir", 0o700)
 tempfile.mkdtemp(prefix="made-by-mkdtemp-", dir=ledger)
 """
@@ -497,6 +496,7 @@ def test_the_acl_probe_records_directory_creation_points(tmp_path: Path) -> None
     if os.name != "nt":
         from tests.support.windows_suite import acl_probe
 
+        assert acl_probe.is_windows() is False
         assert acl_probe.install_acl_probe(tmp_path, lambda: None) is False
     ledger = tmp_path / "ledger"
     ledger.mkdir()

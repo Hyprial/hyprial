@@ -17,6 +17,11 @@ process", not as "not created".  An exception raised by an audit hook aborts
 the audited operation, so the hook drops any failure of its own instead of
 failing the test's ``mkdir``, and a per-thread guard keeps its own file writes
 from re-entering.
+
+Decision (same date, self-test rework): the platform check lives in the
+module-level ``is_windows`` so the self-test can replace it on POSIX.  Setting
+``os.name`` to ``"nt"`` instead makes ``pathlib.Path`` pick ``WindowsPath``,
+which cannot be instantiated off Windows.
 """
 
 from __future__ import annotations
@@ -34,6 +39,12 @@ PROBE_FILE = "acl-probe.jsonl"
 EVENTS = frozenset({"os.mkdir", "tempfile.mkdtemp"})
 
 _INSTALLED = False
+
+
+def is_windows() -> bool:
+    """Whether the probe applies to this interpreter."""
+
+    return os.name == "nt"
 
 
 class AuditRecorder:
@@ -80,7 +91,7 @@ def install_acl_probe(ledger_dir: Path, current_nodeid: Callable[[], str | None]
     """Install the audit hook on Windows; return whether a hook is active."""
 
     global _INSTALLED
-    if os.name != "nt":
+    if not is_windows():
         return False
     if not _INSTALLED:
         sys.addaudithook(AuditRecorder(Path(ledger_dir) / PROBE_FILE, current_nodeid))
