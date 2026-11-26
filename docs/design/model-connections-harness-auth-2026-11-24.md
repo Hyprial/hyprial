@@ -604,36 +604,23 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 
 用户于 2026-11-26 更新流程：开发并保持 WIP → 固定本地树验证 → cc-gui-orgs 独立实现评审通过 → 推进下一阶段。CI 与远程合并暂时延后，不作为下一片开发前置；可用后按依赖顺序补查同一 SHA 的正式 CI，再交 e2e-verifier 正常合并。每片记录 head/base/tree、前序 PR 依赖与少于 50 文件的自身差异；本地组合不代表远程 dev 已合并，设计评审也不代替实现评审。
 
-本地依赖：dev `ef4f983a24a0cdd6fa8ba4aade8ef0afbb2aeea5` → #59 `bbe20799fd0631bdfc9f0ae2001d37d8ed3aba17` → #61 `e40a634f92fe98ca646569808acee833e16ab2f0`（tree `04a5bd8c8275cae7abe92aaa39a0736ae704c28d`）。#59 相对 dev 为 2 文件，#61 相对 #59 为 46 文件；该组合无冲突，Pi 自身文件未变。新固定树测试及独立复评进行中，旧 full/24 基线不迁移。
+本地依赖：dev `ef4f983a24a0cdd6fa8ba4aade8ef0afbb2aeea5` → #59 `bbe20799fd0631bdfc9f0ae2001d37d8ed3aba17` → #61 `e40a634f92fe98ca646569808acee833e16ab2f0`（tree `04a5bd8c8275cae7abe92aaa39a0736ae704c28d`）。#59 相对 dev 为 2 文件，#61 相对 #59 为 46 文件；该组合无冲突，Pi 自身文件未变。组合树已获 cc-gui-orgs 限定独立 PASS（回执 f52a1609、5324c99f）：Pi/Lark/locality/IPC 1176P，另 constraints/model_probe/架构 308P，Ruff/结构/模块门通过。全量 exit2：4 个迁移 collection errors；isolated corpus FAIL 11/14。该 PASS 只覆盖本地焦点与依赖组合，旧 full/24 基线不迁移。
 
 | 阶段 | 实现和固定版本 | 验收与剩余事项 | 状态 |
 |---|---|---|---|
 | PR 1：连接记录与请求契约 | [#3141](https://code.hyprial.com/HyprialOS/hyprial/pulls/3141)，评审/CI head `cb9eb3bf74df398524030365969239ff0fa50f90`；用户手动合并 `4766a1f1be4de1c8e84e1330dc30fa903946c3da` | v2 Secret/CAS/迁移、旧目录兼容、精确探针、取消、HTTP 预算与契约已交付；Linux CI run 58214 全部选定 lane 成功。GUI/真实厂商不在本片验收范围 | 已合并 |
-| PR 2：Pi runtime 与会话保护 | [#61](https://github.com/Hyprial/hyprial/pull/61)，GitHub head `24f200502a00fb5510f1993bb582128257e47f55`，46 文件；历史评审 head `e4d2d2ac77f3440648e16a2268f69aa62117ed0c` | §2.3/§3/§8 产品及非回归范围已独立 PASS。原始全量39F/2E/31045P仍记FAIL，24项基线已交接，额外16项双方分别串行复跑通过。e4d正式GUI通过，Python run59162/shard3为7101P/1F；失败为预存Lark关闭竞争。GitHub改动文件与e4d逐blob相同，迁移后的基线与CI需重新核验 | 本地已纳入 #59/最新 dev，固定 e40a634f 复验；CI/e2e 后补，未合并 |
-| CI 阻断修复：Lark completion | [#59](https://github.com/Hyprial/hyprial/pull/59)，GitHub head `cd0d6828863fd4ca335e76fcf98d272431f87d10`，2 文件；历史验证 head `e25f726a7c73d70dc2eccb64a4e8c8f0dac05930` | 完成通知对CLOSED仍重试5秒，拖住stop(2s)；一行修复保留receipt和既有失败分支，过载重试不变。确定性旧实现2F/1P→shutdown19P，Lark目录815P；原用例10次串行及4-worker全量运行期间5次复跑通过，原超时/断言未改。原始全量30937P/31F/1E保持FAIL：24个既有ID+8额外ID，后8项同提交串行8P，根因未据此关闭。旧e25实现及限定非回归已独立PASS，原始全量FAIL不改写。GitHub新树复验：base2F/1P→head3P，原用例10/10P，全Lark815P；评审位独立复跑3P、10/10P、815P，确认Lark修复范围本地门PASS。旧full/24基线不迁移，GH full仍UNKNOWN | 修复范围本地 PASS；最新 dev 组合固定 bbe20799 待增量确认；CI/e2e 后补，未合并 |
-| PR 3：绑定存储与事务 | 未开实现 PR | §5.1：schema 4、首次启动前记录、操作回执/容量、Agent 级 cleanupPending、降级与故障回读 | 本地分支已基于 e40a634f 建立，准备失败先行测试；依赖 PR 2 的本地复评，不等待远程合并 |
+| PR 2：Pi runtime 与会话保护 | [#61](https://github.com/Hyprial/hyprial/pull/61)，固定 `e40a634f92fe98ca646569808acee833e16ab2f0`，base 为 #59 `bbe20799`，46 文件 | 通用模板、精确模型、会话快照/单 writer/退出释放及错误分类。组合焦点与独立复评 PASS；GH full 被 4 个迁移收集错误阻断，corpus FAIL 11/14；真实服务/浏览器尚未验收 | 本地焦点 PASS，可推进后续片；CI/e2e 后补，未合并 |
+| CI 阻断修复：Lark completion | [#59](https://github.com/Hyprial/hyprial/pull/59)，固定 `bbe20799fd0631bdfc9f0ae2001d37d8ed3aba17`，base dev `ef4f983a`，2 文件 | CLOSED 立即进入原保留 receipt/失败分支，OVERLOADED 重试不变。旧实现确定性 2F/1P，新实现 3P、原用例 10/10、Lark 815P；迁移和最新 dev 组合已独立复核。full/corpus 限制同上 | 修复范围本地 PASS；CI/e2e 后补，未合并 |
+| PR 3：绑定存储与事务 | [WIP #81](https://github.com/Hyprial/hyprial/pull/81)，固定 `059bcd13385e49d053cbacba6f83a66c2524dc87`，tree `ef48713cee60ef4b0486037eec4e87e5482b7c58`，base #61 `e40a634f`，22 文件 | §5.1 已实现 schema 4、绑定/CAS/持久操作回执/容量、Agent 级 cleanup 标记与 purge、启动快照。旧 e40a reader 对新 JSON/SQLite 均明确拒绝。行为先红后绿，专项修复集 36P；固定树扩大回归进行中，full 4 个收集错误、corpus 11/14 均与直接 base 同 ID，保持 BLOCKED/FAIL | 已送 cc-gui-orgs 固定树独立评审；WIP/Draft，未开放生产绑定 |
 | PR 4：启动/Cell/CLI 接线 | 未开实现 PR | §2/§5：configure/status/cancel、prepared/Cell CAS/finalize、restore/routines、销毁恢复、生成物与操作说明 | 未开始，依赖 PR 3；新生产绑定仍关闭 |
 | PR 5：连接 GUI | 未开实现 PR | §2.1/§3.2：预设/自定义、测试时手填 ID、显式 30s 预算、真实点击及错误/取消旅程 | 未开始 |
 | PR 6：Agent GUI | 未开实现 PR | §2.2/§2.3：Harness+认证+手填 ID 一次保存、启动复用、status/cancel、创建/编辑/恢复实点验收 | 未开始 |
 
-PR 2 的本轮设计精确化已随实现复评闭合：legacy 首次 receipt 的短占用属于兼容行为变化；
-本机根使用 identity 映射的 `state/pi`；启动错误保留五种闭集分类，不能只转发 busy。
-独立评审回执 `308d9c98-d870-5889-bc65-8cfd9d6862a6`：架构 201 passed、Pi/AF_UNIX 96 passed、
-Pi 全目录 353 passed、post_install/OpenAPI/inventory 293 passed；Ruff 与结构/模块门通过。
-这些集合有重叠，不相加冒充全量结果。评审位独立验证 Pi 1.2.0，另两版仍标为开发位实测。
-016aa9与73679的产品src tree完全相同；全量终态保留原始失败，限定复跑不改写全量结果。
-PR1的探针预算测试误将ping/catalog握手计为业务派发，已通过强制过期缓存稳定复现并修正测试断言；产品行为未变。
-最终回执 `a169eaa3-c5e6-50aa-b9fe-6cb2cc7e1415` 确认016aa9本地门PASS并同意复用全量非回归证据。
-#3153曾去WIP，正式GUI run58958出现本片遗漏（3029P/1F/1skip/4todo）：四个新启动错误码缺专属文案。
-8a81只增改共享错误映射与语义/脱敏/结果未知测试，290P；类型、模块边界、共享入口静态门通过。
-cc回执 `9c467203-331c-5d50-a208-57a286dbb631` 独立复现旧失败并确认8a81增量本地门PASS、Python证据可复用。
-8a81正式GUI run59009为3033P/1F/1skip/4todo：新凭据错误文案命中只缩减的不可用词表。
-89bda改为“无法取得所选模型连接的凭据”，并更新语义断言；原红1F/4P，修复后文案扫描与Agent295P、台账规则31P通过，扫描器/白名单/门禁未变。
-cc回执 `6ae83287-8997-5c8f-a58d-14afdb0dec33` 独立复现旧失败并确认89bda本地门PASS，Python证据复用成立。
-已再去WIP、draft=false。89bda正式CI首轮GUI/浏览器、native、mock harness E2E及静态门通过；Python59068仅旧PAC `test_closed_actor_backlog_cannot_starve_an_open_graph` 的0.5s等待失败（9799P/1F），其余分片通过，汇总仍FAIL。
-该测试/PAC实现不在本片diff；同SHA不改断言，开发位独立10次、评审位独立5次串行全通过，支持时序敏感但不证明根因（回执1d13cc21）。保留原始FAIL，在全部任务终态后同SHA正式重跑一次；再次失败则继续定位，不skip或放宽断言。重跑全绿后才交e2e。生产绑定在PR4前不开放。
-该重跑Python59106五分片及unit全部通过；GUI59103的case N却在startup JSON前退出1（28P/1F），缺失stdout诊断，尚不能归因端口或资源压力。
-e4d仅改测试helper分别保留两stream的head/tail（总量<12k），加错误仍拒绝、诊断保留、listener清理回归（原实现2F，修复2P）。独立复评ff6e4c16及补证db8b0ef0均PASS：独立2P+295P、类型/模块/parity通过，Python证据可复用。已去WIP，e4d正式GUI59148、Python59151及相关门运行中；原FAIL保留，不以本机四组合4P替代Linux CI。
+实现证据按各 PR 的固定 SHA 记录。历史 FJ 的本地/CI 结果不自动迁移到 GitHub；
+新基组合、存储变更与后续真实运行分别验收。PR3 的存储契约见实施分支中的
+`contract/daemon-request/model-binding-storage.md`：新快照列独立迁移，不重复旧 ghost-row 清理；
+整文档与增量缓存均保留模型权威。原始红绿日志、旧 reader 脚本与全量失败明细留在开发/评审工作区，
+不再向产品仓库追加逐次日志。PR4 负责新的公共配置操作、Cell 协调、启动/恢复与真实销毁钩子。
 
 24 项 macOS 基线失败已按用户指示交接 CLI developer 作归属判断与择期维护：
 发送 `75764cae-2487-5885-807d-9ed6db2e3ff7`，接收确认 `0d672269-558a-5cd5-b342-9a3b6074f37b`。
