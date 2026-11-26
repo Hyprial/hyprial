@@ -18,7 +18,7 @@ docs/design/cell-thread-conversation-model-2026-11-03.md（11-03 的原始设计
 | daemon | 持有传输会话、durable inbox、路由与受管运行时状态的长驻进程；消息与恢复的权威边界 | 不是"server"（去中心，无中心服务器） | src/hyprial/daemon/ |
 | host | 运行一个 hyprial daemon 的环境（一个 hyprial home + 其 daemon）；agent 住在 host 上、在 host 之间 move，host 决定是否接纳外来 agent。用户可见的唯一称呼 | ~~node~~、~~machine~~、~~device~~（均改为 host，Allen 2026-10-27）；只作名词，不作动词；不等于网络主机名 | docs/design/daemon-request/handoff-2026-10-27.md §7 |
 | harness | 运行 AI agent 的宿主程序（Claude Code、Codex、Pi 等） | 不指本仓代码本身 | src/hyprial/daemon/impl/harnesses/ |
-| model connection | 模型连接：本机 Secret 内稳定引用、endpoint、协议、认证字段与配置修订；模型 ID 由调用方明确提供 | 不是模型目录或 Harness；不替代 grant | docs/design/model-connections-contract-stage-2026-11-24.md |
+| model connection | 模型连接：本机 Secret 内稳定引用、endpoint、协议、认证字段与配置修订；模型 ID 由调用方明确提供，GUI 在 Agent 配置或临时测试中手填 | 不是模型目录或 Harness；复用 Secret，不替代 grant，不在 Cell 文档保存秘密 | docs/design/model-connections-contract-stage-2026-11-24.md、docs/design/model-connections-harness-auth-2026-11-24.md |
 | connector | 把一个 harness 会话接到 daemon 的进程管理+注入层 | ~~proxy~~（语义偏同协议转发，已弃用） | design.md §2 命名词表 |
 | adapter | 外部平台（Lark 等）接入，映射平台身份到统一寻址/投递模型 | ~~gateway~~、~~room~~（已退役） | src/hyprial/daemon/impl/adapters/ |
 | user settings | 用户设置：当前账号的信息及登录、退出操作 | 不包含本地人员目录、平台身份映射管理或 Agent 凭据；设备和组织使用各自主导航入口 | gui/src/pages/SettingsPage.tsx、gui/src/features/account/impl/AccountLoginSection.tsx |
@@ -36,7 +36,6 @@ docs/design/cell-thread-conversation-model-2026-11-03.md（11-03 的原始设计
 | log event summary | 日志事件摘要：`log.page` 返回的时间、级别、组件和事件安全投影 | 每页 20 条，沿 cursor 翻页，显示页码和上一页/下一页；不宣称已知总页数；不包含消息正文，按文件分页而非全局时间顺序；adapter 组件称“平台接入” | gui/src/features/settings/impl/logs/LogsSection.tsx |
 | platform integration | 平台接入：用户面的 adapter 生命周期模块（添加、授权、启动/停止、身份同步、删除） | 不是 channel；channel 是协议层群组会话空间；技术面仍用 adapter；“使用已有应用”经 adapter.register 保存配置，不表示凭据验证、权限授权、启动或 Agent 绑定 | gui/src/features/connections/PlatformIntegrationsSection.tsx |
 | model credential | 模型凭据：Key 为模型服务的 API Key；Auth 为 harness 的原生登录材料；Agent 设置中的栏目称“凭据设置” | 保存 Key 不等于已授权给 Agent，也不等于模型请求已验证成功；本页 Key `active` 显示“已保存”，不作健康结论 | gui/src/features/connections/CredentialsSection.tsx、gui/src/features/connections/shared-credentials-api.ts |
-| model connection（WIP 提案） | 模型连接：将服务地址、API 协议、认证引用和修订关联为可选择的本机配置；模型 ID 由用户在 Agent 配置或临时测试中手填 | 尚未实施，不改变现行 provider 契约；不含模型目录，不是 harness、模型品牌或新的凭据存储，不在 Cell 文档保存秘密 | docs/design/model-connections-harness-auth-2026-11-24.md |
 | model service endpoint | 服务地址：自定义模型服务的 API 基础地址，技术面称 endpoint / base URL | 不是模型名、harness 或飞书消息路由；共享 GUI 将地址与用户 Secret 一起保存，授权后由 Pi 后台 deepseek/deepseek-flash 消费；临时测试成功不等于已保存或启动 | contract/identity/model-service-routing.md、src/hyprial/daemon/impl/harnesses/model_provider.py |
 | credential test | 凭据测试：使用指定服务商或服务地址、协议、Key 与测试模型发起一次最小模型请求 | 共享 GUI 消费 `agent.secret.provider-test`；测试不保存 Key、配置或测试模型、不创建 Agent/会话、不自动重试；HTTP 200 本身不足以证明通过，只有协议内模型文本可记 passed；不证明 Agent 可启动 | contract/daemon-request/credential-probe.md、src/hyprial/daemon/impl/model_probe |
 | model API protocol | 兼容协议：模型服务使用的具体 API 格式，如 OpenAI Chat Completions / Anthropic Messages | 不是服务商或 harness；当前自定义 Key 保存和启动仅支持 Pi 后台 deepseek/deepseek-flash 的 OpenAI Chat Completions，探针支持范围不扩大启动范围 | gui/src/features/connections/credentials-view-model.ts、contract/identity/model-service-routing.md |
