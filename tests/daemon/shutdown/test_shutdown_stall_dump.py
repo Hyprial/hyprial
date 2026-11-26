@@ -17,6 +17,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from hyprial.daemon.impl.processes.shutdown_stall import (
     arm_shutdown_stall_dump,
     cancel_shutdown_stall_dump,
@@ -117,6 +119,7 @@ def test_the_summary_marks_non_daemon_threads_instead_of_filtering_them() -> Non
         worker.join(timeout=2.0)
 
 
+@pytest.mark.posix_only("SIGUSR1")
 def test_a_signal_makes_the_process_print_its_own_stacks(tmp_path: Path) -> None:
     """The half that does not need a stall, a person, or root.
 
@@ -167,6 +170,8 @@ def test_a_signal_makes_the_process_print_its_own_stacks(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.posix_only("SIGHUP")
+@pytest.mark.posix_only("SIGUSR1")
 def test_the_signal_is_one_nothing_else_in_hyprial_claims() -> None:
     """Choosing a taken signal would replace behaviour rather than add it.
 
@@ -184,6 +189,7 @@ def test_the_signal_is_one_nothing_else_in_hyprial_claims() -> None:
     )
 
 
+@pytest.mark.posix_only("SIGUSR1")
 def test_the_signal_also_writes_every_named_thread_past_faulthandlers_cap(
     tmp_path: Path,
 ) -> None:

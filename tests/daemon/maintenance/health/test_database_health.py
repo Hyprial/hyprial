@@ -81,6 +81,7 @@ def test_corrupt_database_is_fail_loud_without_repairing_it(tmp_path, capsys):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor exhaustion fixture")
+@pytest.mark.posix_only("resource")
 def test_fd_exhaustion_reports_sqlite_code_instead_of_claiming_wal_corruption(tmp_path):
     result = subprocess.run([sys.executable, "-c", '''
 import json, os, resource, sqlite3, sys

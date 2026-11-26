@@ -151,6 +151,7 @@ def test_cycle_was_released():
     assert "2 passed" in result.stdout
 
 
+@pytest.mark.posix_only("/proc")
 def test_parallel_workers_preserve_leak_failure_and_report_all_tests() -> None:
     result = _probe(
         """pinned = []
@@ -208,6 +209,7 @@ def test_second(tmp_path):
         assert data["signal"] == signal.SIGTERM
 
 
+@pytest.mark.posix_only("/proc")
 def test_guard_still_rejects_a_reachable_file_leak() -> None:
     result = _probe(
         """pinned = []

@@ -152,6 +152,7 @@ def test_root_conftest_configure_registers_the_tripwire_on_windows(
     assert tripwire.home == Path(PROFILE)
 
 
+@pytest.mark.posix_only("pwd")
 def test_real_account_home_keeps_the_posix_password_entry() -> None:
     import pwd
 
