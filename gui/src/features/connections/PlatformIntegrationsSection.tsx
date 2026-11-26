@@ -514,7 +514,7 @@ export function PlatformIntegrationsSection({ api }: PlatformIntegrationsSection
     try {
       const next = addOperation.operationId ? await api.addOperation(addOperation.operationId) : await api.currentAdd?.(addOperation.adapter);
       if (current !== generation.current) return;
-      setAddError(null);
+      setAddError(next === null ? '未找到这次添加的记录。请重新开始添加。' : null);
       if (next !== undefined) setAddOperation(next);
       if (next?.status === 'succeeded') await finishAdd(next, current);
     } catch (error) {

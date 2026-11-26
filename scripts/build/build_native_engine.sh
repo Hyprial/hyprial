@@ -26,15 +26,21 @@
 # clarification CL-2): module init registers the conformance suite's native
 # handler factories through register_native_factory. Never used for wheels.
 #
-# After staging, the script records src/hyprial/_core/actors.stamp.json (the
-# digest of every crates/ input, the module's SHA-256, features and profile)
-# through src/hyprial/shell/impl/packaging/native_engine.py. An editable build
+# The default (non --free-threaded) path is `native_editable.py build` in
+# src/hyprial/shell/impl/packaging/: the same Python entry the editable build
+# hook calls in-process, so a Windows `HYPRIAL_BUILD_NATIVE=1 uv sync` needs
+# no bash (KP-135); it applies the same rustup/rustc toolchain rule as the
+# check below. It stages src/hyprial/_core/actors<suffix> (the
+# interpreter's stable-ABI extension suffix: actors.abi3.so on Linux and
+# macOS, actors.pyd on Windows) and records src/hyprial/_core/actors.stamp.json
+# (the digest of every crates/ input, the module's SHA-256, features and
+# profile) through native_engine.py. An editable build
 # (uv sync) verifies the staged module against that stamp and its
 # ENGINE_ABI_VERSION, and fails on a stale or foreign module. Wheels never
 # use the staged module: the Hatch hook compiles their own.
 #
 # The artefact path is taken from cargo's own --message-format=json output
-# (native_engine.py library), never from a guessed target directory, so
+# (native_engine.py library_from_messages), never from a guessed target directory, so
 # CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR and build.target-dir in
 # .cargo/config.toml all work and a stale crates/target library is never staged.
 set -euo pipefail
@@ -102,20 +108,8 @@ if [[ -z "${PYO3_PYTHON:-}" ]]; then
     fi
 fi
 
-# RUNNER is legitimately empty when rustup is not on PATH (the E2E script
-# installs cargo into a private toolchain dir instead). Expand it optionally:
-# bash < 4.4 treats "${RUNNER[@]}" on an empty array as unbound under set -u,
-# which broke the manylinux2014_aarch64 gate (run 57004, job 149555).
-MESSAGES="$(mktemp)"
-trap 'rm -f "${MESSAGES}"' EXIT
-"${RUNNER[@]+"${RUNNER[@]}"}" cargo build ${CARGO_PROFILE} --locked --manifest-path crates/Cargo.toml --features "${FEATURES}" -p hyprial-py \
-    --message-format=json-render-diagnostics > "${MESSAGES}"
-
-EXT="$(uv run --no-project --python 3.12 python src/hyprial/shell/impl/packaging/native_engine.py library "${MESSAGES}")"
-DEST="src/hyprial/_core/actors.abi3.so"
-
-mkdir -p src/hyprial/_core
-cp "${EXT}" "${DEST}"
-echo "staged ${DEST} (from ${EXT})"
-uv run --no-project --python 3.12 python src/hyprial/shell/impl/packaging/native_engine.py \
-    stamp "$(pwd)" "${DEST}" "${FEATURES}" "${PROFILE}"
+BUILD_ARGS=()
+[[ "${PROFILE}" == "debug" ]] && BUILD_ARGS+=(--debug)
+[[ "${FEATURES}" == *conformance-handlers* ]] && BUILD_ARGS+=(--conformance)
+uv run --no-project --python 3.12 python src/hyprial/shell/impl/packaging/native_editable.py \
+    build "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
