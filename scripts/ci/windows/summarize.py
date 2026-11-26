@@ -10,6 +10,11 @@ selection, hard-red wave states can never be offset, optional expected-failures.
 reconciliation checks exact phase, ledger excinfo.type, and message regex (failing on
 stale-expected-failure or unexpected-failure-shape), and coarse failure buckets plus
 POSIX_ONLY_IGNORED counts are printed for nightly trend tracking.
+
+Decision (2026-11-27, tier 2 full suite).  Files dropped from the plan because they
+define no test (plan key noTestDefinitionsIgnored) and files reported only through
+a collection-time module skip (run-manifest key collectionSkippedFiles) are printed
+with their count and every path, so neither is silent.
 """
 
 from __future__ import annotations
@@ -382,6 +387,13 @@ def _collect_suite_cases(
     return totals, failures, parse_or_dup_errors
 
 
+def _paths_from(value: object) -> list[str]:
+    raw = value.get("paths") if isinstance(value, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return sorted({str(item) for item in raw})
+
+
 def _required_legs_from_plan(plan: dict[str, Any]) -> list[str]:
     explicit = plan.get("requiredLegs")
     if isinstance(explicit, list) and explicit:
@@ -530,6 +542,10 @@ def summarize_suite(
     ignored_tests = int(ignored.get("tests", 0))
     report_lines.append(f"## Windows suite summary (selection={selection})")
     report_lines.append(f"POSIX_ONLY_IGNORED files={ignored_files} tests={ignored_tests}")
+    dropped_paths = _paths_from(plan.get("noTestDefinitionsIgnored"))
+    report_lines.append(f"NO_TEST_DEFINITIONS_IGNORED files={len(dropped_paths)}")
+    report_lines.extend(f"  - `{path}`" for path in dropped_paths)
+    collection_skipped: set[str] = set()
     expected_entries, expected_load_errors = _load_expected_failures(expected_failures_path)
     leg_records: dict[str, dict[str, Any]] = {}
     category_counts: dict[str, int] = {}
@@ -586,6 +602,8 @@ def summarize_suite(
             for leak in leaks:
                 if isinstance(leak, dict):
                     all_leaks.append({"leg": leg, **leak})
+        if isinstance(manifest, dict):
+            collection_skipped.update(_paths_from(manifest.get("collectionSkippedFiles")))
         duration = round(
             sum(
                 float(run.get("duration", 0.0))
@@ -661,7 +679,9 @@ def summarize_suite(
         report_lines.append(f"- **failure-categories**: {ordered}")
     if all_leaks:
         report_lines.append(f"- **leaks**: total={len(all_leaks)}")
-    overall = "passed" if overall_ok else "failed"
+    report_lines.append(f"COLLECTION_SKIPPED_FILES files={len(collection_skipped)}")
+    report_lines.extend(f"  - `{path}`" for path in sorted(collection_skipped))
+    overall ="passed" if overall_ok else "failed"
     report_lines.append(f"\nOverall status: **{overall}**")
     for line in report_lines:
         print(line)

@@ -187,6 +187,120 @@ def test_plan_full_discovers_filters_posix_only_and_uses_durations(
     ) == [["tests/a.py"], ["tests/b.py", "tests/c.py"]]
 
 
+HELPERS_ONLY = (
+    "import pytest\n\n\nclass IsolatedHarness:\n    def run(self):\n        return 1\n\n\n"
+    "@pytest.fixture\ndef harness():\n    return IsolatedHarness()\n\n\n"
+    "def _wait_until(check):\n    result = check()\n    return result\n"
+)
+
+
+def _full_plan_files(tmp_path: Path, contents: dict[str, str]) -> tuple[list[str], dict[str, object]]:
+    for rel, content in contents.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    plan = build_suite_plan(selection="full", root=tmp_path, shard_count=1, wave_size=120)
+    planned = sorted(path for shard in plan["shards"] for path in shard)
+    return planned, plan["noTestDefinitionsIgnored"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "import missing_dependency\n\n\ndef test_breaks_at_import():\n    assert False\n",
+        "class Grouped:\n    async def test_inside_class(self):\n        pass\n",
+        "import pytest\n\n\n@pytest.mark.parametrize('x', [1, 2])\ndef test_param(x):\n    pass\n",
+    ],
+    ids=["fails-at-import", "method-in-plain-class", "parametrized"],
+)
+def test_plan_full_keeps_file_with_a_test_function(tmp_path: Path, content: str) -> None:
+    planned, dropped = _full_plan_files(
+        tmp_path, {"tests/test_kept.py": content, "tests/test_helpers_only.py": HELPERS_ONLY}
+    )
+
+    assert planned == ["tests/test_kept.py"]
+    assert dropped == {"files": 1, "paths": ["tests/test_helpers_only.py"]}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "from tests.base import Base\n\n\nclass TestInherited(Base):\n    pass\n",
+        "import unittest\n\n\nclass SharedCase(unittest.TestCase):\n    pass\n",
+    ],
+    ids=["test-class-inherits-tests", "testcase-subclass"],
+)
+def test_plan_full_keeps_file_with_a_test_class(tmp_path: Path, content: str) -> None:
+    planned, dropped = _full_plan_files(
+        tmp_path, {"tests/test_kept.py": content, "tests/test_helpers_only.py": HELPERS_ONLY}
+    )
+
+    assert planned == ["tests/test_kept.py"]
+    assert dropped == {"files": 1, "paths": ["tests/test_helpers_only.py"]}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "from tests.factory import make_case\n\ntest_a = make_case()\n",
+        "from tests.factory import make_case\n\nif True:\n    test_b: object = make_case()\n",
+        "from tests.shared import test_reused\n",
+        "from tests.shared import *\n",
+    ],
+    ids=["assignment", "annotated-in-if", "imported-test", "star-import"],
+)
+def test_plan_full_keeps_file_with_a_module_level_test_binding(tmp_path: Path, content: str) -> None:
+    planned, dropped = _full_plan_files(
+        tmp_path, {"tests/test_kept.py": content, "tests/test_helpers_only.py": HELPERS_ONLY}
+    )
+
+    assert planned == ["tests/test_kept.py"]
+    assert dropped == {"files": 1, "paths": ["tests/test_helpers_only.py"]}
+
+
+def test_plan_full_drops_file_without_test_definitions_and_prints_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    contents = {
+        "tests/test_real.py": "def test_ok():\n    pass\n",
+        "tests/lifecycle/test_helpers_only.py": HELPERS_ONLY,
+        "tests/test_local_names.py": "def helper():\n    test_value = 1\n    return test_value\n",
+        "tests/test_broken_syntax.py": "def test_x(:\n",
+    }
+    for rel, content in contents.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    out_manifest = tmp_path / "plan-manifest.json"
+
+    code = main(["--plan", "--selection", "full", "--shards", "1", "--out", str(out_manifest), "--root", str(tmp_path)])
+
+    assert code == 0
+    written = json.loads(out_manifest.read_text(encoding="utf-8"))
+    assert written["noTestDefinitionsIgnored"] == {
+        "files": 2,
+        "paths": ["tests/lifecycle/test_helpers_only.py", "tests/test_local_names.py"],
+    }
+    assert written["shards"] == [["tests/test_broken_syntax.py", "tests/test_real.py"]]
+    assert written["totalFiles"] == 2
+    stdout = capsys.readouterr().out
+    assert "NO_TEST_DEFINITIONS_IGNORED files=2" in stdout
+    assert "NO_TEST_DEFINITIONS_IGNORED path=tests/lifecycle/test_helpers_only.py" in stdout
+    assert "NO_TEST_DEFINITIONS_IGNORED path=tests/test_local_names.py" in stdout
+
+    targets = tmp_path / "targets.txt"
+    targets.write_text("tests/lifecycle/test_helpers_only.py\n", encoding="utf-8")
+    explicit = build_suite_plan(
+        selection="targets",
+        root=tmp_path,
+        targets_path=targets,
+        tracked_files={"tests/lifecycle/test_helpers_only.py"},
+    )
+    assert explicit["shards"] == [["tests/lifecycle/test_helpers_only.py"]]
+    assert explicit["noTestDefinitionsIgnored"] == {"files": 0, "paths": []}
+
+
 def test_plan_targets_validates_tracked_files_and_rejects_empty(tmp_path: Path) -> None:
     test_file = tmp_path / "tests/test_sample.py"
     test_file.parent.mkdir(parents=True, exist_ok=True)

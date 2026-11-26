@@ -11,6 +11,18 @@ event streams.  JUnit parsing supports both xunit2 (classname-only) and xunit1
 errors for files still missing after reruns.  Tier 1 enforces strict contract and
 non-contract skip rules; tier 2 keeps full ten-state classification without failing
 on legitimate conditional skips.
+
+Decision (2026-11-27, tier 2 full suite).  A module skipped at collection time (for
+example a module-level pytest.importorskip) produces one testcase with an empty
+classname and the dotted module path as name, so it cannot be attributed through
+classname.  Such a testcase marks its planned file as reported only when all four
+hold: classname is empty, name equals the dotted module path of exactly one planned
+file, it has a skipped child, and it has no failure child and no error child (any
+number of error children rejects it).  The file is reported through
+collection_skipped_files, never through nodeids_by_file, so the ledger end-event
+check and rerun deselection are unaffected.  Tier 1 still lists it as an
+unexpected skip.  A collection error keeps its "collection failure" error child and
+stays a hard red.
 """
 
 from __future__ import annotations
@@ -67,6 +79,7 @@ class JUnitResult:
     nodeids_by_file: dict[str, tuple[str, ...]]
     parse_errors: tuple[str, ...] = ()
     other_skips: tuple[tuple[str, str], ...] = ()
+    collection_skipped_files: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -80,6 +93,7 @@ class RunOutcome:
     leaks: tuple[dict[str, Any], ...]
     details: tuple[str, ...]
     offsettable: bool
+    collection_skipped_files: frozenset[str] = frozenset()
 
 
 def is_offsettable(status: str) -> bool:
@@ -161,6 +175,29 @@ def _resolve_case_location(
     return None, fallback
 
 
+def _planned_module_names(planned: frozenset[str]) -> dict[str, str]:
+    by_name: dict[str, str] = {}
+    collisions: set[str] = set()
+    for path in planned:
+        if not path.endswith(".py"):
+            continue
+        dotted = path[:-3].replace("/", ".")
+        if dotted in by_name:
+            collisions.add(dotted)
+        by_name[dotted] = path
+    return {dotted: path for dotted, path in by_name.items() if dotted not in collisions}
+
+
+def _collection_skipped_file(case: ET.Element, module_names: dict[str, str]) -> str | None:
+    if case.attrib.get("classname", ""):
+        return None
+    if case.find("skipped") is None:
+        return None
+    if case.find("failure") is not None or case.find("error") is not None:
+        return None
+    return module_names.get(case.attrib.get("name", ""))
+
+
 def read_junit(
     paths: Iterable[Path],
     planned_files: Sequence[str],
@@ -168,8 +205,10 @@ def read_junit(
     root: Path | None = None,
 ) -> JUnitResult:
     planned = frozenset(normalise_path(path) for path in planned_files)
+    module_names = _planned_module_names(planned)
     nodeids: set[str] = set()
     files: set[str] = set()
+    collection_skipped: set[str] = set()
     by_file: dict[str, list[str]] = {}
     failures = 0
     errors = 0
@@ -187,6 +226,18 @@ def read_junit(
             parse_errors.append(f"{path.name}: {error}")
             continue
         for case in xml_root.iter("testcase"):
+            skipped_module = _collection_skipped_file(case, module_names)
+            if skipped_module is not None:
+                if skipped_module in nodeids:
+                    raise ValueError(f"duplicate-result: {skipped_module}")
+                nodeids.add(skipped_module)
+                files.add(skipped_module)
+                collection_skipped.add(skipped_module)
+                skipped += 1
+                skipped_node = case.find("skipped")
+                reason = "" if skipped_node is None else skipped_node.attrib.get("message", "")
+                other_skips.append((skipped_module, reason))
+                continue
             resolved_file, nodeid = _resolve_case_location(case, planned, root)
             if nodeid in nodeids:
                 raise ValueError(f"duplicate-result: {nodeid}")
@@ -219,6 +270,7 @@ def read_junit(
         {key: tuple(values) for key, values in by_file.items()},
         tuple(parse_errors),
         tuple(other_skips),
+        frozenset(collection_skipped),
     )
 
 
@@ -434,6 +486,7 @@ def classify_run(
         _ledger_leaks(events),
         tuple(details),
         is_offsettable(status),
+        result.collection_skipped_files,
     )
 
 

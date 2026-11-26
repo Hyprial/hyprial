@@ -13,6 +13,10 @@ hard-red classification without failing on legitimate conditional skips.  Window
 uses a kill-on-close Job Object without BREAKAWAY_OK via _winapi.CreateProcess
 with CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, while Linux keeps a real
 subprocess path so self-tests exercise the wrapper directly.
+
+Decision (2026-11-27, tier 2 full suite).  The manifest key collectionSkippedFiles
+lists, with a count, every planned file reported only through a collection-time
+module skip (the four-condition rule in wave_state.py), so the summary can show it.
 """
 
 from __future__ import annotations
@@ -594,6 +598,7 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     all_junits: list[Path] = []
     completed_files: set[str] = set()
     completed_nodeids_by_file: dict[str, set[str]] = {}
+    collection_skipped_files: set[str] = set()
     leaks: list[dict[str, Any]] = []
     leaked_processes: list[dict[str, Any]] = []
     final_status = "passed"
@@ -660,6 +665,7 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             for file_name, nodeids in outcome.nodeids_by_file.items():
                 completed_nodeids_by_file.setdefault(file_name, set()).update(nodeids)
             completed_files.update(outcome.reported_files - outcome.partial_files)
+            collection_skipped_files.update(outcome.collection_skipped_files)
             leaks.extend(outcome.leaks)
             runs.append(
                 {
@@ -709,6 +715,10 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         "duplicateResult": duplicate_error,
         "plannedFiles": planned,
         "reportedFiles": sorted(completed_files),
+        "collectionSkippedFiles": {
+            "files": len(collection_skipped_files),
+            "paths": sorted(collection_skipped_files),
+        },
         "runs": runs,
         "leakedProcesses": leaked_processes,
         "leaks": leaks,

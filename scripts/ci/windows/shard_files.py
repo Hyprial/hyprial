@@ -8,6 +8,20 @@ selections (full, tier1-next, arm-next, targets), excludes optional posix-only.j
 entries while reporting POSIX_ONLY_IGNORED counts, uses deterministic greedy LPT
 sharding when pytest-durations-windows.json is present, and verifies every target
 in dispatch-targets.txt against tracked git paths.
+
+Decision (2026-11-27, tier 2 full suite).  A file whose name matches the test
+pattern but that defines no test can never be attributed in JUnit, so the full
+selection drops it statically and records every dropped path under
+noTestDefinitionsIgnored.  has_test_definitions is computed from the syntax tree,
+never from a hand-written list, and keeps the file when any of these hold: a
+function anywhere whose name starts with "test"; a class anywhere whose name starts
+with "Test" or whose bases name a TestCase; a module-scope binding (assignment,
+annotated or augmented assignment, walrus, loop target, from-import alias) whose
+name starts with "test" or "Test"; a star import; or a syntax error.  The prefixes
+are the pytest defaults; the project sets no python_functions or python_classes.
+Only the full selection drops files; explicit lists (targets, tier1-next, arm-next)
+are never filtered.  count_def_tests is unchanged and is only a trend count for
+POSIX_ONLY_IGNORED.
 """
 
 from __future__ import annotations
@@ -19,7 +33,7 @@ import os
 import re
 import statistics
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -34,6 +48,8 @@ SKIP_DIR_NAMES = frozenset({"__pycache__", ".git"})
 SKIP_DIR_PREFIX = "windows-suite-probe-"
 WILDCARD_CHARS = frozenset({"*", "?", "[", "]"})
 TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+test_\w+", re.MULTILINE)
+TEST_FUNCTION_PREFIX = "test"
+TEST_CLASS_PREFIX = "Test"
 
 
 def _normalise_relpath(value: str) -> str:
@@ -154,6 +170,65 @@ def count_def_tests(path: Path) -> int:
         ):
             count += 1
     return count
+
+
+def _module_scope_nodes(nodes: Iterable[ast.AST]) -> Iterator[ast.AST]:
+    for node in nodes:
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        yield from _module_scope_nodes(ast.iter_child_nodes(node))
+
+
+def _names_test_case_base(node: ast.ClassDef) -> bool:
+    for base in node.bases:
+        name = base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", "")
+        if "TestCase" in name:
+            return True
+    return False
+
+
+def has_test_definitions(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return True
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
+            TEST_FUNCTION_PREFIX
+        ):
+            return True
+        if isinstance(node, ast.ClassDef) and (
+            node.name.startswith(TEST_CLASS_PREFIX) or _names_test_case_base(node)
+        ):
+            return True
+    for node in _module_scope_nodes(tree.body):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            if node.id.startswith((TEST_FUNCTION_PREFIX, TEST_CLASS_PREFIX)):
+                return True
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if bound == "*" or bound.startswith((TEST_FUNCTION_PREFIX, TEST_CLASS_PREFIX)):
+                    return True
+    return False
+
+
+def filter_no_test_definitions(
+    files: Sequence[str],
+    *,
+    root: Path,
+) -> tuple[list[str], dict[str, Any]]:
+    kept: list[str] = []
+    dropped: list[str] = []
+    for rel in files:
+        path = root / rel
+        if path.is_file() and not has_test_definitions(path):
+            dropped.append(rel)
+        else:
+            kept.append(rel)
+    return kept, {"files": len(dropped), "paths": sorted(dropped)}
 
 
 def load_posix_only_entries(path: Path) -> list[tuple[str, str]]:
@@ -281,10 +356,13 @@ def build_suite_plan(
     if wave_size < 1:
         raise ValueError("wave_size must be positive")
     posix_only_ignored = {"files": 0, "tests": 0}
+    no_test_definitions: dict[str, Any] = {"files": 0, "paths": []}
     if selection == "full":
         if shard_count < 1:
             raise ValueError("shard_count must be positive")
-        discovered = discover_test_files(root)
+        discovered, no_test_definitions = filter_no_test_definitions(
+            discover_test_files(root), root=root
+        )
         posix_path = posix_only_path or (root / DEFAULT_POSIX_ONLY)
         files, posix_only_ignored = filter_posix_only(discovered, posix_path, root=root)
         if not files:
@@ -331,6 +409,7 @@ def build_suite_plan(
         "waveSize": wave_size,
         "totalFiles": len(files),
         "posixOnlyIgnored": posix_only_ignored,
+        "noTestDefinitionsIgnored": no_test_definitions,
         "shards": shards,
         "waves": waves,
     }
@@ -377,6 +456,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(manifest, ensure_ascii=False, sort_keys=True))
         ignored = manifest["posixOnlyIgnored"]
         print(f"POSIX_ONLY_IGNORED files={ignored['files']} tests={ignored['tests']}")
+        dropped = manifest["noTestDefinitionsIgnored"]
+        print(f"NO_TEST_DEFINITIONS_IGNORED files={dropped['files']}")
+        for path in dropped["paths"]:
+            print(f"NO_TEST_DEFINITIONS_IGNORED path={path}")
         return 0
     if args.files is None or args.shards is None:
         parser.error("--files and --shards are required unless --plan is passed")
