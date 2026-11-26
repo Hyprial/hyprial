@@ -503,11 +503,14 @@ def test_a_workspace_junction_to_another_private_directory_is_refused(
     Creating a junction needs neither elevation nor Developer Mode, so a
     workspace can be replaced by a link to a private directory that is not
     this agent's workspace.  This case shows that such a junction is refused.
-    It is not before/after evidence for one term of the chain check: if
-    ``lstat`` reports the junction as a symlink, the symlink term refused it
-    as well.  What ``lstat`` and ``path_is_reparse`` report for the junction
-    is recorded as properties, so the run itself answers which term refused
-    it; nothing is asserted about those values.
+    The junction is passed as the cwd as well, which is what lets the launch
+    reach the chain check; the refusal is matched on that check's message, so
+    a refusal from an earlier step cannot pass in its place.  It is not
+    before/after evidence for one term of the chain check: if ``lstat``
+    reports the junction as a symlink, the symlink term refused it as well.
+    What ``lstat`` and ``path_is_reparse`` report for the junction is
+    recorded as properties, so the run itself answers which term refused it;
+    nothing is asserted about those values.
     """
 
     own = tmp_path / "agents" / "be-dev-1" / "workspace"
@@ -520,7 +523,7 @@ def test_a_workspace_junction_to_another_private_directory_is_refused(
     record_property("junction_s_isdir", str(stat.S_ISDIR(metadata.st_mode)))
     record_property("junction_is_reparse", str(path_is_reparse(metadata)))
 
-    with pytest.raises(PiProjectTrustError):
+    with pytest.raises(PiProjectTrustError, match="real directory"):
         resolve_approved_pi_project(
-            cwd=str(intruder), runtime_args=("--approve",), own_workspace=own
+            cwd=str(own), runtime_args=("--approve",), own_workspace=own
         )
