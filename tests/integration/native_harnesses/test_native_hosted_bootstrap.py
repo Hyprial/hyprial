@@ -52,7 +52,11 @@ def _run(runner, tmp_path, *, mutated=None, source_root=ROOT, import_root=ROOT):
     try:
         stdout, stderr = child.communicate(timeout=30)
     except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
+        killpg = getattr(os, "killpg", None)
+        if killpg is None:
+            child.kill()
+        else:
+            killpg(child.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         child.communicate()
         raise
     assert child.poll() is not None

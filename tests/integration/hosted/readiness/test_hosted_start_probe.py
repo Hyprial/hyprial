@@ -8,7 +8,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import textwrap
@@ -172,7 +171,7 @@ def test_sigkill_leaves_parsable_file_close_to_kill(runner: Any, tmp_path: Path,
     try:
         time.sleep(2.2)
         killed_at = time.monotonic()
-        process.send_signal(signal.SIGKILL)
+        process.kill()
         process.wait(timeout=10)
     finally:
         if process.poll() is None:

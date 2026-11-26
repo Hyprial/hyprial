@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import signal
 import stat
 import subprocess
 import sys
@@ -25,6 +24,7 @@ ACTOR = f"user:{OWNER}"
 from tests.integration.request_http.conftest import (  # noqa: E402
     HttpProcess,
     _clean_env,
+    signal_group,
     write_config,
 )
 
@@ -231,12 +231,12 @@ def test_a_local_gui_config_is_refused_by_the_standalone_entry_and_hosts_nothing
     try:
         _, stderr = process.communicate(timeout=30)
     except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        signal_group(process, hard=True)
         process.communicate(timeout=30)
         raise
     finally:
         if process.poll() is None:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            signal_group(process, hard=True)
             process.wait(timeout=10)
 
     assert process.returncode == 2

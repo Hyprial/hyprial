@@ -19,12 +19,17 @@ their pids in a ``process_table.Ledger`` (``ps`` listing, ``process_birth_identi
 birth re-checked before every signal), each launcher starts in its own session and
 registers its ``release`` with the ``LifecycleHome`` so the fixture runs it after a
 failed assertion, and ``release`` asserts that nothing it recorded survives.
+Decision (2026-11-26): ``signal_group`` sends a release signal to the process
+group a launcher leads where ``os.killpg`` exists and to the launcher itself
+otherwise (Windows has no process groups to signal); what the launcher left is
+then stopped through the ledger, so the release does not depend on POSIX groups.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -38,6 +43,21 @@ from tests.integration.daemon_lifecycle.support import LifecycleHome
 from tests.support.process_table import Ledger, alive as alive, children_of
 
 FOLLOW_SECONDS = 60
+
+
+def signal_group(process: subprocess.Popen[Any], *, hard: bool) -> None:
+    """``SIGTERM`` (or ``SIGKILL`` when ``hard``) to the group ``process`` leads; ``terminate``/``kill`` of it where there are no groups."""
+
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        if hard:
+            process.kill()
+        else:
+            process.terminate()
+        return
+    killpg(process.pid, getattr(signal, "SIGKILL", signal.SIGTERM) if hard else signal.SIGTERM)
+
+
 OWNER = "z2-owner@example.test"
 ISSUER = "https://issuer.example.test"
 
@@ -125,18 +145,16 @@ class HostGui:
         return self.process.wait(timeout=60)
 
     def release(self) -> None:
-        import signal
-
         if self.process.poll() is None:
             self.ledger.adopt_descendants(self.process.pid)
             try:
-                os.killpg(self.process.pid, signal.SIGTERM)
+                signal_group(self.process, hard=False)
             except ProcessLookupError:
                 pass
             try:
                 self.process.wait(timeout=60)
             except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
+                signal_group(self.process, hard=True)
                 self.process.wait(timeout=60)
         survivors = self.ledger.stop(kill=20, exclude={self.process.pid})
         for stream in (self.process.stdout, self.process.stdin):
@@ -344,8 +362,6 @@ class GuiCommand:
             self.ledger.adopt_descendants(self.process.pid)
 
     def release(self) -> None:
-        import signal
-
         if self.released:
             return
         self.released = True
@@ -353,7 +369,7 @@ class GuiCommand:
         process = self.process
         if process.poll() is None:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                signal_group(process, hard=True)
             except ProcessLookupError:
                 pass
         process.wait(timeout=10)

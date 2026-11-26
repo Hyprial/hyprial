@@ -1,6 +1,5 @@
 """Durable ack after an uncatchable process kill and audited recovery."""
 import json
-import signal
 import subprocess
 import sys
 
@@ -33,7 +32,7 @@ time.sleep(30)
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         assert child.stdout.readline().strip() == "ACK_COMMITTED"
-        child.send_signal(signal.SIGKILL)
+        child.kill()
         child.wait(timeout=5)
     finally:
         if child.poll() is None:
