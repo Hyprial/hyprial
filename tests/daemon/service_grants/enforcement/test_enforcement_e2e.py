@@ -395,6 +395,26 @@ def test_the_tick_reads_the_roster_once_however_many_ports_and_grants(make_rig: 
     assert rig.exposes(port=PORT)[-1]["keys"] == [BOB_KEY]
 
 
+def test_a_device_with_no_exposure_reads_nothing_and_pushes_nothing(make_rig: Any) -> None:
+    """Without a user exposure there is no set to push, so nothing is read for one.
+
+    A sidecar start offers the first derivation, and most devices expose
+    nothing; that derivation must not put a roster read on the wire of every
+    device, nor log about grants that no exposure would admit through.
+    """
+
+    rig = make_rig()
+    rig.grant(BOB_NODE.slug)
+    rig.harness.exposures.remove(PORT)
+    pushed_before = len(rig.exposes())
+
+    rig.build().apply_now()
+
+    assert rig.roster_reads == 0
+    assert len(rig.exposes()) == pushed_before
+    assert rig.logged("service.grant.key_unavailable") == []
+
+
 def test_the_periodic_tick_waits_for_its_interval_and_the_immediate_push_does_not(
     make_rig: Any,
 ) -> None:

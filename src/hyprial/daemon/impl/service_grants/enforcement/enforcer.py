@@ -35,6 +35,10 @@
 #   tick instead of waiting out the whole interval.
 # - The key limit is the forwarding policy's: the sidecar's parser and this
 #   object must agree on one number, and there is one place that states it.
+# - A derivation that finds no user exposure stops there: no roster read, no
+#   grant read, no event. Every sidecar start offers a derivation and most
+#   devices expose nothing, so without this every device would put a
+#   membership-status read on its wire for a set it has nowhere to push.
 """Pushing each exposure's derived admission set to the sidecar."""
 
 from __future__ import annotations
@@ -225,6 +229,9 @@ class ServiceAdmissionEnforcer:
             if server_public is None:
                 return
             exposures = list(self._exposure_store.list())
+            if not exposures:
+                self._dirty = False
+                return
             roster = self._read_roster()
             inputs = self._inputs()
             grants = self._read_grants(inputs)
