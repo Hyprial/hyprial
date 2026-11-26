@@ -18,6 +18,7 @@ import pytest
 
 import hyprial.daemon.impl.org.network.device_key as device_key_module
 from hyprial.daemon.impl.org.network.device_key import (
+    KEY_UNAVAILABLE,
     encryption_key_reader,
     ensure_encryption_key,
 )
@@ -123,11 +124,11 @@ def test_a_complete_account_yields_the_public_half_with_the_store_digest_id(
 def test_a_quarantined_store_yields_no_key(tmp_path: Path) -> None:
     home = _home(tmp_path)
     state = tmp_path / "state"
-    reader = encryption_key_reader(home=home, state_dir=state)
-    assert reader() is not None
+    assert ensure_encryption_key(home, state) is not None
     (state / "identity" / "encryption-keys").chmod(0o755)
 
-    assert reader() is None
+    assert ensure_encryption_key(home, state) is None
+    assert encryption_key_reader(home=home, state_dir=state)() is KEY_UNAVAILABLE
 
 
 def test_a_copied_key_from_another_machine_yields_no_key(tmp_path: Path) -> None:
@@ -135,8 +136,7 @@ def test_a_copied_key_from_another_machine_yields_no_key(tmp_path: Path) -> None
 
     home = _home(tmp_path)
     state = tmp_path / "state"
-    reader = encryption_key_reader(home=home, state_dir=state)
-    first = reader()
+    first = ensure_encryption_key(home, state)
     assert first is not None
     [path] = (state / "identity" / "encryption-keys").glob("*/key.json")
     record = json.loads(path.read_text("utf-8"))
@@ -144,7 +144,8 @@ def test_a_copied_key_from_another_machine_yields_no_key(tmp_path: Path) -> None
     path.chmod(0o600)
     path.write_text(json.dumps(record), encoding="utf-8")
 
-    assert reader() is None
+    assert encryption_key_reader(home=home, state_dir=state)() is KEY_UNAVAILABLE
+    assert ensure_encryption_key(home, state) is None
     assert json.loads(path.read_text("utf-8"))["keyId"] == first["keyId"]
 
 

@@ -357,12 +357,22 @@ class ServingRecovery:
     def _ensure_encryption_key(self, owner: str, device: Any) -> None:
         """Ensure this device's encryption key; never raises and never blocks the pass.
 
-        The reader re-reads the committed account and the device record itself,
-        so it binds the key to what is committed now.  A device record that is
-        not there yet is left to the step after provisioning.
+        Acquires the home's identity transaction lock with the same bounded
+        wait as the signing-key step so a concurrent login or relogin cannot
+        swap ``settings.json`` and ``device.json`` mid-read.
         """
 
         if self._encryption_key is None or device is None:
+            return
+        try:
+            transaction = IdentityTransactionLock.acquire(
+                self._home, timeout=_KEY_LOCK_SECONDS
+            )
+        except IdentityTransactionBusy:
+            _LOG.info("encryption key skipped: the identity transaction is busy")
+            return
+        except Exception as error:
+            _LOG.warning("encryption key was not ensured: %s", type(error).__name__)
             return
         try:
             if self._owner() != owner:
@@ -371,6 +381,8 @@ class ServingRecovery:
             self._encryption_key(self._home, Path(self._operations.root).parent)
         except Exception as error:
             _LOG.warning("encryption key was not ensured: %s", type(error).__name__)
+        finally:
+            transaction.close()
 
     def _ensure_user_key(self, owner: str, device: Any) -> dict[str, Any] | None:
         try:

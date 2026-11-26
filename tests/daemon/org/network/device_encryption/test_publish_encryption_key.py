@@ -19,7 +19,10 @@ from pathlib import Path
 import pytest
 
 import hyprial.identity as identity
-from hyprial.daemon.impl.org.network.device_key import encryption_key_reader
+from hyprial.daemon.impl.org.network.device_key import (
+    encryption_key_reader,
+    ensure_encryption_key,
+)
 from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine
 from hyprial.daemon.impl.org.network.service import OrgNetworkService
 from hyprial.identity import id_form_minting
@@ -200,9 +203,9 @@ def test_a_key_the_store_refuses_publishes_no_pair_and_is_not_a_publish_error(
     state = tmp_path_factory.mktemp("state")
     fs = FakeFs()
     _create_org_spaces(fs)
-    reader = encryption_key_reader(home=home, state_dir=state)
-    assert reader() is not None
+    assert ensure_encryption_key(home, state) is not None
     (state / "identity" / "encryption-keys").chmod(0o755)
+    reader = encryption_key_reader(home=home, state_dir=state)
 
     result = _service(fs, home, encryption_key=reader).publish_self()
 

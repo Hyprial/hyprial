@@ -13,10 +13,12 @@ Decision record (service grant S1, 2026-11-26: the published encryption key):
   caller has to remember it.  ``publish_self_for_app`` has one caller, the
   forwarding maintenance tick, which runs it on the first tick and whenever
   the sidecar address changes, and otherwise at most every ten seconds.
-- The reader is bound to the home and the state directory of this build and
-  reads the committed account on every call.  It is therefore rebuilt with the
-  service, and a login or logout in the running daemon is followed by the next
-  publish under the account that is committed then.
+- The reader is bound to the home, the state directory, and a per-app in-memory
+  ``EncryptionKeyCache`` keyed by ``(user_id, device_uid)`` so steady-state
+  periodic refreshes never re-enter ``store.ensure()`` or contend on the 15 s
+  store file lock, while account or device changes invalidate the cache on the
+  next read.  ``publish_self_for_app`` scopes a ``single_read_pass()`` so a
+  multi-org refresh resolves the key at most once across all orgs.
 - An application without a state directory gets no reader.  Private state is
   where the key lives; without it the row is published without the pair, which
   is the same answer the reader gives for any missing prerequisite.
@@ -66,7 +68,10 @@ from hyprial.daemon.impl.org.network.directory import (
     OrgFsDirectoryStore,
 )
 from hyprial.daemon.impl.org.membership.invites import InviteService
-from hyprial.daemon.impl.org.network.device_key import encryption_key_reader
+from hyprial.daemon.impl.org.network.device_key import (
+    EncryptionKeyCache,
+    encryption_key_reader,
+)
 from hyprial.daemon.impl.org.network.service import (
     OrgNetworkError,
     OrgNetworkService,
@@ -95,6 +100,17 @@ def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
         quarantine = InvalidDeviceQuarantine()
         app._org_directory_quarantine = quarantine
     return quarantine
+
+
+def _encryption_key_cache(app: Any) -> EncryptionKeyCache:
+    cache = getattr(app, "_device_encryption_key_cache", None)
+    if cache is None:
+        cache = EncryptionKeyCache()
+        try:
+            app._device_encryption_key_cache = cache
+        except AttributeError:
+            pass
+    return cache
 
 
 def _build_service(
@@ -258,7 +274,9 @@ def _build_service(
             None
             if state_dir is None
             else encryption_key_reader(
-                home=Path(app.hyprial_home), state_dir=Path(state_dir)
+                home=Path(app.hyprial_home),
+                state_dir=Path(state_dir),
+                cache=_encryption_key_cache(app),
             )
         ),
         map_peer=map_peer,
@@ -761,47 +779,48 @@ def publish_self_for_app(app: Any) -> dict:
     """
 
     try:
-        service = _build_service(app)
-        actors = ensure_org_cell_actors(app, service_factory=lambda: service)
-        orgs = service._orgs()
-        if (
-            isinstance(service, OrgNetworkService)
-            and type(service).publish_self is OrgNetworkService.publish_self
-        ):
-            published: list[str] = []
-            skipped: list[dict[str, str]] = []
-            errors: list[dict[str, str]] = []
-            for org in orgs:
-                try:
-                    if actors.for_org(org).org_publish_self():
-                        published.append(org)
-                except OrgNetworkError as error:
-                    skipped.append({"org": org, "reason": error.code})
-                except Exception as error:  # noqa: BLE001 - per-org failure must not mask others
-                    errors.append(
-                        {
-                            "org": org,
-                            "code": getattr(error, "code", "PUBLISH_FAILED"),
-                            "errorType": type(error).__name__,
-                        }
+        with _encryption_key_cache(app).single_read_pass():
+            service = _build_service(app)
+            actors = ensure_org_cell_actors(app, service_factory=lambda: service)
+            orgs = service._orgs()
+            if (
+                isinstance(service, OrgNetworkService)
+                and type(service).publish_self is OrgNetworkService.publish_self
+            ):
+                published: list[str] = []
+                skipped: list[dict[str, str]] = []
+                errors: list[dict[str, str]] = []
+                for org in orgs:
+                    try:
+                        if actors.for_org(org).org_publish_self():
+                            published.append(org)
+                    except OrgNetworkError as error:
+                        skipped.append({"org": org, "reason": error.code})
+                    except Exception as error:  # noqa: BLE001 - per-org failure must not mask others
+                        errors.append(
+                            {
+                                "org": org,
+                                "code": getattr(error, "code", "PUBLISH_FAILED"),
+                                "errorType": type(error).__name__,
+                            }
+                        )
+                    finally:
+                        actors.prune_if_unowned(org)
+                if published or skipped or errors:
+                    app._log(
+                        "info",
+                        "org",
+                        "org.publish_self",
+                        published=published,
+                        skipped=skipped,
                     )
-                finally:
-                    actors.prune_if_unowned(org)
-            if published or skipped or errors:
-                app._log(
-                    "info",
-                    "org",
-                    "org.publish_self",
-                    published=published,
-                    skipped=skipped,
-                )
-            outcome: dict[str, Any] = {
-                "published": published,
-                "skipped": skipped,
-                "errors": errors,
-            }
-        else:
-            outcome = service.publish_self()
+                outcome: dict[str, Any] = {
+                    "published": published,
+                    "skipped": skipped,
+                    "errors": errors,
+                }
+            else:
+                outcome = service.publish_self()
         from hyprial.daemon.impl.org.network.member_agents import publish_for_app
 
         inventory = publish_for_app(app, orgs)

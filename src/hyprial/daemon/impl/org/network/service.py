@@ -848,7 +848,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             machine_fingerprint=binding.machine_fingerprint,
             first_published_at=binding.first_published_at,
             device_uid=record.device_uid if id_form_minting() else None,
-            **published_pair(self._encryption_key),
+            **published_pair(self._encryption_key, current=current),
         )
         if current is not None and (
             current.server_public == device.server_public

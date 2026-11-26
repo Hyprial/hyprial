@@ -253,10 +253,11 @@ def test_a_stuck_key_step_does_not_hold_serving_start(tmp_path: Path) -> None:
 
     home = KeyHome(tmp_path).registered()
     entered = threading.Event()
+    release = threading.Event()
 
     def stuck(_home: Path, _state: Path) -> None:
         entered.set()
-        threading.Event().wait()
+        release.wait(10)
 
     gateway = home.gateway()
     recovery = home.recovery(stuck)
@@ -266,6 +267,7 @@ def test_a_stuck_key_step_does_not_hold_serving_start(tmp_path: Path) -> None:
         gateway.on_daemon_ready()
         assert entered.wait(10)
     finally:
+        release.set()
         gateway.close()
 
 

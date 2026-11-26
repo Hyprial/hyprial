@@ -2,40 +2,36 @@
 # - This subpackage is the one place the daemon asks for this device's
 #   encryption key.  It is a subpackage because ``org/network`` already holds
 #   the seven direct files the structure gate allows.
-# - ``encryption_key_reader`` is for a caller that publishes more than once:
-#   it is bound to the home and state directory once and read on every call.
-#   ``ensure_encryption_key`` is the same read as one call, for serving start.
-#   Both answer ``{keyId, publicKey}`` or ``None``.
-# - "No key" is an answer, not a failure.  Every missing prerequisite and
-#   every refusal of the key store turns into ``None``, so the row is
-#   published without the pair and the publish itself never fails.  The
-#   daemon must not become unable to register a device because a credential
-#   it does not need yet is unavailable.
-# - The identity is the same one the login user-key step uses
-#   (``read_onboarding_subject``): settings owner, issuer and ``userId``, the
-#   device record's ``deviceUid``, and a device that belongs to the settings
-#   owner.  A wider rule here would give a device an encryption key where it
-#   has no signing key, and the two would disagree about who the device is.
-#   It is read on every call, so a rebind of the principal in the running
-#   daemon is picked up by the next publish and not by a cached reader.
+# - ``ensure_encryption_key`` is the serving-start and relogin entry; it calls
+#   ``store.ensure()`` directly without the periodic cache or short pre-probe,
+#   and returns ``{keyId, publicKey}`` or ``None``.
+# - ``encryption_key_reader`` is for directory publication (``ipc._build_service``
+#   and ``publish_self_for_app``).  It distinguishes three outcomes:
+#   * ``{keyId, publicKey}`` — a usable key for the current committed subject;
+#   * ``None`` — definitely no key (missing prerequisites, invalid state path,
+#     unsupported platform, or revoked/unbound key);
+#   * ``KEY_UNAVAILABLE`` — temporarily unreadable (busy store lock, transient
+#     I/O, or store quarantine refusal that shares ``USER_KEY_QUARANTINED`` with
+#     lock-busy and I/O errors in ``user_key/store.py``).
+# - The identity is read once via ``read_onboarding_subject(home)``, using
+#   ``subject.user_id`` and ``subject.device_uid`` directly without a second
+#   read of ``device.json``.  ``read_onboarding_subject`` already verifies that
+#   ``device.owner == settings.owner`` in one consistent read, preventing a
+#   chimeric key across a concurrent reprovision.
 # - Nothing under ``state_dir`` is touched while the account is incomplete.
-#   The reader returns before it builds a store, and the store itself refuses
-#   an empty subject, so a home without an account never grows key
-#   directories on every refresh of the org directory.
-# - ``ensure`` is called on every publish.  The directory refresh in
-#   ``application/netendpoints/forwarding.py`` publishes at most every ten
-#   seconds, and only once the sidecar address file exists; it publishes at
-#   once when that address changes.  ``ensure`` is idempotent and takes the
-#   store's own lock, so repeated starts keep one key.  Measured on Linux with
-#   the key already in place, one call of the reader took a median of 0.6 ms
-#   (p99 0.7 ms, 300 calls): ``ensure`` re-reads and re-checks the record
-#   under the fence, which is more than one lock and one read.  Because it
-#   takes that lock, a refresh waits for any other process holding it, up to
-#   the store's own lock timeout.
+# - Steady-state periodic refreshes serve ``{keyId, publicKey}`` from an
+#   in-memory ``EncryptionKeyCache`` keyed by ``(user_id, device_uid)``,
+#   invalidated on subject change, so ``store.ensure()`` runs only at serving
+#   start, relogin, or on a cache miss.  On a cache miss in the periodic path,
+#   an existing regular ``.lock`` file is probed with a short timeout before
+#   calling ``store.ensure()``; timeout returns ``KEY_UNAVAILABLE`` instead of
+#   blocking the daemon-runtime lane for the store's 15 s lock timeout.
 """This device's published encryption key: the public half of the local store."""
 
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -44,57 +40,182 @@ from hyprial.identity import (
     IdentityRecordError,
     UserKey,
     machine_fingerprint,
-    read_device_record,
     read_onboarding_subject,
 )
+from hyprial.kernel import FileLockBusy, ProcessFileLock, ipc_errors
+
+from .cache import EncryptionKeyCache as EncryptionKeyCache
+from .pair import KEY_UNAVAILABLE as KEY_UNAVAILABLE
 from .pair import published_pair as published_pair
 
-__all__ = ["encryption_key_reader", "ensure_encryption_key", "published_pair"]
+__all__ = [
+    "EncryptionKeyCache",
+    "KEY_UNAVAILABLE",
+    "encryption_key_reader",
+    "ensure_encryption_key",
+    "published_pair",
+]
+
+_PERIODIC_LOCK_TIMEOUT_SECONDS = 0.25
+_LOCK_POLL_INTERVAL_SECONDS = 0.02
+_DEFINITELY_NO_KEY_CODES = frozenset(
+    {
+        ipc_errors.PAYLOAD_INVALID,
+        ipc_errors.USER_KEY_ABSENT,
+        ipc_errors.USER_KEY_UNBOUND,
+    }
+)
 
 
 def ensure_encryption_key(home: Path, state_dir: Path) -> dict[str, str] | None:
     """Read or create this device's key once and answer its public half.
 
-    This is the serving-start step and takes its two paths positionally, like
-    the signing-key step beside it.  ``None`` covers a missing prerequisite
-    and a key the store refuses alike; neither is an error for the caller.
+    This is the serving-start and relogin step and takes its two paths
+    positionally, like the signing-key step beside it.  ``None`` covers a
+    missing prerequisite or store refusal alike; neither fails recovery.
     """
 
-    return _read(home, state_dir)
+    result = _read_uncached(Path(home), Path(state_dir), lock_timeout=None)
+    return result if isinstance(result, dict) else None
 
 
 def encryption_key_reader(
-    *, home: Path, state_dir: Path
-) -> Callable[[], dict[str, str] | None]:
-    """Return a callable giving ``{keyId, publicKey}`` for this device, or ``None``.
+    *,
+    home: Path,
+    state_dir: Path,
+    cache: EncryptionKeyCache | None = None,
+    lock_timeout: float | None = _PERIODIC_LOCK_TIMEOUT_SECONDS,
+) -> Callable[[], dict[str, str] | object | None]:
+    """Return a cached, bounded reader giving ``{keyId, publicKey}``, ``None``, or ``KEY_UNAVAILABLE``.
 
-    The callable is for a caller that publishes more than once, such as the
-    directory refresh.  The store is read again on every call, so a key that
-    becomes usable later is published then, without a restart.
+    A cache hit returns the public pair without entering ``store.ensure()`` or
+    the store's file lock.  A change in ``(user_id, device_uid)`` invalidates
+    the cache; a busy store lock on a cache miss returns ``KEY_UNAVAILABLE``
+    within ``lock_timeout`` seconds instead of blocking on the 15 s store lock.
     """
 
-    return lambda: _read(home, state_dir)
+    home_path = Path(home)
+    state_path = Path(state_dir)
+    active_cache = cache if cache is not None else EncryptionKeyCache()
 
-
-def _read(home: Path, state_dir: Path) -> dict[str, str] | None:
-    try:
-        subject = read_onboarding_subject(Path(home))
-        device = read_device_record(Path(home))
-        if subject is None or device is None or device.device_uid is None:
-            return None
-        store = EncryptionKey.Store(
-            state_dir=Path(state_dir),
-            kind="user",
-            casdoor_sub=subject.user_id,
-            device_uid=device.device_uid,
-            fingerprint=machine_fingerprint(),
+    def _resolve() -> dict[str, str] | object | None:
+        return active_cache.read_in_pass(
+            lambda: _read_cached(
+                home_path,
+                state_path,
+                active_cache,
+                lock_timeout=lock_timeout,
+            )
         )
-        record = store.ensure()
-    except UserKey.Error:
+
+    return _resolve
+
+
+def _read_subject(home: Path) -> tuple[str, str] | object | None:
+    try:
+        subject = read_onboarding_subject(home)
+    except IdentityRecordError as error:
+        if error.code == "IDENTITY_SETTINGS_UNREADABLE":
+            return KEY_UNAVAILABLE
         return None
-    except (IdentityRecordError, OSError, ValueError, TypeError, AttributeError):
+    except OSError:
+        return KEY_UNAVAILABLE
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if subject is None or not subject.device_uid:
+        return None
+    return (subject.user_id, subject.device_uid)
+
+
+def _check_store_lock(lock_path: Path, *, timeout: float) -> bool:
+    try:
+        info = os.lstat(lock_path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode):
+        return True
+    probe = ProcessFileLock(lock_path)
+    try:
+        probe.acquire(
+            timeout=timeout,
+            poll_interval=min(_LOCK_POLL_INTERVAL_SECONDS, max(0.001, timeout)),
+        )
+    except (FileLockBusy, OSError):
+        return False
+    probe.release()
+    return True
+
+
+def _ensure_for_subject(
+    subject_key: tuple[str, str],
+    state_dir: Path,
+    *,
+    lock_timeout: float | None,
+) -> dict[str, str] | object | None:
+    if not state_dir.is_absolute() or not UserKey.Store.supported():
+        return None
+    user_id, device_uid = subject_key
+    try:
+        fingerprint = machine_fingerprint()
+    except OSError:
+        return KEY_UNAVAILABLE
+    except (ValueError, TypeError, AttributeError):
+        return None
+    try:
+        store = EncryptionKey.Store(
+            state_dir=state_dir,
+            kind="user",
+            casdoor_sub=user_id,
+            device_uid=device_uid,
+            fingerprint=fingerprint,
+        )
+        if lock_timeout is not None and not _check_store_lock(
+            store.root / ".lock", timeout=lock_timeout
+        ):
+            return KEY_UNAVAILABLE
+        record = store.ensure()
+    except UserKey.Error as error:
+        if error.code in _DEFINITELY_NO_KEY_CODES:
+            return None
+        return KEY_UNAVAILABLE
+    except OSError:
+        return KEY_UNAVAILABLE
+    except (ValueError, TypeError, AttributeError):
         return None
     key_id, public_key = record.get("keyId"), record.get("publicKey")
     if not isinstance(key_id, str) or not isinstance(public_key, str):
         return None
     return {"keyId": key_id, "publicKey": public_key}
+
+
+def _read_uncached(
+    home: Path, state_dir: Path, *, lock_timeout: float | None
+) -> dict[str, str] | object | None:
+    subject_key = _read_subject(home)
+    if not isinstance(subject_key, tuple):
+        return subject_key
+    return _ensure_for_subject(subject_key, state_dir, lock_timeout=lock_timeout)
+
+
+def _read_cached(
+    home: Path,
+    state_dir: Path,
+    cache: EncryptionKeyCache,
+    *,
+    lock_timeout: float | None,
+) -> dict[str, str] | object | None:
+    subject_key = _read_subject(home)
+    if subject_key is KEY_UNAVAILABLE:
+        return KEY_UNAVAILABLE
+    if not isinstance(subject_key, tuple):
+        cache.invalidate()
+        return None
+    cached = cache.get(subject_key)
+    if cached is not None:
+        return cached
+    result = _ensure_for_subject(subject_key, state_dir, lock_timeout=lock_timeout)
+    if isinstance(result, dict):
+        cache.put(subject_key, result)
+    return result
