@@ -1,0 +1,265 @@
+# Decisions (2026-11-26):
+# - actions/checkout v7.0.1 pinned to 3d3c42e5aac5ba805825da76410c181273ba90b1 (verified 2026-11-26).
+# - astral-sh/setup-uv v10.4.0 pinned to 1db35dd8eee11c5894872e0b383ae6c406cf738d (verified 2026-11-26).
+# - actions/upload-artifact v7.0.2 pinned to cf430e030ddbb5b0abf93d22962f4752f3646cd9 (verified 2026-11-26).
+# - actions/download-artifact v8.0.2 pinned to 9000827ccba6bdab643e8b6fd33ac0654aef8333 (verified 2026-11-26).
+# - Hosted Windows runner images include Node 24 for the wheel GUI build and artifact actions.
+# - The ARM leg creates an x64-emulated CPython 3.12 venv, installs runtime deps without
+#   --extra test plus the win_amd64 wheel, and runs smoke steps 1, 2, and 6.
+# - windows-smoke-summary downloads all available artifacts in one call so a failed/skipped
+#   leg still produces a clear missing-evidence failure in GITHUB_STEP_SUMMARY.
+name: windows-smoke
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "crates/**"
+      - "gui/**"
+      - "contract/**"
+      - "sidecar/**"
+      - "scripts/build/**"
+      - "scripts/verify/**"
+      - "scripts/ci/windows/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "VERSION"
+      - ".github/workflows/windows-smoke.yml"
+  push:
+    branches: [dev, main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "crates/**"
+      - "gui/**"
+      - "contract/**"
+      - "sidecar/**"
+      - "scripts/build/**"
+      - "scripts/verify/**"
+      - "scripts/ci/windows/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "VERSION"
+      - ".github/workflows/windows-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.7"
+  PYTHON_VERSION: "3.12"
+  RUST_VERSION: "1.93.1"
+  NO_COLOR: "1"
+  PYTHONUTF8: "1"
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build-wheel:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Record Node and npm availability
+        run: Get-Command node,npm -ErrorAction SilentlyContinue | Select-Object Name,Version | Format-Table | Out-String | Write-Host
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Build the wheel
+        run: |
+          uv build --wheel --out-dir "$env:RUNNER_TEMP\wci\wheel"
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Upload wheel
+        id: upload-wheel
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-wheel
+          path: ${{ runner.temp }}/wci/wheel/
+          if-no-files-found: error
+      - name: Record wheel upload outcome
+        if: always()
+        run: '"windows-wheel upload: ${{ steps.upload-wheel.outcome }}" | Add-Content $env:GITHUB_STEP_SUMMARY'
+
+  w1-x64:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Install the editable test environment
+        env:
+          HYPRIAL_BUILD_NATIVE: "1"
+        run: |
+          uv sync --locked --python $env:PYTHON_VERSION --extra test
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Run W1 waves
+        timeout-minutes: 30
+        run: |
+          .venv\Scripts\python.exe scripts/ci/windows/run_waves.py --tier 1 --files scripts/ci/windows/tier1-tests.txt --workers 2 --watchdog-seconds 300 --wave-minutes 20 --deadline-minutes 25 --step-minutes 30 --job-minutes 60 --basetemp-root "$env:USERPROFILE\pt\b" --results "$env:RUNNER_TEMP\wci\results" --ledger-root "$env:RUNNER_TEMP\wci\ledger" --report "$env:RUNNER_TEMP\wci\results\run-manifest.json"
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Upload W1 results
+        id: upload-w1
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-w1
+          path: ${{ runner.temp }}/wci/
+          if-no-files-found: error
+      - name: Record W1 upload outcome
+        if: always()
+        run: '"windows-w1 upload: ${{ steps.upload-w1.outcome }}" | Add-Content $env:GITHUB_STEP_SUMMARY'
+
+  smoke-x64:
+    runs-on: windows-latest
+    needs: [build-wheel]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: windows-wheel
+          path: ${{ runner.temp }}/wci/wheel
+      - name: Install dependencies without the project
+        run: |
+          uv sync --locked --no-install-project --python $env:PYTHON_VERSION --extra test
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Install the built wheel
+        run: |
+          uv pip install --no-deps --python .venv\Scripts\python.exe (Get-ChildItem "$env:RUNNER_TEMP\wci\wheel\*.whl" | Select-Object -First 1 -ExpandProperty FullName)
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Run x64 smoke
+        env:
+          SMOKE_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          .venv\Scripts\python.exe scripts/ci/windows/smoke.py --leg x64 --results "$env:RUNNER_TEMP\wci\results"
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Upload x64 smoke results
+        id: upload-smoke-x64
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-smoke-x64
+          path: ${{ runner.temp }}/wci/results/
+          if-no-files-found: error
+      - name: Record x64 upload outcome
+        if: always()
+        run: '"windows-smoke-x64 upload: ${{ steps.upload-smoke-x64.outcome }}" | Add-Content $env:GITHUB_STEP_SUMMARY'
+
+  smoke-arm:
+    runs-on: windows-11-arm
+    needs: [build-wheel]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: windows-wheel
+          path: ${{ runner.temp }}/wci/wheel
+      - name: Create the x64 emulated environment
+        run: |
+          uv venv --python cpython-3.12-windows-x86_64
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Install runtime dependencies without the project
+        run: |
+          uv sync --locked --no-install-project --python cpython-3.12-windows-x86_64
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Install the built x64 wheel
+        run: |
+          uv pip install --no-deps --python .venv\Scripts\python.exe (Get-ChildItem "$env:RUNNER_TEMP\wci\wheel\*.whl" | Select-Object -First 1 -ExpandProperty FullName)
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Run ARM smoke
+        env:
+          SMOKE_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          .venv\Scripts\python.exe scripts/ci/windows/smoke.py --leg arm --results "$env:RUNNER_TEMP\wci\results"
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Upload ARM smoke results
+        id: upload-smoke-arm
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-smoke-arm
+          path: ${{ runner.temp }}/wci/results/
+          if-no-files-found: error
+      - name: Record ARM upload outcome
+        if: always()
+        run: '"windows-smoke-arm upload: ${{ steps.upload-smoke-arm.outcome }}" | Add-Content $env:GITHUB_STEP_SUMMARY'
+
+  windows-smoke-summary:
+    runs-on: ubuntu-latest
+    needs: [build-wheel, w1-x64, smoke-x64, smoke-arm]
+    if: always()
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: ${{ runner.temp }}/wci-artifacts
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Create summary environment
+        run: |
+          uv venv --python 3.12
+          code=$?
+          exit $code
+      - name: Validate all legs
+        run: |
+          .venv/bin/python scripts/ci/windows/summarize.py --input "${{ runner.temp }}/wci-artifacts/windows-w1=w1" --input "${{ runner.temp }}/wci-artifacts/windows-smoke-x64=x64" --input "${{ runner.temp }}/wci-artifacts/windows-smoke-arm=arm"
+          code=$?
+          exit $code
