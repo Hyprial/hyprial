@@ -2,19 +2,21 @@
 
 A directory device row may carry the device's X25519 public key so another
 member can seal a service credential to this device.  The key set stays
-closed: the two keys are either both present or both absent.
+closed: the two keys are either both present or both absent, and the id is
+the digest of the published public key.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 
 import pytest
 
 from hyprial.identity.impl.org_directory.models import DirectoryDevice
 
-KEY_ID = "x25519:" + "a" * 32
 PUBLIC_KEY = base64.b64encode(bytes(range(32))).decode("ascii")
+KEY_ID = "x25519:" + hashlib.sha256(bytes(range(32))).hexdigest()[:32]
 
 
 def _row(**fields: object) -> dict[str, object]:
@@ -47,6 +49,32 @@ def test_a_row_with_the_pair_round_trips() -> None:
     assert device.encryption_key_id == KEY_ID
     assert device.encryption_public_key == PUBLIC_KEY
     assert device.as_record() == record
+
+
+def _true_id(public_key: str) -> str:
+    return "x25519:" + hashlib.sha256(base64.b64decode(public_key)).hexdigest()[:32]
+
+
+def test_the_key_id_must_be_the_digest_of_the_published_public_key() -> None:
+    """Every sealer names the recipient by key id; a mismatch seals to nobody.
+
+    Both halves are individually well formed, so only the relationship
+    between them can refuse this row.
+    """
+    wrong = "x25519:" + "a" * 32
+    assert wrong != KEY_ID
+    with pytest.raises(ValueError, match="encryptionKeyId does not match encryptionPublicKey"):
+        DirectoryDevice.from_record(_row(encryptionKeyId=wrong, encryptionPublicKey=PUBLIC_KEY))
+
+
+def test_a_store_generated_pair_is_accepted() -> None:
+    from hyprial.identity.impl.user_key.encryption.crypto import generate
+
+    key_id, public_key, _private = generate()
+    device = DirectoryDevice.from_record(
+        _row(encryptionKeyId=key_id, encryptionPublicKey=public_key)
+    )
+    assert device.encryption_key_id == key_id == _true_id(public_key)
 
 
 @pytest.mark.parametrize(
@@ -140,4 +168,43 @@ def test_the_pair_does_not_relax_the_closed_key_set() -> None:
                 encryptionPublicKey=PUBLIC_KEY,
                 encryptionKeyPrivate="never-published",
             )
+        )
+
+
+@pytest.mark.parametrize(
+    "key_id, public_key, message",
+    [
+        pytest.param("x25519:" + "a" * 32, PUBLIC_KEY, "does not match", id="id-not-the-digest"),
+        pytest.param(KEY_ID, "not base64!", "must be base64", id="public-key-not-base64"),
+        pytest.param(
+            KEY_ID,
+            base64.b64encode(bytes(31)).decode("ascii"),
+            "canonical base64 of 32 bytes",
+            id="public-key-wrong-length",
+        ),
+        pytest.param(
+            KEY_ID,
+            base64.b64encode(bytes(32)).decode("ascii"),
+            "low-order point",
+            id="public-key-low-order",
+        ),
+        pytest.param("ed25519:" + "a" * 32, PUBLIC_KEY, "encryptionKeyId must be", id="id-wrong-shape"),
+    ],
+)
+def test_a_directly_built_row_refuses_an_inconsistent_pair(
+    key_id: str, public_key: str, message: str
+) -> None:
+    """``from_record`` validates, but ``DirectoryDevice(...)`` must not leak a bad row."""
+
+    with pytest.raises(ValueError, match=message):
+        DirectoryDevice(
+            device_id="device-a",
+            owner="alice",
+            server_public="nodekey:" + "1" * 64,
+            client_public="nodekey:" + "2" * 64,
+            address="tcp://10.0.0.1:7447#psk",
+            key_generation=1,
+            updated_at="2026-11-25T00:00:00Z",
+            encryption_key_id=key_id,
+            encryption_public_key=public_key,
         )

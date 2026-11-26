@@ -23,11 +23,30 @@ Pure model plus naming rules — no storage, no daemon imports.  The storage
 port lives in ``ports.py``; the daemon's OrgFS-backed implementation is
 injected at the composition root (tailnet cutover §1: identity defines the
 directory model, daemon provides the storage).
+
+Service grant S1 (2026-11-26): a device row may carry the device's X25519
+public key as the paired optional keys ``encryptionKeyId`` and
+``encryptionPublicKey``.  The pair is either both present or both absent and
+the key set stays closed.  The public key is the encoding the local encryption
+key store already uses: the 32 raw key bytes as standard base64; the id is the
+store's ``x25519:`` + first 32 hex digits of the SHA-256 of those bytes, and a
+row whose id is not that digest is refused because every sealer names the
+recipient by id.  ``__post_init__`` is the one enforcement point, so a row
+built directly is checked exactly like one read back.
+
+A low-order point is refused: the X25519 loader accepts one, and every shared
+secret derived from it is public.  ``_LOW_ORDER_POINTS`` holds the eight
+low-order points of Curve25519 as little-endian u-coordinates: order 1 and 2
+(``0``, ``1``, ``p``, ``p+1``) and order 8 (the two ``39…``/``32…`` constants,
+``p-1`` and ``p+2``), with ``p`` = 2**255 - 19.  The list was derived, not
+recalled: by Montgomery ladder ``[8]u`` is the identity for each of the eight
+and is not for ``p+3`` or ``p+4``, which are ordinary points and stay accepted.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -115,7 +134,23 @@ _RECORD_KEYS = frozenset(
     }
 )
 _OPTIONAL_RECORD_KEYS = frozenset({"machineFingerprint", "firstPublishedAt", "deviceUid"})
+_ENCRYPTION_RECORD_KEYS = ("encryptionKeyId", "encryptionPublicKey")
 _MACHINE_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
+_ENCRYPTION_KEY_ID = re.compile(r"x25519:[0-9a-f]{32}\Z")
+_ENCRYPTION_PUBLIC_BYTES = 32
+_LOW_ORDER_POINTS = frozenset(
+    value.to_bytes(32, "little")
+    for value in (
+        0,
+        1,
+        325606250916557431795983626356110631294008115727848805560023387167927233504,
+        39382357235489614581723060781553021112529911719440698176882885853963445705823,
+        2**255 - 19 - 1,
+        2**255 - 19,
+        2**255 - 19 + 1,
+        2**255 - 19 + 2,
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,12 +177,35 @@ class DirectoryDevice:
     machine_fingerprint: str | None = None
     first_published_at: str | None = None
     device_uid: str | None = None
+    encryption_key_id: str | None = None
+    encryption_public_key: str | None = None
+
+    def __post_init__(self) -> None:
+        """One enforcement point for the encryption pair, whichever way a row is built.
+
+        ``from_record`` is strict, but a row built directly must not be able
+        to carry a bad pair out through ``as_record`` either.
+        """
+        if (self.encryption_key_id is None) != (self.encryption_public_key is None):
+            raise ValueError(
+                "directory device record: encryptionKeyId and encryptionPublicKey "
+                "must either both be present or both be absent"
+            )
+        if self.encryption_key_id is None or self.encryption_public_key is None:
+            return
+        _encryption_key_id(self.encryption_key_id)
+        public_key = _encryption_public_key(self.encryption_public_key)
+        if self.encryption_key_id != encryption_key_digest(public_key):
+            raise ValueError(
+                "directory device record: encryptionKeyId does not match encryptionPublicKey"
+            )
 
     def as_record(self) -> dict[str, object]:
         """The camelCase JSON projection, including optional binding metadata.
 
         ``deviceUid`` (UUID addressing) is written only when the row carries
-        one, so a row without it keeps the exact pre-UUID shape.
+        one, so a row without it keeps the exact pre-UUID shape.  The
+        encryption key pair is written only when the device holds a key.
         """
         record: dict[str, object] = {
             "deviceId": self.device_id,
@@ -165,6 +223,9 @@ class DirectoryDevice:
             record["firstPublishedAt"] = self.first_published_at
         if self.device_uid is not None:
             record["deviceUid"] = self.device_uid
+        if self.encryption_key_id is not None:
+            record["encryptionKeyId"] = self.encryption_key_id
+            record["encryptionPublicKey"] = self.encryption_public_key
         return record
 
     @classmethod
@@ -175,13 +236,16 @@ class DirectoryDevice:
         rejects them: the schema is frozen by the cutover contract, and
         documents cross machines via OrgFS sync.  ``deviceUid`` is either
         absent or a UUID4 hex string; an explicit null is rejected, since
-        :meth:`as_record` never writes one.
+        :meth:`as_record` never writes one.  The encryption key pair is
+        likewise absent or both present, never null; its shape and the
+        agreement between id and public key are checked in
+        ``__post_init__``, the one enforcement point for a row built either way.
         """
         if not isinstance(value, Mapping):
             raise ValueError(
                 f"directory device record must be a JSON object, got {type(value).__name__}"
             )
-        unknown = sorted(set(value) - _RECORD_KEYS - _OPTIONAL_RECORD_KEYS)
+        unknown = sorted(set(value) - _RECORD_KEYS - _OPTIONAL_RECORD_KEYS - set(_ENCRYPTION_RECORD_KEYS))
         if unknown:
             raise ValueError(f"directory device record has unknown keys: {unknown}")
         missing = sorted(_RECORD_KEYS - set(value))
@@ -214,6 +278,16 @@ class DirectoryDevice:
                 None
                 if "deviceUid" not in value
                 else _checked_device_uid(value["deviceUid"])
+            ),
+            encryption_key_id=(
+                None
+                if "encryptionKeyId" not in value
+                else _encryption_key_id(value["encryptionKeyId"])
+            ),
+            encryption_public_key=(
+                None
+                if "encryptionPublicKey" not in value
+                else _encryption_public_key(value["encryptionPublicKey"])
             ),
         )
 
@@ -633,6 +707,36 @@ def _optional_timestamp(value: object, label: str) -> str | None:
     if value is None:
         return None
     return _utc_timestamp(value, label)
+
+
+def encryption_key_digest(public_key: str) -> str:
+    """The key id the local encryption key store derives from a public key."""
+
+    return "x25519:" + hashlib.sha256(base64.b64decode(public_key, validate=True)).hexdigest()[:32]
+
+
+def _encryption_key_id(value: object) -> str:
+    text = _non_empty_string(value, "encryptionKeyId")
+    if _ENCRYPTION_KEY_ID.fullmatch(text) is None:
+        raise ValueError("encryptionKeyId must be 'x25519:' followed by 32 lowercase hex digits")
+    return text
+
+
+def _encryption_public_key(value: object) -> str:
+    """The store's public-key text: standard base64 of the 32 raw X25519 bytes."""
+
+    text = _non_empty_string(value, "encryptionPublicKey")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (ValueError, TypeError) as error:
+        raise ValueError("encryptionPublicKey must be base64") from error
+    if len(raw) != _ENCRYPTION_PUBLIC_BYTES or base64.b64encode(raw).decode("ascii") != text:
+        raise ValueError(
+            "encryptionPublicKey must be the canonical base64 of 32 bytes"
+        )
+    if raw in _LOW_ORDER_POINTS:
+        raise ValueError("encryptionPublicKey is a low-order point")
+    return text
 
 
 def _utc_timestamp(value: object, label: str) -> str:
