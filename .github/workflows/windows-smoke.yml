@@ -49,8 +49,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-smoke-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: windows-smoke-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   UV_VERSION: "0.11.7"
@@ -71,6 +71,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
         with:
           version: ${{ env.UV_VERSION }}
@@ -106,6 +107,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
         with:
           version: ${{ env.UV_VERSION }}
@@ -115,6 +117,7 @@ jobs:
           $code = $LASTEXITCODE
           exit $code
       - name: Install the editable test environment
+        timeout-minutes: 20
         env:
           HYPRIAL_BUILD_NATIVE: "1"
         run: |
@@ -148,6 +151,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
         with:
           version: ${{ env.UV_VERSION }}
@@ -166,6 +170,7 @@ jobs:
           $code = $LASTEXITCODE
           exit $code
       - name: Run x64 smoke
+        timeout-minutes: 10
         env:
           SMOKE_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -193,6 +198,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
         with:
           version: ${{ env.UV_VERSION }}
@@ -216,6 +222,7 @@ jobs:
           $code = $LASTEXITCODE
           exit $code
       - name: Run ARM smoke
+        timeout-minutes: 10
         env:
           SMOKE_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -247,6 +254,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           path: ${{ runner.temp }}/wci-artifacts

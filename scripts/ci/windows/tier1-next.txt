@@ -1,4 +1,3 @@
-tests/kernel/ipc/local_ipc/test_win32_pipe.py
 tests/kernel/ipc/local_ipc/test_selection.py
 tests/kernel/ipc/local_ipc/test_servers.py
 tests/kernel/ipc/test_endpoint_semantics.py
@@ -34,3 +33,5 @@ tests/tooling/architecture/platform/test_process_file_lock_boundary.py
 tests/tooling/ci/test_pyright_windows_gate.py
 tests/tooling/isolation/windows/test_conftest_on_windows.py
 tests/tooling/isolation/windows/test_isolated_home_on_windows.py
+tests/daemon/channels/mcp/lifecycle/supersession/handoff/test_handoff.py
+tests/shell/cli/daemon/lifecycle/test_lifecycle.py
