@@ -88,6 +88,61 @@ func TestParseCommandNegative(t *testing.T) {
 		}
 	}
 }
+func TestParseExposeKeys(t *testing.T) {
+	keyA := "nodekey:0000000000000000000000000000000000000000000000000000000000000001"
+	keyB := "nodekey:0000000000000000000000000000000000000000000000000000000000000002"
+	positive := map[string]struct {
+		keys []string
+		want int
+	}{
+		"one key":   {[]string{keyA}, 1},
+		"two keys":  {[]string{keyA, keyB}, 2},
+		"empty set": {[]string{}, 0},
+	}
+	for name, tc := range positive {
+		body, err := json.Marshal(map[string]any{
+			"v": 7, "op": "expose", "requestId": "r", "port": 8447,
+			"target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+			"admission": "keys", "keys": tc.keys,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		command, err := ParseCommand(body)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if command.Admission != AdmissionKeys || len(command.Keys) != tc.want {
+			t.Fatalf("%s: admission %q keys %v", name, command.Admission, command.Keys)
+		}
+		for i, want := range tc.keys {
+			if command.Keys[i] != want {
+				t.Fatalf("%s: key %d = %q, want %q", name, i, command.Keys[i], want)
+			}
+		}
+	}
+	negative := map[string]string{
+		"keys mode without keys": `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys"}`,
+		"keys mode with null":    `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":null}`,
+		"keys on allow":          `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow","keys":[]}`,
+		"keys on any":            `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"any","keys":[]}`,
+		"keys without admission": `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","keys":[]}`,
+		"keys not an array":      `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":"nodekey:abcd"}`,
+		"key not a string":       `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":[1]}`,
+		"null key in array":      `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":[null]}`,
+		"key not a nodekey":      `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["not-a-key"]}`,
+		"key too short":          `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["nodekey:abcd"]}`,
+		"key not hex":            `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["nodekey:zz0000000000000000000000000000000000000000000000000000000000000000"]}`,
+		"zero key":               `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["nodekey:0000000000000000000000000000000000000000000000000000000000000000"]}`,
+		"one bad key":            `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["` + keyA + `","nodekey:abcd"]}`,
+	}
+	for name, line := range negative {
+		if _, err := ParseCommand([]byte(line)); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+}
+
 func TestEventsRoundTrip(t *testing.T) {
 	events := []Event{Hello("0.1.0", "tailcat"), State("Starting"), RunningState("nodekey:a", "nodekey:b", nil, nil), RunningState("nodekey:a", "nodekey:b", []PeerMapping{{Peer: "p", Slot: "/a/s0"}}, []string{"/a/s0"}), SlotMapped("p", "/a/s0"), PeerUnmapped("p"), Exposed(8447, "unix:/a/backend", "v2", AdmissionAllow), Unexposed(8447), PeerKey("[fd7a::1]:8447", true, "nodekey:a"), PeerKey("[fd7a::1]:8447", false, ""), Error(CodeBadRequest, "nope"), Exited()}
 	for _, event := range events {

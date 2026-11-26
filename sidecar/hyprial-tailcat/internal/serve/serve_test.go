@@ -237,3 +237,64 @@ func TestKeyFileInvalid(t *testing.T) {
 	s.send(t, `{"v":6,"op":"down"}`)
 	s.finish(t)
 }
+
+func TestExposeKeysThroughServe(t *testing.T) {
+	relay := labrelay.Start(t)
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "dev.key")
+	if _, err := keys.Generate(keyFile, false); err != nil {
+		t.Fatal(err)
+	}
+	s := startSession(t)
+	s.expect(t, "hello")
+	derp := relay.Config()
+	up := upFields(dir, keyFile)
+	up["v"] = 7
+	up["derp"] = map[string]any{"host": derp.Host, "derpPort": derp.DERPPort, "stunPort": derp.STUNPort, "insecureForTests": true}
+	sendMap(t, s, up)
+	s.expect(t, "state")
+	s.expect(t, "state")
+
+	keyA := "nodekey:0000000000000000000000000000000000000000000000000000000000000001"
+	for len(s.raw) > 0 {
+		<-s.raw
+	}
+	sendMap(t, s, map[string]any{
+		"v": 7, "op": "expose", "requestId": "exp-1",
+		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+		"admission": "keys", "keys": []string{keyA},
+	})
+	exposed := s.expect(t, "exposed")
+	if exposed.RequestID != "exp-1" || exposed.Admission == nil || *exposed.Admission != proto.AdmissionKeys {
+		t.Fatalf("unexpected exposed event: %+v", exposed)
+	}
+	rawExposed := <-s.raw
+	if strings.Contains(rawExposed, `"keys"`) || strings.Contains(rawExposed, keyA) {
+		t.Fatalf("exposed event echoed keys: %s", rawExposed)
+	}
+
+	// Re-expose with empty keys set replaces in place without PORT_IN_USE.
+	sendMap(t, s, map[string]any{
+		"v": 7, "op": "expose", "requestId": "exp-2",
+		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+		"admission": "keys", "keys": []string{},
+	})
+	replaced := s.expect(t, "exposed")
+	if replaced.RequestID != "exp-2" || replaced.Admission == nil || *replaced.Admission != proto.AdmissionKeys {
+		t.Fatalf("unexpected replaced exposed event: %+v", replaced)
+	}
+
+	// Missing keys field in keys mode is rejected as BAD_REQUEST.
+	sendMap(t, s, map[string]any{
+		"v": 7, "op": "expose", "requestId": "exp-bad",
+		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+		"admission": "keys",
+	})
+	bad := s.expect(t, "error")
+	if bad.Code != proto.CodeBadRequest || bad.RequestID != "exp-bad" {
+		t.Fatalf("bad expose error = %+v", bad)
+	}
+
+	s.send(t, `{"v":7,"op":"down"}`)
+	s.finish(t)
+}
