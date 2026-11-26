@@ -149,7 +149,7 @@
 #   it is dropped (``orgfs.join.leftover-discarded``) and joined afresh.
 #   A runtime with no transport bound (no resident sync can exist) simply
 #   returns the listed space, as the facade did before.
-#   ``join`` answers a finished space (listed, resident sync, no marker)
+#   ``_join_shortcut`` (asked by ``join``) answers a finished space (listed, resident sync, no marker)
 #   without queueing on the lifecycle when no join of it is running.
 """Per-space sync assembly, node gate and join of the state runtime."""
 
@@ -562,13 +562,10 @@ class StateLifecycle:
             return None
         return existing.info
 
-    def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
+    def _join_shortcut(self, space_id: str) -> SpaceInfo | None:
         self._require_space_id(space_id)
         with self._join_guard(space_id, blocking=False) as held:
-            info = self._joined_info(space_id) if held else None
-        if info is not None:
-            return info
-        return super().join(space_id, timeout=timeout)
+            return self._joined_info(space_id) if held else None
 
     def _join_sync(self, space_id: str) -> SpaceInfo:
         self._require_space_id(space_id)

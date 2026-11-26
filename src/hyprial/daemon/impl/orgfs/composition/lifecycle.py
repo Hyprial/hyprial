@@ -435,7 +435,15 @@ class RuntimeLifecycle:
 
 
     def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
+        info = self._join_shortcut(space_id)
+        if info is not None:
+            return info
         return self._ask_lifecycle(_JoinSpace(space_id), timeout=timeout)  # type: ignore[return-value]
+
+    def _join_shortcut(self, space_id: str) -> SpaceInfo | None:
+        """A space whose join already finished, answered without queueing."""
+
+        return None
 
 
     def watch_events(
