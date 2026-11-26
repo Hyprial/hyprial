@@ -1,0 +1,385 @@
+# Decision notes (service grant S5, 2026-11-26):
+# - The consumer is the derived source service-connect talks to. It keeps one
+#   immutable snapshot in memory (entries + protected devices) and replaces
+#   it atomically; nothing it derives is ever written under service-connect.
+# - refresh() is the only maintenance entry. service-connect drives it on
+#   every reconcile tick and before every list/guide/connect. It is bounded
+#   and never raises: on any failure the previous snapshot stays, and nothing
+#   is written or deleted.
+# - Which orgs count as "this device's": the orgs the directory store knows,
+#   minus the ones this home left, and only where this owner is a current
+#   member. Membership is re-checked every tick (one members() call), so a
+#   removed member stops deriving at once. An org marked deleted derives
+#   nothing; that is read when its fingerprint changes, not every tick.
+# - Cost per unchanged tick, per org: one recursive listdir of the grants
+#   tree, one of the devices tree, one stat of the org meta document and one
+#   members() call; plus one lstat per stored Key entry and one local read of
+#   the left-org list. No document is read, nothing is written or opened.
+#   A changed fingerprint reloads that org whole: all its grants through S3's
+#   loader and all its device rows through the store. Expiry changes no
+#   bytes, so an answer also carries the earliest expiry of the grants it
+#   derives from and is re-read when that moment has passed.
+# - The credential is opened only behind can_open_grant_credential, as the
+#   brief requires. For a grant that carries a credential and is effective
+#   for this device the only way it answers no is "@members", which S3
+#   already refuses to write; such a grant is treated as having no Key.
+# - "Could not read" is not "no grant". A Key entry is withdrawn only when
+#   every live org answered; while any org is unreadable and has no earlier
+#   answer to fall back on, nothing is withdrawn.
+# - Events are only service.grant.received (a Key entry was written, or
+#   written again after it went missing) and service.grant.rejected (a grant
+#   yields no Key, and the fixed reason). A rejection is reported once per
+#   (org, grant id, reason) for as long as it lasts, so a steady tick emits
+#   nothing.
+# - The connections bookkeeping (connected/forget/retain/remembers) is the
+#   ledger's connection set: service-connect reports which derived names are
+#   mapped, so a connection is withdrawn together with its grant, also after
+#   a restart.
+# - Only the directory store's and the OrgFS facade's public surface is used.
+#   GRANTS_DIR is the one path this package has to spell itself; a guard test
+#   pins it to the store's own constant.
+"""The recipient side of service grants: derive, keep and withdraw what grants give this device."""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.state import read_left_orgs
+from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
+from hyprial.daemon.impl.service_connect.derived import DerivedEntry, alternative_name
+from hyprial.daemon.impl.service_connect.models import ProtectedDevice
+from hyprial.daemon.impl.service_grants.models import normalize_bare_owner
+from hyprial.daemon.impl.service_grants.queries import (
+    can_open_grant_credential,
+    load_org_service_grants,
+)
+from hyprial.identity import DIRECTORY_DIR, ORG_META_DOC, org_space_name
+
+from .derive import (
+    KEY_GRANTED,
+    KEY_NONE,
+    KEY_UNAVAILABLE_STATE,
+    NAME_CONFLICT,
+    DerivedGrant,
+    Rejection,
+    assemble,
+    derive_org,
+)
+from .keys import (
+    LEDGER_RELPATH,
+    Ledger,
+    default_opener,
+    sync_entry,
+    withdraw_entry,
+)
+
+RECEIVED_EVENT = "service.grant.received"
+REJECTED_EVENT = "service.grant.rejected"
+GRANTS_DIR = "directory/service-grants"
+_COMPONENT = "service"
+_UNKNOWN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class Snapshot:
+    """What the grants give this device right now."""
+
+    grants: tuple[DerivedGrant, ...] = ()
+    devices: tuple[ProtectedDevice, ...] = ()
+
+    def entries(self) -> tuple[DerivedEntry, ...]:
+        return tuple(
+            DerivedEntry(grant.name, alternative_name(grant.name, grant.grantor), grant.entry)
+            for grant in self.grants
+        )
+
+
+@dataclass(slots=True)
+class _OrgAnswer:
+    """One org's last complete answer, with the fingerprint it answers for.
+
+    ``expires_at_ms`` is the earliest expiry among the grants this answer
+    derives from: an expiring grant changes nothing in the directory, so the
+    answer is re-read when that moment passes even though the fingerprint is
+    the same.
+    """
+
+    fingerprint: object = _UNKNOWN
+    wanted: tuple[tuple[DerivedGrant, ProtectedDevice], ...] = ()
+    rejected: tuple[Rejection, ...] = ()
+    expires_at_ms: int | None = None
+
+    def expired(self, now_ms: int) -> bool:
+        return self.expires_at_ms is not None and self.expires_at_ms <= now_ms
+
+
+@dataclass(slots=True)
+class _KeyPass:
+    states: dict[tuple[str, str], tuple[str, str | None]] = field(default_factory=dict)
+    rejected: list[Rejection] = field(default_factory=list)
+    received: list[tuple[str, str, str, str]] = field(default_factory=list)
+
+
+class GrantConsumer:
+    """Derive service-connect entries and Key entries from the grants addressed to this device."""
+
+    def __init__(
+        self,
+        *,
+        orgfs: OrgFs | None,
+        home: Path,
+        state_dir: Path,
+        owner: str | None,
+        device_id: str | None,
+        now_ms: Callable[[], int] | None = None,
+        logger: Callable[..., None] | None = None,
+        open_credential: Callable[..., bytes] | None = None,
+    ) -> None:
+        self._fs = orgfs
+        self._store = None if orgfs is None else OrgFsDirectoryStore(orgfs)
+        self._home = Path(home).absolute()
+        self._state_dir = Path(state_dir).absolute()
+        self._owner = _bare_owner(owner)
+        self._device_id = device_id
+        self._now = now_ms or (lambda: time.time_ns() // 1_000_000)
+        self._logger = logger
+        self._open_credential = open_credential
+        self._ledger = Ledger(self._home / LEDGER_RELPATH)
+        self._lock = threading.RLock()
+        self._snapshot = Snapshot()
+        self._answers: dict[str, _OrgAnswer] = {}
+        self._reported: set[tuple[str, str, str, str]] = set()
+        self._unresolved: tuple[str, ...] = ()
+
+    @property
+    def active(self) -> bool:
+        """Whether this home can prove who it is; otherwise nothing is derived, not even "@members"."""
+
+        return self._store is not None and bool(self._owner) and bool(self._device_id)
+
+    def refresh(self) -> None:
+        """Re-derive; bounded, never raises, and keeps the last snapshot on failure."""
+
+        if not self.active:
+            with self._lock:
+                self._snapshot = Snapshot()
+            return
+        try:
+            self._refresh()
+        except Exception:
+            return
+
+    def _refresh(self) -> None:
+        with self._lock:
+            left = set(read_left_orgs(self._home))
+            answers = {
+                org: self._answer_for(org)
+                for org in self._store.orgs()
+                if org not in left and self._store.is_member(org, f"user:{self._owner}")
+            }
+            self._answers = answers
+            items, devices, contested = assemble(answer.wanted for answer in answers.values())
+            rejected = [
+                *contested,
+                *(item for answer in answers.values() for item in answer.rejected),
+                *(
+                    Rejection(grant.org, grant.grant_id, grant.grantor, NAME_CONFLICT)
+                    for name in self._unresolved
+                    for grant in items
+                    if grant.name == name
+                ),
+            ]
+            self._unresolved = ()
+            settled = all(answer.fingerprint is not _UNKNOWN for answer in answers.values())
+            keys = self._pass_keys(items, settled)
+            grants = tuple(
+                grant.with_key_state(*keys.states.get((grant.org, grant.grant_id), (KEY_NONE, None)))
+                if grant.has_credential
+                else grant
+                for grant in items
+            )
+            self._snapshot = Snapshot(grants, tuple(devices.values()))
+            self._report(sorted({*rejected, *keys.rejected}, key=_order), keys.received)
+
+    def _answer_for(self, org: str) -> _OrgAnswer:
+        previous = self._answers.get(org)
+        try:
+            fingerprint = _fingerprint(self._fs, org)
+        except Exception:
+            return previous if previous is not None else _OrgAnswer()
+        if previous is not None and previous.fingerprint == fingerprint and not previous.expired(self._now()):
+            return previous
+        try:
+            return self._load(org, fingerprint)
+        except Exception:
+            return previous if previous is not None else _OrgAnswer()
+
+    def _load(self, org: str, fingerprint: object) -> _OrgAnswer:
+        now = self._now()
+        if self._store.org_state(org) == "deleted":
+            return _OrgAnswer(fingerprint)
+        wanted, rejected = derive_org(
+            load_org_service_grants(self._store, org),
+            self._store.list_devices(org),
+            owner=self._owner,
+            device_id=self._device_id,
+            now_ms=now,
+        )
+        expiries = [
+            grant.stored.grant.expires_at_ms
+            for grant, _device in wanted
+            if grant.stored.grant.expires_at_ms is not None
+        ]
+        return _OrgAnswer(fingerprint, wanted, rejected, min(expiries) if expiries else None)
+
+    def _pass_keys(self, items: tuple[DerivedGrant, ...], settled: bool) -> _KeyPass:
+        keys = _KeyPass()
+        openable: dict[tuple[str, str], DerivedGrant] = {}
+        for item in items:
+            if not item.has_credential:
+                continue
+            if can_open_grant_credential(
+                item.stored,
+                recipient_owner=self._owner,
+                recipient_device_id=self._device_id,
+                now_ms=self._now(),
+            ):
+                openable[(item.org, item.grant_id)] = item
+        if settled:
+            for key in tuple(self._ledger.rows):
+                if key not in openable:
+                    self._withdraw(key)
+        for key, item in openable.items():
+            outcome = sync_entry(item, self._ledger, self._opener(), self._home)
+            if outcome.rejection is not None:
+                keys.rejected.append(outcome.rejection)
+            if outcome.stored:
+                keys.states[key] = (KEY_GRANTED, outcome.entry_id)
+                if outcome.written:
+                    keys.received.append((item.org, item.grant_id, item.grantor, outcome.entry_id))
+            else:
+                keys.states[key] = (KEY_UNAVAILABLE_STATE, None)
+        return keys
+
+    def _withdraw(self, key: tuple[str, str]) -> None:
+        row = self._ledger.release(key)
+        if row is not None:
+            withdraw_entry(row, self._home)
+
+    def _opener(self) -> Callable[[Any], bytes]:
+        if self._open_credential is not None:
+            return self._open_credential
+        return lambda stored: default_opener(
+            stored,
+            home=self._home,
+            state_dir=self._state_dir,
+            owner=self._owner,
+            device_id=self._device_id,
+        )
+
+    def _report(self, rejected: list[Rejection], received: list[tuple[str, str, str, str]]) -> None:
+        current = {(item.org, item.grant_id, item.grantor, item.reason) for item in rejected}
+        for key in sorted(current - self._reported):
+            self._emit("warn", REJECTED_EVENT, org=key[0], grantId=key[1], grantor=key[2], reason=key[3])
+        self._reported = current
+        for org, grant_id, grantor, entry_id in sorted(received):
+            self._emit("info", RECEIVED_EVENT, org=org, grantId=grant_id, grantor=grantor, entryId=entry_id)
+        self._ledger.save()
+
+    def _emit(self, level: str, event: str, **fields: Any) -> None:
+        if self._logger is not None:
+            try:
+                self._logger(level, _COMPONENT, event, **fields)
+            except Exception:
+                pass
+
+    def entries(self) -> tuple[DerivedEntry, ...]:
+        return self._snapshot.entries()
+
+    def devices(self) -> tuple[ProtectedDevice, ...]:
+        return self._snapshot.devices
+
+    def remembers(self, name: str) -> bool:
+        return name in self._ledger.connections
+
+    def connected(self, name: str) -> None:
+        with self._lock:
+            self._ledger.connections.add(name)
+            self._ledger.save()
+
+    def forget(self, name: str) -> None:
+        with self._lock:
+            self._ledger.connections.discard(name)
+            self._ledger.save()
+
+    def retain(self, names: Collection[str]) -> None:
+        with self._lock:
+            if set(names) != self._ledger.connections:
+                self._ledger.connections = set(names)
+                self._ledger.save()
+
+    def owns_entry(self, entry_id: str) -> bool:
+        """Whether the ledger still claims this entry for some grant."""
+
+        with self._lock:
+            return any(row.entry_id == entry_id for row in self._ledger.rows.values())
+
+    def unresolved(self, names: tuple[str, ...]) -> None:
+        with self._lock:
+            self._unresolved = self._unresolved + tuple(names)
+
+
+def _order(rejection: Rejection) -> tuple[str, str, str, str]:
+    return (rejection.org, rejection.grant_id, rejection.grantor, rejection.reason)
+
+
+def _bare_owner(owner: object) -> str | None:
+    """The owner as the directory spells it (``user:x`` and ``x`` are one owner)."""
+
+    try:
+        return normalize_bare_owner(owner)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return None
+
+
+def _fingerprint(fs: OrgFs, org: str) -> tuple[object, ...]:
+    name = org_space_name(org)
+    matches = [space for space in fs.spaces() if space.name == name]
+    if len(matches) != 1:
+        raise OrgFsError("unknown-space", {"org": org, "space": name})
+    space_id = matches[0].space_id
+    try:
+        meta = fs.stat(space_id, ORG_META_DOC)
+        org_meta: tuple[object, ...] = (meta.node_id, meta.version, meta.size)
+    except OrgFsError as error:
+        if error.code != "unknown-doc":
+            raise
+        org_meta = ()
+    return (
+        _tree(fs, space_id, GRANTS_DIR),
+        _tree(fs, space_id, DIRECTORY_DIR),
+        org_meta,
+        matches[0].owner,
+    )
+
+
+def _tree(fs: OrgFs, space_id: str, path: str) -> tuple[object, ...]:
+    try:
+        nodes = fs.listdir(space_id, path, recursive=True)
+    except OrgFsError as error:
+        if error.code == "unknown-doc":
+            return ()
+        raise
+    return tuple(
+        (node.path, node.node_id, node.version, node.size, node.deleted, node.content_state)
+        for node in sorted(nodes, key=lambda node: node.path)
+    )
+
+
+__all__ = ["RECEIVED_EVENT", "REJECTED_EVENT", "GrantConsumer", "Snapshot"]

@@ -13,13 +13,15 @@ values.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from hyprial.daemon.impl.service_grants.consumer import LEDGER_RELPATH, GrantConsumer, entry_id_for_grant
-from hyprial.identity import read_user_provider_value
+from hyprial.daemon.impl.service_grants.consumer import keys as keys_module
+from hyprial.identity import SecretResolver, read_user_provider_value
 from tests.daemon.service_grants.consumer.support import (
     KEY_FIELD,
     ORG,
@@ -31,6 +33,7 @@ from tests.daemon.service_grants.consumer.support import (
     build_directory,
     device_row,
     grantor,
+    leave_org,
     provider_ids,
     providers_dir,
     write_user_provider,
@@ -195,6 +198,58 @@ def test_clearing_the_credential_deletes_the_key_and_keeps_the_connection(world:
     assert not source.owns_entry(entry_id)
 
 
+def test_a_key_refused_for_a_missing_encryption_key_arrives_once_the_key_exists(world: dict[str, Any]) -> None:
+    """Nothing to open with is not a permanent verdict: the next tick after the key appears writes it."""
+
+    grant_id = grant_key(world)
+    entry_id = entry_id_for_grant(grant_id)
+    late_key_state = world["tmp"] / "late-key-state"
+    source = consumer(world, state_dir=late_key_state)
+    source.refresh()
+    assert provider_ids(world["bob_home"]) == []
+    [refused] = world["events"].of("service.grant.rejected")
+    assert refused["reason"] == "key-unavailable"
+    shutil.copytree(world["bob_state"], late_key_state)
+
+    source.refresh()
+
+    assert read_user_provider_value(world["bob_home"], entry_id, KEY_FIELD) == SECRET
+    assert [item["entryId"] for item in world["events"].of("service.grant.received")] == [entry_id]
+    assert [item["reason"] for item in world["events"].of("service.grant.rejected")] == ["key-unavailable"]
+
+
+def test_leaving_the_org_takes_the_key_back(world: dict[str, Any]) -> None:
+    """Leaving the org is one of the ways a grant stops applying to this device."""
+
+    grant_id = grant_key(world)
+    entry_id = entry_id_for_grant(grant_id)
+    source = consumer(world)
+    source.refresh()
+    assert provider_ids(world["bob_home"]) == [entry_id]
+
+    leave_org(world["bob_home"])
+    source.refresh()
+
+    assert provider_ids(world["bob_home"]) == []
+    assert source.entries() == ()
+    assert not source.owns_entry(entry_id)
+
+
+def test_the_grantors_device_leaving_the_directory_takes_the_key_back(world: dict[str, Any]) -> None:
+    grant_id = grant_key(world)
+    entry_id = entry_id_for_grant(grant_id)
+    source = consumer(world)
+    source.refresh()
+    assert provider_ids(world["bob_home"]) == [entry_id]
+
+    world["store"].remove_device(ORG, "device-a", owner="alice")
+    source.refresh()
+
+    assert provider_ids(world["bob_home"]) == []
+    assert source.entries() == ()
+    assert not source.owns_entry(entry_id)
+
+
 def test_entry_edited_by_the_user_is_not_deleted_on_withdrawal(world: dict[str, Any]) -> None:
     grant_id = grant_key(world)
     entry_id = entry_id_for_grant(grant_id)
@@ -210,6 +265,41 @@ def test_entry_edited_by_the_user_is_not_deleted_on_withdrawal(world: dict[str, 
     source.refresh()
 
     assert path.read_bytes() == edited
+    assert not source.owns_entry(entry_id)
+
+
+def test_a_key_bound_to_a_model_connection_is_still_owned_and_taken_back(world: dict[str, Any]) -> None:
+    """The recipient's own third step rewrites the entry; the Key in it is still the granted one."""
+
+    grant_id = grant_key(world)
+    entry_id = entry_id_for_grant(grant_id)
+    alice = grantor(world, world["clock"])
+    source = consumer(world)
+    source.refresh()
+    SecretResolver(world["bob_home"], None).configure_model_connection(  # type: ignore[arg-type]
+        entry_id,
+        field_name=KEY_FIELD,
+        connection={
+            "version": 1,
+            "endpoint": "http://127.0.0.1:18080/v1",
+            "protocol": "openai-completions",
+            "profile": "openai-chat-completions/v1",
+        },
+        expected_revision=0,
+    )
+    bound = (providers_dir(world["bob_home"]) / f"{entry_id}.json").read_bytes()
+
+    source.refresh()
+
+    assert source.owns_entry(entry_id)
+    assert world["events"].of("service.grant.rejected") == []
+    assert (providers_dir(world["bob_home"]) / f"{entry_id}.json").read_bytes() == bound
+    assert read_user_provider_value(world["bob_home"], entry_id, KEY_FIELD) == SECRET
+
+    alice.revoke(org=ORG, grant_id=grant_id)
+    source.refresh()
+
+    assert provider_ids(world["bob_home"]) == []
     assert not source.owns_entry(entry_id)
 
 
@@ -234,18 +324,25 @@ def test_restart_does_not_write_again_or_add_a_second_entry(world: dict[str, Any
     assert read_user_provider_value(world["bob_home"], entry_id, KEY_FIELD) == SECRET
 
 
-def test_unchanged_ticks_never_touch_the_entry(world: dict[str, Any]) -> None:
+def test_unchanged_ticks_never_touch_the_entry(world: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     grant_key(world)
     source = consumer(world)
     source.refresh()
     [path] = providers_dir(world["bob_home"]).glob("*.json")
     stat_before = path.stat()
+    reads: list[str] = []
+    monkeypatch.setattr(
+        keys_module,
+        "read_user_provider_value",
+        lambda home, entry_id, field: reads.append(entry_id) or SECRET,
+    )
 
     for _ in range(5):
         source.refresh()
 
     stat_after = path.stat()
     assert (stat_after.st_mtime_ns, stat_after.st_ino) == (stat_before.st_mtime_ns, stat_before.st_ino)
+    assert reads == []
 
 
 def test_missing_entry_is_restored_and_ledger_loss_leaves_entries_alone(world: dict[str, Any]) -> None:
@@ -345,6 +442,18 @@ def test_a_device_without_an_encryption_key_gets_the_connection_and_no_key(world
     assert (rejected["grantId"], rejected["reason"]) == (grant_id, "key-unavailable")
 
 
+def test_a_device_without_an_encryption_key_gets_no_key_store_created(world: dict[str, Any]) -> None:
+    """Refusing must leave no trace: no directory, no lock file, nothing under the state dir."""
+
+    grant_key(world)
+    empty_state = world["tmp"] / "empty-state"
+
+    for _ in range(2):
+        consumer(world, state_dir=empty_state).refresh()
+
+    assert empty_state.exists() is False
+
+
 def test_a_device_without_a_committed_account_derives_nothing(world: dict[str, Any]) -> None:
     grant_key(world)
     grantor(world, world["clock"]).grant(org=ORG, port=PORT, device="@members", name="shared")
@@ -352,7 +461,7 @@ def test_a_device_without_a_committed_account_derives_nothing(world: dict[str, A
 
     source.refresh()
 
-    assert source.entries() == {}
+    assert source.entries() == ()
     assert provider_ids(world["bob_home"]) == []
 
 

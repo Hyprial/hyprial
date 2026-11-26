@@ -19,22 +19,27 @@ from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.service_connect import ServiceManager
 from hyprial.daemon.impl.service_grants import ServiceGrantService
 from hyprial.daemon.impl.service_grants.consumer import GrantConsumer, has_effective_grant
-from tests.daemon.service_connect.support import FakeController, FakeStatePort, ManualScheduler
+from hyprial.daemon.impl.service_grants.consumer.startup import STARTUP_BUDGET_SECONDS
+from tests.daemon.service_connect.support import FakeController, FakeStatePort
 from tests.daemon.service_grants.consumer.support import (
     ORG,
     OTHER_ORG,
+    OTHER_PORT,
     PORT,
     Clock,
     Recorder,
+    as_author,
     build_directory,
     device_row,
     grantor,
+    hand_placed,
     leave_org,
+    service_manager,
 )
 
 
 @pytest.fixture
-def world(tmp_path: Path) -> dict[str, Any]:
+def world(tmp_path: Path, actor_host) -> dict[str, Any]:
     directory = build_directory(tmp_path)
     world = {
         **directory,
@@ -44,6 +49,7 @@ def world(tmp_path: Path) -> dict[str, Any]:
         "state": FakeStatePort(),
         "controller": FakeController(),
         "access": tmp_path / "recipient-state" / "tailcat" / "service-access.json",
+        "actor_host": actor_host,
         "managers": [],
     }
     yield world
@@ -52,35 +58,35 @@ def world(tmp_path: Path) -> dict[str, Any]:
     directory["runtime"].close()
 
 
-def alice(world: dict[str, Any]) -> ServiceGrantService:
-    return grantor(world, world["clock"])
+def alice(world: dict[str, Any], *ports: int) -> ServiceGrantService:
+    """Alice's grantor side, exposing ``ports`` besides the usual one.
+
+    One grant supersedes her earlier grant of the same port to the same
+    recipient, so grants that must coexist use distinct ports.
+    """
+
+    return grantor(world, world["clock"], ports=(PORT, OTHER_PORT, *ports))
 
 
-def consumer(world: dict[str, Any]) -> GrantConsumer:
-    return GrantConsumer(
-        orgfs=world["runtime"].facade,
-        home=world["bob_home"],
-        state_dir=world["bob_state"],
-        owner="bob",
-        device_id="device-b",
-        now_ms=world["clock"],
-        logger=world["events"],
-    )
+def consumer(world: dict[str, Any], **overrides: Any) -> GrantConsumer:
+    arguments: dict[str, Any] = {
+        "orgfs": world["runtime"].facade,
+        "home": world["bob_home"],
+        "state_dir": world["bob_state"],
+        "owner": "bob",
+        "device_id": "device-b",
+        "now_ms": world["clock"],
+        "logger": world["events"],
+    }
+    arguments.update(overrides)
+    return GrantConsumer(**arguments)
 
 
 def start(world: dict[str, Any]) -> tuple[GrantConsumer, ServiceManager]:
     """One daemon start: a fresh consumer and a fresh manager over the same durable state."""
 
     source = consumer(world)
-    service = ServiceManager(
-        orgfs=world["runtime"].facade,
-        state=world["state"],
-        persistence_late_result=None,
-        controller_factory=lambda: world["controller"],
-        access_path=world["access"],
-        scheduler=ManualScheduler(),
-        derived_source=source,
-    )
+    service = service_manager(world, source)
     world["managers"].append(service)
     world["controller"].calls.clear()
     return source, service
@@ -105,7 +111,7 @@ def test_new_grants_are_followed_by_periodic_maintenance_without_restart(world: 
 
     service.handle("service.connect", {"name": "magpie"})
     assert names(service) == ["magpie"]
-    alice(world).grant(org=ORG, port=PORT, device="@members", name="relay")
+    alice(world, OTHER_PORT).grant(org=ORG, port=OTHER_PORT, device="@members", name="relay")
     tick(source, service)
     service.handle("service.connect", {"name": "relay"})
     assert names(service) == ["magpie", "relay"]
@@ -127,9 +133,9 @@ def test_restart_derives_again_and_restores_the_grant_connection(world: dict[str
     tick(restarted_source, restarted)
     assert [row["state"] for row in restarted.handle("service.list", {})["services"]] == ["listening"]
     assert world["controller"].services.keys() == {"magpie"}
-    assert [call for call in world["state"].calls if call[0] == "set" and call[1][0] == "magpie"] == [
-        ("set", ("magpie", 18080))
-    ]
+    sets = [call for call in world["state"].calls if call[0] == "set"]
+    assert sets == [("set", ("magpie", 0)), ("set", ("magpie", 18080))]
+    assert [call for call in world["state"].calls if call[0] == "remove"] == []
 
 
 def test_restart_after_withdrawal_removes_the_connection_instead_of_failing_it(world: dict[str, Any]) -> None:
@@ -155,22 +161,18 @@ def test_connection_of_a_hand_placed_entry_whose_document_vanishes_keeps_its_fai
 ) -> None:
     """Only connections this slice derived are withdrawn silently; the existing rule is unchanged."""
 
-    from tests.daemon.service_connect.support import catalog_document, write_access
-
-    runtime = world["runtime"]
-    space = next(item for item in runtime.facade.spaces() if item.name == ORG)
-    runtime.facade.write_text(space.space_id, "api.md", catalog_document())
-    write_access(world["access"], space_id=space.space_id, owner="user:alice")
+    space = hand_placed(world)
     source, service = start(world)
     tick(source, service)
-    service.handle("service.connect", {"name": "api"})
-    runtime.facade.remove(space.space_id, "api.md")
+    assert service.handle("service.connect", {"name": "api"})["service"]["state"] == "listening"
+    world["runtime"].facade.remove(space.space_id, "api.md")
     tick(source, service)
 
     rows = service.handle("service.list", {})["services"]
     assert [(row["name"], row["state"], row["errorCode"]) for row in rows] == [
         ("api", "failed", "SERVICE_NOT_REGISTERED")
     ]
+    assert [call for call in world["state"].calls if call[0] == "remove"] == []
 
 
 def test_unchanged_ticks_read_no_document(world: dict[str, Any]) -> None:
@@ -201,10 +203,14 @@ def test_unchanged_ticks_read_no_document(world: dict[str, Any]) -> None:
 
 
 def test_a_changed_directory_reloads_and_reads_only_what_exists(world: dict[str, Any]) -> None:
-    for index in range(12):
-        alice(world).grant(org=ORG, port=PORT, device="@members", name=f"svc-{index:02d}")
+    """The tick that notices a change reloads the whole org: every grant document and device row, once."""
+
+    ports = list(range(8500, 8513))
+    for port in ports[:12]:
+        alice(world, *ports).grant(org=ORG, port=port, device="@members", name=f"svc-{port}")
     source = consumer(world)
     source.refresh()
+    alice(world, *ports).grant(org=ORG, port=ports[12], device="@members", name="svc-new")
     facade = world["runtime"].facade
     log: list[str] = []
     original_listdir = facade.listdir
@@ -221,14 +227,16 @@ def test_a_changed_directory_reloads_and_reads_only_what_exists(world: dict[str,
     object.__setattr__(facade, "listdir", counting_listdir)
     object.__setattr__(facade, "read_text", counting_read)
     try:
-        alice(world).grant(org=ORG, port=PORT, device="@members", name="svc-99")
+        log.clear()
         source.refresh()
     finally:
         object.__setattr__(facade, "listdir", original_listdir)
         object.__setattr__(facade, "read_text", original_read)
 
-    assert sorted(source.entries())[-1] == "svc-99"
-    assert sum(line.startswith("read ") and "service-grants" in line for line in log) == 13
+    assert sorted(item.name for item in source.entries())[-1] == "svc-new"
+    assert len(source.entries()) == 13
+    device_rows = len(world["store"].list_devices(ORG))
+    assert sum(line.startswith("read id:") for line in log) == 13 + device_rows
     assert sum(line.startswith("listdir ") for line in log) <= 16
 
 
@@ -263,26 +271,19 @@ def test_grants_are_collected_from_every_live_org_of_this_device(world: dict[str
     alice(world).grant(org=ORG, port=PORT, device="@members", name="magpie")
     alice(world).grant(org=OTHER_ORG, port=PORT, device="@members", name="relay")
     source = consumer(world)
-    service = ServiceManager(
-        orgfs=runtime.facade,
-        state=world["state"],
-        persistence_late_result=None,
-        controller_factory=lambda: world["controller"],
-        access_path=world["access"],
-        scheduler=ManualScheduler(),
-        derived_source=source,
-    )
+    service = service_manager(world, source)
     world["managers"].append(service)
 
     tick(source, service)
 
-    assert sorted(source.entries()) == ["magpie", "relay"]
-    assert [device.device_id for device in source.devices()] == ["device-a", "device-a"]
+    assert sorted(item.name for item in source.entries()) == ["magpie", "relay"]
+    assert [device.device_id for device in source.devices()] == ["device-a"]
 
     leave_org(world["bob_home"], ORG)
     tick(source, service)
 
-    assert sorted(source.entries()) == ["relay"]
+    assert sorted(item.name for item in source.entries()) == ["relay"]
+    assert [device.device_id for device in source.devices()] == ["device-a"]
 
 
 def test_has_effective_grant_is_a_cheap_answer_and_treats_failure_as_no(world: dict[str, Any]) -> None:
@@ -314,6 +315,98 @@ def test_has_effective_grant_is_a_cheap_answer_and_treats_failure_as_no(world: d
         orgfs=world["runtime"].facade, home=world["bob_home"], owner=None, device_id="device-b",
         now_ms=world["clock"],
     ) is False
+
+
+def test_the_startup_check_gives_up_once_its_budget_is_spent(world: dict[str, Any]) -> None:
+    """A slow directory cannot hold daemon startup: past the budget the answer is "no".
+
+    The question reads its clock once for the deadline and once before each
+    org, so two told times stand for one whole question.
+    """
+
+    alice(world, OTHER_PORT).grant(org=ORG, port=OTHER_PORT, device="@members", name="relay")
+    reads: list[str] = []
+    facade = world["runtime"].facade
+    original = facade.read_text
+
+    def counting(space_id: str, ref: str) -> tuple[str, str]:
+        reads.append(ref)
+        return original(space_id, ref)
+
+    object.__setattr__(facade, "read_text", counting)
+    try:
+        assert ask(world, [500.0, 500.1]) is True
+        assert len(reads) == 1
+        assert ask(world, [500.0, 500.0 + STARTUP_BUDGET_SECONDS + 1.0]) is False
+    finally:
+        object.__setattr__(facade, "read_text", original)
+
+    assert len(reads) == 1
+
+
+def ask(world: dict[str, Any], ticks: list[float]) -> bool:
+    """Ask the startup question with a clock that only tells the given times."""
+
+    moments = iter(ticks)
+    return has_effective_grant(
+        orgfs=world["runtime"].facade, home=world["bob_home"], owner="bob", device_id="device-b",
+        now_ms=world["clock"], monotonic=lambda: next(moments),
+    )
+
+
+def test_the_owner_may_come_as_the_principal_the_daemon_carries(world: dict[str, Any]) -> None:
+    """The daemon's owner is ``user:<name>`` or bare; both mean the same member."""
+
+    alice(world).grant(org=ORG, port=PORT, device="@members", name="magpie")
+    alice(world).grant(org=ORG, port=OTHER_PORT, device="bob/device-b", name="relay")
+
+    for owner in ("bob", "user:bob"):
+        source = consumer(world, owner=owner)
+        source.refresh()
+        assert sorted(item.name for item in source.entries()) == ["magpie", "relay"], owner
+        assert has_effective_grant(
+            orgfs=world["runtime"].facade, home=world["bob_home"], owner=owner,
+            device_id="device-b", now_ms=world["clock"],
+        ) is True, owner
+    invalid = consumer(world, owner="not a principal")
+    invalid.refresh()
+    assert invalid.entries() == ()
+
+
+def test_the_fingerprint_watches_the_tree_the_store_writes_grants_into(world: dict[str, Any]) -> None:
+    """The consumer spells the grants path itself; it must be the store's own.
+
+    A document the store writes there must change the fingerprint, so the next
+    tick re-reads the org instead of keeping its answer.
+    """
+
+    import hyprial.daemon.impl.org.network.directory as directory_module
+    import hyprial.daemon.impl.service_grants.consumer.maintenance as consumer_module
+
+    assert consumer_module.GRANTS_DIR == directory_module._SERVICE_GRANTS_DIR
+    alice(world).grant(org=ORG, port=PORT, device="@members", name="magpie")
+    source = consumer(world)
+    source.refresh()
+    facade = world["runtime"].facade
+    reads: list[str] = []
+    original = facade.read_text
+
+    def counting(space_id: str, ref: str) -> tuple[str, str]:
+        reads.append(ref)
+        return original(space_id, ref)
+
+    with as_author(world["runtime"], "alice"):
+        world["store"].put_service_grant(
+            ORG, "alice", "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa", {"schemaVersion": 1}
+        )
+    object.__setattr__(facade, "read_text", counting)
+    try:
+        source.refresh()
+    finally:
+        object.__setattr__(facade, "read_text", original)
+
+    assert reads
+    assert [item.name for item in source.entries()] == ["magpie"]
 
 
 def test_consumer_without_an_owner_never_touches_the_directory(world: dict[str, Any]) -> None:

@@ -23,14 +23,18 @@ from hyprial.daemon.impl.org.network.device_key import ensure_encryption_key
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.org.network.state import add_left_org
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.service_connect import ServiceManager
 from hyprial.daemon.impl.service_grants import ServiceGrantService
 from hyprial.identity import DEVICE_RECORD_RELPATH, DeviceRecord, DirectoryDevice, write_device_record
 from hyprial.kernel import atomic_json_write, write_private_file_atomic
+
+from tests.daemon.service_connect.support import ManualScheduler
 
 ORG = "group-acme"
 OTHER_ORG = "group-other"
 SECRET = "SYNTHETIC-RECIPIENT-KEY-0123456789ABCDEF"
 PORT = 8447
+OTHER_PORT = 8448
 ISSUER = "https://issuer.example.test"
 KEY_FIELD = "KEY"
 
@@ -74,14 +78,16 @@ def as_author(runtime: OrgFsRuntime, owner: str) -> Iterator[None]:
         runtime.facade.author = previous
 
 
-def device_row(device_id: str, owner: str, *, keys: dict[str, str] | None = None) -> DirectoryDevice:
+def device_row(
+    device_id: str, owner: str, *, keys: dict[str, str] | None = None, generation: int = 1
+) -> DirectoryDevice:
     return DirectoryDevice(
         device_id=device_id,
         owner=owner,
         server_public="nodekey:" + device_id[-1].encode().hex() * 32,
         client_public="nodekey:" + format(ord(device_id[-1]) + 100, "02x") * 32,
         address=f"tc{device_id.replace('-', '')}PrivateAddressForTests",
-        key_generation=1,
+        key_generation=generation,
         updated_at="2026-11-26T00:00:00+00:00",
         encryption_key_id=None if keys is None else keys["keyId"],
         encryption_public_key=None if keys is None else keys["publicKey"],
@@ -168,15 +174,52 @@ def build_directory(tmp_path: Path) -> dict[str, Any]:
     }
 
 
-def grantor(directory: dict[str, Any], clock: Clock) -> ServiceGrantService:
+def grantor(
+    directory: dict[str, Any], clock: Clock, *, ports: tuple[int, ...] = (PORT,)
+) -> ServiceGrantService:
+    """Alice's grantor side. A grant supersedes her earlier grant of the same port
+    to the same recipient (that is S3's rule), so tests that need several grants
+    at once pass distinct ports here."""
+
     return ServiceGrantService(
         store=directory["store"],
         home=directory["alice_home"],
         owner="alice",
         local_device_id="device-a",
-        exposed_ports=lambda: frozenset({PORT}),
+        exposed_ports=lambda: frozenset(ports),
         now_ms=clock,
     )
+
+
+def service_manager(world: dict[str, Any], source: Any) -> ServiceManager:
+    """A manager over the recipient home, which has no protected access record."""
+
+    return ServiceManager(
+        orgfs=world["runtime"].facade,
+        state=world["state"],
+        persistence_late_result=None,
+        controller_factory=lambda: world["controller"],
+        access_path=world["access"],
+        scheduler=ManualScheduler(),
+        actor_host=world["actor_host"],
+        derived_source=source,
+    )
+
+
+def hand_placed(world: dict[str, Any], *, name: str = "api") -> Any:
+    """Give the recipient home a hand-placed catalog: a services space plus the protected record.
+
+    A catalog lives in a space of its own whose root holds only catalog
+    documents (that is service-connect's rule), never beside an org directory.
+    """
+
+    from tests.daemon.service_connect.support import catalog_document, write_access
+
+    runtime = world["runtime"]
+    space = runtime.facade.create_space(f"services-{name}")
+    runtime.facade.write_text(space.space_id, f"{name}.md", catalog_document(name=name))
+    write_access(world["access"], space_id=space.space_id, owner=space.owner)
+    return space
 
 
 def providers_dir(home: Path) -> Path:
@@ -184,7 +227,13 @@ def providers_dir(home: Path) -> Path:
 
 
 def provider_ids(home: Path) -> list[str]:
-    return sorted(path.stem for path in providers_dir(home).glob("*.json"))
+    """Ids of the regular entry files; a symlink at an entry path is not an entry."""
+
+    return sorted(
+        path.stem
+        for path in providers_dir(home).glob("*.json")
+        if path.is_file() and not path.is_symlink()
+    )
 
 
 def drop_device_record(home: Path) -> None:
@@ -203,6 +252,7 @@ __all__ = [
     "KEY_FIELD",
     "ORG",
     "OTHER_ORG",
+    "OTHER_PORT",
     "PORT",
     "SECRET",
     "Clock",
@@ -214,8 +264,10 @@ __all__ = [
     "device_uid",
     "drop_device_record",
     "grantor",
+    "hand_placed",
     "leave_org",
     "provider_ids",
     "providers_dir",
+    "service_manager",
     "write_user_provider",
 ]

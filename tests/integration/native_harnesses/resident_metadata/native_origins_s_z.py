@@ -161,4 +161,10 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/service_grants/models.py": ("resident", ("new-module: service grant S3 models",)),
     "daemon/impl/service_grants/queries.py": ("resident", ("new-module: service grant S3 pure query helpers",)),
     "daemon/impl/service_grants/service.py": ("resident", ("new-module: service grant S3 domain service",)),
+    "daemon/impl/service_connect/derived.py": ("resident", ("new-module: service grant S5 derived source seam for service-connect",)),
+    "daemon/impl/service_grants/consumer/__init__.py": ("resident", ("new-module: service grant S5 recipient-side package",)),
+    "daemon/impl/service_grants/consumer/derive.py": ("resident", ("new-module: service grant S5 grants to service entries",)),
+    "daemon/impl/service_grants/consumer/keys.py": ("resident", ("new-module: service grant S5 granted Key entry and ownership ledger",)),
+    "daemon/impl/service_grants/consumer/maintenance.py": ("resident", ("new-module: service grant S5 recipient-side derived source",)),
+    "daemon/impl/service_grants/consumer/startup.py": ("resident", ("new-module: service grant S5 startup grant check",)),
 }

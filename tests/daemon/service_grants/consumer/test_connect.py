@@ -18,24 +18,29 @@ import pytest
 
 from hyprial.daemon.impl.service_connect import ServiceConnectError, ServiceManager
 from hyprial.daemon.impl.service_grants import ServiceGrantService
-from hyprial.daemon.impl.service_grants.consumer import GrantConsumer
+from hyprial.daemon.impl.service_grants.consumer import GrantConsumer, entry_id_for_grant
+from hyprial.shell.impl.cli.commands.service.presentation import render_connect, render_guide
 from hyprial.kernel import ipc_errors
-from tests.daemon.service_connect.support import FakeController, FakeStatePort, ManualScheduler
+from tests.daemon.service_connect.support import FakeController, FakeStatePort
 from tests.daemon.service_grants.consumer.support import (
     ORG,
     PORT,
+    SECRET,
     Clock,
     Recorder,
     as_author,
     build_directory,
     device_row,
     grantor,
+    hand_placed,
     leave_org,
+    provider_ids,
+    service_manager,
 )
 
 
 @pytest.fixture
-def world(tmp_path: Path) -> dict[str, Any]:
+def world(tmp_path: Path, actor_host) -> dict[str, Any]:
     directory = build_directory(tmp_path)
     clock = Clock()
     events = Recorder()
@@ -50,6 +55,7 @@ def world(tmp_path: Path) -> dict[str, Any]:
         "state": state,
         "controller": controller,
         "access": access,
+        "actor_host": actor_host,
         "managers": [],
     }
     yield world
@@ -77,15 +83,7 @@ def consumer(world: dict[str, Any], **overrides: Any) -> GrantConsumer:
 
 
 def manager(world: dict[str, Any], source: Any) -> ServiceManager:
-    created = ServiceManager(
-        orgfs=world["runtime"].facade,
-        state=world["state"],
-        persistence_late_result=None,
-        controller_factory=lambda: world["controller"],
-        access_path=world["access"],
-        scheduler=ManualScheduler(),
-        derived_source=source,
-    )
+    created = service_manager(world, source)
     world["managers"].append(created)
     return created
 
@@ -141,12 +139,8 @@ def test_derived_entry_follows_the_grantor_device_row(world: dict[str, Any]) -> 
     service.handle("service.connect", {"name": "magpie"})
     world["controller"].calls.clear()
     store = world["store"]
-    [row] = [item for item in store.list_devices(ORG) if item.device_id == "device-a"]
     with as_author(world["runtime"], "alice"):
-        store.put_device(
-            ORG,
-            device_row("device-a", "alice", keys={"keyId": "x25519:unused", "publicKey": "AA"}),
-        )
+        store.put_device(ORG, device_row("device-a", "alice", generation=2))
 
     tick(world, source, service)
 
@@ -202,7 +196,7 @@ def test_removed_grantor_device_row_withdraws_the_derived_entry(world: dict[str,
     world["store"].remove_device(ORG, "device-a", owner="alice")
     tick(world, source, service)
 
-    assert source.entries() == {}
+    assert source.entries() == ()
     assert service.handle("service.list", {})["services"] == []
     assert world["controller"].services == {}
 
@@ -219,7 +213,7 @@ def test_grant_for_a_device_absent_from_the_grantor_is_discarded(world: dict[str
 
     source.refresh()
 
-    assert source.entries() == {}
+    assert source.entries() == ()
     assert source.devices() == ()
     assert world["events"].of("service.grant.rejected") == [
         {"org": ORG, "grantId": grant_id, "grantor": "alice", "reason": "service-device-unknown"}
@@ -238,40 +232,65 @@ def test_members_grant_connects_without_a_key(world: dict[str, Any]) -> None:
     assert list((world["bob_home"] / "secrets" / "providers").glob("*.json")) == []
 
 
-def test_members_grant_carrying_a_credential_is_never_opened(world: dict[str, Any]) -> None:
-    made = alice(world).grant(org=ORG, port=PORT, device="bob/device-b", name="magpie", credential={"entryId": "gateway"})
+def test_a_credential_readdressed_to_members_never_reaches_the_opener(world: dict[str, Any]) -> None:
+    """S3 forbids a credential on "@members"; a document edited around that is dropped whole."""
+
+    made = alice(world).grant(
+        org=ORG, port=PORT, device="bob/device-b", name="magpie", credential={"entryId": "gateway"}
+    )
     raw = world["store"].read_service_grant(ORG, "alice", made["grant"]["grantId"])
     assert raw is not None
     with as_author(world["runtime"], "alice"):
-        world["store"].put_service_grant(ORG, "alice", made["grant"]["grantId"], {**raw, "recipient": "@members"})
-    source = consumer(world)
+        world["store"].put_service_grant(
+            ORG, "alice", made["grant"]["grantId"], {**raw, "recipient": "@members"}
+        )
+    opened: list[object] = []
+
+    def counting_opener(stored: object) -> bytes:
+        opened.append(stored)
+        return b""
+
+    source = consumer(world, open_credential=counting_opener)
     service = manager(world, source)
 
     tick(world, source, service)
 
-    assert source.entries()
-    assert list((world["bob_home"] / "secrets" / "providers").glob("*.json")) == []
+    assert source.entries() == ()
+    assert opened == []
+    assert provider_ids(world["bob_home"]) == []
+    assert world["events"].names() == []
+
+
+def test_the_cli_shows_where_a_granted_key_is_and_how_to_bind_it(world: dict[str, Any]) -> None:
+    """What the recipient reads off the real renderers: a command that runs as printed."""
+
+    made = alice(world).grant(
+        org=ORG, port=PORT, device="bob/device-b", name="magpie",
+        credential={"entryId": "gateway", "fieldName": "API_KEY"},
+    )
+    entry_id = entry_id_for_grant(made["grant"]["grantId"])
+    source = consumer(world)
+    service = manager(world, source)
+    tick(world, source, service)
+
+    guide = render_guide(service.handle("service.guide", {"name": "magpie"}), full=True)
+    connected = render_connect(service.handle("service.connect", {"name": "magpie"}))
+
+    binding = (
+        f"hyprial agent secret grant <agent> --source user-provider --entry-id {entry_id} "
+        f"--field-name KEY --environment-name <ENV> --grant-id <grant-id> --revision 1"
+    )
+    for text in (guide, connected):
+        assert binding in text
+        assert "Key as" not in text and "Key:  Key" not in text
+    assert f"auth: granted, stored as user-provider entry {entry_id} (field KEY)" in guide
+    assert f"Key:  granted, stored as user-provider entry {entry_id} (field KEY)" in connected
+    assert SECRET not in guide + connected
 
 
 def test_hand_placed_sources_win_and_a_colliding_derived_name_is_renamed(world: dict[str, Any]) -> None:
     alice(world).grant(org=ORG, port=PORT, device="@members", name="magpie")
-    hand_placed = {
-        "name": "magpie",
-        "deviceId": "sub2api",
-        "remotePort": 8080,
-        "protocol": "http",
-        "localPort": 18080,
-        "usage": "claude-code-baseurl",
-        "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:{port}"},
-        "auth": "request a key separately",
-        "guide": "Use the printed port.",
-    }
-    runtime = world["runtime"]
-    space = next(item for item in runtime.facade.spaces() if item.name == ORG)
-    from tests.daemon.service_connect.support import catalog_document, write_access
-
-    runtime.facade.write_text(space.space_id, "magpie.md", catalog_document())
-    write_access(world["access"], space_id=space.space_id, owner="user:alice")
+    hand_placed(world, name="magpie")
     source = consumer(world)
     service = manager(world, source)
 
@@ -280,19 +299,13 @@ def test_hand_placed_sources_win_and_a_colliding_derived_name_is_renamed(world: 
     guide = service.handle("service.guide", {"name": "magpie-alice"})["entry"]
     assert (guide["deviceId"], guide["remotePort"], guide["protocol"]) == ("device-a", PORT, "tcp")
     assert service.handle("service.guide", {"name": "magpie"})["entry"]["deviceId"] == "sub2api"
-    assert hand_placed["name"] == "magpie"
     service.handle("service.connect", {"name": "magpie-alice"})
     service.handle("service.connect", {"name": "magpie"})
     assert sorted(row["name"] for row in service.handle("service.list", {})["services"]) == ["magpie", "magpie-alice"]
 
 
 def test_hand_placed_record_and_catalog_are_unchanged_by_an_empty_grant_set(world: dict[str, Any]) -> None:
-    from tests.daemon.service_connect.support import catalog_document, write_access
-
-    runtime = world["runtime"]
-    space = next(item for item in runtime.facade.spaces() if item.name == ORG)
-    runtime.facade.write_text(space.space_id, "api.md", catalog_document())
-    write_access(world["access"], space_id=space.space_id, owner="user:alice")
+    hand_placed(world)
     before = world["access"].read_bytes()
     source = consumer(world)
     service = manager(world, source)
@@ -310,7 +323,7 @@ def test_grant_of_another_recipient_is_not_derived(world: dict[str, Any]) -> Non
     source = consumer(world)
     source.refresh()
 
-    assert source.entries() == {}
+    assert source.entries() == ()
 
 
 def test_leaving_the_org_withdraws_the_entry(world: dict[str, Any]) -> None:
@@ -323,7 +336,7 @@ def test_leaving_the_org_withdraws_the_entry(world: dict[str, Any]) -> None:
     leave_org(world["bob_home"])
     tick(world, source, service)
 
-    assert source.entries() == {}
+    assert source.entries() == ()
     assert service.handle("service.list", {})["services"] == []
 
 
@@ -333,5 +346,5 @@ def test_unnamed_grant_has_no_connectable_entry(world: dict[str, Any]) -> None:
 
     source.refresh()
 
-    assert source.entries() == {}
+    assert source.entries() == ()
     assert world["events"].names().count("service.grant.rejected") == 1
