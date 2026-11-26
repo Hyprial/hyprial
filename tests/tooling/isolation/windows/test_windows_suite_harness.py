@@ -26,6 +26,13 @@ Decision (same date, self-test rework): ``os.name`` is never changed.  With
 ``os.name == "nt"`` on Linux, ``pathlib.Path`` picks ``WindowsPath`` and raises
 ``NotImplementedError`` inside the install functions, and any other thread
 that builds a path in that window would fail the same way.
+
+Decision (2026-11-26): every probe directory written under ``tests/`` appends a
+``pytest_ignore_collect`` guard to its ``conftest.py`` that ignores the
+directory unless ``HYPRIAL_WINDOWS_SUITE_PROBE == "1"``, which only ``_probe``
+sets.  A probe directory left behind by a killed pytest process is therefore
+not collected by an ordinary ``pytest tests/`` run (including broken top-level
+imports and GIL-holding tests).
 """
 
 from __future__ import annotations
@@ -80,6 +87,15 @@ def pytest_unconfigure(config):
         with open(os.environ["PROBE_WORKER_EXIT_FILE"], "w", encoding="utf-8") as stream:
             json.dump(codes, stream)
 """
+PROBE_IGNORE_CONFTEST = """
+import os as _hyprial_probe_os
+
+
+def pytest_ignore_collect(collection_path, config):
+    if _hyprial_probe_os.environ.get("HYPRIAL_WINDOWS_SUITE_PROBE") != "1":
+        return True
+    return None
+"""
 
 
 def _stop_tree(process: subprocess.Popen[str]) -> None:
@@ -93,6 +109,11 @@ def _write_probe_dir(files: dict[str, str]) -> Path:
     directory = Path(tempfile.mkdtemp(prefix="windows-suite-probe-", dir=ROOT / "tests"))
     for name, source in files.items():
         (directory / name).write_text(textwrap.dedent(source), encoding="utf-8")
+    conftest = directory / "conftest.py"
+    existing = conftest.read_text(encoding="utf-8") if conftest.exists() else ""
+    guard = textwrap.dedent(PROBE_IGNORE_CONFTEST).lstrip("\n")
+    content = f"{existing.rstrip()}\n\n\n{guard}" if existing.strip() else guard
+    conftest.write_text(content, encoding="utf-8")
     return directory
 
 
@@ -103,6 +124,7 @@ def _probe(
     environment = {key: value for key, value in os.environ.items() if key not in HARNESS_ENV}
     environment["PROBE_WORKER_EXIT_FILE"] = str(tmp_path / "worker-exit.json")
     environment.update(env or {})
+    environment[PROBE_ENV] = "1"
     args = [
         sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
         "-o", "faulthandler_timeout=0", "-n", str(workers), "--max-worker-restart=0",
@@ -578,4 +600,3 @@ def test_a_leftover_probe_directory_is_ignored_by_an_ordinary_collection(tmp_pat
             assert "collected 0 items" in result.stdout, result.stdout + result.stderr
         finally:
             shutil.rmtree(directory, ignore_errors=True)
-
