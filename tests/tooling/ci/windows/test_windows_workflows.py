@@ -755,3 +755,23 @@ def test_suite_paths_are_neutral_and_consistent() -> None:
     ]
     assert len(summary_downloads) == 1
     assert summary_downloads[0].get("with") == {"path": f"{runner}/suite-artifacts"}
+
+
+def test_suite_legs_import_the_native_module_before_waves() -> None:
+    all_jobs = jobs(document(SUITE_WORKFLOW))
+    for name in SUITE_LEG_IFS:
+        names = [str(step.get("name", "")) for step in steps(all_jobs[name])]
+        install = names.index("Install the editable test environment")
+        assert names[install + 1] == "Assert the native module imports", name
+        assert any(step_name.startswith("Run ") and step_name.endswith(" waves") for step_name in names[install + 2 :])
+        check = steps(all_jobs[name])[install + 1]
+        assert check.get("shell") == "pwsh"
+        assert type(check.get("timeout-minutes")) is int
+        assert "env" not in check
+        lines = [line.strip() for line in str(check["run"]).splitlines() if line.strip()]
+        assert lines == [
+            '.venv\\Scripts\\python.exe -c "import hyprial._core.actors as m; '
+            'assert m.ENGINE_ABI_VERSION == 1, m.ENGINE_ABI_VERSION; print(m.__file__)"',
+            "$code = $LASTEXITCODE",
+            "exit $code",
+        ]

@@ -16,6 +16,9 @@
 #   uploads.  Result artifacts contain only suite-results/ and suite-ledger/.
 # - windows-suite-summary downloads all available artifacts and validates every required
 #   leg named in plan-manifest.json so a missing or aborted leg fails closed.
+# - 2026-11-27: every test leg imports hyprial._core.actors right after uv sync and
+#   requires ENGINE_ABI_VERSION == 1, because restoring an empty native bundle does not
+#   fail and the waves would otherwise run without the native module.
 name: windows-suite
 
 on:
@@ -177,6 +180,13 @@ jobs:
           uv sync --locked --python $env:PYTHON_VERSION --extra test
           $code = $LASTEXITCODE
           exit $code
+      - name: Assert the native module imports
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          .venv\Scripts\python.exe -c "import hyprial._core.actors as m; assert m.ENGINE_ABI_VERSION == 1, m.ENGINE_ABI_VERSION; print(m.__file__)"
+          $code = $LASTEXITCODE
+          exit $code
       - name: Run tier 2 shard waves
         timeout-minutes: 150
         env:
@@ -232,6 +242,13 @@ jobs:
           uv sync --locked --python $env:PYTHON_VERSION --extra test
           $code = $LASTEXITCODE
           exit $code
+      - name: Assert the native module imports
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          .venv\Scripts\python.exe -c "import hyprial._core.actors as m; assert m.ENGINE_ABI_VERSION == 1, m.ENGINE_ABI_VERSION; print(m.__file__)"
+          $code = $LASTEXITCODE
+          exit $code
       - name: Run targets waves
         timeout-minutes: 30
         env:
@@ -284,6 +301,13 @@ jobs:
         timeout-minutes: 20
         run: |
           uv sync --locked --python $env:PYTHON_VERSION --extra test
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Assert the native module imports
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          .venv\Scripts\python.exe -c "import hyprial._core.actors as m; assert m.ENGINE_ABI_VERSION == 1, m.ENGINE_ABI_VERSION; print(m.__file__)"
           $code = $LASTEXITCODE
           exit $code
       - name: Run tier1-next waves
@@ -343,6 +367,13 @@ jobs:
         timeout-minutes: 20
         run: |
           uv sync --locked --python cpython-3.12-windows-x86_64 --extra test
+          $code = $LASTEXITCODE
+          exit $code
+      - name: Assert the native module imports
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          .venv\Scripts\python.exe -c "import hyprial._core.actors as m; assert m.ENGINE_ABI_VERSION == 1, m.ENGINE_ABI_VERSION; print(m.__file__)"
           $code = $LASTEXITCODE
           exit $code
       - name: Run arm-next waves
