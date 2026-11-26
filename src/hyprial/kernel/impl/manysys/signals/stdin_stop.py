@@ -20,6 +20,17 @@
 #   0x0003), polls PeekNamedPipe in bounded slices so broken/disconnected pipes
 #   (109/232/233/6) trigger immediate EOF stop, avail > 0 reads bounded bytes
 #   without blocking, and avail == 0 waits on _closed_event for instant close().
+# - Windows console stdin (KP-136, 2026-11-24): msvcrt.kbhit() alone can never
+#   report that the console went away, so every kbhit slice first re-checks
+#   GetConsoleMode on the stdin handle and treats its failure as EOF. A
+#   gracefully closed console is expected to still kill the process through
+#   the default CTRL_CLOSE_EVENT handler before this check matters, and the
+#   check is meant for a console host that vanishes without that event; both
+#   are inferences, not measured (pending the KP-136 real-machine matrix).
+#   Unlisted PeekNamedPipe
+#   errors and unknown file types still reach the generic select tail, which
+#   on Windows rejects CRT descriptors and so ends as EOF after one fallback
+#   slice; this is pinned by tests and left for real-machine evidence.
 """Cross-platform descriptor watcher for EOF or ``shutdown`` stop requests."""
 
 from __future__ import annotations
@@ -378,6 +389,8 @@ class StdinStopWatcher:
                     return b""
             kbhit = getattr(_msvcrt, "kbhit", None)
             while not self._closed_event.is_set():
+                if not get_console_mode(handle, ctypes.byref(mode)):
+                    return b""
                 if kbhit is not None and kbhit():
                     try:
                         return os.read(self._descriptor, _STDIN_LINE_LIMIT)
