@@ -42,7 +42,7 @@
 # - `gate` is the single job a branch rule requires. It fails unless every
 #   other job succeeded, so adding a job does not need a rule change.
 name: model-line-borrowed-gate
-run-name: Model line PR61 at 2ffadc65
+run-name: Model line PR59 at 78a1b473
 
 on:
   pull_request:
@@ -57,8 +57,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MODEL_CANDIDATE_SHA: "2ffadc65332722eaa587077feeacdf66884c3265"
-  MODEL_CANDIDATE_PR: "61"
+  MODEL_CANDIDATE_SHA: "78a1b4738242f87e2df505b4b7e5d9322515f448"
+  MODEL_CANDIDATE_PR: "59"
   UV_VERSION: "0.11.7"
   PYTHON_VERSION: "3.12"
   RUST_VERSION: "1.93.1"
@@ -146,6 +146,7 @@ jobs:
       - name: Run the shard
         env:
           HYPRIAL_CI_PROFILE: "1"
+          HYPRIAL_E2E_EXPECT_SHA: ${{ env.MODEL_CANDIDATE_SHA }}
         run: |
           set -euo pipefail
           export HYPRIAL_BIN="${PWD}/.venv/bin/hyprial"
