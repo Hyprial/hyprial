@@ -1,4 +1,21 @@
-"""Descriptor-relative safe storage and per-slot OS ownership."""
+"""Descriptor-relative safe storage and per-slot OS ownership.
+
+Decision (2026-11-26, KP-140): ``locked()`` hardens ``operation.lock`` after
+the OS lock is acquired and before the first ``_file_safe`` check.  On Windows
+``filelock``'s ``mode`` has no effect and an elevated token makes
+``BUILTIN\\Administrators`` the owner of the new file, so the inherited
+descriptor never lets the current user read it and ``_file_safe`` always
+rejected it.  The lock file may have been created by another process or placed
+in advance, so changing its permissions is only allowed for an entry this
+account owns: it must be a regular file (no symlink or reparse point) with
+exactly one link, and ``private_metadata_violation`` must not report
+``wrong-owner``, ``unsafe-reparse`` or ``unsupported-private-acl``; otherwise
+the slot is rejected without touching the file.  Unlike the ``.cas.lock``
+preparation in provider-key storage, hardening runs even when no violation is
+reported, so both platforms take the same path and an already private file is
+re-applied to the same mode.  ``_file_safe`` stays unchanged before and after
+the body; hardening corrects the descriptor and never relaxes that check.
+"""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -7,7 +24,9 @@ import stat
 from hyprial.kernel import (
     PrivateAccessUnsupported,
     ProcessFileLock,
+    harden_private_path,
     open_private_file,
+    path_is_reparse,
     private_metadata_violation,
     read_private_file,
     secure_private_directory,
@@ -117,6 +136,25 @@ class Slot:
         except FileNotFoundError:
             return False
 
+    @staticmethod
+    def _harden_lock(path):
+        """Make this account's lock file private; refuse an entry it does not own."""
+        try:
+            metadata = path.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or path_is_reparse(metadata)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                fail("TAILNET_STORAGE_UNSAFE", "storage")
+            violation = private_metadata_violation(path, metadata, mode=0o600)
+            if violation in ("wrong-owner", "unsafe-reparse", "unsupported-private-acl"):
+                fail("TAILNET_STORAGE_UNSAFE", "storage")
+            harden_private_path(path, mode=0o600)
+        except (OSError, PrivateAccessUnsupported):
+            fail("TAILNET_STORAGE_UNSAFE", "storage")
+
     @contextmanager
     def locked(self):
         with self.directory(self.state, create=True) as directory:
@@ -124,6 +162,7 @@ class Slot:
             lock = ProcessFileLock(path)
             try:
                 lock.acquire(timeout=15.0)
+                self._harden_lock(path)
                 self._file_safe(path, path.lstat(), 0o600)
                 yield
                 self._file_safe(path, path.lstat(), 0o600)
