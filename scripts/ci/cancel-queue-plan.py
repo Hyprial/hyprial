@@ -36,7 +36,7 @@ order by r.id;
 
 def psql(sql: str) -> str:
     r = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=10", os.environ.get("HYPRIAL_CI_DB_HOST", "hyprial-powerstation"),
+        ["ssh", "-o", "ConnectTimeout=10", os.environ.get("HYPRIAL_CI_DB_HOST", "ci-db-host"),
          f"sudo docker exec -i {os.environ.get('HYPRIAL_CI_DB_CONTAINER', 'hyprial-forgejo-postgres-1')} "
          f"psql -U forgejo -d forgejo -t -A -F '\t' -f -"],
         input=sql, capture_output=True, text=True)
