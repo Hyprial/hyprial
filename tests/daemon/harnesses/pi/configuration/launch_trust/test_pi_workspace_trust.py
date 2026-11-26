@@ -401,9 +401,9 @@ def test_a_workspace_whose_privacy_cannot_be_inspected_is_a_trust_refusal(
     """An ``OSError`` from the kernel check is a permanent trust refusal.
 
     The descriptor check raises ``OSError`` when it cannot read the security
-    descriptor or the current account.  Escaping bare, it would carry no
-    permanent-failure flag and the streaming pump would retry it until the
-    startup deadline.
+    descriptor or the current account.  Escaping bare, it would be an
+    ordinary failed start that the actor retries with backoff and charges to
+    the failure budget; as a trust error it is a permanent start failure.
     """
 
     workspace = _workspace(tmp_path, "be-dev-1")

@@ -14,21 +14,26 @@ bits alone do not answer "may only this account reach this path": they
 ignore the owner, and on platforms whose ``stat`` mode bits are synthesised
 the old expression was non-zero for every directory, refusing every private
 workspace root.  On POSIX the kernel check is the owner plus the same
-group/other bits, so only the owner requirement is new.  It is deliberately
-not ``private_metadata_violation(..., mode=...)``: that compares for equality
-and would refuse a private directory that also carries a setgid or sticky
-bit.  Judging by the kernel check makes the workspace scope reachable where
-it was refused for every directory before, so the chain check before it has
-to hold there too: the workspace and its agent-home ancestors must be real
-directories, refusing a reparse point of any kind as well as a symlink, as
-the other harnesses' directory checks do.  The symlink term alone does not
-cover a reparse point that ``lstat`` reports as a directory, and ``resolve``
-follows a reparse point onto its target, where the privacy check would judge
-the target and sign it as the workspace.  When the kernel cannot inspect
-privacy at all (its descriptor check raises ``OSError``), the root is refused
-as a trust error, a permanent start failure, instead of letting the
-``OSError`` escape and be retried until the startup deadline; an
-``OSError`` from ``stat`` of the root is left as it was.
+group/other bits, so only the owner requirement is new.  A platform with
+neither a comparable uid nor a security descriptor, and Windows without
+pywin32, is now always refused where the bits alone used to decide.  It is
+deliberately not ``private_metadata_violation(..., mode=...)``: that compares
+for equality and would refuse a private directory that also carries a setgid
+or sticky bit.  Judging by the kernel check makes the workspace scope
+reachable where it was refused for every directory before, so the chain
+check before it has to hold there too: the workspace and its agent-home
+ancestors must be real directories, refusing a reparse point of any kind as
+well as a symlink, as the other harnesses' directory checks do.  The symlink
+term alone does not cover a reparse point that ``lstat`` reports as a
+directory, and ``resolve`` follows a reparse point onto its target, where the
+privacy check would judge the target and sign it as the workspace.  When the
+kernel cannot inspect privacy at all (its descriptor check raises
+``OSError``), the root is refused as a trust error: trust is resolved
+synchronously while the worker process is constructed, and a bare
+``OSError`` from there is an ordinary failed start that the actor retries
+with backoff and charges to the failure budget, while the trust error is a
+permanent start precondition failure that stops at once and is not retried.
+An ``OSError`` from ``stat`` of the root is left as it was.
 """
 
 from __future__ import annotations
