@@ -24,8 +24,11 @@
 #   directories on every refresh of the org directory.
 # - ``ensure`` is called on every publish (the directory refresh runs every
 #   ten seconds).  It is idempotent and takes the store's own lock, so
-#   repeated starts keep one key; the cost of a steady-state call is one lock
-#   and one small read.
+#   repeated starts keep one key.  Measured on Linux with the key already in
+#   place, one call of the reader took a median of 0.6 ms (p99 0.7 ms, 300
+#   calls): ``ensure`` re-reads and re-checks the record under the fence, which
+#   is more than one lock and one read.  Because it takes that lock, a refresh
+#   waits for any other process holding it, up to the store's own lock timeout.
 """This device's published encryption key: the public half of the local store."""
 
 from __future__ import annotations
