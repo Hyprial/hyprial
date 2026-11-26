@@ -5,6 +5,10 @@
 # - Parameter validation is performed by METHOD_REGISTRY schema enforcement
 #   (ipc_param_validation="schema") before reaching this handler; domain
 #   invariants are re-checked inside ServiceGrantService.
+# - S3 fix (2026-11-26, critic N1, N2): every failure leaves the handler as a
+#   DaemonRequestError whose text never names a local path; an unexpected
+#   exception is reported by type name only. The service device id comes only
+#   from the local device record; there is no node_id fallback.
 """Daemon IPC wiring for ``service.grant``, ``service.revoke``, and ``service.grants``."""
 
 from __future__ import annotations
@@ -31,29 +35,33 @@ def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
     return quarantine
 
 
-def _local_device_id(app: Any, home: Path) -> str:
+def _local_device_id(home: Path) -> str:
     try:
         record = read_device_record(home)
-    except ValueError:
+    except (OSError, ValueError):
         record = None
-    if record is not None and record.device_id:
-        return record.device_id
-    node_id = getattr(app, "node_id", None)
-    if isinstance(node_id, str) and node_id:
-        return node_id
-    raise DaemonRequestError(
-        ipc_errors.SERVICE_DEVICE_UNAVAILABLE,
-        "local device record is not available",
-    )
+    if record is None or not isinstance(record.device_id, str) or not record.device_id:
+        raise DaemonRequestError(
+            ipc_errors.SERVICE_DEVICE_UNAVAILABLE,
+            "local device record is not available",
+        )
+    return record.device_id
 
 
 def _exposed_ports(app: Any) -> frozenset[int]:
     exposure_store = getattr(app, "_exposure_store", None)
     if exposure_store is None:
         return frozenset()
+    try:
+        items = exposure_store.list()
+    except Exception as error:
+        raise DaemonRequestError(
+            ipc_errors.SERVICE_UNAVAILABLE,
+            f"exposure state is unavailable ({type(error).__name__})",
+        ) from None
     return frozenset(
         item["port"]
-        for item in exposure_store.list()
+        for item in items
         if isinstance(item, Mapping) and type(item.get("port")) is int
     )
 
@@ -67,7 +75,7 @@ def _build_service(app: Any) -> ServiceGrantService:
             ipc_errors.SERVICE_NOT_AUTHORIZED,
             "daemon owner identity is not configured",
         )
-    device_id = _local_device_id(app, home)
+    device_id = _local_device_id(home)
     log_fn = getattr(app, "_log", None)
     logger = (
         (lambda level, component, event, **fields: log_fn(level, component, event, **fields))
@@ -94,6 +102,18 @@ def handle_service_grants(
 ) -> dict[str, Any]:
     """Dispatch ``service.grant``, ``service.revoke``, and ``service.grants``."""
 
+    try:
+        return _dispatch(app, method, params)
+    except DaemonRequestError:
+        raise
+    except Exception as error:
+        raise DaemonRequestError(
+            ipc_errors.SERVICE_UNAVAILABLE,
+            f"{method} failed ({type(error).__name__})",
+        ) from None
+
+
+def _dispatch(app: Any, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
     service = _build_service(app)
     if method == "service.grant":
         return service.grant(
