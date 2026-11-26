@@ -96,6 +96,7 @@ def test_the_two_reads_are_declared_by_exact_name_and_the_family_stays_open() ->
     assert {
         name for name in METHOD_REGISTRY.names if name.startswith("agent.")
     } == set(agent_catalog.PARTIAL_MIGRATED_METHODS) | {
+        "agent.model.configure", "agent.model.status", "agent.model.cancel",
         "agent.grant.check",
         "agent.grant.visibility",
         "agent.provider.allow",

@@ -1,8 +1,11 @@
 """Synthetic model configuration receipts; no model service is contacted."""
 
+from hashlib import sha256
+
 from hyprial.error import codes
 from hyprial.kernel import MethodExample, MethodExampleError, MethodExampleSet
 
+_DIGEST = sha256(b"example-not-a-credential").hexdigest()
 CONFIG = {"authKind": "connection", "harness": "pi", "mode": "headless",
           "model": "hy4-flash", "connectionRef": "example-connection", "configRevision": 1}
 CONFIGURE = {"name": "worker", "operationId": "configure-example",
@@ -11,11 +14,11 @@ CANCEL = {"name": "worker", "operationId": "configure-example", "expectedBinding
 EMPTY = {"ok": True, "agentId": "a.example", "member": "member-example", "binding": None,
          "operation": None, "cell": {"cellId": "c.example", "revision": 1, "intentMatches": None},
          "cleanupPending": False, "runtime": "not-verified"}
-RECEIPT = {"operationId": "configure-example", "phase": "finalized", "requestDigest": "a" * 64,
+RECEIPT = {"operationId": "configure-example", "phase": "finalized", "requestDigest": _DIGEST,
            "expectedBindingRevision": 0, "resultBindingRevision": 1, "coordinationPhase": "applied",
            "expectedCellRevision": 1, "observedCellRevision": 2}
 SAVED = {**EMPTY, "binding": {"bindingRef": "mb.example", "bindingRevision": 1,
-         "configuration": {**CONFIG, "intentDigest": "b" * 64}}, "operation": RECEIPT,
+         "configuration": {**CONFIG, "intentDigest": _DIGEST}}, "operation": RECEIPT,
          "cell": {"cellId": "c.example", "revision": 2, "intentMatches": True}}
 CANCELLED = {**EMPTY, "operation": {**RECEIPT, "phase": "cancelled",
              "resultBindingRevision": 0, "coordinationPhase": "compensated", "observedCellRevision": 3}}

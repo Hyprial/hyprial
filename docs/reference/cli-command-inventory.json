@@ -29,17 +29,17 @@
     "workflow"
   ],
   "counts": {
-    "nodes": 260,
-    "rootInclusiveNodes": 261,
-    "leaves": 209,
-    "groups": 51,
-    "groupsIncludingRoot": 52,
+    "nodes": 264,
+    "rootInclusiveNodes": 265,
+    "leaves": 212,
+    "groups": 52,
+    "groupsIncludingRoot": 53,
     "executableGroups": 4,
-    "entries": 213,
+    "entries": 216,
     "hiddenNodes": 6,
     "directHiddenNodes": 3,
     "hiddenEntries": 4,
-    "visibleEntries": 209,
+    "visibleEntries": 212,
     "rootParams": 0
   },
   "commands": [
@@ -4325,7 +4325,7 @@
           "multiple": false,
           "hidden": false,
           "type": "str",
-          "help": "Config key (supported: autoUpgrade, lsRemoteTimeoutSeconds, forwarding.mode, org.fetchSource, workerProxy.url, workerProxy.vendors, workerProxy.noProxy, dispatch.reminder).",
+          "help": "Config key (supported: autoUpgrade, lsRemoteTimeoutSeconds, forwarding.mode, org.fetchSource, workerProxy.url, workerProxy.vendors, workerProxy.noProxy, dispatch.reminder, modelBinding.operationLimit).",
           "nargs": 1,
           "metavar": null,
           "default": null,
@@ -4390,7 +4390,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.agent.create",
-      "help": "Register a new agent on this machine.\n\nThe name is the agent's identity within agent:<owner>:<machine>:, and only\none agent may hold it -- creating a second agent under a name already in\nuse fails, whether or not anything is currently running under it. The name\nis freed only by 'hyprial agent destroy'.\n\nWithout --config, creation materializes a minimal explicit config in the\nagent home so claude, codex, and pi use agent-home P2. Without --cwd, the\nagent home's workspace directory is used.\n\nA name says nothing about a harness: an agent called 'pi-ds4' is just an\nagent called 'pi-ds4', and it can run on claude. To move an existing agent\nto another harness, start it there; that rebinds the same agent rather\nthan creating a new one, so it is not a name conflict.\n\nCredentials: a captured Claude default ('agent provider login claude\n--actor OWNER --setup-token --default') grants its token to new agents with\n--preferred-harness claude. A captured native default copies the named\nowner's login instead. PAC and lifecycle creation use the same policy.\nLegacy provider-name defaults still seed from host login in this CLI only;\nre-run provider login --default --actor OWNER to bind a Claude source for PAC.",
+      "help": "Register a new agent on this machine.\n\nThe name is the agent's identity within agent:<owner>:<machine>:, and only\none agent may hold it -- creating a second agent under a name already in\nuse fails, whether or not anything is currently running under it. The name\nis freed only by 'hyprial agent destroy'.\n\nWithout --config, creation materializes a minimal explicit config in the\nagent home so claude, codex, and pi use agent-home P2. Without --cwd, the\nagent home's workspace directory is used.\n\nA name says nothing about a harness: an agent called 'pi-ds4' is just an\nagent called 'pi-ds4', and it can run on claude. To move an existing agent\nto another harness, start it there; that rebinds the same agent rather\nthan creating a new one, so it is not a name conflict.\n\nCredentials: a captured Claude default ('agent provider login claude\n--actor OWNER --setup-token --default') grants its token to new agents with\n--preferred-harness claude. A captured native default copies the named\nowner's login instead. PAC and lifecycle creation use the same policy.\nLegacy provider-name defaults still seed from host login in this CLI only;\nre-run provider login --default --actor OWNER to bind a Claude source for PAC.\nExplicit --connection/--native-auth disables all defaults. Supply --model,\n--preferred-harness and --operation-id. Creation does not start a process.\nA missing native login leaves a visible unconfigured agent; log in to that\nagent, then use agent model configure. Do not repeat agent create.",
       "params": [
         {
           "opts": [
@@ -4475,6 +4475,78 @@
           "hidden": false,
           "type": "str",
           "help": "Model id preference.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--connection"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Saved connection reference; disables default credentials.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--config-revision"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int",
+          "help": "Saved connection revision; required only with --connection.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--native-auth"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Native login slot for this agent; never copies another login.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--operation-id"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Unique model configuration operation ID.",
           "nargs": 1,
           "metavar": null,
           "default": null,
@@ -8333,6 +8405,431 @@
           "hidden": false,
           "type": "boolean",
           "help": "Emit JSON only.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        }
+      ]
+    },
+    {
+      "path": "agent model",
+      "family": "agent",
+      "kind": "group",
+      "hidden": false,
+      "directHidden": false,
+      "executable": false,
+      "callbackModule": null,
+      "help": "Configure a model connection or native login; saving does not start the agent.",
+      "params": []
+    },
+    {
+      "path": "agent model configure",
+      "family": "agent",
+      "kind": "leaf",
+      "hidden": false,
+      "directHidden": false,
+      "executable": true,
+      "callbackModule": "hyprial.shell.impl.cli.commands.agent.model",
+      "help": "Save an exact connection or native login without starting the agent.",
+      "params": [
+        {
+          "opts": [
+            "name"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Agent name or URI.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--model"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Exact model ID; never inferred or substituted.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--connection"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Saved connection reference, not a Key.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--config-revision"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int",
+          "help": "Saved connection revision; required only with --connection.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--native-auth"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Exact nativeAuthRef from the agent's Auth inventory.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--binding-revision"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int",
+          "help": "Current binding revision; 0 for first configuration.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--cell-revision"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int",
+          "help": "Current agent Cell revision.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--operation-id"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Unique ID; retry the same ID and exact input after read-back.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--harness"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Harness to bind; unsupported combinations are refused.",
+          "nargs": 1,
+          "metavar": null,
+          "default": "pi",
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--mode"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Execution mode to bind.",
+          "nargs": 1,
+          "metavar": null,
+          "default": "headless",
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--member"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Cell member ID; omit only when the target is unique.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--json"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Emit one machine-readable JSON result.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        }
+      ]
+    },
+    {
+      "path": "agent model status",
+      "family": "agent",
+      "kind": "leaf",
+      "hidden": false,
+      "directHidden": false,
+      "executable": true,
+      "callbackModule": "hyprial.shell.impl.cli.commands.agent.model",
+      "help": "Read the saved binding and durable operation receipt.",
+      "params": [
+        {
+          "opts": [
+            "name"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Agent name or URI.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--member"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Cell member ID; omit only when the target is unique.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--operation-id"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Operation ID whose durable receipt to read.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--json"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Emit one machine-readable JSON result.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        }
+      ]
+    },
+    {
+      "path": "agent model cancel",
+      "family": "agent",
+      "kind": "leaf",
+      "hidden": false,
+      "directHidden": false,
+      "executable": true,
+      "callbackModule": "hyprial.shell.impl.cli.commands.agent.model",
+      "help": "Cancel a prepared configuration after reconciling its Cell result.",
+      "params": [
+        {
+          "opts": [
+            "name"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Agent name or URI.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--operation-id"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Prepared operation ID to cancel.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--binding-revision"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int",
+          "help": "Current binding revision for cancellation.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--member"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Cell member ID; omit only when the target is unique.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--json"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Emit one machine-readable JSON result.",
           "nargs": 1,
           "metavar": null,
           "default": false,

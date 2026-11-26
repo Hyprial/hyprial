@@ -50,6 +50,7 @@ ROOT = Path(__file__).resolve().parents[4]
 CODE = "USER_AGENT_IMMUTABLE"
 
 REFUSED_CATALOG = frozenset({
+    "agent.model.configure", "agent.model.cancel",
     "agent.attach", "agent.destroy.preview",
     "agent.detach", "agent.harness-args.clear",
     "agent.harness-args.set", "agent.provider.allow", "agent.provider.login",
@@ -65,6 +66,7 @@ REVOKES = frozenset({"agent.provider.revoke", "agent.revoke", "agent.secret.revo
 """Allowed on purpose: revocation only removes (``test_revoke_allowed``)."""
 NAME_GATED = frozenset({"agent.create", "agent.start.preflight"})
 ALLOWED = REVOKES | frozenset({
+    "agent.model.status",
     "agent.destroy",
     "agent.get", "agent.grant.check", "agent.grant.visibility", "agent.grants",
     "agent.harness-args.get", "agent.harness-args.validate", "agent.home-census",
@@ -311,6 +313,13 @@ def _ensured(tmp_path: Path):  # type: ignore[no-untyped-def]
 
 def _attempts(target: str) -> dict[str, dict[str, object]]:
     return {
+        "agent.model.configure": {"name": target, "operationId": "example-operation",
+            "expectedBindingRevision": 0, "expectedCellRevision": 1,
+            "configuration": {"authKind": "connection", "harness": "pi", "mode": "headless",
+                              "model": "example-model", "connectionRef": "example-connection",
+                              "configRevision": 1}},
+        "agent.model.cancel": {"name": target, "operationId": "example-operation",
+                               "expectedBindingRevision": 0},
         "agent.attach": {"name": target},
         "agent.destroy.preview": {"name": target},
         "agent.detach": {"name": target},
