@@ -9,6 +9,14 @@
 #   DaemonRequestError whose text never names a local path; an unexpected
 #   exception is reported by type name only. The service device id comes only
 #   from the local device record; there is no node_id fallback.
+# - S4-py (2026-11-26): a grant or a revoke that succeeded is a trigger. The
+#   handler marks the admission sets stale and offers the enforcement cadence
+#   a tick, through the application's own method when it has one; it never
+#   derives on the IPC thread and the reply never waits for the push. A
+#   trigger that cannot be delivered is not an error: the maintenance tick
+#   re-derives within its interval. The service builder and the quarantine
+#   accessor are public because the admission wiring builds the same service
+#   and reads the same directory diagnostics; there is one implementation.
 """Daemon IPC wiring for ``service.grant``, ``service.revoke``, and ``service.grants``."""
 
 from __future__ import annotations
@@ -27,7 +35,9 @@ from hyprial.kernel import DaemonRequestError, ipc_errors
 from .service import ServiceGrantService
 
 
-def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
+def quarantine_for(app: Any) -> InvalidDeviceQuarantine:
+    """The application's device quarantine, created on first use."""
+
     quarantine = getattr(app, "_org_directory_quarantine", None)
     if quarantine is None:
         quarantine = InvalidDeviceQuarantine()
@@ -66,7 +76,9 @@ def _exposed_ports(app: Any) -> frozenset[int]:
     )
 
 
-def _build_service(app: Any) -> ServiceGrantService:
+def build_service(app: Any) -> ServiceGrantService:
+    """The service grant service over the application's current facade and owner."""
+
     fs = app._require_orgfs_runtime().facade
     home = Path(app.hyprial_home)
     owner = getattr(app, "owner", None)
@@ -84,7 +96,7 @@ def _build_service(app: Any) -> ServiceGrantService:
     )
     store = OrgFsDirectoryStore(
         fs,
-        invalid_devices=_invalid_device_diagnostics(app),
+        invalid_devices=quarantine_for(app),
         logger=logger,
     )
     return ServiceGrantService(
@@ -97,13 +109,20 @@ def _build_service(app: Any) -> ServiceGrantService:
     )
 
 
+_TRIGGERS = frozenset({"service.grant", "service.revoke"})
+
+
 def handle_service_grants(
     app: Any, method: str, params: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Dispatch ``service.grant``, ``service.revoke``, and ``service.grants``."""
+    """Dispatch ``service.grant``, ``service.revoke``, and ``service.grants``.
+
+    A grant or a revoke that succeeded has changed what the exposing device
+    must admit, so it ends by asking the application to re-derive.
+    """
 
     try:
-        return _dispatch(app, method, params)
+        result = _dispatch(app, method, params)
     except DaemonRequestError:
         raise
     except Exception as error:
@@ -111,10 +130,32 @@ def handle_service_grants(
             ipc_errors.SERVICE_UNAVAILABLE,
             f"{method} failed ({type(error).__name__})",
         ) from None
+    if method in _TRIGGERS:
+        _admission_changed(app, method)
+    return result
+
+
+def _admission_changed(app: Any, method: str) -> None:
+    """Tell the application the admission inputs changed; never fails the write."""
+
+    trigger = getattr(app, "_service_admission_changed", None)
+    try:
+        if callable(trigger):
+            trigger()
+    except Exception as error:  # noqa: BLE001 - the grant is already durable
+        log_fn = getattr(app, "_log", None)
+        if callable(log_fn):
+            log_fn(
+                "warn",
+                "service",
+                "service.grant.admission_trigger_failed",
+                method=method,
+                errorType=type(error).__name__,
+            )
 
 
 def _dispatch(app: Any, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
-    service = _build_service(app)
+    service = build_service(app)
     if method == "service.grant":
         return service.grant(
             org=params["org"],
@@ -142,4 +183,4 @@ def _dispatch(app: Any, method: str, params: Mapping[str, Any]) -> dict[str, Any
     )
 
 
-__all__ = ["handle_service_grants"]
+__all__ = ["build_service", "handle_service_grants", "quarantine_for"]

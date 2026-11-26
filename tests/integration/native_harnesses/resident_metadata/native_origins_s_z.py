@@ -167,4 +167,11 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/service_grants/consumer/keys.py": ("resident", ("new-module: service grant S5 granted Key entry and ownership ledger",)),
     "daemon/impl/service_grants/consumer/maintenance.py": ("resident", ("new-module: service grant S5 recipient-side derived source",)),
     "daemon/impl/service_grants/consumer/startup.py": ("resident", ("new-module: service grant S5 startup grant check",)),
+    "daemon/impl/service_grants/enforcement/__init__.py": ("resident", ("new-module: service grant S4-py admission enforcement package",)),
+    "daemon/impl/service_grants/enforcement/derive.py": ("resident", ("new-module: service grant S4-py admission derivation",)),
+    "daemon/impl/service_grants/enforcement/enforcer.py": ("resident", ("new-module: service grant S4-py admission enforcer",)),
+    "daemon/impl/service_grants/enforcement/models.py": ("resident", ("new-module: service grant S4-py admission value types",)),
+    "daemon/impl/service_grants/enforcement/reader.py": ("resident", ("new-module: service grant S4-py own-grant reader",)),
+    "daemon/impl/service_grants/enforcement/roster.py": ("resident", ("new-module: service grant S4-py roster key lookup",)),
+    "daemon/impl/service_grants/enforcement/wiring.py": ("resident", ("new-module: service grant S4-py application wiring",)),
 }

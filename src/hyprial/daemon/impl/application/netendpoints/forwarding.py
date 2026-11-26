@@ -1,3 +1,20 @@
+# Decision notes (service grant S4-py, 2026-11-26):
+# - The daemon owns one admission enforcer for the lifetime of its forwarding
+#   supervisor. It is created with the supervisor, because the supervisor's
+#   on_installed hook is what re-pushes the admission sets after a (re)spawn.
+# - An immediate trigger (a grant, a revoke, a new exposure, the sidecar being
+#   installed) only marks the sets stale and hands one tick to a bounded
+#   cadence: the derivation, with its bounded roster read, never runs on an
+#   IPC thread, on the sidecar's relaunch path or on the scheduler thread.
+# - The maintenance tick drives the same cadence without marking anything
+#   stale, which gives the throttled re-derivation that picks up directory
+#   changes, expiry and a roster that completed after the grant was written.
+# - An unexpose asks the enforcer to forget the port and to revoke this
+#   device's grants for it. That is best effort: a failure there is logged
+#   and never fails the unexpose.
+# - The enforcer is a forwarding concern that reads the org directory, so the
+#   inputs it needs are taken from the same public places the service grant
+#   IPC handler takes them from.
 """Forwarding sidecar operations: supervisor start, exposure warnings, redial and status."""
 
 from __future__ import annotations
@@ -78,6 +95,10 @@ class _ForwardingOpsMixin:
             # its side of the wire here: idempotent, unix-only, before
             # any slots-carrying up can leave the process (e2e 2026-10-08).
             ensure_slots_dir(self.hyprial_home)
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import (
+            install as install_service_admission,
+        )
+
         supervisor = ForwardingSidecarSupervisor(
             {**os.environ, **self._forwarding_environment},
             event_log=lambda level, event, **fields: self._log(
@@ -91,9 +112,50 @@ class _ForwardingOpsMixin:
             slot_transport=slot_transport(),
             on_slots_reported=lambda ids: record_tcp_slot_ports(self, ids),
             up_slots=lambda: slot_store_for_app(self).specs(),
+            on_installed=self._service_admission_installed,
         )
         self._forwarding_supervisor = supervisor
+        install_service_admission(self)
         supervisor.ensure_started()
+
+    def _service_admission_installed(self) -> None:
+        """The sidecar is (re)installed: its exposures admit nobody until re-derived.
+
+        The supervisor isolates its installed hook and reports a failure
+        itself, so this one does not repeat that.
+        """
+
+        self._service_admission_changed()
+
+    def _service_admission_changed(self) -> None:
+        """The inputs changed: the sets are stale. Never derives, never raises.
+
+        Called by the service grant handler after a grant or a revoke and by
+        the exposure path after a new exposure.
+        """
+
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import mark_stale
+
+        mark_stale(self)
+
+    def _service_port_unexposing(self, port: int, remove: Any) -> Any:
+        """Take a port off the sidecar with no admission derivation in flight.
+
+        ``remove`` is the caller's step (sidecar unexpose, exposure store) and
+        its result or exception is passed through. Once it has succeeded this
+        device's grants for the port are revoked; that part never raises.
+        """
+
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import unexpose_port
+
+        return unexpose_port(self, port, remove)
+
+    def _retire_service_admission(self) -> None:
+        """Close the admission cadence before its sidecar goes away."""
+
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import retire
+
+        retire(self)
 
     def _rebind_forwarding_endpoint(self, listener: str) -> None:
         """Restart the sidecar on the loopback listener chosen after a re-pick."""
@@ -104,6 +166,7 @@ class _ForwardingOpsMixin:
         target = inbound_target_from_listener(listener)
         self._forwarding_environment = self._forwarding_automatic.environment(target)
         if self._forwarding_supervisor is not None:
+            self._retire_service_admission()
             self._forwarding_supervisor.close()
             self._forwarding_supervisor = None
         self._forwarding_start_attempted = False
@@ -340,6 +403,7 @@ class _ForwardingOpsMixin:
         self._retry_degraded_redemption_throttled()
         self._publish_org_directory_if_address_changed()
         self._process_org_leave_requests_throttled()
+        self._offer_service_admission_tick()
         backend = self._forwarding_backend()
         if backend is None:
             return
@@ -372,6 +436,27 @@ class _ForwardingOpsMixin:
             current=list(current),
             restartRequired=current != self._forwarding_dialed,
         )
+
+    def _offer_service_admission_tick(self) -> None:
+        """Offer the admission cadence the maintenance tick, without marking stale.
+
+        The cadence owns the throttle, so this is one non-blocking submit per
+        tick. It is what re-derives after directory changes, expiry and a
+        roster that completed later, and what re-offers a tick an immediate
+        trigger could not get admitted.
+        """
+
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import offer_tick
+
+        try:
+            offer_tick(self)
+        except Exception as error:  # noqa: BLE001 - one concern of the tick
+            self._log(
+                "warn",
+                "service",
+                "service.grant.admission_tick_deferred",
+                errorType=type(error).__name__,
+            )
 
     def _process_org_leave_requests_throttled(self) -> None:
         """§4.3 owner/admin reconcile: fulfil pending org leave requests.

@@ -89,10 +89,29 @@ class Daemon:
         return self.app._forwarding_supervisor
 
     def start(self) -> None:
-        """Start the sidecar the way the first exposure request does."""
+        """Start the sidecar the way the first exposure request does, and let it settle."""
 
         self.app._start_forwarding_supervisor()
         assert self.started.is_set()
+        self.settle()
+
+    def settle(self, timeout: float = 10.0) -> None:
+        """Wait until the admission cadence has finished every tick it was offered.
+
+        A tick that the cadence's actor has accepted but not yet started is
+        not "active", so "not active" alone is not idle: the count of offered
+        ticks has to equal the count of finished ones. Without a cadence
+        there is nothing to wait for, which is itself the finding a test then
+        makes on its own assertion.
+        """
+
+        cadence = getattr(self.app, "_service_admission_cadence", None)
+        if cadence is None:
+            return
+        deadline = time.monotonic() + timeout
+        while not _settled(cadence) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert _settled(cadence), "admission cadence did not settle"
 
     def exposes(self, *, port: int | None = None) -> list[dict[str, Any]]:
         if not self.receipt.exists():
@@ -115,19 +134,44 @@ class Daemon:
     def logged(self, event: str) -> list[tuple[str, dict[str, Any]]]:
         return [(level, fields) for level, _c, name, fields in self.events if name == event]
 
+    def wire_ops(self, port: int) -> list[str]:
+        """The ``expose``/``unexpose`` commands for ``port``, in the order the sidecar got them.
+
+        The fixture applies its commands in that order, so the last entry is
+        whether the port is exposed on the sidecar now.
+        """
+
+        if not self.receipt.exists():
+            return []
+        commands = [json.loads(line) for line in self.receipt.read_text().splitlines()]
+        return [
+            command["op"]
+            for command in commands
+            if command["op"] in {"expose", "unexpose"} and command.get("port") == port
+        ]
+
     def close(self) -> None:
         """Close what starting the sidecar opened, then the application's domains.
 
         The maintenance scheduler and the sidecar are started by this test, not
         by ``DaemonApplication`` start-up, so they are closed here in the order
-        the daemon's own shutdown uses: effects, scheduler, sidecar.
+        the daemon's own shutdown uses: admission cadence, scheduler, sidecar.
         """
 
+        cadence = getattr(self.app, "_service_admission_cadence", None)
+        if cadence is not None:
+            cadence.close(5.0)
+            self.app._service_admission_cadence = None
         if self.app._forwarding_supervisor is not None:
             self.app._forwarding_supervisor.close()
             self.app._forwarding_supervisor = None
         self.app._maintenance_scheduler.shutdown(5.0)
         self.app._agent_session_domains.close()
+
+
+def _settled(cadence: Any) -> bool:
+    projection = cadence.projection()
+    return projection.accepted == projection.completed and not projection.active
 
 
 def _device_key(home: Path) -> None:

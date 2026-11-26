@@ -165,7 +165,6 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
     ]
     # Protocol v3: the Python-side "none" went out as "" on the wire.
     assert commands[1]["proxyProtocol"] == ""
-    # Protocol v7: the caller's explicit admission goes out as it was given.
     assert commands[1]["admission"] == "allow"
 
 
