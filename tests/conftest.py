@@ -61,6 +61,23 @@ directory context, so cyclic garbage holding SQLite handles is reclaimed before
 the root is deleted. Values still pinned by ``item.funcargs`` are released only
 by ``_fd_hygiene``; whether any of them hold files under the root on real
 Windows is UNKNOWN. POSIX keeps the previous order and adds no collection.
+
+Decision (2026-11-26, PR #78 gate run 45792478153): ``_remove_tmp_path`` retries
+``shutil.rmtree`` for at most ``_RMDIR_RETRY_BACKOFF`` (one second in total)
+and only when the error is ``ENOTEMPTY``, ``EBUSY`` or ``EEXIST``.  Those three
+mean "something else is still inside or is using this directory right now": on
+that run a round thread of the test that had just passed was still writing its
+``state/`` directory while the reclamation removed it, so ``rmdir`` reported a
+directory that was no longer empty, the error left ``pytest_runtest_protocol``
+and the xdist worker died with the two tests behind it unresolved.  Any other
+``OSError`` says the removal cannot succeed by trying again (``EACCES``,
+``EPERM``, ``EROFS``, ``ENOSPC``) and is raised at once, unaltered and
+unlogged.  An error that outlives the window is raised exactly as it was
+caught, with its errno, filename and traceback: this hook has no caller that
+could act on a swallowed error, so hiding one would silently keep a passed
+test's directory and turn a real failure into lost disk.  ``FileNotFoundError``
+keeps meaning "already gone".  The clock and the sleep are module-level names
+so a unit test can exhaust the window without waiting for it.
 """
 
 from __future__ import annotations
@@ -69,6 +86,7 @@ from tests.support.runtime._tmp import hyprial_test_tmp_root
 
 import asyncio
 import contextlib
+import errno
 import gc
 import hashlib
 import json
@@ -96,6 +114,11 @@ from tests.support.runtime.environment import UNIT_USER_ID  # noqa: E402
 _TMP_PATH_STASH = pytest.StashKey[Path]()
 _TEST_FAILED_STASH = pytest.StashKey[bool]()
 
+_RMDIR_RETRY_ERRNOS = frozenset({errno.ENOTEMPTY, errno.EBUSY, errno.EEXIST})
+_RMDIR_RETRY_BACKOFF = (0.01, 0.02, 0.04, 0.08, 0.16, 0.25, 0.44)
+_remove_tmp_path_clock = time.monotonic
+_remove_tmp_path_sleep = time.sleep
+
 
 def _remove_tmp_path(path: Path) -> None:
     def onexc(function, target, _exc_info):
@@ -109,10 +132,21 @@ def _remove_tmp_path(path: Path) -> None:
         except FileNotFoundError:
             pass
 
-    try:
-        shutil.rmtree(path, onexc=onexc)
-    except FileNotFoundError:
-        pass
+    deadline = _remove_tmp_path_clock() + sum(_RMDIR_RETRY_BACKOFF)
+    for attempt in range(len(_RMDIR_RETRY_BACKOFF) + 1):
+        try:
+            shutil.rmtree(path, onexc=onexc)
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if error.errno not in _RMDIR_RETRY_ERRNOS or attempt == len(_RMDIR_RETRY_BACKOFF):
+                raise
+            pause = _RMDIR_RETRY_BACKOFF[attempt]
+            if _remove_tmp_path_clock() + pause > deadline:
+                raise
+            _remove_tmp_path_sleep(pause)
+        else:
+            return
 
 
 @pytest.hookimpl(hookwrapper=True)

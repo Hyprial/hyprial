@@ -19,32 +19,36 @@ def _fixture_check(tmp_path, *roots):
     )
 
 
-def test_retired_fixture_absent_roots_skip(tmp_path) -> None:
+def test_retired_fixture_absent_roots_skip(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     result = _fixture_check(tmp_path, "app", "src/gui")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "present=false"
     assert "absent" in result.stderr
 
 
-def test_retired_fixture_present_root_without_lock_is_red(tmp_path) -> None:
+def test_retired_fixture_present_root_without_lock_is_red(tmp_path, monkeypatch) -> None:
     (tmp_path / "src/gui").mkdir(parents=True)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     result = _fixture_check(tmp_path, "app", "src/gui")
     assert result.returncode == 1
     assert "src/gui/package-lock.json" in result.stderr
 
 
-def test_retired_fixture_complete_roots_are_present(tmp_path) -> None:
+def test_retired_fixture_complete_roots_are_present(tmp_path, monkeypatch) -> None:
     for root in ("app", "src/gui"):
         (tmp_path / root).mkdir(parents=True)
         (tmp_path / root / "package-lock.json").write_text("{}")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     result = _fixture_check(tmp_path, "app", "src/gui")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "present=true"
 
 
-def test_retired_fixture_partial_deletion_is_red(tmp_path) -> None:
+def test_retired_fixture_partial_deletion_is_red(tmp_path, monkeypatch) -> None:
     (tmp_path / "src/gui").mkdir(parents=True)
     (tmp_path / "src/gui/package-lock.json").write_text("{}")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     result = _fixture_check(tmp_path, "app", "src/gui")
     assert result.returncode == 1
     assert "app" in result.stderr
