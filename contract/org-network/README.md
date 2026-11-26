@@ -68,6 +68,43 @@ The one-time offline migration and subsequent sidecar membership commits check
 identity/address consistency. Do not use Directory conflict repair as an
 implicit authority transfer or key reissue.
 
+A directory row may additionally carry a device's encryption key as the
+paired keys `encryptionKeyId` and `encryptionPublicKey`: either both are
+present or neither. The key is an X25519 key of the `user` kind, the one
+kind that can open a sealed credential on the device. `encryptionPublicKey`
+is the 32 raw bytes of the public key as standard base64, the encoding the
+local key store already uses, and `encryptionKeyId` is `x25519:` followed by
+the first 32 lowercase hex digits of the SHA-256 of those bytes. A reader
+refuses a row where only one key is present, where either is malformed, where
+the id is not the digest of the public key, or where the public key is a
+low-order point; such a row is invalid as a whole. The key set of a row stays
+closed: `encryptionKeyPrivate` or any other unknown key is rejected.
+
+A device publishes the pair once it holds a committed account and a device
+record that belongs to that account (settings `owner`, `identityIssuer` and
+`userId`, and the record's `deviceUid`). A device without them publishes a
+row without the pair, which stays valid, and its publish does not fail. The
+pair carries no switch of its own: an upgraded daemon that has them publishes
+the pair on its next `publish_self`, and it does so once on every serving
+start.
+
+Mixed-version window. Running the directory model of a build that predates
+the two keys on a row that carries them raises `directory device record has
+unknown keys: ['encryptionKeyId', 'encryptionPublicKey']`, and the same model
+accepts the row without them; that much was measured. What follows from it is
+read from the reader code and was not run against two daemon versions: such a
+daemon records the row as an `invalid-device-record` data problem and leaves
+that device out of its directory view until it upgrades, while its other rows
+are not affected. Because no switch delays the pair, every device of an org
+has to be upgraded together, before the first upgraded device republishes its
+row. The migration steps are in
+`docs/guides/migration-device-encryption-key.md`.
+
+A daemon on a build that publishes the pair but does not know it in its
+`org.network` result schema is not a supported state: the result is checked
+against a closed schema at request time, and such an answer fails as a
+whole. The schema and the publication change ship together.
+
 The response keeps the existing pane values and adds `paneStatus`, keyed by
 `directory`, `mappedPeers`, and `sidecar`. Each status is one of:
 
