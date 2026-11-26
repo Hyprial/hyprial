@@ -1,6 +1,7 @@
-import { createAgentsApi, createContractAgentGateway } from '../../../../src/features/agents/impl/api';
+import { createAgentsApi, createContractAgentGateway, type AgentsApi } from '../../../../src/features/agents/impl/api';
 import { AgentRequestError } from '../../../../src/features/agents/impl/api/agent-writes';
 import { AGENTS_LIST_ROWS_DATA } from '../../../fixtures/agents/agent-list';
+import { createStartupMockAgents } from '../../../../src/dev/mock/startup-agents';
 
 const configuration = { authKind: 'connection', harness: 'pi', mode: 'headless', model: 'hy4-flash', connectionRef: '0123456789abcdef0123456789abcdef', configRevision: 3 } as const;
 const request = { configuration, operationId: 'gui-configure-1' };
@@ -43,4 +44,21 @@ it('reads native targets only for the current agent, with explicit version', asy
 it('does not offer model ports when injected handlers are absent', () => {
   const api = createAgentsApi({ agent: {} } as never);
   expect(api.modelStatus).toBeUndefined(); expect(api.configureModel).toBeUndefined(); expect(api.cancelModel).toBeUndefined();
+});
+it('keeps startup preview legacy capabilities usable without advertising model bindings', async () => {
+  const { api } = createStartupMockAgents();
+  const capabilities: AgentsApi = api;
+  expect(capabilities.modelStatus).toBeUndefined();
+  expect(capabilities.configureModel).toBeUndefined();
+  expect(capabilities.cancelModel).toBeUndefined();
+  expect(capabilities.nativeTargets).toBeUndefined();
+  const created = await api.create({ name: 'preview-worker', preferredHarness: 'pi', provider: 'deepseek', model: 'deepseek-flash' });
+  expect(created.created).toBe(true);
+  expect(await api.list()).toMatchObject([{ actor: created.actor, preferredHarness: 'pi', model: 'deepseek-flash' }]);
+  await api.allowProvider(created.entity.uri, 'deepseek', { keyId: 'deepseek-official:DEEPSEEK_API_KEY', grantId: 'preview-grant', revision: 1 });
+  expect(await api.providerStatus(created.entity.uri)).toHaveLength(1);
+  expect(await api.start(created.actor, { harness: 'pi', provider: 'deepseek', model: 'deepseek-flash', cwd: '/preview/work', approve: true })).toMatchObject({ accepted: true, running: true });
+  expect((await api.list())[0].runState.runtime).toBe('online');
+  expect((await api.stop(created.actor)).removed).not.toHaveLength(0);
+  expect((await api.list())[0].runState.runtime).toBe('offline');
 });

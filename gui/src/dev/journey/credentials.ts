@@ -5,7 +5,7 @@ import { createMockSharedCredentialsApi } from '../mock/agent-settings';
 
 type Grant = Awaited<ReturnType<Required<AgentsApi>['providerStatus']>>[number];
 
-export function createJourneyCredentials(directory: Required<AgentsApi>) {
+export function createJourneyCredentials(directory: Pick<Required<AgentsApi>, 'list'>) {
   const stored = createMockSharedCredentialsApi({ entries: [], authGrants: [] });
   const grants = new Map<string, Map<string, Grant>>();
   async function actorOf(selector: string) {

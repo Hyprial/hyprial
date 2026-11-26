@@ -66,6 +66,36 @@ try {
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ width, passed: true, driver: 'canonical-contract-mock', pageErrors: errors }));
     await page.close();
+    const legacy = await browser.newPage({ viewport: { width, height: 900 } });
+    const legacyErrors = [];
+    legacy.on('pageerror', error => legacyErrors.push(error.message));
+    entry.searchParams.delete('pending');
+    entry.searchParams.set('source', 'startup');
+    await legacy.goto(entry.href);
+    await legacy.getByRole('button', { name: 'Agent', exact: true }).click();
+    await legacy.getByRole('button', { name: '创建 Agent', exact: true }).click();
+    await legacy.getByLabel('名称', { exact: true }).fill(`preview-${width}`);
+    await legacy.getByLabel('harness', { exact: true }).click();
+    await legacy.getByRole('option', { name: 'pi', exact: true }).click();
+    await legacy.getByLabel('模型', { exact: true }).waitFor();
+    assert.equal(await legacy.getByLabel('模型 ID', { exact: true }).count(), 0);
+    await legacy.screenshot({ path: resolve(evidence, `startup-create-${width}.png`) });
+    await legacy.getByRole('button', { name: '创建 Agent', exact: true }).click();
+    await legacy.getByRole('button', { name: '启动', exact: true }).waitFor();
+    assert.equal(await legacy.getByRole('heading', { name: '模型配置', exact: true }).count(), 0);
+    await legacy.getByRole('button', { name: '启动', exact: true }).click();
+    const legacyStart = legacy.getByRole('dialog', { name: '启动 Agent' });
+    await legacyStart.waitFor();
+    await legacyStart.getByLabel('工作目录', { exact: true }).fill('/preview/work');
+    await legacyStart.getByRole('checkbox').check();
+    await legacyStart.getByRole('button', { name: '保存并启动', exact: true }).click();
+    await legacyStart.waitFor({ state: 'hidden' });
+    await legacy.getByRole('button', { name: '停止', exact: true }).click();
+    await legacy.getByRole('button', { name: '启动', exact: true }).waitFor();
+    await legacy.screenshot({ path: resolve(evidence, `startup-stopped-${width}.png`) });
+    assert.deepEqual(legacyErrors, []);
+    console.log(JSON.stringify({ width, passed: true, driver: 'legacy-startup-preview', pageErrors: legacyErrors }));
+    await legacy.close();
   }
 } finally {
   await browser.close();

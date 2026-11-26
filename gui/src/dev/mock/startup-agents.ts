@@ -1,11 +1,8 @@
 /**
  * Development-only Agent directory for the init preview.
  *
- * The preview used to render the fixture Agent form, which kept fields the live
- * directory path does not have (职责/所属组织/服务商/模型). This mock feeds the
- * same AgentsApi the connected product uses so the preview exercises the real
- * create form: name + harness + credential, with Key authorization and native
- * login written through the same method names.
+ * This legacy preview exposes only its implemented Agent capabilities.
+ * Model binding previews use the canonical Contract Mock composition.
  *
  * It is an in-memory preview only: no transport, storage, production daemon or
  * daemon credential is touched. Explicitly selected Auth bytes are not retained by this mock.
@@ -87,7 +84,7 @@ function row(
 
 export interface StartupMockAgents {
   readonly nativeAuth: NativeAuthApi;
-  readonly api: Required<AgentsApi>;
+  readonly api: Omit<Required<AgentsApi>, 'modelStatus' | 'configureModel' | 'cancelModel' | 'nativeTargets'>;
   readonly remove: (actor: string) => void;
   readonly chatTargets: (kind: 'agent') => Promise<readonly {
     readonly targetUri: string;
@@ -323,8 +320,9 @@ export function createStartupMockAgents(
       }
     },
   });
+  const { modelStatus, configureModel, cancelModel, nativeTargets, ...api } = createAgentsApi(client);
   return {
-    api: createAgentsApi(client),
+    api,
     nativeAuth: {
       async list(selector) {
         return [...nativeFiles.values()].flatMap(record => {
