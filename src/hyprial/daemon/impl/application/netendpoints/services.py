@@ -1,3 +1,17 @@
+# Decision notes (service grant S5, 2026-11-26, coordinator ruling a):
+# - The worker also starts for a home that has neither a protected record nor
+#   persisted connections when any org holds an effective grant addressed to
+#   this device. Service grants are then its second source (derived_source):
+#   entries and devices derived from the directory, never persisted here.
+# - That startup question is answered only by an OrgFS runtime the daemon has
+#   already built. The startup path has one by now (the delivery plane binds
+#   it in the step before this one), so asking costs a bounded read there and
+#   nothing is built for a home without a grant; has_effective_grant itself
+#   gives up after a short budget and answers "no" on any failure. A wrong
+#   "no" only delays the worker to the first service request, which starts it
+#   regardless.
+# - A home with a record or with connections takes exactly the path it took
+#   before the question is ever asked.
 """Service-connect composition over existing daemon-owned authorities."""
 
 from __future__ import annotations
@@ -8,6 +22,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from hyprial.daemon.impl.service_connect import ServiceManager
+from hyprial.daemon.impl.service_grants.consumer import (
+    GrantConsumer,
+    device_id_of,
+    has_effective_grant,
+)
 
 
 class _ServiceScheduler:
@@ -114,18 +133,21 @@ class _ServiceConnectOpsMixin:
             access_path = (
                 self.hyprial_home / "state" / "tailcat" / "service-access.json"
             )
+            runtime = None
             if not force:
                 snapshot = state.load()
                 if not snapshot.service_connections and not _access_record_present(
                     access_path
                 ):
-                    return
+                    runtime = self._orgfs_runtime
+                    if not self._held_grant(runtime):
+                        return
             # The service manager owns this scheduler. It must not shut down the
             # application's shared maintenance scheduler during its earlier close.
             scheduler = _ServiceScheduler()
             try:
                 manager = ServiceManager(
-                    orgfs=self._require_orgfs_runtime().facade,
+                    orgfs=(runtime or self._require_orgfs_runtime()).facade,
                     state=state,
                     persistence_late_result=self._state_persistence.result,
                     controller_factory=self._service_controller,
@@ -133,11 +155,34 @@ class _ServiceConnectOpsMixin:
                     scheduler=scheduler,
                     service_discovery=self._service_discovery,
                     actor_host=self._agent_session_domains.actor_hosts.host_for("service-connect"),
+                    derived_source=self._grant_source(),
                 )
             except BaseException:
                 scheduler.shutdown(5.0)
                 raise
             self._service_manager = manager
+
+    def _held_grant(self, runtime) -> bool:
+        """The startup answer to "is this device a grant-only recipient?"."""
+
+        return runtime is not None and has_effective_grant(
+            orgfs=runtime.facade,
+            home=self.hyprial_home,
+            owner=self.owner,
+            device_id=device_id_of(self.hyprial_home),
+        )
+
+    def _grant_source(self) -> GrantConsumer:
+        """The grants addressed to this device, as service-connect's second source."""
+
+        return GrantConsumer(
+            orgfs=self._require_orgfs_runtime().facade,
+            home=self.hyprial_home,
+            state_dir=self.state_dir,
+            owner=self.owner,
+            device_id=device_id_of(self.hyprial_home),
+            logger=self._log,
+        )
 
     def _handle_service_connect(
         self, method: str, params: dict[str, object]

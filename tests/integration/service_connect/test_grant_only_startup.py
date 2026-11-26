@@ -22,9 +22,10 @@ from hyprial.daemon.impl.application.netendpoints import services as services_mo
 from hyprial.daemon.impl.bootstrap.discovery import ForwardingEndpoints
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.service_connect import manager as manager_module
 from hyprial.identity import DeviceRecord, write_device_record
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _daemon_dependencies
-from tests.daemon.service_connect.support import FakeController
+from tests.daemon.service_connect.support import FakeController, write_access
 from tests.daemon.service_grants.consumer.support import PORT, as_author, device_row
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
 
@@ -184,19 +185,98 @@ def test_a_grant_for_someone_else_does_not_start_service_connect(tmp_path: Path)
 def test_a_failing_grant_check_is_answered_as_no_and_does_not_block_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The real check meets a broken directory: that is "no grant", quickly."""
+
     app, _controller = _application(tmp_path)
     _grant(app, "magpie")
+    facade = app._require_orgfs_runtime().facade
 
     def failing(*args: object, **kwargs: object) -> object:
         raise OrgFsError("io", {"reason": "synthetic"})
 
-    monkeypatch.setattr(services_module, "has_effective_grant", failing)
+    monkeypatch.setattr(facade, "listdir", failing)
     started = time.monotonic()
+    app._start_service_connect()
+    elapsed = time.monotonic() - started
+    monkeypatch.undo()
+    app._close_service_connect(0.0)
+
+    assert app._service_manager is None
+    assert elapsed < 1.0
+
+
+def test_a_home_with_a_record_is_never_asked_about_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured home takes the path it took before; the grant question is not on it."""
+
+    app, _controller = _application(tmp_path)
+    write_access(_access_record(app))
+    asked: list[object] = []
+
+    def counting(*args: object, **kwargs: object) -> bool:
+        asked.append(kwargs)
+        return False
+
+    monkeypatch.setattr(services_module, "has_effective_grant", counting)
+    try:
+        app._start_service_connect()
+        assert app._service_manager is not None
+    finally:
+        app._close_service_connect(2.0)
+
+    assert asked == []
+
+
+def test_an_unconfigured_home_without_a_grant_builds_nothing(tmp_path: Path) -> None:
+    """Answering "no grant" must not build the OrgFS runtime for a home that never asked."""
+
+    app, _controller = _application(tmp_path)
+    assert app._orgfs_runtime is None
+    before = {thread.ident for thread in threading.enumerate()}
+
     app._start_service_connect()
     app._close_service_connect(0.0)
 
     assert app._service_manager is None
-    assert time.monotonic() - started < 1.0
+    assert app._orgfs_runtime is None
+    assert {thread.ident for thread in threading.enumerate()} == before
+
+
+def test_the_cadence_follows_a_withdrawal_without_any_service_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once started, the periodic path needs no request to notice that a grant is gone."""
+
+    app, controller = _application(tmp_path)
+    made = _grant(app, "magpie")
+    monkeypatch.setattr(manager_module, "SERVICE_RECONCILE_INTERVAL_SECONDS", 0.05)
+    app._start_service_connect()
+    try:
+        app._service_manager.reconcile()
+        app._handle_service_connect("service.connect", {"name": "magpie"})
+        assert list(controller.services) == ["magpie"]
+        with as_author(app._require_orgfs_runtime(), GRANTOR):
+            _revoke(app, made)
+        deadline = time.monotonic() + 5.0
+        while controller.services and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert controller.services == {}
+        assert [call[0] for call in controller.calls].count("unmap") == 1
+        assert app._handle_service_connect("service.list", {})["services"] == []
+    finally:
+        app._close_service_connect(2.0)
+    assert _scheduler_threads() == []
+
+
+def _revoke(app: DaemonApplication, grant_id: str) -> None:
+    """Write the tombstone S3's revoke would leave, as the grantor."""
+
+    store = OrgFsDirectoryStore(app._require_orgfs_runtime().facade)
+    record = store.read_service_grant(ORG, GRANTOR, grant_id)
+    assert record is not None
+    store.put_service_grant(ORG, GRANTOR, grant_id, {**record, "revokedAtMs": 2})
 
 
 def test_the_startup_grant_check_stays_cheap_as_grants_accumulate(tmp_path: Path) -> None:
