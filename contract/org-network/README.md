@@ -86,7 +86,8 @@ record that belongs to that account (settings `owner`, `identityIssuer` and
 row without the pair, which stays valid, and its publish does not fail. The
 pair carries no switch of its own: an upgraded daemon that has them publishes
 the pair on its next `publish_self`, and it does so once on every serving
-start.
+start.  Whether the key was made by serving start or by the publish itself
+does not matter: both read the same local key store and get the same key.
 
 Mixed-version window. A directory reader on a build that predates the two
 keys refuses a row that carries them. Measured on a real OrgFS store: an

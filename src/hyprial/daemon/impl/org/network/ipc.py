@@ -9,8 +9,10 @@ here as callbacks, never imported.
 Decision record (service grant S1, 2026-11-26: the published encryption key):
 - ``_build_service`` injects this device's encryption key reader.  It is the
   one construction point of the network service, so the ``org.*`` handlers,
-  ``publish_self_for_app`` at startup and on every refresh of the directory,
-  and the per-org actor all publish the pair and no caller has to remember it.
+  ``publish_self_for_app`` and the per-org actor all publish the pair and no
+  caller has to remember it.  ``publish_self_for_app`` has one caller, the
+  forwarding maintenance tick, which runs it on the first tick and whenever
+  the sidecar address changes, and otherwise at most every ten seconds.
 - The reader is bound to the home and the state directory of this build and
   reads the committed account on every call.  It is therefore rebuilt with the
   service, and a login or logout in the running daemon is followed by the next
