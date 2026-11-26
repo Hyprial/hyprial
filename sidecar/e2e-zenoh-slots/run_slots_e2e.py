@@ -1,4 +1,4 @@
-"""Real-zenoh minimal E2E for the sidecar's fixed slot pool (protocol v6, N1).
+"""Real-zenoh minimal E2E for the sidecar's fixed slot pool (protocol v7, N1).
 
 Two real `hyprial-tailcat forward` processes on a local lab relay. Node B's
 zenoh session connects ONLY to B-sidecar's fixed unix-socket slots; node A's
@@ -19,7 +19,7 @@ Run from the repository root:
 
 With ``tcp`` the slot pool is loopback TCP with kernel-assigned ports --
 up sends tcp:127.0.0.1:0 grow specs and Running reports resolved ids.
-The inbound backend is always a private Unix socket; this managed-v6
+The inbound backend is always a private Unix socket; this managed-v7
 scenario requires a Unix host. Same readings, same gates.
 """
 
@@ -40,6 +40,7 @@ from pathlib import Path
 
 os.environ.setdefault("HYPRIAL_PEER_DISCOVERY", "0")
 
+from hyprial.daemon.impl.forwarding.policy import FORWARD_PROTOCOL_VERSION  # noqa: E402
 from hyprial.daemon.impl.transport.zenoh.config import ZenohConfig  # noqa: E402
 from hyprial.daemon.impl.transport.zenoh.transport import ZenohTransport  # noqa: E402
 
@@ -86,7 +87,7 @@ def genkey(binary: Path, out: Path) -> None:
 
 
 class Sidecar:
-    """One `forward` process on the closed v6 JSON-lines wire."""
+    """One `forward` process on the closed v7 JSON-lines wire."""
 
     def __init__(self, binary: Path, name: str, stderr_path: Path) -> None:
         self.name = name
@@ -113,7 +114,13 @@ class Sidecar:
     def send(self, **command: object) -> None:
         assert self.proc.stdin is not None
         self.proc.stdin.write(
-            (json.dumps({"v": 6, **command}, separators=(",", ":")) + "\n").encode()
+            (
+                json.dumps(
+                    {"v": FORWARD_PROTOCOL_VERSION, **command},
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode()
         )
         self.proc.stdin.flush()
 

@@ -1,4 +1,4 @@
-"""The forwarding sidecar process controller (closed v5 JSON-lines wire)."""
+"""The forwarding sidecar process controller (closed v7 JSON-lines wire)."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ _RESPONSE_BUFFER_MAX_AGE_SECONDS = 60.0
 
 
 class ForwardingSidecarController(MembershipWireMixin):
-    """Own one candidate sidecar process and its closed v6 JSON-lines wire."""
+    """Own one candidate sidecar process and its closed v7 JSON-lines wire."""
 
     def __init__(
         self,
@@ -74,11 +74,15 @@ class ForwardingSidecarController(MembershipWireMixin):
             raise ValueError("forwarding sidecar command must not be empty")
         self._up = dict(up)
         if self._up.get("v") != FORWARD_PROTOCOL_VERSION or self._up.get("op") != "up":
-            raise ValueError("forwarding sidecar up request must be protocol v6")
+            raise ValueError(
+                f"forwarding sidecar up request must be protocol v{FORWARD_PROTOCOL_VERSION}"
+            )
         if not isinstance(self._up.get("keyFile"), str) or not self._up["keyFile"]:
             raise ValueError("forwarding sidecar up request must name a keyFile")
         if "allow" in self._up or "allowAny" in self._up:
-            raise ValueError("v6 rejects directory admission fields")
+            raise ValueError(
+                f"v{FORWARD_PROTOCOL_VERSION} rejects directory admission fields"
+            )
         for field in ("membershipStore", "owner", "deviceId"):
             if not isinstance(self._up.get(field), str) or not self._up[field]:
                 raise ValueError(f"forwarding up requires {field}")
@@ -369,7 +373,10 @@ class ForwardingSidecarController(MembershipWireMixin):
         deadline = time.monotonic() + self._timeout
         hello = self._next(deadline=deadline)
         if hello.get("event") != "hello" or not hello.get("sidecar"):
-            raise ForwardingSidecarError("forwarding sidecar v6 hello mismatch", code='SIDECAR_PROTOCOL_MISMATCH')
+            raise ForwardingSidecarError(
+                f"forwarding sidecar v{FORWARD_PROTOCOL_VERSION} hello mismatch",
+                code='SIDECAR_PROTOCOL_MISMATCH',
+            )
         capabilities = hello.get("capabilities")
         capability_set = (
             set(capabilities)
@@ -378,7 +385,10 @@ class ForwardingSidecarController(MembershipWireMixin):
             else set()
         )
         if not CAPABILITIES <= capability_set or "allow" in capability_set:
-            raise ForwardingSidecarError("Sidecar v6 membership capabilities required.", code="SIDECAR_PROTOCOL_MISMATCH")
+            raise ForwardingSidecarError(
+                f"Sidecar v{FORWARD_PROTOCOL_VERSION} membership capabilities required.",
+                code="SIDECAR_PROTOCOL_MISMATCH",
+            )
         self._expose_capable = {"expose", "unexpose", "peer-key"} <= capability_set
         self._service_capable = "service-connect-v1" in capability_set
         self._forwarding_request_ids = "forwarding-request-id-v1" in capability_set
@@ -398,8 +408,6 @@ class ForwardingSidecarController(MembershipWireMixin):
                     f"unexpected forwarding startup event {event.get('event')!r}"
                 )
             if event.get("state") == "Running":
-                # Protocol v6: the Running state must carry serverPublic,
-                # clientPublic and a ``peers`` key (possibly empty).
                 if not isinstance(event.get("serverPublic"), str) or not isinstance(
                     event.get("clientPublic"), str
                 ):
@@ -543,9 +551,9 @@ class ForwardingSidecarController(MembershipWireMixin):
             )
 
     def expose(self, exposure: Mapping[str, object]) -> dict[str, object]:
+        """Expose a target; protocol v7 writes canonical ``"none"`` proxyProtocol as ``""``."""
         self._require_expose_capability()
         normalized = _normalize_exposure(exposure)
-        # Protocol v6 writes the Python-side "none" as "" on the wire.
         wire = dict(normalized)
         if wire["proxyProtocol"] == "none":
             wire["proxyProtocol"] = ""

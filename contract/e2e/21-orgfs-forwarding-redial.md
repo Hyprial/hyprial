@@ -10,7 +10,7 @@ Headscale service is used. `real_environment_required: false`.
 The daemon intentionally forbids its forwarding backend when
 `HYPRIAL_NETWORK_ISOLATED=1`, so this runner uses the narrower loopback-only
 topology and verifies the effective endpoints through `hyprial daemon status` before it
-continues. Both nodes use a protocol-v6 sidecar fixture with leased roster
+continues. Both nodes use a protocol-v7 sidecar fixture with leased roster
 exchanges and owned Unix stream proxies, without Tailcat or DERP. It accepts
 and reports the daemon's fixed slots and records exact
 `map-peer(peer, address, slot)` requests. The daemon starts with a one-slot
@@ -38,7 +38,7 @@ an interrupted TERM grace still escalates to KILL and confirms process exit.
 
 ## Steps
 
-1. Start daemon A with a protocol-v6 forwarding fixture and one fixed slot, then create
+1. Start daemon A with a protocol-v7 forwarding fixture and one fixed slot, then create
    an orgfs space plus the `group-redialnet` directory space. Invite B's user
    before B starts, so A's orgfs mesh and
    liveliness observer already exist when B appears. Register a bounded set of

@@ -26,8 +26,11 @@ from hyprial.kernel import (
     hidden_subprocess_kwargs,
 )
 
+SIDECAR_PROTOCOL_VERSION = 7
+"""The closed stdio/CLI JSON protocol version spoken by ``hyprial-tailcat``."""
+
 TAILCAT_COMMIT = "b4dc28e8aa8936f0a90a41ad8293a64e3d6b645f"
-"""The Tailcat engine commit this daemon's protocol v6 client is built for."""
+"""The Tailcat engine commit this daemon's protocol v7 client is built for."""
 
 SIDECAR_BINARY_NAME = "hyprial-tailcat"
 """Platform-neutral basename; use :func:`sidecar_binary_name` for a path."""
@@ -140,9 +143,10 @@ def verify_tailcat_sidecar(
 ) -> dict[str, object]:
     """Run ``<sidecar> version`` and pin the engine commit; return the record.
 
-    The sidecar prints one JSON line ``{"v":6,"sidecar":...,"tailcat":...}``;
-    anything else -- unparseable output, a protocol version that is not 6, a
-    tailcat commit other than :data:`TAILCAT_COMMIT` -- is ``SIDECAR_INVALID``.
+    The sidecar prints one JSON line ``{"v":7,"sidecar":...,"tailcat":...}``;
+    anything else -- unparseable output, a protocol version other than
+    :data:`SIDECAR_PROTOCOL_VERSION`, a tailcat commit other than
+    :data:`TAILCAT_COMMIT` -- is ``SIDECAR_INVALID``.
     """
 
     binary = locate_tailcat_sidecar(home, environ)
@@ -169,9 +173,14 @@ def verify_tailcat_sidecar(
         raise TailcatSidecarError(
             "SIDECAR_INVALID", f"{binary} version did not print JSON: {error}"
         ) from error
-    if not isinstance(record, dict) or type(record.get("v")) is not int or record.get("v") != 6:
+    if (
+        not isinstance(record, dict)
+        or type(record.get("v")) is not int
+        or record.get("v") != SIDECAR_PROTOCOL_VERSION
+    ):
         raise TailcatSidecarError(
-            "SIDECAR_INVALID", f"{binary} version is not a protocol-v6 record"
+            "SIDECAR_INVALID",
+            f"{binary} version is not a protocol-v{SIDECAR_PROTOCOL_VERSION} record",
         )
     if record.get("tailcat") != TAILCAT_COMMIT:
         raise TailcatSidecarError(

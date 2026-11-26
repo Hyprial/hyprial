@@ -354,7 +354,7 @@ if ! TAILCAT_VERSION="$("${TAILCAT}" version 2>&1)"; then
   echo "Tailcat version probe failed: ${TAILCAT_VERSION}" >&2
   exit 2
 fi
-if [[ "${TAILCAT_VERSION}" != *'"v":6'* ]]; then
+if [[ "${TAILCAT_VERSION}" != *'"v":7'* ]]; then
   echo "unexpected Tailcat protocol version: ${TAILCAT_VERSION}" >&2
   exit 2
 fi

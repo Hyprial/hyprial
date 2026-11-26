@@ -12,7 +12,7 @@
 - Both nodes use E2E-021's narrow forwarding exception:
   `HYPRIAL_NETWORK_ISOLATED=0`, explicit private Unix endpoints, with peer discovery,
   gossip, usage fetches, Tailnet, and Headscale disabled.
-- Both nodes use E2E-021's protocol-v6 leased-roster fixture. A starts with
+- Both nodes use E2E-021's protocol-v7 leased-roster fixture. A starts with
   `HYPRIAL_ZENOH_SLOT_POOL=1`. The fixture reports exact `{peer, slot}`
   mappings and proxies only owned private Unix streams. It does not implement
   Tailcat, DERP, cryptography or a remote control authority.
@@ -41,7 +41,7 @@ legitimate rebuild: fixed-slot pool exhaustion and growth.
 
 ## Steps
 
-1. Start A with one fixed forwarding slot and both nodes' v6 sidecars.
+1. Start A with one fixed forwarding slot and both nodes' v7 sidecars.
    Publish an explicit leased roster: B's fixture client key orders B above A
    and makes B dial A through the loss intermediary, while A initially maps
    no business peer. Join one org directory and require mutual host visibility.
@@ -73,8 +73,8 @@ legitimate rebuild: fixed-slot pool exhaustion and growth.
 
 ## Assertions
 
-- The protocol-v6 fixture retains the E2E-021 golden wire/capabilities,
-  rejects retired v5 and directory `allow` requests, and records daemon-selected
+- The protocol-v7 fixture retains the E2E-021 golden wire/capabilities,
+  rejects retired v5/v6 and directory `allow` requests, and records daemon-selected
   fixed slots. Only explicitly leased active roster members can be mapped.
 - The first peer fits the pool and does not redial. The second peer grows the
   pool and produces at least one `zenoh.forwarding.redialed` event.

@@ -22,7 +22,7 @@ value, and no derived value may equal the row's master `clientPublic`. Missing,
 invalid, duplicate or cross-role-aliased maps make the entire row invalid.
 `clientPublic` remains the master public identifier for directory identity only
 and is never an inbound admission key. Directory maps are publication data,
-not admission or HTTP attribution authority. With stdio v6 the sidecar roster
+not admission or HTTP attribution authority. With stdio v7 the sidecar roster
 supplies the derived-key-to-owner mapping; absent, ambiguous, master or
 foreign-server keys fail closed. The `self` pane still exposes the local public
 `serverPublic`. Directory outages do not change sidecar membership.

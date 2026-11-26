@@ -70,7 +70,7 @@ class EndpointDiscovery(Protocol):
 
 @runtime_checkable
 class ForwardingController(Protocol):
-    """The daemon-owned protocol-v6 sidecar control surface."""
+    """The daemon-owned protocol-v7 sidecar control surface."""
 
     def status(self) -> tuple[tuple[str, ...], dict[str, str]]: ...
 

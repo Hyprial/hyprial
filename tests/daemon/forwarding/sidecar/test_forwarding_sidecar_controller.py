@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from hyprial.daemon.impl.forwarding import (
+    FORWARD_PROTOCOL_VERSION,
     ForwardingSidecarController,
     ForwardingSidecarError,
 )
@@ -144,7 +145,7 @@ def test_derive_client_key_rejects_uncorrelated_v5_reply(
 
 
 def test_up_requires_the_v5_device_key_shape(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="protocol v6"):
+    with pytest.raises(ValueError, match=f"protocol v{FORWARD_PROTOCOL_VERSION}"):
         ForwardingSidecarController(
             (sys.executable, str(FIXTURE)),
             {"v": 2, "op": "up", "resume": True},

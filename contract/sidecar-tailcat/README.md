@@ -69,7 +69,7 @@ below and is not evidence of a specific network cause.
 
 ## Membership transport diagnostic byte counts (0.5.5.3)
 
-A correlated v6 membership `error` may carry a `data` diagnostic object.
+A correlated v7 membership `error` may carry a `data` diagnostic object.
 The Python consumer validates the complete object before copying any of it
 into IPC error data. Required closed fields:
 

@@ -1,6 +1,6 @@
 """Explicit real-sidecar offline re-pin smoke; never auto-selected by pytest.
 
-uv run python tests/daemon/forwarding/membership/repin_smoke.py --binary <v6> --relay <labrelay>
+uv run python tests/daemon/forwarding/membership/repin_smoke.py --binary <v7> --relay <labrelay>
 Only disposable /tmp homes and a loopback labrelay are used. No production files.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from hyprial.daemon import DaemonStateOwnershipFence, ensure_device_key, verify_
 from hyprial.daemon.impl.forwarding.controller import ForwardingSidecarController
 from hyprial.daemon.impl.forwarding.membership.maintenance import TailnetMaintenance
 from hyprial.daemon.impl.forwarding.membership.removal import RemovalJournal
-from hyprial.daemon.impl.forwarding.policy import ForwardingSidecarError
+from hyprial.daemon.impl.forwarding.policy import FORWARD_PROTOCOL_VERSION, ForwardingSidecarError
 from hyprial.identity import address_path, device_key_path
 
 
@@ -35,7 +35,7 @@ def run(binary: Path, relay_binary: Path):
         try:
             derp = json.loads(relay.stdout.readline())['derp']
             env.update(HYPRIAL_TAILCAT_BINARY=str(binary), HYPRIAL_TAILCAT_DERP=json.dumps(derp))
-            assert verify_tailcat_sidecar(root, env)['v'] == 6
+            assert verify_tailcat_sidecar(root, env)['v'] == FORWARD_PROTOCOL_VERSION
             rows = []
             for device in ('old', 'new', 'victim'):
                 owner = 'bob' if device == 'victim' else 'alice'
@@ -48,7 +48,7 @@ def run(binary: Path, relay_binary: Path):
                 keys = {'serverPublic': record.server_public, 'clientPublic': record.client_public}
                 private = home / 'tailnet'
                 private.mkdir(mode=0o700)
-                up = {'v': 6, 'op': 'up', 'keyFile': str(key_path),
+                up = {'v': FORWARD_PROTOCOL_VERSION, 'op': 'up', 'keyFile': str(key_path),
                     'membershipStore': str(private / 'membership.json'), 'owner': owner,
                     'deviceId': device, 'controlPort': 7448, 'addressFile': str(address_path(home)),
                     'inboundTarget': 'unix:' + str(private / 'absent.sock'),

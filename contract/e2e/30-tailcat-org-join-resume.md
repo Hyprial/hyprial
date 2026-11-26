@@ -1,4 +1,4 @@
-# E2E-030: v6 already-running joiner and lost-reply redemption resume
+# E2E-030: v7 already-running joiner and lost-reply redemption resume
 
 ## Preconditions
 
@@ -10,7 +10,7 @@ uses an in-process loopback labrelay, and creates disposable `/tmp/hr-*` homes,
 keys and stores. No production account, daemon or credentials are used.
 Allow about 90 seconds: the idle period exceeds the real 60-second refresh tick.
 
-This is the **v6 transport equivalent** of #1855's E2E-030. The interruption is
+This is the **v7 transport equivalent** of #1855's E2E-030. The interruption is
 between authority commit and receipt delivery, not between Python bootstrap
 steps. The Go engines and stores are stopped/reopened; this is not a daemon
 SIGKILL test or a power-loss/fsync fault test. CLI workflow continuation and
@@ -20,7 +20,7 @@ positive control. The obsolete directory-row continuation window is not restored
 ## Steps
 
 1. Start the authority and an uninvited joiner. Keep the joiner control-ready,
-   member-not-ready for 65 seconds, beyond one v6 refresh interval.
+   member-not-ready for 65 seconds, beyond one v7 refresh interval.
 2. Only then issue InviteV2. Use the joiner's derived transport identity to send
    a real control redemption frame, but never read its response.
 3. Observe commit through the authority's local roster operation. Require the

@@ -292,7 +292,7 @@ class ForwardingControllerAuthority:
         return result
 
     def map_peer(self, peer: str, address: str, slot: str, *, timeout: float | None = None) -> str:
-        """Bind ``peer`` onto the fixed ``slot`` (protocol v6).
+        """Bind ``peer`` onto the fixed ``slot`` (protocol v7).
 
         Returns the bound slot wire id (the resolved id on a tcp growth
         bind); the fixed slot pool is the only mapping shape.

@@ -33,7 +33,7 @@ Membership operations are `membership-init`, `roster-fetch`, `member-announce`,
 `authority-repin`. Local-only operator operations cannot run over control-v1.
 `allow`, `allowAny`, and public `admission:any` are retired. Only the internal
 control listener bypasses business membership admission. Existing standalone
-engine/servicehost allow configuration is separate from the managed-v6 entry.
+engine/servicehost allow configuration is separate from the managed-v7 entry.
 
 An empty announcement map is expanded with derived public keys for the live
 roster's servers. Expansion is persisted beside the store as `.announcements`,

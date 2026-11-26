@@ -12,6 +12,7 @@ from hyprial.daemon.impl.network.tailcat import (
     ensure_device_key,
     reissue_device_key,
 )
+from hyprial.daemon.impl.network.tailcat.binary import SIDECAR_PROTOCOL_VERSION
 from hyprial.identity import machine_binding_path, read_device_record
 
 
@@ -33,7 +34,7 @@ def _rotating_genkey(tmp_path: Path) -> Path:
         'else N=original; [ -f "$OUT" ] && CODE=3 || CODE=0; fi\n'
         'printf \'{"v":3}\' > "$OUT"\n'
         'chmod 600 "$OUT"\n'
-        'printf \'{"v":6,"serverPublic":"nodekey:server-%s",'
+        f'printf \'{{"v":{SIDECAR_PROTOCOL_VERSION},"serverPublic":"nodekey:server-%s",'
         '"clientPublic":"nodekey:client-%s"}\\n\' "$N" "$N"\n'
         "exit $CODE\n",
         encoding="utf-8",

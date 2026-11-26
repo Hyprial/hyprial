@@ -7,6 +7,7 @@ import stat
 from collections.abc import Mapping
 from pathlib import Path
 
+from hyprial.daemon.impl.network.tailcat.binary import SIDECAR_PROTOCOL_VERSION
 from hyprial.kernel import (
     MEMBERSHIP_BUDGETS,
     loopback_inbound_supported,
@@ -14,7 +15,7 @@ from hyprial.kernel import (
 )
 
 
-FORWARD_PROTOCOL_VERSION = 7
+FORWARD_PROTOCOL_VERSION = SIDECAR_PROTOCOL_VERSION
 
 
 _UNSUPPORTED_PROXY_KEYS = frozenset(
@@ -34,6 +35,7 @@ def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
+    """Validate an exposure record; protocol v7 writes canonical ``"none"`` as ``""`` on the wire."""
     port = exposure.get("port")
     target = exposure.get("target")
     proxy_protocol = exposure.get("proxyProtocol")
@@ -41,9 +43,6 @@ def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
         raise ForwardingSidecarError("exposure port must be between 1 and 65535")
     if not isinstance(target, str) or not target:
         raise ForwardingSidecarError("exposure target must be a non-empty string")
-    # Python-side canonical value is "none"; protocol v6 writes "" on the
-    # wire (see controller.expose).  Both are accepted here so a persisted
-    # entry and a raw wire event normalize to the same record.
     if proxy_protocol not in {"v2", "none", ""}:
         raise ForwardingSidecarError("proxy protocol must be v2 or none")
     # Any local process can reach a loopback TCP port and forge a PROXY v2

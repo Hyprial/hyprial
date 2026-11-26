@@ -19,6 +19,7 @@ from hyprial.daemon.impl.network.tailcat import (
     TailcatSidecarError,
     ensure_device_key,
 )
+from hyprial.daemon.impl.network.tailcat.binary import SIDECAR_PROTOCOL_VERSION
 
 _SERVER_PUBLIC = "nodekey:server-fixture"
 _CLIENT_PUBLIC = "nodekey:client-fixture"
@@ -28,7 +29,7 @@ def _genkey_script(
     tmp_path: Path,
     *,
     corrupt: bool = False,
-    version: int | float = 6,
+    version: int | float = SIDECAR_PROTOCOL_VERSION,
     server_public: str = _SERVER_PUBLIC,
     client_public: str = _CLIENT_PUBLIC,
     filename: str = "hyprial-tailcat",
@@ -62,7 +63,7 @@ def _genkey_script(
     return script
 
 
-@pytest.mark.parametrize('version', [5, 6.0])
+@pytest.mark.parametrize('version', [5, 6, float(SIDECAR_PROTOCOL_VERSION)])
 def test_genkey_refuses_legacy_or_noninteger_version(tmp_path, version):
     binary = _genkey_script(tmp_path, version=version)
     with pytest.raises(TailcatSidecarError) as caught:

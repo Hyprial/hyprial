@@ -6,7 +6,7 @@
 make accept-gui MODE=normal PORT=4178
 ```
 
-镜像使用 Go 1.27.1 构建 `hyprial-tailcat`，安装到源码包的 `hyprial/_bin/`，并在构建时执行包内 `verify_tailcat_sidecar()`。该检查要求协议 v6 和 daemon 固定的 tailcat 引擎提交一致；不匹配会使构建失败。启动命令打印候选 SHA、镜像来源及私密 handoff 文件路径，不打印一次性浏览器 grant。手动测试后按 Ctrl-C 停止命令，并检查它创建的容器已退出；镜像缓存保留。
+镜像使用 Go 1.27.1 构建 `hyprial-tailcat`，安装到源码包的 `hyprial/_bin/`，并在构建时执行包内 `verify_tailcat_sidecar()`。该检查要求协议 v7 和 daemon 固定的 tailcat 引擎提交一致；不匹配会使构建失败。启动命令打印候选 SHA、镜像来源及私密 handoff 文件路径，不打印一次性浏览器 grant。手动测试后按 Ctrl-C 停止命令，并检查它创建的容器已退出；镜像缓存保留。
 
 当前阶段仍设置 `HYPRIAL_NETWORK_ISOLATED=1` 并使用合成 owner，且以 `HYPRIAL_BUILD_SKIP_NATIVE=1` 安装可编辑源码。因此这里只能验证同一 SHA 的构建、sidecar 打包和隔离 GUI 本地入口。不能把该结果记为真实设备加入、跨节点、外部登录、wheel 安装态或 M2/G1–G8 完整验收通过。完整目标和后续阶段见 [设计](../design/gui-full-acceptance-2026-11-11.md)。
 

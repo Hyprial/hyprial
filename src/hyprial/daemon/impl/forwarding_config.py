@@ -87,7 +87,7 @@ def daemon_forwarding_environment(
     *,
     node_id: str,
 ) -> dict[str, str]:
-    """Return managed v6 sidecar launch variables, or none when not configured.
+    """Return managed v7 sidecar launch variables, or none when not configured.
 
     The sidecar binary is the installed ``hyprial-tailcat`` (located via
     ``HYPRIAL_TAILCAT_BINARY`` or ``$HYPRIAL_HOME/bin``); the device key and
