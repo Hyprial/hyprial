@@ -261,15 +261,25 @@ hyprial agent model configure NAME --model hy4-flash --connection REF --config-r
 hyprial agent model status NAME --operation-id configure-unique-1 --json
 ```
 
-This first slice supports Pi/headless connections. Configure saves intent; it does
+Explicit custom connections support Pi/headless; native references support the selected
+pi/claude/codex harness in headless mode (Pi native currently requires SDK 1.2.0). Configure saves intent; it does
 not start the agent or prove model availability. Start uses the saved binding and
 rechecks authorization. Pending configuration blocks launch. If a response is lost,
 read status or retry the exact same ID/payload. To abandon a prepared operation,
 use `hyprial agent model cancel NAME --operation-id ID --binding-revision REV --json`;
 it restores the previous member intent before clearing the blocker. Unknown Cell
-results stay blocked. Do not replace the operation ID to bypass that state. Native
-Auth selection and integrated creation are a later slice; unbound legacy behavior
-remains available. See `contract/daemon-request/model-binding-storage.md`.
+results stay blocked. Do not replace the operation ID to bypass that state. For native Auth, read `agent.provider.auth.list` with targetsVersion=1 through
+the daemon request API, then configure with `--native-auth REF` instead of
+`--connection`/`--config-revision`. The reference selects this Agent's login slot;
+it does not copy another Agent's login or prove upstream validity.
+
+For explicit creation, add `--connection REF --config-revision REV` or
+`--native-auth REF`, plus `--preferred-harness HARNESS --model ID --operation-id ID`.
+This suppresses default credential seeding. A configuration-required error with an
+agentId means identity creation succeeded but configuration did not: read status,
+authorize/login to that Agent and use model configure; do not repeat agent create.
+Keep connection-test success separate from native-login presence and Agent-start
+success. Unbound legacy calls without the new options remain available. See `contract/daemon-request/model-binding-storage.md`.
 
 For a manual Codex or Claude launch, set reasoning with the public
 `hyprial agent start ... --effort <level>` option before `--`; it also works with

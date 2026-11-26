@@ -95,7 +95,20 @@ function exclusiveClaim(root, id) {
 const FIELDS = ["schemaVersion", "bindingRef", "bindingRevision", "authKind", "connectionRef",
   "configRevision", "model", "harness", "profile", "template", "contextWindow", "maxTokens", "costStatus"];
 
+const NATIVE_FIELDS = ["schemaVersion", "bindingRef", "bindingRevision", "authKind", "nativeAuthRef", "model", "harness", "target"];
+
 export function validateSnapshot(value) {
+  if (value?.authKind === "native") {
+    if (Object.keys(value).length !== NATIVE_FIELDS.length || NATIVE_FIELDS.some((k) => !Object.hasOwn(value, k)) ||
+        value.schemaVersion !== 1 || value.harness !== "pi" ||
+        !Number.isSafeInteger(value.bindingRevision) || value.bindingRevision < 1 ||
+        typeof value.bindingRef !== "string" || !value.bindingRef || value.bindingRef.length > 256 ||
+        typeof value.model !== "string" || !value.model || [...value.model].length > 256 || value.model.trim() !== value.model ||
+        /\p{C}/u.test(value.model) || /\p{C}/u.test(value.bindingRef) ||
+        typeof value.target !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(value.target) ||
+        ![`native:v1:pi:oauth:${value.target}`, `native:v1:pi:api-key:${value.target}`].includes(value.nativeAuthRef)) refuse();
+    return value;
+  }
   if (!value || typeof value !== "object" || Array.isArray(value) ||
       Object.keys(value).length !== FIELDS.length || FIELDS.some((k) => !Object.hasOwn(value, k)) ||
       value.schemaVersion !== 1 || value.authKind !== "api-key" || value.harness !== "pi" ||
@@ -144,16 +157,16 @@ export function admitModelSession(command, options) {
       if (previous?.modelBinding !== undefined) refuse();
     } else if (previous?.modelBinding !== undefined) {
       validateSnapshot(previous.modelBinding);
-      if (FIELDS.some((k) => k !== "bindingRevision" && binding[k] !== previous.modelBinding[k])) {
+      if ([...new Set([...Object.keys(binding), ...Object.keys(previous.modelBinding)])].some((k) => k !== "bindingRevision" && binding[k] !== previous.modelBinding[k])) {
         refuse("MODEL_RESUME_MISMATCH", "resume", binding.model !== previous.modelBinding.model ? "model-changed" : "binding-changed");
       }
     } else if (previous || options.requireExistingSession) {
       refuse("MODEL_RESUME_MISMATCH", "resume", "provenance-missing");
     }
     if (binding !== undefined) {
-      const provider = "hyprial-connection-" + createHash("sha256").update(JSON.stringify([binding.connectionRef, binding.configRevision])).digest("hex");
+      const provider = binding.authKind === "native" ? binding.target : "hyprial-connection-" + createHash("sha256").update(JSON.stringify([binding.connectionRef, binding.configRevision])).digest("hex");
       if (options.modelProvider !== provider || options.model !== binding.model) refuse();
-      if (!/^[!-~]{1,16384}$/.test(process.env.HYPRIAL_PI_CONNECTION_KEY ?? "")) {
+      if (binding.authKind !== "native" && !/^[!-~]{1,16384}$/.test(process.env.HYPRIAL_PI_CONNECTION_KEY ?? "")) {
         refuse("MODEL_AUTH_UNAVAILABLE", "authorize", "missing");
       }
     }
@@ -321,5 +334,53 @@ export function boundModelRuntime(runtime, provider, modelId, definition) {
         async result() { const message = await source.result(); redactMessage(message, failureReason); return message; },
       };
     };
+  }
+}
+
+export function checkNativeCredential(snapshot, authPath) {
+  validateSnapshot(snapshot);
+  const { target } = snapshot;
+  const kind = snapshot.nativeAuthRef.split(":")[3];
+  const check = () => {
+    let credential;
+    try { credential = regularJson(authPath)?.[target]; }
+    catch { refuse("MODEL_AUTH_UNAVAILABLE", "authorize", "unreadable"); }
+    if (!credential) refuse("MODEL_AUTH_UNAVAILABLE", "authorize", "missing");
+    const secret = (value) => typeof value === "string" && /^[!-~]{1,16384}$/.test(value) && !value.startsWith("!");
+    if ((kind === "api-key" && (credential.type !== "api_key" || !secret(credential.key) || credential.env !== undefined)) ||
+        (kind === "oauth" && (credential.type !== "oauth" || !secret(credential.access) || !secret(credential.refresh) ||
+          !Number.isFinite(credential.expires) || credential.env !== undefined))) refuse("MODEL_AUTH_UNAVAILABLE", "authorize", "unreadable");
+  };
+  check();
+}
+
+export function boundNativeRuntime(runtime, snapshot, authPath) {
+  const { target, model: modelId } = snapshot;
+  const check = () => checkNativeCredential(snapshot, authPath);
+  check();
+  const physical = runtime.getPhysicalModel(target, modelId);
+  if (!physical || physical.provider !== target || physical.id !== modelId) {
+    refuse("MODEL_COMBINATION_UNSUPPORTED", "admission", "runtime-option");
+  }
+  const auth = runtime.getAuth.bind(runtime);
+  runtime.getAuth = async (model, options = {}) => {
+    if ((typeof model === "string" ? model : model.provider) !== target ||
+        (typeof model !== "string" && model.id !== modelId) || options.apiKey !== undefined || options.env !== undefined) refuse();
+    check();
+    return auth(model, { ...options, env: {} });
+  };
+  for (const name of ["stream", "streamSimple"]) {
+    const stream = runtime[name].bind(runtime);
+    runtime[name] = (model, context, options = {}) => {
+      if (model.provider !== target || model.id !== modelId || model.baseUrl !== physical.baseUrl || model.api !== physical.api ||
+          options.apiKey !== undefined || options.env !== undefined || options.fetch || options.transformHeaders ||
+          Object.keys(options.headers ?? {}).length || Object.keys(model.headers ?? {}).length) refuse();
+      check();
+      return stream(model, context, options);
+    };
+  }
+  for (const name of ["setRuntimeApiKey", "removeRuntimeApiKey", "registerProvider", "registerNativeProvider",
+      "registerVirtualModel", "unregisterProvider", "login", "logout"]) {
+    runtime[name] = () => refuse("MODEL_COMBINATION_UNSUPPORTED", "admission", "runtime-option");
   }
 }

@@ -17,6 +17,9 @@ _ROW = {
         "actor": _STRING, "displayName": _STRING, "harness": _HARNESS,
         "state": {"enum": ["stored", "partial", "unavailable"]},
         "files": _FILES, "missingFiles": _FILES,
+        "targets": {"type": "array", "items": {"type": "object", "properties": {
+            "nativeAuthRef": _STRING, "target": _STRING, "kind": {"enum": ["oauth", "api-key"]}},
+            "required": ["nativeAuthRef", "target", "kind"], "additionalProperties": False}},
         "errorCode": {"type": ["string", "null"]},
         "importedAt": {"type": ["integer", "null"], "minimum": 1,
                        "description": "Registry import time in Unix milliseconds, only when the current Agent incarnation, home resource and bounded native-file digest match. Missing, changed or incomplete files have no proven import time."},
@@ -28,7 +31,7 @@ _ROW = {
 }
 SPEC = MethodSpec(
     name="agent.provider.auth.list", owner="daemon.agents",
-    params_schema={"type": "object", "properties": {"actor": _STRING, "harness": _HARNESS}, "additionalProperties": False},
+    params_schema={"type": "object", "properties": {"actor": _STRING, "harness": _HARNESS, "targetsVersion": {"const": 1}}, "additionalProperties": False},
     result_schema={"type": "object", "properties": {"ok": {"const": True}, "records": {"type": "array", "items": _ROW}},
                    "required": ["ok", "records"], "additionalProperties": False},
     errors=tuple(MethodError(code, description="Native Auth inventory refusal.") for code in (

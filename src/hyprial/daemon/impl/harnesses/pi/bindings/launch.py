@@ -45,7 +45,8 @@ def bind_launch(payload: dict[str, object], environment: dict[str, str], *,
     try:
         manifest = json.loads((Path(str(payload["piPackageRoot"])) / "package.json").read_text())
         version = manifest["version"]
-        proven = version in {"0.85.1", "1.2.0", "1.3.0"}
+        native = binding.snapshot()["authKind"] == "native"
+        proven = version == "1.2.0" if native else version in {"0.85.1", "1.2.0", "1.3.0"}
         if not proven or not pi_version_supported(version):
             raise ValueError
     except (OSError, KeyError, TypeError, ValueError):
@@ -78,9 +79,12 @@ def bind_launch(payload: dict[str, object], environment: dict[str, str], *,
     selection = (payload.get("modelProvider"), payload.get("model"))
     if selection not in ((None, None), (binding.provider_id, binding.model)):
         raise PiModelBindingError(codes.MODEL_COMBINATION_UNSUPPORTED, "admission", "runtime-option")
+    if native and KEY_ENV in environment:
+        raise PiModelBindingError(codes.MODEL_AUTH_UNAVAILABLE, "authorize", "ambiguous")
     payload.update(modelBinding=binding.snapshot(), modelProvider=binding.provider_id,
                    model=binding.model, modelDefinitions=binding.definitions(),
                    managedSessionRoot=str(root), agentHome=str(home))
-    environment[KEY_ENV] = binding.key
+    if not native:
+        environment[KEY_ENV] = binding.key
 
 

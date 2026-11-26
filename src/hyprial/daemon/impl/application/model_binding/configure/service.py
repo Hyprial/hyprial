@@ -44,7 +44,12 @@ def authorize(app, agent, config):
             agent_name=agent.actor,
             owner_secrets=launch_resolver(app, registry=app._agent_registry),
         )
-        select_secret(config, secrets)
+        if config.auth_kind == "native":
+            from hyprial.daemon.impl.harnesses.model_routes.native import select_native
+
+            select_native(config, secrets, app._agent_registry, agent)
+        else:
+            select_secret(config, secrets)
     except PiModelBindingError as error:
         refuse(error.code, error.data["reason"], error.data["phase"])
     except SecretResolutionError as error:
@@ -54,10 +59,11 @@ def authorize(app, agent, config):
 
 def configuration(raw, member):
     data = dict(raw)
-    data["configRevision"] = integer(data["configRevision"])
+    if "configRevision" in data:
+        data["configRevision"] = integer(data["configRevision"])
     data["intentDigest"] = intent_digest(member, data["harness"], data["model"])
     config = Configuration.from_json(data)
-    if config.auth_kind != "connection" or config.harness != "pi":
+    if config.auth_kind == "connection" and config.harness != "pi":
         refuse(codes.MODEL_COMBINATION_UNSUPPORTED, "runtime-option", "admission")
     if config.mode != "headless":
         refuse(codes.MODEL_COMBINATION_UNSUPPORTED, "mode", "admission")

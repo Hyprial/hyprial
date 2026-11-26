@@ -8199,6 +8199,108 @@
                       "null"
                     ]
                   },
+                  "modelConfiguration": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "configuration": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authKind": {
+                                "const": "connection"
+                              },
+                              "configRevision": {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "connectionRef": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "harness": {
+                                "enum": [
+                                  "pi",
+                                  "claude",
+                                  "codex"
+                                ]
+                              },
+                              "mode": {
+                                "enum": [
+                                  "headless",
+                                  "interactive"
+                                ]
+                              },
+                              "model": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "authKind",
+                              "model",
+                              "harness",
+                              "mode",
+                              "connectionRef",
+                              "configRevision"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authKind": {
+                                "const": "native"
+                              },
+                              "harness": {
+                                "enum": [
+                                  "pi",
+                                  "claude",
+                                  "codex"
+                                ]
+                              },
+                              "mode": {
+                                "enum": [
+                                  "headless",
+                                  "interactive"
+                                ]
+                              },
+                              "model": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "nativeAuthRef": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "authKind",
+                              "model",
+                              "harness",
+                              "mode",
+                              "nativeAuthRef"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "operationId": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "operationId",
+                      "configuration"
+                    ],
+                    "type": "object"
+                  },
                   "name": {
                     "description": "Agent name, unique on this machine; required first.",
                     "minLength": 1,
@@ -9018,6 +9120,274 @@
                         "nextHarness",
                         "contextCarriedOver",
                         "notice"
+                      ],
+                      "type": "object"
+                    },
+                    "modelConfiguration": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "agentId": {
+                          "maxLength": 512,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "binding": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "bindingRef": {
+                                  "maxLength": 512,
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "bindingRevision": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "configuration": {
+                                  "oneOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "authKind": {
+                                          "const": "connection"
+                                        },
+                                        "configRevision": {
+                                          "maximum": 9007199254740991,
+                                          "minimum": 1,
+                                          "type": "integer"
+                                        },
+                                        "connectionRef": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "harness": {
+                                          "enum": [
+                                            "pi",
+                                            "claude",
+                                            "codex"
+                                          ]
+                                        },
+                                        "intentDigest": {
+                                          "pattern": "^[0-9a-f]{64}$",
+                                          "type": "string"
+                                        },
+                                        "mode": {
+                                          "enum": [
+                                            "headless",
+                                            "interactive"
+                                          ]
+                                        },
+                                        "model": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "authKind",
+                                        "model",
+                                        "harness",
+                                        "mode",
+                                        "connectionRef",
+                                        "configRevision",
+                                        "intentDigest"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "authKind": {
+                                          "const": "native"
+                                        },
+                                        "harness": {
+                                          "enum": [
+                                            "pi",
+                                            "claude",
+                                            "codex"
+                                          ]
+                                        },
+                                        "intentDigest": {
+                                          "pattern": "^[0-9a-f]{64}$",
+                                          "type": "string"
+                                        },
+                                        "mode": {
+                                          "enum": [
+                                            "headless",
+                                            "interactive"
+                                          ]
+                                        },
+                                        "model": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "nativeAuthRef": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "authKind",
+                                        "model",
+                                        "harness",
+                                        "mode",
+                                        "nativeAuthRef",
+                                        "intentDigest"
+                                      ],
+                                      "type": "object"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "bindingRef",
+                                "bindingRevision",
+                                "configuration"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "cell": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "cellId": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "intentMatches": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "revision": {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "cellId",
+                            "revision",
+                            "intentMatches"
+                          ],
+                          "type": "object"
+                        },
+                        "cleanupPending": {
+                          "type": "boolean"
+                        },
+                        "member": {
+                          "maxLength": 512,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "ok": {
+                          "const": true
+                        },
+                        "operation": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "coordinationPhase": {
+                                  "enum": [
+                                    null,
+                                    "planned",
+                                    "applied",
+                                    "cancelling",
+                                    "compensated"
+                                  ]
+                                },
+                                "expectedBindingRevision": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "expectedCellRevision": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "observedCellRevision": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "operationId": {
+                                  "maxLength": 512,
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "phase": {
+                                  "enum": [
+                                    "prepared",
+                                    "finalized",
+                                    "cancelled"
+                                  ]
+                                },
+                                "requestDigest": {
+                                  "pattern": "^[0-9a-f]{64}$",
+                                  "type": "string"
+                                },
+                                "resultBindingRevision": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "operationId",
+                                "phase",
+                                "requestDigest",
+                                "expectedBindingRevision",
+                                "resultBindingRevision",
+                                "coordinationPhase",
+                                "expectedCellRevision",
+                                "observedCellRevision"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "runtime": {
+                          "const": "not-verified"
+                        }
+                      },
+                      "required": [
+                        "ok",
+                        "agentId",
+                        "member",
+                        "binding",
+                        "operation",
+                        "cell",
+                        "cleanupPending",
+                        "runtime"
                       ],
                       "type": "object"
                     },
@@ -10013,6 +10383,132 @@
                       "properties": {
                         "code": {
                           "const": "INVALID_AGENT_NAME"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_CONFIGURATION_INVALID"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "phase": {
+                              "const": "validate"
+                            },
+                            "reason": {
+                              "enum": [
+                                "invalid-connection",
+                                "operation-limit-setting"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_COMBINATION_UNSUPPORTED"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "phase": {
+                              "const": "admission"
+                            },
+                            "reason": {
+                              "enum": [
+                                "runtime-option",
+                                "mode"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_CONFIGURATION_INCOMPLETE"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "actor": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "agentId": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "causeCode": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "operationId": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "bind"
+                            },
+                            "reason": {
+                              "const": "configuration-required"
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "reason",
+                            "agentId",
+                            "actor",
+                            "operationId",
+                            "causeCode"
+                          ],
+                          "type": "object"
                         },
                         "message": {
                           "type": "string"
@@ -13176,54 +13672,102 @@
                               "type": "integer"
                             },
                             "configuration": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "authKind": {
-                                  "const": "connection"
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "authKind": {
+                                      "const": "connection"
+                                    },
+                                    "configRevision": {
+                                      "maximum": 9007199254740991,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "connectionRef": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "harness": {
+                                      "enum": [
+                                        "pi",
+                                        "claude",
+                                        "codex"
+                                      ]
+                                    },
+                                    "intentDigest": {
+                                      "pattern": "^[0-9a-f]{64}$",
+                                      "type": "string"
+                                    },
+                                    "mode": {
+                                      "enum": [
+                                        "headless",
+                                        "interactive"
+                                      ]
+                                    },
+                                    "model": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "authKind",
+                                    "model",
+                                    "harness",
+                                    "mode",
+                                    "connectionRef",
+                                    "configRevision",
+                                    "intentDigest"
+                                  ],
+                                  "type": "object"
                                 },
-                                "configRevision": {
-                                  "maximum": 9007199254740991,
-                                  "minimum": 1,
-                                  "type": "integer"
-                                },
-                                "connectionRef": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "type": "string"
-                                },
-                                "harness": {
-                                  "enum": [
-                                    "pi",
-                                    "claude",
-                                    "codex"
-                                  ]
-                                },
-                                "intentDigest": {
-                                  "pattern": "^[0-9a-f]{64}$",
-                                  "type": "string"
-                                },
-                                "mode": {
-                                  "enum": [
-                                    "headless",
-                                    "interactive"
-                                  ]
-                                },
-                                "model": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "type": "string"
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "authKind": {
+                                      "const": "native"
+                                    },
+                                    "harness": {
+                                      "enum": [
+                                        "pi",
+                                        "claude",
+                                        "codex"
+                                      ]
+                                    },
+                                    "intentDigest": {
+                                      "pattern": "^[0-9a-f]{64}$",
+                                      "type": "string"
+                                    },
+                                    "mode": {
+                                      "enum": [
+                                        "headless",
+                                        "interactive"
+                                      ]
+                                    },
+                                    "model": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "nativeAuthRef": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "authKind",
+                                    "model",
+                                    "harness",
+                                    "mode",
+                                    "nativeAuthRef",
+                                    "intentDigest"
+                                  ],
+                                  "type": "object"
                                 }
-                              },
-                              "required": [
-                                "authKind",
-                                "model",
-                                "harness",
-                                "mode",
-                                "connectionRef",
-                                "configRevision",
-                                "intentDigest"
-                              ],
-                              "type": "object"
+                              ]
                             }
                           },
                           "required": [
@@ -13925,49 +14469,92 @@
                 ],
                 "properties": {
                   "configuration": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "authKind": {
-                        "const": "connection"
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "connection"
+                          },
+                          "configRevision": {
+                            "maximum": 9007199254740991,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "connectionRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "connectionRef",
+                          "configRevision"
+                        ],
+                        "type": "object"
                       },
-                      "configRevision": {
-                        "maximum": 9007199254740991,
-                        "minimum": 1,
-                        "type": "integer"
-                      },
-                      "connectionRef": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "harness": {
-                        "enum": [
-                          "pi",
-                          "claude",
-                          "codex"
-                        ]
-                      },
-                      "mode": {
-                        "enum": [
-                          "headless",
-                          "interactive"
-                        ]
-                      },
-                      "model": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "native"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "nativeAuthRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "nativeAuthRef"
+                        ],
+                        "type": "object"
                       }
-                    },
-                    "required": [
-                      "authKind",
-                      "model",
-                      "harness",
-                      "mode",
-                      "connectionRef",
-                      "configRevision"
-                    ],
-                    "type": "object"
+                    ]
                   },
                   "expectedBindingRevision": {
                     "maximum": 9007199254740991,
@@ -14076,54 +14663,102 @@
                               "type": "integer"
                             },
                             "configuration": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "authKind": {
-                                  "const": "connection"
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "authKind": {
+                                      "const": "connection"
+                                    },
+                                    "configRevision": {
+                                      "maximum": 9007199254740991,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "connectionRef": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "harness": {
+                                      "enum": [
+                                        "pi",
+                                        "claude",
+                                        "codex"
+                                      ]
+                                    },
+                                    "intentDigest": {
+                                      "pattern": "^[0-9a-f]{64}$",
+                                      "type": "string"
+                                    },
+                                    "mode": {
+                                      "enum": [
+                                        "headless",
+                                        "interactive"
+                                      ]
+                                    },
+                                    "model": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "authKind",
+                                    "model",
+                                    "harness",
+                                    "mode",
+                                    "connectionRef",
+                                    "configRevision",
+                                    "intentDigest"
+                                  ],
+                                  "type": "object"
                                 },
-                                "configRevision": {
-                                  "maximum": 9007199254740991,
-                                  "minimum": 1,
-                                  "type": "integer"
-                                },
-                                "connectionRef": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "type": "string"
-                                },
-                                "harness": {
-                                  "enum": [
-                                    "pi",
-                                    "claude",
-                                    "codex"
-                                  ]
-                                },
-                                "intentDigest": {
-                                  "pattern": "^[0-9a-f]{64}$",
-                                  "type": "string"
-                                },
-                                "mode": {
-                                  "enum": [
-                                    "headless",
-                                    "interactive"
-                                  ]
-                                },
-                                "model": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "type": "string"
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "authKind": {
+                                      "const": "native"
+                                    },
+                                    "harness": {
+                                      "enum": [
+                                        "pi",
+                                        "claude",
+                                        "codex"
+                                      ]
+                                    },
+                                    "intentDigest": {
+                                      "pattern": "^[0-9a-f]{64}$",
+                                      "type": "string"
+                                    },
+                                    "mode": {
+                                      "enum": [
+                                        "headless",
+                                        "interactive"
+                                      ]
+                                    },
+                                    "model": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "nativeAuthRef": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "authKind",
+                                    "model",
+                                    "harness",
+                                    "mode",
+                                    "nativeAuthRef",
+                                    "intentDigest"
+                                  ],
+                                  "type": "object"
                                 }
-                              },
-                              "required": [
-                                "authKind",
-                                "model",
-                                "harness",
-                                "mode",
-                                "connectionRef",
-                                "configRevision",
-                                "intentDigest"
-                              ],
-                              "type": "object"
+                              ]
                             }
                           },
                           "required": [
@@ -14914,54 +15549,102 @@
                               "type": "integer"
                             },
                             "configuration": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "authKind": {
-                                  "const": "connection"
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "authKind": {
+                                      "const": "connection"
+                                    },
+                                    "configRevision": {
+                                      "maximum": 9007199254740991,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "connectionRef": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "harness": {
+                                      "enum": [
+                                        "pi",
+                                        "claude",
+                                        "codex"
+                                      ]
+                                    },
+                                    "intentDigest": {
+                                      "pattern": "^[0-9a-f]{64}$",
+                                      "type": "string"
+                                    },
+                                    "mode": {
+                                      "enum": [
+                                        "headless",
+                                        "interactive"
+                                      ]
+                                    },
+                                    "model": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "authKind",
+                                    "model",
+                                    "harness",
+                                    "mode",
+                                    "connectionRef",
+                                    "configRevision",
+                                    "intentDigest"
+                                  ],
+                                  "type": "object"
                                 },
-                                "configRevision": {
-                                  "maximum": 9007199254740991,
-                                  "minimum": 1,
-                                  "type": "integer"
-                                },
-                                "connectionRef": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "type": "string"
-                                },
-                                "harness": {
-                                  "enum": [
-                                    "pi",
-                                    "claude",
-                                    "codex"
-                                  ]
-                                },
-                                "intentDigest": {
-                                  "pattern": "^[0-9a-f]{64}$",
-                                  "type": "string"
-                                },
-                                "mode": {
-                                  "enum": [
-                                    "headless",
-                                    "interactive"
-                                  ]
-                                },
-                                "model": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "type": "string"
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "authKind": {
+                                      "const": "native"
+                                    },
+                                    "harness": {
+                                      "enum": [
+                                        "pi",
+                                        "claude",
+                                        "codex"
+                                      ]
+                                    },
+                                    "intentDigest": {
+                                      "pattern": "^[0-9a-f]{64}$",
+                                      "type": "string"
+                                    },
+                                    "mode": {
+                                      "enum": [
+                                        "headless",
+                                        "interactive"
+                                      ]
+                                    },
+                                    "model": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "nativeAuthRef": {
+                                      "maxLength": 512,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "authKind",
+                                    "model",
+                                    "harness",
+                                    "mode",
+                                    "nativeAuthRef",
+                                    "intentDigest"
+                                  ],
+                                  "type": "object"
                                 }
-                              },
-                              "required": [
-                                "authKind",
-                                "model",
-                                "harness",
-                                "mode",
-                                "connectionRef",
-                                "configRevision",
-                                "intentDigest"
-                              ],
-                              "type": "object"
+                              ]
                             }
                           },
                           "required": [
@@ -16235,6 +16918,9 @@
                       "pi",
                       "agy"
                     ]
+                  },
+                  "targetsVersion": {
+                    "const": 1
                   }
                 },
                 "type": "object"
@@ -16339,6 +17025,34 @@
                               "partial",
                               "unavailable"
                             ]
+                          },
+                          "targets": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "kind": {
+                                  "enum": [
+                                    "oauth",
+                                    "api-key"
+                                  ]
+                                },
+                                "nativeAuthRef": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "target": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "nativeAuthRef",
+                                "target",
+                                "kind"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
                           }
                         },
                         "required": [
@@ -25838,7 +26552,8 @@
                               "enum": [
                                 "destroy-cleanup-pending",
                                 "operation-in-progress",
-                                "state-unreadable"
+                                "state-unreadable",
+                                "configuration-required"
                               ],
                               "type": "string"
                             }
@@ -103746,6 +104461,96 @@
           "code": "INVALID_AGENT_NAME",
           "dataSchema": null,
           "description": "The agent-domain owner rejected the lifecycle or create command with registry code INVALID_AGENT_NAME; the write did not take effect."
+        },
+        {
+          "code": "MODEL_CONFIGURATION_INVALID",
+          "dataSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "phase": {
+                "const": "validate"
+              },
+              "reason": {
+                "enum": [
+                  "invalid-connection",
+                  "operation-limit-setting"
+                ]
+              }
+            },
+            "required": [
+              "phase",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "description": ""
+        },
+        {
+          "code": "MODEL_COMBINATION_UNSUPPORTED",
+          "dataSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "phase": {
+                "const": "admission"
+              },
+              "reason": {
+                "enum": [
+                  "runtime-option",
+                  "mode"
+                ]
+              }
+            },
+            "required": [
+              "phase",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "description": ""
+        },
+        {
+          "code": "MODEL_CONFIGURATION_INCOMPLETE",
+          "dataSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "agentId": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "causeCode": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operationId": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "phase": {
+                "const": "bind"
+              },
+              "reason": {
+                "const": "configuration-required"
+              }
+            },
+            "required": [
+              "phase",
+              "reason",
+              "agentId",
+              "actor",
+              "operationId",
+              "causeCode"
+            ],
+            "type": "object"
+          },
+          "description": ""
         }
       ],
       "httpBinding": {
@@ -103866,6 +104671,108 @@
               "string",
               "null"
             ]
+          },
+          "modelConfiguration": {
+            "additionalProperties": false,
+            "properties": {
+              "configuration": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authKind": {
+                        "const": "connection"
+                      },
+                      "configRevision": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "connectionRef": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "harness": {
+                        "enum": [
+                          "pi",
+                          "claude",
+                          "codex"
+                        ]
+                      },
+                      "mode": {
+                        "enum": [
+                          "headless",
+                          "interactive"
+                        ]
+                      },
+                      "model": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "authKind",
+                      "model",
+                      "harness",
+                      "mode",
+                      "connectionRef",
+                      "configRevision"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authKind": {
+                        "const": "native"
+                      },
+                      "harness": {
+                        "enum": [
+                          "pi",
+                          "claude",
+                          "codex"
+                        ]
+                      },
+                      "mode": {
+                        "enum": [
+                          "headless",
+                          "interactive"
+                        ]
+                      },
+                      "model": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "nativeAuthRef": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "authKind",
+                      "model",
+                      "harness",
+                      "mode",
+                      "nativeAuthRef"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "operationId": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "operationId",
+              "configuration"
+            ],
+            "type": "object"
           },
           "name": {
             "description": "Agent name, unique on this machine; required first.",
@@ -104582,6 +105489,274 @@
               "nextHarness",
               "contextCarriedOver",
               "notice"
+            ],
+            "type": "object"
+          },
+          "modelConfiguration": {
+            "additionalProperties": false,
+            "properties": {
+              "agentId": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "binding": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bindingRef": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "bindingRevision": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "configuration": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authKind": {
+                                "const": "connection"
+                              },
+                              "configRevision": {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "connectionRef": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "harness": {
+                                "enum": [
+                                  "pi",
+                                  "claude",
+                                  "codex"
+                                ]
+                              },
+                              "intentDigest": {
+                                "pattern": "^[0-9a-f]{64}$",
+                                "type": "string"
+                              },
+                              "mode": {
+                                "enum": [
+                                  "headless",
+                                  "interactive"
+                                ]
+                              },
+                              "model": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "authKind",
+                              "model",
+                              "harness",
+                              "mode",
+                              "connectionRef",
+                              "configRevision",
+                              "intentDigest"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authKind": {
+                                "const": "native"
+                              },
+                              "harness": {
+                                "enum": [
+                                  "pi",
+                                  "claude",
+                                  "codex"
+                                ]
+                              },
+                              "intentDigest": {
+                                "pattern": "^[0-9a-f]{64}$",
+                                "type": "string"
+                              },
+                              "mode": {
+                                "enum": [
+                                  "headless",
+                                  "interactive"
+                                ]
+                              },
+                              "model": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "nativeAuthRef": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "authKind",
+                              "model",
+                              "harness",
+                              "mode",
+                              "nativeAuthRef",
+                              "intentDigest"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "bindingRef",
+                      "bindingRevision",
+                      "configuration"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "cell": {
+                "additionalProperties": false,
+                "properties": {
+                  "cellId": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intentMatches": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "revision": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "cellId",
+                  "revision",
+                  "intentMatches"
+                ],
+                "type": "object"
+              },
+              "cleanupPending": {
+                "type": "boolean"
+              },
+              "member": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "ok": {
+                "const": true
+              },
+              "operation": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "coordinationPhase": {
+                        "enum": [
+                          null,
+                          "planned",
+                          "applied",
+                          "cancelling",
+                          "compensated"
+                        ]
+                      },
+                      "expectedBindingRevision": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "expectedCellRevision": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "observedCellRevision": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "operationId": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "phase": {
+                        "enum": [
+                          "prepared",
+                          "finalized",
+                          "cancelled"
+                        ]
+                      },
+                      "requestDigest": {
+                        "pattern": "^[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "resultBindingRevision": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "operationId",
+                      "phase",
+                      "requestDigest",
+                      "expectedBindingRevision",
+                      "resultBindingRevision",
+                      "coordinationPhase",
+                      "expectedCellRevision",
+                      "observedCellRevision"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "runtime": {
+                "const": "not-verified"
+              }
+            },
+            "required": [
+              "ok",
+              "agentId",
+              "member",
+              "binding",
+              "operation",
+              "cell",
+              "cleanupPending",
+              "runtime"
             ],
             "type": "object"
           },
@@ -110752,54 +111927,102 @@
                     "type": "integer"
                   },
                   "configuration": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "authKind": {
-                        "const": "connection"
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "connection"
+                          },
+                          "configRevision": {
+                            "maximum": 9007199254740991,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "connectionRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "intentDigest": {
+                            "pattern": "^[0-9a-f]{64}$",
+                            "type": "string"
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "connectionRef",
+                          "configRevision",
+                          "intentDigest"
+                        ],
+                        "type": "object"
                       },
-                      "configRevision": {
-                        "maximum": 9007199254740991,
-                        "minimum": 1,
-                        "type": "integer"
-                      },
-                      "connectionRef": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "harness": {
-                        "enum": [
-                          "pi",
-                          "claude",
-                          "codex"
-                        ]
-                      },
-                      "intentDigest": {
-                        "pattern": "^[0-9a-f]{64}$",
-                        "type": "string"
-                      },
-                      "mode": {
-                        "enum": [
-                          "headless",
-                          "interactive"
-                        ]
-                      },
-                      "model": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "native"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "intentDigest": {
+                            "pattern": "^[0-9a-f]{64}$",
+                            "type": "string"
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "nativeAuthRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "nativeAuthRef",
+                          "intentDigest"
+                        ],
+                        "type": "object"
                       }
-                    },
-                    "required": [
-                      "authKind",
-                      "model",
-                      "harness",
-                      "mode",
-                      "connectionRef",
-                      "configRevision",
-                      "intentDigest"
-                    ],
-                    "type": "object"
+                    ]
                   }
                 },
                 "required": [
@@ -111236,49 +112459,92 @@
         "additionalProperties": false,
         "properties": {
           "configuration": {
-            "additionalProperties": false,
-            "properties": {
-              "authKind": {
-                "const": "connection"
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "authKind": {
+                    "const": "connection"
+                  },
+                  "configRevision": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "connectionRef": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "harness": {
+                    "enum": [
+                      "pi",
+                      "claude",
+                      "codex"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "headless",
+                      "interactive"
+                    ]
+                  },
+                  "model": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "authKind",
+                  "model",
+                  "harness",
+                  "mode",
+                  "connectionRef",
+                  "configRevision"
+                ],
+                "type": "object"
               },
-              "configRevision": {
-                "maximum": 9007199254740991,
-                "minimum": 1,
-                "type": "integer"
-              },
-              "connectionRef": {
-                "maxLength": 512,
-                "minLength": 1,
-                "type": "string"
-              },
-              "harness": {
-                "enum": [
-                  "pi",
-                  "claude",
-                  "codex"
-                ]
-              },
-              "mode": {
-                "enum": [
-                  "headless",
-                  "interactive"
-                ]
-              },
-              "model": {
-                "maxLength": 512,
-                "minLength": 1,
-                "type": "string"
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "authKind": {
+                    "const": "native"
+                  },
+                  "harness": {
+                    "enum": [
+                      "pi",
+                      "claude",
+                      "codex"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "headless",
+                      "interactive"
+                    ]
+                  },
+                  "model": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "nativeAuthRef": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "authKind",
+                  "model",
+                  "harness",
+                  "mode",
+                  "nativeAuthRef"
+                ],
+                "type": "object"
               }
-            },
-            "required": [
-              "authKind",
-              "model",
-              "harness",
-              "mode",
-              "connectionRef",
-              "configRevision"
-            ],
-            "type": "object"
+            ]
           },
           "expectedBindingRevision": {
             "maximum": 9007199254740991,
@@ -111342,54 +112608,102 @@
                     "type": "integer"
                   },
                   "configuration": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "authKind": {
-                        "const": "connection"
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "connection"
+                          },
+                          "configRevision": {
+                            "maximum": 9007199254740991,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "connectionRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "intentDigest": {
+                            "pattern": "^[0-9a-f]{64}$",
+                            "type": "string"
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "connectionRef",
+                          "configRevision",
+                          "intentDigest"
+                        ],
+                        "type": "object"
                       },
-                      "configRevision": {
-                        "maximum": 9007199254740991,
-                        "minimum": 1,
-                        "type": "integer"
-                      },
-                      "connectionRef": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "harness": {
-                        "enum": [
-                          "pi",
-                          "claude",
-                          "codex"
-                        ]
-                      },
-                      "intentDigest": {
-                        "pattern": "^[0-9a-f]{64}$",
-                        "type": "string"
-                      },
-                      "mode": {
-                        "enum": [
-                          "headless",
-                          "interactive"
-                        ]
-                      },
-                      "model": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "native"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "intentDigest": {
+                            "pattern": "^[0-9a-f]{64}$",
+                            "type": "string"
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "nativeAuthRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "nativeAuthRef",
+                          "intentDigest"
+                        ],
+                        "type": "object"
                       }
-                    },
-                    "required": [
-                      "authKind",
-                      "model",
-                      "harness",
-                      "mode",
-                      "connectionRef",
-                      "configRevision",
-                      "intentDigest"
-                    ],
-                    "type": "object"
+                    ]
                   }
                 },
                 "required": [
@@ -111912,54 +113226,102 @@
                     "type": "integer"
                   },
                   "configuration": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "authKind": {
-                        "const": "connection"
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "connection"
+                          },
+                          "configRevision": {
+                            "maximum": 9007199254740991,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "connectionRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "intentDigest": {
+                            "pattern": "^[0-9a-f]{64}$",
+                            "type": "string"
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "connectionRef",
+                          "configRevision",
+                          "intentDigest"
+                        ],
+                        "type": "object"
                       },
-                      "configRevision": {
-                        "maximum": 9007199254740991,
-                        "minimum": 1,
-                        "type": "integer"
-                      },
-                      "connectionRef": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "harness": {
-                        "enum": [
-                          "pi",
-                          "claude",
-                          "codex"
-                        ]
-                      },
-                      "intentDigest": {
-                        "pattern": "^[0-9a-f]{64}$",
-                        "type": "string"
-                      },
-                      "mode": {
-                        "enum": [
-                          "headless",
-                          "interactive"
-                        ]
-                      },
-                      "model": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authKind": {
+                            "const": "native"
+                          },
+                          "harness": {
+                            "enum": [
+                              "pi",
+                              "claude",
+                              "codex"
+                            ]
+                          },
+                          "intentDigest": {
+                            "pattern": "^[0-9a-f]{64}$",
+                            "type": "string"
+                          },
+                          "mode": {
+                            "enum": [
+                              "headless",
+                              "interactive"
+                            ]
+                          },
+                          "model": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "nativeAuthRef": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "authKind",
+                          "model",
+                          "harness",
+                          "mode",
+                          "nativeAuthRef",
+                          "intentDigest"
+                        ],
+                        "type": "object"
                       }
-                    },
-                    "required": [
-                      "authKind",
-                      "model",
-                      "harness",
-                      "mode",
-                      "connectionRef",
-                      "configRevision",
-                      "intentDigest"
-                    ],
-                    "type": "object"
+                    ]
                   }
                 },
                 "required": [
@@ -112638,6 +114000,9 @@
               "pi",
               "agy"
             ]
+          },
+          "targetsVersion": {
+            "const": 1
           }
         },
         "type": "object"
@@ -112710,6 +114075,34 @@
                     "partial",
                     "unavailable"
                   ]
+                },
+                "targets": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "oauth",
+                          "api-key"
+                        ]
+                      },
+                      "nativeAuthRef": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "target": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "nativeAuthRef",
+                      "target",
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
                 }
               },
               "required": [
@@ -118555,7 +119948,8 @@
                 "enum": [
                   "destroy-cleanup-pending",
                   "operation-in-progress",
-                  "state-unreadable"
+                  "state-unreadable",
+                  "configuration-required"
                 ],
                 "type": "string"
               }

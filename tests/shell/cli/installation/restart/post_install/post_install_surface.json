@@ -162,7 +162,7 @@
     "hyprial.shell.impl.gui.apps",
     "hyprial.shell.impl.gui.errors"
   ],
-  "primedModuleCount": 625,
+  "primedModuleCount": 627,
   "primedModules": [
     "hyprial",
     "hyprial.biz",
@@ -260,6 +260,7 @@
     "hyprial.daemon.impl.harnesses.model_routes",
     "hyprial.daemon.impl.harnesses.model_routes.connection",
     "hyprial.daemon.impl.harnesses.model_routes.errors",
+    "hyprial.daemon.impl.harnesses.model_routes.native",
     "hyprial.daemon.impl.harnesses.pi",
     "hyprial.daemon.impl.harnesses.pi.bindings",
     "hyprial.daemon.impl.harnesses.pi.bindings.errors",
@@ -441,6 +442,7 @@
     "hyprial.identity.impl.agents.home.native_credential",
     "hyprial.identity.impl.agents.home.native_imports",
     "hyprial.identity.impl.agents.home.native_imports.manifest",
+    "hyprial.identity.impl.agents.home.native_imports.targets",
     "hyprial.identity.impl.agents.home.provisioner",
     "hyprial.identity.impl.agents.migration",
     "hyprial.identity.impl.agents.migration._base",
