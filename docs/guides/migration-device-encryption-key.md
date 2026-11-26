@@ -71,7 +71,7 @@
    hyprial daemon start
    ```
 
-   daemon 进入 serving 后为具备第 3 节前提的设备生成加密钥（已有一把时沿用那一把），并在自己加入了 org 且 sidecar 已写入地址文件之后，在下一次发布设备行时带上公钥。生成钥有两个入口：serving 启动后的后台恢复流程，以及每次发布设备行本身；两个入口得到的是同一把钥，先到的那一个生成它。
+   daemon 进入 serving 后为具备第 3 节前提的设备生成加密钥（已有一把时沿用那一把），并在自己加入了 org 且 sidecar 已写入地址文件之后，在下一次发布设备行时带上公钥。生成钥的入口是 serving 启动与重新登录时的恢复流程，以及内存缓存未命中时的首次目录发布；稳态下的周期性发布复用按 `(userId, deviceUid)` 缓存在内存里的公钥对，不再重复进入钥存储。两个入口读的是同一个本机钥存储，得到的是同一把钥。
 
 ## 5. 升级后验证
 
@@ -91,13 +91,20 @@
    hyprial org network <org> --json
    ```
 
-   在结果的 `directory` 里找到本机那一行（`deviceId` 是本机的设备 id），确认同时有 `encryptionKeyId` 和 `encryptionPublicKey`，且 `encryptionKeyId` 的值以 `x25519:` 开头。`dataProblems` 里不应出现 `reason` 为 `invalid-device-record` 且指向这台设备的条目（其它原因的数据问题与本次升级无关）。
+   CLI `--json` 输出单个 JSON 对象，顶层带 `"ok": true`、`orgs`、`directory`、`directoryPending`、`self` 和 `dataProblems`。设备行列表位于 `directory["<orgKey>"]` 数组中（`<orgKey>` 为 `orgs[0]`，即带 `group-` 前缀的规范 org 名，例如查询 `acme` 或 `group-acme` 时对应键均为 `"group-acme"`），而不是直接平铺在 `directory` 上。在该数组中按 `deviceId`（与 `self.deviceId` 相同）找到本机那一行，确认同时有 `encryptionKeyId` 和 `encryptionPublicKey`，且 `encryptionKeyId` 的值以 `x25519:` 开头。顶层 `dataProblems`（以及 `directoryPending["<orgKey>"]["dataProblems"]`）里不应出现 `reason` 为 `invalid-device-record` 且指向这台设备的条目（其它原因的数据问题与本次升级无关）。
 
-3. 在 org 内另一台已升级的设备上重复第 2 步，确认它能同时看到自己和第一台设备的行，且 `dataProblems` 里没有指向这两台设备的 `invalid-device-record` 条目。
+3. 在 org 内另一台已升级的设备上重复第 2 步，确认它在 `directory["<orgKey>"]` 里能同时看到自己和第一台设备的行，且 `dataProblems` 里没有指向这两台设备的 `invalid-device-record` 条目。
 
 ## 6. 回退
 
-回退到旧版本后，目录里已经发布的行仍带着这两个键。回退后的 daemon 会把自己的行判为无效并从目录视图里丢掉（第 2 节），直到整台 org 再次升级。本机的加密钥文件不会被回退删除；重新升级后沿用它，不会生成第二把。
+刚回退到旧版本并启动、尚未执行 `publish_self` 时，目录里已经发布的行仍带着 `encryptionKeyId` 和 `encryptionPublicKey`，旧版本 daemon 读取时会把这一行判为 `invalid-device-record` 并从目录视图里丢掉（第 2 节）。但一旦 sidecar 写入地址文件，旧版本 daemon 在下一次 `publish_self`（启动后立即或 10 秒维护周期内）会构造一条不带这两个键的旧格式行并直接覆写自己在 OrgFS 里的设备行；覆写完成后，旧版本 daemon 随即重新看到自己的设备行。
+
+因此：
+
+- **整台 org 全部回退并启动**：各设备在各自下一次 `publish_self` 用不带键的行覆写自己的目录行后，都会恢复可见。
+- **部分回退（新旧版本混跑）或曾升级的设备离线未启动旧版**：那些仍带着 `encryptionKeyId` / `encryptionPublicKey` 的设备行，会被旧版本 daemon 持续判为 `invalid-device-record` 丢弃。
+
+本机的加密钥文件不会被回退删除；日后重新升级后会沿用它，不会生成第二把。
 
 ## 7. 已知限制
 

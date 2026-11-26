@@ -83,11 +83,19 @@ closed: `encryptionKeyPrivate` or any other unknown key is rejected.
 A device publishes the pair once it holds a committed account and a device
 record that belongs to that account (settings `owner`, `identityIssuer` and
 `userId`, and the record's `deviceUid`). A device without them publishes a
-row without the pair, which stays valid, and its publish does not fail. The
-pair carries no switch of its own: an upgraded daemon that has them publishes
-the pair on its next `publish_self`, and it does so once on every serving
-start.  Whether the key was made by serving start or by the publish itself
-does not matter: both read the same local key store and get the same key.
+row without the pair, which stays valid, and its publish does not fail. When
+the local key store is temporarily unreadable (such as a busy store lock or
+transient I/O error), publication retains any pair already present on this
+device's current directory row instead of overwriting it without keys; only
+an explicit absence of prerequisites clears the pair. Serving start and
+relogin ensure the key on disk under the home identity transaction lock, and
+periodic `publish_self` caches the resolved public pair in memory by
+`(userId, deviceUid)` (invalidating when either changes) and reads at most
+once across all orgs per pass, with a short lock timeout on a cache miss. The
+pair carries no switch of its own: an upgraded daemon that has the
+prerequisites publishes the pair on its next `publish_self`. Whether the key
+was made by serving start or by a cache-miss publish does not matter: both
+read the same local key store and get the same key.
 
 Mixed-version window. A directory reader on a build that predates the two
 keys refuses a row that carries them. Measured on a real OrgFS store: an
@@ -100,9 +108,13 @@ both and reported no problem. The rows were written through the directory
 store, not by `publish_self`, and no two daemon builds talked to each other
 over a network. A daemon on the older build therefore leaves that device out
 of its directory view until it upgrades, while its other rows are not
-affected. Because no switch delays the pair, every device of an org has to
-be upgraded together, before the first upgraded device republishes its row.
-The migration steps are in
+affected. On rollback, once an older daemon runs its next `publish_self`, it
+overwrites its own row with an older-format row without the pair and becomes
+visible again, whereas any device still running the newer build or offline
+with a row carrying the pair continues to be dropped as
+`invalid-device-record` by older builds. Because no switch delays the pair,
+every device of an org has to be upgraded together, before the first upgraded
+device republishes its row. The migration steps are in
 `docs/guides/migration-device-encryption-key.md`.
 
 A daemon on a build that publishes the pair but does not know it in its
