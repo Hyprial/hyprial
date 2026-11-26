@@ -48,6 +48,10 @@ def _checkout(tmp_path: Path) -> Path:
     native_engine = root / "src/hyprial/shell/impl/packaging/native_engine.py"
     native_engine.parent.mkdir(parents=True)
     shutil.copy2(source_root / "src/hyprial/shell/impl/packaging/native_engine.py", native_engine)
+    shutil.copy2(
+        source_root / "src/hyprial/shell/impl/packaging/native_editable.py",
+        native_engine.with_name("native_editable.py"),
+    )
     return root
 
 

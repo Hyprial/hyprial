@@ -45,6 +45,21 @@ it('uses declared authorization methods with explicit minimal consent and no wri
   expect(invoke.mock.calls.map(call => call[0])).toEqual(['adapter.authorization.begin', 'adapter.authorization.operation', 'adapter.authorization.cancel']);
 });
 
+it('starts authorization with a UUID v4 when randomUUID is unavailable on HTTP', async () => {
+  const { api, invoke } = setup();
+  const getRandomValues = crypto.getRandomValues.bind(crypto);
+  vi.stubGlobal('crypto', { getRandomValues });
+  try {
+    await api.beginAuthorization!('demo');
+    const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    expect(invoke).toHaveBeenCalledWith('adapter.authorization.begin', expect.objectContaining({
+      name: 'demo', operationKey: expect.stringMatching(uuidV4),
+    }), expect.anything());
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 it('restores an existing operation after opening details without another begin', async () => {
   const { api, invoke, restore } = setup();
   restore();

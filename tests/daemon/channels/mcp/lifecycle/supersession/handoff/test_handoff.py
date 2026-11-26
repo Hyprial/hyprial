@@ -441,6 +441,56 @@ async def test_real_owner_birth_marker_survives_in_place_package_swap(
             owner.wait(timeout=5)
 
 
+async def test_watch_parent_default_owner_probe_uses_kernel_not_os_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production call passes no ``signal_process``; ``os.kill(pid, 0)`` is Ctrl+C on Windows."""
+
+    owner_pid = 2**30
+    kill_calls: list[tuple[int, int]] = []
+    probes: list[int] = []
+    owner_alive = True
+
+    def intercept_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, sig))
+        raise AssertionError(f"owner probe reached os.kill({pid}, {sig})")
+
+    def kernel_probe(pid: int) -> None:
+        probes.append(pid)
+        if not owner_alive:
+            raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(os, "kill", intercept_kill)
+    monkeypatch.setattr(channel_module, "probe_process", kernel_probe)
+    outcome: list[bool] = []
+
+    async def watch() -> None:
+        outcome.append(
+            await _watch_parent(
+                getppid=lambda: 9999,
+                poll_interval=0.01,
+                owner_pid=owner_pid,
+                owner_identity="original-start",
+                read_identity=lambda _pid: "original-start",
+            )
+        )
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(watch)
+        with anyio.fail_after(2):
+            while len(probes) < 3:
+                await anyio.sleep(0.01)
+        assert outcome == []
+        owner_alive = False
+        with anyio.fail_after(2):
+            while outcome == []:
+                await anyio.sleep(0.01)
+
+    assert outcome == [True]
+    assert kill_calls == []
+    assert set(probes) == {owner_pid}
+
+
 async def test_watch_parent_waits_for_the_same_live_owner_after_reparenting() -> None:
     with pytest.raises(TimeoutError):
         with anyio.fail_after(0.3):
