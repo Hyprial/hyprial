@@ -30,7 +30,10 @@
 #   _cancelling == 0 before disposing or handing off the handle, ensuring every
 #   handle and hEvent closes exactly once after settlement and no thread uses
 #   them after close() returns. Calling accept() on a closed listener raises
-#   OSError(errno.EBADF, ...).
+#   OSError(errno.EBADF, ...). close() is blocking (it waits for any in-flight
+#   accept() to finish overlapped settlement before returning, and neither
+#   handle, operation, nor hEvent is released before then), must not be called
+#   from the thread currently executing accept(), and is idempotent.
 """Local, current-user Windows named pipes with bounded overlapped I/O.
 
 Only the small stream interface used by daemon IPC is implemented. This is
