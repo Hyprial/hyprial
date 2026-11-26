@@ -39,10 +39,10 @@ class NativeAuthTarget:
     def from_reference(cls, value):
         if not isinstance(value, str):
             raise ValueError("invalid native target reference")
-        parts = value.split(":")
-        if len(parts) != 5 or parts[:2] != ["native", "v1"]:
+        match = re.fullmatch(r"native:v1:([^:]*):([^:]*):([^:]*)", value)
+        if match is None:
             raise ValueError("invalid native target reference")
-        return cls(parts[2], parts[4], parts[3])
+        return cls(match[1], match[3], match[2])
 
     def to_json(self):
         return {"nativeAuthRef": self.reference, "target": self.target, "kind": self.kind}

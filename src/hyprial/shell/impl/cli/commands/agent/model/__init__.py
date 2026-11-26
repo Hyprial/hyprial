@@ -53,19 +53,20 @@ def configuration_input(*, connection, config_revision, native_auth, harness, mo
 
 @model_app.command("configure")
 def configure(
-    name: str = typer.Argument(...),
+    name: str = typer.Argument(..., help="Agent name or URI."),
     model: str = typer.Option(..., "--model", help="Exact model ID; never inferred or substituted."),
     connection: str | None = typer.Option(None, "--connection", help="Saved connection reference, not a Key."),
-    config_revision: int | None = typer.Option(None, "--config-revision"),
+    config_revision: int | None = typer.Option(None, "--config-revision", help="Saved connection revision; required only with --connection."),
     native_auth: str | None = typer.Option(None, "--native-auth", help="Exact nativeAuthRef from the agent's Auth inventory."),
     binding_revision: int = typer.Option(..., "--binding-revision", help="Current binding revision; 0 for first configuration."),
     cell_revision: int = typer.Option(..., "--cell-revision", help="Current agent Cell revision."),
     operation_id: str = typer.Option(..., "--operation-id", help="Unique ID; retry the same ID and exact input after read-back."),
-    harness: str = typer.Option("pi", "--harness"),
-    mode: str = typer.Option("headless", "--mode"),
-    member: str | None = typer.Option(None, "--member"),
-    json_output: bool = typer.Option(False, "--json"),
+    harness: str = typer.Option("pi", "--harness", help="Harness to bind; unsupported combinations are refused."),
+    mode: str = typer.Option("headless", "--mode", help="Execution mode to bind."),
+    member: str | None = typer.Option(None, "--member", help="Cell member ID; omit only when the target is unique."),
+    json_output: bool = typer.Option(False, "--json", help="Emit one machine-readable JSON result."),
 ):
+    """Save an exact connection or native login without starting the agent."""
     def request():
         params = {
             **target(name, member, operation_id), "expectedBindingRevision": binding_revision,
@@ -80,22 +81,24 @@ def configure(
 
 @model_app.command("status")
 def status(
-    name: str = typer.Argument(...),
-    member: str | None = typer.Option(None, "--member"),
-    operation_id: str | None = typer.Option(None, "--operation-id"),
-    json_output: bool = typer.Option(False, "--json"),
+    name: str = typer.Argument(..., help="Agent name or URI."),
+    member: str | None = typer.Option(None, "--member", help="Cell member ID; omit only when the target is unique."),
+    operation_id: str | None = typer.Option(None, "--operation-id", help="Operation ID whose durable receipt to read."),
+    json_output: bool = typer.Option(False, "--json", help="Emit one machine-readable JSON result."),
 ):
+    """Read the saved binding and durable operation receipt."""
     params = target(name, member, operation_id)
     execute(lambda: get_services().runtime.request("agent.model.status", params), json_output)
 
 
 @model_app.command("cancel")
 def cancel(
-    name: str = typer.Argument(...),
-    operation_id: str = typer.Option(..., "--operation-id"),
-    binding_revision: int = typer.Option(..., "--binding-revision"),
-    member: str | None = typer.Option(None, "--member"),
-    json_output: bool = typer.Option(False, "--json"),
+    name: str = typer.Argument(..., help="Agent name or URI."),
+    operation_id: str = typer.Option(..., "--operation-id", help="Prepared operation ID to cancel."),
+    binding_revision: int = typer.Option(..., "--binding-revision", help="Current binding revision for cancellation."),
+    member: str | None = typer.Option(None, "--member", help="Cell member ID; omit only when the target is unique."),
+    json_output: bool = typer.Option(False, "--json", help="Emit one machine-readable JSON result."),
 ):
+    """Cancel a prepared configuration after reconciling its Cell result."""
     params = {**target(name, member, operation_id), "expectedBindingRevision": binding_revision}
     execute(lambda: get_services().runtime.request("agent.model.cancel", params), json_output)

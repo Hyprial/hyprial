@@ -3243,7 +3243,7 @@
               "observedCellRevision": 3,
               "operationId": "configure-example",
               "phase": "cancelled",
-              "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
               "resultBindingRevision": 0
             },
             "runtime": "not-verified"
@@ -3506,7 +3506,7 @@
                 "configRevision": 1,
                 "connectionRef": "example-connection",
                 "harness": "pi",
-                "intentDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
                 "mode": "headless",
                 "model": "hy4-flash"
               }
@@ -3526,7 +3526,7 @@
               "observedCellRevision": 2,
               "operationId": "configure-example",
               "phase": "finalized",
-              "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
               "resultBindingRevision": 1
             },
             "runtime": "not-verified"
@@ -3720,7 +3720,7 @@
                 "configRevision": 1,
                 "connectionRef": "example-connection",
                 "harness": "pi",
-                "intentDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
                 "mode": "headless",
                 "model": "hy4-flash"
               }
@@ -3740,7 +3740,7 @@
               "observedCellRevision": 2,
               "operationId": "configure-example",
               "phase": "finalized",
-              "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
               "resultBindingRevision": 1
             },
             "runtime": "not-verified"

@@ -245,6 +245,18 @@
    "covered": false,
    "reason": "Agent lifecycle, credential and launch surface; S3 adds Agent.cell_id internally only. agent.create/list/get/resolve are recorded as the canary for that change."
   },
+  "agent.model.cancel": {
+   "covered": false,
+   "reason": "No golden scenario yet. Model binding, Cell CAS, durable cancellation and read-back are covered by tests/daemon/application/actors/model_configuration and tests/shell/cli/agents/model; the golden harness has no configured model connection."
+  },
+  "agent.model.configure": {
+   "covered": false,
+   "reason": "No golden scenario yet. Model binding, Cell CAS, durable cancellation and read-back are covered by tests/daemon/application/actors/model_configuration and tests/shell/cli/agents/model; the golden harness has no configured model connection."
+  },
+  "agent.model.status": {
+   "covered": false,
+   "reason": "No golden scenario yet. Model binding, Cell CAS, durable cancellation and read-back are covered by tests/daemon/application/actors/model_configuration and tests/shell/cli/agents/model; the golden harness has no configured model connection."
+  },
   "agent.provider.allow": {
    "covered": false,
    "reason": "Agent provider lifecycle was added after the G0 scenario set; no provider runtime is present in the isolated golden harness."
