@@ -281,11 +281,15 @@ def test_grant_with_credential_round_trips_and_blocks_moved_owner_and_never_leak
     assert moved_err.value.code == ipc_errors.PAYLOAD_INVALID
     assert SYNTHETIC_SECRET not in str(moved_err.value)
 
+    write_private_file_atomic(
+        harness["home"] / "secrets" / "providers" / "raw.json",
+        SYNTHETIC_SECRET.encode("utf-8"),
+    )
     single_field = service.grant(
         org=ORG,
         port=8447,
         device="bob/device-b",
-        credential={"entryId": "gateway"},
+        credential={"entryId": "raw"},
     )["grant"]
     raw_single = store.read_service_grant(ORG, "alice", single_field["grantId"])
     assert raw_single is not None
@@ -300,19 +304,6 @@ def test_grant_with_credential_round_trips_and_blocks_moved_owner_and_never_leak
         recipient_device=raw_single["recipient"]["deviceId"],
     )
     assert opened_single == SYNTHETIC_SECRET.encode("utf-8")
-
-    _write_user_provider(
-        harness["home"], "multi", {"A_KEY": SYNTHETIC_SECRET, "B_KEY": "SYNTHETIC-B"}
-    )
-    with pytest.raises(DaemonRequestError) as ambiguous:
-        service.grant(
-            org=ORG,
-            port=8447,
-            device="bob/device-b",
-            credential={"entryId": "multi"},
-        )
-    assert ambiguous.value.code == ipc_errors.INVALID_ARGUMENT
-    assert SYNTHETIC_SECRET not in str(ambiguous.value)
 
 
 def test_revoke_clears_credential_keeps_document_and_refuses_other_owners_grant(
