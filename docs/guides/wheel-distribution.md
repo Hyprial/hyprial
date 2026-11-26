@@ -205,10 +205,10 @@ Hatch hook（`src/hyprial/gui_build_hook.py`）在 tailcat 与 GUI 之后运行 
 - 只为构建主机构建：`HYPRIAL_TAILCAT_TARGET` 指向其他平台时 native 阶段失败（尚无交叉构建矩阵）。
 - worker 精简 wheel（`HYPRIAL_BUILD_WORKER_WHEEL=1`）保留 native 阶段，只省 GUI 与 sidecar。
 - sdist 按 Hatch 默认携带 `crates/`（排除 `crates/target*` 与开发暂存模块），hook 校验 manifest 与 lockfile 存在。
-- editable（`uv sync`）默认不编译：若 `src/hyprial/_core/actors.abi3.so` 已暂存，按
+- editable（`uv sync`）默认不编译：若 `src/hyprial/_core/actors.abi3.so`（Windows 为 `actors.pyd`）已暂存，按
   `actors.stamp.json`（`scripts/build/build_native_engine.sh` 写入的 crates/ 摘要与模块 SHA-256）和
   ABI 版本校验，过期/不符即失败；错误信息提示用 `HYPRIAL_BUILD_NATIVE=1 uv sync` 或该脚本重建；未暂存只提示。
-  源码开发者可显式设置 `HYPRIAL_BUILD_NATIVE=1`，让 hook 调用同一脚本，自动构建缺失或过期的本机模块后再校验。
+  源码开发者可显式设置 `HYPRIAL_BUILD_NATIVE=1`，让 hook 在进程内调用 `native_editable.build_editable`（不再执行 `.sh`，KP-135），自动构建缺失或过期的本机模块后再校验；`scripts/build/build_native_engine.sh` 的默认路径委托给同一个 `native_editable.py build`，`--free-threaded` 仍只在脚本里。debug 或 free-threaded 解释器会明确报错，不暂存。
   editable 路径的 `PYO3_PYTHON` 是稳定 realpath（优先 `sys._base_executable`，避免一次性 uv build 路径）；
   wheel 路径不变，仍用 `sys.executable` 的绝对路径。
   摘要只覆盖 cargo 输入（`Cargo.toml`、`Cargo.lock`、`*.rs`，不含顶层 `crates/target*`）；`pyproject.toml`

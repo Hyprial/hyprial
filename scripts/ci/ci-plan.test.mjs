@@ -752,6 +752,7 @@ test('native conformance selects engine inputs and keeps document test inputs on
     ['src/hyprial/kernel/interface.py', true, true],
     ['src/hyprial/kernel/__init__.py', true, true],
     ['src/hyprial/shell/impl/packaging/native_engine.py', true, true],
+    ['src/hyprial/shell/impl/packaging/native_editable.py', true, true],
     ['src/hyprial/gui_build_hook.py', true, true],
     ['scripts/build/build_native_engine.sh', true, false],
     ['scripts/build/manylinux_native_evidence.sh', true, false],

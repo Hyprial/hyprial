@@ -1,4 +1,14 @@
-"""Channel poll/heartbeat/daemon loops and parent watch."""
+"""Channel poll/heartbeat/daemon loops and parent watch.
+
+Decision notes (2026-11-26, KP-137):
+
+- ``_watch_parent`` defaults ``signal_process`` to ``None`` so the owner
+  liveness probe goes through ``hyprial.kernel.probe_process``.  The old
+  default bound ``os.kill`` at definition time, and on Windows
+  ``os.kill(pid, 0)`` sends ``CTRL_C_EVENT`` to the console process group
+  instead of checking that the owner exists; a runtime patch of ``os.kill``
+  could not intercept the bound default.
+"""
 from __future__ import annotations
 
 import logging
@@ -319,7 +329,7 @@ async def _watch_parent(
     poll_interval: float,
     owner_pid: int | None = None,
     owner_identity: str | None = None,
-    signal_process: Callable[[int, int], None] = os.kill,
+    signal_process: Callable[[int, int], None] | None = None,
     read_identity: Callable[[int], str | None] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> bool:

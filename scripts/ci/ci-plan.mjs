@@ -69,6 +69,7 @@ const nativeExactInputs = new Set([
   'docs/design/actor-rustify-build-distribution-adr-2026-10-24.md',
   'src/hyprial/kernel/interface.py', 'src/hyprial/kernel/__init__.py',
   'src/hyprial/shell/impl/packaging/native_engine.py', 'src/hyprial/gui_build_hook.py',
+  'src/hyprial/shell/impl/packaging/native_editable.py',
   'scripts/build/build_native_engine.sh', 'scripts/build/manylinux_native_evidence.sh',
   'scripts/build/build-wheel.sh', 'scripts/ci/ci-ensure-rust.sh', 'scripts/ci/ci-ensure-uv.sh',
   'scripts/ci/ci-ensure-cpython-mirror.sh', 'scripts/ci/ci-uv-cache.sh',
