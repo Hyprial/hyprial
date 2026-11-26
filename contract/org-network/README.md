@@ -88,16 +88,20 @@ pair carries no switch of its own: an upgraded daemon that has them publishes
 the pair on its next `publish_self`, and it does so once on every serving
 start.
 
-Mixed-version window. Running the directory model of a build that predates
-the two keys on a row that carries them raises `directory device record has
-unknown keys: ['encryptionKeyId', 'encryptionPublicKey']`, and the same model
-accepts the row without them; that much was measured. What follows from it is
-read from the reader code and was not run against two daemon versions: such a
-daemon records the row as an `invalid-device-record` data problem and leaves
-that device out of its directory view until it upgrades, while its other rows
-are not affected. Because no switch delays the pair, every device of an org
-has to be upgraded together, before the first upgraded device republishes its
-row. The migration steps are in
+Mixed-version window. A directory reader on a build that predates the two
+keys refuses a row that carries them. Measured on a real OrgFS store: an
+upgraded build wrote two rows, one with the pair and one without, and the
+reader of the build before this change kept only the row without the pair,
+logged `directory device record has unknown keys: ['encryptionKeyId',
+'encryptionPublicKey']` and reported the other row as an
+`invalid-device-record` data problem; the reader of the upgraded build kept
+both and reported no problem. The rows were written through the directory
+store, not by `publish_self`, and no two daemon builds talked to each other
+over a network. A daemon on the older build therefore leaves that device out
+of its directory view until it upgrades, while its other rows are not
+affected. Because no switch delays the pair, every device of an org has to
+be upgraded together, before the first upgraded device republishes its row.
+The migration steps are in
 `docs/guides/migration-device-encryption-key.md`.
 
 A daemon on a build that publishes the pair but does not know it in its
