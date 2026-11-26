@@ -175,7 +175,7 @@ export function AddConnection({
           <p role="status">正在读取官方地址预设…</p>
         )}
         {presetState === "error" && (
-          <p role="status">官方地址预设暂不可用，可填写自定义地址。</p>
+          <p role="status">官方地址预设读取失败，可填写自定义地址。</p>
         )}
         <Field
           label="服务地址"
@@ -242,11 +242,6 @@ export function AddConnection({
             protocol: connection.protocol,
           })}
         />
-        {!api.configureKey && (
-          <Notice tone="warning" title="保存不可用">
-            当前服务未提供连接配置能力。
-          </Notice>
-        )}
       </form>
     </Dialog>
   );

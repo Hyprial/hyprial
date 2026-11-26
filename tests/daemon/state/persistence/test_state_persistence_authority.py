@@ -38,6 +38,44 @@ def _authority(tmp_path: Path, actor_host, **kwargs) -> StatePersistenceAuthorit
     return StatePersistenceAuthority(store, actor_host=actor_host, **kwargs)
 
 
+def test_bound_launch_survives_production_journal_admission_and_reload(tmp_path, actor_host):
+    from dataclasses import replace
+    from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation
+    from hyprial.daemon.impl.state_persistence.commands import ReserveLifecycle
+    from tests.daemon.lifecycle.process.manager.support import _spec
+
+    authority = _authority(tmp_path, actor_host)
+    reference = {"bindingRef": "binding-local", "bindingRevision": 2}
+    target = _spec("bound-launch")
+    target = replace(target, harness=replace(target.harness, model_binding=reference))
+    operation = LifecycleOperation.create("bound-operation", target)
+    try:
+        from hyprial.daemon.impl.desired_state_io import DesiredStateIoRequest, DesiredStateOperation
+        DesiredStateIoRequest("bound-io", 1, 1, DesiredStateOperation.APPLY_HARNESS_LIFECYCLE,
+                              args=(operation,), context=("lifecycle", operation))
+        authority.call_settled(ReserveLifecycle("bound-reserve", operation))
+        reference["bindingRevision"] = 9
+        restored = authority.journal.load(operation.operation_id)
+        assert restored.target.harness.model_binding == {"bindingRef": "binding-local", "bindingRevision": 2}
+        with pytest.raises(TypeError):
+            restored.target.harness.model_binding["bindingRevision"] = 8
+        launch = HarnessLaunchSpec("pi", "bound-launch", True, model_binding={"bindingRef": "binding-local", "bindingRevision": 2})
+        projection = authority.projection()
+        authority.settled_desired.compare_and_save(replace(projection.desired, schema_version=4), expected_version=projection.version)
+        DesiredStateIoRequest("bound-upsert", 1, 1, DesiredStateOperation.UPSERT_HARNESS, args=(launch,))
+        from types import MappingProxyType
+        with pytest.raises(TypeError, match="immutable"):
+            DesiredStateIoRequest("raw-map", 1, 1, DesiredStateOperation.UPSERT_HARNESS,
+                                  args=(MappingProxyType({"mutable": []}),))
+        authority.settled_desired.upsert_harness(launch)
+        saved = authority.settled_desired.load().harnesses[0]
+        assert saved.model_binding == launch.model_binding
+        with pytest.raises(TypeError):
+            saved.model_binding["bindingRevision"] = 8
+    finally:
+        assert authority.close()
+
+
 def test_start_failures_are_readable_through_the_production_journal_port(tmp_path, actor_host):
     from dataclasses import replace
     from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation, LifecycleState

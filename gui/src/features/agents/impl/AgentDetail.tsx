@@ -1,3 +1,6 @@
+import { ModelPanel } from './model-configuration/Panel';
+import { ModelStartDialog } from './model-configuration/StartDialog';
+import { modelReady, type ModelStatus } from './model-configuration/api';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import type {
@@ -132,6 +135,8 @@ export function AgentDetail({
   providerDefault: _providerDefault,
   secretRows: _secretRows,
 }: AgentDetailProps) {
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [boundStartOpen, setBoundStartOpen] = useState(false);
   const [mode, setMode] = useState<Mode>('view');
   const [requestedTab, setTab] = useState<DetailTabId>('overview');
   const notifyUnavailable = useNotifyUnavailable();
@@ -149,7 +154,7 @@ export function AgentDetail({
     { tone: 'error' | 'status'; text: string } | null
   >(null);
   const [runtimeOutcome, setRuntimeOutcome] = useState<
-    { tone: 'status' | 'error'; text: string } | null
+    RuntimeActionOutcome | null
   >(null);
   const [runtimePending, setRuntimePending] = useState(false);
   const [credentialReadRevision, setCredentialReadRevision] = useState(0);
@@ -360,7 +365,7 @@ export function AgentDetail({
   }
 
   async function stop(): Promise<void> {
-    if (runtimePending || runtimeAwaiting) {
+    if (runtimePending || (runtimeAwaiting && !(runtimeIntent === 'start' && runtimeOutcome?.running))) {
       return;
     }
     setRuntimeOutcome(null);
@@ -394,6 +399,12 @@ export function AgentDetail({
     if (refusal) {
       notifyUnavailable('启动 Agent', refusal);
       return;
+    }
+    if (agentsApi?.modelStatus) {
+      if (modelReady(modelStatus)) { setBoundStartOpen(true); return; }
+      if (!modelStatus || modelStatus.cleanupPending || modelStatus.operation?.phase === 'prepared' || modelStatus.binding || directoryRow?.modelConfigurationRequired) {
+        setRuntimeOutcome({ tone: 'error', text: '模型配置尚未确认或未完成，请刷新并完成配置后启动。', dispatched: false }); return;
+      }
     }
     setStartHarness(directoryRow?.preferredHarness ?? extension.preferredHarness ?? '');
     const grants = providerStatus.view.status === 'ready'
@@ -539,6 +550,9 @@ export function AgentDetail({
                   : runtimeAwaiting ? '刷新状态' : extension.runtime === 'online' ? '停止' : '启动'}
               </Button>
             )}
+            {onRuntimeAction && runtimeAwaiting && runtimeIntent === 'start' && runtimeOutcome?.running && (
+              <Button variant="secondary" disabled={runtimePending} onClick={() => void stop()}>停止</Button>
+            )}
             {onStartChat && (
               <Button variant="primary" onClick={() => onStartChat()}>
                 开始对话
@@ -571,6 +585,11 @@ export function AgentDetail({
           </div>
         </div>
 
+        {!previewMode && agentsApi?.modelStatus && <ModelPanel
+          actor={agentActorUri ?? directoryRow?.uri ?? agent.id} api={agentsApi} credentials={credentialsApi}
+          nativeLoginFiles={nativeLoginFiles} onStatus={setModelStatus} checkAccess={checkAccess}
+          initialHarness={directoryRow?.preferredHarness ?? extension.preferredHarness ?? ''}
+          initialModel={directoryRow?.model ?? extension.model ?? ''} />}
         <dl className="agent-detail-facts">
           <div>
             <dt>所有者</dt>
@@ -649,11 +668,11 @@ export function AgentDetail({
         hidden={tab !== 'overview'}
       >
         <OverviewTab
-          extension={extension}
+          extension={modelStatus?.binding ? { ...extension, harness: modelStatus.binding.configuration.harness, model: modelStatus.binding.configuration.model } : extension}
           notices={notices}
           onJumpTo={setTab}
           activity={agent.activity}
-          onConfigureStart={onRuntimeAction ? openStart : undefined}
+          onConfigureStart={onRuntimeAction && !agentsApi?.modelStatus ? openStart : undefined}
           configureDisabled={runtimePending || runtimeAwaiting || extension.runtime === 'online'}
           availableTabs={tabs}
           noAnomalyConfirmed={providerStatus.view.status === 'ready'}
@@ -685,6 +704,7 @@ export function AgentDetail({
           hidden={tab !== 'credentials'}
         >
           <CredentialsTab
+            explicitBinding={Boolean(agentsApi?.modelStatus && (!modelStatus || modelStatus.binding || directoryRow?.modelConfigurationRequired))}
             active={tab === 'credentials'}
             actor={directoryRow?.uri ?? agent.id}
             expectedAgent={expectedAgent}
@@ -766,6 +786,14 @@ export function AgentDetail({
           </div>
       </Dialog>
 
+      {boundStartOpen && modelStatus?.binding && agentsApi && onRuntimeAction && <ModelStartDialog
+        actor={agentActorUri ?? directoryRow?.uri ?? agent.id} status={modelStatus} api={agentsApi}
+        cwd={directoryRow?.cwd ?? agent.activity?.homePath ?? ''}
+        onClose={() => setBoundStartOpen(false)} onStart={options => {
+          priorFailureRef.current = startupFailure?.operationId; setRuntimeIntent('start'); setRuntimeOutcome(null);
+          return onRuntimeAction('start', options);
+        }}
+        onOutcome={outcome => { if (outcome.refusal) { notifyUnavailable('启动 Agent', outcome.refusal); return; } setRuntimeOutcome(outcome); setRuntimeAwaiting(outcome.awaitingObservation === true); onRefreshRuntime?.(); }} />}
       {confirmOpen && <AgentDeleteDialog name={agent.displayName} load={loadDeletePreview}
         confirm={confirmDelete} onClose={closeConfirm} />}
 

@@ -15,7 +15,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNotifyUnavailable } from '../../../components/notifications';
 import { Button, Notice, StatusCard } from '../../../components/primitives';
 import { SecretField } from '../../../components/forms';
-import { AgentForm, keyCompatibleWithHarness, type AgentDraft } from '../../agents';
+import { AgentForm, ModelRecovery, keyCompatibleWithHarness, type AgentDraft, type AgentsApi } from '../../agents';
 import type { ProviderLoginFile } from '../../agent-provider';
 import { CredentialsSection, type SharedCredentialsApi } from '../../connections';
 import { StepActions } from './StepActions';
@@ -35,6 +35,7 @@ const RUNTIME_COMPATIBLE = keyCompatibleWithHarness(
 );
 
 interface ModelStepProps {
+  readonly modelApi?: AgentsApi;
   readonly state: StepViewState;
   readonly saved: boolean;
   readonly restored?: boolean;
@@ -63,7 +64,7 @@ interface ModelStepProps {
 }
 
 /** Connected first-run reuses the shared Agent form; legacy hosts keep the DeepSeek key form. */
-export function ModelStep({ state, saved, restored = false, savePending = false, savedKeyNote, draft, onDraftChange, onBack, onSave, onCheckStatus, onSavedChange, onSaveUnknown, onContinue, onConfigureAgent, runtimeCredentials, pickRuntimeLoginFiles, onRuntimeConfigured, runtimeWriteLocked = false, runtimeWritePending = false, runtimeUnknown = null, onBeginRuntimeWrite, onRuntimeWriteUnknown, onFinishRuntimeWrite }: ModelStepProps) {
+export function ModelStep({ modelApi, state, saved, restored = false, savePending = false, savedKeyNote, draft, onDraftChange, onBack, onSave, onCheckStatus, onSavedChange, onSaveUnknown, onContinue, onConfigureAgent, runtimeCredentials, pickRuntimeLoginFiles, onRuntimeConfigured, runtimeWriteLocked = false, runtimeWritePending = false, runtimeUnknown = null, onBeginRuntimeWrite, onRuntimeWriteUnknown, onFinishRuntimeWrite }: ModelStepProps) {
   const notifyUnavailable = useNotifyUnavailable();
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -72,6 +73,7 @@ export function ModelStep({ state, saved, restored = false, savePending = false,
   const [statusCheck, setStatusCheck] = useState<ModelKeyStatusCheck | null>(null);
   const [configuring, setConfiguring] = useState(false);
   const [credentialsRevision, setCredentialsRevision] = useState(0);
+  const [submittedDraft, setSubmittedDraft] = useState<AgentDraft | null>(null);
   const [configResult, setConfigResult] = useState<RuntimeConfigurationResult | null>(null);
   const configuringRef = useRef(false);
   const configAttempt = useRef(0);
@@ -166,7 +168,7 @@ export function ModelStep({ state, saved, restored = false, savePending = false,
     const id = ++configAttempt.current;
     configuringRef.current = true;
     setConfiguring(true);
-    setConfigResult(null);
+    setConfigResult(null); setSubmittedDraft(draftValue);
     let next: RuntimeConfigurationResult;
     try {
       next = await onConfigureAgent(draftValue);
@@ -179,7 +181,7 @@ export function ModelStep({ state, saved, restored = false, savePending = false,
     if (next.status === 'unavailable' && next.refusal) {
       notifyUnavailable('创建 Agent', next.refusal);
     }
-    if (next.status === 'unknown') {
+    if (next.status === 'unknown' || next.status === 'incomplete') {
       configUnknown.current = true;
       onRuntimeWriteUnknown?.(writeAttempt, next);
     } else {
@@ -219,8 +221,12 @@ export function ModelStep({ state, saved, restored = false, savePending = false,
         {onConfigureAgent ? (<>
           {runtimeCredentials && <CredentialsSection api={runtimeCredentials} creationOnly
             onKeysChanged={() => setCredentialsRevision(value => value + 1)} />}
-          <AgentForm
+          {runtimeMessage?.created && runtimeMessage.actorUri && modelApi ? <ModelRecovery
+            actor={runtimeMessage.actorUri} api={modelApi} credentials={runtimeCredentials}
+            nativeLoginFiles={pickRuntimeLoginFiles ? (_actor, harness) => pickRuntimeLoginFiles(harness) : undefined}
+            draft={submittedDraft} onConfigured={() => onRuntimeConfigured?.({ status: 'configured', actorUri: runtimeMessage.actorUri, created: true })} /> : <AgentForm
             mode="create"
+            explicitModel={modelApi?.configureModel !== undefined}
             initial={{
               displayName: '',
               role: '',
@@ -243,7 +249,7 @@ export function ModelStep({ state, saved, restored = false, savePending = false,
               : null}
             onSubmit={(next) => void configure(next)}
             onCancel={onBack}
-          />
+          />}
         </>
         ) : saved && !editing ? <>
           <StatusCard label="DeepSeek 凭证" value={`已保存 DeepSeek Key${savedKeyNote ?? ''}`} tone="positive"

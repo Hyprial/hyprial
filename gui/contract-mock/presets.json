@@ -36,6 +36,49 @@
         "agent.secret.provider-configure": "connection-conflict",
         "agent.secret.provider-test": "saved-connection-replied"
       }
+    },
+    "agent-model-create": {
+      "scenario": "success",
+      "cases": {
+        "agent.secret.provider-list": "versioned-connection",
+        "agent.provider.auth.list": "empty",
+        "agent.list": "empty-registry",
+        "agent.create": "manual-model-created",
+        "agent.model.status": "manual-connection",
+        "org.list": "no-joined-orgs"
+      }
+    },
+    "agent-model-saved": {
+      "scenario": "success",
+      "cases": {
+        "agent.secret.provider-list": "versioned-connection",
+        "agent.provider.auth.list": "empty",
+        "agent.list": "manual-model-agent",
+        "agent.model.status": "manual-connection",
+        "agent.start": "running-evidenced",
+        "org.list": "no-joined-orgs"
+      }
+    },
+    "agent-model-pending": {
+      "scenario": "success",
+      "cases": {
+        "agent.secret.provider-list": "versioned-connection",
+        "agent.provider.auth.list": "empty",
+        "agent.list": "manual-model-agent",
+        "agent.model.status": "pending-connection",
+        "agent.model.cancel": "cancel-manual-connection",
+        "org.list": "no-joined-orgs"
+      }
+    },
+    "agent-model-cancelled": {
+      "scenario": "success",
+      "cases": {
+        "agent.secret.provider-list": "versioned-connection",
+        "agent.provider.auth.list": "empty",
+        "agent.list": "manual-model-agent",
+        "agent.model.status": "read-back",
+        "org.list": "no-joined-orgs"
+      }
     }
   },
   "transitions": [
@@ -48,6 +91,16 @@
       "preset": "model-connections-saved",
       "method": "agent.secret.provider-configure",
       "next": "model-connections-rotated"
+    },
+    {
+      "preset": "agent-model-create",
+      "method": "agent.create",
+      "next": "agent-model-saved"
+    },
+    {
+      "preset": "agent-model-pending",
+      "method": "agent.model.cancel",
+      "next": "agent-model-cancelled"
     }
   ],
   "inputGuards": [

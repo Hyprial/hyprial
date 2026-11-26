@@ -133,6 +133,9 @@ describe('shared agent page source boundaries', () => {
     await user.type(screen.getByLabelText('名称'), 'new-worker');
     await user.click(screen.getByLabelText('harness'));
     await user.click(screen.getByRole('option', { name: 'claude' }));
+    await user.click(screen.getByLabelText('凭据', { exact: true }));
+    await user.click(screen.getByRole('option', { name: '原生 Auth' }));
+    await user.type(screen.getByLabelText('模型 ID'), 'claude-test-model');
     await user.click(screen.getByRole('button', { name: '创建 Agent' }));
     expect(first.calls.filter(call => call.method === 'agent.create')).toHaveLength(0);
     expect(second.calls.filter(call => call.method === 'agent.create')).toHaveLength(1);
@@ -147,6 +150,9 @@ describe('shared agent page source boundaries', () => {
     await user.type(screen.getByLabelText('名称'), 'new-worker');
     await user.click(screen.getByLabelText('harness'));
     await user.click(screen.getByRole('option', { name: 'claude' }));
+    await user.click(screen.getByLabelText('凭据', { exact: true }));
+    await user.click(screen.getByRole('option', { name: '原生 Auth' }));
+    await user.type(screen.getByLabelText('模型 ID'), 'claude-test-model');
     await user.click(screen.getByRole('button', { name: '创建 Agent' }));
     expect(current.calls.filter(call => call.method === 'agent.create')).toHaveLength(1);
   });

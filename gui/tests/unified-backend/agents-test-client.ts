@@ -29,7 +29,9 @@ export function createTestAgentsApi(port: AgentsTestPort, access?: MethodAccess)
     }
     return value;
   });
-  return createAgentsApi(client, access);
+  const api = createAgentsApi(client, access);
+  const { modelStatus: _status, configureModel: _configure, cancelModel: _cancel, nativeTargets: _targets, ...legacy } = api;
+  return legacy;
 }
 
 export function explicitAgentFixtureSeed() {

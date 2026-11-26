@@ -64,6 +64,14 @@ async function openDetail(user: ReturnType<typeof userEvent.setup>): Promise<HTM
 }
 
 describe('credentials section: refused operations', () => {
+  it('refuses missing connection writer before opening an editor', async () => {
+    renderWithNotifications(<CredentialsSection api={createApi()} />);
+    await screen.findByRole('list', { name: '凭据列表' });
+    await userEvent.setup().click(screen.getByRole('button', { name: '添加连接' }));
+    expectUnavailableToast('添加连接暂不可用。');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('reports a refusal known before the form opens and opens nothing', async () => {
     const user = userEvent.setup();
     const addKey = vi.fn();
@@ -224,7 +232,7 @@ describe('credentials section: refused reads', () => {
 describe('credentials section: absent capabilities are not rendered', () => {
   it('has no test button or test-model field without a test port', async () => {
     const user = userEvent.setup();
-    renderWithNotifications(<CredentialsSection api={createApi()} />);
+    renderWithNotifications(<CredentialsSection api={createApi({ configureKey: vi.fn(async () => REFUSED) })} />);
     await screen.findByRole('list', { name: '凭据列表' });
     await user.click(screen.getByRole('button', { name: '添加连接' }));
     const dialog = await screen.findByRole('dialog');
@@ -236,7 +244,7 @@ describe('credentials section: absent capabilities are not rendered', () => {
 
   it('offers the test controls when a test port exists', async () => {
     const user = userEvent.setup();
-    const api = createApi({ async testKey() { return { kind: 'model', status: 200, ok: true, latencyMs: 1 }; } });
+    const api = createApi({ configureKey: vi.fn(async () => REFUSED), async testKey() { return { kind: 'model', status: 200, ok: true, latencyMs: 1 }; } });
     renderWithNotifications(<CredentialsSection api={api} />);
     await screen.findByRole('list', { name: '凭据列表' });
     await user.click(screen.getByRole('button', { name: '添加连接' }));
@@ -247,14 +255,14 @@ describe('credentials section: absent capabilities are not rendered', () => {
   });
 
   it('offers custom supported protocol without claiming unavailable official presets', async () => {
-    const user=userEvent.setup();renderWithNotifications(<CredentialsSection api={createApi()}/>);
+    const user=userEvent.setup();renderWithNotifications(<CredentialsSection api={createApi({ configureKey: vi.fn(async () => REFUSED) })}/>);
     await screen.findByRole('list',{name:'凭据列表'});await user.click(screen.getByRole('button',{name:'添加连接'}));
     const dialog=screen.getByRole('dialog');
     expect(within(dialog).queryByLabelText('模型服务商')).toBeNull();
     expect(within(dialog).getByLabelText('服务地址')).toBeVisible();
     expect(within(dialog).getByLabelText('兼容协议')).toHaveTextContent('OpenAI Chat Completions');
     expect(within(dialog).getByRole('button',{name:'保存'})).toBeDisabled();
-    expect(within(dialog).getByText('官方地址预设暂不可用，可填写自定义地址。')).toBeVisible();
+    expect(within(dialog).getByText('官方地址预设读取失败，可填写自定义地址。')).toBeVisible();
   });
 
   it('renders a fixture model without any operation control', async () => {

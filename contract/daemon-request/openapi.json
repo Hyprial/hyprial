@@ -8054,6 +8054,25 @@
                     "name": "worker"
                   }
                 },
+                "manual-model-created": {
+                  "description": "Identity and explicit binding saved; no start.",
+                  "summary": "manual-model-created",
+                  "value": {
+                    "modelConfiguration": {
+                      "configuration": {
+                        "authKind": "connection",
+                        "configRevision": 1,
+                        "connectionRef": "0123456789abcdef0123456789abcdef",
+                        "harness": "pi",
+                        "mode": "headless",
+                        "model": "hy4-flash"
+                      },
+                      "operationId": "00000000-0000-4000-8000-000000000001"
+                    },
+                    "name": "worker",
+                    "preferredHarness": "pi"
+                  }
+                },
                 "name-taken": {
                   "description": "the name is already taken on this node",
                   "summary": "name-taken",
@@ -8107,6 +8126,21 @@
                     "existing": "reuse",
                     "harness": "claude",
                     "name": "worker"
+                  },
+                  {
+                    "modelConfiguration": {
+                      "configuration": {
+                        "authKind": "connection",
+                        "configRevision": 1,
+                        "connectionRef": "0123456789abcdef0123456789abcdef",
+                        "harness": "pi",
+                        "mode": "headless",
+                        "model": "hy4-flash"
+                      },
+                      "operationId": "00000000-0000-4000-8000-000000000001"
+                    },
+                    "name": "worker",
+                    "preferredHarness": "pi"
                   }
                 ],
                 "properties": {
@@ -8441,6 +8475,72 @@
                       "created": true,
                       "ok": true,
                       "providerDefault": "claude"
+                    },
+                    {
+                      "agent": {
+                        "actor": "worker",
+                        "agentId": "a.example",
+                        "capabilities": {
+                          "modelConfigurationRequired": true
+                        },
+                        "config": null,
+                        "createdAtMs": 1760000000000,
+                        "cwd": "/work/worker",
+                        "harness": null,
+                        "harnessArgs": {},
+                        "heartbeatAgeSeconds": null,
+                        "hosted": false,
+                        "hostedBy": null,
+                        "lastHarness": null,
+                        "lastSessionId": null,
+                        "machine": "node-1",
+                        "model": "hy4-flash",
+                        "owner": "acme",
+                        "preferredHarness": "pi",
+                        "provider": null,
+                        "runtime": null,
+                        "sessionId": null,
+                        "status": "offline",
+                        "uri": "agent:acme:node-1:worker"
+                      },
+                      "created": true,
+                      "modelConfiguration": {
+                        "agentId": "a.example",
+                        "binding": {
+                          "bindingRef": "mb.example",
+                          "bindingRevision": 1,
+                          "configuration": {
+                            "authKind": "connection",
+                            "configRevision": 1,
+                            "connectionRef": "0123456789abcdef0123456789abcdef",
+                            "harness": "pi",
+                            "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                            "mode": "headless",
+                            "model": "hy4-flash"
+                          }
+                        },
+                        "cell": {
+                          "cellId": "c.example",
+                          "intentMatches": true,
+                          "revision": 2
+                        },
+                        "cleanupPending": false,
+                        "member": "agent:acme:node-1:worker",
+                        "ok": true,
+                        "operation": {
+                          "coordinationPhase": "applied",
+                          "expectedBindingRevision": 0,
+                          "expectedCellRevision": 1,
+                          "observedCellRevision": 2,
+                          "operationId": "00000000-0000-4000-8000-000000000001",
+                          "phase": "finalized",
+                          "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                          "resultBindingRevision": 1
+                        },
+                        "runtime": "not-verified"
+                      },
+                      "ok": true,
+                      "providerDefault": null
                     }
                   ],
                   "properties": {
@@ -10712,6 +10812,92 @@
               "harness": "claude",
               "name": "worker"
             }
+          },
+          {
+            "description": "Identity and explicit binding saved; no start.",
+            "kind": "success",
+            "name": "manual-model-created",
+            "params": {
+              "modelConfiguration": {
+                "configuration": {
+                  "authKind": "connection",
+                  "configRevision": 1,
+                  "connectionRef": "0123456789abcdef0123456789abcdef",
+                  "harness": "pi",
+                  "mode": "headless",
+                  "model": "hy4-flash"
+                },
+                "operationId": "00000000-0000-4000-8000-000000000001"
+              },
+              "name": "worker",
+              "preferredHarness": "pi"
+            },
+            "result": {
+              "agent": {
+                "actor": "worker",
+                "agentId": "a.example",
+                "capabilities": {
+                  "modelConfigurationRequired": true
+                },
+                "config": null,
+                "createdAtMs": 1760000000000,
+                "cwd": "/work/worker",
+                "harness": null,
+                "harnessArgs": {},
+                "heartbeatAgeSeconds": null,
+                "hosted": false,
+                "hostedBy": null,
+                "lastHarness": null,
+                "lastSessionId": null,
+                "machine": "node-1",
+                "model": "hy4-flash",
+                "owner": "acme",
+                "preferredHarness": "pi",
+                "provider": null,
+                "runtime": null,
+                "sessionId": null,
+                "status": "offline",
+                "uri": "agent:acme:node-1:worker"
+              },
+              "created": true,
+              "modelConfiguration": {
+                "agentId": "a.example",
+                "binding": {
+                  "bindingRef": "mb.example",
+                  "bindingRevision": 1,
+                  "configuration": {
+                    "authKind": "connection",
+                    "configRevision": 1,
+                    "connectionRef": "0123456789abcdef0123456789abcdef",
+                    "harness": "pi",
+                    "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                    "mode": "headless",
+                    "model": "hy4-flash"
+                  }
+                },
+                "cell": {
+                  "cellId": "c.example",
+                  "intentMatches": true,
+                  "revision": 2
+                },
+                "cleanupPending": false,
+                "member": "agent:acme:node-1:worker",
+                "ok": true,
+                "operation": {
+                  "coordinationPhase": "applied",
+                  "expectedBindingRevision": 0,
+                  "expectedCellRevision": 1,
+                  "observedCellRevision": 2,
+                  "operationId": "00000000-0000-4000-8000-000000000001",
+                  "phase": "finalized",
+                  "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                  "resultBindingRevision": 1
+                },
+                "runtime": "not-verified"
+              },
+              "ok": true,
+              "providerDefault": null
+            }
           }
         ],
         "x-hyprial-http-binding": {
@@ -12463,6 +12649,11 @@
                     "inactiveSince": null
                   }
                 },
+                "manual-model-agent": {
+                  "description": "Configured identity; not yet started.",
+                  "summary": "manual-model-agent",
+                  "value": {}
+                },
                 "one-agent": {
                   "description": "one registered agent is returned",
                   "summary": "one-agent",
@@ -12510,6 +12701,7 @@
                   {
                     "inactiveSince": 0
                   },
+                  {},
                   {}
                 ],
                 "properties": {
@@ -12631,6 +12823,44 @@
                           "uri": "agent:alice:node:a.jdabi7xber55h2fgqxbmhajhw4",
                           "userActor": "user:alice",
                           "userAgent": true
+                        }
+                      ],
+                      "agentsWithoutRoutine": [],
+                      "ok": true
+                    },
+                    {
+                      "agents": [
+                        {
+                          "activityHints": {
+                            "agentHomeMtimeMs": null,
+                            "createdAtMs": 1760000000000,
+                            "hasLastSessionId": false
+                          },
+                          "actor": "worker",
+                          "agentId": "a.example",
+                          "capabilities": {
+                            "modelConfigurationRequired": true
+                          },
+                          "config": null,
+                          "createdAtMs": 1760000000000,
+                          "cwd": "/work/worker",
+                          "harness": null,
+                          "harnessArgs": {},
+                          "heartbeatAgeSeconds": null,
+                          "hosted": false,
+                          "hostedBy": null,
+                          "lastActiveAtMs": null,
+                          "lastHarness": null,
+                          "lastSessionId": null,
+                          "machine": "node-1",
+                          "model": "hy4-flash",
+                          "owner": "acme",
+                          "preferredHarness": "pi",
+                          "provider": null,
+                          "runtime": null,
+                          "sessionId": null,
+                          "status": "offline",
+                          "uri": "agent:acme:node-1:worker"
                         }
                       ],
                       "agentsWithoutRoutine": [],
@@ -13515,6 +13745,50 @@
             "kind": "domain-error",
             "name": "registry-unavailable",
             "params": {}
+          },
+          {
+            "description": "Configured identity; not yet started.",
+            "kind": "success",
+            "name": "manual-model-agent",
+            "params": {},
+            "result": {
+              "agents": [
+                {
+                  "activityHints": {
+                    "agentHomeMtimeMs": null,
+                    "createdAtMs": 1760000000000,
+                    "hasLastSessionId": false
+                  },
+                  "actor": "worker",
+                  "agentId": "a.example",
+                  "capabilities": {
+                    "modelConfigurationRequired": true
+                  },
+                  "config": null,
+                  "createdAtMs": 1760000000000,
+                  "cwd": "/work/worker",
+                  "harness": null,
+                  "harnessArgs": {},
+                  "heartbeatAgeSeconds": null,
+                  "hosted": false,
+                  "hostedBy": null,
+                  "lastActiveAtMs": null,
+                  "lastHarness": null,
+                  "lastSessionId": null,
+                  "machine": "node-1",
+                  "model": "hy4-flash",
+                  "owner": "acme",
+                  "preferredHarness": "pi",
+                  "provider": null,
+                  "runtime": null,
+                  "sessionId": null,
+                  "status": "offline",
+                  "uri": "agent:acme:node-1:worker"
+                }
+              ],
+              "agentsWithoutRoutine": [],
+              "ok": true
+            }
           }
         ],
         "x-hyprial-http-binding": {
@@ -13536,6 +13810,15 @@
           "content": {
             "application/json": {
               "examples": {
+                "cancel-manual-connection": {
+                  "description": "Confirmed compensation of a prepared operation.",
+                  "summary": "cancel-manual-connection",
+                  "value": {
+                    "expectedBindingRevision": 0,
+                    "name": "worker",
+                    "operationId": "00000000-0000-4000-8000-000000000001"
+                  }
+                },
                 "foreign-caller": {
                   "description": "Worker denied before reads.",
                   "summary": "foreign-caller",
@@ -13581,6 +13864,11 @@
                     "expectedBindingRevision": 0,
                     "name": "worker",
                     "operationId": "configure-example"
+                  },
+                  {
+                    "expectedBindingRevision": 0,
+                    "name": "worker",
+                    "operationId": "00000000-0000-4000-8000-000000000001"
                   }
                 ],
                 "properties": {
@@ -13640,6 +13928,29 @@
                         "expectedCellRevision": 1,
                         "observedCellRevision": 3,
                         "operationId": "configure-example",
+                        "phase": "cancelled",
+                        "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                        "resultBindingRevision": 0
+                      },
+                      "runtime": "not-verified"
+                    },
+                    {
+                      "agentId": "a.example",
+                      "binding": null,
+                      "cell": {
+                        "cellId": "c.example",
+                        "intentMatches": null,
+                        "revision": 1
+                      },
+                      "cleanupPending": false,
+                      "member": "agent:acme:node-1:worker",
+                      "ok": true,
+                      "operation": {
+                        "coordinationPhase": "compensated",
+                        "expectedBindingRevision": 0,
+                        "expectedCellRevision": 1,
+                        "observedCellRevision": 3,
+                        "operationId": "00000000-0000-4000-8000-000000000001",
                         "phase": "cancelled",
                         "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
                         "resultBindingRevision": 0
@@ -14268,7 +14579,7 @@
         ],
         "x-hyprial-confirmation": "none",
         "x-hyprial-example-gaps": {
-          "empty": "An operation returns its durable receipt."
+          "empty": "Cancellation returns its durable receipt."
         },
         "x-hyprial-examples": [
           {
@@ -14344,6 +14655,39 @@
               "expectedBindingRevision": 0,
               "name": "worker",
               "operationId": "configure-example"
+            }
+          },
+          {
+            "description": "Confirmed compensation of a prepared operation.",
+            "kind": "success",
+            "name": "cancel-manual-connection",
+            "params": {
+              "expectedBindingRevision": 0,
+              "name": "worker",
+              "operationId": "00000000-0000-4000-8000-000000000001"
+            },
+            "result": {
+              "agentId": "a.example",
+              "binding": null,
+              "cell": {
+                "cellId": "c.example",
+                "intentMatches": null,
+                "revision": 1
+              },
+              "cleanupPending": false,
+              "member": "agent:acme:node-1:worker",
+              "ok": true,
+              "operation": {
+                "coordinationPhase": "compensated",
+                "expectedBindingRevision": 0,
+                "expectedCellRevision": 1,
+                "observedCellRevision": 3,
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "phase": "cancelled",
+                "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                "resultBindingRevision": 0
+              },
+              "runtime": "not-verified"
             }
           }
         ],
@@ -15410,6 +15754,20 @@
                     "name": "worker"
                   }
                 },
+                "manual-connection": {
+                  "description": "Manual model and a versioned saved connection, without activation.",
+                  "summary": "manual-connection",
+                  "value": {
+                    "name": "worker"
+                  }
+                },
+                "pending-connection": {
+                  "description": "Durable configuration awaits reconciliation.",
+                  "summary": "pending-connection",
+                  "value": {
+                    "name": "worker"
+                  }
+                },
                 "read-back": {
                   "description": "Synthetic local receipt; process activation is unverified.",
                   "summary": "read-back",
@@ -15428,6 +15786,12 @@
               "schema": {
                 "additionalProperties": false,
                 "examples": [
+                  {
+                    "name": "worker"
+                  },
+                  {
+                    "name": "worker"
+                  },
                   {
                     "name": "worker"
                   },
@@ -15486,6 +15850,64 @@
                       "member": "member-example",
                       "ok": true,
                       "operation": null,
+                      "runtime": "not-verified"
+                    },
+                    {
+                      "agentId": "a.example",
+                      "binding": {
+                        "bindingRef": "mb.example",
+                        "bindingRevision": 1,
+                        "configuration": {
+                          "authKind": "connection",
+                          "configRevision": 1,
+                          "connectionRef": "0123456789abcdef0123456789abcdef",
+                          "harness": "pi",
+                          "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                          "mode": "headless",
+                          "model": "hy4-flash"
+                        }
+                      },
+                      "cell": {
+                        "cellId": "c.example",
+                        "intentMatches": true,
+                        "revision": 2
+                      },
+                      "cleanupPending": false,
+                      "member": "agent:acme:node-1:worker",
+                      "ok": true,
+                      "operation": {
+                        "coordinationPhase": "applied",
+                        "expectedBindingRevision": 0,
+                        "expectedCellRevision": 1,
+                        "observedCellRevision": 2,
+                        "operationId": "00000000-0000-4000-8000-000000000001",
+                        "phase": "finalized",
+                        "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                        "resultBindingRevision": 1
+                      },
+                      "runtime": "not-verified"
+                    },
+                    {
+                      "agentId": "a.example",
+                      "binding": null,
+                      "cell": {
+                        "cellId": "c.example",
+                        "intentMatches": null,
+                        "revision": 1
+                      },
+                      "cleanupPending": false,
+                      "member": "agent:acme:node-1:worker",
+                      "ok": true,
+                      "operation": {
+                        "coordinationPhase": "planned",
+                        "expectedBindingRevision": 0,
+                        "expectedCellRevision": 1,
+                        "observedCellRevision": null,
+                        "operationId": "00000000-0000-4000-8000-000000000001",
+                        "phase": "prepared",
+                        "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                        "resultBindingRevision": null
+                      },
                       "runtime": "not-verified"
                     },
                     {
@@ -16204,6 +16626,80 @@
             "name": "unreadable-binding",
             "params": {
               "name": "worker"
+            }
+          },
+          {
+            "description": "Manual model and a versioned saved connection, without activation.",
+            "kind": "success",
+            "name": "manual-connection",
+            "params": {
+              "name": "worker"
+            },
+            "result": {
+              "agentId": "a.example",
+              "binding": {
+                "bindingRef": "mb.example",
+                "bindingRevision": 1,
+                "configuration": {
+                  "authKind": "connection",
+                  "configRevision": 1,
+                  "connectionRef": "0123456789abcdef0123456789abcdef",
+                  "harness": "pi",
+                  "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                  "mode": "headless",
+                  "model": "hy4-flash"
+                }
+              },
+              "cell": {
+                "cellId": "c.example",
+                "intentMatches": true,
+                "revision": 2
+              },
+              "cleanupPending": false,
+              "member": "agent:acme:node-1:worker",
+              "ok": true,
+              "operation": {
+                "coordinationPhase": "applied",
+                "expectedBindingRevision": 0,
+                "expectedCellRevision": 1,
+                "observedCellRevision": 2,
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "phase": "finalized",
+                "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                "resultBindingRevision": 1
+              },
+              "runtime": "not-verified"
+            }
+          },
+          {
+            "description": "Durable configuration awaits reconciliation.",
+            "kind": "success",
+            "name": "pending-connection",
+            "params": {
+              "name": "worker"
+            },
+            "result": {
+              "agentId": "a.example",
+              "binding": null,
+              "cell": {
+                "cellId": "c.example",
+                "intentMatches": null,
+                "revision": 1
+              },
+              "cleanupPending": false,
+              "member": "agent:acme:node-1:worker",
+              "ok": true,
+              "operation": {
+                "coordinationPhase": "planned",
+                "expectedBindingRevision": 0,
+                "expectedCellRevision": 1,
+                "observedCellRevision": null,
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "phase": "prepared",
+                "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                "resultBindingRevision": null
+              },
+              "runtime": "not-verified"
             }
           },
           {
@@ -106830,6 +107326,92 @@
             "harness": "claude",
             "name": "worker"
           }
+        },
+        {
+          "description": "Identity and explicit binding saved; no start.",
+          "kind": "success",
+          "name": "manual-model-created",
+          "params": {
+            "modelConfiguration": {
+              "configuration": {
+                "authKind": "connection",
+                "configRevision": 1,
+                "connectionRef": "0123456789abcdef0123456789abcdef",
+                "harness": "pi",
+                "mode": "headless",
+                "model": "hy4-flash"
+              },
+              "operationId": "00000000-0000-4000-8000-000000000001"
+            },
+            "name": "worker",
+            "preferredHarness": "pi"
+          },
+          "result": {
+            "agent": {
+              "actor": "worker",
+              "agentId": "a.example",
+              "capabilities": {
+                "modelConfigurationRequired": true
+              },
+              "config": null,
+              "createdAtMs": 1760000000000,
+              "cwd": "/work/worker",
+              "harness": null,
+              "harnessArgs": {},
+              "heartbeatAgeSeconds": null,
+              "hosted": false,
+              "hostedBy": null,
+              "lastHarness": null,
+              "lastSessionId": null,
+              "machine": "node-1",
+              "model": "hy4-flash",
+              "owner": "acme",
+              "preferredHarness": "pi",
+              "provider": null,
+              "runtime": null,
+              "sessionId": null,
+              "status": "offline",
+              "uri": "agent:acme:node-1:worker"
+            },
+            "created": true,
+            "modelConfiguration": {
+              "agentId": "a.example",
+              "binding": {
+                "bindingRef": "mb.example",
+                "bindingRevision": 1,
+                "configuration": {
+                  "authKind": "connection",
+                  "configRevision": 1,
+                  "connectionRef": "0123456789abcdef0123456789abcdef",
+                  "harness": "pi",
+                  "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                  "mode": "headless",
+                  "model": "hy4-flash"
+                }
+              },
+              "cell": {
+                "cellId": "c.example",
+                "intentMatches": true,
+                "revision": 2
+              },
+              "cleanupPending": false,
+              "member": "agent:acme:node-1:worker",
+              "ok": true,
+              "operation": {
+                "coordinationPhase": "applied",
+                "expectedBindingRevision": 0,
+                "expectedCellRevision": 1,
+                "observedCellRevision": 2,
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "phase": "finalized",
+                "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                "resultBindingRevision": 1
+              },
+              "runtime": "not-verified"
+            },
+            "ok": true,
+            "providerDefault": null
+          }
         }
       ]
     },
@@ -112087,6 +112669,50 @@
           "kind": "domain-error",
           "name": "registry-unavailable",
           "params": {}
+        },
+        {
+          "description": "Configured identity; not yet started.",
+          "kind": "success",
+          "name": "manual-model-agent",
+          "params": {},
+          "result": {
+            "agents": [
+              {
+                "activityHints": {
+                  "agentHomeMtimeMs": null,
+                  "createdAtMs": 1760000000000,
+                  "hasLastSessionId": false
+                },
+                "actor": "worker",
+                "agentId": "a.example",
+                "capabilities": {
+                  "modelConfigurationRequired": true
+                },
+                "config": null,
+                "createdAtMs": 1760000000000,
+                "cwd": "/work/worker",
+                "harness": null,
+                "harnessArgs": {},
+                "heartbeatAgeSeconds": null,
+                "hosted": false,
+                "hostedBy": null,
+                "lastActiveAtMs": null,
+                "lastHarness": null,
+                "lastSessionId": null,
+                "machine": "node-1",
+                "model": "hy4-flash",
+                "owner": "acme",
+                "preferredHarness": "pi",
+                "provider": null,
+                "runtime": null,
+                "sessionId": null,
+                "status": "offline",
+                "uri": "agent:acme:node-1:worker"
+              }
+            ],
+            "agentsWithoutRoutine": [],
+            "ok": true
+          }
         }
       ]
     },
@@ -112596,7 +113222,7 @@
       },
       "retry": "never",
       "x-hyprial-example-gaps": {
-        "empty": "An operation returns its durable receipt."
+        "empty": "Cancellation returns its durable receipt."
       },
       "x-hyprial-examples": [
         {
@@ -112672,6 +113298,39 @@
             "expectedBindingRevision": 0,
             "name": "worker",
             "operationId": "configure-example"
+          }
+        },
+        {
+          "description": "Confirmed compensation of a prepared operation.",
+          "kind": "success",
+          "name": "cancel-manual-connection",
+          "params": {
+            "expectedBindingRevision": 0,
+            "name": "worker",
+            "operationId": "00000000-0000-4000-8000-000000000001"
+          },
+          "result": {
+            "agentId": "a.example",
+            "binding": null,
+            "cell": {
+              "cellId": "c.example",
+              "intentMatches": null,
+              "revision": 1
+            },
+            "cleanupPending": false,
+            "member": "agent:acme:node-1:worker",
+            "ok": true,
+            "operation": {
+              "coordinationPhase": "compensated",
+              "expectedBindingRevision": 0,
+              "expectedCellRevision": 1,
+              "observedCellRevision": 3,
+              "operationId": "00000000-0000-4000-8000-000000000001",
+              "phase": "cancelled",
+              "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+              "resultBindingRevision": 0
+            },
+            "runtime": "not-verified"
           }
         }
       ]
@@ -113954,6 +114613,80 @@
           "name": "unreadable-binding",
           "params": {
             "name": "worker"
+          }
+        },
+        {
+          "description": "Manual model and a versioned saved connection, without activation.",
+          "kind": "success",
+          "name": "manual-connection",
+          "params": {
+            "name": "worker"
+          },
+          "result": {
+            "agentId": "a.example",
+            "binding": {
+              "bindingRef": "mb.example",
+              "bindingRevision": 1,
+              "configuration": {
+                "authKind": "connection",
+                "configRevision": 1,
+                "connectionRef": "0123456789abcdef0123456789abcdef",
+                "harness": "pi",
+                "intentDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+                "mode": "headless",
+                "model": "hy4-flash"
+              }
+            },
+            "cell": {
+              "cellId": "c.example",
+              "intentMatches": true,
+              "revision": 2
+            },
+            "cleanupPending": false,
+            "member": "agent:acme:node-1:worker",
+            "ok": true,
+            "operation": {
+              "coordinationPhase": "applied",
+              "expectedBindingRevision": 0,
+              "expectedCellRevision": 1,
+              "observedCellRevision": 2,
+              "operationId": "00000000-0000-4000-8000-000000000001",
+              "phase": "finalized",
+              "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+              "resultBindingRevision": 1
+            },
+            "runtime": "not-verified"
+          }
+        },
+        {
+          "description": "Durable configuration awaits reconciliation.",
+          "kind": "success",
+          "name": "pending-connection",
+          "params": {
+            "name": "worker"
+          },
+          "result": {
+            "agentId": "a.example",
+            "binding": null,
+            "cell": {
+              "cellId": "c.example",
+              "intentMatches": null,
+              "revision": 1
+            },
+            "cleanupPending": false,
+            "member": "agent:acme:node-1:worker",
+            "ok": true,
+            "operation": {
+              "coordinationPhase": "planned",
+              "expectedBindingRevision": 0,
+              "expectedCellRevision": 1,
+              "observedCellRevision": null,
+              "operationId": "00000000-0000-4000-8000-000000000001",
+              "phase": "prepared",
+              "requestDigest": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+              "resultBindingRevision": null
+            },
+            "runtime": "not-verified"
           }
         },
         {

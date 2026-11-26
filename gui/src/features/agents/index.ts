@@ -10,6 +10,7 @@
 
 import './impl/agents.css';
 
+export { ModelRecovery } from './impl/model-configuration/Recovery';
 export { AgentDetail } from './impl/AgentDetail';
 export { AgentForm, keyCompatibleWithHarness } from './impl/AgentForm';
 export { AgentList } from './impl/AgentList';

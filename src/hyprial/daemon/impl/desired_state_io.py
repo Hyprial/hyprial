@@ -4,6 +4,8 @@ Business actors submit immutable operation values here instead of waiting on
 StatePersistence from their mailbox thread.  One worker preserves mutation
 ordering.  EffectLane retains every completion until the owning actor handles
 and acknowledges it, including across actor generation replacement.
+Launch records defensively own their immutable binding mappings; admit those
+validated references without admitting arbitrary views over mutable mappings.
 """
 
 from __future__ import annotations
@@ -14,7 +16,8 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Callable
 
-from hyprial.kernel import AdmissionResult
+from hyprial.kernel import AdmissionResult, HarnessLaunchSpec
+from hyprial.daemon.impl.harnesses.runtime.ports import HarnessLaunchProjection
 from hyprial.kernel import EffectCompleted, EffectRequest
 from hyprial.kernel import CallCostCounters
 
@@ -263,7 +266,10 @@ def _assert_immutable(value: object) -> None:
         getattr(type(value), "__dataclass_params__", None).frozen
     ):
         for field in fields(value):
-            _assert_immutable(getattr(value, field.name))
+            child = getattr(value, field.name)
+            if field.name == "model_binding" and type(value) in (HarnessLaunchSpec, HarnessLaunchProjection) and child is not None:
+                child = tuple(child.items())
+            _assert_immutable(child)
         return
     raise TypeError(
         f"desired-state I/O requests require immutable values, got {type(value).__name__}"

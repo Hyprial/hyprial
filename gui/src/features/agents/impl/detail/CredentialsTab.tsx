@@ -59,6 +59,7 @@ import { SECRET_PROVIDER_ENVIRONMENTS, type CredentialEntry, type SharedCredenti
 import { CredentialList, CredentialListItem, NativeAuthList, providerLoginFileLocation, providerLoginFileMessage, type NativeAuthApi, type NativeAuthRecord, type ProviderLoginFile } from '../../../agent-provider';
 
 export interface CredentialsTabProps {
+  readonly explicitBinding?: boolean;
   readonly active?: boolean;
   readonly actor?: string;
   readonly expectedAgent?: AgentExpected | null;
@@ -133,6 +134,7 @@ export function CredentialsTab({
   providerStatus = { view: { status: 'idle' }, reload: () => undefined },
   credentialsApi,
   nativeAuthApi,
+  explicitBinding = false,
   runtimeRevision = 0,
   nativeLoginFiles,
   preferredHarness,
@@ -370,7 +372,7 @@ export function CredentialsTab({
   }
 
   const grantView = providerStatus.view;
-  const canEdit = agentsApi !== undefined
+  const canEdit = agentsApi !== undefined && !explicitBinding
     && ((credentialsApi !== undefined && keysReadable && allowProvider !== undefined)
       || (nativeLoginFiles !== undefined && loginNative !== undefined));
   const canSaveType = credentialType === 'key'

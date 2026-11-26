@@ -105,8 +105,8 @@ export function ContactsPage({
   const notifyUnavailable = useNotifyUnavailable();
   const callable = (method: string): boolean => accessRefusal(methodAccess, method) === null;
   const createKeyCredentials = credentialsApi !== undefined
-    && directoryApi?.allowProvider !== undefined
-    && callable('agent.secret.provider-list') && callable('agent.secret.grant')
+    && (directoryApi?.configureModel !== undefined || directoryApi?.allowProvider !== undefined)
+    && callable('agent.secret.provider-list') && (directoryApi?.configureModel !== undefined || callable('agent.secret.grant'))
     ? credentialsApi : undefined;
   const createLoginFilePicker = directoryApi?.loginNative !== undefined
     && callable('agent.provider.login') ? loginFilePicker : undefined;
@@ -220,11 +220,11 @@ export function ContactsPage({
   );
 
   const selectedAgent =
-    panel.kind === 'detail' ? getManagedAgent(agents, panel.agentId) : undefined;
+    panel.kind === 'detail' ? getManagedAgent(agents, directoryRows.find(row => row.uri === panel.agentId)?.actor ?? panel.agentId) : undefined;
   const detailAgent = selectedAgent?.remote ? undefined : selectedAgent;
   const detailDirectoryRow =
     directoryMode && panel.kind === 'detail'
-      ? directoryRows.find((row) => row.actor === panel.agentId)
+      ? directoryRows.find((row) => row.actor === panel.agentId || row.uri === panel.agentId)
       : undefined;
   const extensionViews: Record<string, AgentExtensionView> = Object.fromEntries(
     agents.map((agent) => [
@@ -341,6 +341,7 @@ export function ContactsPage({
           ...current,
           [result.agent.id]: {
             preferredHarness: draft.preferredHarness ?? undefined,
+            model: draft.model ?? undefined,
           },
         }));
       }
@@ -385,9 +386,17 @@ export function ContactsPage({
       return;
     }
     let notice: CreatedNotice | undefined;
+    if (result.kind === 'incomplete') {
+      setPending(false); setCreateUnknown(true); directory.reload();
+      setFormMessage({ tone: 'error', text: result.message });
+      setCreatedNotice({ tone: 'error', text: result.message, agentId: result.actorUri });
+      dispatch({ type: 'open-agent-detail', agentId: result.actorUri }); return;
+    }
     if (result.kind === 'created') {
       if (result.created === false) {
         notice = { tone: 'status', text: '已复用现有 Agent；未改动其凭据。' };
+      } else if (draft.requireModelConfiguration) {
+        notice = { tone: 'error', text: 'Agent 身份已创建，尚未配置模型；请导入登录文件、选择登录目标并保存配置后再启动。' };
       } else {
         const credential = draft.credential;
         if (credential !== undefined && credential.kind !== 'none') {
@@ -546,6 +555,7 @@ export function ContactsPage({
           }}
           organizations={organizations}
           previewMode={!directoryMode}
+          explicitModel={directoryApi?.configureModel !== undefined}
           credentialsApi={directoryMode ? createKeyCredentials : undefined}
           pickLoginFiles={directoryMode ? createLoginFilePicker : undefined}
           pending={pending}

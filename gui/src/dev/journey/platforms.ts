@@ -4,7 +4,7 @@ import type { PlatformIntegrationsApi } from '../../features/connections';
 import { createMockPlatformIntegrationsApi } from '../mock/platform-integrations';
 import { createJourneyRoutes } from './routes';
 
-export function createJourneyPlatforms(agents: Required<AgentsApi>) {
+export function createJourneyPlatforms(agents: Pick<Required<AgentsApi>, 'list'>) {
   const lifecycle = createMockPlatformIntegrationsApi({ integrations: [] });
   const bindings = new Map<string, string>();
   const platformIntegrations: PlatformIntegrationsApi = {

@@ -34,7 +34,7 @@ export function probeError(error: unknown): string {
     if (error.code === "MODEL_CONFIGURATION_CONFLICT")
       return "连接已变更，请刷新清单后重新测试。";
     if (error.code === "MODEL_AUTH_UNAVAILABLE")
-      return "已保存的凭据不可用，请刷新并核对授权。";
+      return "无法取得已保存的凭据，请刷新并核对授权。";
     if (error.code === "INVALID_ARGUMENT")
       return "配置无效，请核对服务地址、Key 和模型 ID。";
   }
@@ -108,12 +108,7 @@ export function ConnectionProbe({
       }
     }
   }
-  if (!api.testKey)
-    return (
-      <p className="credentials-row__meta">
-        当前连接测试不可用，保存不代表模型可调用。
-      </p>
-    );
+  if (!api.testKey) return null;
   return (
     <div className="credentials-probe">
       <Field

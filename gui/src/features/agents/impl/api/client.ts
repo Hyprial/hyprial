@@ -16,6 +16,7 @@ import type { AgentsApi } from './index';
 export type AgentsClient = Pick<GeneratedClient, 'agent' | 'org' | 'routine' | 'workflow'>;
 
 export const AGENTS_CLIENT_METHODS = [
+  'agent.model.status', 'agent.model.configure', 'agent.model.cancel', 'agent.provider.auth.list',
   'agent.destroy', 'agent.destroy.preview',
   'agent.list', 'agent.create', 'agent.start', 'agent.stop', 'agent.rename',
   'agent.secret.list', 'agent.provider.default',
@@ -46,6 +47,10 @@ export async function callAgentMethod<P, R>(
 }
 
 const HANDLER_OF: { readonly [K in keyof AgentsApi]-?: (client?: AgentsClient) => unknown } = {
+  modelStatus: (client) => client?.agent?.model?.status,
+  configureModel: (client) => client?.agent?.model?.configure,
+  cancelModel: (client) => client?.agent?.model?.cancel,
+  nativeTargets: (client) => client?.agent?.provider?.auth?.list,
   previewDestroy: (client) => client?.agent?.destroy?.preview,
   destroy: (client) => client?.agent?.destroy,
   list: (client) => client?.agent?.list,

@@ -20,6 +20,17 @@ const DESCRIPTOR = {
   ],
 } as const;
 
+it('keeps explicit first-run creation separate from user-approved start', async () => {
+  const start = vi.fn();
+  const gateway = { create: vi.fn(async () => ({ kind: 'created', created: true, actorUri: 'agent:test:node:worker', agent: { id: 'worker' } })) };
+  const configure = createFirstRunConfigureAgent(gateway as never, undefined, undefined, undefined, start);
+  const result = await configure(draft({ credential: undefined, provider: undefined, modelConfiguration: { operationId: 'model-first-run', configuration: {
+    authKind: 'connection', harness: 'pi', mode: 'headless', model: 'hy4-flash', connectionRef: '0123456789abcdef0123456789abcdef', configRevision: 1,
+  } } }));
+  expect(result).toMatchObject({ status: 'incomplete', created: true, actorUri: 'agent:test:node:worker' });
+  expect(start).not.toHaveBeenCalled();
+});
+
 function draft(overrides: Partial<AgentDraft> = {}): AgentDraft {
   return {
     displayName: 'squire',
