@@ -49,6 +49,10 @@ def intent_digest(member, harness, model):
 
 
 def connection_provider(configuration):
+    if configuration.auth_kind == "native":
+        from hyprial.daemon.impl.harnesses.model_routes.native import target_for
+
+        return target_for(configuration).target
     from hyprial.daemon.impl.harnesses.pi.bindings import connection_provider_id
 
     return connection_provider_id(
@@ -95,6 +99,8 @@ def select(app, spec, *, allow_unpinned=False):
     member = launch_member_name(agent, spec)
     binding = status(app, agent, member).binding
     if binding is None:
+        if agent.capabilities.get("modelConfigurationRequired") is True:
+            refuse(codes.MODEL_CONFIGURATION_INCOMPLETE, "bind", "configuration-required")
         if spec.model_binding is not None:
             refuse(codes.MODEL_CONFIGURATION_CONFLICT, "bind", "revision-mismatch")
         return None
@@ -104,11 +110,16 @@ def select(app, spec, *, allow_unpinned=False):
         refuse(codes.MODEL_CONFIGURATION_CONFLICT, "bind", "revision-mismatch")
     config = binding.configuration
     if (
-        config.auth_kind != "connection"
-        or config.harness != "pi"
-        or spec.harness != "pi"
+        (config.auth_kind == "connection" and config.harness != "pi")
+        or config.harness != spec.harness
     ):
         refuse(codes.MODEL_COMBINATION_UNSUPPORTED, "admission", "runtime-option")
+    if config.auth_kind == "native" and spec.args and not (
+        config.harness == "pi" and spec.args == ("--approve",)
+    ):
+        refuse(codes.MODEL_COMBINATION_UNSUPPORTED, "admission", "runtime-option")
+    if config.auth_kind == "native" and config.harness != "pi" and spec.session_ref is not None:
+        refuse(codes.MODEL_RESUME_MISMATCH, "resume", "binding-changed")
     if config.mode != "headless" or not spec.headless:
         refuse(codes.MODEL_COMBINATION_UNSUPPORTED, "admission", "mode")
     if spec.model not in (None, config.model) or spec.model_provider not in (

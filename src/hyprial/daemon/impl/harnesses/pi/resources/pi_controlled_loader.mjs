@@ -26,7 +26,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { admitModelSession, guardModelSession, boundModelRuntime, modelFailure } from "./pi_model_binding.mjs";
+import { admitModelSession, guardModelSession, boundModelRuntime, boundNativeRuntime, checkNativeCredential, modelFailure } from "./pi_model_binding.mjs";
 
 const RECEIPT_SCHEMA = "hyprial-pi-loader-v1";
 const CONTEXT_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
@@ -474,9 +474,12 @@ async function createControlledRuntime(rawOptions, claim) {
     if (extensionErrors.length > 0) {
       fail(`Pi extension load failed: ${extensionErrors.map((entry) => `${entry.path}: ${entry.error}`).join("; ")}`);
     }
+    if (claim?.snapshot?.authKind === "native") {
+      checkNativeCredential(claim.snapshot, join(controlled.options.nativeRoot, "auth.json"));
+    }
     const modelRuntime = await sdk.ModelRuntime.create({
       authPath: join(controlled.options.nativeRoot, "auth.json"),
-      modelsPath: join(controlled.options.nativeRoot, "models.json"),
+      modelsPath: claim?.snapshot?.authKind === "native" ? null : join(controlled.options.nativeRoot, "models.json"),
       modelsStorePath: join(controlled.options.nativeRoot, "models-store.json"),
     });
     // §8.2: hyprial owns retry (the durable inbox redelivers with backoff), so
@@ -489,7 +492,11 @@ async function createControlledRuntime(rawOptions, claim) {
       retry: { maxRetries: 0, provider: { maxRetries: 0 } },
     });
     registerModelDefinitions(modelRuntime, rawOptions.modelDefinitions);
-    if (claim?.snapshot) boundModelRuntime(modelRuntime, modelProvider, modelId, rawOptions.modelDefinitions[modelProvider]);
+    if (claim?.snapshot?.authKind === "native") {
+      boundNativeRuntime(modelRuntime, claim.snapshot, join(controlled.options.nativeRoot, "auth.json"));
+    } else if (claim?.snapshot) {
+      boundModelRuntime(modelRuntime, modelProvider, modelId, rawOptions.modelDefinitions[modelProvider]);
+    }
     // The agent's current configuration is the launch's explicit selection,
     // else the native root's settings default.  A resumed session may record
     // a different vendor (the production case: settings deepseek, session

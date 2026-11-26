@@ -5,7 +5,7 @@ from hyprial.error import codes
 MODEL_BINDING_FAILURES = {
     codes.MODEL_CONFIGURATION_INCOMPLETE: (
         "bind",
-        ("destroy-cleanup-pending", "operation-in-progress", "state-unreadable"),
+        ("destroy-cleanup-pending", "operation-in-progress", "state-unreadable", "configuration-required"),
     ),
     codes.MODEL_CONFIGURATION_CONFLICT: (
         "bind",

@@ -66,3 +66,30 @@ def test_capacity_setting_is_offline_and_preserves_other_settings(tmp_path, monk
     assert json.loads(path.read_text()) == {"identity": {"owner": "fixture"},
         "forwarding": {"mode": "off"}, "modelBinding": {"operationLimit": 20000}}
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_native_configuration_has_no_connection_fields(monkeypatch):
+    calls = []
+    monkeypatch.setattr(support, "_daemon_request", lambda method, params=None, **_kw:
+        calls.append((method, params)) or {"ok": True, "binding": None, "operation": None})
+    result = CliRunner().invoke(app, ["agent", "model", "configure", "worker", "--model", "gpt-4.1-mini",
+        "--native-auth", "native:v1:pi:api-key:openai", "--binding-revision", "0", "--cell-revision", "1",
+        "--operation-id", "native-1", "--json"])
+    assert result.exit_code == 0, result.output
+    assert calls[0][1]["configuration"] == {"authKind": "native", "nativeAuthRef": "native:v1:pi:api-key:openai",
+        "model": "gpt-4.1-mini", "harness": "pi", "mode": "headless"}
+
+
+def test_explicit_create_uses_one_request_and_no_default_seed(monkeypatch):
+    from hyprial.shell.impl.cli.commands.agent import create
+
+    calls = []
+    monkeypatch.setattr(support, "_daemon_request", lambda method, params=None, **_kw:
+        calls.append((method, params)) or {"ok": True, "created": True, "providerDefault": "claude"})
+    monkeypatch.setattr(create, "seed_new_agent", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("no default seed")))
+    result = CliRunner().invoke(app, ["agent", "create", "--name", "worker", "--preferred-harness", "pi",
+        "--model", "hy4-flash", "--connection", "ref", "--config-revision", "1", "--operation-id", "create-1", "--json"])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1 and calls[0][0] == "agent.create"
+    assert calls[0][1]["modelConfiguration"]["configuration"]["model"] == "hy4-flash"
+    assert "provider" not in calls[0][1] and "model" not in calls[0][1]

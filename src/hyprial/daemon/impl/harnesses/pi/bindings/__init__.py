@@ -90,6 +90,24 @@ class PiModelBinding:
 
 def validated_snapshot(value: object) -> Mapping[str, object]:
     """Read only the versioned, non-secret provenance emitted by this adapter."""
+    if isinstance(value, Mapping) and value.get("authKind") == "native":
+        from hyprial.identity import NativeAuthTarget
+
+        expected = {"schemaVersion", "authKind", "bindingRef", "bindingRevision", "nativeAuthRef",
+                    "harness", "model", "target"}
+        if set(value) != expected or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1:
+            raise ValueError("invalid native model binding snapshot")
+        target = NativeAuthTarget.from_reference(value["nativeAuthRef"])
+        if target.harness != "pi" or value["harness"] != "pi" or value["target"] != target.target:
+            raise ValueError("invalid native model binding target")
+        for name in ("bindingRef", "model"):
+            item = value[name]
+            if (not isinstance(item, str) or not 1 <= len(item) <= 256 or item.strip() != item
+                    or any(category(c).startswith("C") for c in item)):
+                raise ValueError("invalid native binding identity")
+        if type(value["bindingRevision"]) is not int or not 1 <= value["bindingRevision"] <= 2**53 - 1:
+            raise ValueError("invalid native binding revision")
+        return MappingProxyType(dict(value))
     fixed = {"schemaVersion": 1, "authKind": "api-key", "harness": "pi",
              "profile": "openai-chat-completions/v1", "template": TEMPLATE, "costStatus": "unknown"}
     fields = set(fixed) | {"bindingRef", "bindingRevision", "connectionRef", "configRevision",

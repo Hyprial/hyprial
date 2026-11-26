@@ -197,6 +197,7 @@ from hyprial.kernel import (
 )
 
 from .entity import AGENT_IDENTITY_SNAPSHOT, agent_status_row
+from ..model.schemas import CONFIGURATION, RESULT as MODEL_RESULT, CREATE_MODEL_ERRORS
 
 AGENT_CREATE = "agent.create"
 AGENT_STOP = "agent.stop"
@@ -216,6 +217,9 @@ _COMPAT_VALUE = {
 _CREATE_PARAMS = {
     "type": "object",
     "properties": {
+        "modelConfiguration": {"type": "object", "properties": {
+            "operationId": _STRING, "configuration": CONFIGURATION},
+            "required": ["operationId", "configuration"], "additionalProperties": False},
         "name": {
             **_STRING,
             "description": "Agent name, unique on this machine; required first.",
@@ -344,6 +348,7 @@ _PROVIDER_DEFAULT_CREDENTIAL = {
 _CREATE_RESULT = {
     "type": "object",
     "properties": {
+        "modelConfiguration": MODEL_RESULT,
         "ok": {"const": True},
         "created": {"type": "boolean"},
         "agent": {
@@ -700,7 +705,7 @@ AGENT_CREATE_SPEC = MethodSpec(
     owner="daemon.agent",
     params_schema=_CREATE_PARAMS,
     result_schema=_CREATE_RESULT,
-    errors=_CREATE_ERRORS,
+    errors=_CREATE_ERRORS + CREATE_MODEL_ERRORS,
     mode="unary",
     mutates=True,
     retry="never",
@@ -736,6 +741,10 @@ def agent_create(
 ) -> Any:
     from .entity import call_with_legacy_agent_errors
 
+    if "modelConfiguration" in params:
+        from hyprial.daemon.impl.provider_keys.ipc import preauthorize
+
+        preauthorize(AGENT_CREATE, app, params, trusted_message_origin=trusted_message_origin)
     return call_with_legacy_agent_errors(
         lambda: app._handle_agent_create_with_default(dict(params))
     )

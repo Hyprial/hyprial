@@ -138,7 +138,8 @@ class DefaultCredentialMixin:
                 "entryId": entry_id, "fieldName": OAUTH_FIELD, "kind": kind}
 
     def _grant_default_claude_locked(self, agent) -> None:
-        if (agent.preferred_harness != "claude" or agent.hosted_by is not None
+        if (agent.capabilities.get("modelConfigurationRequired") is True
+                or agent.preferred_harness != "claude" or agent.hosted_by is not None
                 or agent.owner != self.owner):
             return
         default = self.default_claude_credential()

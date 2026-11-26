@@ -15,16 +15,21 @@ def obj(properties, required=None):
             "additionalProperties": False}
 
 
-CONFIGURATION = obj({
+CONNECTION_CONFIGURATION = obj({
     "authKind": {"const": "connection"}, "model": TEXT,
     "harness": {"enum": ["pi", "claude", "codex"]},
     "mode": {"enum": ["headless", "interactive"]},
     "connectionRef": TEXT, "configRevision": POSITIVE,
 })
-SAVED_CONFIGURATION = obj({
-    **CONFIGURATION["properties"],
-    "intentDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+NATIVE_CONFIGURATION = obj({
+    "authKind": {"const": "native"}, "model": TEXT,
+    "harness": {"enum": ["pi", "claude", "codex"]},
+    "mode": {"enum": ["headless", "interactive"]}, "nativeAuthRef": TEXT,
 })
+CONFIGURATION = {"oneOf": [CONNECTION_CONFIGURATION, NATIVE_CONFIGURATION]}
+SAVED_CONFIGURATION = {"oneOf": [obj({**shape["properties"],
+    "intentDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+}) for shape in CONFIGURATION["oneOf"]]}
 TARGET = {"name": TEXT, "member": TEXT, "operationId": TEXT}
 CONFIGURE_PARAMS = obj({**TARGET, "expectedBindingRevision": REVISION,
     "expectedCellRevision": POSITIVE, "configuration": CONFIGURATION},
@@ -64,3 +69,10 @@ ERRORS = tuple(MethodError(code) for code in (
         (codes.MODEL_COMBINATION_UNSUPPORTED, "admission", ["runtime-option", "mode"]),
         (codes.MODEL_OPERATION_CAPACITY_EXCEEDED, "bind", ["operation-capacity"]),
     ))
+
+CREATE_MODEL_ERRORS = tuple(error for error in ERRORS if error.code in {
+    codes.MODEL_CONFIGURATION_INVALID, codes.MODEL_COMBINATION_UNSUPPORTED,
+}) + (MethodError(codes.MODEL_CONFIGURATION_INCOMPLETE, obj({
+    "phase": {"const": "bind"}, "reason": {"const": "configuration-required"},
+    "agentId": TEXT, "actor": TEXT, "operationId": TEXT, "causeCode": TEXT,
+})),)

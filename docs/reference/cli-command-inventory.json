@@ -4390,7 +4390,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.agent.create",
-      "help": "Register a new agent on this machine.\n\nThe name is the agent's identity within agent:<owner>:<machine>:, and only\none agent may hold it -- creating a second agent under a name already in\nuse fails, whether or not anything is currently running under it. The name\nis freed only by 'hyprial agent destroy'.\n\nWithout --config, creation materializes a minimal explicit config in the\nagent home so claude, codex, and pi use agent-home P2. Without --cwd, the\nagent home's workspace directory is used.\n\nA name says nothing about a harness: an agent called 'pi-ds4' is just an\nagent called 'pi-ds4', and it can run on claude. To move an existing agent\nto another harness, start it there; that rebinds the same agent rather\nthan creating a new one, so it is not a name conflict.\n\nCredentials: a captured Claude default ('agent provider login claude\n--actor OWNER --setup-token --default') grants its token to new agents with\n--preferred-harness claude. A captured native default copies the named\nowner's login instead. PAC and lifecycle creation use the same policy.\nLegacy provider-name defaults still seed from host login in this CLI only;\nre-run provider login --default --actor OWNER to bind a Claude source for PAC.",
+      "help": "Register a new agent on this machine.\n\nThe name is the agent's identity within agent:<owner>:<machine>:, and only\none agent may hold it -- creating a second agent under a name already in\nuse fails, whether or not anything is currently running under it. The name\nis freed only by 'hyprial agent destroy'.\n\nWithout --config, creation materializes a minimal explicit config in the\nagent home so claude, codex, and pi use agent-home P2. Without --cwd, the\nagent home's workspace directory is used.\n\nA name says nothing about a harness: an agent called 'pi-ds4' is just an\nagent called 'pi-ds4', and it can run on claude. To move an existing agent\nto another harness, start it there; that rebinds the same agent rather\nthan creating a new one, so it is not a name conflict.\n\nCredentials: a captured Claude default ('agent provider login claude\n--actor OWNER --setup-token --default') grants its token to new agents with\n--preferred-harness claude. A captured native default copies the named\nowner's login instead. PAC and lifecycle creation use the same policy.\nLegacy provider-name defaults still seed from host login in this CLI only;\nre-run provider login --default --actor OWNER to bind a Claude source for PAC.\nExplicit --connection/--native-auth disables all defaults. Supply --model,\n--preferred-harness and --operation-id. Creation does not start a process.\nA missing native login leaves a visible unconfigured agent; log in to that\nagent, then use agent model configure. Do not repeat agent create.",
       "params": [
         {
           "opts": [
@@ -4475,6 +4475,78 @@
           "hidden": false,
           "type": "str",
           "help": "Model id preference.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--connection"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Saved connection reference; disables default credentials.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--config-revision"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int",
+          "help": "Saved connection revision; required only with --connection.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--native-auth"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Native login slot for this agent; never copies another login.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--operation-id"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Unique model configuration operation ID.",
           "nargs": 1,
           "metavar": null,
           "default": null,
@@ -8350,7 +8422,7 @@
       "directHidden": false,
       "executable": false,
       "callbackModule": null,
-      "help": "Configure a saved model connection; saving does not start the agent.",
+      "help": "Configure a model connection or native login; saving does not start the agent.",
       "params": []
     },
     {
@@ -8361,7 +8433,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.agent.model",
-      "help": "Save an exact model connection without starting the agent.",
+      "help": "Save an exact connection or native login without starting the agent.",
       "params": [
         {
           "opts": [
@@ -8404,7 +8476,7 @@
             "--connection"
           ],
           "secondaryOpts": [],
-          "required": true,
+          "required": false,
           "isFlag": false,
           "multiple": false,
           "hidden": false,
@@ -8422,12 +8494,30 @@
             "--config-revision"
           ],
           "secondaryOpts": [],
-          "required": true,
+          "required": false,
           "isFlag": false,
           "multiple": false,
           "hidden": false,
           "type": "int",
-          "help": "Saved connection revision from provider-list.",
+          "help": "Saved connection revision; required only with --connection.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--native-auth"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Exact nativeAuthRef from the agent's Auth inventory.",
           "nargs": 1,
           "metavar": null,
           "default": null,

@@ -45,6 +45,7 @@ from hyprial.identity import (
     NativeCredentialError,
     install_native_credential_set,
     inspect_native_credentials,
+    native_auth_targets,
     remove_native_credentials,
     secret_environment_name_is_allowed,
 )
@@ -126,9 +127,15 @@ class _AgentProviderMixin:
         )
 
     def _handle_agent_create_with_default(self, params: JsonObject) -> Any:
+        if "modelConfiguration" in params:
+            from hyprial.daemon.impl.application.model_binding.configure.create import create
+
+            return create(self, params)
         created = self._handle_agent("agent.create", params)
         if not isinstance(created, dict):
             return created
+        if created.get("agent", {}).get("capabilities", {}).get("modelConfigurationRequired") is True:
+            return {**created, "providerDefault": None}
         try:
             reference = self._agent_registry.default_claude_credential()
             default = ({"provider": "claude", "credentialSource": reference["kind"],
@@ -343,12 +350,15 @@ def native_auth_records(application: Any, params: JsonObject) -> dict[str, objec
     for agent in agents:
         for harness in harnesses:
             error_code = None
+            targets = []
             try:
                 receipt = application._agent_registry.home_receipt(agent.actor, require_ready=False)
                 observation = inspect_native_credentials(
                     Path(receipt.path), harness,
                     import_record=application._agent_registry.native_credential_import_record(agent.actor),
                 )
+                if params.get("targetsVersion") == 1 and observation["state"] == "stored":
+                    targets = [target.to_json() for target in native_auth_targets(Path(receipt.path), harness)]
             except (NativeCredentialError, AgentError, AgentHomeError, OSError) as error:
                 error_code = error.code if isinstance(error, NativeCredentialError) else ipc_errors.DAEMON_ERROR
                 observation = {"state": "unavailable", "files": [], "missingFiles": []}
@@ -357,6 +367,7 @@ def native_auth_records(application: Any, params: JsonObject) -> dict[str, objec
             records.append({
                 "actor": agent.uri, "displayName": agent.display_name or agent.actor,
                 "harness": harness, **observation, "errorCode": error_code,
+                **({"targets": targets} if params.get("targetsVersion") == 1 else {}),
                 "importedAt": observation.get("importedAt"),
                 "startupConfirmedAt": observation.get("startupConfirmedAt"),
             })

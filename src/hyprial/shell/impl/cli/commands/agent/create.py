@@ -7,11 +7,13 @@ from typing import Any
 
 import typer
 
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
 from hyprial.shell.impl.cli.commands.agent.provider.commands import seed_new_agent
+from hyprial.shell.impl.cli.commands.agent.model import configuration_input
 
 
 @agent_app.command("create")
@@ -36,6 +38,10 @@ def agent_create(
         help="Model vendor preference (the harness/provider/model vocabulary).",
     ),
     model: str | None = typer.Option(None, "--model", help="Model id preference."),
+    connection: str | None = typer.Option(None, "--connection", help="Saved connection reference; disables default credentials."),
+    config_revision: int | None = typer.Option(None, "--config-revision", help="Saved connection revision; required only with --connection."),
+    native_auth: str | None = typer.Option(None, "--native-auth", help="Native login slot for this agent; never copies another login."),
+    operation_id: str | None = typer.Option(None, "--operation-id", help="Unique model configuration operation ID."),
     preferred_harness: str | None = typer.Option(
         None,
         "--preferred-harness",
@@ -68,12 +74,24 @@ def agent_create(
     owner's login instead. PAC and lifecycle creation use the same policy.
     Legacy provider-name defaults still seed from host login in this CLI only;
     re-run provider login --default --actor OWNER to bind a Claude source for PAC.
+    Explicit --connection/--native-auth disables all defaults. Supply --model,
+    --preferred-harness and --operation-id. Creation does not start a process.
+    A missing native login leaves a visible unconfigured agent; log in to that
+    agent, then use agent model configure. Do not repeat agent create.
     """
     services = get_services()
 
     def operation() -> Any:
         services = get_services()
         params: JsonObject = {"name": name}
+        explicit = any(value is not None for value in (connection, native_auth, config_revision, operation_id))
+        if explicit:
+            if provider is not None or preferred_harness is None or model is None or operation_id is None:
+                raise services.CliError(codes.INVALID_ARGUMENT,
+                    "Explicit model creation requires --preferred-harness, --model and --operation-id, without --provider.")
+            params["modelConfiguration"] = {"operationId": operation_id,
+                "configuration": configuration_input(connection=connection, config_revision=config_revision,
+                    native_auth=native_auth, harness=preferred_harness, mode="headless", model=model)}
         if cwd is not None:
             params["cwd"] = str(cwd.expanduser().resolve())
         if config is not None:
@@ -84,14 +102,13 @@ def agent_create(
                 "discovery": "explicit-only",
             }
         if provider is not None:
-            # Wire key for the model vendor, as squire spells it.
             params["provider"] = provider
-        if model is not None:
+        if model is not None and not explicit:
             params["model"] = model
         if preferred_harness is not None:
             params["preferredHarness"] = preferred_harness
         created = services.runtime.request("agent.create", params)
-        if not isinstance(created, dict):
+        if not isinstance(created, dict) or explicit:
             return created
         seed = seed_new_agent(
             services,

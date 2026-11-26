@@ -117,9 +117,12 @@ All three have module-level MethodSpecs, closed params/results/errors and HTTP P
 projections. There is no worker permission or caller-provided trusted identity.
 
 Configure requires `operationId`, `expectedBindingRevision` (zero for an initial
-binding), `expectedCellRevision` and `configuration`: `authKind=connection`,
-`harness=pi`, `mode=headless`, exact manually supplied `model`, `connectionRef`
-and `configRevision`. The server derives intentDigest. Other declared harness/mode
+binding), `expectedCellRevision` and `configuration`. Connection configuration uses
+`authKind=connection`, `harness=pi`, `mode=headless`, an exact manually supplied
+`model`, `connectionRef` and `configRevision`. Native configuration uses
+`authKind=native`, `nativeAuthRef`, an explicit pi/claude/codex harness, headless
+mode and a manual model ID; it has no connectionRef/configRevision. The server
+derives intentDigest. Other declared harness/mode
 combinations refuse `MODEL_COMBINATION_UNSUPPORTED`; no defaults or alternate Key
 are substituted. Secret/grant authorization precedes preparation and is repeated
 when a pending operation resumes. Saving does not start a process or call a model.
@@ -169,3 +172,71 @@ Capacity refusal maps to HTTP 409 with bind/operation-capacity. Additional close
 diagnostics include bind/cell-revision-mismatch, cell-intent-mismatch,
 agent-incarnation-changed, state-unreadable and cell-outcome-unknown; see MethodSpec
 for the authoritative per-code reason lists.
+
+
+## Native target and explicit creation
+
+Native Pi headless start accepts the single controlled runtime argument `--approve`
+emitted by `agent.start` with `approve:true` and an explicit working directory.
+The existing project trust check still runs before spawning: missing approval is
+not inferred from a saved native login. Other runtime arguments, including provider
+or model overrides, refuse `MODEL_COMBINATION_UNSUPPORTED` with
+`admission/runtime-option`; native Claude/Codex do not accept runtime arguments.
+Native Pi process/client drivers retain the binding snapshot without projecting a
+connection Key; the selected per-Agent native credential remains the only source.
+
+`agent.provider.auth.list` retains its legacy result when targetsVersion is absent.
+Opting into targetsVersion=1 adds metadata-only targets to each row, each containing
+nativeAuthRef, target and kind. References have the exact form
+`native:v1:<harness>:<oauth|api-key>:<target>` and identify a slot inside the selected
+Agent incarnation, not an account fingerprint or authority shared across Agents.
+OAuth refresh preserves the slot; logout makes it unavailable; an explicit login
+can repopulate it. Unreadable/ambiguous stores and command/env-derived Keys refuse.
+Claude selects anthropic/oauth; Codex selects openai/oauth or openai/api-key; Pi
+selects an explicitly listed target. Login inventory is not an upstream test.
+
+Every new native binding is reauthorized before configure and launch. Competing
+model credential grants and routed grants refuse; unrelated tool secrets remain.
+No native launch args or interactive mode are accepted in this slice. Pi native
+bindings require SDK 1.2.0: its physical model must match the exact target and ID;
+unknown IDs refuse without aliases or fallback. Native getAuth rechecks the slot
+and prevents ambient environment/API-Key overrides. The receipt and reservation
+rules apply equally to native and custom bindings. Real vendor calls, other Pi
+native SDK versions and custom TUI are not established by isolated process tests.
+Claude/Codex explicit native bindings refuse a nonempty session_ref with
+MODEL_RESUME_MISMATCH (resume/binding-changed): this slice has no equivalent
+immutable session receipt for them. Use a new session; legacy unbound resumes are
+unchanged. This is an intentional fail-closed capability boundary.
+
+`agent.create` accepts an optional closed modelConfiguration object containing
+operationId and configuration. This operator-only path rejects simultaneous legacy
+harness/provider/model/runtime/existing inputs. It creates an identity with the
+persistent capability modelConfigurationRequired=true, suppresses captured-Claude
+and CLI default seeding, and then uses the same coordinator as agent.model.configure.
+Connection creation grants the exact saved field through the existing Secret/grant
+authority with an incarnation fence; it never duplicates Key storage. Native creation
+does not import another Agent/operator login.
+
+Creation and configuration are separate commits. If configuration fails after
+identity creation, MODEL_CONFIGURATION_INCOMPLETE reports bind/configuration-required
+with agentId, actor, operationId and a sanitized causeCode. The identity remains
+visible and start/restore/reconcile refuse until a binding is finalized. Read status,
+complete explicit login/grant authorization and use agent.model.configure for that
+identity; do not retry agent.create or silently choose a default. Existing schema-4
+binding downgrade refusal remains; the capability-only incomplete identity does not
+establish safe operation under an older binary that does not enforce this marker.
+
+CLI create adds --connection/--config-revision or --native-auth, together with
+--preferred-harness, --model and --operation-id. Configure accepts the same exclusive
+credential selectors. Existing CLI requests without these new flags keep legacy
+behavior. Saving configuration never starts the Agent or calls a model.
+
+`agent.secret.provider-test` remains the connection probe: exact endpoint, Key and
+manual model ID, with its existing cancellation and timeout contract. It is not
+native-login validation or proof of a successful harness launch. No second Auth
+probe method is introduced. Native login inventory, connection-probe results and
+runtime-start observations remain distinct.
+
+The offline operationLimit setting is nested JSON (`modelBinding.operationLimit`
+in CLI notation means {"modelBinding":{"operationLimit":20000}}); a literal dotted
+JSON key is invalid and blocks new IDs, without blocking existing replay/cancel.

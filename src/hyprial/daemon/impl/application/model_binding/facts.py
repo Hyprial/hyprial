@@ -11,12 +11,16 @@ from .admission import connection_provider, snapshot, status, validate_cell
 def launch_row(app, agent, member, row):
     binding = status(app, agent, member).binding
     if binding is None:
+        if agent.capabilities.get("modelConfigurationRequired") is True:
+            from hyprial.error import codes
+            from .admission import refuse
+
+            refuse(codes.MODEL_CONFIGURATION_INCOMPLETE, "bind", "configuration-required")
         return row
     validate_cell(app, agent, member, binding)
     config = binding.configuration
     if (
-        config.auth_kind != "connection"
-        or config.harness != "pi"
+        (config.auth_kind == "connection" and config.harness != "pi")
         or config.mode != "headless"
     ):
         from hyprial.error import codes

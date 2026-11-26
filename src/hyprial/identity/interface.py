@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .impl.agents.home.native_imports.targets import NativeAuthTarget as NativeAuthTarget, native_auth_targets as native_auth_targets
     from .impl.facade.types import ModelConnection as ModelConnection
     from hyprial.identity.impl.provider_auth.helper import DeviceLoginRunner as DeviceLoginRunner
     from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAuthority as ProviderAuthAuthority
@@ -354,6 +355,8 @@ _FACADE_EXPORTS = {
     'resolve_agent_runtime_context': ('hyprial.identity.impl.agents.runtime.context', 'resolve_agent_runtime_context'),
     'resolve_agent_tool_profile': ('hyprial.identity.impl.agents.runtime.tool_profile', 'resolve_agent_tool_profile'),
     'resolve_agent_secrets': ('hyprial.identity.impl.agents.home.environment', 'resolve_agent_secrets'),
+    'NativeAuthTarget': ('hyprial.identity.impl.agents.home.native_imports.targets', 'NativeAuthTarget'),
+    'native_auth_targets': ('hyprial.identity.impl.agents.home.native_imports.targets', 'native_auth_targets'),
     'NativeCredentialError': ('hyprial.identity.impl.agents.home.native_credential', 'NativeCredentialError'),
     'NATIVE_CREDENTIAL_FILES': ('hyprial.identity.impl.agents.home.native_credential', 'NATIVE_CREDENTIAL_FILES'),
     'install_native_credential': ('hyprial.identity.impl.agents.home.native_credential', 'install_native_credential'),
@@ -625,6 +628,8 @@ __all__ = [
     'MigrationAuthorizationWindow',
     'MigrationPreflightManifest',
     'NATIVE_CREDENTIAL_FILES',
+    'NativeAuthTarget',
+    'native_auth_targets',
     'NativeCredentialError',
     'ORG_META_DOC',
     'ORG_SPACE_PREFIX',

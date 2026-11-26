@@ -133,6 +133,11 @@ def compose_daemon_worker_launch(
         nonlocal resolved_binding
         if binding is None:
             return route_environment(spec, secrets)
+        if binding.configuration.auth_kind == "native":
+            from hyprial.daemon.impl.harnesses.model_routes.native import resolve as resolve_native
+
+            resolved_binding = resolve_native(binding, secrets, registry, app.agents.require(spec.name))
+            return {}
         resolved_binding = resolve(binding, secrets)
         return {"HYPRIAL_OPENAI_BASE_URL": resolved_binding.connection.endpoint}
 

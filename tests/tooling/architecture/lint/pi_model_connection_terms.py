@@ -37,4 +37,11 @@ PI_MODEL_CONNECTION_LINES = (
     ('daemon/impl/harnesses/pi/bindings/__init__.py', 'from legacy provider arguments or environment.'),
     ('daemon/impl/harnesses/pi/bindings/__init__.py', 'def connection_provider_id(connection_ref: str, config_revision: int) -> str:'),
     ('daemon/impl/harnesses/pi/bindings/__init__.py', '        return connection_provider_id(self.connection.connection_ref, self.connection.config_revision)'),
+
+    ('daemon/impl/application/model_binding/configure/create.py', '        "actor": agent.actor, "grantId": "model-connection", "source": "user-provider",'),
+    ('daemon/impl/harnesses/model_routes/native.py', '    def provider_id(self):'),
+    ('daemon/impl/harnesses/pi/resources/pi_model_binding.mjs', '      const provider = binding.authKind === "native" ? binding.target : "hyprial-connection-" + createHash("sha256").update(JSON.stringify([binding.connectionRef, binding.configRevision])).digest("hex");'),
+    ('daemon/impl/harnesses/pi/resources/pi_model_binding.mjs', '  if (!physical || physical.provider !== target || physical.id !== modelId) {'),
+    ('daemon/impl/harnesses/pi/resources/pi_model_binding.mjs', '    if ((typeof model === "string" ? model : model.provider) !== target ||'),
+    ('daemon/impl/harnesses/pi/resources/pi_model_binding.mjs', '      if (model.provider !== target || model.id !== modelId || model.baseUrl !== physical.baseUrl || model.api !== physical.api ||'),
 )

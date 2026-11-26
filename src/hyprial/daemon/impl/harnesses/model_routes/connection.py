@@ -6,6 +6,8 @@ records. An extra routed credential is ambiguous, never a fallback candidate.
 
 from dataclasses import dataclass, field, fields
 
+from .native import NativeModelBinding
+
 from hyprial.error import codes
 from hyprial.identity import ChildEnvironmentLaunch, ModelConnection
 from hyprial.daemon.impl.harnesses.pi.bindings import KEY_ENV, PiModelBinding
@@ -14,7 +16,7 @@ from hyprial.daemon.impl.harnesses.pi.bindings.errors import PiModelBindingError
 
 @dataclass(frozen=True, slots=True)
 class BoundChildEnvironmentLaunch(ChildEnvironmentLaunch):
-    model_binding: PiModelBinding | None = field(
+    model_binding: PiModelBinding | NativeModelBinding | None = field(
         default=None, repr=False, compare=False
     )
 

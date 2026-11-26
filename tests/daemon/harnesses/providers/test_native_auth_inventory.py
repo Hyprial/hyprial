@@ -78,6 +78,24 @@ def test_inventory_spec_is_read_only_http_with_no_caller_from_body():
     assert spec.http_binding.identity.mode == "none"
 
 
+def test_targets_are_opt_in_exact_metadata_and_invalid_store_is_unavailable(provider_app):
+    app = provider_app
+    credentials = {"openai": {"type": "api_key", "key": "synthetic-private"},
+                   "anthropic": {"type": "api_key", "key": "synthetic-other"}}
+    app.handle("agent.provider.login", {"actor": ACTOR, "provider": "pi", "files": _files(
+        ("auth.json", json.dumps(credentials).encode()), ("models-store.json", b"{}"))})
+    assert "targets" not in app.handle("agent.provider.auth.list", {})["records"][0]
+    row = app.handle("agent.provider.auth.list", {"targetsVersion": 1})["records"][0]
+    assert row["targets"] == [
+        {"nativeAuthRef": "native:v1:pi:api-key:anthropic", "target": "anthropic", "kind": "api-key"},
+        {"nativeAuthRef": "native:v1:pi:api-key:openai", "target": "openai", "kind": "api-key"}]
+    assert "synthetic-" not in json.dumps(row)
+    _target(app, "pi", "auth.json").write_text('{"openai":{"type":"api_key","key":"!command"}}')
+    row = app.handle("agent.provider.auth.list", {"targetsVersion": 1})["records"][0]
+    assert row["state"] == "unavailable" and row["targets"] == []
+    assert row["errorCode"] == "MODEL_AUTH_UNAVAILABLE"
+
+
 def test_inventory_filters_foreign_agents_and_refuses_explicit_foreign_target(provider_app, monkeypatch):
     app = provider_app
     agent = app.agents.require(ACTOR)

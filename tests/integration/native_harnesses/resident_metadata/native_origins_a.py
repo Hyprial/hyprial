@@ -344,4 +344,5 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/application/model_binding/configure/coordinator.py": ("resident", ("new-module: model configuration coordination and request contract",)),
     "daemon/impl/application/model_binding/configure/service.py": ("resident", ("new-module: model configuration coordination and request contract",)),
     "daemon/impl/application/model_binding/configure/settings.py": ("resident", ("new-module: model configuration coordination and request contract",)),
+    'daemon/impl/application/model_binding/configure/create.py': ("resident", ("new-module: explicit native model binding",)),
 }

@@ -332,4 +332,5 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/harnesses/agent_sdk/authority_model.py": ("resident", ("new-module: stdlib-only launch policy digest the isolated worker exec-loads (cell model I6-5a)",)),
     "daemon/impl/harnesses/model_routes/connection.py": ("resident", ("new-module: local model binding runtime admission",)),
     "daemon/impl/harnesses/model_routes/errors.py": ("resident", ("new-module: local model binding runtime admission",)),
+    'daemon/impl/harnesses/model_routes/native.py': ("resident", ("new-module: explicit native model binding",)),
 }

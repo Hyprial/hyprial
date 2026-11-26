@@ -20,6 +20,7 @@ docs/design/cell-thread-conversation-model-2026-11-03.md（11-03 的原始设计
 | harness | 运行 AI agent 的宿主程序（Claude Code、Codex、Pi 等） | 不指本仓代码本身 | src/hyprial/daemon/impl/harnesses/ |
 | model connection | 模型连接：本机 Secret 内稳定引用、endpoint、协议、认证字段与配置修订；模型 ID 由调用方明确提供 | 不是模型目录或 Harness；不替代 grant | docs/design/model-connections-contract-stage-2026-11-24.md |
 | model binding | 模型绑定：现有本机 desired-state 中按 Agent incarnation/member 保存的认证引用、显式模型与配置修订 | 不是 Key 存储或共享 Cell 真相；启动行只保存快照引用 | contract/daemon-request/model-binding-storage.md |
+| native auth target | 原生登录目标：在指定 Agent incarnation 内按 harness、认证种类和上游标识引用现有登录槽位；nativeAuthRef 不含凭据 | 不等于凭据有效性、模型连通或启动成功；不隐式复制其他 Agent 登录 | contract/daemon-request/model-binding-storage.md |
 | connector | 把一个 harness 会话接到 daemon 的进程管理+注入层 | ~~proxy~~（语义偏同协议转发，已弃用） | design.md §2 命名词表 |
 | adapter | 外部平台（Lark 等）接入，映射平台身份到统一寻址/投递模型 | ~~gateway~~、~~room~~（已退役） | src/hyprial/daemon/impl/adapters/ |
 | user settings | 用户设置：当前账号的信息及登录、退出操作 | 不包含本地人员目录、平台身份映射管理或 Agent 凭据；设备和组织使用各自主导航入口 | gui/src/pages/SettingsPage.tsx、gui/src/features/account/impl/AccountLoginSection.tsx |

@@ -31,6 +31,7 @@ from hyprial.kernel import ipc_errors
 
 if TYPE_CHECKING:
     from hyprial.identity import AgentRuntimeContext
+    from ..model_routes.native import NativeModelBinding
 
 PI_CONTROLLED_LOADER = Path(__file__).parent / "resources" / "pi_controlled_loader.mjs"
 PI_LOADER_RECEIPT_SCHEMA = "hyprial-pi-loader-v1"
@@ -712,7 +713,7 @@ def pi_sdk_launch_from_runtime_context(
     session_name: str | None = None,
     initial_message: str | None = None,
     containerized: bool = False,
-    model_binding: PiModelBinding | None = None,
+    model_binding: PiModelBinding | NativeModelBinding | None = None,
 ) -> PiSdkLaunch:
     """Consume P22's context without deriving or rewriting any agent root."""
 
@@ -813,7 +814,7 @@ def _pi_sdk_launch(
     session_name: str | None,
     initial_message: str | None,
     containerized: bool,
-    model_binding: PiModelBinding | None = None,
+    model_binding: PiModelBinding | NativeModelBinding | None = None,
     agent_home: Path | None = None,
 ) -> PiSdkLaunch:
     if containerized:

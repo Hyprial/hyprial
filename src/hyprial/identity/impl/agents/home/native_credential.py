@@ -161,13 +161,19 @@ def install_native_credential_set(
 
 
 @serialized
-def read_native_credential_set(agent_home: Path, harness: str) -> list[tuple[str, bytes]]:
+def read_native_credential_set(agent_home: Path, harness: str, *,
+                               filenames: Sequence[str] | None = None,
+                               max_bytes: int | None = None) -> list[tuple[str, bytes]]:
     """Read only an explicitly authorized owner's private native files."""
 
     allowed = _allowed(harness)
     directory = _open_private_chain(Path(agent_home), harness, create=False)
     if directory is None:
         raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default source is absent")
+    if filenames is not None:
+        if not filenames or not set(filenames) <= allowed:
+            raise ValueError("native read filenames must be allowlisted")
+        allowed = frozenset(filenames)
     documents: list[tuple[str, bytes]] = []
     for name in sorted(allowed):
         metadata = _lstat_at(name, directory)
@@ -175,7 +181,7 @@ def read_native_credential_set(agent_home: Path, harness: str) -> list[tuple[str
             raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is absent")
         if _is_link_or_non_regular(metadata):
             raise NativeCredentialError(ipc_errors.PROVIDER_UNSAFE_PATH, "native default file is not private")
-        content = _read_at(name, directory)
+        content = _read_at(name, directory, max_bytes=max_bytes)
         if not content:
             raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is empty")
         documents.append((name, content))
@@ -560,7 +566,7 @@ def _lstat_at(name: str, directory: Path) -> os.stat_result | None:
     return _lstat_entry(directory / name)
 
 
-def _read_at(name: str, directory: Path) -> bytes:
+def _read_at(name: str, directory: Path, *, max_bytes: int | None = None) -> bytes:
     target = directory / name
     metadata = _lstat_at(name, directory)
     if metadata is None or _is_link_or_non_regular(metadata):
@@ -572,7 +578,19 @@ def _read_at(name: str, directory: Path) -> bytes:
             raise NativeCredentialError(
                 ipc_errors.PROVIDER_UNSAFE_PATH, f"{name} is not a regular file"
             )
-        return stream.read()
+        if max_bytes is None:
+            return stream.read()
+        opened = os.fstat(stream.fileno())
+        if (type(max_bytes) is not int or max_bytes < 1 or metadata.st_size > max_bytes
+                or (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise NativeCredentialError(ipc_errors.PROVIDER_UNSAFE_PATH, "native file exceeds the read boundary")
+        content = stream.read(max_bytes + 1)
+        after = target.lstat()
+        if (len(content) > max_bytes or _is_link_or_non_regular(after)
+                or (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns) !=
+                   (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise NativeCredentialError(ipc_errors.PROVIDER_UNSAFE_PATH, "native file changed during read")
+        return content
 
 
 def _create_private_at(name: str, content: bytes, directory: Path) -> None:
