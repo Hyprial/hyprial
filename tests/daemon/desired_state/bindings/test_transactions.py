@@ -125,6 +125,8 @@ def test_cleanup_prevents_finalize_and_rollback_is_attempt_fenced(tmp_path):
     api.mark_cleanup("a.fixture", "entity-1", "destroy-1")
     with pytest.raises(DesiredStateError, match="destroy-cleanup-pending"):
         api.finalize("a.fixture", "member-1", "op-1", first.request_digest, 0)
+    with pytest.raises(DesiredStateError, match="destroy-cleanup-pending"):
+        api.cancel("a.fixture", "member-1", "op-1", first.request_digest, 0)
     api.rollback_cleanup("a.fixture", "entity-1", "destroy-1")
     api.finalize("a.fixture", "member-1", "op-1", first.request_digest, 0)
     with pytest.raises(DesiredStateError, match="operation-already-completed"):

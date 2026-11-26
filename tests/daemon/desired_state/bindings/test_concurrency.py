@@ -188,3 +188,20 @@ def test_failed_agent_marker_does_not_promote_legacy_root(tmp_path):
         store.model_binding_store.mark_cleanup("a.fixture", "token", "destroy")
     assert store.load().schema_version == 3
     assert store.load().model_agent_lifecycle == ()
+
+
+def test_post_write_corruption_rolls_back_inside_transaction(tmp_path):
+    store = DesiredStateStore(tmp_path / "desired-state.json")
+    first = prepare(store)
+    api = store.model_binding_store
+    api.finalize("a.fixture", "member-1", "op-1", first.request_digest, 0)
+    pending = prepare(store, operation="op-2", revision=1)
+    before = store.load()
+    with store.state_db.transaction() as db:
+        db.execute(
+            "CREATE TRIGGER corrupt_result AFTER UPDATE OF phase ON model_binding_operations WHEN NEW.phase='finalized' BEGIN UPDATE model_binding_operations SET binding_ref='mb.corrupt' WHERE operation_id=NEW.operation_id; END"
+        )
+    with pytest.raises(DesiredStateError):
+        api.finalize("a.fixture", "member-1", "op-2", pending.request_digest, 1)
+    assert store.load() == before
+    assert DesiredStateStore(store.legacy_path).load() == before

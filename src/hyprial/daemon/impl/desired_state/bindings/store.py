@@ -32,6 +32,7 @@ class ModelBindingStore:
                 if version and version[0] == 4:
                     read(db)
                 result = action(db, *args, **kwargs)
+                read(db)
             owner._published_state = None
             owner.load()
             return result

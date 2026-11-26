@@ -107,6 +107,8 @@ def finish(
     old = current(db, agent_id, member_id)
     if (old.binding_revision if old else 0) != expected_revision:
         fail("revision-mismatch")
+    if old is not None and item.binding_ref != old.binding_ref:
+        fail("revision-mismatch")
     result = replace(
         item,
         phase="cancelled" if cancel else "finalized",

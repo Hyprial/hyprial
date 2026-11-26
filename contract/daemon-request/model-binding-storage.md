@@ -35,6 +35,8 @@ Successful launch rows may carry `modelBinding={bindingRef,bindingRevision}`. Th
 is a snapshot reference, not current configuration. It requires root schema 4.
 Old schema-3 binaries refuse the whole schema-4 store; enabling it is not a
 reversible downgrade. A residual legacy JSON import cannot overwrite schema 4.
+Adding the nullable launch column alone leaves a legacy root at schema 3; old
+readers ignore that column. It does not repeat historical ghost-row migration.
 
 ## Transaction boundaries
 
@@ -42,9 +44,13 @@ All conditions and mutations use one existing StateDatabase transaction. Prepare
 checks cleanup → same operation digest/receipt → other prepared → expected revision
 → new-ID capacity. A partial unique index enforces one prepared per binding.
 Finalize/cancel commit binding and terminal receipt together. An agent cleanup
-marker blocks every member's prepare/finalize. Marker takeover, rollback and purge
+marker blocks every member's prepare/finalize/cancel. Marker takeover, rollback and purge
 compare the exact incarnation and attempt; purge deletes the three tables' entries
 for that agent in one transaction. A different incarnation is untouched.
+Every write validates the resulting projection before commit; invalid output rolls
+back. Prepared references match an existing binding. Finalized receipts share its
+reference and cannot claim a later revision. A cancelled initial attempt at revision
+zero may retain a different reference from the binding created by a later attempt.
 
 The default capacity is 10,000 retained operations per binding. A supplied limit
 must be an integer from 10,000 to 2,147,483,647; it is trusted local settings input,

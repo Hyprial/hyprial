@@ -96,3 +96,78 @@ def test_non_scalar_discriminator_is_a_safe_configuration_error(tmp_path, field)
             "a.fixture", "member", "operation", 0, {**candidate(), field: []}
         )
     assert not store.state_db.exists()
+
+
+@pytest.mark.parametrize(
+    "damage", ["prepared-ref", "finalized-orphan", "future-receipt"]
+)
+def test_inconsistent_operation_authority_refused_before_mutation(tmp_path, damage):
+    store = DesiredStateStore(tmp_path / "desired-state.json")
+    first = prepare(store)
+    api = store.model_binding_store
+    api.finalize("a.fixture", "member-1", "op-1", first.request_digest, 0)
+    pending = prepare(store, operation="op-2", revision=1)
+    with store.state_db.transaction() as db:
+        if damage == "prepared-ref":
+            db.execute(
+                "UPDATE model_binding_operations SET binding_ref='mb.different' WHERE operation_id='op-2'"
+            )
+        elif damage == "finalized-orphan":
+            db.execute("DELETE FROM model_binding_operations WHERE operation_id='op-2'")
+            db.execute("DELETE FROM model_bindings")
+        else:
+            from hyprial.daemon.impl.desired_state.bindings.models import (
+                Configuration,
+                Operation,
+                request_digest,
+            )
+            from hyprial.daemon.impl.desired_state.bindings.schema import (
+                insert_operation,
+            )
+
+            config = Configuration.from_json(candidate())
+            insert_operation(
+                db,
+                Operation(
+                    "a.fixture",
+                    "member-1",
+                    "future",
+                    request_digest("a.fixture", "member-1", 2, config),
+                    2,
+                    first.binding_ref,
+                    config,
+                    "finalized",
+                    3,
+                ),
+            )
+        before = tuple(
+            db.execute(
+                "SELECT operation_id,phase FROM model_binding_operations ORDER BY operation_id"
+            )
+        )
+    with pytest.raises(DesiredStateError):
+        api.status("a.fixture", "member-1")
+    with pytest.raises(DesiredStateError):
+        api.finalize("a.fixture", "member-1", "op-2", pending.request_digest, 1)
+    with store.state_db.read() as db:
+        assert (
+            tuple(
+                db.execute(
+                    "SELECT operation_id,phase FROM model_binding_operations ORDER BY operation_id"
+                )
+            )
+            == before
+        )
+
+
+def test_cancelled_initial_attempt_can_precede_a_different_active_reference(tmp_path):
+    store = DesiredStateStore(tmp_path / "desired-state.json")
+    api = store.model_binding_store
+    first = prepare(store)
+    api.cancel("a.fixture", "member-1", "op-1", first.request_digest, 0)
+    second = prepare(store, operation="op-2")
+    api.finalize("a.fixture", "member-1", "op-2", second.request_digest, 0)
+    assert first.binding_ref != second.binding_ref
+    status = api.status("a.fixture", "member-1")
+    assert status.binding.binding_ref == second.binding_ref
+    assert status.operations[0].binding_ref == first.binding_ref

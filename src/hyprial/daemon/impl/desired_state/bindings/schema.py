@@ -4,7 +4,7 @@ import json
 
 from hyprial.kernel import DesiredStateError
 from .codec import ROOTS, parse, project
-from .models import Binding, Cleanup, Configuration, Operation, canonical
+from .models import Binding, Cleanup, Configuration, Operation, canonical, fail
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS model_bindings (
@@ -85,8 +85,8 @@ def read(db):
 
 
 def insert_binding(db, item):
-    db.execute(
-        "INSERT INTO model_bindings VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id,member_id) DO UPDATE SET binding_revision=excluded.binding_revision,configuration_json=excluded.configuration_json,operation_id=excluded.operation_id",
+    result = db.execute(
+        "INSERT INTO model_bindings VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id,member_id) DO UPDATE SET binding_revision=excluded.binding_revision,configuration_json=excluded.configuration_json,operation_id=excluded.operation_id WHERE model_bindings.binding_ref=excluded.binding_ref",
         (
             item.agent_id,
             item.member_id,
@@ -96,6 +96,8 @@ def insert_binding(db, item):
             item.operation_id,
         ),
     )
+    if result.rowcount != 1:
+        fail("revision-mismatch")
 
 
 def insert_operation(db, item):

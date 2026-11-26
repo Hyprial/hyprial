@@ -73,8 +73,23 @@ def parse(document):
             invalid()
     for item in operations:
         current = by_key.get((item.agent_id, item.member_id))
-        if item.phase == "prepared" and item.expected_revision != (
-            current.binding_revision if current else 0
+        revision = current.binding_revision if current else 0
+        if item.expected_revision > revision:
+            invalid()
+        if item.phase == "prepared" and (
+            item.expected_revision != revision
+            or current is not None
+            and item.binding_ref != current.binding_ref
+        ):
+            invalid()
+        if item.phase == "finalized" and (
+            current is None
+            or item.result_revision > revision
+            or item.binding_ref != current.binding_ref
+        ):
+            invalid()
+        if item.expected_revision > 0 and (
+            current is None or item.binding_ref != current.binding_ref
         ):
             invalid()
     return tuple(result)
