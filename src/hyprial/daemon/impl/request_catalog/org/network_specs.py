@@ -13,6 +13,17 @@ Decision record (org lifecycle batch 2, 2026-11-02)
   drops ``parkedCommits``.  The state host parks no commits, and an
   always-empty field would claim a property nothing measures; held-back
   updates are diagnosed through ``orgfs.status``.
+
+Decision record (service grant S1, 2026-11-26: the published encryption key)
+- A directory row may carry ``encryptionKeyId`` and ``encryptionPublicKey``, the
+  public half of the publishing device's X25519 key.  Both are optional and
+  never ``null``: the daemon answers either both or neither, and a ``null``
+  would be a broken row.
+- The schema does not tie the two to each other.  The result is checked
+  against a closed schema at request time, and the pair rule has one
+  enforcement point in the directory model; a half pair cannot reach this
+  schema.  Tying them here is not free: the contract diff has no rule for
+  ``dependentRequired`` and reports it as a breaking change.
 """
 
 from __future__ import annotations
@@ -168,6 +179,8 @@ _DEVICE_VIEW = {
         "firstPublishedAt": _STRING,
         # UUID addressing: present only when the publisher stamped it.
         "deviceUid": {"type": ["string", "null"]},
+        "encryptionKeyId": _ORG,
+        "encryptionPublicKey": _ORG,
     },
     "required": [
         "deviceId",

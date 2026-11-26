@@ -53371,6 +53371,14 @@
                                 "null"
                               ]
                             },
+                            "encryptionKeyId": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encryptionPublicKey": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
                             "firstPublishedAt": {
                               "type": "string"
                             },
@@ -126814,6 +126822,14 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "encryptionKeyId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "encryptionPublicKey": {
+                    "minLength": 1,
+                    "type": "string"
                   },
                   "firstPublishedAt": {
                     "type": "string"
