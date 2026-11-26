@@ -13,11 +13,22 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.directory import (
+    InvalidDeviceQuarantine,
+    OrgFsDirectoryStore,
+)
 from hyprial.identity import read_device_record
 from hyprial.kernel import DaemonRequestError, ipc_errors
 
 from .service import ServiceGrantService
+
+
+def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
+    quarantine = getattr(app, "_org_directory_quarantine", None)
+    if quarantine is None:
+        quarantine = InvalidDeviceQuarantine()
+        app._org_directory_quarantine = quarantine
+    return quarantine
 
 
 def _local_device_id(app: Any, home: Path) -> str:
@@ -63,7 +74,11 @@ def _build_service(app: Any) -> ServiceGrantService:
         if callable(log_fn)
         else None
     )
-    store = OrgFsDirectoryStore(fs, logger=logger)
+    store = OrgFsDirectoryStore(
+        fs,
+        invalid_devices=_invalid_device_diagnostics(app),
+        logger=logger,
+    )
     return ServiceGrantService(
         store=store,
         home=home,
