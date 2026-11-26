@@ -48,6 +48,7 @@ from tests.support.windows_suite import host, watchdog
 
 ROOT = Path(__file__).resolve().parents[4]
 PROBE_TIMEOUT_S = 120
+PROBE_ENV = "HYPRIAL_WINDOWS_SUITE_PROBE"
 HARNESS_ENV = (
     watchdog.LEDGER_ENV,
     watchdog.WATCHDOG_ENV,
@@ -88,12 +89,17 @@ def _stop_tree(process: subprocess.Popen[str]) -> None:
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
 
 
-def _probe(
-    tmp_path: Path, files: dict[str, str], *, workers: int, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
+def _write_probe_dir(files: dict[str, str]) -> Path:
     directory = Path(tempfile.mkdtemp(prefix="windows-suite-probe-", dir=ROOT / "tests"))
     for name, source in files.items():
         (directory / name).write_text(textwrap.dedent(source), encoding="utf-8")
+    return directory
+
+
+def _probe(
+    tmp_path: Path, files: dict[str, str], *, workers: int, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    directory = _write_probe_dir(files)
     environment = {key: value for key, value in os.environ.items() if key not in HARNESS_ENV}
     environment["PROBE_WORKER_EXIT_FILE"] = str(tmp_path / "worker-exit.json")
     environment.update(env or {})
@@ -523,3 +529,53 @@ def test_the_acl_probe_records_directory_creation_points(tmp_path: Path) -> None
     assert mkdir["mode"] == 0o700
     assert all(record["nodeid"] == "probe.py::test" for record in records)
     assert all({"mono", "pid"} <= record.keys() for record in records)
+
+
+def test_a_leftover_probe_directory_is_ignored_by_an_ordinary_collection(tmp_path: Path) -> None:
+    cases = (
+        {
+            "test_broken.py": "import module_that_does_not_exist_for_the_probe\n",
+            "test_gil.py": """
+            def test_holds_gil():
+                sum(range(10**12))
+            """,
+        },
+        {
+            "conftest.py": WORKER_EXIT_CONFTEST,
+            "test_broken.py": "import module_that_does_not_exist_for_the_probe\n",
+            "test_gil.py": """
+            def test_holds_gil():
+                sum(range(10**12))
+            """,
+        },
+    )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in HARNESS_ENV and key != PROBE_ENV
+    }
+    for index, files in enumerate(cases):
+        directory = _write_probe_dir(files)
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "--collect-only",
+                    "-p",
+                    "no:cacheprovider",
+                    f"--basetemp={tmp_path / f'basetemp-{index}'}",
+                    str(directory),
+                ],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_S,
+            )
+            assert result.returncode == 5, result.stdout + result.stderr
+            assert "collected 0 items" in result.stdout, result.stdout + result.stderr
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
