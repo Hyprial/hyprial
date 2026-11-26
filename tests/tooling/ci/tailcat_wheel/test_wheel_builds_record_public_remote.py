@@ -3,13 +3,20 @@
 ``HYPRIAL_BUILD_SOURCE_REMOTE`` makes the build hook write the public
 repository address into ``hyprial/_gui/release.json`` instead of the runner
 checkout's origin.  The declaration table is fail-closed: a workflow that
-builds a wheel must be declared here.  It is empty -- no workflow in the tree
-builds a wheel -- so any build step that appears in one reddens the first test
-below.  The per-kind obligations that used to be checked against the declared
-workflows (a publishing build sets the variable, a snapshot build never does,
-a candidate-only build publishes nothing) went with those workflow files; a
-workflow that starts building wheels needs those checks written against it,
-not only a table entry.
+builds a wheel must be declared here with what happens to its artifact, and a
+build step in an undeclared workflow reddens the first test below.
+
+``candidate`` is the only kind declared: the wheel is uploaded only as an
+evidence artifact of the same run, the workflow contains no publish or attach
+command and never names the variable, so ``release.json`` keeps the runner
+checkout's origin.  ``windows-smoke.yml`` is the one entry: its
+``build-wheel`` job builds the wheel that the x64 and ARM smoke jobs install.
+
+The other two kinds have no workflow in this tree and no test of their own
+here: ``publish`` (wheels go to the registry, R2 or a release; every build
+step sets the variable) and ``snapshot`` (the publish snapshot's stamp decides
+the remote; setting the variable is a build error).  A workflow of either kind
+needs its obligation written as a test here, not only a table entry.
 
 The macOS package script ``package-macos-shell.sh`` still counts as a build
 step, so a workflow that called it would have to be declared here. Owner
@@ -28,7 +35,7 @@ import runpy
 import pytest
 import yaml
 
-from tests.support.ci.ci_workflow_policy import ROOT, workflow_files
+from tests.support.ci.ci_workflow_policy import ROOT, WORKFLOW_DIR, workflow_files
 
 ENV = "HYPRIAL_BUILD_SOURCE_REMOTE"
 PUBLIC_REMOTE = runpy.run_path(
@@ -40,7 +47,7 @@ BUILD = re.compile(
 PUBLISHING = re.compile(
     r"publish_wheels\.py|attach_wheel_assets\.py|uv publish|api/packages|r2_upload|gh release"
 )
-DECLARED: dict[str, str] = {}
+DECLARED: dict[str, str] = {"windows-smoke.yml": "candidate"}
 MANUAL_PACKAGING = ROOT / "packaging" / "clients" / "README.md"
 
 
@@ -72,6 +79,15 @@ def _sets_public_remote(step: dict) -> bool:
 def test_every_wheel_building_workflow_is_declared() -> None:
     building = {path.name for path in workflow_files() if _build_steps(path)}
     assert building == set(DECLARED)
+
+
+def test_candidate_only_workflows_contain_no_publish_or_attach_command() -> None:
+    for name, kind in DECLARED.items():
+        if kind != "candidate":
+            continue
+        assert ENV not in (WORKFLOW_DIR / name).read_text(encoding="utf-8"), name
+        for job, step in _steps(WORKFLOW_DIR / name):
+            assert not PUBLISHING.search(str(step.get("run") or "")), f"{name}::{job}"
 
 
 def test_the_manual_packaging_commands_set_exactly_the_public_remote_constant() -> None:
