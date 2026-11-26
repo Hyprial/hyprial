@@ -25,6 +25,9 @@
 # - Package F6 (R3-8): a refused space records the store's explanation (with
 #   the migration guide) as the error ``message``, so every later lookup
 #   says why and where to look, not only the code.
+# - Package F8b: ``_join_locks`` holds one ``_JoinLock`` (lock and user
+#   count) per space with a join running or waiting; ``sync.py`` drops the
+#   entry with its last user.
 """``OrgFsRuntime``: the OrgFS runtime over the state store and protocol 3 sync."""
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ from hyprial.daemon.impl.orgfs.composition.lifecycle import RuntimeLifecycle
 from hyprial.daemon.impl.orgfs.composition.space_purge import RuntimeSpacePurge
 from hyprial.daemon.impl.orgfs.composition.state.content import StateContent
 from hyprial.daemon.impl.orgfs.composition.state.stores import StateStoreRegistry, classify_spaces
-from hyprial.daemon.impl.orgfs.composition.state.sync import StateLifecycle
+from hyprial.daemon.impl.orgfs.composition.state.sync import StateLifecycle, _JoinLock
 from hyprial.daemon.impl.orgfs.composition.vocabulary import (
     OrgFsActorHostCustody,
     _DirectoryEffectBatch,
@@ -106,7 +109,7 @@ class OrgFsRuntime(
         self._device_owner_hint = device_owner_hint
         self._directory_index_keys: dict[str, tuple[bytes, bytes]] = {}
         self._catalog_retries: dict[str, tuple[int, float]] = {}
-        self._join_locks: dict[str, Lock] = {}
+        self._join_locks: dict[str, _JoinLock] = {}
         self._join_locks_guard = Lock()
         self._excluded_orgs = excluded_orgs or (lambda: frozenset())
         self._space_binding_state = space_binding_state or (lambda _space_id: None)

@@ -4,6 +4,12 @@
 #   mixin keeps the per-space lifecycle actor (open, join, checkout commands)
 #   that the state runtime drives; ``composition/state/sync.py`` supplies the
 #   per-space ``SpaceSync`` creation and the join.
+# - Package F8b (review of F8, item 3): a join of a space whose join is
+#   already queued or running does not take a worker of its own; like a
+#   second open-mesh command it waits for that command and gets its outcome
+#   (``running`` / ``aliases``).  Repeated joins of one space (a caller's
+#   retries after a lifecycle wait timeout, repeated clicks) therefore hold
+#   at most one of the four workers, however long that join takes.
 from __future__ import annotations
 
 
@@ -32,6 +38,14 @@ from hyprial.daemon.impl.orgfs.api  import OrgFsError, SpaceInfo
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace, _DirectoryCallOperation, _JoinSpace, _LifecycleAuthority, _LifecycleCommand, _LifecycleFailure, _LifecycleOutcome, _LifecycleWaiter, _MeshCreation, _OpenSpaceMesh, _SpaceResourceHandle
 
 ORGFS_LIFECYCLE_WAIT_SECONDS = 120.0
+
+
+def _coalescing_key(operation: object) -> tuple[str, str] | None:
+    if isinstance(operation, _OpenSpaceMesh):
+        return ("open-mesh", operation.space_id)
+    if isinstance(operation, _JoinSpace):
+        return ("join", operation.space_id)
+    return None
 
 
 class RuntimeLifecycle:
@@ -155,9 +169,10 @@ class RuntimeLifecycle:
                     authority.commands.pop(command.operation_id, None)
                     authority.submitted.discard(command.operation_id)
                     waiter = authority.waiters.pop(command.operation_id, None)
-                    aliases = tuple(authority.mesh_aliases.pop(command.operation_id, ()))
-                    if isinstance(current.operation, _OpenSpaceMesh):
-                        authority.mesh_opening.pop(current.operation.space_id, None)
+                    aliases = tuple(authority.aliases.pop(command.operation_id, ()))
+                    key = _coalescing_key(current.operation)
+                    if key is not None and authority.running.get(key) == command.operation_id:
+                        authority.running.pop(key, None)
             if waiter is not None:
                 outcome = command.result
                 if isinstance(outcome, _LifecycleOutcome):
@@ -189,15 +204,16 @@ class RuntimeLifecycle:
             return
         if not isinstance(command, _LifecycleCommand):
             raise TypeError("orgfs lifecycle actor received an invalid command")
-        if isinstance(command.operation, _OpenSpaceMesh):
+        key = _coalescing_key(command.operation)
+        if key is not None:
             with self._lifecycle_lock:
-                opening = authority.mesh_opening.get(command.operation.space_id)
-                if opening is not None and opening != command.operation_id:
-                    aliases = authority.mesh_aliases.setdefault(opening, [])
+                running = authority.running.get(key)
+                if running is not None and running != command.operation_id:
+                    aliases = authority.aliases.setdefault(running, [])
                     if command.operation_id not in aliases:
                         aliases.append(command.operation_id)
                     return
-                authority.mesh_opening[command.operation.space_id] = command.operation_id
+                authority.running[key] = command.operation_id
         admission = authority.effects.submit(
             EffectRequest(command.operation_id, command.generation, command)
         )

@@ -43,9 +43,9 @@ def slow_join_round(peer: Peer, delay: float) -> None:
     facade = peer.fs
     original = facade.complete_join
 
-    def complete_join(space_id: str) -> object:
+    def complete_join(space_id: str, **kwargs: Any) -> object:
         time.sleep(delay)
-        return original(space_id)
+        return original(space_id, **kwargs)
 
     facade.complete_join = complete_join
 

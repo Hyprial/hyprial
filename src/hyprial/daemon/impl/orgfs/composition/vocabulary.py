@@ -7,6 +7,9 @@
 #   directory anti-entropy at the registered interval (OrgFS owns no polling
 #   loop); each node spreads its deadline by up to ±20% so members that
 #   started together do not pull in lockstep.
+# - Package F8b: the lifecycle authority's ``running`` maps an operation kind
+#   and space (open-mesh or join) to the command executing it, and
+#   ``aliases`` the commands that wait for that command's outcome.
 """Shared vocabulary of the OrgFS runtime composition."""
 
 from __future__ import annotations
@@ -140,8 +143,8 @@ class _LifecycleAuthority:
     commands: dict[str, _LifecycleCommand] = field(default_factory=dict)
     submitted: set[str] = field(default_factory=set)
     waiters: dict[str, _LifecycleWaiter] = field(default_factory=dict)
-    mesh_opening: dict[str, str] = field(default_factory=dict)
-    mesh_aliases: dict[str, list[str]] = field(default_factory=dict)
+    running: dict[tuple[str, str], str] = field(default_factory=dict)
+    aliases: dict[str, list[str]] = field(default_factory=dict)
     deferred: list[_LifecycleCommand] = field(default_factory=list)
 
 ORGFS_CONTENT_WAIT_S: Final[float] = 10.0

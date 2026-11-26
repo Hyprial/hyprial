@@ -58,9 +58,14 @@
 #   listed or still joining: only the runtime knows whether the join's tail
 #   (marker removal, resident sync) finished, and it serializes joins of one
 #   space.  The early returns and the "join in progress" refusal remain for
-#   a facade without a runtime.  ``abandon_join(completed=True)`` also drops
-#   a space whose ``complete_join`` ran, so a join whose tail failed can
-#   leave no space behind.
+#   a facade without a runtime.
+# - Package F8b (review of F8, item 1): a listed space may hold local writes,
+#   so it is never abandoned.  ``complete_join`` takes ``confirm``, which the
+#   runtime uses to remove ``join.pending`` after the owner and member checks
+#   and before the space is listed: a failure there leaves a hidden space no
+#   caller could write to, and a crash after the listing finds no marker.
+#   ``abandon_join`` therefore only drops a space that is still joining (the
+#   F8 ``completed`` flag is gone).
 """Spaces, members and status of the state host."""
 
 from __future__ import annotations
@@ -284,8 +289,14 @@ class StateSpaces:
                 str(raw.get("createdAt", "")),
             )
 
-    def complete_join(self, space_id: str) -> SpaceInfo:
-        """Unhide a joined space once its meta names an owner and this node's member."""
+    def complete_join(
+        self, space_id: str, *, confirm: Callable[[], None] | None = None
+    ) -> SpaceInfo:
+        """Unhide a joined space once its meta names an owner and this node's member.
+
+        ``confirm`` runs after the checks and before the space is listed; if it
+        raises, the space stays hidden (package F8b).
+        """
 
         with self._space_lock(space_id):
             space = self._space(space_id)
@@ -307,22 +318,22 @@ class StateSpaces:
                     and registry.loaded(node.doc_id) is None
                 ):
                     registry.mark(node.doc_id, None)
+            if confirm is not None:
+                confirm()
             with self._lock:
                 self._joining.discard(space_id)
             return space.info
 
-    def abandon_join(self, space_id: str, timeout: float = 5.0, *, completed: bool = False) -> bool:
+    def abandon_join(self, space_id: str, timeout: float = 5.0) -> bool:
         """Drop a temporary space and its directory (design §9 R5).
 
         It runs inside the caller's own ``join``, whose effect reservation is
         still open, so it stops the space's command loop itself instead of
         ``detach_space`` (which waits for every effect of the facade).
-        ``completed`` also drops a space whose ``complete_join`` already ran,
-        for a join whose tail failed (package F8).
         """
 
         with self._lock:
-            if space_id not in self._joining and not (completed and space_id in self._spaces):
+            if space_id not in self._joining:
                 return False
             self._syncs.pop(space_id, None)
             owner = self._space_state_owners.get(space_id)

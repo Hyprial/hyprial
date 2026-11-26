@@ -198,8 +198,8 @@ def test_two_joins_during_the_tail_both_report_the_joined_space(peers: Peers) ->
     facade = member.fs
     original = facade.complete_join
 
-    def complete_join(space: str) -> object:
-        info = original(space)
+    def complete_join(space: str, **kwargs: Any) -> object:
+        info = original(space, **kwargs)
         time.sleep(1.0)
         return info
 

@@ -5,6 +5,11 @@
 #   journal supplier resolver bound to one space id (``_supplier_owner_for_space``,
 #   which matched a space id against the org directory name rule) is deleted;
 #   the node gate is ``composition/state/sync.py``.
+# - Package F8b (review of F8, item 2): an announce is soft state that the
+#   next liveliness edge or space change sends again, so ``_announce_all``
+#   logs a failed put (``orgfs.announce.failed``) instead of raising; a join,
+#   a resident sync creation or a purge that already happened never reports
+#   failure because of it.
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -772,7 +777,12 @@ class RuntimeDirectory:
         if mesh is None:
             return
         self._announce_event("announce.broadcast", node=self.node_id)
-        mesh.announce()
+        try:
+            mesh.announce()
+        except Exception as exc:
+            if self.logger is not None:
+                self.logger("warn", "orgfs.announce.failed", node=self.node_id,
+                            detail=type(exc).__name__)
 
     def _on_announce(self, sample: TransportSample) -> None:
         self._process_announce(sample)
