@@ -1,0 +1,216 @@
+# Decisions (Windows follow-up verification for KP-134, KP-135, KP-136):
+# - Verification only. It measures the pull request on a GitHub-hosted Windows
+#   runner and is not part of the merge gate; no branch rule requires it.
+# - A hosted runner is Windows Server under an elevated administrator
+#   account, and the job runs in that account's interactive session. Its
+#   process chain is under services.exe and its standard handles are pipes
+#   with no console window (run 45601792986 printed the chain and the
+#   handles; run 45648626321 printed the session). A pass here is recorded
+#   as "GitHub-hosted Windows runner", never as a Windows 11 real-machine
+#   pass.
+#   KP-136 depends on real terminal hosts, so its job here only prints the
+#   handle facts. The close results and the private-directory check were
+#   measured on separate temporary branches and are recorded in the KP-136
+#   and KP-123 entries of docs/reference/known-problems.md, not in this
+#   workflow.
+# - KP-134 runs on three Node majors because the real-machine symptom (the
+#   worker starts, then exits at the random call) may depend on the version.
+# - KP-135 runs the exact reproduction on the base commit and on the head. The
+#   base leg is expected to fail with WinError 193, which the step writes to
+#   the job summary; a base failure without that line is a runner problem, not
+#   a reproduction. Once the change is on dev the base leg passes and no
+#   longer shows anything.
+# - GitHub-hosted runners only, read-only token, no secret, no
+#   pull_request_target. Actions are pinned to commit SHAs, the ones the
+#   proposed merge gate workflow lists for actions/checkout v7.0.1,
+#   astral-sh/setup-uv v10.4.0, actions/setup-node v7.1.0 and
+#   actions/upload-artifact v7.0.2; the tag mapping was not re-checked here.
+# - Limited by path to the files these three problems touch, so it does not run
+#   on unrelated pull requests.
+name: windows-followup
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - ".github/workflows/windows-followup.yml"
+      - "scripts/verify/windows_followup_probe.py"
+      - "scripts/verify/stdin_stop_windows_probe.py"
+      - "scripts/build/build_native_engine.sh"
+      - "src/hyprial/gui_build_hook.py"
+      - "src/hyprial/shell/impl/packaging/**"
+      - "src/hyprial/daemon/impl/harnesses/pi/**"
+      - "src/hyprial/kernel/impl/manysys/**"
+      - "src/hyprial/identity/impl/agents/home/environment.py"
+      - "tests/daemon/harnesses/pi/**"
+      - "tests/shell/packaging/**"
+      - "tests/kernel/manysys/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-followup-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.7"
+  PYTHON_VERSION: "3.12"
+  RUST_VERSION: "1.93.1"
+  PI_PACKAGE: "@earendil-works/pi-coding-agent@0.85.1"
+  NO_COLOR: "1"
+  PYTHONUTF8: "1"
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  kp135-native-build:
+    name: kp135 native build (${{ matrix.leg }})
+    runs-on: windows-latest
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.leg == 'base' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [base, head]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.leg == 'base' && github.event.pull_request.base.sha || github.event.pull_request.head.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install $env:RUST_VERSION --profile minimal
+      - name: Source install with the native engine (the KP-135 reproduction)
+        env:
+          HYPRIAL_BUILD_NATIVE: "1"
+        run: |
+          uv sync --locked --python $env:PYTHON_VERSION --extra test --reinstall-package hyprial 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\sync.log"
+          $code = $LASTEXITCODE
+          "sync exit code: $code" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          if (Select-String -Path "$env:RUNNER_TEMP\sync.log" -Pattern 'WinError 193' -Quiet) {
+            "sync output contains WinError 193" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+          exit $code
+      - name: Import the staged engine
+        if: always()
+        run: |
+          Get-ChildItem src\hyprial\_core -ErrorAction SilentlyContinue | Select-Object Name, Length
+          uv run --locked --no-sync python -c "from hyprial._core import actors; print(actors.__file__); print('ENGINE_ABI_VERSION', actors.ENGINE_ABI_VERSION)"
+
+  kp134-pi:
+    name: kp134 pi package root and worker environment (node ${{ matrix.node }})
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22", "24"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install the locked environment without the native engine
+        run: uv sync --locked --python $env:PYTHON_VERSION --extra test
+      - name: Install Pi the way a user does
+        run: |
+          npm install -g --no-audit --no-fund $env:PI_PACKAGE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $prefix = npm prefix -g
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "npm prefix -g: $prefix"
+          Get-Command pi -All | Format-List Name, Source, CommandType
+      - name: Probe the package root and the worker environment
+        if: always()
+        run: |
+          uv run --locked --no-sync python scripts/verify/windows_followup_probe.py | Tee-Object -FilePath "$env:RUNNER_TEMP\kp134.json"
+          $code = $LASTEXITCODE
+          '```json' | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "$env:RUNNER_TEMP\kp134.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          '```' | Add-Content $env:GITHUB_STEP_SUMMARY
+          exit $code
+      - name: Upload the probe result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: kp134-probe-node${{ matrix.node }}
+          path: ${{ runner.temp }}/kp134.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  changed-tests:
+    name: changed test directories on Windows (advisory)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install $env:RUST_VERSION --profile minimal
+      - name: Source install with the native engine
+        env:
+          HYPRIAL_BUILD_NATIVE: "1"
+        run: uv sync --locked --python $env:PYTHON_VERSION --extra test --reinstall-package hyprial
+      - name: Tests added by this pull request
+        if: always()
+        run: >
+          uv run --locked --no-sync pytest -q -p no:cacheprovider
+          --basetemp="$env:USERPROFILE\pytest-new"
+          --junitxml="$env:RUNNER_TEMP\pytest-results\new.xml"
+          tests/daemon/harnesses/pi/configuration/launch_trust/test_pi_sdk_package_root.py
+          tests/kernel/manysys/test_stdin_stop_windows_branches.py
+          tests/shell/packaging/native_engine/test_editable_build.py
+      - name: Whole directories of the changed files
+        if: always()
+        env:
+          HYPRIAL_CI_PROFILE: "1"
+        run: >
+          uv run --locked --no-sync pytest -q -p no:cacheprovider
+          -n 4 --dist=loadfile --max-worker-restart=0
+          --continue-on-collection-errors
+          --basetemp="$env:USERPROFILE\pytest-dirs"
+          --junitxml="$env:RUNNER_TEMP\pytest-results\dirs.xml"
+          tests/daemon/harnesses/pi tests/shell/packaging tests/kernel/manysys
+      - name: Upload the JUnit results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-pytest
+          path: ${{ runner.temp }}/pytest-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  kp136-stdin-stop:
+    name: kp136 stdin-stop facts (advisory, partial)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install the locked environment without the native engine
+        run: uv sync --locked --python $env:PYTHON_VERSION --extra test
+      - name: Handle facts as the runner sees them
+        if: always()
+        run: uv run --locked --no-sync python scripts/verify/stdin_stop_windows_probe.py facts

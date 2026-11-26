@@ -57,9 +57,10 @@
 #   opt-out exists until build images carry Rust (待 HQ 追认); a wheel built
 #   with it must not be published.
 # - Editable builds stay toolchain-free unless `HYPRIAL_BUILD_NATIVE=1` is
-#   explicit.  The opt-in hook invokes scripts/build/build_native_engine.sh
-#   with the current build interpreter, which stages
-#   src/hyprial/_core/actors.abi3.so and writes actors.stamp.json with the
+#   explicit.  The opt-in hook calls build_editable in native_editable.py
+#   in-process (KP-135: a hook that executed the .sh failed with WinError 193
+#   on Windows), with the current build interpreter; it stages
+#   src/hyprial/_core/actors<suffix> and writes actors.stamp.json with the
 #   digest of the cargo inputs under crates/: Cargo.toml, Cargo.lock and
 #   *.rs at any depth, never a top-level crates/target* directory.  Python
 #   helpers, their __pycache__ and notes under crates/ are not inputs, and a
@@ -86,6 +87,17 @@
 #   library_from_messages (the `library` command of main), so
 #   CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR and build.target-dir in
 #   .cargo/config.toml all resolve inside cargo.
+# - The editable module's file name is a fact of the interpreter running this
+#   file, not a platform branch: `actors` plus the stable-ABI suffix of
+#   importlib.machinery.EXTENSION_SUFFIXES (`.abi3.so` on Linux and macOS),
+#   else the plain `.pyd` (Windows, where CPython lists no abi3 suffix).  A
+#   list with neither (a Windows debug `_d.pyd` or a free-threaded build) has
+#   no editable name and build_editable fails; whether an abi3 module loads
+#   there is unproven.  verify_editable resolves the name at call time and
+#   treats "no name" as "nothing staged"; EDITABLE_MODULE is only a message
+#   hint and never fails at import, so wheel and sdist builds are unaffected.
+# - cargo's JSON messages are UTF-8 whatever the locale (cp936/cp1252 on
+#   Windows); both cargo runs decode them as UTF-8 with errors="replace".
 """Native actor engine (``hyprial._core.actors``) stage of the wheel build.
 
 Import-pure on purpose (no ``hyprial`` imports): the Hatch build hook loads
@@ -105,6 +117,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
+from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 
 SKIP_ENV = "HYPRIAL_BUILD_SKIP_NATIVE"
@@ -132,7 +145,7 @@ CARGO_FEATURES = "extension-module"
 LIBRARY_NAME = "actors"
 MODULE_NAME = "hyprial._core.actors"
 WHEEL_MODULE_DIR = "hyprial/_core"
-EDITABLE_MODULE = "src/hyprial/_core/actors.abi3.so"
+EDITABLE_MODULE_DIR = "src/hyprial/_core"
 STAMP_NAME = "actors.stamp.json"
 ENGINE_ABI_VERSION = 1
 PYTHON_TAG = "cp312"
@@ -184,6 +197,33 @@ def wheel_module_name(target: str) -> str:
     """The extension filename inside the wheel for a ``goos/goarch`` target."""
 
     return f"{LIBRARY_NAME}.pyd" if target.startswith("windows/") else f"{LIBRARY_NAME}.abi3.so"
+
+
+def editable_module_suffix() -> str | None:
+    """This interpreter's stable-ABI extension suffix, else ``.pyd``; ``None`` for neither."""
+
+    stable = [suffix for suffix in EXTENSION_SUFFIXES if suffix.startswith(f".{ABI_TAG}.")]
+    if stable:
+        return stable[0]
+    return ".pyd" if ".pyd" in EXTENSION_SUFFIXES else None
+
+
+def editable_module_name() -> str:
+    """``actors`` plus :func:`editable_module_suffix`; NativeEngineError when there is none."""
+
+    suffix = editable_module_suffix()
+    if suffix is None:
+        raise NativeEngineError(
+            f"this interpreter lists no .{ABI_TAG}.* or plain .pyd extension suffix "
+            f"({list(EXTENSION_SUFFIXES)}): a debug or free-threaded interpreter cannot take "
+            f"the {ABI_TAG} editable module; use a GIL-enabled release CPython >= "
+            f"{ABI3_FLOOR[0]}.{ABI3_FLOOR[1]}"
+        )
+    return LIBRARY_NAME + suffix
+
+
+EDITABLE_MODULE = f"{EDITABLE_MODULE_DIR}/{LIBRARY_NAME}{editable_module_suffix() or '.<suffix>'}"
+"""The staged editable module, relative to the source root (a hint for messages)."""
 
 
 def wheel_module_path(target: str) -> str:
@@ -427,6 +467,8 @@ def run_cargo(
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=CARGO_TIMEOUT_SECONDS,
             stdin=subprocess.DEVNULL,
@@ -894,7 +936,10 @@ def verify_editable(root: Path, *, python: str | None = None) -> str | None:
     does not report ENGINE_ABI_VERSION 1.  Returns a one-line status.
     """
 
-    module = Path(root) / EDITABLE_MODULE
+    suffix = editable_module_suffix()
+    if suffix is None:
+        return None
+    module = Path(root) / EDITABLE_MODULE_DIR / f"{LIBRARY_NAME}{suffix}"
     if not module.is_file():
         return None
     rebuild = (

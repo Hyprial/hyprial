@@ -426,10 +426,61 @@ def _runtime_root(value: object, label: str) -> Path:
     return path.resolve(strict=True)
 
 
+_PI_SDK_PACKAGE = "@earendil-works/pi-coding-agent"
+
+
+def _pi_sdk_manifest_root(directory: Path) -> Path | None:
+    manifest = directory / "package.json"
+    if not manifest.is_file():
+        return None
+    try:
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(body, dict) and body.get("name") == _PI_SDK_PACKAGE:
+        return directory
+    return None
+
+
+_PI_SHIM_READ_LIMIT = 64 * 1024
+_PI_SHIM_TARGET = re.compile(
+    r"node_modules[\\/]"
+    + r"[\\/]".join(re.escape(part) for part in _PI_SDK_PACKAGE.split("/"))
+    + r"[\\/]"
+)
+
+
+def _shim_names_pi_sdk(shim: Path) -> bool:
+    try:
+        with shim.open("rb") as handle:
+            head = handle.read(_PI_SHIM_READ_LIMIT)
+    except OSError:
+        return False
+    return _PI_SHIM_TARGET.search(head.decode("utf-8", errors="replace")) is not None
+
+
 def find_pi_package_root(
     command: tuple[str, ...], environment: Mapping[str, str]
 ) -> Path:
-    """Resolve the installed SDK beside the exact Pi command being replaced."""
+    """Resolve the installed SDK beside the exact Pi command being replaced.
+
+    Two npm layouts place the SDK beside the command.  When the command
+    resolves into the package (the POSIX global bin is a symlink to the
+    package's CLI), the package root is an ancestor of the resolved file.
+    When npm writes a launcher shim instead (the Windows global layout puts
+    ``pi.cmd``/``pi.ps1``/``pi`` in the prefix directory), the package is in
+    ``node_modules`` next to that shim.  Only these two places are checked,
+    and both require the SDK package name.  The ancestor walk ties the SDK
+    to the command structurally (the command file lives inside the package).
+    The sibling branch is taken only when the command file's first 64 KiB,
+    read as UTF-8, name ``node_modules/@earendil-works/pi-coding-agent/``
+    (either slash), as every npm cmd/ps1/sh shim for the package does; an
+    unrelated executable or a shim for another package beside an installed
+    SDK is rejected.  This checks what the shim text names, not what it
+    executes.  No wider search and no npm configuration lookup is performed.  The ``<prefix>/bin`` to ``<prefix>/lib/node_modules``
+    hop is deliberately not followed: npm always links that layout, which
+    the ancestor walk already covers.
+    """
 
     if not command:
         raise PiStartPreconditionError("Pi command must not be empty")
@@ -443,18 +494,17 @@ def find_pi_package_root(
         raise PiStartPreconditionError(f"Pi command is unavailable: {executable!r}")
     resolved = Path(candidate).resolve(strict=True)
     for parent in (resolved, *resolved.parents):
-        manifest = parent / "package.json"
-        if not manifest.is_file():
-            continue
-        try:
-            body = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if body.get("name") == "@earendil-works/pi-coding-agent":
-            return parent
+        root = _pi_sdk_manifest_root(parent)
+        if root is not None:
+            return root
+    shim_sibling = resolved.parent / "node_modules" / _PI_SDK_PACKAGE
+    if shim_sibling.is_dir() and _shim_names_pi_sdk(resolved):
+        root = _pi_sdk_manifest_root(shim_sibling.resolve(strict=True))
+        if root is not None:
+            return root
     raise PiStartPreconditionError(
         f"Pi SDK package root not found beside {resolved}; a pi installation "
-        "with the @earendil-works/pi-coding-agent SDK is required for P2 launches"
+        f"with the {_PI_SDK_PACKAGE} SDK is required for P2 launches"
     )
 
 

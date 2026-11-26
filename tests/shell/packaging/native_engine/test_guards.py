@@ -310,6 +310,7 @@ _SDIST_TREE = (
     "src/hyprial/gui_build_hook.py",
     "src/hyprial/shell/impl/packaging/tailcat_wheel.py",
     "src/hyprial/shell/impl/packaging/native_engine.py",
+    "src/hyprial/shell/impl/packaging/native_editable.py",
     "src/hyprial/shell/impl/gui/install/resources.py",
     "crates/Cargo.toml",
     "crates/Cargo.lock",
