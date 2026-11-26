@@ -1,10 +1,9 @@
 """Service grant S1: the production wiring of the published encryption key.
 
 ``_build_service`` is the one place every publish path constructs the network
-service: the CLI ``org.*`` handlers, ``publish_self_for_app`` at startup and
-on every refresh of the org directory, and the per-org actor.  The reader is
-injected there, so a service built from the application publishes the pair
-without any caller having to remember it.
+service: the CLI ``org.*`` handlers, ``publish_self_for_app`` and the per-org
+actor.  The reader is injected there, so a service built from the application
+publishes the pair without any caller having to remember it.
 
 These cases run the real ``org create`` handler over a real OrgFS runtime, the
 same way ``test_org_network_ipc`` does, and add only what a key needs: a
@@ -21,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.org.network.device_key import ensure_encryption_key
 from hyprial.daemon.impl.org.network.ipc import _build_service, ipc_org_create
 from hyprial.identity import (
     DeviceRecord,
@@ -174,3 +174,39 @@ def test_after_a_logout_the_service_no_longer_offers_a_key(tmp_path: Path) -> No
         app._runtime.close()
 
     assert len(_key_records(key_state)) == 1
+
+
+@pytest.mark.parametrize("publish_first", [True, False], ids=["publish-first", "serving-first"])
+def test_the_two_entrances_to_the_key_leave_one_key_and_one_row(
+    tmp_path: Path, publish_first: bool
+) -> None:
+    """Serving start and the publish itself each ensure the key; neither makes a second.
+
+    Which one runs first depends on when the forwarding maintenance tick
+    fires, so both orders are tried against the real key store.
+    """
+
+    app, key_state = _app(tmp_path, user_id=USER_ID)
+    try:
+        entrances = (
+            (ipc_org_create, ensure_encryption_key) if publish_first
+            else (ensure_encryption_key, ipc_org_create)
+        )
+        for entrance in entrances:
+            if entrance is ensure_encryption_key:
+                entrance(tmp_path, key_state)
+            else:
+                entrance(app, {"org": ORG})
+        ensure_encryption_key(tmp_path, key_state)
+        assert _build_service(app).publish_self() == {
+            "published": [],
+            "skipped": [],
+            "errors": [],
+        }
+        row = _device_row(app)
+    finally:
+        app._runtime.close()
+
+    records = _key_records(key_state)
+    assert list(records) == [row["encryptionKeyId"]]
+    assert row["encryptionPublicKey"] == records[row["encryptionKeyId"]]
