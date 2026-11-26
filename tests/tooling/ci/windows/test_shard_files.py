@@ -414,7 +414,7 @@ CLASS_WITH_BASE_CASES = {
         True,
     ),
     "support-names-testcase-then-subclass": (
-        "class Support(unittest.TestCase):\n    pass\n\n\nclass Case(Support):\n    pass\n",
+        "import unittest\n\n\nclass Support(unittest.TestCase):\n    pass\n\n\nclass Case(Support):\n    pass\n",
         True,
     ),
     "helper-without-base-and-plain-function": (
