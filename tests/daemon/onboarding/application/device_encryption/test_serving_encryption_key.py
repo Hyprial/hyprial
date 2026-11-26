@@ -15,8 +15,12 @@ under ``tmp_path``.  Nothing outside it is touched.
 from __future__ import annotations
 
 import json
+import multiprocessing
 import threading
+import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -53,6 +57,49 @@ def _device(device_uid: str | None = DEVICE_UID) -> DeviceRecord:
         device_uid=device_uid,
         name="device-a" if device_uid else None,
     )
+
+
+def _hold_identity_lock_in_another_process(home: str, signals: str) -> None:
+    """Hold ``home``'s identity transaction lock until the caller says so.
+
+    Written for the ``spawn`` start method: the function is imported by the
+    child, so it stays at module level and takes only plain values.
+    """
+
+    from hyprial.identity import IdentityTransactionLock
+
+    signal_dir = Path(signals)
+    held = IdentityTransactionLock.acquire(Path(home), timeout=0)
+    try:
+        (signal_dir / "held").write_text("1", encoding="utf-8")
+        deadline = time.monotonic() + 30.0
+        while not (signal_dir / "release").exists() and time.monotonic() < deadline:
+            time.sleep(0.005)
+    finally:
+        held.close()
+
+
+@contextmanager
+def _identity_lock_held_elsewhere(home: Path) -> Iterator[None]:
+    """Hold ``home``'s identity transaction lock from another process inside the block."""
+
+    signals = home / "lock-signals"
+    signals.mkdir()
+    process = multiprocessing.get_context("spawn").Process(
+        target=_hold_identity_lock_in_another_process, args=(str(home), str(signals))
+    )
+    process.start()
+    try:
+        deadline = time.monotonic() + 30.0
+        while not (signals / "held").exists():
+            assert process.is_alive() and time.monotonic() < deadline
+            time.sleep(0.005)
+        yield
+    finally:
+        (signals / "release").write_text("1", encoding="utf-8")
+        process.join(15)
+        process.is_alive() and process.terminate()
+        process.close()
 
 
 class KeyHome:
@@ -333,17 +380,41 @@ def test_the_encryption_key_step_holds_the_identity_transaction_lock(
     assert len(home.keys()) == 1
 
 
-def test_a_busy_identity_transaction_skips_the_encryption_key_without_failing_recovery(
+def test_a_lock_this_process_already_holds_does_not_skip_the_encryption_key(
+    tmp_path: Path,
+) -> None:
+    """The launch-time lock is this process's own; the step must not wait on it.
+
+    Serving start runs the recovery thread while ``daemon run`` still holds the
+    home identity transaction lock.  A second lock object in the same process
+    contends with it, so taking the lock again would always time out and skip
+    the key.  The step runs at once under the lock already held.
+    """
+
+    home = KeyHome(tmp_path).registered()
+    started = time.monotonic()
+    with IdentityTransactionLock.acquire(home.dir, timeout=0):
+        outcome = home.recovery().run()
+
+    assert outcome == "initialized"
+    assert home.keys() != []
+    assert time.monotonic() - started < 2.0
+    assert len(home.keys()) == 1
+
+
+def test_a_lock_held_by_another_process_skips_the_encryption_key_after_a_bounded_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A busy identity transaction skips encryption-key creation without blocking recovery."""
+    """Another process's identity transaction makes the step wait briefly, then skip."""
 
-    monkeypatch.setattr(recovery_module, "_KEY_LOCK_SECONDS", 0.1)
+    monkeypatch.setattr(recovery_module, "_KEY_LOCK_SECONDS", 0.2)
     home = KeyHome(tmp_path).registered()
+    started = time.monotonic()
+    with _identity_lock_held_elsewhere(home.dir):
+        outcome = home.recovery().run()
 
-    with IdentityTransactionLock.acquire(home.dir, timeout=0):
-        assert home.recovery().run() == "initialized"
-
+    assert outcome == "initialized"
+    assert 0.2 <= time.monotonic() - started < 5.0
     assert home.initialize_states() == [(OWNER, "completed")]
     assert not (home.state / "identity").exists()
 
