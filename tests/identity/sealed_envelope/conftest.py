@@ -37,6 +37,16 @@ def sealed():
 
 
 @pytest.fixture
+def sealed_core():
+    return importlib.import_module("hyprial.identity.impl.sealed_envelope.core")
+
+
+@pytest.fixture
+def service_grant_mod():
+    return importlib.import_module("hyprial.identity.impl.sealed_envelope.service_grant")
+
+
+@pytest.fixture
 def materials(provider, vector):
     raw = base64.b64decode
     signer = provider.SigningKey("test-sub", raw(vector["ownerPrivate"]))

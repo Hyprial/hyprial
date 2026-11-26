@@ -54,30 +54,49 @@ def test_provider_key_binding_runs_on_the_primitive(sealed):
     assert isinstance(profile, sealed.Profile)
     assert profile.wrap_domain == b"hyprial/provider-key/wrap/v1"
     assert profile.signature is not None
+    assert profile.reject_weak_recipients is False
     assert profile.header_fields == frozenset(
         {"v", "alg", "wrap", "provider", "keyId", "owner", "dekVersion", "createdAt"})
 
 
-def test_primitive_with_provider_profile_reproduces_contract_vector(sealed, vector, materials, entropy):
+def test_profile_rejects_weak_recipients_by_default(sealed):
+    profile = sealed.Profile(
+        name="default-check", wrap_domain=b"hyprial/test/wrap/v1",
+        header_fields=frozenset({"v"}), check_header=lambda h: None,
+        signature=None, error=ValueError, invalid="INVALID", unseal="UNSEAL",
+        missing="MISSING", argument="ARGUMENT",
+    )
+    assert profile.reject_weak_recipients is True
+
+
+def test_unwrap_row_helper_is_removed(sealed, sealed_core):
+    from hyprial.identity.impl.provider_keys import envelope
+
+    assert not hasattr(sealed, "unwrap_row")
+    assert not hasattr(sealed_core, "unwrap_row")
+    assert not hasattr(envelope, "_unwrap")
+
+
+def test_primitive_with_provider_profile_reproduces_contract_vector(sealed_core, vector, materials, entropy):
     from hyprial.identity.impl.provider_keys import envelope
 
     signer, owner, recipients = materials
     entropy(vector["randomValues"])
-    value = sealed.seal(envelope.PROFILE, raw(vector["secret"]), header=vector["envelope"]["header"],
-                        recipients=recipients, signer=signer)
+    value = sealed_core.seal(envelope.PROFILE, raw(vector["secret"]), header=vector["envelope"]["header"],
+                             recipients=recipients, signer=signer)
     assert value == vector["envelope"]
     row = vector["recipients"][1]
-    assert sealed.open(envelope.PROFILE, value, owner_key=owner, recipient_key_id=row["keyId"],
-                       private_key=raw(row["private"])) == raw(vector["secret"])
+    assert sealed_core.open(envelope.PROFILE, value, owner_key=owner, recipient_key_id=row["keyId"],
+                            private_key=raw(row["private"])) == raw(vector["secret"])
 
 
-def test_signed_profile_refuses_a_missing_signer(sealed, vector, materials):
+def test_signed_profile_refuses_a_missing_signer(sealed_core, vector, materials):
     from hyprial.identity.impl.provider_keys import envelope
 
     _, _, recipients = materials
     with pytest.raises(envelope.Error) as caught:
-        sealed.seal(envelope.PROFILE, b"synthetic", header=vector["envelope"]["header"],
-                    recipients=recipients, signer=None)
+        sealed_core.seal(envelope.PROFILE, b"synthetic", header=vector["envelope"]["header"],
+                         recipients=recipients, signer=None)
     assert caught.value.code == "PROVIDER_KEY_SIGNATURE_INVALID"
 
 

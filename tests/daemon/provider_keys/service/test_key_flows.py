@@ -10,8 +10,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from hyprial.daemon.impl.provider_keys import storage
 from hyprial.identity import ProviderKeys
-from hyprial.identity.impl.provider_keys.envelope import _unwrap
+from hyprial.identity.impl.provider_keys.envelope import PROFILE as PROVIDER_KEY_PROFILE
 from hyprial.identity.impl.provider_keys.models import encode
+from hyprial.identity.impl.sealed_envelope.core import _unwrap
 from hyprial.kernel import DaemonRequestError, ipc_errors
 
 from .conftest import DEVICE, NOW, OTHER_SECRET, SECRET, SUB, bound_signer
@@ -127,7 +128,7 @@ def test_rotate_reseals_with_a_new_dek_and_removes_the_old_envelope(world):
     assert _open(world, new) == SECRET.encode()
     private = _x1_private(world)
     row = old["recipients"][0]
-    old_dek = _unwrap(row, private, encode(old["header"]))
+    old_dek = _unwrap(PROVIDER_KEY_PROFILE, row, private, encode(old["header"]))
     with pytest.raises(InvalidTag):
         AESGCM(old_dek).decrypt(base64.b64decode(new["payload"]["nonce"]),
                                 base64.b64decode(new["payload"]["ciphertext"]), encode(new["header"]))
