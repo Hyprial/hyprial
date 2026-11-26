@@ -371,6 +371,7 @@ def _spec_from_payload(raw: dict[str, object]) -> LifecycleSpec:
             model_provider=_optional_str(harness.get("modelProvider")),
             model=_optional_str(harness.get("model")),
             member=_optional_str(harness.get("member")),
+            model_binding=harness.get("modelBinding"),
         ),
         route=RouteSpec(
             str(route["route_id"]),

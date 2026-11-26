@@ -186,7 +186,11 @@ def _member_rules(cell: Any, member: str) -> dict[str, Any]:
 
 
 def _with_desired(app: Any, *specs: HarnessLaunchSpec) -> Any:
-    app.desired_state = SimpleNamespace(load=lambda: SimpleNamespace(harnesses=specs))
+    from hyprial.daemon.impl.desired_state.documents import DesiredState
+    from hyprial.daemon.impl.desired_state.bindings.store import ModelBindingStore
+
+    app.desired_state = SimpleNamespace(load=lambda: DesiredState(harnesses=specs))
+    app.desired_state.model_binding_store = ModelBindingStore(app.desired_state)
     return app
 
 

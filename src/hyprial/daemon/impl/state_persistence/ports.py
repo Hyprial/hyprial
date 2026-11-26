@@ -88,6 +88,7 @@ from .commands import (
     _state_cost_key,
 )
 from .services import ServiceDesiredPortMixin
+from .model_bindings import MODEL_BINDING_COMMANDS, ModelBindingPort, execute as execute_binding
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +229,10 @@ class _Generation:
         started_cpu = time.thread_time() if costs.enabled else 0.0
         started_wall = time.perf_counter()
         try:
-            if isinstance(command, ReadDesiredQuery):
+            if isinstance(command, MODEL_BINDING_COMMANDS):
+                result = execute_binding(self.desired.model_binding_store, command)
+                self.projection.publish(self.desired.published_state())
+            elif isinstance(command, ReadDesiredQuery):
                 if command.operation is DesiredQuery.INCOMPLETE_HARNESS_LIFECYCLE_RESOURCES:
                     result = self.desired.incomplete_harness_lifecycle_resources()
                 elif command.operation is DesiredQuery.INCOMPLETE_HARNESS_LIFECYCLE_RECEIPTS:
@@ -460,7 +464,7 @@ class _Generation:
             else:
                 raise TypeError("unsupported state persistence command")
         except Exception as error:
-            if isinstance(command, (NormalizeInteractiveSessions, CompareAndSaveDesired,
+            if isinstance(command, (*MODEL_BINDING_COMMANDS, NormalizeInteractiveSessions, CompareAndSaveDesired,
                                     ApplySessionLifecycle, ApplyHarnessLifecycle,
                                     RetireDomainReceipt, ConfirmDomainReceipt,
                                     ClaimInteractiveSession, ClaimInteractiveWithAgentEffects,
@@ -534,6 +538,7 @@ class _DesiredPort(ServiceDesiredPortMixin):
         self.state_db = owner.state_db
         self.legacy_path = owner._desired_store.legacy_path
         self.versioned_path = owner._desired_store.versioned_path
+        self.model_binding_store = ModelBindingPort(self)
 
     def load(self) -> DesiredState:
         # _Projection.read() already returns a fresh deep copy.  Copying that

@@ -168,13 +168,16 @@ class OwnMemberEffects:
             return None
         target = found
         spec = intent.spec
+        if spec is not None and spec.model_binding is not None:
+            target = replace(found, model=spec.model, model_provider=spec.model_vendor,
+                             model_binding=spec.model_binding)
         if (
             spec is not None
             and spec.harness == found.harness
             and spec.model is not None
             and spec.model != found.model
         ):
-            target = replace(found, model=spec.model)
+            target = replace(target, model=spec.model)
         key = launch_key(found)
         if key is None:
             return None

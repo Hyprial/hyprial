@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from hyprial.kernel import DaemonRequestError, canonical_agent_uri, ipc_errors
+from hyprial.error import codes
 
 from ..entity import translated_agent_errors
 from .specs import ERROR_CODES, EXECUTE, PREVIEW
@@ -26,14 +27,18 @@ def admit(app, params, *, trusted_message_origin=None):
 
 def _snapshot(app, agent):
     from hyprial.daemon.impl.composition.cells import agent_adapter_bindings
+    from hyprial.daemon.impl.application.model_binding.cleanup import cleanup_summary
 
     receipt = app._agent_registry.home_receipt(agent.actor, require_ready=False, validate_mirror=False)
     routines = app._routines_bound_to(agent.actor)
+    counts, digest = cleanup_summary(app, agent)
     return {
         "name": agent.actor,
         "homeToken": receipt.resource_token if receipt is not None else None,
         "adapterBindings": sorted(agent_adapter_bindings(app, agent)),
         "routines": sorted((str(row.get("name", "")), str(row.get("registrationId", ""))) for row in routines),
+        "modelBindingCleanup": counts,
+        "modelBindingDigest": digest,
     }
 
 
@@ -49,7 +54,8 @@ def _failure(error):
     code = getattr(error, "code", ipc_errors.DAEMON_ERROR)
     if code not in ERROR_CODES:
         code = ipc_errors.DAEMON_ERROR
-    return DaemonRequestError(code, "Agent deletion did not complete; inspect the Agent before a new preview")
+    data = getattr(error, "data", None) if code == codes.MODEL_CONFIGURATION_INCOMPLETE else None
+    return DaemonRequestError(code, "Agent deletion did not complete; inspect the Agent before a new preview", data=data)
 
 
 def preview(app, params, *, trusted_message_origin=None):
@@ -77,6 +83,7 @@ def preview(app, params, *, trusted_message_origin=None):
                     "operationId": record.operation_id, "expiresAt": record.expires_at_ms,
                     "summary": summary, "workspace": workspace,
                     "adapterBindings": snapshot["adapterBindings"],
+                    "modelBindingCleanup": snapshot["modelBindingCleanup"],
                     "routines": [row[0] for row in snapshot["routines"]],
                     "pendingMessages": pending, "irreversible": True}
     except Exception as error:
@@ -88,7 +95,7 @@ def _replay(record):
     if result is None:
         raise DaemonRequestError(ipc_errors.OPERATION_IN_PROGRESS, "deletion is in progress")
     if result.get("ok") is False:
-        raise DaemonRequestError(result["code"], result["message"])
+        raise DaemonRequestError(result["code"], result["message"], data=result.get("data"))
     return dict(result)
 
 
@@ -132,7 +139,8 @@ def execute(app, params, *, trusted_message_origin=None):
     except BaseException as error:
         failure = _failure(error)
         if claimed:
-            registry.complete(record.operation_id, {"ok": False, "code": failure.code, "message": str(failure)})
+            registry.complete(record.operation_id, {"ok": False, "code": failure.code,
+                              "message": str(failure), "data": failure.data})
         if not isinstance(error, Exception):
             raise
         raise failure from error

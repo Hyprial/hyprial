@@ -42,6 +42,7 @@ from hyprial.daemon.impl.harnesses.streaming.protocol  import TurnCompletedObser
 from hyprial.identity import ChildEnvironmentLaunch
 from hyprial.identity import AgentRuntimeContext
 from .native_auth import native_auth_observer
+from hyprial.daemon.impl.harnesses.model_routes.connection import BoundChildEnvironmentLaunch
 from hyprial.daemon.impl.harnesses.worker_channel  import WorkerChannel
 
 WorkerChannelFactory = Callable[[HarnessLaunchSpec], WorkerChannel | None]
@@ -167,9 +168,16 @@ class HarnessLauncher:
         there is no ambient fallback path by construction.
         """
 
-        if self._child_environment_factory is None or channel is None:
-            return None
-        return self._child_environment_factory(spec, channel)
+        launch = (None if self._child_environment_factory is None or channel is None
+                  else self._child_environment_factory(spec, channel))
+        if spec.model_binding is not None and (
+            not isinstance(launch, BoundChildEnvironmentLaunch) or launch.model_binding is None
+        ):
+            from hyprial.error import codes
+            from hyprial.daemon.impl.harnesses.pi.bindings.errors import PiModelBindingError
+
+            raise PiModelBindingError(codes.MODEL_AUTH_UNAVAILABLE, "authorize", "unreadable")
+        return launch
 
     def _make_agent_sdk_process(
         self, spec: HarnessLaunchSpec
@@ -231,6 +239,8 @@ class HarnessLauncher:
             worker_channel=channel,
             command=spec.resolved_command(("pi",)),
             complete_launch=complete_launch,
+            **({"model_binding": complete_launch.model_binding}
+               if isinstance(complete_launch, BoundChildEnvironmentLaunch) else {}),
             on_turn_failure_for_spec=self._turn_failure_observer,
             on_turn_completed=native_auth_observer(complete_launch, self._turn_completed_observer),
             runtime_launch_custody=self._runtime_launch_custody,

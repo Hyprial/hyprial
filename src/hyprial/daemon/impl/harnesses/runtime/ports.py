@@ -3,6 +3,8 @@ from __future__ import annotations
 from .observation import RuntimeFactsGrant
 
 from dataclasses import dataclass
+from collections.abc import Mapping
+from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.adapters.spec import AdapterSpec
 import hashlib
 import json
@@ -38,16 +40,22 @@ class HarnessLaunchProjection:
     model_provider: str | None = None
     model: str | None = None
     member: str | None = None
+    model_binding: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.member is None:
             object.__setattr__(self, "member", self.name)
+        if self.model_binding is not None:
+            validated = HarnessLaunchSpec(self.harness, self.name, self.headless,
+                                          model_binding=self.model_binding)
+            object.__setattr__(self, "model_binding", validated.model_binding)
 
     def to_payload(self) -> dict[str, object]:
         return {
             "provider": self.harness,
             "name": self.name,
             "headless": self.headless,
+            **({"modelBinding": dict(self.model_binding)} if self.model_binding is not None else {}),
             **({"member": self.member} if self.member is not None and self.member != self.name else {}),
             "args": list(self.args),
             "ownership": self.ownership,

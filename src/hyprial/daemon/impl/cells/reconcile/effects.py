@@ -46,6 +46,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Protocol
 
 from hyprial.daemon.impl.cells.structure import StructureMember
@@ -99,10 +100,14 @@ class LocalMemberLaunchFacts:
     custody: str = CUSTODY_DAEMON
     launch_member: str | None = None
     held: bool = False
+    model_binding: Mapping[str, object] | None = None
+    binding_error: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "command", tuple(self.command))
         object.__setattr__(self, "args", tuple(self.args))
+        if self.model_binding is not None:
+            object.__setattr__(self, "model_binding", MappingProxyType(dict(self.model_binding)))
 
 
 class LocalMemberFactsPort(Protocol):
@@ -140,6 +145,11 @@ class DesiredMemberSpec:
     policy: MemberPolicy | None = None
     base_digest: str = ""
     launch_member: str | None = None
+    model_binding: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        if self.model_binding is not None:
+            object.__setattr__(self, "model_binding", MappingProxyType(dict(self.model_binding)))
 
     @property
     def launch_member_name(self) -> str:
@@ -171,6 +181,7 @@ class DesiredMemberSpec:
             None,
             "running",
             self.launch_member_name,
+            model_binding=self.model_binding,
         )
 
 
@@ -187,6 +198,7 @@ def compute_member_config_digest(
     approval: str | None,
     env_ref: str | None,
     policy_digest: str | None = None,
+    model_binding: Mapping[str, object] | None = None,
 ) -> str:
     """Deterministic SHA-256 over resolved member configuration."""
 
@@ -203,6 +215,8 @@ def compute_member_config_digest(
         "envRef": env_ref,
         "policyDigest": policy_digest,
     }
+    if model_binding is not None:
+        payload["modelBinding"] = dict(model_binding)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -218,6 +232,12 @@ def resolve_member_desired_spec(
         return None, f"missing-local-facts:{doc_member.name}:no-record"
     if facts.custody == CUSTODY_EXTERNAL:
         return None, "external-custody"
+    if facts.binding_error is not None:
+        return None, facts.binding_error
+    if facts.model_binding is not None and (
+        doc_member.kind != facts.harness or doc_member.model != facts.model
+    ):
+        return None, "model-binding-cell-intent-mismatch"
     harness = doc_member.kind or facts.harness
     if not harness:
         return None, f"missing-local-facts:{doc_member.name}:harness"
@@ -240,6 +260,7 @@ def resolve_member_desired_spec(
         "args": facts.args,
         "approval": facts.approval,
         "env_ref": facts.env_ref,
+        "model_binding": facts.model_binding,
     }
     policy_digest = policy.digest if policy is not None else None
     digest = compute_member_config_digest(**launch, policy_digest=policy_digest)
@@ -260,6 +281,7 @@ def resolve_member_desired_spec(
             policy=policy,
             base_digest=compute_member_config_digest(**launch),
             launch_member=facts.launch_member,
+            model_binding=facts.model_binding,
         ),
         None,
     )

@@ -162,7 +162,7 @@
     "hyprial.shell.impl.gui.apps",
     "hyprial.shell.impl.gui.errors"
   ],
-  "primedModuleCount": 621,
+  "primedModuleCount": 624,
   "primedModules": [
     "hyprial",
     "hyprial.biz",
@@ -257,6 +257,9 @@
     "hyprial.daemon.impl.harnesses.codex.transport",
     "hyprial.daemon.impl.harnesses.codex.transport.connection",
     "hyprial.daemon.impl.harnesses.model_provider",
+    "hyprial.daemon.impl.harnesses.model_routes",
+    "hyprial.daemon.impl.harnesses.model_routes.connection",
+    "hyprial.daemon.impl.harnesses.model_routes.errors",
     "hyprial.daemon.impl.harnesses.pi",
     "hyprial.daemon.impl.harnesses.pi.bindings",
     "hyprial.daemon.impl.harnesses.pi.bindings.errors",

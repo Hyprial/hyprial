@@ -74,7 +74,11 @@ class Harness:
             owner="owner-a",
             _provider_key_service=self.service,
             _provider_key_agent_resolver=self._resolve,
+            agents=self.registry,
         )
+        from hyprial.daemon.impl.desired_state.store import DesiredStateStore
+
+        self.app.desired_state = DesiredStateStore(self.state / "desired-state.json")
 
     def _resolve(self, ref: str, expected: object) -> AgentRef:
         self.resolved.append((ref, expected))

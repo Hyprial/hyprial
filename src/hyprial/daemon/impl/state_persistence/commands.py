@@ -25,6 +25,7 @@ from hyprial.kernel  import (
 )
 from hyprial.kernel import DomainEffectClaim
 from hyprial.kernel import LifecycleMutationRequest
+from .model_bindings import ModelBindingCommand
 
 
 class DesiredQuery(StrEnum):
@@ -377,7 +378,8 @@ class BackfillDomainAttestedEffects:
 
 
 StateCommand = (
-    ReadDesiredQuery
+    ModelBindingCommand
+    | ReadDesiredQuery
     | ReadJournalQuery
     | NormalizeInteractiveSessions
     | CompareAndSaveDesired

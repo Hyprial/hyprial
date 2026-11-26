@@ -658,6 +658,9 @@ class _LifecycleOpsMixin(_HarnessArgsLifecycleMixin, _AgentStartMixin):
         spec = HarnessLaunchSpec.from_json(
             {**params, "provider": harness, "name": name}, "provider"
         )
+        from hyprial.daemon.impl.application.model_binding.admission import pin
+
+        spec = pin(self, spec)
         if spec.effort is not None:
             from hyprial.daemon.impl.harnesses.model_provider import (
                 ModelProviderError,

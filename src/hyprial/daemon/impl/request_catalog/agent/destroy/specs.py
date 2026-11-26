@@ -6,6 +6,7 @@ Workspace counts describe an observation, not a frozen filesystem snapshot.
 """
 
 from hyprial.identity import AgentError
+from hyprial.error import codes
 from hyprial.kernel import (
     HttpBinding, IdentityBinding, IdempotencySpec, MethodError, MethodSpec,
     PreviewSpec, ipc_errors,
@@ -32,9 +33,21 @@ ERROR_CODES = (
     ipc_errors.AGENT_LAUNCH_IN_PROGRESS, ipc_errors.AGENT_RUNTIME_CONTEXT_STALE,
     ipc_errors.AGENT_DESTROY_SETTLEMENT_UNKNOWN, ipc_errors.DOMAIN_COMMAND_TIMEOUT,
     ipc_errors.SUBMIT_OUTCOME_UNKNOWN, ipc_errors.LIFECYCLE_OPERATION_UNSETTLED,
+    codes.MODEL_CONFIGURATION_INCOMPLETE,
+)
+MODEL_CLEANUP_ERROR = MethodError(
+    codes.MODEL_CONFIGURATION_INCOMPLETE,
+    description="Model cleanup is unresolved; entityDeleted is null when registry state is unknown.",
+    data_schema={"type": "object", "properties": {
+        "phase": {"const": "bind"}, "reason": {"const": "destroy-cleanup-pending"},
+        "entityDeleted": {"type": ["boolean", "null"]},
+    }, "required": ["phase", "reason", "entityDeleted"], "additionalProperties": False},
 )
 COMMON = {
-    "owner": "daemon.agent", "errors": tuple(MethodError(code) for code in ERROR_CODES),
+    "owner": "daemon.agent", "errors": tuple(
+        MODEL_CLEANUP_ERROR if code == codes.MODEL_CONFIGURATION_INCOMPLETE else MethodError(code)
+        for code in ERROR_CODES
+    ),
     "audience": ("local-operator", "internal"), "http_exposed": True,
     "http_binding": HttpBinding(IdentityBinding("none")),
 }
@@ -52,6 +65,10 @@ PREVIEW = MethodSpec(
         "adapterBindings": STRINGS, "routines": STRINGS,
         "pendingMessages": {"type": "integer", "minimum": 0},
         "irreversible": {"const": True},
+        "modelBindingCleanup": {"type": "object", "properties": {
+            "bindings": {"type": "integer", "minimum": 0},
+            "operations": {"type": "integer", "minimum": 0},
+        }, "required": ["bindings", "operations"], "additionalProperties": False},
     }, "required": ["ok", "actor", "agent", "operationId", "expiresAt", "summary",
                     "workspace", "adapterBindings", "routines", "pendingMessages", "irreversible"],
     "additionalProperties": False},

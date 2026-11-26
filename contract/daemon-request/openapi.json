@@ -10668,6 +10668,45 @@
                         "message"
                       ],
                       "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_CONFIGURATION_INCOMPLETE"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "entityDeleted": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "phase": {
+                              "const": "bind"
+                            },
+                            "reason": {
+                              "const": "destroy-cleanup-pending"
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "reason",
+                            "entityDeleted"
+                          ],
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
                     }
                   ]
                 }
@@ -10857,6 +10896,24 @@
                     },
                     "irreversible": {
                       "const": true
+                    },
+                    "modelBindingCleanup": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bindings": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "operations": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "bindings",
+                        "operations"
+                      ],
+                      "type": "object"
                     },
                     "ok": {
                       "const": true
@@ -11188,6 +11245,45 @@
                       "properties": {
                         "code": {
                           "const": "LIFECYCLE_OPERATION_UNSETTLED"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_CONFIGURATION_INCOMPLETE"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "entityDeleted": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "phase": {
+                              "const": "bind"
+                            },
+                            "reason": {
+                              "const": "destroy-cleanup-pending"
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "reason",
+                            "entityDeleted"
+                          ],
+                          "type": "object"
                         },
                         "message": {
                           "type": "string"
@@ -23173,6 +23269,135 @@
                       "additionalProperties": false,
                       "properties": {
                         "code": {
+                          "const": "MODEL_CONFIGURATION_INCOMPLETE"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "dependentRequired": {
+                            "phase": [
+                              "reason"
+                            ],
+                            "reason": [
+                              "phase"
+                            ]
+                          },
+                          "properties": {
+                            "lastError": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "bind"
+                            },
+                            "reason": {
+                              "enum": [
+                                "destroy-cleanup-pending",
+                                "operation-in-progress",
+                                "state-unreadable"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_CONFIGURATION_CONFLICT"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "dependentRequired": {
+                            "phase": [
+                              "reason"
+                            ],
+                            "reason": [
+                              "phase"
+                            ]
+                          },
+                          "properties": {
+                            "lastError": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "bind"
+                            },
+                            "reason": {
+                              "enum": [
+                                "revision-mismatch",
+                                "cell-intent-mismatch"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_CONFIGURATION_INVALID"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "dependentRequired": {
+                            "phase": [
+                              "reason"
+                            ],
+                            "reason": [
+                              "phase"
+                            ]
+                          },
+                          "properties": {
+                            "lastError": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "validate"
+                            },
+                            "reason": {
+                              "enum": [
+                                "invalid-connection"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
                           "const": "MODEL_SESSION_BUSY"
                         },
                         "data": {
@@ -23325,7 +23550,10 @@
                             },
                             "reason": {
                               "enum": [
-                                "missing"
+                                "missing",
+                                "revoked",
+                                "ambiguous",
+                                "unreadable"
                               ],
                               "type": "string"
                             }
@@ -102544,6 +102772,33 @@
           "code": "LIFECYCLE_OPERATION_UNSETTLED",
           "dataSchema": null,
           "description": ""
+        },
+        {
+          "code": "MODEL_CONFIGURATION_INCOMPLETE",
+          "dataSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "entityDeleted": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "phase": {
+                "const": "bind"
+              },
+              "reason": {
+                "const": "destroy-cleanup-pending"
+              }
+            },
+            "required": [
+              "phase",
+              "reason",
+              "entityDeleted"
+            ],
+            "type": "object"
+          },
+          "description": "Model cleanup is unresolved; entityDeleted is null when registry state is unknown."
         }
       ],
       "httpBinding": {
@@ -102825,6 +103080,33 @@
           "description": ""
         },
         {
+          "code": "MODEL_CONFIGURATION_INCOMPLETE",
+          "dataSchema": {
+            "additionalProperties": false,
+            "properties": {
+              "entityDeleted": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "phase": {
+                "const": "bind"
+              },
+              "reason": {
+                "const": "destroy-cleanup-pending"
+              }
+            },
+            "required": [
+              "phase",
+              "reason",
+              "entityDeleted"
+            ],
+            "type": "object"
+          },
+          "description": "Model cleanup is unresolved; entityDeleted is null when registry state is unknown."
+        },
+        {
           "code": "USER_AGENT_IMMUTABLE",
           "dataSchema": null,
           "description": "The named agent is the owner's user agent, which is never administered; no data payload."
@@ -102896,6 +103178,24 @@
           },
           "irreversible": {
             "const": true
+          },
+          "modelBindingCleanup": {
+            "additionalProperties": false,
+            "properties": {
+              "bindings": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "operations": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "bindings",
+              "operations"
+            ],
+            "type": "object"
           },
           "ok": {
             "const": true
@@ -113963,6 +114263,99 @@
           "description": "The per-launch worker-proxy read refused the forward launch; the start did not take effect and is never retried; data may name the harness's published refusal."
         },
         {
+          "code": "MODEL_CONFIGURATION_INCOMPLETE",
+          "dataSchema": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "phase": [
+                "reason"
+              ],
+              "reason": [
+                "phase"
+              ]
+            },
+            "properties": {
+              "lastError": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "bind"
+              },
+              "reason": {
+                "enum": [
+                  "destroy-cleanup-pending",
+                  "operation-in-progress",
+                  "state-unreadable"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "The Pi connection/session precondition refused this start without credential fallback."
+        },
+        {
+          "code": "MODEL_CONFIGURATION_CONFLICT",
+          "dataSchema": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "phase": [
+                "reason"
+              ],
+              "reason": [
+                "phase"
+              ]
+            },
+            "properties": {
+              "lastError": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "bind"
+              },
+              "reason": {
+                "enum": [
+                  "revision-mismatch",
+                  "cell-intent-mismatch"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "The Pi connection/session precondition refused this start without credential fallback."
+        },
+        {
+          "code": "MODEL_CONFIGURATION_INVALID",
+          "dataSchema": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "phase": [
+                "reason"
+              ],
+              "reason": [
+                "phase"
+              ]
+            },
+            "properties": {
+              "lastError": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "validate"
+              },
+              "reason": {
+                "enum": [
+                  "invalid-connection"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "The Pi connection/session precondition refused this start without credential fallback."
+        },
+        {
           "code": "MODEL_SESSION_BUSY",
           "dataSchema": {
             "additionalProperties": false,
@@ -114078,7 +114471,10 @@
               },
               "reason": {
                 "enum": [
-                  "missing"
+                  "missing",
+                  "revoked",
+                  "ambiguous",
+                  "unreadable"
                 ],
                 "type": "string"
               }

@@ -22,6 +22,7 @@ STATUS_BY_CODE: Mapping[str, int] = {
     ipc_errors.INVALID_PARAMS: 400,
     ipc_errors.MODEL_CONFIGURATION_INVALID: 400,
     ipc_errors.MODEL_CONFIGURATION_CONFLICT: 409,
+    ipc_errors.MODEL_CONFIGURATION_INCOMPLETE: 409,
     ipc_errors.MODEL_AUTH_UNAVAILABLE: 403,
     ipc_errors.MODEL_SESSION_BUSY: 409,
     ipc_errors.MODEL_RESUME_MISMATCH: 409,
