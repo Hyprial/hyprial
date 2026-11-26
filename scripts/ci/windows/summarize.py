@@ -127,7 +127,10 @@ def validate_waves(manifest: dict[str, Any] | None, text: str) -> tuple[bool, li
     return not errors, errors
 
 
-def inspect_contract_skips(xml_paths: Sequence[Path]) -> tuple[list[tuple[str, str]], list[str]]:
+def inspect_contract_skips(
+    xml_paths: Sequence[Path],
+    planned_files: Sequence[str] | None = None,
+) -> tuple[list[tuple[str, str]], list[str]]:
     reasons: list[tuple[str, str]] = []
     errors: list[str] = []
     for path in xml_paths:
@@ -149,13 +152,24 @@ def inspect_contract_skips(xml_paths: Sequence[Path]) -> tuple[list[tuple[str, s
             reasons.append((nodeid, reason))
             if reason not in EXPECTED_SKIP_MESSAGES:
                 errors.append(f"invalid contract skip reason for {nodeid}: {reason!r}")
-    if len(reasons) != 13:
-        errors.append(f"contract skip count is {len(reasons)}, expected 13")
+    if planned_files is None:
+        if len(reasons) != 13:
+            errors.append(f"contract skip count is {len(reasons)}, expected 13")
+    else:
+        planned = {path.replace("\\", "/").lstrip("./") for path in planned_files}
+        if CONTRACT_TEST_FILE in planned:
+            if len(reasons) != 13:
+                errors.append(f"contract skip count is {len(reasons)}, expected 13")
+        elif reasons:
+            errors.append("contract skips found for an unplanned file")
     return reasons, errors
 
 
-def contract_skip_errors(xml_paths: Sequence[Path]) -> list[str]:
-    _, errors = inspect_contract_skips(xml_paths)
+def contract_skip_errors(
+    xml_paths: Sequence[Path],
+    planned_files: Sequence[str] | None = None,
+) -> list[str]:
+    _, errors = inspect_contract_skips(xml_paths, planned_files=planned_files)
     return errors
 
 
@@ -237,7 +251,13 @@ def summarize_leg(root: Path, leg: str, *, waves: bool = False) -> tuple[bool, l
         if not valid:
             errors.extend(wave_errors)
         xmls = sorted(root.rglob("*.xml")) if root.exists() else []
-        skip_reasons, skip_errors = inspect_contract_skips(xmls)
+        raw_planned = manifest.get("plannedFiles") if isinstance(manifest, dict) else None
+        planned_files = (
+            [str(item) for item in raw_planned]
+            if isinstance(raw_planned, list)
+            else None
+        )
+        skip_reasons, skip_errors = inspect_contract_skips(xmls, planned_files=planned_files)
         errors.extend(skip_errors)
         other_skips = inspect_other_skips(xmls)
         counts = junit_counts(xmls)
