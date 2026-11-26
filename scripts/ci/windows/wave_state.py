@@ -41,7 +41,10 @@ collection_skipped_files.  Measured on pytest 8.4.2 without xdist: a collection-
 skip next to a passing test exits 0, next to a failing test exits 1, and next to a
 file that collects nothing exits 5.  The last shape never reaches this condition:
 the file that collects nothing is missing from the reported files, so the
-unreported-files branch has already ended the classification.
+unreported-files branch has already ended the classification.  The exemption covers
+the exit code only: a testcase holding a failure or an error child still fails the
+run whatever the exit code is, including a testcase that resolves to no planned file
+and therefore counts in neither the reported files nor collection_skipped_files.
 """
 
 from __future__ import annotations
@@ -491,9 +494,10 @@ def classify_run(
         if uncovered:
             details.append(f"ledger-uncovered:{len(uncovered)}")
             status = "unreported-files"
-        elif returncode != 0 and not (
-            returncode == 5 and planned and planned <= result.collection_skipped_files
-        ):
+        elif (
+            returncode != 0
+            and not (returncode == 5 and planned and planned <= result.collection_skipped_files)
+        ) or result.failures or result.errors:
             status = "failed"
         else:
             status = "passed"

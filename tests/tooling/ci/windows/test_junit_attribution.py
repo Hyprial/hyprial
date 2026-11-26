@@ -24,6 +24,16 @@ The second file in those rows is a name of its own, so the ordinary cases sit
 outside REAL_MODULE and need their own ledger; classify takes the exit code, the
 planned list and the ledger as keyword arguments that default to what the earlier
 tests used.
+
+Decision (2026-11-27, tier 2 full suite).  The exit code 5 exemption covers the exit
+code only.  A failure or an error child still fails the run whatever the exit code
+is, as before the exemption existed.  The testcases that slip past the planned-file
+checks are the ones that resolve to no file: one whose classname names an unplanned
+module, and one with no classname at all.  Such a testcase is in neither the reported
+files nor collection_skipped_files, so the planned set stays all collection-skipped
+while its failure or error still counts.  Four rows pin this: the two unattributable
+failure shapes and the unattributable error shape on exit code 5, and the first of
+them again on exit code 0, where the exit code is no help at all.
 """
 
 from __future__ import annotations
@@ -185,6 +195,27 @@ def test_exit_code_five_passes_only_when_every_planned_file_is_collection_skippe
         assert outcome.details == ("unreported:1",)
     if row == "one-collection-skipped-file-tier-1":
         assert outcome.details == (f"unexpected-skip:{SKIPPED_MODULE}:collection skipped",)
+
+
+UNPLANNED_CLASSNAME = "tests.pkg.test_unplanned"
+UNATTRIBUTABLE_FAILURE = '<failure message="assert 1 == 2">call trace</failure>'
+UNATTRIBUTABLE_ERROR = '<error message="teardown">teardown trace</error>'
+EXEMPTION_ROWS = {
+    "unplanned-failure-exit-five": (5, module_case("test_bad", UNATTRIBUTABLE_FAILURE, classname=UNPLANNED_CLASSNAME)),
+    "classnameless-failure-exit-five": (5, module_case("test_bad", UNATTRIBUTABLE_FAILURE)),
+    "classnameless-error-exit-five": (5, module_case("test_bad", UNATTRIBUTABLE_ERROR)),
+    "unplanned-failure-exit-zero": (0, module_case("test_bad", UNATTRIBUTABLE_FAILURE, classname=UNPLANNED_CLASSNAME)),
+}
+
+
+@pytest.mark.parametrize("row", list(EXEMPTION_ROWS), ids=list(EXEMPTION_ROWS))
+def test_exit_code_exemption_does_not_cover_a_failure_or_an_error(tmp_path: Path, row: str) -> None:
+    returncode, case = EXEMPTION_ROWS[row]
+    junit = write_xml(tmp_path / "r.xml", module_case("tests.pkg.test_optional", SKIP_BODY), case)
+
+    outcome = classify(tmp_path, junit, returncode=returncode, planned=[SKIPPED_MODULE])
+
+    assert outcome.status == "failed", outcome.details
 
 
 @pytest.mark.parametrize("error_count", [1, 4])
