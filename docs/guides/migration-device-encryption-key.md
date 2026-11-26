@@ -11,7 +11,7 @@
   - `encryptionKeyId`：`x25519:` 加上这 32 个字节的 SHA-256 摘要的前 32 个小写十六进制字符。
 - 两个键要么都有，要么都没有。行里出现其中一个而没有另一个、键的格式不对、`encryptionKeyId` 不是 `encryptionPublicKey` 的摘要、或公钥是低阶点，整行无效。
 - 行的键集仍是封闭的：出现任何别的键（例如 `encryptionKeyPrivate`）整行无效。私钥从不写入目录。
-- 加密钥是 `kind="user"` 的 X25519 钥，由本机的加密钥 store 保管（`<state>/identity/encryption-keys/<slug>/key.json`）。私钥不出本机。
+- 加密钥是 `kind="user"` 的 X25519 钥，由本机的加密钥 store 保管（`<state>/identity/encryption-keys/<slug>/key.json`，`<state>` 是 daemon 的状态目录，默认为 `HYPRIAL_HOME` 下的 `state`）。私钥不出本机。
 
 没有数据需要转换：旧版本的行（不带这两个键）在新版本下照常有效。
 
@@ -77,7 +77,7 @@
 
 在每台设备上：
 
-1. 确认只有一把钥（把 `<HYPRIAL_HOME>` 换成实际路径）：
+1. 确认只有一把钥（把 `<HYPRIAL_HOME>` 换成实际路径；daemon 单独配置了状态目录时，把路径里的 `state` 换成那个目录）：
 
    ```sh
    ls <HYPRIAL_HOME>/state/identity/encryption-keys/*/key.json
