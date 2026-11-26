@@ -608,14 +608,35 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         )
         all_junits.append(junit)
         leaked_processes.extend(survivors)
-        outcome = classify_run(
-            returncode=returncode,
-            junit_paths=[junit],
-            ledger_dir=ledger,
-            planned_files=pending,
-            root=root,
-            forced_status=forced_status,
-        )
+        try:
+            outcome = classify_run(
+                returncode=returncode,
+                junit_paths=[junit],
+                ledger_dir=ledger,
+                planned_files=pending,
+                root=root,
+                forced_status=forced_status,
+            )
+        except ValueError as error:
+            duplicate_error = str(error)
+            final_status = "unreported-files"
+            detail = (
+                duplicate_error
+                if duplicate_error.startswith("duplicate-result:")
+                else f"duplicate-result: {duplicate_error}"
+            )
+            runs.append(
+                {
+                    "run": attempt,
+                    "status": "unreported-files",
+                    "offsettable": False,
+                    "returncode": returncode,
+                    "junit": str(junit),
+                    "duration": round(time.monotonic() - started, 3),
+                    "details": [detail],
+                }
+            )
+            break
         for file_name, nodeids in outcome.nodeids_by_file.items():
             completed_nodeids_by_file.setdefault(file_name, set()).update(nodeids)
         completed_files.update(outcome.reported_files - outcome.partial_files)
@@ -645,6 +666,8 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             and (union_junit.contract_skip_errors or union_junit.contract_skips != 13)
             and final_status == "passed"
         ):
+            final_status = "failed"
+        if union_junit.other_skips and final_status == "passed":
             final_status = "failed"
     except ValueError as error:
         duplicate_error = str(error)

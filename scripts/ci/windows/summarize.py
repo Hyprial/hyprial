@@ -159,6 +159,25 @@ def contract_skip_errors(xml_paths: Sequence[Path]) -> list[str]:
     return errors
 
 
+def inspect_other_skips(xml_paths: Sequence[Path]) -> list[tuple[str, str]]:
+    skips: list[tuple[str, str]] = []
+    for path in xml_paths:
+        if not path.exists():
+            continue
+        try:
+            root = ET.parse(path).getroot()
+        except ET.ParseError:
+            continue
+        for case in root.iter("testcase"):
+            if _is_contract_case(case):
+                continue
+            skipped = case.find("skipped")
+            if skipped is None:
+                continue
+            skips.append((_case_nodeid(case), skipped.attrib.get("message", "")))
+    return skips
+
+
 def junit_counts(xml_paths: Sequence[Path]) -> dict[str, int]:
     totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
     for path in xml_paths:
@@ -220,6 +239,7 @@ def summarize_leg(root: Path, leg: str, *, waves: bool = False) -> tuple[bool, l
         xmls = sorted(root.rglob("*.xml")) if root.exists() else []
         skip_reasons, skip_errors = inspect_contract_skips(xmls)
         errors.extend(skip_errors)
+        other_skips = inspect_other_skips(xmls)
         counts = junit_counts(xmls)
         failed_nodeids = junit_failure_nodeids(xmls)
         leaks = manifest.get("leaks", []) if isinstance(manifest, dict) else []
@@ -246,6 +266,9 @@ def summarize_leg(root: Path, leg: str, *, waves: bool = False) -> tuple[bool, l
         if skip_reasons:
             lines.append(f"  - `test_contract.py` skips ({len(skip_reasons)}):")
             lines.extend(f"    - `{nodeid}`: {reason}" for nodeid, reason in skip_reasons)
+        if other_skips:
+            lines.append(f"  - unexpected skips ({len(other_skips)}):")
+            lines.extend(f"    - `{nodeid}`: {reason}" for nodeid, reason in other_skips)
         lines.extend(f"  - error: {error}" for error in errors)
         for line in lines:
             print(line)

@@ -61,6 +61,7 @@ class JUnitResult:
     contract_skip_errors: tuple[str, ...]
     nodeids_by_file: dict[str, tuple[str, ...]]
     parse_errors: tuple[str, ...] = ()
+    other_skips: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,19 @@ def normalise_path(value: str) -> str:
     if marker in path:
         path = "tests/" + path.split(marker, 1)[1]
     return path.lstrip("./")
+
+
+def _normalise_nodeid(nodeid: str) -> str:
+    if "::" not in nodeid:
+        return normalise_path(nodeid)
+    file_part, rest = nodeid.split("::", 1)
+    return f"{normalise_path(file_part)}::{rest}"
+
+
+def _is_leak_timeout_hang(path: Path) -> bool:
+    with path.open("r", encoding="utf-8", errors="replace") as stream:
+        first_line = stream.readline()
+    return "hyprial watchdog: leak-timeout" in first_line
 
 
 def _is_native_crash(code: int) -> bool:
@@ -157,6 +171,7 @@ def read_junit(
     skipped = 0
     contract_skips = 0
     contract_skip_errors: list[str] = []
+    other_skips: list[tuple[str, str]] = []
     parse_errors: list[str] = []
     for path in paths:
         if not path.exists():
@@ -181,11 +196,13 @@ def read_junit(
             skipped_node = case.find("skipped")
             if skipped_node is not None:
                 skipped += 1
+                reason = skipped_node.attrib.get("message", "")
                 if resolved_file == CONTRACT_TEST_FILE:
                     contract_skips += 1
-                    reason = skipped_node.attrib.get("message", "")
                     if reason not in EXPECTED_CONTRACT_SKIPS:
                         contract_skip_errors.append(reason)
+                elif resolved_file is not None and resolved_file in planned:
+                    other_skips.append((nodeid, reason))
     return JUnitResult(
         frozenset(nodeids),
         frozenset(files),
@@ -196,6 +213,7 @@ def read_junit(
         tuple(contract_skip_errors),
         {key: tuple(values) for key, values in by_file.items()},
         tuple(parse_errors),
+        tuple(other_skips),
     )
 
 
@@ -307,11 +325,15 @@ def classify_run(
     if forced_status in HARD_STATES:
         status = forced_status
         details.append(f"forced:{forced_status}")
+    elif any(event.get("reason") == "leak-timeout" for event in crash_events) or returncode == 97:
+        details.append("crash:leak-timeout")
+        status = "worker-crash"
+    elif any(_is_leak_timeout_hang(path) for path in hang_files):
+        details.append("leak-timeout-fallback")
+        status = "worker-crash"
     elif hang_files or any(event.get("reason") == "test-timeout" for event in crash_events) or returncode == 96:
         details.extend(f"hang:{path.name}" for path in hang_files)
         status = "test-watchdog-timeout"
-    elif any(event.get("reason") == "leak-timeout" for event in crash_events) or returncode == 97:
-        status = "worker-crash"
     elif any(
         isinstance(event.get("exit_code"), int) and _is_native_crash(int(event["exit_code"]))
         for event in crash_events
@@ -350,10 +372,30 @@ def classify_run(
         if partial_files:
             details.append(f"partial:{len(partial_files)}")
         status = "unreported-files"
-    elif returncode != 0 or result.failures or result.errors:
-        status = "failed"
+    elif not ledger_dir.exists() or not any(event.get("event") == "collect" for event in events):
+        details.append("ledger-missing")
+        status = "unreported-files"
     else:
-        status = "passed"
+        reported_nodeids = {
+            _normalise_nodeid(event["nodeid"])
+            for event in events
+            if event.get("event") == "end"
+            and isinstance(event.get("nodeid"), str)
+            and event["nodeid"]
+        }
+        planned_nodeids = {
+            _normalise_nodeid(nodeid)
+            for values in result.nodeids_by_file.values()
+            for nodeid in values
+        }
+        uncovered = planned_nodeids - reported_nodeids
+        if uncovered:
+            details.append(f"ledger-uncovered:{len(uncovered)}")
+            status = "unreported-files"
+        elif returncode != 0 or result.failures or result.errors:
+            status = "failed"
+        else:
+            status = "passed"
     if result.contract_skip_errors:
         details.extend(f"invalid-contract-skip:{reason}" for reason in result.contract_skip_errors)
         if status == "passed":
@@ -365,6 +407,12 @@ def classify_run(
         and result.contract_skips != 13
     ):
         details.append(f"contract-skips:{result.contract_skips}")
+        if status == "passed":
+            status = "failed"
+    if result.other_skips:
+        details.extend(
+            f"unexpected-skip:{nodeid}:{reason}" for nodeid, reason in result.other_skips
+        )
         if status == "passed":
             status = "failed"
     return RunOutcome(
