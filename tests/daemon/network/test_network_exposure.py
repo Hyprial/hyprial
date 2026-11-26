@@ -151,6 +151,7 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
     ]
     # Protocol v3: the Python-side "none" went out as "" on the wire.
     assert commands[1]["proxyProtocol"] == ""
+    assert commands[1]["admission"] == "allow"
 
 
 def test_unix_target_directory_requires_owner_only_mode(tmp_path: Path) -> None:
@@ -412,3 +413,88 @@ def test_network_exposures_text_lists_entries_that_are_not_served(
         "unix:",
         "target",
     ]
+
+
+def test_fake_sidecar_validates_v7_expose_admission_and_key_count(tmp_path: Path) -> None:
+    """Fake sidecar pins protocol-v7 expose admission, canonical keys, and keyCount."""
+
+    import subprocess
+
+    receipt = tmp_path / "receipt.jsonl"
+    key_a = "nodekey:" + "0" * 63 + "1"
+    commands = [
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "missing-admission",
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "",
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "allow-ok",
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "",
+            "admission": "allow",
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "keys-ok",
+            "port": 8444,
+            "target": "tcp:127.0.0.1:9444",
+            "proxyProtocol": "",
+            "admission": "keys",
+            "keys": [key_a],
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "keys-dup",
+            "port": 8444,
+            "target": "tcp:127.0.0.1:9444",
+            "proxyProtocol": "",
+            "admission": "keys",
+            "keys": [key_a, key_a],
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "keys-upper",
+            "port": 8444,
+            "target": "tcp:127.0.0.1:9444",
+            "proxyProtocol": "",
+            "admission": "keys",
+            "keys": ["nodekey:" + "A" * 64],
+        },
+        {"v": 7, "op": "down"},
+    ]
+    payload = "\n".join(json.dumps(item) for item in commands) + "\n"
+    completed = subprocess.run(
+        [sys.executable, str(FIXTURE)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        env={"FAKE_FORWARD_RECEIPT": str(receipt)},
+        check=True,
+        timeout=15,
+    )
+    events = [json.loads(line) for line in completed.stdout.splitlines()]
+    by_request = {event["requestId"]: event for event in events if "requestId" in event}
+    assert by_request["missing-admission"]["event"] == "error"
+    assert by_request["missing-admission"]["code"] == "BAD_REQUEST"
+    assert by_request["allow-ok"]["event"] == "exposed"
+    assert by_request["allow-ok"]["admission"] == "allow"
+    assert "keyCount" not in by_request["allow-ok"]
+    assert by_request["keys-ok"]["event"] == "exposed"
+    assert by_request["keys-ok"]["admission"] == "keys"
+    assert by_request["keys-ok"]["keyCount"] == 1
+    assert "keys" not in by_request["keys-ok"]
+    assert by_request["keys-dup"]["event"] == "error"
+    assert by_request["keys-dup"]["code"] == "BAD_REQUEST"
+    assert by_request["keys-upper"]["event"] == "error"
+    assert by_request["keys-upper"]["code"] == "BAD_REQUEST"
+

@@ -2,10 +2,13 @@ package proto
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/exposuregate"
 )
 
 func upFixture() map[string]any {
@@ -60,7 +63,7 @@ func TestParseCommandPositive(t *testing.T) {
 		`{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"/a/slot-00"}`,
 		`{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"tcp:127.0.0.1:0","port":8447}`,
 		`{"v":7,"op":"unmap-peer","peer":"a","requestId":"r"}`,
-		`{"v":7,"op":"expose","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":""}`,
+		`{"v":7,"op":"expose","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow"}`,
 		`{"v":7,"op":"expose","port":8447,"target":` + string(target) + `,"proxyProtocol":"v2","admission":"allow"}`,
 		`{"v":7,"op":"unexpose","port":8447}`,
 		`{"v":7,"op":"peer-key","addr":"[fd7a::1]:8447"}`,
@@ -122,6 +125,8 @@ func TestParseExposeKeys(t *testing.T) {
 		}
 	}
 	negative := map[string]string{
+		"absent admission":       `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":""}`,
+		"empty admission":        `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":""}`,
 		"keys mode without keys": `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys"}`,
 		"keys mode with null":    `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":null}`,
 		"keys on allow":          `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow","keys":[]}`,
@@ -135,24 +140,68 @@ func TestParseExposeKeys(t *testing.T) {
 		"key not hex":            `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["nodekey:zz0000000000000000000000000000000000000000000000000000000000000000"]}`,
 		"zero key":               `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["nodekey:0000000000000000000000000000000000000000000000000000000000000000"]}`,
 		"one bad key":            `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["` + keyA + `","nodekey:abcd"]}`,
+		"duplicate key":          `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["` + keyA + `","` + keyA + `"]}`,
+		"upper hex":              `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["nodekey:` + strings.Repeat("A", 64) + `"]}`,
+		"missing prefix":         `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["` + strings.Repeat("a", 64) + `"]}`,
+		"upper prefix":           `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["NODEKEY:` + strings.Repeat("0", 63) + `1"]}`,
+		"duplicate keys field":   `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":["` + keyA + `"],"keys":[]}`,
+		"capitalised Keys field": `{"v":7,"op":"expose","requestId":"r","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","Keys":[]}`,
 	}
 	for name, line := range negative {
 		if _, err := ParseCommand([]byte(line)); err == nil {
 			t.Fatalf("%s was accepted", name)
 		}
 	}
+
+	atCap := make([]string, exposuregate.MaxKeys)
+	for i := range atCap {
+		atCap[i] = fmt.Sprintf("nodekey:%064x", i+1)
+	}
+	bodyAtCap, err := json.Marshal(map[string]any{
+		"v": 7, "op": "expose", "requestId": "cap-ok", "port": 8447,
+		"target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+		"admission": "keys", "keys": atCap,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd, err := ParseCommand(bodyAtCap); err != nil || len(cmd.Keys) != exposuregate.MaxKeys {
+		t.Fatalf("at-cap keys failed: len=%d err=%v", len(cmd.Keys), err)
+	}
+	overCap := append(atCap, fmt.Sprintf("nodekey:%064x", exposuregate.MaxKeys+1))
+	bodyOverCap, err := json.Marshal(map[string]any{
+		"v": 7, "op": "expose", "requestId": "cap-over", "port": 8447,
+		"target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+		"admission": "keys", "keys": overCap,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseCommand(bodyOverCap); err == nil {
+		t.Fatal("over-cap keys was accepted")
+	}
 }
 
 func TestEventsRoundTrip(t *testing.T) {
-	events := []Event{Hello("0.1.0", "tailcat"), State("Starting"), RunningState("nodekey:a", "nodekey:b", nil, nil), RunningState("nodekey:a", "nodekey:b", []PeerMapping{{Peer: "p", Slot: "/a/s0"}}, []string{"/a/s0"}), SlotMapped("p", "/a/s0"), PeerUnmapped("p"), Exposed(8447, "unix:/a/backend", "v2", AdmissionAllow), Exposed(8448, "tcp:127.0.0.1:8080", "", AdmissionKeys), Unexposed(8447), PeerKey("[fd7a::1]:8447", true, "nodekey:a"), PeerKey("[fd7a::1]:8447", false, ""), Error(CodeBadRequest, "nope"), Exited()}
+	zero := 0
+	one := 1
+	events := []Event{Hello("0.1.0", "tailcat"), State("Starting"), RunningState("nodekey:a", "nodekey:b", nil, nil), RunningState("nodekey:a", "nodekey:b", []PeerMapping{{Peer: "p", Slot: "/a/s0"}}, []string{"/a/s0"}), SlotMapped("p", "/a/s0"), PeerUnmapped("p"), Exposed(8447, "unix:/a/backend", "v2", AdmissionAllow, nil), Exposed(8448, "tcp:127.0.0.1:8080", "", AdmissionKeys, &one), Exposed(8449, "tcp:127.0.0.1:8081", "", AdmissionKeys, &zero), Unexposed(8447), PeerKey("[fd7a::1]:8447", true, "nodekey:a"), PeerKey("[fd7a::1]:8447", false, ""), Error(CodeBadRequest, "nope"), Exited()}
 	for _, event := range events {
 		b, _ := json.Marshal(event)
 		parsed, err := ParseEvent(b)
 		if err != nil || parsed.Event != event.Event {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", b, err)
 		}
 		if event.Event == "state" && !strings.Contains(string(b), `"peers":`) {
 			t.Fatal("missing peers")
+		}
+		if event.Event == "exposed" && event.Admission != nil {
+			if *event.Admission == AdmissionKeys && (parsed.KeyCount == nil || *parsed.KeyCount != *event.KeyCount) {
+				t.Fatalf("keys exposed lost keyCount: %s", b)
+			}
+			if *event.Admission == AdmissionAllow && strings.Contains(string(b), `"keyCount"`) {
+				t.Fatalf("allow exposed serialized keyCount: %s", b)
+			}
 		}
 	}
 }
@@ -168,9 +217,21 @@ func TestParseStateConnectionTelemetry(t *testing.T) {
 	}
 }
 func TestParseEventNegative(t *testing.T) {
-	for _, line := range []string{`{"v":5,"event":"state","state":"Down","peers":[]}`, `{"v":6,"event":"state","state":"Down","peers":[]}`, `{"v":7,"event":"unknown"}`, `{"v":7,"event":"exited","extra":1}`, `{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":[]}`, `{"v":7,"event":"client-key-derived","serverPublic":"nodekey:a","clientPublic":"nodekey:b"}`} {
+	for _, line := range []string{
+		`{"v":5,"event":"state","state":"Down","peers":[]}`,
+		`{"v":6,"event":"state","state":"Down","peers":[]}`,
+		`{"v":7,"event":"unknown"}`,
+		`{"v":7,"event":"exited","extra":1}`,
+		`{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":[]}`,
+		`{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys"}`,
+		`{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keyCount":null}`,
+		`{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keyCount":-1}`,
+		`{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keyCount":4097}`,
+		`{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"allow","keyCount":0}`,
+		`{"v":7,"event":"client-key-derived","serverPublic":"nodekey:a","clientPublic":"nodekey:b"}`,
+	} {
 		if _, err := ParseEvent([]byte(line)); err == nil {
-			t.Fatal("invalid event accepted")
+			t.Fatalf("invalid event accepted: %s", line)
 		}
 	}
 }

@@ -1,9 +1,12 @@
 // Gate unit tests: keys mode narrows membership (never widens), empty set
-// refuses everyone, set equality ignores order/duplicates, key encoding matches
-// the retired allow list (64 hex chars, optional lowercase nodekey: prefix).
+// refuses everyone, set equality ignores order, key encoding requires
+// canonical lowercase nodekey:<64-hex> entries with no duplicates and a
+// bounded set size.
 package exposuregate
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	"go4.org/mem"
@@ -73,10 +76,13 @@ func TestKeysModeEmptySetAdmitsNobody(t *testing.T) {
 	}
 }
 
-func TestKeySetIgnoresOrderAndDuplicates(t *testing.T) {
+func TestKeySetIgnoresOrder(t *testing.T) {
 	gate := mustGate(t, ModeKeys, []string{keyA, keyB})
-	if !gate.SameKeys(mustGate(t, ModeKeys, []string{keyB, keyA, keyB})) {
-		t.Fatal("reordered or duplicated keys counted as a different set")
+	if gate.KeyCount() != 2 {
+		t.Fatalf("KeyCount = %d, want 2", gate.KeyCount())
+	}
+	if !gate.SameKeys(mustGate(t, ModeKeys, []string{keyB, keyA})) {
+		t.Fatal("reordered keys counted as a different set")
 	}
 	if gate.SameKeys(mustGate(t, ModeKeys, []string{keyA})) {
 		t.Fatal("a smaller set counted as the same set")
@@ -132,21 +138,34 @@ func TestNewRejectsMalformedInput(t *testing.T) {
 	}
 }
 
-func TestKeyEncodingMatchesAllowList(t *testing.T) {
+func TestKeyEncodingRequiresCanonicalUniqueBoundedKeys(t *testing.T) {
 	lower := "nodekey:" + lowerHex
-	reference := mustGate(t, ModeKeys, []string{lower})
-	for name, spelling := range map[string][]string{
-		"lower case": {lower},
-		"upper case": {"nodekey:" + upperHex},
-		"no prefix":  {lowerHex},
-		"duplicated": {lower, "nodekey:" + upperHex},
-	} {
-		gate := mustGate(t, ModeKeys, spelling)
-		if !gate.SameKeys(reference) || !gate.Admits(true, true, peerKey(t, lowerHex)) {
-			t.Fatalf("%s spelling did not resolve to the same key", name)
+	gate := mustGate(t, ModeKeys, []string{lower})
+	if !gate.Admits(true, true, peerKey(t, lowerHex)) || gate.KeyCount() != 1 {
+		t.Fatal("canonical lowercase nodekey was rejected")
+	}
+	rejected := map[string][]string{
+		"upper case hex":    {"nodekey:" + upperHex},
+		"missing prefix":    {lowerHex},
+		"upper case prefix": {"NODEKEY:" + lowerHex},
+		"duplicate entries": {lower, lower},
+	}
+	for name, keys := range rejected {
+		if _, err := New(ModeKeys, keys); !errors.Is(err, ErrBadInput) {
+			t.Fatalf("%s: err = %v, want ErrBadInput", name, err)
 		}
 	}
-	if _, err := New(ModeKeys, []string{"NODEKEY:" + upperHex}); err == nil {
-		t.Fatal("an upper-case prefix was accepted")
+
+	atCap := make([]string, MaxKeys)
+	for i := range atCap {
+		atCap[i] = fmt.Sprintf("nodekey:%064x", i+1)
+	}
+	capped := mustGate(t, ModeKeys, atCap)
+	if capped.KeyCount() != MaxKeys {
+		t.Fatalf("KeyCount at cap = %d, want %d", capped.KeyCount(), MaxKeys)
+	}
+	overCap := append(atCap, fmt.Sprintf("nodekey:%064x", MaxKeys+1))
+	if _, err := New(ModeKeys, overCap); !errors.Is(err, ErrBadInput) {
+		t.Fatalf("over-cap keys: err = %v, want ErrBadInput", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/exposuregate"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/keys"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/labrelay"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/proto"
@@ -202,7 +204,7 @@ func TestParseErrorEchoesOnlyValidRequestID(t *testing.T) {
 func TestNotUpErrors(t *testing.T) {
 	s := startSession(t)
 	s.expect(t, "hello")
-	for _, line := range []string{`{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"/a/s0"}`, `{"v":7,"op":"unmap-peer","peer":"a"}`, `{"v":7,"op":"expose","port":8447,"target":"tcp:127.0.0.1:80","proxyProtocol":""}`, `{"v":7,"op":"peer-key","addr":"[fd7a::1]:8447"}`, `{"v":7,"op":"membership-status","requestId":"r","params":{}}`} {
+	for _, line := range []string{`{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"/a/s0"}`, `{"v":7,"op":"unmap-peer","peer":"a"}`, `{"v":7,"op":"expose","port":8447,"target":"tcp:127.0.0.1:80","proxyProtocol":"","admission":"allow"}`, `{"v":7,"op":"peer-key","addr":"[fd7a::1]:8447"}`, `{"v":7,"op":"membership-status","requestId":"r","params":{}}`} {
 		s.send(t, line)
 		s.expectError(t, proto.CodeNotUp)
 	}
@@ -265,7 +267,7 @@ func TestExposeKeysThroughServe(t *testing.T) {
 		"admission": "keys", "keys": []string{keyA},
 	})
 	exposed := s.expect(t, "exposed")
-	if exposed.RequestID != "exp-1" || exposed.Admission == nil || *exposed.Admission != proto.AdmissionKeys {
+	if exposed.RequestID != "exp-1" || exposed.Admission == nil || *exposed.Admission != proto.AdmissionKeys || exposed.KeyCount == nil || *exposed.KeyCount != 1 {
 		t.Fatalf("unexpected exposed event: %+v", exposed)
 	}
 	rawExposed := <-s.raw
@@ -279,8 +281,32 @@ func TestExposeKeysThroughServe(t *testing.T) {
 		"admission": "keys", "keys": []string{},
 	})
 	replaced := s.expect(t, "exposed")
-	if replaced.RequestID != "exp-2" || replaced.Admission == nil || *replaced.Admission != proto.AdmissionKeys {
+	if replaced.RequestID != "exp-2" || replaced.Admission == nil || *replaced.Admission != proto.AdmissionKeys || replaced.KeyCount == nil || *replaced.KeyCount != 0 {
 		t.Fatalf("unexpected replaced exposed event: %+v", replaced)
+	}
+	<-s.raw
+
+	sendMap(t, s, map[string]any{
+		"v": 7, "op": "expose", "requestId": "exp-allow",
+		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+		"admission": "allow",
+	})
+	allowed := s.expect(t, "exposed")
+	if allowed.RequestID != "exp-allow" || allowed.Admission == nil || *allowed.Admission != proto.AdmissionAllow || allowed.KeyCount != nil {
+		t.Fatalf("unexpected allow exposed event: %+v", allowed)
+	}
+	rawAllowed := <-s.raw
+	if strings.Contains(rawAllowed, `"keyCount"`) {
+		t.Fatalf("allow exposed event echoed keyCount: %s", rawAllowed)
+	}
+
+	sendMap(t, s, map[string]any{
+		"v": 7, "op": "expose", "requestId": "exp-no-admission",
+		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+	})
+	missingAdmission := s.expect(t, "error")
+	if missingAdmission.Code != proto.CodeBadRequest || missingAdmission.RequestID != "exp-no-admission" {
+		t.Fatalf("missing admission error = %+v", missingAdmission)
 	}
 
 	sendMap(t, s, map[string]any{
@@ -291,6 +317,25 @@ func TestExposeKeysThroughServe(t *testing.T) {
 	bad := s.expect(t, "error")
 	if bad.Code != proto.CodeBadRequest || bad.RequestID != "exp-bad" {
 		t.Fatalf("bad expose error = %+v", bad)
+	}
+
+	overCap := make([]string, exposuregate.MaxKeys+1)
+	for i := range overCap {
+		overCap[i] = fmt.Sprintf("nodekey:%064x", i+1)
+	}
+	sendMap(t, s, map[string]any{
+		"v": 7, "op": "expose", "requestId": "exp-over-cap",
+		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
+		"admission": "keys", "keys": overCap,
+	})
+	tooMany := s.expect(t, "error")
+	if tooMany.Code != proto.CodeBadRequest || tooMany.RequestID != "exp-over-cap" {
+		t.Fatalf("over-cap expose error = %+v", tooMany)
+	}
+	s.send(t, `{"v":7,"op":"status","requestId":"still-alive"}`)
+	alive := s.expect(t, "state")
+	if alive.RequestID != "still-alive" || alive.State != "Running" {
+		t.Fatalf("sidecar did not stay alive after over-cap expose: %+v", alive)
 	}
 
 	s.send(t, `{"v":7,"op":"down"}`)

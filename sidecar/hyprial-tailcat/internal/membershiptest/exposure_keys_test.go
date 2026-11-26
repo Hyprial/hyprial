@@ -1,14 +1,20 @@
-// Service grants (plan v2 §3.3, slice S4): a keys-mode exposure admits a
-// roster member only while the key it shows this server is in the port's
-// key set. The set is derived data, so re-exposing the port replaces it.
+// Exposure key-set admission tests: a keys-mode exposure admits an active
+// tailnet member only while the per-server client key it shows this server is
+// in the port's key set. Re-exposing the port replaces the set in place and
+// closes newly excluded connections; revoking a listed member still closes its
+// connections because keys only narrow membership.
 package membershiptest
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -219,5 +225,247 @@ func TestExposureKeysAllowTransitions(t *testing.T) {
 	})
 	if err := echoOn(t, connB, "b-kept", 8*time.Second); err != nil {
 		t.Fatalf("kept member closed on allow->keys narrow: %v", err)
+	}
+}
+
+func TestExposureKeysListedMemberRevokedIsClosed(t *testing.T) {
+	mesh := joinGrantMesh(t)
+	keyB, keyC := shownKey(t, mesh.b, mesh.a), shownKey(t, mesh.c, mesh.a)
+	exposeKeys(t, mesh, keyB, keyC)
+	connB := dialGranted(t, mesh, mesh.b)
+	connC := dialGranted(t, mesh, mesh.c)
+	until(t, 30*time.Second, "both members echo", func() bool {
+		return echoOn(t, connB, "b-before", 5*time.Second) == nil && echoOn(t, connC, "c-before", 5*time.Second) == nil
+	})
+	roster := fetch(t, mesh.a, "tn")
+	call(t, mesh.a, "member-revoke", membership.RevokeParams{
+		OperationID: "revoke-listed-b", TailnetID: "tn",
+		DeviceIDs: []string{mesh.b.row.DeviceID}, ExpectedRevision: roster.Revision, Confirmed: true, Reason: "revoked member must not pass keys gate",
+	})
+	until(t, 10*time.Second, "revoked listed member closed", func() bool {
+		return echoOn(t, connB, "b-after", 2*time.Second) != nil
+	})
+	if err := echoOn(t, connC, "c-after", 8*time.Second); err != nil {
+		t.Fatalf("still-listed member closed by another member's revoke: %v", err)
+	}
+	before := mesh.accepted.Load()
+	fresh := dialGranted(t, mesh, mesh.b)
+	_, _ = fresh.Write([]byte("revoked-but-listed"))
+	requireClosed(t, fresh)
+	exposeKeys(t, mesh, keyB)
+	again := dialGranted(t, mesh, mesh.b)
+	_, _ = again.Write([]byte("revoked-but-relisted"))
+	requireClosed(t, again)
+	if got := mesh.accepted.Load(); got != before {
+		t.Fatalf("revoked listed member reached backend: %d -> %d", before, got)
+	}
+}
+
+func TestExposureKeysRefusedUpdatesKeepOldGate(t *testing.T) {
+	mesh := joinGrantMesh(t)
+	keyB, keyC := shownKey(t, mesh.b, mesh.a), shownKey(t, mesh.c, mesh.a)
+	exposeKeys(t, mesh, keyB)
+	other, err := net.Listen("unix", filepath.Join(mesh.a.dir, "backend2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	var otherAccepted atomic.Int64
+	go func() {
+		for {
+			conn, err := other.Accept()
+			if err != nil {
+				return
+			}
+			otherAccepted.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	ctx := context.Background()
+	if _, err = mesh.a.e.Expose(ctx, engine.Exposure{Port: grantedPort, Target: "unix:" + other.Addr().String(), Admission: "keys", Keys: []string{keyB, keyC}}); !errors.Is(err, engine.ErrPortInUse) {
+		t.Fatalf("target change err = %v, want ErrPortInUse", err)
+	}
+	if _, err = mesh.a.e.Expose(ctx, engine.Exposure{Port: grantedPort, Target: mesh.target, ProxyProtocol: "v2", Admission: "keys", Keys: []string{keyB, keyC}}); !errors.Is(err, engine.ErrPortInUse) {
+		t.Fatalf("proxyProtocol change err = %v, want ErrPortInUse", err)
+	}
+	if _, err = mesh.a.e.Expose(ctx, engine.Exposure{Port: grantedPort, Target: mesh.target, Admission: "any"}); !errors.Is(err, engine.ErrBadInput) {
+		t.Fatalf("keys->any err = %v, want ErrBadInput", err)
+	}
+	_, err = mesh.a.e.Expose(ctx, engine.Exposure{Port: grantedPort, Target: mesh.target, Admission: "keys", Keys: []string{keyB, keyC, "nodekey:nope"}})
+	if !errors.Is(err, engine.ErrBadInput) {
+		t.Fatalf("malformed key err = %v, want ErrBadInput", err)
+	}
+	if strings.Contains(err.Error(), "bad input: bad input:") {
+		t.Fatalf("duplicated bad input prefix: %v", err)
+	}
+	if _, err = mesh.a.e.Expose(ctx, engine.Exposure{Port: grantedPort, Target: mesh.target, Admission: "allow", Keys: []string{keyC}}); !errors.Is(err, engine.ErrBadInput) {
+		t.Fatalf("allow with keys err = %v, want ErrBadInput", err)
+	}
+	refused := dialGranted(t, mesh, mesh.c)
+	_, _ = refused.Write([]byte("c-after-refused-updates"))
+	requireClosed(t, refused)
+	admitted := dialGranted(t, mesh, mesh.b)
+	until(t, 30*time.Second, "listed member echo", func() bool {
+		return echoOn(t, admitted, "granted", 5*time.Second) == nil
+	})
+	if got := mesh.accepted.Load(); got != 1 || otherAccepted.Load() != 0 {
+		t.Fatalf("backend=%d other=%d, want 1 and 0", got, otherAccepted.Load())
+	}
+}
+
+func TestExposureKeysShrinkRacesFreshAccept(t *testing.T) {
+	mesh := joinGrantMesh(t)
+	keyB := shownKey(t, mesh.b, mesh.a)
+	exposeKeys(t, mesh, keyB)
+	warm := dialGranted(t, mesh, mesh.b)
+	until(t, 30*time.Second, "warm echo", func() bool {
+		return echoOn(t, warm, "warm", 5*time.Second) == nil
+	})
+	slot := filepath.Join(mesh.b.dir, "slot-a")
+	marker := []byte("AFTER-SHRINK")
+	leaked, lingering, preEcho := 0, 0, 0
+	const rounds = 60
+	for i := 0; i < rounds; i++ {
+		exposeKeys(t, mesh, keyB)
+		conn, err := net.Dial("unix", slot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = conn.Write([]byte("before"))
+		time.Sleep(time.Duration(i%12) * 300 * time.Microsecond)
+		exposeKeys(t, mesh)
+		_, _ = conn.Write(marker)
+		_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+		got, err := io.ReadAll(conn)
+		if bytes.Contains(got, []byte("before")) {
+			preEcho++
+		}
+		if bytes.Contains(got, marker) {
+			leaked++
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			lingering++
+		}
+		_ = conn.Close()
+	}
+	until(t, 5*time.Second, "all closed race connections counted", func() bool {
+		return mesh.a.e.DeniedCount()+mesh.a.e.DisconnectedCount() >= int64(rounds+1)
+	})
+	t.Logf("rounds=%d echoed-before-shrink=%d leaked-after-shrink=%d left-open=%d denied=%d disconnected=%d backend=%d",
+		rounds, preEcho, leaked, lingering, mesh.a.e.DeniedCount(), mesh.a.e.DisconnectedCount(), mesh.accepted.Load())
+	if leaked != 0 || lingering != 0 {
+		t.Fatalf("shrink race: leaked=%d left-open=%d", leaked, lingering)
+	}
+}
+
+func TestExposureKeysProxyProtocolV2(t *testing.T) {
+	mesh := joinGrantMesh(t)
+	keyB := shownKey(t, mesh.b, mesh.a)
+	v2Dir := filepath.Join(mesh.a.dir, "v2backend")
+	if err := os.MkdirAll(v2Dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(v2Dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(v2Dir, "app.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	var v2Accepted atomic.Int64
+	tlvCh := make(chan string, 4)
+	signature := [12]byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			v2Accepted.Add(1)
+			go func(c net.Conn) {
+				defer c.Close()
+				preamble := make([]byte, 16)
+				if _, err := io.ReadFull(c, preamble); err != nil {
+					return
+				}
+				if !bytes.Equal(preamble[:12], signature[:]) || preamble[12] != 0x21 || preamble[13] != 0x21 {
+					return
+				}
+				payloadLen := int(binary.BigEndian.Uint16(preamble[14:16]))
+				payload := make([]byte, payloadLen)
+				if _, err := io.ReadFull(c, payload); err != nil {
+					return
+				}
+				if len(payload) >= 39 && payload[36] == 0xe0 {
+					tlvLen := int(binary.BigEndian.Uint16(payload[37:39]))
+					if 39+tlvLen <= len(payload) {
+						tlvCh <- string(payload[39 : 39+tlvLen])
+					}
+				}
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	v2Target := "unix:" + listener.Addr().String()
+	const v2Port = grantedPort + 1
+	if _, err := mesh.a.e.Expose(context.Background(), engine.Exposure{
+		Port: v2Port, Target: v2Target, ProxyProtocol: "v2", Admission: "keys", Keys: []string{keyB},
+	}); err != nil {
+		t.Fatalf("expose v2 keys: %v", err)
+	}
+	dialV2 := func(member *node) net.Conn {
+		t.Helper()
+		slot := filepath.Join(member.dir, "slot-a")
+		if _, err := member.e.MapPeer("granted-v2", mesh.a.row.Address, v2Port, slot); err != nil {
+			t.Fatal(err)
+		}
+		conn, err := net.Dial("unix", slot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		return conn
+	}
+
+	refused := dialV2(mesh.c)
+	_, _ = refused.Write([]byte("unlisted-v2"))
+	requireClosed(t, refused)
+	if got := v2Accepted.Load(); got != 0 {
+		t.Fatalf("unlisted member reached v2 backend: %d", got)
+	}
+
+	connB := dialV2(mesh.b)
+	until(t, 30*time.Second, "listed member v2 echo", func() bool {
+		return echoOn(t, connB, "v2-granted", 5*time.Second) == nil
+	})
+	select {
+	case gotKey := <-tlvCh:
+		if gotKey != keyB {
+			t.Fatalf("PROXY v2 TLV nodekey = %q, want %q", gotKey, keyB)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for PROXY v2 TLV")
+	}
+
+	disconnected := mesh.a.e.DisconnectedCount()
+	if _, err := mesh.a.e.Expose(context.Background(), engine.Exposure{
+		Port: v2Port, Target: v2Target, ProxyProtocol: "v2", Admission: "keys", Keys: []string{},
+	}); err != nil {
+		t.Fatalf("shrink v2 keys to empty: %v", err)
+	}
+	until(t, 10*time.Second, "v2 connection closed after shrink", func() bool {
+		return echoOn(t, connB, "after-v2-shrink", 2*time.Second) != nil
+	})
+	until(t, 5*time.Second, "disconnected counter on v2 shrink", func() bool {
+		return mesh.a.e.DisconnectedCount() > disconnected
+	})
+	fresh := dialV2(mesh.b)
+	_, _ = fresh.Write([]byte("after-v2-shrink-fresh"))
+	requireClosed(t, fresh)
+	if got := v2Accepted.Load(); got != 1 {
+		t.Fatalf("v2 backend accepted %d connections, want 1", got)
 	}
 }
