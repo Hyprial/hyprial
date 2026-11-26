@@ -1,0 +1,18 @@
+{
+  "planId": "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
+  "unsigned": {
+    "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
+    "metaFrontier": "AvqhrMmIj78FGOCGnpfjt5UJDQ==",
+    "docs": [],
+    "blobs": [
+      {
+        "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
+        "referencedElsewhereLocally": []
+      }
+    ],
+    "snapshots": [],
+    "writersAffected": [],
+    "authorsBefore": {},
+    "expiresAt": "2026-11-04T09:00:00Z"
+  }
+}
