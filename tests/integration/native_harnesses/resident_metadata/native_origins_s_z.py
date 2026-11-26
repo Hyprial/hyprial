@@ -156,4 +156,9 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/user_agent/naming.py": ("resident", ("new-module: UA1b per-machine user agent identity",)),
     "daemon/impl/user_agent/runtime.py": ("resident", ("new-module: UA1b per-machine user agent identity",)),
     "daemon/impl/user_key/login_key.py": ("resident", ("new-module: Z-5 daemon-driven first login; no credentials",)),
+    "daemon/impl/service_grants/__init__.py": ("resident", ("new-module: service grant S3 domain package",)),
+    "daemon/impl/service_grants/ipc.py": ("resident", ("new-module: service grant S3 IPC wiring",)),
+    "daemon/impl/service_grants/models.py": ("resident", ("new-module: service grant S3 models",)),
+    "daemon/impl/service_grants/queries.py": ("resident", ("new-module: service grant S3 pure query helpers",)),
+    "daemon/impl/service_grants/service.py": ("resident", ("new-module: service grant S3 domain service",)),
 }
