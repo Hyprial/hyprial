@@ -6,15 +6,18 @@ who wrote it. The header binds org, grantId, the service endpoint
 (grantor owner, deviceId, port), the recipient device (owner, deviceId) and the
 recipient's encryptionKeyId; it is the AEAD associated data and is mixed into
 the HKDF info, so a ciphertext copied into another grant document, or re-labelled
-for another key, does not open. Opening requires the caller to rebuild the
-expected header from the document it read; the envelope's own header is never
-trusted on its own. The canonical encoding is the bounded canonical JSON of the
-whole header (keys sorted, no whitespace, UTF-8, integers only). Seal-time input
-faults are INVALID_ARGUMENT; every opening failure is one value-free
-PAYLOAD_INVALID. Grant ids are sg. plus 26 lowercase base32 characters.
-Identifiers refuse empty values, control characters and "/" so the
-<owner>/<deviceId> rendering stays unambiguous, and a leading "@", which is
-selector syntax ("@members" grants never carry a credential).
+for another key, does not open. Both sealing and opening take structured grant
+fields rather than a raw header dict: sealing derives encryptionKeyId from the
+recipient public key, and opening rebuilds the expected header from the caller's
+document fields so the envelope's own header is never trusted on its own. The
+canonical encoding is the bounded canonical JSON of the whole header (keys
+sorted, no whitespace, UTF-8, integers only). Input faults are INVALID_ARGUMENT;
+every opening failure is one value-free PAYLOAD_INVALID. Grant ids are sg. plus
+26 lowercase base32 characters. Identifiers match the intersection with org
+directory _safe_path_component: non-empty str up to 256 chars, not "." or "..",
+no leading "@" (selector syntax), no "/" or "\\", no control chars (0x00-0x1F,
+0x7F) and no UTF-16 surrogates. Owner fields (grantor, recipient_owner) are
+bare document-path values and additionally reject ":" (no "user:" principal).
 """
 from __future__ import annotations
 
@@ -40,14 +43,20 @@ class ServiceGrantError(DaemonRequestError):
     """Value-free refusal: never carries key material, plaintext or parser text."""
 
     def __init__(self, code: str):
-        messages = {ARGUMENT: "service grant sealing input invalid",
+        messages = {ARGUMENT: "service grant input invalid",
                     REFUSED: "service grant credential cannot be opened"}
         super().__init__(code, messages.get(code, "service grant credential refused"))
 
 
 def _identifier(value: object) -> bool:
-    return (type(value) is str and 0 < len(value) <= 256 and not value.startswith("@")
-            and all(0x20 <= ord(c) != 0x7F and not 0xD800 <= ord(c) <= 0xDFFF and c != "/" for c in value))
+    return (type(value) is str and 0 < len(value) <= 256 and value not in {".", ".."}
+            and not value.startswith("@")
+            and all(0x20 <= ord(c) != 0x7F and not 0xD800 <= ord(c) <= 0xDFFF and c not in "/\\"
+                    for c in value))
+
+
+def _owner(value: object) -> bool:
+    return _identifier(value) and ":" not in value
 
 
 def _port(value: object) -> bool:
@@ -62,9 +71,9 @@ def _valid(header: object) -> bool:
             and header["wrap"] == "X25519-HKDF-SHA256-A256GCM" and _identifier(header["org"])
             and type(header["grantId"]) is str and _GRANT_ID.match(header["grantId"]) is not None
             and type(service) is dict and service.keys() == {"owner", "deviceId", "port"}
-            and _identifier(service["owner"]) and _identifier(service["deviceId"]) and _port(service["port"])
+            and _owner(service["owner"]) and _identifier(service["deviceId"]) and _port(service["port"])
             and type(recipient) is dict and recipient.keys() == {"owner", "deviceId"}
-            and _identifier(recipient["owner"]) and _identifier(recipient["deviceId"])
+            and _owner(recipient["owner"]) and _identifier(recipient["deviceId"])
             and type(header["encryptionKeyId"]) is str and _KEY_ID.match(header["encryptionKeyId"]) is not None)
 
 
@@ -93,7 +102,15 @@ def _argument_header(header: object) -> dict:
 
 def service_grant_header(*, org: str, grant_id: str, grantor: str, service_device: str, port: int,
                          recipient_owner: str, recipient_device: str, encryption_key_id: str) -> dict:
-    """Build the one canonical header for a grant; INVALID_ARGUMENT when a field is unusable."""
+    """Build the one canonical header for a grant; INVALID_ARGUMENT when a field is unusable.
+
+    Owner fields (grantor, recipient_owner) must be the bare owner values from the
+    grant document path, never "user:<owner>" principals; any ":" in an owner is
+    rejected. Identifiers (org, grantor, service_device, recipient_owner,
+    recipient_device) must be non-empty str up to 256 chars, not "." or "..",
+    without leading "@", "/", "\\", ASCII control chars (0x00-0x1F, 0x7F) or
+    UTF-16 surrogates.
+    """
     return _argument_header({
         "v": 1, "alg": "A256GCM", "wrap": "X25519-HKDF-SHA256-A256GCM", "org": org, "grantId": grant_id,
         "service": {"owner": grantor, "deviceId": service_device, "port": port},
@@ -102,21 +119,30 @@ def service_grant_header(*, org: str, grant_id: str, grantor: str, service_devic
     })
 
 
-def seal_service_grant(secret: bytes, *, header: dict, recipient_public_key: bytes) -> dict:
-    """Seal a credential to one device key. The header must name that key's id."""
-    header = _argument_header(header)
+def seal_service_grant(secret: bytes, *, org: str, grant_id: str, grantor: str, service_device: str,
+                       port: int, recipient_owner: str, recipient_device: str,
+                       recipient_public_key: bytes) -> dict:
+    """Seal a credential to one device key; encryptionKeyId is derived from recipient_public_key."""
     if type(recipient_public_key) is not bytes or len(recipient_public_key) != 32:
         raise ServiceGrantError(ARGUMENT)
     key_id = encryption_key_id(recipient_public_key)
-    if header["encryptionKeyId"] != key_id:
-        raise ServiceGrantError(ARGUMENT)
+    header = service_grant_header(
+        org=org, grant_id=grant_id, grantor=grantor, service_device=service_device, port=port,
+        recipient_owner=recipient_owner, recipient_device=recipient_device, encryption_key_id=key_id,
+    )
     return core.seal(SERVICE_GRANT, secret, header=header,
                      recipients=[Recipient(key_id, recipient_public_key)])
 
 
-def open_service_grant(envelope: dict, *, header: dict, private_key: bytes) -> bytes:
-    """Open only if the envelope carries exactly the expected header for this grant and key."""
-    expected = _argument_header(header)
+def open_service_grant(envelope: dict, *, org: str, grant_id: str, grantor: str, service_device: str,
+                       port: int, recipient_owner: str, recipient_device: str,
+                       encryption_key_id: str, private_key: bytes) -> bytes:
+    """Open only if the envelope carries the exact header rebuilt from these grant fields."""
+    expected = service_grant_header(
+        org=org, grant_id=grant_id, grantor=grantor, service_device=service_device, port=port,
+        recipient_owner=recipient_owner, recipient_device=recipient_device,
+        encryption_key_id=encryption_key_id,
+    )
     value = core.verify(SERVICE_GRANT, envelope)
     if value["header"] != expected:
         raise ServiceGrantError(REFUSED)

@@ -182,11 +182,6 @@ def _unwrap(profile: Profile, row: dict, private_key: bytes, header_bytes: bytes
         raise profile.error(profile.unseal) from None
 
 
-def unwrap_row(profile: Profile, row: dict, private_key: bytes, header_bytes: bytes) -> bytes:
-    """Unwrap one recipient row's DEK. No verification: callers verify the envelope first."""
-    return _unwrap(profile, row, private_key, header_bytes)
-
-
 def _row(profile: Profile, value: dict, recipient_key_id: str) -> dict:
     row = next((r for r in value["recipients"] if r["recipientKeyId"] == recipient_key_id), None)
     _require(profile, row is not None, profile.missing)

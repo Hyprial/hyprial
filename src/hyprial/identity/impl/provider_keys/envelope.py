@@ -10,7 +10,8 @@ PROVIDER_KEY_RECIPIENT_PENDING.
 from __future__ import annotations
 
 from hyprial.kernel import ipc_errors
-from .. import sealed_envelope
+from ..sealed_envelope import Profile, Signature
+from ..sealed_envelope import core as sealed_core
 from .models import (
     ENVELOPE_PURPOSE, INVALID, MAX_RECIPIENTS, MAX_SECRET_BYTES, UNSEAL, WRAP_DOMAIN,
     Error, OwnerKey, Recipient, SigningKey, integer, require, sign, validate_header, verify,
@@ -29,20 +30,15 @@ def _verify(unsigned: dict, sealed_by: object, owner_key: object, header: dict) 
     verify(unsigned, sealed_by, owner_key, ENVELOPE_PURPOSE, owner=header["owner"])
 
 
-PROFILE = sealed_envelope.Profile(
+PROFILE = Profile(
     name="provider-key", wrap_domain=WRAP_DOMAIN,
     header_fields=frozenset({"v", "alg", "wrap", "provider", "keyId", "owner", "dekVersion", "createdAt"}),
     check_header=validate_header,
-    signature=sealed_envelope.Signature(check_signer=_check_signer, sign=_sign, verify=_verify),
+    signature=Signature(check_signer=_check_signer, sign=_sign, verify=_verify),
     error=Error, invalid=INVALID, unseal=UNSEAL, missing=ipc_errors.PROVIDER_KEY_RECIPIENT_PENDING,
     argument=UNSEAL, recipient_type=Recipient, max_secret_bytes=MAX_SECRET_BYTES,
-    max_recipients=MAX_RECIPIENTS,
+    max_recipients=MAX_RECIPIENTS, reject_weak_recipients=False,
 )
-
-
-def _unwrap(row: dict, private_key: bytes, header_bytes: bytes) -> bytes:
-    """Unwrap one recipient row's DEK under the provider-key profile; no verification."""
-    return sealed_envelope.unwrap_row(PROFILE, row, private_key, header_bytes)
 
 
 def seal(secret: bytes, *, header: dict, recipients: list[Recipient], signer: SigningKey) -> dict:
@@ -51,19 +47,19 @@ def seal(secret: bytes, *, header: dict, recipients: list[Recipient], signer: Si
     Callers own cross-record version allocation. This pure primitive cannot prove
     that a caller did not reuse a version in another process or storage replica.
     """
-    return sealed_envelope.seal(PROFILE, secret, header=header, recipients=recipients, signer=signer)
+    return sealed_core.seal(PROFILE, secret, header=header, recipients=recipients, signer=signer)
 
 
 def verify_envelope(envelope: dict, *, owner_key: OwnerKey) -> dict:
     """Return a detached verified object. No key is accepted from this document."""
-    return sealed_envelope.verify(PROFILE, envelope, owner_key=owner_key)
+    return sealed_core.verify(PROFILE, envelope, owner_key=owner_key)
 
 
 def open_envelope(envelope: dict, *, owner_key: OwnerKey, recipient_key_id: str,
                   private_key: bytes) -> bytes:
     """Verify before key exchange/decryption. This is not grant authorization."""
-    return sealed_envelope.open(PROFILE, envelope, owner_key=owner_key, recipient_key_id=recipient_key_id,
-                                private_key=private_key)
+    return sealed_core.open(PROFILE, envelope, owner_key=owner_key, recipient_key_id=recipient_key_id,
+                            private_key=private_key)
 
 
 def unwrap_check(envelope: dict, *, owner_key: OwnerKey, recipient_key_id: str,
@@ -74,8 +70,8 @@ def unwrap_check(envelope: dict, *, owner_key: OwnerKey, recipient_key_id: str,
     key or altered wrap is UNSEAL. Success proves custody of the wrap, not that
     the payload ciphertext opens.
     """
-    sealed_envelope.unwrap_check(PROFILE, envelope, owner_key=owner_key, recipient_key_id=recipient_key_id,
-                                 private_key=private_key)
+    sealed_core.unwrap_check(PROFILE, envelope, owner_key=owner_key, recipient_key_id=recipient_key_id,
+                             private_key=private_key)
 
 
 def reseal(envelope: dict, *, owner_key: OwnerKey, recipient_key_id: str,

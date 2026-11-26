@@ -48,4 +48,4 @@ class Profile:
     recipient_type: type = Recipient
     max_secret_bytes: int = 16384
     max_recipients: int = 32
-    reject_weak_recipients: bool = False
+    reject_weak_recipients: bool = True

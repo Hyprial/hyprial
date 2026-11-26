@@ -157,18 +157,28 @@ class Store:
             return ProviderKeys.open_envelope(envelope, owner_key=owner_key, recipient_key_id=record.key_id,
                                               private_key=decode(record.private_key, 32))
 
-    def open_service_grant(self, envelope: dict, *, header: dict) -> bytes:
+    def open_service_grant(
+        self, envelope: dict, *, org: str, grant_id: str, grantor: str,
+        service_device: str, port: int, recipient_owner: str, recipient_device: str,
+    ) -> bytes:
         """Open a service-grant credential sealed to this device's key; no owner key is involved.
 
-        The caller rebuilds the expected header from the grant document it read;
-        an envelope whose own header differs is refused. Custody stays user-scoped.
+        The caller passes structured grant fields from the document it read; this
+        store supplies its own encryptionKeyId and rebuilds the expected header via
+        service_grant_header. An envelope whose own header differs is refused.
+        Custody stays user-scoped.
         """
         from ...sealed_envelope import open_service_grant
         self._require_custody(check_owner=False)
         with self._fence.locked():
             record = self._read()
             self._require_local(record)
-            return open_service_grant(envelope, header=header, private_key=decode(record.private_key, 32))
+            return open_service_grant(
+                envelope, org=org, grant_id=grant_id, grantor=grantor,
+                service_device=service_device, port=port,
+                recipient_owner=recipient_owner, recipient_device=recipient_device,
+                encryption_key_id=record.key_id, private_key=decode(record.private_key, 32),
+            )
 
     def probe_sealed(self, envelope: dict, *, owner_key) -> bool:
         """Verify and unwrap this device's DEK without decrypting the payload; raise on any refusal."""
