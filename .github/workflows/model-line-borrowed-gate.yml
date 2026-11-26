@@ -270,13 +270,15 @@ jobs:
         env:
           STATIC: ${{ needs.static.result }}
           PYTEST: ${{ needs.pytest.result }}
+          PI_SUPPORTED: ${{ needs.pi-supported-sdk.result }}
           HYGIENE: ${{ needs.pr-hygiene.result }}
           EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          echo "static=${STATIC} pytest=${PYTEST} pr-hygiene=${HYGIENE} event=${EVENT}"
+          echo "static=${STATIC} pytest=${PYTEST} pi-supported-sdk=${PI_SUPPORTED} pr-hygiene=${HYGIENE} event=${EVENT}"
           test "${STATIC}" = success
           test "${PYTEST}" = success
+          test "${PI_SUPPORTED}" = success
           if [ "${EVENT}" = pull_request ]; then
             test "${HYGIENE}" = success
           else
