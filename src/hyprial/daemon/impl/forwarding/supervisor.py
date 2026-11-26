@@ -1,8 +1,12 @@
+# Decision notes (service grant S4-py, 2026-11-26):
+# - A desired exposure replayed after a (re)spawn admits nobody: the replay
+#   exposes with an empty key set, never "allow". The admission owner derives
+#   the real set from the grants and the roster and pushes it once the sidecar
+#   is installed, through on_installed. A set remembered from before a restart
+#   is not reused here, because a grant revoked while the sidecar was down
+#   would then still be admitted.
 """ForwardingSidecarSupervisor and its relaunch state machine."""
 
-from __future__ import annotations
-
-from __future__ import annotations
 from __future__ import annotations
 import json
 import random
@@ -402,11 +406,13 @@ class ForwardingSidecarSupervisor:
         with self._lock:
             return self._endpoints
 
-    def expose(self, exposure: Mapping[str, object]) -> dict[str, object]:
+    def expose(
+        self, exposure: Mapping[str, object], *, admission: str, keys: Sequence[str] = ()
+    ) -> dict[str, object]:
         backend = self.endpoints()
         if backend is None:
             raise ForwardingSidecarError("forwarding sidecar is not running")
-        return backend.controller.expose(exposure)
+        return backend.controller.expose(exposure, admission=admission, keys=keys)
 
     def unexpose(self, port: int) -> None:
         backend = self.endpoints()
@@ -774,7 +780,7 @@ class ForwardingSidecarSupervisor:
                 # A single exposure the sidecar refuses is logged and skipped;
                 # it must not stop peer forwarding from starting.
                 try:
-                    controller.expose(exposure)
+                    controller.expose(exposure, admission="keys", keys=())
                 except ForwardingSidecarError as error:
                     self._event_log(
                         "error",

@@ -39,6 +39,8 @@ from .policy import (
     ForwardingSidecarError,
     _child_environment,
     _normalize_exposure,
+    confirmed_admission,
+    exposure_wire_request,
     parse_derp_map,
 )
 from .services import (
@@ -550,22 +552,18 @@ class ForwardingSidecarController(MembershipWireMixin):
                 "expose, unexpose, and peer-key; install a sidecar with inbound exposure support"
             )
 
-    def expose(self, exposure: Mapping[str, object]) -> dict[str, object]:
-        """Expose a target; protocol v7 writes canonical ``"none"`` proxyProtocol as ``""`` and requires explicit admission."""
+    def expose(
+        self, exposure: Mapping[str, object], *, admission: str, keys: Sequence[str] = ()
+    ) -> dict[str, object]:
+        """Expose a target with an explicit admission; the reply must confirm it."""
+
         self._require_expose_capability()
         normalized = _normalize_exposure(exposure)
-        wire = dict(normalized)
-        if wire["proxyProtocol"] == "none":
-            wire["proxyProtocol"] = ""
-        wire["admission"] = "allow"
-        event = self._request(
-            {"v": FORWARD_PROTOCOL_VERSION, "op": "expose", **wire},
-            "exposed",
-        )
-        answer = _normalize_exposure(event)
-        if answer != normalized or event.get("admission") != "allow":
+        wire = exposure_wire_request(normalized, admission, keys)
+        event = self._request({"v": FORWARD_PROTOCOL_VERSION, "op": "expose", **wire}, "exposed")
+        if not confirmed_admission(event, wire):
             raise ForwardingSidecarError("exposed event does not match request")
-        return answer
+        return normalized
 
     def unexpose(self, port: int) -> None:
         self._require_expose_capability()

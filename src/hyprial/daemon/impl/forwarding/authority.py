@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,6 +52,8 @@ class _UnmapSidecarPeer:
 class _ExposeSidecar:
     operation_id: str
     exposure: Mapping[str, object]
+    admission: str
+    keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +235,9 @@ class ForwardingControllerAuthority:
             elif isinstance(command, _UnmapSidecarPeer):
                 value = self._controller.unmap_peer(command.peer)
             elif isinstance(command, _ExposeSidecar):
-                value = self._controller.expose(command.exposure)
+                value = self._controller.expose(
+                    command.exposure, admission=command.admission, keys=command.keys
+                )
             elif isinstance(command, _UnexposeSidecar):
                 value = self._controller.unexpose(command.port)
             elif isinstance(command, _PeerKeySidecar):
@@ -304,8 +308,12 @@ class ForwardingControllerAuthority:
     def unmap_peer(self, peer: str) -> None:
         self._call(_UnmapSidecarPeer(uuid.uuid4().hex, peer))
 
-    def expose(self, exposure: Mapping[str, object]) -> dict[str, object]:
-        result = self._call(_ExposeSidecar(uuid.uuid4().hex, dict(exposure)))
+    def expose(
+        self, exposure: Mapping[str, object], *, admission: str, keys: Sequence[str] = ()
+    ) -> dict[str, object]:
+        result = self._call(
+            _ExposeSidecar(uuid.uuid4().hex, dict(exposure), admission, tuple(keys))
+        )
         assert isinstance(result, dict)
         return result
 
