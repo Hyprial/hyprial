@@ -9,14 +9,30 @@
 #   timeouts and wire error-code validation are exercised.  CLI joins call
 #   ``OrgNetworkService.join`` directly.
 # - Late bodies are deterministic: a query gate holds the Nth (3rd and later)
-#   ``/org/fs3/sync/`` query for the target space until the test releases it.
+#   ``/org/fs3/sync/`` query for the target space until the test releases it
+#   (superseded by the F10b gate bullet below).
 # - One-time token replay remains refused with ``INVITE_CONSUMED`` on public
 #   ``org.invites.accept``; ``accept_invite`` is unchanged from baseline.
+# - Package F10b (owner ruling on the F10 review): the wait is best effort, so
+#   a body still pending is logged and the join goes on.  The "waits for a
+#   late body" tests no longer release on a timer: the call must be inside the
+#   body wait while the gate still holds the body, then the test releases it,
+#   which keeps them red on a non-waiting build however loaded the machine is.
+#   Caps are asserted on the timeouts handed to ``await_text``, not wall time.
+# - F10b: the gate (and the holder that leaves) key on what a query asks for,
+#   not on its position.  Counting to the 3rd query was load dependent: on two
+#   shared cores the body sometimes came with the 2nd round, failing the order
+#   assertion with the fix in place (measured; trace in the F10b report).
+#   Holding a body query instead would block ``join``, which waits for the
+#   first resident round, so a closed gate strips the body documents from the
+#   space's requests (meta and tree still sync) and opening it schedules a new
+#   round from the owner.
 """Post-join late document body waits across IPC accept and CLI org join (F10)."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+import dataclasses
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -39,6 +55,8 @@ from hyprial.daemon.impl.org.network.service import OrgNetworkService
 from hyprial.daemon.impl.org.network.tailnet.budget import JoinBudget
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.sync import FrameError, SyncRequest, decode_request, encode_request
+from hyprial.daemon.impl.orgfs.sync.interface import CATALOG_DOC_IDS
 from hyprial.daemon.impl.request_catalog.registry import METHOD_REGISTRY
 from hyprial.identity import (
     ACTION_READ,
@@ -110,24 +128,52 @@ def _service(
     return OrgNetworkService(**values)
 
 
-class SyncGate:
-    """Hold the Nth and later ``/org/fs3/sync/`` queries for one space."""
+def _sync_request(space_id: str, payload: bytes) -> SyncRequest | None:
+    try:
+        return decode_request(payload, space_id=space_id)
+    except FrameError:
+        return None
 
-    def __init__(self, space_id: str, *, hold_from: int = 3) -> None:
+
+def _asks_for_body(space_id: str, payload: bytes) -> bool:
+    request = _sync_request(space_id, payload)
+    return request is not None and any(
+        doc_id not in CATALOG_DOC_IDS for doc_id, _vector in request.vectors
+    )
+
+
+def _without_bodies(space_id: str, payload: bytes) -> bytes:
+    request = _sync_request(space_id, payload)
+    if request is None:
+        return payload
+    kept = tuple(row for row in request.vectors if row[0] in CATALOG_DOC_IDS)
+    return encode_request(dataclasses.replace(request, vectors=kept))
+
+
+class SyncGate:
+    """Keep one space's document bodies from arriving until the test opens it.
+
+    While closed, each ``/org/fs3/sync/`` request for the space goes out with
+    its body documents removed, so meta and tree sync as usual and no round
+    blocks on the gate.  Opening it asks the space's sync for a new round.
+    """
+
+    def __init__(self, space_id: str) -> None:
         self.space_id = space_id
-        self.hold_from = hold_from
-        self.seen = 0
         self.reached = threading.Event()
         self.release = threading.Event()
+        self.on_open: list[Callable[[], None]] = []
 
     def open(self) -> None:
         self.release.set()
+        for callback in tuple(self.on_open):
+            callback()
 
     def release_after(self, delay_seconds: float, *, wait_timeout: float = 5.0) -> threading.Thread:
         def worker() -> None:
             if self.reached.wait(wait_timeout):
                 time.sleep(delay_seconds)
-            self.release.set()
+            self.open()
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
@@ -139,19 +185,15 @@ def _install_gates(session: Any, gates: tuple[SyncGate, ...]) -> None:
         return
     original = session.query
     by_space = {gate.space_id: gate for gate in gates}
-    lock = threading.Lock()
 
     def query(key_expr: str, payload: bytes, **kwargs: Any) -> list[Any]:
         text = str(key_expr)
         if "/org/fs3/sync/" in text:
             for space_id, gate in by_space.items():
                 if space_id in text:
-                    with lock:
-                        gate.seen += 1
-                        hold = gate.seen >= gate.hold_from
-                    if hold:
+                    if not gate.release.is_set() and _asks_for_body(space_id, payload):
                         gate.reached.set()
-                        gate.release.wait(30.0)
+                        payload = _without_bodies(space_id, payload)
                     break
         return original(key_expr, payload, **kwargs)
 
@@ -159,23 +201,21 @@ def _install_gates(session: Any, gates: tuple[SyncGate, ...]) -> None:
 
 
 def _holder_leaves_on_body_query(
-    network: FakeNetwork, holder: str, space_id: str, *, leave_from: int = 3
+    network: FakeNetwork, holder: str, space_id: str
 ) -> threading.Event:
     """Drop ``holder`` from the network when it first receives a body query."""
 
     left = threading.Event()
     lock = threading.Lock()
-    seen = 0
     for index, (node, expression, handler) in enumerate(tuple(network.handlers)):
         if node != holder or "/org/fs3/sync/" not in expression:
             continue
 
         def serving(key_expr: str, payload: bytes, _handler: Any = handler) -> list[Any]:
-            nonlocal seen
-            if space_id in str(key_expr):
+            if space_id in str(key_expr) and _asks_for_body(space_id, payload):
                 with lock:
-                    seen += 1
-                    should_leave = seen >= leave_from and not left.is_set()
+                    should_leave = not left.is_set()
+                    left.set()
                 if should_leave:
                     left.set()
                     network.forget(holder)
@@ -184,6 +224,78 @@ def _holder_leaves_on_body_query(
 
         network.handlers[index] = (node, expression, serving)
     return left
+
+
+def _call_held_in_body_wait(
+    call: Callable[[], Any], runtime: OrgFsRuntime, gates: tuple[SyncGate, ...]
+) -> tuple[threading.Thread, dict[str, Any]]:
+    """Run ``call`` until it waits on a gated body; fail if it returns first.
+
+    The order is structural: a call that does not wait returns while the gate
+    still holds the body, however slow the machine is.
+    """
+
+    spaces = {gate.space_id for gate in gates}
+    either = threading.Event()
+    entered = threading.Event()
+    original = runtime.await_content
+
+    def spy(space_id: str, node_id: str, *, deadline_monotonic: float) -> bool:
+        if space_id in spaces:
+            entered.set()
+            either.set()
+        return original(space_id, node_id, deadline_monotonic=deadline_monotonic)
+
+    runtime.await_content = spy  # type: ignore[method-assign]
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["result"] = call()
+        except BaseException as error:  # noqa: BLE001
+            box["error"] = error
+        finally:
+            box["done"] = True
+            either.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert either.wait(20.0)
+    assert entered.is_set() and "done" not in box, f"returned while the body was held: {box}"
+    return thread, box
+
+
+def _released(thread: threading.Thread, box: dict[str, Any], gates: tuple[SyncGate, ...]) -> Any:
+    for gate in gates:
+        gate.open()
+    thread.join(timeout=20.0)
+    assert box.get("done"), "the call did not return after the bodies were released"
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
+def _spy_await_text(runtime: OrgFsRuntime) -> list[tuple[str, float]]:
+    calls: list[tuple[str, float]] = []
+    original = runtime.await_text
+
+    def spy(space_id: str, ref: str, *, timeout: float) -> Any:
+        calls.append((space_id, timeout))
+        return original(space_id, ref, timeout=timeout)
+
+    runtime.await_text = spy  # type: ignore[method-assign]
+    return calls
+
+
+class LogRecorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict[str, Any]]] = []
+
+    def __call__(self, level: str, _area: str, event: str, **fields: Any) -> None:
+        self.events.append((level, event, fields))
+
+    def named(self, event: str) -> list[dict[str, Any]]:
+        return [fields for level, name, fields in self.events if name == event and level == "warn"]
 
 
 class OwnerOrg:
@@ -261,6 +373,8 @@ class InviteeNode:
         )
         session = owner.network.add_node(node)
         _install_gates(session, gates)
+        for gate in gates:
+            gate.on_open.append(lambda space_id=gate.space_id: self._sync_again(space_id))
         self.runtime.bind_transport(
             session,
             supplier_online=owner.network.online_for(node),
@@ -286,6 +400,14 @@ class InviteeNode:
             _require_orgfs_runtime=lambda: self.runtime,
             authenticated_oidc_claims=lambda: dict(self.claims),
         )
+
+    def _sync_again(self, space_id: str) -> None:
+        try:
+            sync = self.runtime._mesh(space_id)
+        except OrgFsError:
+            return
+        if sync is not None:
+            sync.schedule_sync_from("node-owner")
 
     def invoke(self, method: str, params: dict[str, Any]) -> Any:
         original = ipc._request_service
@@ -335,15 +457,21 @@ def owner_org(tmp_path: Path) -> Any:
         org.close()
 
 
-def test_accept_waits_for_late_acl_policy_body(tmp_path: Path, owner_org: OwnerOrg) -> None:
+@pytest.fixture
+def long_body_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(org_binding, "JOIN_BODY_WAIT_SECONDS", 20.0, raising=False)
+
+
+def test_accept_waits_for_late_acl_policy_body(
+    tmp_path: Path, owner_org: OwnerOrg, long_body_wait: None
+) -> None:
     """R6-1: IPC org.invites.accept waits for a late ACL policy body (RED on baseline)."""
 
     acl_gate = SyncGate(owner_org.acl_id)
     invitee = InviteeNode(tmp_path, owner_org, gates=(acl_gate,))
-    releaser = acl_gate.release_after(0.08)
     try:
-        result = invitee.accept()
-        assert acl_gate.reached.is_set()
+        thread, box = _call_held_in_body_wait(invitee.accept, invitee.runtime, (acl_gate,))
+        result = _released(thread, box, (acl_gate,))
         assert result["ok"] is True
         assert result["joined"] is True
         assert any(step["kind"] == "register-device" for step in result["steps"])
@@ -352,23 +480,26 @@ def test_accept_waits_for_late_acl_policy_body(tmp_path: Path, owner_org: OwnerO
         assert role_grants_from_document(json.loads(text))
     finally:
         acl_gate.open()
-        releaser.join(timeout=2.0)
         invitee.close()
 
 
-def test_sub_org_accept_waits_for_late_directory_meta(tmp_path: Path, owner_org: OwnerOrg) -> None:
+def test_sub_org_accept_waits_for_late_directory_meta(
+    tmp_path: Path, owner_org: OwnerOrg, long_body_wait: None
+) -> None:
     """Review 9.1: sub-org accept waits for late directory/org.json (RED on baseline)."""
 
     sub = owner_org.create_sub_org()
     sub_dir_gate = SyncGate(sub["directory_id"])
     invitee = InviteeNode(tmp_path, owner_org, gates=(sub_dir_gate,))
-    releaser: threading.Thread | None = None
     try:
         parent_res = invitee.accept()
         assert parent_res["ok"] is True
-        releaser = sub_dir_gate.release_after(0.45)
-        sub_res = invitee.accept(invite_id=sub["invite_id"], link=sub["link"])
-        assert sub_dir_gate.reached.is_set()
+        thread, box = _call_held_in_body_wait(
+            lambda: invitee.accept(invite_id=sub["invite_id"], link=sub["link"]),
+            invitee.runtime,
+            (sub_dir_gate,),
+        )
+        sub_res = _released(thread, box, (sub_dir_gate,))
         assert sub_res["ok"] is True
         assert sub_res["joined"] is True
         assert any(step["kind"] == "connect-members" for step in sub_res["steps"])
@@ -377,70 +508,73 @@ def test_sub_org_accept_waits_for_late_directory_meta(tmp_path: Path, owner_org:
         assert listed[SUB_ORG]["parent"] == ORG
     finally:
         sub_dir_gate.open()
-        if releaser is not None:
-            releaser.join(timeout=2.0)
         invitee.close()
 
 
 def test_accept_followed_immediately_by_org_network_and_org_list(
-    tmp_path: Path, owner_org: OwnerOrg
+    tmp_path: Path, owner_org: OwnerOrg, long_body_wait: None
 ) -> None:
-    """Review 9.2 & 9.3: org.network and org.list succeed immediately after accept (RED on baseline)."""
+    """Review 9.2 & 9.3: org.network and org.list succeed immediately after accept (RED on baseline).
+
+    F10b: no timed release.  The accept must still be inside the body wait
+    while the gate holds the directory body; the test then releases it.
+    """
 
     dir_gate = SyncGate(owner_org.directory_id)
     invitee = InviteeNode(tmp_path, owner_org, gates=(dir_gate,))
-    releaser = dir_gate.release_after(0.08)
     try:
-        result = invitee.accept()
+        thread, box = _call_held_in_body_wait(invitee.accept, invitee.runtime, (dir_gate,))
+        result = _released(thread, box, (dir_gate,))
         assert result["ok"] is True
-        assert dir_gate.reached.is_set()
         network_view = invitee.service.network(ORG)
         assert network_view["self"]["owner"] == INVITEE
         listed = {row["org"]: row for row in invitee.service.list()["orgs"]}
         assert listed[ORG]["state"] == "active"
     finally:
         dir_gate.open()
-        releaser.join(timeout=2.0)
         invitee.close()
 
 
 def test_parent_accept_followed_immediately_by_sub_org_accept(
-    tmp_path: Path, owner_org: OwnerOrg
+    tmp_path: Path, owner_org: OwnerOrg, long_body_wait: None
 ) -> None:
-    """Review 9.4: accepting a sub-org right after parent accept does not see partial (RED on baseline)."""
+    """Review 9.4: accepting a sub-org right after parent accept does not see partial (RED on baseline).
+
+    F10b: no timed release, as in the test above.
+    """
 
     sub = owner_org.create_sub_org()
     parent_dir_gate = SyncGate(owner_org.directory_id)
     invitee = InviteeNode(tmp_path, owner_org, gates=(parent_dir_gate,))
-    releaser = parent_dir_gate.release_after(0.08)
     try:
-        parent_res = invitee.accept()
+        thread, box = _call_held_in_body_wait(invitee.accept, invitee.runtime, (parent_dir_gate,))
+        parent_res = _released(thread, box, (parent_dir_gate,))
         assert parent_res["ok"] is True
-        assert parent_dir_gate.reached.is_set()
         sub_res = invitee.accept(invite_id=sub["invite_id"], link=sub["link"])
         assert sub_res["ok"] is True
         assert sub_res["joined"] is True
     finally:
         parent_dir_gate.open()
-        releaser.join(timeout=2.0)
         invitee.close()
 
 
 def test_cli_join_followed_immediately_by_policy_allows_and_network(
-    tmp_path: Path, owner_org: OwnerOrg
+    tmp_path: Path, owner_org: OwnerOrg, long_body_wait: None
 ) -> None:
     """Review 9.5: CLI OrgNetworkService.join waits for both docs before returning (RED on baseline)."""
 
     dir_gate = SyncGate(owner_org.directory_id)
     acl_gate = SyncGate(owner_org.acl_id)
-    invitee = InviteeNode(tmp_path, owner_org, gates=(dir_gate, acl_gate))
-    dir_releaser = dir_gate.release_after(0.08)
-    acl_releaser = acl_gate.release_after(0.08)
+    gates = (dir_gate, acl_gate)
+    invitee = InviteeNode(tmp_path, owner_org, gates=gates)
     try:
-        joined = invitee.service.join(owner_org.link, claims=invitee.claims)
+        thread, box = _call_held_in_body_wait(
+            lambda: invitee.service.join(owner_org.link, claims=invitee.claims),
+            invitee.runtime,
+            gates,
+        )
+        joined = _released(thread, box, gates)
         assert joined["org"] == ORG
-        assert dir_gate.reached.is_set()
-        assert acl_gate.reached.is_set()
         assert invitee.service._policy.allows(
             org=ORG,
             subject=INVITEE,
@@ -452,33 +586,34 @@ def test_cli_join_followed_immediately_by_policy_allows_and_network(
     finally:
         dir_gate.open()
         acl_gate.open()
-        dir_releaser.join(timeout=2.0)
-        acl_releaser.join(timeout=2.0)
         invitee.close()
 
 
-@pytest.mark.parametrize(
-    ("target", "expected_step"),
-    [("acl", "acl-applied"), ("directory", "directory-committed")],
-)
+@pytest.mark.parametrize("directory_held", [False, True], ids=["acl-only", "directory-too"])
 def test_holder_offline_after_join_returns_no_holder_online_under_actor_timeout(
     tmp_path: Path,
     owner_org: OwnerOrg,
     monkeypatch: pytest.MonkeyPatch,
-    target: str,
-    expected_step: str,
+    directory_held: bool,
 ) -> None:
-    """Holder drops after join: wire error is no-holder-online (never DAEMON_ERROR), under actor limit.
+    """Holder drops after join: accept fails with no-holder-online (never DAEMON_ERROR), under actor limit.
 
-    ``acl`` is a guard on baseline (and pins bounded wait < actor timeout);
-    ``directory`` is RED on baseline (baseline silently succeeded with pending org.json).
+    Both cases are GUARD on baseline and give its result.  F10 had made the
+    ``directory-too`` case report ``directory-committed`` from the wait; under
+    the F10b ruling the wait only logs, so the accept read-back reports the
+    ACL policy, as the baseline does.  In ``directory-too`` the directory body
+    stays pending either because the gate holds its query or because the
+    holder left before it was asked for; which happens first is not fixed, so
+    the pending log is asserted, not the gate.
     """
 
     monkeypatch.setattr(org_binding, "JOIN_BODY_WAIT_SECONDS", 0.4, raising=False)
-    dir_gate = SyncGate(owner_org.directory_id) if target == "directory" else None
+    dir_gate = SyncGate(owner_org.directory_id) if directory_held else None
     gates = (dir_gate,) if dir_gate is not None else ()
     left = _holder_leaves_on_body_query(owner_org.network, "node-owner", owner_org.acl_id)
     invitee = InviteeNode(tmp_path, owner_org, gates=gates, join_timeout_seconds=30.0)
+    log = LogRecorder()
+    invitee.service._log = log
     try:
         actor = ipc._org_actors(invitee.app).for_org(ORG)
         actor._call_timeout_s = 1.5
@@ -487,15 +622,17 @@ def test_holder_offline_after_join_returns_no_holder_online_under_actor_timeout(
             invitee.accept()
         elapsed = time.monotonic() - started
         assert left.is_set()
-        if dir_gate is not None:
-            assert dir_gate.reached.is_set()
         assert exc_info.value.code == "no-holder-online"
         assert exc_info.value.code != "DAEMON_ERROR"
         assert exc_info.value.data is not None
-        assert exc_info.value.data["missingStep"] == expected_step
+        assert exc_info.value.data["missingStep"] == "acl-applied"
         assert exc_info.value.data["status"] == "partial"
         assert elapsed < 1.3
+        pending = {(row["spaceId"], row["doc"]) for row in log.named("org.join.body-pending")}
+        assert (owner_org.acl_id, ACL_POLICY_DOC) in pending
+        assert ((owner_org.directory_id, ORG_META_DOC) in pending) is directory_held
         assert invitee.journal()["state"] == "partial"
+        assert invitee.journal()["missingStep"] == "space-bound"
         assert invitee.own_device_rows() == []
         with pytest.raises(DaemonRequestError) as replay_exc:
             invitee.accept()
@@ -624,7 +761,7 @@ def test_legacy_org_without_org_meta_does_not_wait_or_fail(
 
 @pytest.mark.parametrize("join_step_completed", [False, True])
 def test_recovery_reentering_bootstrap_with_committed_spaces_waits_for_late_bodies(
-    tmp_path: Path, owner_org: OwnerOrg, join_step_completed: bool
+    tmp_path: Path, owner_org: OwnerOrg, long_body_wait: None, join_step_completed: bool
 ) -> None:
     """Recovery path where spaces are already committed still waits for late bodies (RED on baseline)."""
 
@@ -650,15 +787,11 @@ def test_recovery_reentering_bootstrap_with_committed_spaces_waits_for_late_bodi
             journal.complete_step("space-bound")
             journal.complete_step("join-org")
 
-        dir_releaser = dir_gate.release_after(0.08)
-        acl_releaser = acl_gate.release_after(0.08)
-        try:
-            result = run_bootstrap(invitee.service, parsed, journal)
-        finally:
-            dir_gate.open()
-            acl_gate.open()
-            dir_releaser.join(timeout=2.0)
-            acl_releaser.join(timeout=2.0)
+        gates = (dir_gate, acl_gate)
+        thread, box = _call_held_in_body_wait(
+            lambda: run_bootstrap(invitee.service, parsed, journal), invitee.runtime, gates
+        )
+        result = _released(thread, box, gates)
         assert result["org"] == ORG
         text, _version = invitee.runtime.facade.read_text(owner_org.directory_id, ORG_META_DOC)
         assert json.loads(text)["state"] == "active"
@@ -716,7 +849,10 @@ def test_await_text_non_pending_error_does_not_stat_or_await(
 def test_await_text_non_positive_timeout_does_not_wait(
     tmp_path: Path, owner_org: OwnerOrg
 ) -> None:
-    """Pins M2: timeout <= 0 re-raises content-pending directly without calling await_content (RED on baseline)."""
+    """Pins M2: timeout <= 0 re-raises content-pending without await_content (RED on baseline).
+
+    F10b: a join whose wait limit is already zero skips the wait without a read.
+    """
 
     acl_gate = SyncGate(owner_org.acl_id)
     invitee = InviteeNode(tmp_path, owner_org, gates=(acl_gate,))
@@ -738,18 +874,24 @@ def test_await_text_non_positive_timeout_does_not_wait(
             assert exc_info.value.code == ORGFS_CONTENT_PENDING
         assert await_calls == []
 
+        text_calls = _spy_await_text(invitee.runtime)
+        log = LogRecorder()
+        invitee.service._log = log
         budget = JoinBudget()
         budget.started = budget.clock() - (org_binding.JOIN_ACTOR_HEADROOM_SECONDS + 1.0)
         invitee.service._join_budget = budget
         try:
-            with pytest.raises(OrgFsError) as join_exc:
-                org_binding.await_org_join_bodies(
-                    invitee.service, owner_org.directory_id, owner_org.acl_id
-                )
+            org_binding.await_org_join_bodies(
+                invitee.service, owner_org.directory_id, owner_org.acl_id, org=ORG
+            )
         finally:
             invitee.service._join_budget = None
-        assert join_exc.value.code == "no-holder-online"
         assert await_calls == []
+        assert text_calls == []
+        assert log.named("org.join.body-wait-skipped") == [
+            {"org": ORG, "spaceIds": [owner_org.directory_id, owner_org.acl_id],
+             "reason": "no-wait-budget"}
+        ]
     finally:
         acl_gate.open()
         invitee.close()
@@ -766,21 +908,24 @@ def test_body_wait_is_capped_by_join_budget_remaining(
         invitee.runtime.facade.join(owner_org.directory_id)
         invitee.runtime.facade.join(owner_org.acl_id)
         assert acl_gate.reached.wait(2.0)
+        text_calls = _spy_await_text(invitee.runtime)
+        log = LogRecorder()
+        invitee.service._log = log
         budget = JoinBudget()
         budget.deadline = budget.clock() + 0.25
         invitee.service._join_budget = budget
         started = time.monotonic()
         try:
-            with pytest.raises(OrgFsError) as exc_info:
-                org_binding.await_org_join_bodies(
-                    invitee.service, owner_org.directory_id, owner_org.acl_id
-                )
+            org_binding.await_org_join_bodies(
+                invitee.service, owner_org.directory_id, owner_org.acl_id, org=ORG
+            )
         finally:
             invitee.service._join_budget = None
         elapsed = time.monotonic() - started
-        assert exc_info.value.code == "no-holder-online"
-        assert exc_info.value.details.get("missingStep") == "acl-applied"
-        assert 0.15 <= elapsed < 1.2
+        assert [space for space, _timeout in text_calls] == [owner_org.directory_id, owner_org.acl_id]
+        assert max(timeout for _space, timeout in text_calls) <= 0.25
+        assert elapsed >= 0.15
+        assert [row["doc"] for row in log.named("org.join.body-pending")] == [ACL_POLICY_DOC]
     finally:
         acl_gate.open()
         invitee.close()
@@ -797,21 +942,24 @@ def test_body_wait_is_capped_by_actor_headroom(
         invitee.runtime.facade.join(owner_org.directory_id)
         invitee.runtime.facade.join(owner_org.acl_id)
         assert acl_gate.reached.wait(2.0)
+        text_calls = _spy_await_text(invitee.runtime)
+        log = LogRecorder()
+        invitee.service._log = log
         budget = JoinBudget()
         budget.started = budget.clock() - (org_binding.JOIN_ACTOR_HEADROOM_SECONDS - 0.25)
         invitee.service._join_budget = budget
         started = time.monotonic()
         try:
-            with pytest.raises(OrgFsError) as exc_info:
-                org_binding.await_org_join_bodies(
-                    invitee.service, owner_org.directory_id, owner_org.acl_id
-                )
+            org_binding.await_org_join_bodies(
+                invitee.service, owner_org.directory_id, owner_org.acl_id, org=ORG
+            )
         finally:
             invitee.service._join_budget = None
         elapsed = time.monotonic() - started
-        assert exc_info.value.code == "no-holder-online"
-        assert exc_info.value.details.get("missingStep") == "acl-applied"
-        assert 0.15 <= elapsed < 1.2
+        assert [space for space, _timeout in text_calls] == [owner_org.directory_id, owner_org.acl_id]
+        assert max(timeout for _space, timeout in text_calls) <= 0.25
+        assert elapsed >= 0.15
+        assert [row["doc"] for row in log.named("org.join.body-pending")] == [ACL_POLICY_DOC]
     finally:
         acl_gate.open()
         invitee.close()

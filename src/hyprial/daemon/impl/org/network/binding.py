@@ -13,8 +13,18 @@
 #   ``ORG_ACTOR_TIMEOUT`` / ``DAEMON_ERROR``.
 # - A legitimately absent document (``unknown-doc``, e.g., legacy orgs without
 #   ``directory/org.json``) returns immediately without waiting or failing.
-#   Remaining ``content-pending`` raises ``no-holder-online`` carrying the
-#   failing ``missingStep``; ``unavailable`` (closing / sync detached) propagates.
+#   Remaining ``content-pending`` raised ``no-holder-online`` (superseded by
+#   F10b below); ``unavailable`` (closing / sync detached) propagates.
+# - Package F10b (owner ruling on the F10 review, 2026-11-26): the wait is best
+#   effort.  A body still ``content-pending`` at the shared deadline is logged
+#   (``org.join.body-pending``: org, space, doc, waited seconds) and the join
+#   goes on, so ``org join`` keeps the baseline result and accept's read-back
+#   (``missing_membership_step``) still reports ``no-holder-online``.  A zero
+#   limit skips without reading; a caller without an OrgFS has nothing to wait
+#   for.  Closing, a detached sync and ``not-a-member`` still raise.  The budget
+#   limit reads ``deadline - clock`` instead of ``remaining`` so an expired
+#   budget skips the wait and expires where the baseline did, after the step.
+#   ``ACL_POLICY_DOC`` lives here so the wait no longer imports ``policy``.
 """Resolve an org's daemon-owned ACL space from its durable ID binding."""
 
 from __future__ import annotations
@@ -28,6 +38,7 @@ from hyprial.identity import ORG_META_DOC, org_space_name
 from hyprial.kernel import ORGFS_CONTENT_PENDING
 
 
+ACL_POLICY_DOC = "policy/role-grants.json"
 INVITE_SPACE_MODES = MappingProxyType({"directory": "rw", "acl": "ro"})
 JOIN_BODY_WAIT_SECONDS = 5.0
 JOIN_ACTOR_HEADROOM_SECONDS = 25.0
@@ -110,8 +121,7 @@ def _body_wait_seconds(service: Any) -> float:
     limit = min(timeout, JOIN_BODY_WAIT_SECONDS) if timeout > 0 else JOIN_BODY_WAIT_SECONDS
     budget = getattr(service, "_join_budget", None)
     if budget is not None:
-        budget_remaining = budget.remaining("join-orgfs")
-        limit = min(limit, budget_remaining)
+        limit = min(limit, budget.deadline - budget.clock())
         started = getattr(budget, "started", None)
         if started is not None:
             elapsed = max(0.0, budget.clock() - started)
@@ -120,14 +130,7 @@ def _body_wait_seconds(service: Any) -> float:
     return max(0.0, limit)
 
 
-def _await_join_doc(
-    fs: Any,
-    space_id: str,
-    path: str,
-    *,
-    timeout: float,
-    missing_step: str,
-) -> None:
+def _await_join_doc(fs: Any, space_id: str, path: str, *, timeout: float) -> bool:
     mesh = getattr(fs, "mesh", None)
     await_text = getattr(mesh, "await_text", None)
     try:
@@ -139,36 +142,45 @@ def _await_join_doc(
                 read_text(space_id, path)
     except OrgFsError as exc:
         if exc.code == "unknown-doc":
-            return
+            return True
         if exc.code == ORGFS_CONTENT_PENDING:
-            raise OrgFsError("no-holder-online", {"missingStep": missing_step}) from exc
+            return False
         raise
+    return True
 
 
 def await_org_join_bodies(
-    service: Any, directory_space_id: str, acl_space_id: str
+    service: Any, directory_space_id: str, acl_space_id: str, *, org: str | None = None
 ) -> None:
-    """Wait once within the join budget for ``directory/org.json`` and ACL policy bodies."""
+    """Best-effort wait within the join budget for the org's two required bodies.
 
-    from hyprial.daemon.impl.org.network.policy import ACL_POLICY_DOC
+    A body still pending when the wait ends is logged and left to the resident
+    sync; closing, a detached sync and a lost membership still raise.
+    """
 
+    fs = getattr(service, "_fs", None)
+    if fs is None:
+        return
+    log = getattr(service, "_log", None) or (lambda *_args, **_fields: None)
     wait_seconds = _body_wait_seconds(service)
-    deadline = time.monotonic() + wait_seconds
-    for space_id, path, missing_step in (
-        (directory_space_id, ORG_META_DOC, "directory-committed"),
-        (acl_space_id, ACL_POLICY_DOC, "acl-applied"),
+    if wait_seconds <= 0:
+        log("warn", "org", "org.join.body-wait-skipped", org=org,
+            spaceIds=[directory_space_id, acl_space_id], reason="no-wait-budget")
+        return
+    started = time.monotonic()
+    deadline = started + wait_seconds
+    for space_id, path in (
+        (directory_space_id, ORG_META_DOC),
+        (acl_space_id, ACL_POLICY_DOC),
     ):
-        remaining = max(0.0, deadline - time.monotonic()) if wait_seconds > 0 else 0.0
-        _await_join_doc(
-            service._fs,
-            space_id,
-            path,
-            timeout=remaining,
-            missing_step=missing_step,
-        )
+        remaining = max(0.0, deadline - time.monotonic())
+        if not _await_join_doc(fs, space_id, path, timeout=remaining):
+            log("warn", "org", "org.join.body-pending", org=org, spaceId=space_id, doc=path,
+                waitedSeconds=round(time.monotonic() - started, 3))
 
 
 __all__ = [
+    "ACL_POLICY_DOC",
     "INVITE_SPACE_MODES",
     "JOIN_ACTOR_HEADROOM_SECONDS",
     "JOIN_BODY_WAIT_SECONDS",

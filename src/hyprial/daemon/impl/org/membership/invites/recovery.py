@@ -19,6 +19,10 @@
 #   leg for ``directory/org.json`` and ``policy/role-grants.json``.  Read-only
 #   ``missing_membership_step`` stays non-waiting so ``org.invites.list`` and
 #   accept's short-circuit check never block on pending bodies.
+# - 2026-11-26 (package F10b): the wait is best effort and no longer raises
+#   ``no-holder-online``; a body still pending is left to the read-back
+#   below, which reports it as before.  The journal is written exactly
+#   where the baseline wrote it, so the wait records no ``missingStep``.
 """Resume the existing org bootstrap with read-back checks at durable boundaries.
 
 A space listing is discovery only. Directory and ACL membership, the ACL
@@ -105,14 +109,8 @@ def _join_space(service, journal, space: str) -> None:
         journal.save()
 
 
-def _await_join_bodies(service, journal, parsed) -> None:
-    try:
-        await_org_join_bodies(service, parsed.space_id, parsed.acl_space_id)
-    except OrgFsError as error:
-        missing_step = error.details.get("missingStep")
-        if isinstance(missing_step, str) and missing_step:
-            journal.begin(missing_step)
-        raise
+def _await_join_bodies(service, parsed) -> None:
+    await_org_join_bodies(service, parsed.space_id, parsed.acl_space_id, org=parsed.org)
 
 
 def run_bootstrap(service, parsed, journal):
@@ -141,7 +139,7 @@ def _run_bootstrap(service, parsed, journal, budget):
             action()
             journal.complete_step(kind)
     if "join-org" in completed:
-        _await_join_bodies(service, journal, parsed)
+        _await_join_bodies(service, parsed)
     executed = journal.record["steps"]
     for step in parse_bootstrap_yaml(parsed.workflow_yaml):
         if step.kind in completed:
@@ -159,7 +157,7 @@ def _run_bootstrap(service, parsed, journal, budget):
                     _join_space(service, journal, space)
                 if space_committed(service, space, required_mode=mode):
                     journal.complete_step(kind)
-            _await_join_bodies(service, journal, parsed)
+            _await_join_bodies(service, parsed)
             journal.begin("space-bound")
             missing = missing_membership_step(service, parsed)
             if missing:
