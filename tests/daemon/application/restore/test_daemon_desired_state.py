@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from hyprial.daemon.impl.desired_state.documents import SUPPORTED_SCHEMA_VERSIONS
 from hyprial.daemon.impl import  (
     DesiredState,
     DesiredStateError,
@@ -136,7 +137,7 @@ def test_unknown_or_malformed_desired_state_fails_loudly(tmp_path: Path) -> None
     legacy_path = tmp_path / "desired-state.json"
     versioned_path = Path(f"{legacy_path}.v1")
     versioned_path.write_text(
-        json.dumps({"schemaVersion": 4, "providers": []}), encoding="utf-8"
+        json.dumps({"schemaVersion": max(SUPPORTED_SCHEMA_VERSIONS) + 1, "providers": []}), encoding="utf-8"
     )
 
     with pytest.raises(DesiredStateError, match="unsupported desired-state schema"):
