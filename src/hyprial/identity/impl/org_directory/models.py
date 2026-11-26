@@ -34,13 +34,21 @@ row whose id is not that digest is refused because every sealer names the
 recipient by id.  ``__post_init__`` is the one enforcement point, so a row
 built directly is checked exactly like one read back.
 
-A low-order point is refused: the X25519 loader accepts one, and every shared
-secret derived from it is public.  ``_LOW_ORDER_POINTS`` holds the eight
-low-order points of Curve25519 as little-endian u-coordinates: order 1 and 2
-(``0``, ``1``, ``p``, ``p+1``) and order 8 (the two ``39…``/``32…`` constants,
-``p-1`` and ``p+2``), with ``p`` = 2**255 - 19.  The list was derived, not
-recalled: by Montgomery ladder ``[8]u`` is the identity for each of the eight
-and is not for ``p+3`` or ``p+4``, which are ordinary points and stay accepted.
+A low-order point is refused: every shared secret derived from one is
+public.  X25519 drops bit 255 of the 32 bytes and reduces the rest modulo
+``p`` = 2**255 - 19, so one point has several spellings and a comparison of
+raw bytes refuses only one of them.  ``_encryption_public_key`` therefore
+compares the reduced value with ``_LOW_ORDER_U``.
+
+Where the five come from, and what is not claimed.  The X25519 library in
+use was the oracle, not a derivation of our own: its verdict and this rule
+agreed on every value tried, among them every spelling of the five, the
+integers below 30,000, the neighbourhoods of ``p``, ``2**255`` and ``2**256``,
+and 22,000 random values.  The count of five is the published order of the
+curve's group of small points (eight, so at most five distinct
+u-coordinates); that count was taken from the curve's definition and was not
+re-derived here.  ``p + 2`` reduces to ``2``, an ordinary point, and is
+accepted; an earlier list of raw bytes refused it.
 """
 
 from __future__ import annotations
@@ -138,17 +146,15 @@ _ENCRYPTION_RECORD_KEYS = ("encryptionKeyId", "encryptionPublicKey")
 _MACHINE_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 _ENCRYPTION_KEY_ID = re.compile(r"x25519:[0-9a-f]{32}\Z")
 _ENCRYPTION_PUBLIC_BYTES = 32
-_LOW_ORDER_POINTS = frozenset(
-    value.to_bytes(32, "little")
-    for value in (
+_X25519_P = 2**255 - 19
+_X25519_KEEP = (1 << 255) - 1
+_LOW_ORDER_U = frozenset(
+    (
         0,
         1,
-        325606250916557431795983626356110631294008115727848805560023387167927233504,
+        _X25519_P - 1,
         39382357235489614581723060781553021112529911719440698176882885853963445705823,
-        2**255 - 19 - 1,
-        2**255 - 19,
-        2**255 - 19 + 1,
-        2**255 - 19 + 2,
+        325606250916557431795983626356110631294008115727848805560023387167927233504,
     )
 )
 
@@ -734,7 +740,8 @@ def _encryption_public_key(value: object) -> str:
         raise ValueError(
             "encryptionPublicKey must be the canonical base64 of 32 bytes"
         )
-    if raw in _LOW_ORDER_POINTS:
+    u = (int.from_bytes(raw, "little") & _X25519_KEEP) % _X25519_P
+    if u in _LOW_ORDER_U:
         raise ValueError("encryptionPublicKey is a low-order point")
     return text
 
