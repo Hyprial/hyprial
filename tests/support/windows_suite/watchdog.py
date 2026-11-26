@@ -49,8 +49,13 @@ holds the GIL in native code keeps that Python thread from running, so each
 arming also arms ``faulthandler.dump_traceback_later(T + grace, exit=True)``
 on the same file (grace 30 seconds, ``HYPRIAL_TEST_WATCHDOG_GRACE_SECONDS``
 for the self-test).  That fallback writes faulthandler's ``Timeout (...)!``
-dump and exits with 1 and no ``crash`` event; ``run_waves.py`` treats
-``hang-gwN.txt`` plus exit code 1 as ``test-watchdog-timeout`` as well.
+dump and exits with 1 and no ``crash`` event.  ``run_waves.py`` reads the two
+paths differently: the primary path leaves a hang file and a ``crash`` event,
+and only the faulthandler fallback (a hang file that starts with ``Timeout
+(...)!``, no ``crash`` event, exit code 1) is classified as
+``test-watchdog-timeout`` from the hang file plus exit code 1; a hang file
+whose first line carries the ``leak-timeout`` header is classified as
+``worker-crash``.
 
 Decision (2026-11-26): the ``leak`` event is the primary L2 signal
 and exit code 97 is only the fallback.  xdist tears its workers down with
