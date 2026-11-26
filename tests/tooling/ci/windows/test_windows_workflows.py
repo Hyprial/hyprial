@@ -4,6 +4,18 @@ Decision (2026-11-26, tier 1 smoke and tier 2 full suite).  Enforces the
 GitHub-native compliance rules for both Windows workflows, plus workflow
 coexistence and tier file-list checks.  A file listed in tier1-rejected.tsv
 must not also be admitted in tier1-tests.txt.
+
+Decision (2026-11-27, tier 2 full suite).  The four test legs' if: strings and the
+concurrency group are asserted in full.  A truth table over event and selection
+evaluates those expressions with a small evaluator that follows GitHub's operator
+precedence and value-returning && and ||, then checks that the lit legs (named
+from each job's upload artifact, the matrix expanded) equal requiredLegs from
+build_suite_plan for the selection the planning job computes.  The push and
+pull_request rows are hypothetical: no trigger exists for them, and the table
+records that they would light no leg while the plan still requires every shard,
+so the summary would fail.  Each of four mutations (|| to &&, a deleted leg if:,
+swapped tier1-next and arm-next conditions, unparenthesised group) is applied to
+the loaded workflow and must change the table.
 """
 
 from __future__ import annotations
@@ -12,7 +24,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
+
+from scripts.ci.windows.shard_files import build_suite_plan
 
 ROOT = Path(__file__).parents[4]
 WORKFLOW = ROOT / ".github/workflows/windows-smoke.yml"
@@ -295,6 +310,212 @@ def test_suite_action_pins_permissions_and_triggers() -> None:
     assert "github.event_name == 'schedule'" in group
     assert "inputs.selection" in group
     assert "github.ref" in group
+    assert group == SUITE_CONCURRENCY_GROUP
+    assert {name: jobs(value)[name].get("if") for name in SUITE_LEG_IFS} == SUITE_LEG_IFS
+
+
+SUITE_LEG_IFS = {
+    "tier2-pytest": "github.event_name == 'schedule' || inputs.selection == 'full'",
+    "targets-run": "github.event_name == 'workflow_dispatch' && inputs.selection == 'targets'",
+    "tier1-admission": "github.event_name == 'workflow_dispatch' && inputs.selection == 'tier1-next'",
+    "arm-admission": "github.event_name == 'workflow_dispatch' && inputs.selection == 'arm-next'",
+}
+SUITE_CONCURRENCY_GROUP = (
+    "${{ (github.event_name == 'schedule' || inputs.selection == 'full') && 'windows-suite-full' "
+    "|| format('windows-suite-{0}-{1}', inputs.selection, github.ref) }}"
+)
+SUITE_REF = "refs/heads/dev"
+SUITE_TRUTH_TABLE = [
+    ("schedule", "", ("tier2-pytest",), "windows-suite-full", True),
+    ("workflow_dispatch", "full", ("tier2-pytest",), "windows-suite-full", True),
+    ("workflow_dispatch", "tier1-next", ("tier1-admission",), f"windows-suite-tier1-next-{SUITE_REF}", True),
+    ("workflow_dispatch", "arm-next", ("arm-admission",), f"windows-suite-arm-next-{SUITE_REF}", True),
+    ("workflow_dispatch", "targets", ("targets-run",), f"windows-suite-targets-{SUITE_REF}", True),
+    ("push", "", (), f"windows-suite--{SUITE_REF}", False),
+    ("pull_request", "", (), f"windows-suite--{SUITE_REF}", False),
+]
+EXPRESSION_TOKEN = re.compile(r"\s*(?:(\|\||&&|==|!=|[(),])|'((?:[^']|'')*)'|([A-Za-z_][\w.]*))")
+
+
+class Expression:
+    """Evaluate the GitHub expression subset used by the suite workflow.
+
+    Supports string literals, context names, ==, !=, &&, ||, parentheses and
+    format().  && binds tighter than ||; || returns the first truthy operand and
+    && the first falsy one, as GitHub does, so a missing pair of parentheses
+    changes the value instead of being ignored.
+    """
+
+    def __init__(self, text: str, context: dict[str, str]) -> None:
+        text = text.strip()
+        if text.startswith("${{") and text.endswith("}}"):
+            text = text[3:-2].strip()
+        self.tokens: list[tuple[str, str]] = []
+        position = 0
+        while position < len(text):
+            match = EXPRESSION_TOKEN.match(text, position)
+            assert match is not None, text[position:]
+            operator, literal, name = match.groups()
+            if operator:
+                self.tokens.append(("op", operator))
+            elif literal is not None:
+                self.tokens.append(("str", literal.replace("''", "'")))
+            else:
+                self.tokens.append(("name", name))
+            position = match.end()
+        self.position = 0
+        self.context = context
+
+    def value(self) -> object:
+        result = self.either()
+        assert self.position == len(self.tokens), self.tokens[self.position :]
+        return result
+
+    def peek(self) -> tuple[str, str] | None:
+        return self.tokens[self.position] if self.position < len(self.tokens) else None
+
+    def take(self, expected: tuple[str, str] | None = None) -> tuple[str, str]:
+        token = self.peek()
+        assert token is not None and expected in (None, token), (expected, token)
+        self.position += 1
+        return token
+
+    def either(self) -> object:
+        result = self.both()
+        while self.peek() == ("op", "||"):
+            self.take()
+            right = self.both()
+            result = result if result else right
+        return result
+
+    def both(self) -> object:
+        result = self.compare()
+        while self.peek() == ("op", "&&"):
+            self.take()
+            right = self.compare()
+            result = right if result else result
+        return result
+
+    def compare(self) -> object:
+        left = self.primary()
+        if self.peek() in (("op", "=="), ("op", "!=")):
+            operator = self.take()[1]
+            right = self.primary()
+            return left == right if operator == "==" else left != right
+        return left
+
+    def primary(self) -> object:
+        kind, text = self.take()
+        if (kind, text) == ("op", "("):
+            result = self.either()
+            self.take(("op", ")"))
+            return result
+        if kind == "str":
+            return text
+        if self.peek() == ("op", "("):
+            assert text == "format", text
+            self.take()
+            arguments = [self.either()]
+            while self.peek() == ("op", ","):
+                self.take()
+                arguments.append(self.either())
+            self.take(("op", ")"))
+            result = str(arguments[0])
+            for index, argument in enumerate(arguments[1:]):
+                result = result.replace(f"{{{index}}}", str(argument))
+            return result
+        return self.context[text]
+
+
+def suite_leg_names(job: dict[str, Any]) -> list[str]:
+    matrix = job.get("strategy", {}).get("matrix", {})
+    names: list[str] = []
+    for step in steps(job):
+        artifact = str(step.get("with", {}).get("name", ""))
+        if not str(step.get("uses", "")).startswith("actions/upload-artifact@"):
+            continue
+        if not artifact.startswith("windows-suite-"):
+            continue
+        leg = artifact.removeprefix("windows-suite-")
+        if "${{ matrix.shard }}" in leg:
+            names.extend(leg.replace("${{ matrix.shard }}", str(shard)) for shard in matrix["shard"])
+        else:
+            names.append(leg)
+    return names
+
+
+def suite_plan_for(value: dict[str, Any], context: dict[str, str], root: Path) -> dict[str, Any]:
+    plan_step = next(step for step in steps(jobs(value)["plan-suite"]) if step.get("name") == "Plan test suite shards")
+    selection = Expression(plan_step["env"]["WINDOWS_SUITE_SELECTION"], context).value()
+    shard_count = int(re.search(r"--shards (\d+)", plan_step["run"]).group(1))
+    sample = root / "tests/test_sample.py"
+    sample.parent.mkdir(parents=True, exist_ok=True)
+    sample.write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    listing = root / "listing.txt"
+    listing.write_text("tests/test_sample.py\n", encoding="utf-8")
+    return build_suite_plan(
+        selection=str(selection),
+        root=root,
+        shard_count=shard_count,
+        targets_path=listing,
+        tier1_next_path=listing,
+        tier1_tests_path=listing,
+        tier1_arm_tests_path=listing,
+        tracked_files={"tests/test_sample.py"},
+    )
+
+
+def suite_truth_table_rows(value: dict[str, Any], root: Path) -> list[tuple[Any, ...]]:
+    rows: list[tuple[Any, ...]] = []
+    all_jobs = jobs(value)
+    for event, selection, _, _, _ in SUITE_TRUTH_TABLE:
+        context = {"github.event_name": event, "inputs.selection": selection, "github.ref": SUITE_REF}
+        lit_jobs = tuple(
+            name
+            for name in SUITE_LEG_IFS
+            if "if" not in all_jobs[name] or Expression(str(all_jobs[name]["if"]), context).value()
+        )
+        lit_legs = [leg for name in lit_jobs for leg in suite_leg_names(all_jobs[name])]
+        required = suite_plan_for(value, context, root / f"{event}-{selection or 'none'}")["requiredLegs"]
+        group = Expression(str(value["concurrency"]["group"]), context).value()
+        rows.append((event, selection, lit_jobs, group, lit_legs == required))
+    return rows
+
+
+def test_suite_truth_table_lights_exactly_the_planned_legs(tmp_path: Path) -> None:
+    assert suite_truth_table_rows(document(SUITE_WORKFLOW), tmp_path) == SUITE_TRUTH_TABLE
+
+
+def _swap_tier1_and_arm(value: dict[str, Any]) -> None:
+    all_jobs = jobs(value)
+    all_jobs["tier1-admission"]["if"], all_jobs["arm-admission"]["if"] = (
+        all_jobs["arm-admission"]["if"],
+        all_jobs["tier1-admission"]["if"],
+    )
+
+
+SUITE_MUTATIONS = {
+    "or-to-and": lambda value: jobs(value)["tier2-pytest"].update(
+        {"if": jobs(value)["tier2-pytest"]["if"].replace("||", "&&")}
+    ),
+    "delete-leg-if": lambda value: jobs(value)["targets-run"].pop("if"),
+    "swap-tier1-next-and-arm-next": _swap_tier1_and_arm,
+    "drop-group-parentheses": lambda value: value["concurrency"].update(
+        {"group": value["concurrency"]["group"].replace("(github", "github", 1).replace("'full')", "'full'", 1)}
+    ),
+}
+
+
+@pytest.mark.parametrize("mutation", sorted(SUITE_MUTATIONS))
+def test_suite_truth_table_rejects_each_mutation(tmp_path: Path, mutation: str) -> None:
+    value = document(SUITE_WORKFLOW)
+    SUITE_MUTATIONS[mutation](value)
+
+    assert suite_truth_table_rows(value, tmp_path) != SUITE_TRUTH_TABLE
+    assert (
+        value["concurrency"]["group"] != SUITE_CONCURRENCY_GROUP
+        or {name: jobs(value)[name].get("if") for name in SUITE_LEG_IFS} != SUITE_LEG_IFS
+    )
 
 
 def test_suite_inputs_never_interpolated_in_run_blocks() -> None:
