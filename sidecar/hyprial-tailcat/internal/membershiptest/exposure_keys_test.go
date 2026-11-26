@@ -19,9 +19,6 @@ import (
 
 const grantedPort = 8447
 
-// grantMesh is the exposing authority and two joined members. The
-// authority's backend counts the connections it really received: a
-// refused peer must never move that counter.
 type grantMesh struct {
 	a, b, c  *node
 	target   string
@@ -62,8 +59,6 @@ func joinGrantMesh(t *testing.T) *grantMesh {
 	return mesh
 }
 
-// shownKey is the key member shows when it dials a's server: the
-// per-server key derived from member's client master for a.serverPublic.
 func shownKey(t *testing.T, member, server *node) string {
 	t.Helper()
 	public, err := member.e.DeriveClientPublic(server.row.ServerPublic)
@@ -84,9 +79,6 @@ func exposeKeys(t *testing.T, mesh *grantMesh, keys ...string) engine.Exposure {
 	return exposure
 }
 
-// dialGranted opens one connection to the granted port from member's
-// slot-a. The dial only proves the tunnel accepted the stream; whether
-// admission let it through is what the caller asserts.
 func dialGranted(t *testing.T, mesh *grantMesh, member *node) net.Conn {
 	t.Helper()
 	slot := filepath.Join(member.dir, "slot-a")
@@ -133,13 +125,10 @@ func TestExposureKeysAdmitsListedMembersOnly(t *testing.T) {
 	mesh := joinGrantMesh(t)
 	exposeKeys(t, mesh, shownKey(t, mesh.b, mesh.a))
 
-	// Both peers are on the roster. The unlisted one is closed at accept
-	// time and never reaches the backend.
 	refused := dialGranted(t, mesh, mesh.c)
 	_, _ = refused.Write([]byte("must-not-reach-backend"))
 	requireClosed(t, refused)
 
-	// The listed one reaches the backend.
 	admitted := dialGranted(t, mesh, mesh.b)
 	until(t, 30*time.Second, "listed member echo", func() bool {
 		return echoOn(t, admitted, "granted", 5*time.Second) == nil
@@ -151,7 +140,6 @@ func TestExposureKeysAdmitsListedMembersOnly(t *testing.T) {
 		t.Fatal("the refused connection was not counted as denied")
 	}
 
-	// An admitted connection does not widen the set.
 	again := dialGranted(t, mesh, mesh.c)
 	_, _ = again.Write([]byte("still-refused"))
 	requireClosed(t, again)
@@ -190,8 +178,6 @@ func TestExposureKeysShrinkClosesRemovedKeyOnly(t *testing.T) {
 	}
 }
 
-// TestExposureKeysEmptySetRefusesEveryone: an absent or empty key set
-// refuses every peer, roster members included.
 func TestExposureKeysEmptySetRefusesEveryone(t *testing.T) {
 	mesh := joinGrantMesh(t)
 	for _, keys := range [][]string{nil, {}} {
@@ -207,14 +193,10 @@ func TestExposureKeysEmptySetRefusesEveryone(t *testing.T) {
 	}
 }
 
-// TestExposureKeysAllowTransitions: a port can widen from keys to allow
-// (e.g. an @members grant) and narrow back from allow to keys without
-// disturbing connections that remain admitted.
 func TestExposureKeysAllowTransitions(t *testing.T) {
 	mesh := joinGrantMesh(t)
 	exposeKeys(t, mesh)
 
-	// Widen from empty keys to allow: both roster members can connect.
 	if _, err := mesh.a.e.Expose(context.Background(), engine.Exposure{
 		Port: grantedPort, Target: mesh.target, Admission: "allow",
 	}); err != nil {
@@ -228,7 +210,6 @@ func TestExposureKeysAllowTransitions(t *testing.T) {
 	})
 	disconnected := mesh.a.e.DisconnectedCount()
 
-	// Narrow from allow to keys=[b]: c is closed, b stays open.
 	exposeKeys(t, mesh, shownKey(t, mesh.b, mesh.a))
 	until(t, 10*time.Second, "unlisted member closed on allow->keys narrow", func() bool {
 		return echoOn(t, connC, "c-after", 2*time.Second) != nil
@@ -240,4 +221,3 @@ func TestExposureKeysAllowTransitions(t *testing.T) {
 		t.Fatalf("kept member closed on allow->keys narrow: %v", err)
 	}
 }
-

@@ -14,7 +14,7 @@ from hyprial.kernel import (
 )
 
 
-FORWARD_PROTOCOL_VERSION = 6
+FORWARD_PROTOCOL_VERSION = 7
 
 
 _UNSUPPORTED_PROXY_KEYS = frozenset(

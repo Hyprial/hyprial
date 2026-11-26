@@ -1,6 +1,6 @@
-# sidecar-tailcat — 协议 v5 契约样例
+# sidecar-tailcat — 协议 v7 契约样例
 
-`hyprial-tailcat` 边车的 stdio JSON 协议 v5 的 golden 样例。子命令与 key 文件格式见
+`hyprial-tailcat` 边车的 stdio JSON 协议 v7 的 golden 样例。子命令与 key 文件格式见
 [tailnet-cutover-architecture-2026-10-03.md §3.1–§3.2](../../docs/design/tailnet-cutover-architecture-2026-10-03.md)，
 forward 基线见同文档 [§3.3](../../docs/design/tailnet-cutover-architecture-2026-10-03.md)，
 service-connect-v1 扩展以 [service-connect baseline-C contract](../service-connect/README.md)
@@ -273,3 +273,14 @@ v4 引入固定槽位池（design-stable-zenoh-session-slots-2026-10-08 §4）�
   `slots`（解析后的 wire id，up 顺序在前、扩容追加）——tcp 传输下 daemon 以此获知
   内核分配的端口并组装 connect set。
 - `allow` 不变：入站准入与出站槽位是两件事。
+
+## expose key-set admission（协议 v7）
+
+v7 在 `expose` 命令上新增 `admission: "keys"` 与 `keys` 数组（对端公钥列表，每项为带可选 `nodekey:` 前缀的 64 位十六进制非零公钥，编码与既有 `allow` 列表一致；`keys` 仅在 `admission: "keys"` 时出现且不得为 `null`）：
+
+- 准入语义：对端必须先通过 tailnet 成员准入，且其连接本机 server 时出示的每 server 派生客户端公钥（对方设备行 `clientPublicByServer[本机 serverPublic]`）必须命中该端口的 `keys` 集合；未命中的连接在 accept 阶段直接关闭，不触达本地后端。
+- 空集合（`"keys": []`）拒绝所有对端（包括在册成员），不回退到 `allow`。
+- 对同一端口、同一 `target` 与 `proxyProtocol` 再次发送 `expose` 时，在原监听上就地替换准入规则（支持 `keys` 集合增删以及 `keys` ↔ `allow` 切换），并关闭已建连接中不再被新规则放行的连接；仍被放行的连接不受影响。
+- `exposed` 事件回显 `admission`（`"allow"` 或 `"keys"`），但永不回显 `keys` 数组（集合由授权文档推导，不属于观测面；含 `keys` 的 `exposed` 事件在 `invalid-events.jsonl` 中被拒绝）。
+- 协议为封闭格式，v6 及更早版本一律返回 `SIDECAR_PROTOCOL_MISMATCH`；升级步骤见 [migration-sidecar-protocol-v7.md](../../docs/guides/migration-sidecar-protocol-v7.md)。
+

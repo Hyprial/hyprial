@@ -99,7 +99,7 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
     controller = ForwardingSidecarController(
         [sys.executable, str(FIXTURE)],
         {
-            "v": 6,
+            "v": 7,
             "op": "up",
             "keyFile": str(tmp_path / "device-key.json"),
             "membershipStore": str(tmp_path / 'membership.json'),

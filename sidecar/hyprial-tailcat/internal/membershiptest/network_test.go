@@ -55,7 +55,7 @@ func pin(n *node) membership.Authority {
 }
 func run(n *node, op string, p any) (json.RawMessage, error) {
 	b, _ := json.Marshal(p)
-	return n.e.Membership(context.Background(), membership.Request{V: 6, Op: op, RequestID: "r", Params: b})
+	return n.e.Membership(context.Background(), membership.Request{V: 7, Op: op, RequestID: "r", Params: b})
 }
 func call(t *testing.T, n *node, op string, p any) json.RawMessage {
 	t.Helper()

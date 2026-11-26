@@ -1,3 +1,6 @@
+// Gate unit tests: keys mode narrows membership (never widens), empty set
+// refuses everyone, set equality ignores order/duplicates, key encoding matches
+// the retired allow list (64 hex chars, optional lowercase nodekey: prefix).
 package exposuregate
 
 import (
@@ -39,8 +42,6 @@ func mustGate(t *testing.T, mode string, keys []string) Gate {
 	return gate
 }
 
-// TestKeysModeAdmitsOnlyListedMembers: a listed member passes, an
-// unlisted member is refused.
 func TestKeysModeAdmitsOnlyListedMembers(t *testing.T) {
 	gate := mustGate(t, ModeKeys, []string{keyA})
 	if !gate.Admits(true, true, peerKey(t, hexA)) {
@@ -51,8 +52,6 @@ func TestKeysModeAdmitsOnlyListedMembers(t *testing.T) {
 	}
 }
 
-// TestKeysModeStillRequiresMembership: the key set narrows membership,
-// it never widens it.
 func TestKeysModeStillRequiresMembership(t *testing.T) {
 	gate := mustGate(t, ModeKeys, []string{keyA})
 	if gate.Admits(false, true, peerKey(t, hexA)) {
@@ -63,8 +62,6 @@ func TestKeysModeStillRequiresMembership(t *testing.T) {
 	}
 }
 
-// TestKeysModeEmptySetAdmitsNobody: an absent or empty key set refuses
-// every peer.
 func TestKeysModeEmptySetAdmitsNobody(t *testing.T) {
 	for name, keys := range map[string][]string{"absent": nil, "empty": {}} {
 		gate := mustGate(t, ModeKeys, keys)
@@ -76,8 +73,6 @@ func TestKeysModeEmptySetAdmitsNobody(t *testing.T) {
 	}
 }
 
-// TestKeySetIgnoresOrderAndDuplicates: the set is compared as a set, so
-// re-sending the same keys in another order is not a replacement.
 func TestKeySetIgnoresOrderAndDuplicates(t *testing.T) {
 	gate := mustGate(t, ModeKeys, []string{keyA, keyB})
 	if !gate.SameKeys(mustGate(t, ModeKeys, []string{keyB, keyA, keyB})) {
@@ -94,9 +89,6 @@ func TestKeySetIgnoresOrderAndDuplicates(t *testing.T) {
 	}
 }
 
-// TestAllowAndAnyModesFollowMembershipOnly: the existing modes are not
-// influenced by the key set. Allow still fails closed when the peer key
-// could not be established.
 func TestAllowAndAnyModesFollowMembershipOnly(t *testing.T) {
 	allow := mustGate(t, ModeAllow, nil)
 	any := mustGate(t, ModeAny, nil)
@@ -115,8 +107,6 @@ func TestAllowAndAnyModesFollowMembershipOnly(t *testing.T) {
 	}
 }
 
-// TestNewRejectsMalformedInput: keys belong to the keys mode only, and
-// every entry must be a nodekey other than the zero key.
 func TestNewRejectsMalformedInput(t *testing.T) {
 	cases := map[string]struct {
 		mode string
@@ -142,10 +132,6 @@ func TestNewRejectsMalformedInput(t *testing.T) {
 	}
 }
 
-// TestKeyEncodingMatchesAllowList: entries are spelled exactly as the
-// retired allow list accepted them -- 64 hex characters, the nodekey
-// prefix optional, hex letter case insignificant, the prefix itself
-// case-sensitive.
 func TestKeyEncodingMatchesAllowList(t *testing.T) {
 	lower := "nodekey:" + lowerHex
 	reference := mustGate(t, ModeKeys, []string{lower})

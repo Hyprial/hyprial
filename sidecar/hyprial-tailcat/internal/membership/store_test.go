@@ -25,7 +25,7 @@ func authority(s Sender) Authority {
 }
 func request(op string, p any) Request {
 	b, _ := json.Marshal(p)
-	return Request{V: 6, Op: op, RequestID: "test", Params: b}
+	return Request{V: 7, Op: op, RequestID: "test", Params: b}
 }
 func invoke(t *testing.T, m *Manager, op string, p any) json.RawMessage {
 	t.Helper()
@@ -149,7 +149,7 @@ func TestRevokeGuards(t *testing.T) {
 	}
 }
 func TestStrictWire(t *testing.T) {
-	for _, data := range []string{`{"v":6,"op":"roster-fetch","params":{"tailnetId":"tn"}}`, `{"v":6,"op":"roster-fetch","requestId":"r","params":{"tailnetId":"tn","tailnetId":"other"}}`, `{"v":6,"op":"roster-fetch","requestId":"r","params":{"tailnetId":"tn","extra":1}}`} {
+	for _, data := range []string{`{"v":7,"op":"roster-fetch","params":{"tailnetId":"tn"}}`, `{"v":7,"op":"roster-fetch","requestId":"r","params":{"tailnetId":"tn","tailnetId":"other"}}`, `{"v":7,"op":"roster-fetch","requestId":"r","params":{"tailnetId":"tn","extra":1}}`} {
 		if _, err := Parse([]byte(data), false); err == nil {
 			t.Fatal("accepted malformed request")
 		}

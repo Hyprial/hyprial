@@ -11,7 +11,6 @@ package engine
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -31,6 +30,7 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/exposuregate"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/keys"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/outbound"
@@ -73,10 +73,10 @@ type Mapping struct {
 	Slot string
 }
 
-// AdmissionAny marks an exposure that admits every authenticated key
-// (design §3.3, the join endpoint). Any other value, including the empty
-// string, restricts the exposure to the allow set.
-const AdmissionAny = "any"
+const (
+	AdmissionAny  = exposuregate.ModeAny
+	AdmissionKeys = exposuregate.ModeKeys
+)
 
 // Exposure describes one exposed Tailcat port.
 type Exposure struct {
@@ -84,10 +84,8 @@ type Exposure struct {
 	Target        string
 	ProxyProtocol string
 	Admission     string
+	Keys          []string
 }
-
-// restricted reports whether the exposure admits only the allow set.
-func (x Exposure) restricted() bool { return x.Admission != AdmissionAny }
 
 // Sentinel errors mapped to protocol error codes by the serve layer.
 var (
@@ -129,6 +127,7 @@ type mappedPeer struct {
 
 type exposedPort struct {
 	exposure Exposure
+	gate     exposuregate.Gate
 	listener net.Listener
 	cancel   context.CancelFunc
 	pairs    map[*connPair]struct{}
@@ -419,11 +418,9 @@ func (e *Engine) Allow(list []string, allowAny bool) (int, error) {
 		}
 	}
 	for _, exposed := range e.exposed {
-		if !exposed.exposure.restricted() {
-			continue
-		}
 		for pair := range exposed.pairs {
-			if !set.Contains(pair.peerKey) {
+			haveKey := !pair.peerKey.IsZero()
+			if !exposed.gate.Admits(haveKey && set.Contains(pair.peerKey), haveKey, pair.peerKey) {
 				pair.close()
 				e.disconnected.Add(1)
 			}
@@ -485,96 +482,6 @@ func (e *Engine) unmapLocked(peer string, mapped *mappedPeer) {
 		pair.close()
 	}
 	e.releaseClientLocked(mapped.lease)
-}
-
-// Expose listens on the Tailcat server port and proxies each connection
-// to target. With proxyProtocol "v2" a PROXY v2 header precedes the
-// stream: source is the peer's Tailcat IP and TLV 0xE0 carries the
-// peer's nodekey text.
-func (e *Engine) Expose(ctx context.Context, exposure Exposure) (Exposure, error) {
-	e.mu.Lock()
-	if !e.up {
-		e.mu.Unlock()
-		return Exposure{}, ErrNotUp
-	}
-	if e.membership != nil && exposure.Admission == AdmissionAny {
-		e.mu.Unlock()
-		return Exposure{}, ErrBadInput
-	}
-	if existing := e.exposed[exposure.Port]; existing != nil {
-		current := existing.exposure
-		e.mu.Unlock()
-		if current == exposure {
-			return current, nil
-		}
-		return Exposure{}, ErrPortInUse
-	}
-	server := e.server
-	e.mu.Unlock()
-
-	listenCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	listener, err := server.Listen(listenCtx, "tcp", ":"+strconv.Itoa(exposure.Port))
-	cancel()
-	if err != nil {
-		if strings.Contains(err.Error(), "already in use") {
-			return Exposure{}, ErrPortInUse
-		}
-		return Exposure{}, fmt.Errorf("listen on tailcat port %d: %w", exposure.Port, err)
-	}
-	acceptCtx, acceptCancel := context.WithCancel(e.ctx)
-	exposed := &exposedPort{
-		exposure: exposure, listener: listener,
-		cancel: acceptCancel, pairs: make(map[*connPair]struct{}),
-	}
-	e.mu.Lock()
-	e.exposed[exposure.Port] = exposed
-	e.mu.Unlock()
-	e.wg.Add(1)
-	go e.acceptExposure(acceptCtx, exposed)
-	return exposure, nil
-}
-
-// Unexpose tears down an exposed port.
-func (e *Engine) Unexpose(port int) error {
-	e.mu.Lock()
-	if !e.up {
-		e.mu.Unlock()
-		return ErrNotUp
-	}
-	exposed := e.exposed[port]
-	if exposed == nil {
-		e.mu.Unlock()
-		return ErrPortInUse
-	}
-	delete(e.exposed, port)
-	exposed.cancel()
-	_ = exposed.listener.Close()
-	for pair := range exposed.pairs {
-		pair.close()
-	}
-	e.mu.Unlock()
-	return nil
-}
-
-// PeerKey resolves the node public key of the peer behind addr, an
-// ip:port as seen by an exposed target.
-func (e *Engine) PeerKey(addr string) (found bool, public string, err error) {
-	e.mu.Lock()
-	if !e.up {
-		e.mu.Unlock()
-		return false, "", ErrNotUp
-	}
-	server := e.server
-	e.mu.Unlock()
-	ap, err := netip.ParseAddrPort(addr)
-	if err != nil {
-		return false, "", fmt.Errorf("%w: addr must be an IP:port", ErrBadInput)
-	}
-	pub, ok := server.PeerKey(&net.TCPAddr{IP: ap.Addr().AsSlice(), Port: int(ap.Port())})
-	if !ok {
-		return false, "", nil
-	}
-	return true, pub.String(), nil
 }
 
 // Status reports the engine state for the status command.
@@ -718,7 +625,6 @@ func (e *Engine) Down() {
 	}
 }
 
-// admits reports whether the allow set admits pub.
 func (e *Engine) admits(pub key.NodePublic) bool {
 	if e.allowAny.Load() {
 		return true
@@ -731,6 +637,16 @@ func (e *Engine) admits(pub key.NodePublic) bool {
 		return member.Admits(pub.String())
 	}
 	return set != nil && set.Contains(pub)
+}
+
+func (e *Engine) admitsLocked(pub key.NodePublic) bool {
+	if e.allowAny.Load() {
+		return true
+	}
+	if e.membership != nil {
+		return e.membership.Admits(pub.String())
+	}
+	return e.allowKeys != nil && e.allowKeys.Contains(pub)
 }
 
 // inboundPeerKey resolves the authenticated tunnel key behind an
@@ -788,84 +704,6 @@ func (e *Engine) acceptInbound(listener net.Listener, inboundTarget string) {
 	}
 }
 
-func (e *Engine) acceptExposure(ctx context.Context, exposed *exposedPort) {
-	defer e.wg.Done()
-	for {
-		remote, err := exposed.listener.Accept()
-		if err != nil {
-			return
-		}
-		e.mu.Lock()
-		if !e.up || e.exposed[exposed.exposure.Port] != exposed {
-			e.mu.Unlock()
-			_ = remote.Close()
-			return
-		}
-		e.wg.Add(1)
-		e.mu.Unlock()
-		go func(conn net.Conn) {
-			defer e.wg.Done()
-			e.handleExposure(ctx, exposed, conn)
-		}(remote)
-	}
-}
-
-func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remote net.Conn) {
-	exposure := exposed.exposure
-	pub, havePub := e.inboundPeerKey(remote)
-	// A restricted exposure accepts only the allow set; unknown keys
-	// fail closed. An admission-any exposure admits every key.
-	if exposure.restricted() && (!havePub || !e.admits(pub)) {
-		e.deniedCount.Add(1)
-		_ = remote.Close()
-		return
-	}
-	var peerKeyText string
-	if exposure.ProxyProtocol == "v2" {
-		// Fail closed: an identity-carrying exposure never forwards a
-		// connection whose peer key could not be established.
-		if !havePub {
-			_ = remote.Close()
-			return
-		}
-		peerKeyText = pub.String()
-	}
-	network, address := splitTarget(exposure.Target)
-	dialer := net.Dialer{Timeout: dialTimeout}
-	local, err := dialer.DialContext(ctx, network, address)
-	if err != nil {
-		_ = remote.Close()
-		return
-	}
-	if exposure.ProxyProtocol == "v2" {
-		header, err := buildProxyV2Header(remote.RemoteAddr(), remote.LocalAddr(), exposure.Port, peerKeyText)
-		if err != nil {
-			_ = remote.Close()
-			_ = local.Close()
-			return
-		}
-		if _, err := local.Write(header); err != nil {
-			_ = remote.Close()
-			_ = local.Close()
-			return
-		}
-	}
-	pair := &connPair{left: remote, right: local, peerKey: pub}
-	e.mu.Lock()
-	if !e.up || e.exposed[exposure.Port] != exposed || (e.membership != nil && !e.membership.Admits(pub.String())) {
-		e.mu.Unlock()
-		pair.close()
-		return
-	}
-	exposed.pairs[pair] = struct{}{}
-	e.mu.Unlock()
-	e.splice(pair, func(_ spliceResult) {
-		e.mu.Lock()
-		delete(exposed.pairs, pair)
-		e.mu.Unlock()
-	})
-}
-
 func validInboundTarget(target string) bool {
 	if target == "" {
 		return true
@@ -885,53 +723,4 @@ func splitTarget(target string) (network, address string) {
 		return "unix", strings.TrimPrefix(target, "unix:")
 	}
 	return "tcp", strings.TrimPrefix(target, "tcp:")
-}
-
-var proxyV2Signature = [12]byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
-
-// buildProxyV2Header builds a PROXY v2 header for an accepted Tailcat
-// connection. Tailcat addresses are IPv6, so the header always uses the
-// TCP6 family; TLV 0xE0 carries the peer nodekey text.
-func buildProxyV2Header(source, destination net.Addr, port int, peerKeyText string) ([]byte, error) {
-	sourceAP, err := addrToAddrPort(source)
-	if err != nil {
-		return nil, err
-	}
-	destinationAP, err := addrToAddrPort(destination)
-	if err != nil {
-		return nil, err
-	}
-	destinationAP = netip.AddrPortFrom(destinationAP.Addr(), uint16(port))
-	tlv := []byte(peerKeyText)
-	payloadLength := 36 + 3 + len(tlv)
-	if payloadLength > 65535 {
-		return nil, errors.New("PROXY v2 TLV is too large")
-	}
-	header := make([]byte, 16, 16+payloadLength)
-	copy(header[:12], proxyV2Signature[:])
-	header[12] = 0x21 // version 2, PROXY command
-	header[13] = 0x21 // TCP over IPv6
-	binary.BigEndian.PutUint16(header[14:16], uint16(payloadLength))
-	as16 := sourceAP.Addr().As16()
-	header = append(header, as16[:]...)
-	ad16 := destinationAP.Addr().As16()
-	header = append(header, ad16[:]...)
-	ports := make([]byte, 4)
-	binary.BigEndian.PutUint16(ports[:2], sourceAP.Port())
-	binary.BigEndian.PutUint16(ports[2:], destinationAP.Port())
-	header = append(header, ports...)
-	header = append(header, 0xe0, byte(len(tlv)>>8), byte(len(tlv)))
-	header = append(header, tlv...)
-	return header, nil
-}
-
-func addrToAddrPort(addr net.Addr) (netip.AddrPort, error) {
-	switch a := addr.(type) {
-	case *net.TCPAddr:
-		return a.AddrPort(), nil
-	case *net.UDPAddr:
-		return a.AddrPort(), nil
-	default:
-		return netip.AddrPort{}, fmt.Errorf("unexpected address type %T", addr)
-	}
 }

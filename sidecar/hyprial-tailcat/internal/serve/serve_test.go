@@ -88,7 +88,7 @@ func (s *session) finish(t *testing.T) {
 }
 func upFields(dir, keyFile string) map[string]any {
 	_ = os.Chmod(dir, 0700)
-	return map[string]any{"v": 6, "op": "up", "requestId": "up", "keyFile": keyFile, "addressFile": filepath.Join(dir, "dev.addr"), "membershipStore": filepath.Join(dir, "tailnet", "membership.json"), "owner": "alice", "deviceId": "device", "inboundTarget": "unix:" + filepath.Join(dir, "zenoh.sock")}
+	return map[string]any{"v": 7, "op": "up", "requestId": "up", "keyFile": keyFile, "addressFile": filepath.Join(dir, "dev.addr"), "membershipStore": filepath.Join(dir, "tailnet", "membership.json"), "owner": "alice", "deviceId": "device", "inboundTarget": "unix:" + filepath.Join(dir, "zenoh.sock")}
 }
 func sendMap(t *testing.T, s *session, p map[string]any) {
 	t.Helper()
@@ -122,20 +122,20 @@ func TestLifecycle(t *testing.T) {
 	if !strings.HasPrefix(running.ServerPublic, "nodekey:") || !strings.HasPrefix(running.ClientPublic, "nodekey:") || running.Peers == nil || len(*running.Peers) != 0 || running.DERPMapSource != "override" {
 		t.Fatal("bad running projection")
 	}
-	sendMap(t, s, map[string]any{"v": 6, "op": "derive-client-key", "requestId": "derive-1", "serverPublic": running.ServerPublic})
+	sendMap(t, s, map[string]any{"v": 7, "op": "derive-client-key", "requestId": "derive-1", "serverPublic": running.ServerPublic})
 	derived := s.expect(t, "client-key-derived")
 	if derived.RequestID != "derive-1" || derived.ServerPublic != running.ServerPublic || derived.ClientPublic == running.ClientPublic {
 		t.Fatal("bad derived key")
 	}
-	s.send(t, `{"v":6,"op":"status"}`)
+	s.send(t, `{"v":7,"op":"status"}`)
 	if status := s.expect(t, "state"); status.State != "Running" || status.ConnectionTelemetry == nil {
 		t.Fatal("bad status")
 	}
-	s.send(t, `{"v":6,"op":"membership-status","requestId":"members","params":{}}`)
+	s.send(t, `{"v":7,"op":"membership-status","requestId":"members","params":{}}`)
 	if e := s.expect(t, "membership-result"); e.RequestID != "members" {
 		t.Fatal("lost correlation")
 	}
-	s.send(t, `{"v":6,"op":"down"}`)
+	s.send(t, `{"v":7,"op":"down"}`)
 	s.finish(t)
 	address, err := os.ReadFile(filepath.Join(dir, "dev.addr"))
 	if err != nil {
@@ -167,15 +167,15 @@ func TestLifecycle(t *testing.T) {
 func TestBadRequests(t *testing.T) {
 	s := startSession(t)
 	s.expect(t, "hello")
-	for _, line := range []string{`{"v":6,"op":"unknown"}`, `{"v":6,"op":"status","mystery":1}`, `not json`} {
+	for _, line := range []string{`{"v":7,"op":"unknown"}`, `{"v":7,"op":"status","mystery":1}`, `not json`} {
 		s.send(t, line)
 		s.expectError(t, proto.CodeBadRequest)
 	}
-	for _, line := range []string{`{"v":2,"op":"status"}`, `{"v":3,"op":"status"}`, `{"v":5,"op":"status"}`} {
+	for _, line := range []string{`{"v":2,"op":"status"}`, `{"v":3,"op":"status"}`, `{"v":5,"op":"status"}`, `{"v":6,"op":"status"}`} {
 		s.send(t, line)
 		s.expectError(t, "SIDECAR_PROTOCOL_MISMATCH")
 	}
-	s.send(t, `{"v":6,"op":"status"}`)
+	s.send(t, `{"v":7,"op":"status"}`)
 	if s.expect(t, "state").State != "Down" {
 		t.Fatal("not down")
 	}
@@ -186,28 +186,28 @@ func TestParseErrorEchoesOnlyValidRequestID(t *testing.T) {
 	s := startSession(t)
 	s.expect(t, "hello")
 	for _, op := range []string{"allow", "map-service", "member-revoke"} {
-		sendMap(t, s, map[string]any{"v": 6, "op": op, "requestId": "bad"})
+		sendMap(t, s, map[string]any{"v": 7, "op": op, "requestId": "bad"})
 		e := s.expect(t, "error")
 		if e.RequestID != "bad" || e.Code != proto.CodeBadRequest {
 			t.Fatal("lost error correlation")
 		}
 	}
-	sendMap(t, s, map[string]any{"v": 6, "op": "allow", "requestId": strings.Repeat("x", 129)})
+	sendMap(t, s, map[string]any{"v": 7, "op": "allow", "requestId": strings.Repeat("x", 129)})
 	if s.expect(t, "error").RequestID != "" {
 		t.Fatal("oversized correlation echoed")
 	}
-	s.send(t, `{"v":6,"op":"down"}`)
+	s.send(t, `{"v":7,"op":"down"}`)
 	s.finish(t)
 }
 func TestNotUpErrors(t *testing.T) {
 	s := startSession(t)
 	s.expect(t, "hello")
-	for _, line := range []string{`{"v":6,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"/a/s0"}`, `{"v":6,"op":"unmap-peer","peer":"a"}`, `{"v":6,"op":"expose","port":8447,"target":"tcp:127.0.0.1:80","proxyProtocol":""}`, `{"v":6,"op":"peer-key","addr":"[fd7a::1]:8447"}`, `{"v":6,"op":"membership-status","requestId":"r","params":{}}`} {
+	for _, line := range []string{`{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"/a/s0"}`, `{"v":7,"op":"unmap-peer","peer":"a"}`, `{"v":7,"op":"expose","port":8447,"target":"tcp:127.0.0.1:80","proxyProtocol":""}`, `{"v":7,"op":"peer-key","addr":"[fd7a::1]:8447"}`, `{"v":7,"op":"membership-status","requestId":"r","params":{}}`} {
 		s.send(t, line)
 		s.expectError(t, proto.CodeNotUp)
 	}
 	for _, op := range []string{"unmap-service", "service-status"} {
-		p := map[string]any{"v": 6, "op": op, "requestId": "r"}
+		p := map[string]any{"v": 7, "op": op, "requestId": "r"}
 		if op == "unmap-service" {
 			p["name"] = "api"
 		}
@@ -216,11 +216,11 @@ func TestNotUpErrors(t *testing.T) {
 			t.Fatal("bad service error")
 		}
 	}
-	s.send(t, `{"v":6,"op":"map-peer","requestId":"map","peer":"a","address":"tcPlaceholder","slot":"/a/s0"}`)
+	s.send(t, `{"v":7,"op":"map-peer","requestId":"map","peer":"a","address":"tcPlaceholder","slot":"/a/s0"}`)
 	if e := s.expect(t, "error"); e.RequestID != "map" || e.Code != proto.CodeNotUp {
 		t.Fatal("bad map error")
 	}
-	s.send(t, `{"v":6,"op":"down"}`)
+	s.send(t, `{"v":7,"op":"down"}`)
 	s.finish(t)
 }
 func TestKeyFileInvalid(t *testing.T) {
@@ -230,11 +230,11 @@ func TestKeyFileInvalid(t *testing.T) {
 	sendMap(t, s, upFields(dir, filepath.Join(dir, "absent.key")))
 	s.expect(t, "state")
 	s.expectError(t, proto.CodeKeyFileInvalid)
-	s.send(t, `{"v":6,"op":"status"}`)
+	s.send(t, `{"v":7,"op":"status"}`)
 	if s.expect(t, "state").State != "Down" {
 		t.Fatal("not down")
 	}
-	s.send(t, `{"v":6,"op":"down"}`)
+	s.send(t, `{"v":7,"op":"down"}`)
 	s.finish(t)
 }
 
@@ -269,11 +269,10 @@ func TestExposeKeysThroughServe(t *testing.T) {
 		t.Fatalf("unexpected exposed event: %+v", exposed)
 	}
 	rawExposed := <-s.raw
-	if strings.Contains(rawExposed, `"keys"`) || strings.Contains(rawExposed, keyA) {
+	if strings.Contains(rawExposed, `"keys":`) || strings.Contains(rawExposed, keyA) {
 		t.Fatalf("exposed event echoed keys: %s", rawExposed)
 	}
 
-	// Re-expose with empty keys set replaces in place without PORT_IN_USE.
 	sendMap(t, s, map[string]any{
 		"v": 7, "op": "expose", "requestId": "exp-2",
 		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",
@@ -284,7 +283,6 @@ func TestExposeKeysThroughServe(t *testing.T) {
 		t.Fatalf("unexpected replaced exposed event: %+v", replaced)
 	}
 
-	// Missing keys field in keys mode is rejected as BAD_REQUEST.
 	sendMap(t, s, map[string]any{
 		"v": 7, "op": "expose", "requestId": "exp-bad",
 		"port": 8447, "target": "tcp:127.0.0.1:8080", "proxyProtocol": "",

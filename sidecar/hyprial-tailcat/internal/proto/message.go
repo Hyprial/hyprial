@@ -1,6 +1,6 @@
-// Package proto implements the hyprial-tailcat stdio protocol v6:
+// Package proto implements the hyprial-tailcat stdio protocol v7:
 // newline-delimited JSON commands and events. It is a closed wire
-// contract: unknown ops, unknown fields, and any version other than 5
+// contract: unknown ops, unknown fields, and any version other than 7
 // are rejected. See docs/design/tailnet-cutover-architecture-2026-10-03.md
 // §3.3 (v3 baseline),
 // docs/design/design-orgfs-requester-authentication-2026-10-08.md §3.3
@@ -8,6 +8,13 @@
 // design branch design/socialware-data-layer-2026-10-06:
 // docs/design/design-stable-zenoh-session-slots-2026-10-08.md §4
 // (v4: fixed slot pool — up.slots, map-peer.slot, hold mode).
+//
+// Decision record (service grant line, plan v2 §3.3, slice S4-go):
+//   - v7 adds admission "keys" with a "keys" array on expose. A closed
+//     format takes a new field only with a version bump, so daemon and
+//     sidecar upgrade together (docs/guides/migration-sidecar-protocol-v7.md).
+//   - The "exposed" event echoes admission but never the key set: the set
+//     is derived from grant documents and is not part of the observation.
 package proto
 
 import (
@@ -22,13 +29,12 @@ import (
 	"strings"
 	"sync"
 
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/exposuregate"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/privatefs"
 )
 
-// Version is the only accepted protocol version. v5 adds deterministic
-// per-server client-key derivation without exposing private material.
-const Version = 6
+const Version = 7
 
 // MaxRequestIDLength bounds correlation data accepted or echoed by v5.
 const MaxRequestIDLength = 128
@@ -39,6 +45,7 @@ const MaxRequestIDLength = 128
 const (
 	AdmissionAny   = "any"
 	AdmissionAllow = "allow"
+	AdmissionKeys  = "keys"
 )
 
 // Error codes emitted on error events.
@@ -86,9 +93,6 @@ type UpRequest struct {
 	SlotHoldMs      int
 }
 
-// Command is a parsed protocol-v6 command. Which fields are populated
-// depends on Op. Address is secret (it embeds the peer pre-shared key)
-// and must never be logged or echoed back.
 type Command struct {
 	Op               string
 	Membership       *membership.Request
@@ -102,7 +106,8 @@ type Command struct {
 	Port             int    // map-peer, expose, unexpose
 	Target           string
 	ProxyProtocol    string
-	Admission        string // managed expose only; "allow"
+	Admission        string
+	Keys             []string
 	Addr             string
 	ServerPublic     string
 	RemotePort       int
@@ -609,7 +614,7 @@ func parseMapPeer(line []byte, raw map[string]json.RawMessage) (Command, error) 
 }
 
 func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
-	if err := onlyKeys(raw, "v", "op", "requestId", "port", "target", "proxyProtocol", "admission"); err != nil {
+	if err := onlyKeys(raw, "v", "op", "requestId", "port", "target", "proxyProtocol", "admission", "keys"); err != nil {
 		return Command{}, err
 	}
 	for _, key := range []string{"port", "target", "proxyProtocol"} {
@@ -618,29 +623,49 @@ func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
 		}
 	}
 	var wire struct {
-		V             int    `json:"v"`
-		Op            string `json:"op"`
-		RequestID     string `json:"requestId,omitempty"`
-		Port          int    `json:"port"`
-		Target        string `json:"target"`
-		ProxyProtocol string `json:"proxyProtocol"`
-		Admission     string `json:"admission,omitempty"`
+		V             int      `json:"v"`
+		Op            string   `json:"op"`
+		RequestID     string   `json:"requestId,omitempty"`
+		Port          int      `json:"port"`
+		Target        string   `json:"target"`
+		ProxyProtocol string   `json:"proxyProtocol"`
+		Admission     string   `json:"admission,omitempty"`
+		Keys          []string `json:"keys,omitempty"`
 	}
 	if err := decodeExact(line, &wire); err != nil {
 		return Command{}, ProtocolError("invalid expose fields")
 	}
-	// Managed exposures always use membership admission; the wire spelling
-	// remains "allow". Public "any" admission is rejected.
 	if _, ok := raw["admission"]; !ok {
 		wire.Admission = AdmissionAllow
 	}
 	if err := ValidateExposure(wire.Port, wire.Target, wire.ProxyProtocol, wire.Admission); err != nil {
 		return Command{}, err
 	}
+	rawKeys, hasKeys := raw["keys"]
+	if wire.Admission == AdmissionKeys {
+		if !hasKeys || bytes.Equal(bytes.TrimSpace(rawKeys), []byte("null")) {
+			return Command{}, ProtocolError("admission keys requires a keys array")
+		}
+		var elems []json.RawMessage
+		if err := json.Unmarshal(rawKeys, &elems); err != nil {
+			return Command{}, ProtocolError("keys must be an array")
+		}
+		for _, elem := range elems {
+			if bytes.Equal(bytes.TrimSpace(elem), []byte("null")) {
+				return Command{}, ProtocolError("keys entries must be nodekeys")
+			}
+		}
+		if _, err := exposuregate.New(wire.Admission, wire.Keys); err != nil {
+			return Command{}, ProtocolError(err.Error())
+		}
+	} else if hasKeys {
+		return Command{}, ProtocolError("keys is only valid with admission keys")
+	}
 	requestID, err := optionalRequestID(raw)
 	return Command{
 		Op: "expose", RequestID: requestID, Port: wire.Port,
-		Target: wire.Target, ProxyProtocol: wire.ProxyProtocol, Admission: wire.Admission,
+		Target: wire.Target, ProxyProtocol: wire.ProxyProtocol,
+		Admission: wire.Admission, Keys: wire.Keys,
 	}, err
 }
 
@@ -667,8 +692,8 @@ func ValidateExposure(port int, target, proxyProtocol, admission string) error {
 	if proxyProtocol != "" && proxyProtocol != "v2" {
 		return ProtocolError("proxyProtocol must be empty or v2")
 	}
-	if admission != AdmissionAllow {
-		return ProtocolError("admission must be allow")
+	if admission != AdmissionAllow && admission != AdmissionKeys {
+		return ProtocolError("admission must be allow or keys")
 	}
 	if proxyProtocol == "v2" {
 		if err := privatefs.ProxyTarget(target, exposureLstat); err != nil {
@@ -735,10 +760,6 @@ var eventFields = map[string][]string{
 	"exited":             {},
 }
 
-// ParseEvent validates one protocol-v6 event line: version 6, a known
-// event name, and only the fields defined for that event. Tests and
-// contract golden checkers use it to exercise the same closed contract
-// on the event side.
 func ParseEvent(line []byte) (Event, error) {
 	var raw map[string]json.RawMessage
 	if err := decodeExact(line, &raw); err != nil {

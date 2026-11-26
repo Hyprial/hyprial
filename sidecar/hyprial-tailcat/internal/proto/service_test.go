@@ -11,9 +11,9 @@ func TestServiceCommandsClosedSchema(t *testing.T) {
 		line string
 		op   string
 	}{
-		{`{"v":6,"op":"map-service","requestId":"req-map","name":"api","deviceId":"sub2api","address":"tcPlaceholderAddressNotASecret","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":7,"localPort":0}`, "map-service"},
-		{`{"v":6,"op":"unmap-service","requestId":"req-unmap","name":"api"}`, "unmap-service"},
-		{`{"v":6,"op":"service-status","requestId":"req-status"}`, "service-status"},
+		{`{"v":7,"op":"map-service","requestId":"req-map","name":"api","deviceId":"sub2api","address":"tcPlaceholderAddressNotASecret","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":7,"localPort":0}`, "map-service"},
+		{`{"v":7,"op":"unmap-service","requestId":"req-unmap","name":"api"}`, "unmap-service"},
+		{`{"v":7,"op":"service-status","requestId":"req-status"}`, "service-status"},
 	}
 	for _, tc := range valid {
 		command, err := ParseCommand([]byte(tc.line))
@@ -26,12 +26,12 @@ func TestServiceCommandsClosedSchema(t *testing.T) {
 	}
 
 	invalid := []string{
-		`{"v":6,"op":"map-service","requestId":"req","name":"api","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":1,"localPort":80}`,
-		`{"v":6,"op":"map-service","requestId":"req","name":"API","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":1,"localPort":18080}`,
-		`{"v":6,"op":"map-service","requestId":"req","name":"api","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":true,"recordGeneration":1,"localPort":18080}`,
-		`{"v":6,"op":"map-service","requestId":"req","name":"api","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":0,"localPort":18080}`,
-		`{"v":6,"op":"unmap-service","requestId":"","name":"api"}`,
-		`{"v":6,"op":"service-status","requestId":"req","extra":1}`,
+		`{"v":7,"op":"map-service","requestId":"req","name":"api","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":1,"localPort":80}`,
+		`{"v":7,"op":"map-service","requestId":"req","name":"API","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":1,"localPort":18080}`,
+		`{"v":7,"op":"map-service","requestId":"req","name":"api","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":true,"recordGeneration":1,"localPort":18080}`,
+		`{"v":7,"op":"map-service","requestId":"req","name":"api","deviceId":"sub2api","address":"tcX","serverPublic":"nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","remotePort":8080,"recordGeneration":0,"localPort":18080}`,
+		`{"v":7,"op":"unmap-service","requestId":"","name":"api"}`,
+		`{"v":7,"op":"service-status","requestId":"req","extra":1}`,
 	}
 	for _, line := range invalid {
 		if _, err := ParseCommand([]byte(line)); err == nil || !IsProtocolError(err) {
@@ -78,15 +78,15 @@ func TestServiceEventsRoundTripAndRequiredNulls(t *testing.T) {
 }
 
 func TestServiceEventRejectsMalformedMapping(t *testing.T) {
-	base := `{"v":6,"event":"service-mapped","requestId":"req","service":{"name":"api","deviceId":"sub2api","remotePort":8080,"recordGeneration":1,"localPort":18080,"activeConnections":0,"path":"unknown","pathDetail":null,"observedAtMs":null,"lastDialState":"unknown","lastDialMs":null,"lastError":null,"lastErrorAtMs":null}}`
+	base := `{"v":7,"event":"service-mapped","requestId":"req","service":{"name":"api","deviceId":"sub2api","remotePort":8080,"recordGeneration":1,"localPort":18080,"activeConnections":0,"path":"unknown","pathDetail":null,"observedAtMs":null,"lastDialState":"unknown","lastDialMs":null,"lastError":null,"lastErrorAtMs":null}}`
 	if _, err := ParseEvent([]byte(base)); err != nil {
 		t.Fatalf("valid mapping rejected: %v", err)
 	}
 	invalid := []string{
-		`{"v":6,"event":"service-mapped","requestId":"req","service":{"name":"api","deviceId":"sub2api","remotePort":8080,"recordGeneration":1,"localPort":80,"activeConnections":0,"path":"unknown","pathDetail":null,"observedAtMs":null,"lastDialState":"unknown","lastDialMs":null,"lastError":null,"lastErrorAtMs":null}}`,
-		`{"v":6,"event":"service-status","requestId":"req","services":null}`,
-		`{"v":6,"event":"service-failed","requestId":"req","op":"map-service","name":"api","code":"SECRET_CODE","message":"nope"}`,
-		`{"v":6,"event":"service-failed","requestId":"req","op":"map-service","name":"api","code":"INTERNAL","message":"dial tcSecretAddressMaterial123456789 failed"}`,
+		`{"v":7,"event":"service-mapped","requestId":"req","service":{"name":"api","deviceId":"sub2api","remotePort":8080,"recordGeneration":1,"localPort":80,"activeConnections":0,"path":"unknown","pathDetail":null,"observedAtMs":null,"lastDialState":"unknown","lastDialMs":null,"lastError":null,"lastErrorAtMs":null}}`,
+		`{"v":7,"event":"service-status","requestId":"req","services":null}`,
+		`{"v":7,"event":"service-failed","requestId":"req","op":"map-service","name":"api","code":"SECRET_CODE","message":"nope"}`,
+		`{"v":7,"event":"service-failed","requestId":"req","op":"map-service","name":"api","code":"INTERNAL","message":"dial tcSecretAddressMaterial123456789 failed"}`,
 	}
 	for _, line := range invalid {
 		if _, err := ParseEvent([]byte(line)); err == nil {

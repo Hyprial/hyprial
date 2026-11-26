@@ -7,8 +7,8 @@ from hyprial.daemon.impl.forwarding.controller import ForwardingSidecarControlle
 from hyprial.daemon.impl.forwarding.policy import FORWARD_PROTOCOL_VERSION
 
 
-def test_protocol_is_v6():
-    assert FORWARD_PROTOCOL_VERSION == 6
+def test_protocol_is_v7():
+    assert FORWARD_PROTOCOL_VERSION == 7
 
 
 def test_membership_rpc_is_correlated_and_preserves_error_code():
@@ -18,10 +18,10 @@ def test_membership_rpc_is_correlated_and_preserves_error_code():
     controller._send = sent.append
     def reply(match, *, deadline):
         request = sent[-1]
-        assert request['v'] == 6
+        assert request['v'] == 7
         assert set(request) == {'v', 'op', 'requestId', 'params'}
         assert not match({'requestId': 'other'})
-        response = {'v': 6, 'event': 'error', 'requestId': request['requestId'],
+        response = {'v': 7, 'event': 'error', 'requestId': request['requestId'],
                     'op': request['op'], 'code': 'AUTHORITY_UNREACHABLE',
                     'message': 'Authority is unreachable.'}
         assert match(response)
@@ -43,7 +43,7 @@ def test_membership_transport_diagnostics_are_allowlisted(valid):
     if not valid:
         detail['cause'] = 'http://fake-user:fake-proxy-secret@proxy.invalid'
     controller._await_response = lambda *args, **kwargs: {
-        'v': 6, 'event': 'error', 'requestId': sent[-1]['requestId'],
+        'v': 7, 'event': 'error', 'requestId': sent[-1]['requestId'],
         'op': sent[-1]['op'], 'code': 'AUTHORITY_UNREACHABLE',
         'message': 'fake-proxy-secret', 'data': detail,
     }

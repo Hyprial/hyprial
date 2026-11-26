@@ -416,7 +416,7 @@ def test_a_relaunch_recomputes_tcp_up_slots(generation_scheduler) -> None:
     supervisor = ForwardingSidecarSupervisor(
         {
             FORWARDING_UP_ENV: json.dumps(
-                {"v": 6, "op": "up", "slots": list(current[0])}
+                {"v": 7, "op": "up", "slots": list(current[0])}
             )
         },
         event_log=lambda *_args, **_fields: None,
@@ -460,7 +460,7 @@ def _app(tmp_path: Path, monkeypatch, *, command: str) -> DaemonApplication:
         "HYPRIAL_FORWARDING_UP",
         json.dumps(
             {
-                "v": 6, "requestId": "up-fixture",
+                "v": 7, "requestId": "up-fixture",
                 "op": "up",
                 "keyFile": str(tmp_path / "device-key.json"),
                 "membershipStore": str(tmp_path / 'membership.json'),

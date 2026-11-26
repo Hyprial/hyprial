@@ -1,7 +1,7 @@
 # hyprial-tailcat
 
 The sidecar owns Tailcat membership and admission. The daemon uses the closed
-stdio-v6 protocol. Each tailnet has one fixed authority, a 300-second member
+stdio-v7 protocol. Each tailnet has one fixed authority, a 300-second member
 lease, and a 60-second refresh interval. There is no automatic authority election.
 
 The normative contract is
@@ -17,7 +17,7 @@ hyprial-tailcat forward
 ```
 
 `genkey` exits with code 3 if the key already exists and `--force` is absent.
-`forward` accepts v6 only. A version mismatch returns
+`forward` accepts v7 only. A version mismatch returns
 `SIDECAR_PROTOCOL_MISMATCH`; unknown operations or fields return `BAD_REQUEST`.
 
 ## Managed lifecycle

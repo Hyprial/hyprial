@@ -28,7 +28,7 @@ def test_device_fixture_uses_owner_path_and_current_address_protocol():
     slot = "/run/hyprial/slots/slot-00"
 
     def request(command, expected):
-        assert command["v"] == 6 and expected == "peer-mapped"
+        assert command["v"] == 7 and expected == "peer-mapped"
         assert command["slot"] == slot and command["address"] == address
         return {"peer": command["peer"], "slot": slot}
 

@@ -238,7 +238,7 @@ func (m *Manager) Refresh(ctx context.Context) {
 	}
 }
 func (m *Manager) refreshTailnet(ctx context.Context, id string) {
-	_, err := m.Execute(ctx, Request{V: 6, Op: "roster-fetch", RequestID: randomToken(), Params: marshal(FetchParams{id})})
+	_, err := m.Execute(ctx, Request{V: 7, Op: "roster-fetch", RequestID: randomToken(), Params: marshal(FetchParams{id})})
 	if err != nil {
 		return
 	}
@@ -257,6 +257,6 @@ func (m *Manager) refreshTailnet(ctx context.Context, id string) {
 	addr := m.self.Address
 	m.mu.Unlock()
 	if need {
-		_, _ = m.Execute(ctx, Request{V: 6, Op: "member-announce", RequestID: randomToken(), Params: marshal(AnnounceParams{randomToken(), id, addr, map[string]string{}})})
+		_, _ = m.Execute(ctx, Request{V: 7, Op: "member-announce", RequestID: randomToken(), Params: marshal(AnnounceParams{randomToken(), id, addr, map[string]string{}})})
 	}
 }

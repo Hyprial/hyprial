@@ -2,13 +2,18 @@ package engine
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/exposuregate"
 )
 
 var serviceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
@@ -329,4 +334,265 @@ func (e *Engine) handleServiceConnection(ctx context.Context, service *mappedSer
 		}
 		e.mu.Unlock()
 	})
+}
+
+func (e *Engine) Expose(ctx context.Context, exposure Exposure) (Exposure, error) {
+	mode := exposure.Admission
+	if mode == "" {
+		mode = exposuregate.ModeAllow
+	}
+	gate, err := exposuregate.New(mode, exposure.Keys)
+	if err != nil {
+		return Exposure{}, fmt.Errorf("%w: %v", ErrBadInput, err)
+	}
+	exposure.Admission = mode
+	if exposure.Keys != nil {
+		exposure.Keys = append([]string(nil), exposure.Keys...)
+	}
+
+	e.mu.Lock()
+	if !e.up {
+		e.mu.Unlock()
+		return Exposure{}, ErrNotUp
+	}
+	if e.membership != nil && mode == AdmissionAny {
+		e.mu.Unlock()
+		return Exposure{}, ErrBadInput
+	}
+	if existing := e.exposed[exposure.Port]; existing != nil {
+		if existing.exposure.Target != exposure.Target || existing.exposure.ProxyProtocol != exposure.ProxyProtocol {
+			e.mu.Unlock()
+			return Exposure{}, ErrPortInUse
+		}
+		if existing.exposure.Admission == AdmissionAny || mode == AdmissionAny {
+			same := existing.exposure.Admission == AdmissionAny && mode == AdmissionAny
+			current := existing.exposure
+			e.mu.Unlock()
+			if same {
+				return current, nil
+			}
+			return Exposure{}, ErrPortInUse
+		}
+		if existing.exposure.Admission == mode && (mode == exposuregate.ModeAllow || existing.gate.SameKeys(gate)) {
+			current := existing.exposure
+			e.mu.Unlock()
+			return current, nil
+		}
+		existing.exposure = exposure
+		existing.gate = gate
+		for pair := range existing.pairs {
+			haveKey := !pair.peerKey.IsZero()
+			if !gate.Admits(haveKey && e.admitsLocked(pair.peerKey), haveKey, pair.peerKey) {
+				pair.close()
+				e.disconnected.Add(1)
+			}
+		}
+		e.mu.Unlock()
+		return exposure, nil
+	}
+	server := e.server
+	e.mu.Unlock()
+
+	listenCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	listener, err := server.Listen(listenCtx, "tcp", ":"+strconv.Itoa(exposure.Port))
+	cancel()
+	if err != nil {
+		if strings.Contains(err.Error(), "already in use") {
+			return Exposure{}, ErrPortInUse
+		}
+		return Exposure{}, fmt.Errorf("listen on tailcat port %d: %w", exposure.Port, err)
+	}
+	e.mu.Lock()
+	if !e.up {
+		e.mu.Unlock()
+		_ = listener.Close()
+		return Exposure{}, ErrNotUp
+	}
+	if e.exposed[exposure.Port] != nil {
+		e.mu.Unlock()
+		_ = listener.Close()
+		return Exposure{}, ErrPortInUse
+	}
+	acceptCtx, acceptCancel := context.WithCancel(e.ctx)
+	exposed := &exposedPort{
+		exposure: exposure, gate: gate, listener: listener,
+		cancel: acceptCancel, pairs: make(map[*connPair]struct{}),
+	}
+	e.exposed[exposure.Port] = exposed
+	e.wg.Add(1)
+	e.mu.Unlock()
+	go e.acceptExposure(acceptCtx, exposed)
+	return exposure, nil
+}
+
+func (e *Engine) Unexpose(port int) error {
+	e.mu.Lock()
+	if !e.up {
+		e.mu.Unlock()
+		return ErrNotUp
+	}
+	exposed := e.exposed[port]
+	if exposed == nil {
+		e.mu.Unlock()
+		return ErrPortInUse
+	}
+	delete(e.exposed, port)
+	exposed.cancel()
+	_ = exposed.listener.Close()
+	for pair := range exposed.pairs {
+		pair.close()
+	}
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *Engine) PeerKey(addr string) (found bool, public string, err error) {
+	e.mu.Lock()
+	if !e.up {
+		e.mu.Unlock()
+		return false, "", ErrNotUp
+	}
+	server := e.server
+	e.mu.Unlock()
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return false, "", fmt.Errorf("%w: addr must be an IP:port", ErrBadInput)
+	}
+	pub, ok := server.PeerKey(&net.TCPAddr{IP: ap.Addr().AsSlice(), Port: int(ap.Port())})
+	if !ok {
+		return false, "", nil
+	}
+	return true, pub.String(), nil
+}
+
+func (e *Engine) acceptExposure(ctx context.Context, exposed *exposedPort) {
+	defer e.wg.Done()
+	for {
+		remote, err := exposed.listener.Accept()
+		if err != nil {
+			return
+		}
+		e.mu.Lock()
+		if !e.up || e.exposed[exposed.exposure.Port] != exposed {
+			e.mu.Unlock()
+			_ = remote.Close()
+			return
+		}
+		e.wg.Add(1)
+		e.mu.Unlock()
+		go func(conn net.Conn) {
+			defer e.wg.Done()
+			e.handleExposure(ctx, exposed, conn)
+		}(remote)
+	}
+}
+
+func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remote net.Conn) {
+	e.mu.Lock()
+	if !e.up || e.exposed[exposed.exposure.Port] != exposed {
+		e.mu.Unlock()
+		_ = remote.Close()
+		return
+	}
+	port := exposed.exposure.Port
+	target := exposed.exposure.Target
+	proxyProtocol := exposed.exposure.ProxyProtocol
+	gate := exposed.gate
+	e.mu.Unlock()
+
+	pub, havePub := e.inboundPeerKey(remote)
+	member := havePub && e.admits(pub)
+	if !gate.Admits(member, havePub, pub) {
+		e.deniedCount.Add(1)
+		_ = remote.Close()
+		return
+	}
+	var peerKeyText string
+	if proxyProtocol == "v2" {
+		if !havePub {
+			_ = remote.Close()
+			return
+		}
+		peerKeyText = pub.String()
+	}
+	network, address := splitTarget(target)
+	dialer := net.Dialer{Timeout: dialTimeout}
+	local, err := dialer.DialContext(ctx, network, address)
+	if err != nil {
+		_ = remote.Close()
+		return
+	}
+	if proxyProtocol == "v2" {
+		header, err := buildProxyV2Header(remote.RemoteAddr(), remote.LocalAddr(), port, peerKeyText)
+		if err != nil {
+			_ = remote.Close()
+			_ = local.Close()
+			return
+		}
+		if _, err := local.Write(header); err != nil {
+			_ = remote.Close()
+			_ = local.Close()
+			return
+		}
+	}
+	pair := &connPair{left: remote, right: local, peerKey: pub}
+	e.mu.Lock()
+	if !e.up || e.exposed[port] != exposed || !exposed.gate.Admits(havePub && e.admitsLocked(pub), havePub, pub) {
+		e.mu.Unlock()
+		pair.close()
+		return
+	}
+	exposed.pairs[pair] = struct{}{}
+	e.mu.Unlock()
+	e.splice(pair, func(_ spliceResult) {
+		e.mu.Lock()
+		delete(exposed.pairs, pair)
+		e.mu.Unlock()
+	})
+}
+
+var proxyV2Signature = [12]byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
+
+func buildProxyV2Header(source, destination net.Addr, port int, peerKeyText string) ([]byte, error) {
+	sourceAP, err := addrToAddrPort(source)
+	if err != nil {
+		return nil, err
+	}
+	destinationAP, err := addrToAddrPort(destination)
+	if err != nil {
+		return nil, err
+	}
+	destinationAP = netip.AddrPortFrom(destinationAP.Addr(), uint16(port))
+	tlv := []byte(peerKeyText)
+	payloadLength := 36 + 3 + len(tlv)
+	if payloadLength > 65535 {
+		return nil, errors.New("PROXY v2 TLV is too large")
+	}
+	header := make([]byte, 16, 16+payloadLength)
+	copy(header[:12], proxyV2Signature[:])
+	header[12] = 0x21
+	header[13] = 0x21
+	binary.BigEndian.PutUint16(header[14:16], uint16(payloadLength))
+	as16 := sourceAP.Addr().As16()
+	header = append(header, as16[:]...)
+	ad16 := destinationAP.Addr().As16()
+	header = append(header, ad16[:]...)
+	ports := make([]byte, 4)
+	binary.BigEndian.PutUint16(ports[:2], sourceAP.Port())
+	binary.BigEndian.PutUint16(ports[2:], destinationAP.Port())
+	header = append(header, ports...)
+	header = append(header, 0xe0, byte(len(tlv)>>8), byte(len(tlv)))
+	header = append(header, tlv...)
+	return header, nil
+}
+
+func addrToAddrPort(addr net.Addr) (netip.AddrPort, error) {
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.AddrPort(), nil
+	case *net.UDPAddr:
+		return a.AddrPort(), nil
+	default:
+		return netip.AddrPort{}, fmt.Errorf("unexpected address type %T", addr)
+	}
 }

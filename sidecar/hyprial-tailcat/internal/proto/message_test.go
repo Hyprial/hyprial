@@ -9,9 +9,9 @@ import (
 )
 
 func upFixture() map[string]any {
-	return map[string]any{"v": 6, "op": "up", "requestId": "up", "keyFile": "/a/dev.key", "addressFile": "/a/dev.addr", "membershipStore": "/a/membership.json", "owner": "alice", "deviceId": "laptop", "inboundTarget": "unix:/a/zenoh.sock"}
+	return map[string]any{"v": 7, "op": "up", "requestId": "up", "keyFile": "/a/dev.key", "addressFile": "/a/dev.addr", "membershipStore": "/a/membership.json", "owner": "alice", "deviceId": "laptop", "inboundTarget": "unix:/a/zenoh.sock"}
 }
-func TestParseUpV6(t *testing.T) {
+func TestParseUpV7(t *testing.T) {
 	cases := []map[string]any{{}, {"inboundTarget": "tcp:127.0.0.1:7443"}, {"slots": []string{"/a/s0", "/a/s1"}, "slotHoldMs": 10000}, {"slots": []string{"tcp:127.0.0.1:0", "tcp:127.0.0.1:0"}}, {"derp": map[string]any{"host": "127.0.0.1", "derpPort": 3340, "stunPort": 3341, "insecureForTests": true}}, {"derpMapURL": "https://derpmap.hyprial.ai/map.json", "derpMapCacheDir": "/a/cache"}}
 	for _, extra := range cases {
 		p := upFixture()
@@ -57,15 +57,15 @@ func TestParseCommandPositive(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := []string{
-		`{"v":6,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"/a/slot-00"}`,
-		`{"v":6,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"tcp:127.0.0.1:0","port":8447}`,
-		`{"v":6,"op":"unmap-peer","peer":"a","requestId":"r"}`,
-		`{"v":6,"op":"expose","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":""}`,
-		`{"v":6,"op":"expose","port":8447,"target":` + string(target) + `,"proxyProtocol":"v2","admission":"allow"}`,
-		`{"v":6,"op":"unexpose","port":8447}`,
-		`{"v":6,"op":"peer-key","addr":"[fd7a::1]:8447"}`,
-		`{"v":6,"op":"derive-client-key","requestId":"r","serverPublic":"nodekey:abc"}`,
-		`{"v":6,"op":"status"}`, `{"v":6,"op":"down"}`,
+		`{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"/a/slot-00"}`,
+		`{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"tcp:127.0.0.1:0","port":8447}`,
+		`{"v":7,"op":"unmap-peer","peer":"a","requestId":"r"}`,
+		`{"v":7,"op":"expose","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":""}`,
+		`{"v":7,"op":"expose","port":8447,"target":` + string(target) + `,"proxyProtocol":"v2","admission":"allow"}`,
+		`{"v":7,"op":"unexpose","port":8447}`,
+		`{"v":7,"op":"peer-key","addr":"[fd7a::1]:8447"}`,
+		`{"v":7,"op":"derive-client-key","requestId":"r","serverPublic":"nodekey:abc"}`,
+		`{"v":7,"op":"status"}`, `{"v":7,"op":"down"}`,
 	}
 	for _, line := range lines {
 		c, err := ParseCommand([]byte(line))
@@ -81,7 +81,7 @@ func TestParseCommandPositive(t *testing.T) {
 	}
 }
 func TestParseCommandNegative(t *testing.T) {
-	lines := []string{`no json`, `{"op":"status"}`, `{"v":2,"op":"status"}`, `{"v":3,"op":"status"}`, `{"v":4,"op":"status"}`, `{"v":5,"op":"status"}`, `{"v":"6","op":"status"}`, `{"v":6}`, `{"v":6,"op":"unknown"}`, `{"v":6,"op":"status","extra":1}`, `{"v":6,"op":"status","peer":"a"}`, `{"v":6,"op":"map-peer","peer":"a"}`, `{"v":6,"op":"map-peer","peer":"a","address":"tcPlaceholder"}`, `{"v":6,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"relative"}`, `{"v":6,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"tcp:10.0.0.9:443"}`, `{"v":6,"op":"map-peer","peer":"","address":"tcPlaceholder","slot":"/a/s0"}`, `{"v":6,"op":"map-peer","peer":"a","address":"http://bad","slot":"/a/s0"}`, `{"v":6,"op":"unmap-peer","peer":"a","port":1}`, `{"v":6,"op":"allow","keys":[],"allowAny":false}`, `{"v":6,"op":"expose","port":1,"target":"tcp:127.0.0.1:80","proxyProtocol":"v1"}`, `{"v":6,"op":"expose","port":1,"target":"tcp:127.0.0.1:80","proxyProtocol":"","admission":"any"}`, `{"v":6,"op":"expose","port":1,"target":"tcp:192.168.1.1:80","proxyProtocol":""}`, `{"v":6,"op":"expose","port":1,"target":"unix:relative","proxyProtocol":""}`, `{"v":6,"op":"expose","port":1,"proxyProtocol":""}`, `{"v":6,"op":"unexpose","port":0}`, `{"v":6,"op":"peer-key","addr":"bad"}`, `{"v":6,"op":"status"} {"v":6}`}
+	lines := []string{`no json`, `{"op":"status"}`, `{"v":2,"op":"status"}`, `{"v":3,"op":"status"}`, `{"v":4,"op":"status"}`, `{"v":5,"op":"status"}`, `{"v":6,"op":"status"}`, `{"v":"7","op":"status"}`, `{"v":7}`, `{"v":7,"op":"unknown"}`, `{"v":7,"op":"status","extra":1}`, `{"v":7,"op":"status","peer":"a"}`, `{"v":7,"op":"map-peer","peer":"a"}`, `{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder"}`, `{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"relative"}`, `{"v":7,"op":"map-peer","peer":"a","address":"tcPlaceholder","slot":"tcp:10.0.0.9:443"}`, `{"v":7,"op":"map-peer","peer":"","address":"tcPlaceholder","slot":"/a/s0"}`, `{"v":7,"op":"map-peer","peer":"a","address":"http://bad","slot":"/a/s0"}`, `{"v":7,"op":"unmap-peer","peer":"a","port":1}`, `{"v":7,"op":"allow","keys":[],"allowAny":false}`, `{"v":7,"op":"expose","port":1,"target":"tcp:127.0.0.1:80","proxyProtocol":"v1"}`, `{"v":7,"op":"expose","port":1,"target":"tcp:127.0.0.1:80","proxyProtocol":"","admission":"any"}`, `{"v":7,"op":"expose","port":1,"target":"tcp:192.168.1.1:80","proxyProtocol":""}`, `{"v":7,"op":"expose","port":1,"target":"unix:relative","proxyProtocol":""}`, `{"v":7,"op":"expose","port":1,"proxyProtocol":""}`, `{"v":7,"op":"unexpose","port":0}`, `{"v":7,"op":"peer-key","addr":"bad"}`, `{"v":7,"op":"status"} {"v":7}`}
 	for _, line := range lines {
 		if _, err := ParseCommand([]byte(line)); err == nil {
 			t.Fatalf("accepted %s", line)
@@ -144,7 +144,7 @@ func TestParseExposeKeys(t *testing.T) {
 }
 
 func TestEventsRoundTrip(t *testing.T) {
-	events := []Event{Hello("0.1.0", "tailcat"), State("Starting"), RunningState("nodekey:a", "nodekey:b", nil, nil), RunningState("nodekey:a", "nodekey:b", []PeerMapping{{Peer: "p", Slot: "/a/s0"}}, []string{"/a/s0"}), SlotMapped("p", "/a/s0"), PeerUnmapped("p"), Exposed(8447, "unix:/a/backend", "v2", AdmissionAllow), Unexposed(8447), PeerKey("[fd7a::1]:8447", true, "nodekey:a"), PeerKey("[fd7a::1]:8447", false, ""), Error(CodeBadRequest, "nope"), Exited()}
+	events := []Event{Hello("0.1.0", "tailcat"), State("Starting"), RunningState("nodekey:a", "nodekey:b", nil, nil), RunningState("nodekey:a", "nodekey:b", []PeerMapping{{Peer: "p", Slot: "/a/s0"}}, []string{"/a/s0"}), SlotMapped("p", "/a/s0"), PeerUnmapped("p"), Exposed(8447, "unix:/a/backend", "v2", AdmissionAllow), Exposed(8448, "tcp:127.0.0.1:8080", "", AdmissionKeys), Unexposed(8447), PeerKey("[fd7a::1]:8447", true, "nodekey:a"), PeerKey("[fd7a::1]:8447", false, ""), Error(CodeBadRequest, "nope"), Exited()}
 	for _, event := range events {
 		b, _ := json.Marshal(event)
 		parsed, err := ParseEvent(b)
@@ -157,7 +157,7 @@ func TestEventsRoundTrip(t *testing.T) {
 	}
 }
 func TestParseStateConnectionTelemetry(t *testing.T) {
-	line := []byte(`{"v":6,"event":"state","state":"Running","peers":[],"connectionTelemetry":{"ringCapacity":16,"slots":[{"peer":"a","slot":"tcp:127.0.0.1:41001","mapPort":41001,"dialFailureCount":2,"lastDialError":"refused","closedCount":1,"errorCounts":{"eof":1},"recent":[{"peer":"a","slot":"tcp:127.0.0.1:41001","mapPort":41001,"bytesIn":17,"bytesOut":19,"durationMs":23,"closeSide":"peer","errors":{"in":"reset","out":"eof"}}]}]}}`)
+	line := []byte(`{"v":7,"event":"state","state":"Running","peers":[],"connectionTelemetry":{"ringCapacity":16,"slots":[{"peer":"a","slot":"tcp:127.0.0.1:41001","mapPort":41001,"dialFailureCount":2,"lastDialError":"refused","closedCount":1,"errorCounts":{"eof":1},"recent":[{"peer":"a","slot":"tcp:127.0.0.1:41001","mapPort":41001,"bytesIn":17,"bytesOut":19,"durationMs":23,"closeSide":"peer","errors":{"in":"reset","out":"eof"}}]}]}}`)
 	event, err := ParseEvent(line)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestParseStateConnectionTelemetry(t *testing.T) {
 	}
 }
 func TestParseEventNegative(t *testing.T) {
-	for _, line := range []string{`{"v":5,"event":"state","state":"Down","peers":[]}`, `{"v":6,"event":"unknown"}`, `{"v":6,"event":"exited","extra":1}`, `{"v":6,"event":"client-key-derived","serverPublic":"nodekey:a","clientPublic":"nodekey:b"}`} {
+	for _, line := range []string{`{"v":5,"event":"state","state":"Down","peers":[]}`, `{"v":6,"event":"state","state":"Down","peers":[]}`, `{"v":7,"event":"unknown"}`, `{"v":7,"event":"exited","extra":1}`, `{"v":7,"event":"exposed","port":8447,"target":"tcp:127.0.0.1:8080","proxyProtocol":"","admission":"keys","keys":[]}`, `{"v":7,"event":"client-key-derived","serverPublic":"nodekey:a","clientPublic":"nodekey:b"}`} {
 		if _, err := ParseEvent([]byte(line)); err == nil {
 			t.Fatal("invalid event accepted")
 		}

@@ -30,7 +30,7 @@ _FIXTURE = (
 
 def _controller(home: Path, slots: list[str]) -> ForwardingSidecarController:
     up = {
-        "v": 6, "requestId": "up-fixture",
+        "v": 7, "requestId": "up-fixture",
         "op": "up",
         "keyFile": str(home / "secrets/tailcat/device-key.json"),
         "membershipStore": str(home / 'membership.json'),

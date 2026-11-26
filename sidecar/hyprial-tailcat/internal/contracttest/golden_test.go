@@ -1,5 +1,5 @@
 // Package contracttest pins the repository's contract golden files for the
-// hyprial-tailcat protocol v6 (contract/sidecar-tailcat/golden/*.jsonl) to
+// hyprial-tailcat protocol v7 (contract/sidecar-tailcat/golden/*.jsonl) to
 // the proto package: every positive line must parse, every line in an
 // invalid-* file must be rejected.
 package contracttest

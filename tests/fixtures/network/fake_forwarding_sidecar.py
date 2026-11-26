@@ -15,7 +15,7 @@ def emit(command: dict[str, object] | None = None, **event: object) -> None:
     request_id = command.get("requestId") if command is not None else None
     if isinstance(request_id, str) and request_id:
         event["requestId"] = request_id
-    print(json.dumps({"v": 6, **event}, separators=(",", ":")), flush=True)
+    print(json.dumps({"v": 7, **event}, separators=(",", ":")), flush=True)
 
 
 receipt = Path(os.environ["FAKE_FORWARD_RECEIPT"])
