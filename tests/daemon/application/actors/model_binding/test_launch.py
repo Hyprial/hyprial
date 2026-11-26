@@ -15,10 +15,21 @@ from tests.identity.agents.home.roots.lifecycle.support import (
 )
 
 
-def test_agent_start_uses_saved_binding_without_legacy_default(configured, monkeypatch):
+@pytest.mark.parametrize("member_form", [None, "actor", "uri"])
+def test_agent_start_uses_saved_binding_without_legacy_default(
+    configured, monkeypatch, member_form
+):
     from hyprial.daemon.impl.request_catalog import METHOD_REGISTRY
 
     app, _, _, expected, _ = configured
+    agent = app.agents.require("worker")
+    original_get = app.agents.get
+
+    def get(name):
+        found = original_get(name)
+        return None if found is None else replace(found, preferred_harness="claude")
+
+    monkeypatch.setattr(app.agents, "get", get)
     calls = []
     original = METHOD_REGISTRY.invoke
 
@@ -37,7 +48,11 @@ def test_agent_start_uses_saved_binding_without_legacy_default(configured, monke
         type(METHOD_REGISTRY), "invoke", lambda _self, *a, **kw: invoke(*a, **kw)
     )
     monkeypatch.setattr(app, "_ipc_lifecycle_start", start)
-    assert app._ipc_agent_start({"name": "worker"})["running"] is True
+    params = {"name": "worker"}
+    if member_form is not None:
+        params["member"] = getattr(agent, member_form)
+    assert app._ipc_agent_start(params)["running"] is True
+    assert calls[0][1]["harness"] == "pi"
     assert "provider" not in calls[0][1] and "model" not in calls[0][1]
     assert calls[1][1]["model"] == "hy4-flash"
     assert calls[1][1]["modelProvider"] == expected.model_provider

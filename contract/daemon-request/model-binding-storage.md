@@ -98,7 +98,9 @@ purges only proven absent incarnations; a same-name replacement is untouched.
 Ordinary stop leaves bindings and receipts intact. Cleanup marking promotes schema 4
 even for a legacy agent without bindings, with the downgrade refusal described above.
 
-`agent.destroy.preview` adds optional modelBindingCleanup counts. Confirmation hashes
+`agent.destroy.preview` adds modelBindingCleanup counts. The field is optional in
+the wire schema for compatibility with older results; this server always emits it.
+Confirmation hashes
 include non-secret binding/operation state, so intervening configuration invalidates
 the preview. Failed destroy and idempotent replay preserve
 MODEL_CONFIGURATION_INCOMPLETE / bind / destroy-cleanup-pending and entityDeleted
