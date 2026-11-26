@@ -744,7 +744,9 @@ PR6 真实浏览器启动验收补齐了前序焦点测试遗漏的持久化交�
 2026-11-27 F1 修订：旧 startup 预览显式不暴露未实现的模型绑定与 native target 端口；
 其创建/授权/状态读取/启动/停止保持旧能力，新模型预览继续使用 canonical Contract Mock。
 共享页面不分叉，正式 MethodAccess 与后端流程不变。四宽度两种入口实点均 PASS；
-全量 GUI 的 a792/ecafb 失败项对照正在运行，不能据此提前声明整体通过。
+全量 GUI 固定对照终态：a792 为 3017P/38F，ecafb 为 3046P/34F；各有 2 skipped/4 todo。
+逐 ID 新增失败 0、共同失败 34、消失 4；整体仍 FAIL，仅本片增量无新增失败。
+共同失败为 j10-credentials 17、contract-gap 2、playwright-cache 15；不删断言、不记 skip 为通过。
 操作说明统一放在本设计 PR 的 `.agents/skills/gui-workflow/SKILL.md`（2adeafe5），
 实现 #86 不重复携带该文档差异。远端 dev 已观测到 db304b28；本次固定依赖链未混入新基，
 后续集成时另做合并与对应树验收。
