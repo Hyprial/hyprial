@@ -65,6 +65,7 @@ def test_only_eligible_unary_operator_routes_become_routes() -> None:
     assert view.routes["message.history"].http_binding["identity"] == {"mode": "local-owner-user-selector", "param": "actor"}
     assert view.routes["message.query"].http_binding["identity"] == {"mode": "local-owner-user-selector", "param": "actor"}
     assert set(view.routes) == {
+        "agent.model.configure", "agent.model.status", "agent.model.cancel",
         "onboarding.status", "auth.login.begin", "auth.operation.get",
         "auth.operation.cancel", "onboarding.device.ensure", "onboarding.initialize",
         "auth.logout", "auth.relogin",

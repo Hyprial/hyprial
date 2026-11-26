@@ -803,6 +803,7 @@ def test_http_exposure_is_explicit() -> None:
         spec.name for spec in METHOD_REGISTRY.specs if spec.http_exposed
     }
     assert exposed == {
+        "agent.model.configure", "agent.model.status", "agent.model.cancel",
         "adapter.identities.list",
         "adapter.identities.sync",
         "adapter.register",

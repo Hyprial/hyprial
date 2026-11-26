@@ -108,6 +108,11 @@ def test_daemon_exports_keep_names_order_targets_and_lazy_loading():
         "BootstrapWireHost",
     )
     values["__all__"].remove("BootstrapWireHost")
+    assert values["_FACADE_EXPORTS"].pop("write_model_binding_operation_limit") == (
+        "hyprial.daemon.impl.application.model_binding.configure.settings",
+        "write_model_binding_operation_limit",
+    )
+    values["__all__"].remove("write_model_binding_operation_limit")
     ownerless = "hyprial.daemon.impl.application.onboarding.lifecycle.ownerless"
     for name, module in (
         ("BootstrapLaunchError", ownerless),

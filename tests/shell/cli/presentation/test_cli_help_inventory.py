@@ -280,6 +280,7 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
         "ensure-home",
         "readiness",
         "provider",
+        "model",
         "tiers",
         "attach",
         "detach",
@@ -288,6 +289,7 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
         "args",
         "teleport",
     } == set(agent.commands)
+    assert set(agent.commands["model"].commands) == {"configure", "status", "cancel"}
     assert "link" not in agent.commands
     assert "runtime" not in agent.commands
     assert "authority" not in agent.commands

@@ -122,6 +122,9 @@ if TYPE_CHECKING:
         AgentHarnessArgsUpdated as AgentHarnessArgsUpdated, AgentMutationCompleted as AgentMutationCompleted, AgentProjection as AgentProjection,
     )
     from hyprial.identity.impl.agents.registry._core import AgentRegistry as AgentRegistry
+    from hyprial.identity.impl.agents.home.native_imports.targets import (
+        NativeAuthTarget as NativeAuthTarget, native_auth_targets as native_auth_targets,
+    )
     from hyprial.identity.impl.agents.home.native_imports import NativeImportRecord as NativeImportRecord
     from hyprial.identity.impl.agents.home.native_imports.launch import capture_native_auth_launch as capture_native_auth_launch
     from hyprial.identity.impl.agents.runtime.context import (
@@ -389,7 +392,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.registry._base import agent_id_for_entity_token as agent_id_for_entity_token
 
 __all__ = [
-    'ModelConnection',
+    'ModelConnection', 'NativeAuthTarget', 'native_auth_targets',
     'ACTION_INVITE', 'ACTION_LEAVE', 'ACTION_READ', 'ACTION_REMOVE', 'ACTION_WRITE', 'ADDRESS_RELPATH', 'AGENT_HEARTBEAT_TTL_SECONDS', 'AcquireAgentRuntimeLaunchCommand', 'Agent', 'AgentActor',
     'AgentAlreadyRunning', 'AgentBinding', 'AgentCapabilityGrantCompleted', 'AgentCommand', 'AgentConfig', 'AgentConfigCasMismatch', 'AgentConfigError', 'AgentDestroyReservationCompleted',
     'AgentDestroySettled', 'AgentError', 'AgentEvent', 'AgentHomeAccessError', 'AgentHomeAccessPending', 'AgentHomeError', 'AgentIncarnationMismatch', 'AgentLifecycleReceiptCompleted',

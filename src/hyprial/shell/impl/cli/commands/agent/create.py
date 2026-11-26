@@ -39,7 +39,7 @@ def agent_create(
     ),
     model: str | None = typer.Option(None, "--model", help="Model id preference."),
     connection: str | None = typer.Option(None, "--connection", help="Saved connection reference; disables default credentials."),
-    config_revision: int | None = typer.Option(None, "--config-revision"),
+    config_revision: int | None = typer.Option(None, "--config-revision", help="Saved connection revision; required only with --connection."),
     native_auth: str | None = typer.Option(None, "--native-auth", help="Native login slot for this agent; never copies another login."),
     operation_id: str | None = typer.Option(None, "--operation-id", help="Unique model configuration operation ID."),
     preferred_harness: str | None = typer.Option(

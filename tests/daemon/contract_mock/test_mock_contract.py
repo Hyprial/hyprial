@@ -147,6 +147,7 @@ def test_the_real_registered_method_projection_loads_and_passes_the_checks(
     path.write_text(json.dumps(document), encoding="utf-8")
     contract = load_contract(path)
     expected_http_methods = {
+        "agent.model.configure", "agent.model.status", "agent.model.cancel",
         *PROVIDER_KEY_METHODS,
         "adapter.identities.list",
         "adapter.identities.sync",
