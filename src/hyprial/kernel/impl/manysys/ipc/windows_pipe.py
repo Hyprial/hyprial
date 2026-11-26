@@ -18,6 +18,19 @@
 #   PIPE_REJECT_REMOTE_CLIENTS (0x8) is always set, ConnectNamedPipe winerror
 #   535 (ERROR_PIPE_CONNECTED) marks immediate connection, and client CreateFile
 #   passes SECURITY_SQOS_PRESENT (0x100000) for anonymous impersonation level.
+# - PipeListener accept/close concurrency (2026-11-26): a shared
+#   threading.Condition (_cond) guards handle, operation, _connected_immediately,
+#   _closed, _accepting, _active_handle, _cancel_sent, _cancelling, and
+#   _closing_handles. accept() checks out (handle, operation) and clears the
+#   instance fields under _cond before waiting/settling unlocked, so close()
+#   never races on GetOverlappedResult or closes live handles. To interrupt an
+#   in-flight accept(), close() marks _closed, pins _active_handle via
+#   _cancelling while calling _cancel() once, and waits on _cond until
+#   _accepting and _closing_handles drain to zero. accept() waits for
+#   _cancelling == 0 before disposing or handing off the handle, ensuring every
+#   handle and hEvent closes exactly once after settlement and no thread uses
+#   them after close() returns. Calling accept() on a closed listener raises
+#   OSError(errno.EBADF, ...).
 """Local, current-user Windows named pipes with bounded overlapped I/O.
 
 Only the small stream interface used by daemon IPC is implemented. This is
@@ -29,6 +42,7 @@ from __future__ import annotations
 import ctypes
 from contextlib import contextmanager
 from ctypes import wintypes
+import errno
 import json
 import re
 import threading
@@ -263,12 +277,49 @@ class PipeStream:
         self.close()
 
 
+def _settle_overlapped(handle, operation):
+    while True:
+        try:
+            win32file.GetOverlappedResult(handle, operation, True)
+            return
+        except pywintypes.error as error:
+            if error.winerror != 996:
+                raise
+            time.sleep(0.001)
+
+
+def _dispose_pending(handle, operation, settled):
+    try:
+        if not settled:
+            try:
+                _cancel(handle)
+            except OSError:
+                pass
+            try:
+                _settle_overlapped(handle, operation)
+            except pywintypes.error:
+                pass
+    finally:
+        try:
+            operation.hEvent.Close()
+        finally:
+            handle.Close()
+
+
 class PipeListener:
     def __init__(self, endpoint: Path, *, gui_write_sid: str | None = None):
         self.name = rf"\\.\pipe\hyprial-{uuid4().hex}"
         self.timeout = 0.25
+        self._cond = threading.Condition()
+        self._closed = False
+        self._accepting = False
+        self._active_handle = None
+        self._cancel_sent = False
+        self._cancelling = 0
+        self._closing_handles = 0
         self.handle = None
         self.operation = None
+        self._connected_immediately = False
         token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
         try:
             sid, _ = win32security.GetTokenInformation(token, win32security.TokenUser)
@@ -298,8 +349,8 @@ class PipeListener:
             self.close()
             raise
 
-    def _prepare(self, *, first=False):
-        self.handle = win32pipe.CreateNamedPipe(
+    def _create_pending(self, *, first=False):
+        handle = win32pipe.CreateNamedPipe(
             self.name,
             win32pipe.PIPE_ACCESS_DUPLEX | win32file.FILE_FLAG_OVERLAPPED
             | (0x00080000 if first else 0),
@@ -307,57 +358,222 @@ class PipeListener:
             | win32pipe.PIPE_WAIT | 8,
             255, 65536, 65536, 0, self.security,
         )
-        self.operation = _overlapped()
+        operation = None
         try:
-            result = win32pipe.ConnectNamedPipe(self.handle, self.operation)
-            self._connected_immediately = result == 535
-            if self._connected_immediately:
-                win32event.SetEvent(self.operation.hEvent)
-        except pywintypes.error as error:
-            if error.winerror != 535:
-                raise
-            self._connected_immediately = True
-            win32event.SetEvent(self.operation.hEvent)
+            operation = _overlapped()
+            try:
+                result = win32pipe.ConnectNamedPipe(handle, operation)
+                connected_immediately = result == 535
+                if connected_immediately:
+                    win32event.SetEvent(operation.hEvent)
+            except pywintypes.error as error:
+                if error.winerror != 535:
+                    raise
+                connected_immediately = True
+                win32event.SetEvent(operation.hEvent)
+            return handle, operation, connected_immediately
+        except BaseException:
+            try:
+                if operation is not None:
+                    operation.hEvent.Close()
+            finally:
+                handle.Close()
+            raise
+
+    def _prepare(self, *, first=False):
+        handle, operation, connected_immediately = self._create_pending(first=first)
+        with self._cond:
+            if not self._closed:
+                self.handle = handle
+                self.operation = operation
+                self._connected_immediately = connected_immediately
+                return
+        _dispose_pending(handle, operation, connected_immediately)
+
+    def _release_active_handle(self):
+        with self._cond:
+            self._active_handle = None
+            while self._cancelling > 0:
+                self._cond.wait()
+            return self._closed
+
+    def _finish_accept(self):
+        with self._cond:
+            self._active_handle = None
+            self._accepting = False
+            self._cond.notify_all()
+
+    def _rearm_after_error(self):
+        try:
+            next_handle, next_operation, next_connected = self._create_pending()
+        except BaseException:
+            return
+        with self._cond:
+            if not self._closed:
+                self.handle = next_handle
+                self.operation = next_operation
+                self._connected_immediately = next_connected
+                return
+        _dispose_pending(next_handle, next_operation, next_connected)
 
     def settimeout(self, timeout):
-        self.timeout = timeout
+        with self._cond:
+            self.timeout = timeout
 
     def accept(self):
-        state = win32event.WaitForSingleObject(self.operation.hEvent, int(self.timeout * 1000))
-        if state == win32event.WAIT_TIMEOUT:
-            raise TimeoutError("named pipe accept timed out")
+        with self._cond:
+            while self._accepting and not self._closed:
+                self._cond.wait()
+            if self._closed or self.handle is None or self.operation is None:
+                raise OSError(errno.EBADF, "named pipe listener is closed")
+            handle = self.handle
+            operation = self.operation
+            connected_immediately = self._connected_immediately
+            timeout = self.timeout
+            self.handle = None
+            self.operation = None
+            self._connected_immediately = False
+            self._accepting = True
+            self._active_handle = None if connected_immediately else handle
+            self._cancel_sent = False
+
+        settled = connected_immediately
+        accepting_owned = True
+        wait_ms = win32event.INFINITE if timeout is None else max(0, int(timeout * 1000))
         try:
-            if not self._connected_immediately:
-                win32file.GetOverlappedResult(self.handle, self.operation, True)
-        except pywintypes.error as error:
-            if error.winerror != 535:
-                raise OSError(error.winerror, "named pipe accept failed") from error
-        accepted = PipeStream(self.handle)
-        self.handle = None
-        self.operation.hEvent.Close()
-        self.operation = None
-        try:
-            self._prepare()
+            state = win32event.WaitForSingleObject(operation.hEvent, wait_ms)
+            if state == win32event.WAIT_TIMEOUT:
+                with self._cond:
+                    self._active_handle = None
+                    while self._cancelling > 0:
+                        self._cond.wait()
+                    if not self._closed:
+                        self.handle = handle
+                        self.operation = operation
+                        self._connected_immediately = connected_immediately
+                        self._accepting = False
+                        self._cond.notify_all()
+                        accepting_owned = False
+                        handle = None
+                        operation = None
+                        raise TimeoutError("named pipe accept timed out")
+                _dispose_pending(handle, operation, settled)
+                handle = None
+                operation = None
+                raise OSError(errno.EBADF, "named pipe listener is closed")
+
+            if state != win32event.WAIT_OBJECT_0:
+                raise OSError("named pipe accept wait failed")
+
+            if not settled:
+                try:
+                    _settle_overlapped(handle, operation)
+                except pywintypes.error as error:
+                    if error.winerror != 535:
+                        settled = True
+                        closed = self._release_active_handle()
+                        _dispose_pending(handle, operation, settled)
+                        handle = None
+                        operation = None
+                        if closed:
+                            raise OSError(
+                                errno.EBADF, "named pipe listener is closed"
+                            ) from error
+                        self._rearm_after_error()
+                        raise OSError(
+                            error.winerror, "named pipe accept failed"
+                        ) from error
+                settled = True
+
+            if self._release_active_handle():
+                _dispose_pending(handle, operation, settled)
+                handle = None
+                operation = None
+                raise OSError(errno.EBADF, "named pipe listener is closed")
+
+            event = operation.hEvent
+            operation = None
+            event.Close()
+            accepted = PipeStream(handle)
+            handle = None
+            try:
+                next_handle, next_operation, next_connected = self._create_pending()
+            except BaseException:
+                accepted.close()
+                raise
+            with self._cond:
+                if not self._closed:
+                    self.handle = next_handle
+                    self.operation = next_operation
+                    self._connected_immediately = next_connected
+                    self._accepting = False
+                    self._cond.notify_all()
+                    accepting_owned = False
+                    return accepted, None
+            _dispose_pending(next_handle, next_operation, next_connected)
+            return accepted, None
         except BaseException:
-            accepted.close()
+            if handle is not None or operation is not None:
+                self._release_active_handle()
+                if handle is not None and operation is not None:
+                    _dispose_pending(handle, operation, settled)
+                elif operation is not None:
+                    operation.hEvent.Close()
+                elif handle is not None:
+                    handle.Close()
             raise
-        return accepted, None
+        finally:
+            if accepting_owned:
+                self._finish_accept()
 
     def close(self):
-        if self.handle is not None:
-            if self.operation is not None:
+        while True:
+            idle_handle = None
+            idle_operation = None
+            idle_connected = False
+            cancel_handle = None
+            with self._cond:
+                self._closed = True
+                if self.handle is not None:
+                    idle_handle = self.handle
+                    idle_operation = self.operation
+                    idle_connected = self._connected_immediately
+                    self.handle = None
+                    self.operation = None
+                    self._connected_immediately = False
+                    self._closing_handles += 1
+                elif self._active_handle is not None and not self._cancel_sent:
+                    cancel_handle = self._active_handle
+                    self._cancel_sent = True
+                    self._cancelling += 1
+                elif self._accepting or self._closing_handles > 0:
+                    self._cond.wait()
+                    continue
+                else:
+                    self._cond.notify_all()
+                    return
+
+            if idle_handle is not None:
                 try:
-                    _cancel(self.handle)
+                    if idle_operation is not None:
+                        _dispose_pending(idle_handle, idle_operation, idle_connected)
+                    else:
+                        idle_handle.Close()
+                finally:
+                    with self._cond:
+                        self._closing_handles -= 1
+                        self._cond.notify_all()
+                continue
+
+            if cancel_handle is not None:
+                try:
+                    _cancel(cancel_handle)
                 except OSError:
                     pass
-                try:
-                    win32file.GetOverlappedResult(self.handle, self.operation, True)
-                except pywintypes.error:
-                    pass
-                self.operation.hEvent.Close()
-                self.operation = None
-            self.handle.Close()
-            self.handle = None
+                finally:
+                    with self._cond:
+                        self._cancelling -= 1
+                        self._cond.notify_all()
 
 
 def connect(endpoint: Path, timeout: float) -> PipeStream:
