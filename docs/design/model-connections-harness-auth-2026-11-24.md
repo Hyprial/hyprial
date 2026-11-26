@@ -1,7 +1,7 @@
-# 模型连接、手填模型 ID 与 Agent 启动统一方案（WIP）
+# 模型连接、手填模型 ID 与 Agent 启动统一方案及实施记录
 
-状态：CLI developer 第七轮设计复核已闭合，用户已授权串行实施；PR 1 已合入 dev。GitHub #59 的 Lark 修复范围已通过独立本地评审；按 2026-11-26 用户更新，本地实现与独立评审持续推进，CI 与远程合并后补。#61 与 #81 的固定组合已获本地实现范围 PASS，#82 已获固定产品及增量独立 PASS；#83 配置协调已获固定独立实现范围 PASS。执行状态见 §7.2。
-设计结论是实现验收焦点，不代替独立实现评审或合并门禁。未交付阶段的字段、方法和错误码仍为拟议契约。
+状态：六个实现阶段的初稿、修复及限定独立实现评审已完成；阶段4拆为4a/4b/4c，完整CI发现的契约遗漏另以#96补齐。PR1已合入dev，其余实现PR已去WIP/Draft。逐片CI的真实红/绿/取消与未验收边界见§7.2，最终由用户按§7.3顺序手动合并。去WIP不等于全量CI通过或已发布。
+设计结论是实现验收焦点，不代替独立实现评审；正式CI恢复后仍按实际候选补跑，不能复用其他提交的结果。
 设计固定基线：`8ccaf513ec23de3bc39a53a1cc23cddf9fb34e15`。
 PR 目标为移动的 `dev`；第二轮评审时 base 为 `ef7c2e26173d6e2dda59d71b775265af9fb2deb5`，
 相关实现目录无差异，不能将固定设计基线写成实时 dev head。
@@ -672,11 +672,17 @@ messageId=`8a1ce56c-225b-5aed-8cab-9918fc470948`。
 |---|---|---|---|
 | #81 `faf3d6be` | `6a3be00e47073fae21c77a31e360df565db28173` | [45876351451](https://github.com/Hyprial/hyprial/actions/runs/45876351451) | FAIL：四pytest/gate失败；static/hygiene/native/Pi1.2通过 |
 | #82 `07b0db63` | `75b44623c8a732ec13f23456f1f09ef3091477b3` | [45876441286](https://github.com/Hyprial/hyprial/actions/runs/45876441286) | FAIL：四pytest/gate失败；static/hygiene/native/Pi1.2通过 |
-| #83 `0fd9e5e6` | `dc0a95fa5d4957ca54a538144faf8e3084907f14` | [45876842431](https://github.com/Hyprial/hyprial/actions/runs/45876842431) | 运行中；本片契约补全须接#96 |
-| #96 `487ab7c7` | `cfc08dfb8fca9b4d081fb972d42ffcdf5d2f350d` | [45877543236](https://github.com/Hyprial/hyprial/actions/runs/45877543236) | 运行中 |
-| #84 `eb83ecd2` | `9e9c63fcfcaedc40c55d248e958f7353a0924975` | [45877643811](https://github.com/Hyprial/hyprial/actions/runs/45877643811) | 运行中；static/hygiene/Pi1.2通过 |
-| #85 `25d6667b` | `a1a9ce452b963a815ac44456869905cc72dc6b58` | [45878106547](https://github.com/Hyprial/hyprial/actions/runs/45878106547) | 运行中 |
-| #86 `989e2d47` | `e01bc7b839a705f095e541e30cb3a89caacf1aef` | [45878475658](https://github.com/Hyprial/hyprial/actions/runs/45878475658) | 排队/运行中 |
+| #83 `0fd9e5e6` | `dc0a95fa5d4957ca54a538144faf8e3084907f14` | [45876842431](https://github.com/Hyprial/hyprial/actions/runs/45876842431) | 四pytest/gate FAIL；static/hygiene/Pi1.2通过；契约补全须接#96 |
+| #96 `487ab7c7` | `cfc08dfb8fca9b4d081fb972d42ffcdf5d2f350d` | [45877543236](https://github.com/Hyprial/hyprial/actions/runs/45877543236) | 四pytest/gate FAIL；static/hygiene/Pi1.2（400P）通过 |
+| #84 `eb83ecd2` | `9e9c63fcfcaedc40c55d248e958f7353a0924975` | [45877643811](https://github.com/Hyprial/hyprial/actions/runs/45877643811) | 四pytest/gate FAIL；static/hygiene/Pi1.2（420P）通过 |
+| #85 `25d6667b` | `a1a9ce452b963a815ac44456869905cc72dc6b58` | [45878106547](https://github.com/Hyprial/hyprial/actions/runs/45878106547) | 四pytest/gate FAIL；static/hygiene/Pi1.2（420P）通过 |
+| #86 `989e2d47` | `e01bc7b839a705f095e541e30cb3a89caacf1aef` | [45879757786](https://github.com/Hyprial/hyprial/actions/runs/45879757786) | completed/FAIL：四pytest/gate失败；static/hygiene/Pi1.2（420P）通过 |
+
+#86先前run45878475658因载体正文edited触发同SHA替代而CANCELLED；run45879420639的hygiene因Submitted-by不在首行失败，随后也被取消。修正正文后触发上表运行。无产品提交变化；两次取消/正文失败保留，不归因迁移、不计通过。全部候选正文另经实际submitted-by脚本检查通过。
+
+#86最后一轮shard3另有pytest worker内部错误：清理`test_a_restarted_coordinator_resumes_from_the_persisted_marks`临时目录时发生`Directory not empty`，exit3（175F/7778P/4E），该分片提前终止。相关测试与`tests/conftest.py`相对dev无差异，但根因尚未闭合，不能据此声明完整分片或全量非回归。日志及JUnit见上表run，未将该现象归咎迁移或登记为已解决。
+其余分片1/2/4均exit1，分别为183F/7512P/4E、171F/7343P、125F/7697P/8E。
+已核对的模型相关失败为旧SDK下3项native准入拒绝及6项native SDK接口不支持；这是开发位认证日志/JUnit分析，评审位只独立核对公开job终态，未宣称独立完成失败根因核验。
 
 补充门 `pi-supported-sdk` 在固定候选上安装 Pi1.2、fresh native build，运行全部Pi与model_binding测试；
 原Pi0.85.1四分片及原失败完整保留，汇总要求所有job成功。此单文件验证载体已经独立评审（95a89023）；
