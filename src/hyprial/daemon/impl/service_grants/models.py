@@ -7,18 +7,32 @@
 #   "user:<owner>" values at entry.
 # - Grant ids use "sg." + 26 lowercase RFC 4648 base32 characters (130 random
 #   bits), matching S2's sealed-envelope grantId validator.
+# - S3 fix (2026-11-26, critic B1, S1, S6, N4, N5): owner and device identifiers
+#   follow S2's identifier rule (at most 256 characters, no leading "@", no
+#   surrogates) on top of the path-segment checks, because identity does not
+#   export that rule. service.name reuses service-connect's service-name pattern
+#   by import, not by copy. service.note is at most 512 characters with no
+#   control or surrogate characters. The reader applies the same rules.
+# - credential is validated against the S2 envelope's fixed key sets and scalar
+#   types and copied by that shape, never with deepcopy, so a hostile nesting
+#   depth cannot raise RecursionError. Values (base64, key ids) are the
+#   opener's job.
+# - A revoked tombstone may carry null service, recipient and grantedAtMs when
+#   the original document could not be parsed; such a document is never
+#   effective, never carries a credential, and is listed as revoked.
 """Service-grant domain models, id generation, and boundary normalization."""
 
 from __future__ import annotations
 
 import base64
-import copy
 import re
 import secrets
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from hyprial.daemon.impl.service_connect.models import _IDENTIFIER as SERVICE_NAME_PATTERN
 from hyprial.identity import directory_owner_principal, org_space_name
 from hyprial.kernel import parse_user_uri
 
@@ -41,16 +55,87 @@ _TOP_LEVEL_KEYS = frozenset(
 )
 _SERVICE_KEYS = frozenset({"deviceId", "port", "name", "protocol", "note"})
 _RECIPIENT_KEYS = frozenset({"owner", "deviceId"})
+NOTE_MAX_CHARS = 512
+IDENTIFIER_MAX_CHARS = 256
+_ENVELOPE_HEADER_TYPES: dict[str, type] = {
+    "v": int,
+    "alg": str,
+    "wrap": str,
+    "org": str,
+    "grantId": str,
+    "service": dict,
+    "recipient": dict,
+    "encryptionKeyId": str,
+}
+_ENVELOPE_SERVICE_TYPES: dict[str, type] = {"owner": str, "deviceId": str, "port": int}
+_ENVELOPE_RECIPIENT_TYPES: dict[str, type] = {"owner": str, "deviceId": str}
+_ENVELOPE_WRAP_TYPES: dict[str, type] = {
+    "recipientKeyId": str,
+    "epk": str,
+    "nonce": str,
+    "wrappedDek": str,
+}
+_ENVELOPE_PAYLOAD_TYPES: dict[str, type] = {"nonce": str, "ciphertext": str}
 
 
 def _safe_segment(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value or value.strip() != value:
+    if type(value) is not str or not value or value.strip() != value:
         raise ValueError(f"{label} must be a non-empty trimmed string")
-    if value in {".", ".."} or any(ch in value for ch in ("/", "\\", ":", "\x00")):
-        raise ValueError(f"{label} is not a safe path segment")
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
-        raise ValueError(f"{label} contains control characters")
+    if (
+        len(value) > IDENTIFIER_MAX_CHARS
+        or value in {".", ".."}
+        or value.startswith("@")
+        or any(ch in value for ch in ("/", "\\", ":"))
+    ):
+        raise ValueError(f"{label} is not a safe identifier")
+    if any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in value):
+        raise ValueError(f"{label} contains control or surrogate characters")
     return value
+
+
+def _service_name(value: object) -> str | None:
+    if value is not None and (type(value) is not str or SERVICE_NAME_PATTERN.fullmatch(value) is None):
+        raise ValueError("service.name must be null or match the service-connect service name rule")
+    return value
+
+
+def _note(value: object) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or len(value) > NOTE_MAX_CHARS:
+        raise ValueError(f"service.note must be null or a string of at most {NOTE_MAX_CHARS} characters")
+    if any(unicodedata.category(ch) in {"Cc", "Cs"} for ch in value):
+        raise ValueError("service.note contains control or surrogate characters")
+    return value
+
+
+def _typed_object(value: object, types: Mapping[str, type], label: str) -> dict[str, Any]:
+    if type(value) is not dict or value.keys() != types.keys():
+        raise ValueError(f"{label} keys do not match the sealed envelope")
+    for key, expected in types.items():
+        if type(value[key]) is not expected:
+            raise ValueError(f"{label}.{key} has the wrong type")
+    return dict(value)
+
+
+def sealed_credential(value: object) -> dict[str, Any]:
+    """Validate the S2 envelope shape and return a fresh copy built from that shape."""
+
+    if type(value) is not dict or value.keys() != {"header", "recipients", "payload"}:
+        raise ValueError("credential keys do not match the sealed envelope")
+    header = _typed_object(value["header"], _ENVELOPE_HEADER_TYPES, "credential.header")
+    header["service"] = _typed_object(header["service"], _ENVELOPE_SERVICE_TYPES, "credential.header.service")
+    header["recipient"] = _typed_object(
+        header["recipient"], _ENVELOPE_RECIPIENT_TYPES, "credential.header.recipient"
+    )
+    wraps = value["recipients"]
+    if type(wraps) is not list or len(wraps) != 1:
+        raise ValueError("credential.recipients must hold exactly one entry")
+    return {
+        "header": header,
+        "recipients": [_typed_object(wraps[0], _ENVELOPE_WRAP_TYPES, "credential.recipients[0]")],
+        "payload": _typed_object(value["payload"], _ENVELOPE_PAYLOAD_TYPES, "credential.payload"),
+    }
 
 
 def normalize_bare_owner(owner: str) -> str:
@@ -117,13 +202,10 @@ class ServiceEndpoint:
     def __post_init__(self) -> None:
         _safe_segment(self.device_id, "service.deviceId")
         _port(self.port)
-        if self.name is not None:
-            if not isinstance(self.name, str) or not self.name or self.name.strip() != self.name:
-                raise ValueError("service.name must be null or a non-empty trimmed string")
+        _service_name(self.name)
         if not isinstance(self.protocol, str) or self.protocol not in GRANT_PROTOCOLS:
             raise ValueError("service.protocol must be 'tcp' or 'http'")
-        if self.note is not None and not isinstance(self.note, str):
-            raise ValueError("service.note must be null or a string")
+        _note(self.note)
 
     def as_record(self) -> dict[str, Any]:
         return {
@@ -191,13 +273,17 @@ def parse_device_target(device: object) -> GrantRecipient | str:
 
 @dataclass(frozen=True, slots=True)
 class ServiceGrant:
-    """One owner-authored service grant document (schemaVersion 1)."""
+    """One owner-authored service grant document (schemaVersion 1).
+
+    ``service``, ``recipient`` and ``granted_at_ms`` are ``None`` only in a
+    revoked tombstone written for a document that could no longer be parsed.
+    """
 
     schema_version: int
     grant_id: str
-    service: ServiceEndpoint
-    recipient: GrantRecipient | str
-    granted_at_ms: int
+    service: ServiceEndpoint | None
+    recipient: GrantRecipient | str | None
+    granted_at_ms: int | None
     expires_at_ms: int | None = None
     revoked_at_ms: int | None = None
     credential: Mapping[str, Any] | None = None
@@ -206,14 +292,19 @@ class ServiceGrant:
         if type(self.schema_version) is not int or self.schema_version != SCHEMA_VERSION:
             raise ValueError("unsupported service grant schemaVersion")
         validate_grant_id(self.grant_id)
-        if not isinstance(self.service, ServiceEndpoint):
+        if None in (self.service, self.recipient, self.granted_at_ms) and (
+            self.revoked_at_ms is None or self.credential is not None
+        ):
+            raise ValueError("only a revoked grant without credential may omit service, recipient or grantedAtMs")
+        if self.service is not None and not isinstance(self.service, ServiceEndpoint):
             raise ValueError("service must be a ServiceEndpoint")
         if not (
-            isinstance(self.recipient, GrantRecipient)
+            self.recipient is None
+            or isinstance(self.recipient, GrantRecipient)
             or self.recipient == ALL_MEMBERS
         ):
             raise ValueError("recipient must be GrantRecipient or '@members'")
-        _non_negative_int(self.granted_at_ms, "grantedAtMs")
+        _optional_non_negative_int(self.granted_at_ms, "grantedAtMs")
         _optional_non_negative_int(self.expires_at_ms, "expiresAtMs")
         _optional_non_negative_int(self.revoked_at_ms, "revokedAtMs")
         if self.credential is not None:
@@ -226,17 +317,13 @@ class ServiceGrant:
         return {
             "schemaVersion": self.schema_version,
             "grantId": self.grant_id,
-            "service": self.service.as_record(),
-            "recipient": (
-                ALL_MEMBERS
-                if isinstance(self.recipient, str)
-                else self.recipient.as_record()
-            ),
+            "service": None if self.service is None else self.service.as_record(),
+            "recipient": _recipient_record(self.recipient),
             "grantedAtMs": self.granted_at_ms,
             "expiresAtMs": self.expires_at_ms,
             "revokedAtMs": self.revoked_at_ms,
             "credential": (
-                None if self.credential is None else copy.deepcopy(dict(self.credential))
+                None if self.credential is None else sealed_credential(self.credential)
             ),
         }
 
@@ -246,36 +333,56 @@ class ServiceGrant:
             raise ValueError("service grant document must be a JSON object")
         if set(value) != _TOP_LEVEL_KEYS:
             raise ValueError("service grant document keys do not match schema")
-        raw_recipient = value["recipient"]
-        recipient: GrantRecipient | str = (
-            ALL_MEMBERS
-            if raw_recipient == ALL_MEMBERS
-            else GrantRecipient.from_record(raw_recipient)
-        )
         raw_cred = value["credential"]
-        credential = (
-            None
-            if raw_cred is None
-            else (
-                copy.deepcopy(dict(raw_cred))
-                if isinstance(raw_cred, Mapping)
-                else _raise_invalid_credential()
-            )
-        )
         return cls(
             schema_version=value["schemaVersion"],
             grant_id=value["grantId"],
-            service=ServiceEndpoint.from_record(value["service"]),
-            recipient=recipient,
+            service=None if value["service"] is None else ServiceEndpoint.from_record(value["service"]),
+            recipient=_recipient_from_record(value["recipient"]),
             granted_at_ms=value["grantedAtMs"],
             expires_at_ms=value["expiresAtMs"],
             revoked_at_ms=value["revokedAtMs"],
-            credential=credential,
+            credential=None if raw_cred is None else sealed_credential(raw_cred),
+        )
+
+    @classmethod
+    def tombstone(cls, grant_id: str, raw: object, *, revoked_at_ms: int) -> "ServiceGrant":
+        """Build a minimal revoked document, keeping each field of ``raw`` that still validates."""
+
+        fields = raw if isinstance(raw, Mapping) else {}
+        return cls(
+            schema_version=SCHEMA_VERSION,
+            grant_id=grant_id,
+            service=_salvage(ServiceEndpoint.from_record, fields.get("service")),
+            recipient=_salvage(_recipient_from_record, fields.get("recipient")),
+            granted_at_ms=_salvage(_non_negative_int, fields.get("grantedAtMs"), "grantedAtMs"),
+            expires_at_ms=_salvage(_non_negative_int, fields.get("expiresAtMs"), "expiresAtMs"),
+            revoked_at_ms=revoked_at_ms,
+            credential=None,
         )
 
 
-def _raise_invalid_credential() -> Any:
-    raise ValueError("credential must be null or a JSON object")
+def _salvage(parse: Any, value: object, *args: object) -> Any:
+    if value is None:
+        return None
+    try:
+        return parse(value, *args)
+    except (ValueError, TypeError, KeyError, RecursionError):
+        return None
+
+
+def _recipient_from_record(value: object) -> GrantRecipient | str | None:
+    if value is None:
+        return None
+    if value == ALL_MEMBERS:
+        return ALL_MEMBERS
+    return GrantRecipient.from_record(value)
+
+
+def _recipient_record(recipient: GrantRecipient | str | None) -> dict[str, str] | str | None:
+    if recipient is None or isinstance(recipient, str):
+        return recipient
+    return recipient.as_record()
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,12 +409,8 @@ def grant_view(stored: StoredServiceGrant, *, now_ms: int, effective: bool) -> d
         "grantor": stored.grantor,
         "schemaVersion": grant.schema_version,
         "grantId": grant.grant_id,
-        "service": grant.service.as_record(),
-        "recipient": (
-            ALL_MEMBERS
-            if isinstance(grant.recipient, str)
-            else grant.recipient.as_record()
-        ),
+        "service": None if grant.service is None else grant.service.as_record(),
+        "recipient": _recipient_record(grant.recipient),
         "grantedAtMs": grant.granted_at_ms,
         "expiresAtMs": grant.expires_at_ms,
         "revokedAtMs": grant.revoked_at_ms,
@@ -321,7 +424,10 @@ __all__ = [
     "GRANT_ID_PATTERN",
     "GRANT_PROTOCOLS",
     "GrantRecipient",
+    "IDENTIFIER_MAX_CHARS",
+    "NOTE_MAX_CHARS",
     "SCHEMA_VERSION",
+    "SERVICE_NAME_PATTERN",
     "ServiceEndpoint",
     "ServiceGrant",
     "StoredServiceGrant",
@@ -330,5 +436,6 @@ __all__ = [
     "normalize_bare_owner",
     "parse_device_target",
     "require_bare_owner",
+    "sealed_credential",
     "validate_grant_id",
 ]

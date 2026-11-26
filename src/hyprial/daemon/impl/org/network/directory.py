@@ -60,6 +60,7 @@ from hyprial.kernel import ORGFS_CONTENT_PENDING, canonical_user_uri, parse_user
 
 _LOG = logging.getLogger(__name__)
 _SERVICE_GRANTS_DIR = "directory/service-grants"
+_SERVICE_GRANT_MAX_BYTES = 64 * 1024
 _OWNER_CREATED_DIRS = (
     "directory",
     DIRECTORY_DIR,
@@ -360,8 +361,18 @@ class OrgFsDirectoryStore:
         if entry.kind != "doc":
             return None
         return self._read_verified_service_grant(
-            space_id, path, entry.node_id, entry.doc_id, directory_owner_principal(bare)
+            space_id, path, entry, directory_owner_principal(bare)
         )
+
+    def service_grant_exists(self, org: str, owner: str, grant_id: str) -> bool:
+        """Return whether a document exists at the owner's grant path, readable or not."""
+
+        try:
+            return self._fs.stat(self._space_id(org), self._service_grant_path(owner, grant_id)[1]).kind == "doc"
+        except OrgFsError as error:
+            if error.code == "unknown-doc":
+                return False
+            raise
 
     def list_service_grants(
         self, org: str, *, owner: str | None = None
@@ -402,9 +413,7 @@ class OrgFsDirectoryStore:
                 if entry.kind != "doc" or not entry.name.endswith(".json"):
                     continue
                 path = f"{_SERVICE_GRANTS_DIR}/{bare}/{entry.name}"
-                rec = self._read_verified_service_grant(
-                    space_id, path, entry.node_id, entry.doc_id, principal
-                )
+                rec = self._read_verified_service_grant(space_id, path, entry, principal)
                 if rec is not None:
                     results.append((bare, entry.name.removesuffix(".json"), rec))
         return sorted(results, key=lambda item: (item[0], item[1]))
@@ -426,8 +435,11 @@ class OrgFsDirectoryStore:
         return bare, f"{_SERVICE_GRANTS_DIR}/{bare}/{grant_id}.json"
 
     def _read_verified_service_grant(
-        self, space_id: str, path: str, node_id: str, doc_id: str | None, path_principal: str
+        self, space_id: str, path: str, entry: Any, path_principal: str
     ) -> dict[str, Any] | None:
+        node_id, doc_id = entry.node_id, entry.doc_id
+        if entry.size is None or entry.size > _SERVICE_GRANT_MAX_BYTES:
+            return None
         try:
             expected = protected_directory_doc_id(
                 space_id, path, space_owner=self._space_owner(space_id)
@@ -436,6 +448,8 @@ class OrgFsDirectoryStore:
                 self._warn_doc_id_mismatch(path, expected=expected, actual=doc_id)
                 return None
             text, _version = self._fs.read_text(space_id, f"id:{node_id}")
+            if len(text.encode("utf-8", "surrogatepass")) > _SERVICE_GRANT_MAX_BYTES:
+                return None
             record = json.loads(text)
             if not isinstance(record, dict):
                 return None
@@ -443,7 +457,7 @@ class OrgFsDirectoryStore:
                 directory_owner_principal(author)
                 for author in self._fs.document_authors(space_id, f"id:{node_id}")
             }
-        except (OrgFsError, TypeError, ValueError):
+        except (OrgFsError, TypeError, ValueError, RecursionError):
             return None
         return record if authors == {path_principal} else None
 

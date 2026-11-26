@@ -5,6 +5,10 @@
 #   grantor is taken solely from the OrgFS path (never from document body or
 #   envelope header), and credential opening requires an exact (owner, deviceId)
 #   recipient match on an effective grant (never "@members").
+# - S3 fix (2026-11-26, critic B1 and S1): a document that fails to parse or
+#   validate for any reason, RecursionError included, is skipped alone. A revoked
+#   tombstone may have null service or recipient; it is never effective, so the
+#   effective-only helpers never see those nulls.
 """Pure service-grant query and OrgFS loading helpers shared with S4-py and S5."""
 
 from __future__ import annotations
@@ -59,9 +63,10 @@ def effective_grants_for_service(
         item
         for item in grants
         if item.grantor == bare_owner
+        and is_grant_effective(item.grant, now_ms=now_ms)
+        and item.grant.service is not None
         and item.grant.service.device_id == device_id
         and item.grant.service.port == port
-        and is_grant_effective(item.grant, now_ms=now_ms)
     )
 
 
@@ -149,7 +154,8 @@ def load_org_service_grants(
     """Load and validate all verified service grants from OrgFS for ``org``.
 
     Invalid documents or documents whose ``grantId`` disagrees with the filename
-    are skipped rather than aborting observation of valid grants.
+    are skipped rather than aborting observation of valid grants; any parse or
+    validation failure, ``RecursionError`` included, skips only that document.
     """
 
     loaded: list[StoredServiceGrant] = []
@@ -163,7 +169,7 @@ def load_org_service_grants(
             loaded.append(
                 StoredServiceGrant(org=org, grantor=bare_owner, grant=grant)
             )
-        except ValueError:
+        except (ValueError, TypeError, KeyError, RecursionError):
             continue
     return tuple(loaded)
 
