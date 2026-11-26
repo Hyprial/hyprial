@@ -1,18 +1,73 @@
 {
   "version": 1,
   "presets": {
-    "success": { "scenario": "success" },
-    "empty": { "scenario": "empty" },
-    "unconfigured": { "scenario": "unconfigured" },
-    "error": { "scenario": "error" }
+    "success": {
+      "scenario": "success"
+    },
+    "empty": {
+      "scenario": "empty"
+    },
+    "unconfigured": {
+      "scenario": "unconfigured"
+    },
+    "error": {
+      "scenario": "error"
+    },
+    "model-connections": {
+      "scenario": "success",
+      "cases": {
+        "agent.secret.provider-list": "versioned-empty",
+        "agent.secret.provider-configure": "connection-configured",
+        "agent.secret.provider-test": "saved-connection-replied"
+      }
+    },
+    "model-connections-saved": {
+      "scenario": "success",
+      "cases": {
+        "agent.secret.provider-list": "versioned-connection",
+        "agent.secret.provider-configure": "connection-rotated",
+        "agent.secret.provider-test": "saved-connection-replied"
+      }
+    },
+    "model-connections-rotated": {
+      "scenario": "success",
+      "cases": {
+        "agent.secret.provider-list": "versioned-rotated",
+        "agent.secret.provider-configure": "connection-conflict",
+        "agent.secret.provider-test": "saved-connection-replied"
+      }
+    }
   },
-  "transitions": [],
+  "transitions": [
+    {
+      "preset": "model-connections",
+      "method": "agent.secret.provider-configure",
+      "next": "model-connections-saved"
+    },
+    {
+      "preset": "model-connections-saved",
+      "method": "agent.secret.provider-configure",
+      "next": "model-connections-rotated"
+    }
+  ],
   "inputGuards": [
     {
       "method": "agent.provider.login",
       "requireOneOf": [
-        { "path": ["setupToken"], "equals": "example-not-a-credential" },
-        { "path": ["files", "*", "contentBase64"], "equals": "ZXhhbXBsZS1ub3QtYS1jcmVkZW50aWFs" }
+        {
+          "path": [
+            "setupToken"
+          ],
+          "equals": "example-not-a-credential"
+        },
+        {
+          "path": [
+            "files",
+            "*",
+            "contentBase64"
+          ],
+          "equals": "ZXhhbXBsZS1ub3QtYS1jcmVkZW50aWFs"
+        }
       ],
       "refusal": {
         "code": "INVALID_ARGUMENT",

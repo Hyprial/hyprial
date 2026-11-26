@@ -85,10 +85,13 @@ describe('Secret review regressions', () => {
     const user = userEvent.setup();
     const { api, entries, providerWrite } = catalog();
     entries.set('DeepSeek', { DEEPSEEK_API_KEY: 'synthetic-original' });
-    render(<CredentialsSection api={api} />);
+    const configureKey=vi.fn(async()=>({status:'failed' as const,message:'该名称已存在，未写入 Key。'}));
+    render(<CredentialsSection api={{...api,configureKey}} />);
     await screen.findByText('DeepSeek');
-    await user.click(screen.getByRole('button', { name: '添加 Key' }));
-    const dialog = screen.getByRole('dialog', { name: '添加 Key' });
+    await user.click(screen.getByRole('button', { name: '添加连接' }));
+    const dialog = screen.getByRole('dialog', { name: '添加连接' });
+    await user.type(within(dialog).getByLabelText('名称'), 'DeepSeek');
+    await user.type(within(dialog).getByLabelText('服务地址'), 'https://gateway.example/v1');
     await user.type(within(dialog).getByLabelText('Key'), 'synthetic-new');
     await user.click(within(dialog).getByRole('button', { name: '保存' }));
     expect(await within(dialog).findByText(/该名称已存在/)).toBeVisible();
@@ -96,18 +99,9 @@ describe('Secret review regressions', () => {
     expect(providerWrite).not.toHaveBeenCalled();
   });
 
-  it.each([['Kimi Code', 'Kimi-Code', 'KIMI_API_KEY'], ['Moonshot AI', 'Moonshot-AI', 'MOONSHOT_API_KEY']])('can save %s using its default name', async (provider, entryId, fieldName) => {
-    const user = userEvent.setup();
-    const { api, providerWrite } = catalog();
-    render(<CredentialsSection api={api} />);
-    await screen.findByText('暂无 Key');
-    await user.click(screen.getByRole('button', { name: '添加 Key' }));
-    const form = screen.getByRole('dialog', { name: '添加 Key' });
-    await user.click(within(form).getByRole('combobox'));
-    await user.click(screen.getByRole('option', { name: provider }));
-    expect(within(form).getByRole('textbox', { name: '名称' })).toHaveValue(entryId);
-    await user.type(within(form).getByLabelText('Key'), 'synthetic');
-    await user.click(within(form).getByRole('button', { name: '保存' }));
-    expect(providerWrite).toHaveBeenCalledExactlyOnceWith({ entryId, fieldName, value: 'synthetic' });
+  it.each([['kimi-coding', 'Kimi-Code', 'KIMI_API_KEY'], ['moonshotai', 'Moonshot-AI', 'MOONSHOT_API_KEY']])('keeps legacy %s calls compatible outside the new connection form', async (provider, entryId, fieldName) => {
+    const {api,providerWrite}=catalog();
+    expect(await api.addKey(provider,entryId,'synthetic')).toMatchObject({status:'saved'});
+    expect(providerWrite).toHaveBeenCalledExactlyOnceWith({entryId,fieldName,value:'synthetic'});
   });
 });

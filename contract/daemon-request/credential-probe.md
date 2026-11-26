@@ -71,7 +71,16 @@ Omitting the field preserves the existing 10-second probe and configured outer
 budget (15 seconds by default); the carrier never supplies a new default of 30.
 JSON integral numbers such as `30.0` are accepted consistently with JSON Schema
 `integer`; booleans and fractional numbers are not integers. New GUI callers
-in PR5 must explicitly send 30 and provide the corresponding outer budget.
+send 30 and use a 35-second outer budget. Cancel, closing the test dialog or
+leaving the page aborts that request and ignores late results; no automatic retry
+is made. Model IDs are manually entered, never selected from a guessed catalog.
+
+The existing `agent.secret.provider-list({connectionVersion:1})` response may
+add `presets: [{label, connection}]`. These are daemon-owned endpoint/protocol
+templates (currently DeepSeek and OpenAI Chat Completions), not supported-model
+lists or authentication evidence. An older response without `presets` remains
+valid. Legacy `{}` calls keep their previous response. Custom addresses remain
+explicit; an official label requires the full template to match, not just its ID.
 
 Four simultaneous probes are permitted per daemon process; a fifth receives
 `RATE_LIMITED` without queuing or sending. Without an explicit deadline, each probe has a 10-second cooperative

@@ -21723,6 +21723,26 @@
                     "value": "synthetic-example"
                   }
                 },
+                "connection-rotated": {
+                  "description": "CAS rotation preserves the exact connection identity and increases its revision.",
+                  "summary": "connection-rotated",
+                  "value": {
+                    "connection": {
+                      "endpoint": "https://model.example/v1",
+                      "preset": {
+                        "id": "custom",
+                        "version": 1
+                      },
+                      "profile": "openai-chat-completions/v1",
+                      "protocol": "openai-completions",
+                      "version": 1
+                    },
+                    "entryId": "example-custom",
+                    "expectedRevision": 1,
+                    "fieldName": "key",
+                    "value": "synthetic-example"
+                  }
+                },
                 "unavailable": {
                   "description": "No other authority is bypassed.",
                   "summary": "unavailable",
@@ -21768,6 +21788,22 @@
                     },
                     "entryId": "example-custom",
                     "expectedRevision": 0,
+                    "fieldName": "key",
+                    "value": "synthetic-example"
+                  },
+                  {
+                    "connection": {
+                      "endpoint": "https://model.example/v1",
+                      "preset": {
+                        "id": "custom",
+                        "version": 1
+                      },
+                      "profile": "openai-chat-completions/v1",
+                      "protocol": "openai-completions",
+                      "version": 1
+                    },
+                    "entryId": "example-custom",
+                    "expectedRevision": 1,
                     "fieldName": "key",
                     "value": "synthetic-example"
                   },
@@ -21962,6 +21998,28 @@
                       "connections": {
                         "key": {
                           "configRevision": 1,
+                          "connectionRef": "0123456789abcdef0123456789abcdef",
+                          "endpoint": "https://model.example/v1",
+                          "preset": {
+                            "id": "custom",
+                            "version": 1
+                          },
+                          "profile": "openai-chat-completions/v1",
+                          "protocol": "openai-completions",
+                          "version": 1
+                        }
+                      },
+                      "entryId": "example-custom",
+                      "fieldNames": [
+                        "key"
+                      ],
+                      "ok": true,
+                      "routes": {}
+                    },
+                    {
+                      "connections": {
+                        "key": {
+                          "configRevision": 2,
                           "connectionRef": "0123456789abcdef0123456789abcdef",
                           "endpoint": "https://model.example/v1",
                           "preset": {
@@ -22547,6 +22605,49 @@
             }
           },
           {
+            "description": "CAS rotation preserves the exact connection identity and increases its revision.",
+            "kind": "success",
+            "name": "connection-rotated",
+            "params": {
+              "connection": {
+                "endpoint": "https://model.example/v1",
+                "preset": {
+                  "id": "custom",
+                  "version": 1
+                },
+                "profile": "openai-chat-completions/v1",
+                "protocol": "openai-completions",
+                "version": 1
+              },
+              "entryId": "example-custom",
+              "expectedRevision": 1,
+              "fieldName": "key",
+              "value": "synthetic-example"
+            },
+            "result": {
+              "connections": {
+                "key": {
+                  "configRevision": 2,
+                  "connectionRef": "0123456789abcdef0123456789abcdef",
+                  "endpoint": "https://model.example/v1",
+                  "preset": {
+                    "id": "custom",
+                    "version": 1
+                  },
+                  "profile": "openai-chat-completions/v1",
+                  "protocol": "openai-completions",
+                  "version": 1
+                }
+              },
+              "entryId": "example-custom",
+              "fieldNames": [
+                "key"
+              ],
+              "ok": true,
+              "routes": {}
+            }
+          },
+          {
             "description": "A stale edit never overwrites the stored credential.",
             "error": {
               "code": "MODEL_CONFIGURATION_CONFLICT",
@@ -22616,6 +22717,20 @@
                   "value": {
                     "connectionVersion": 1
                   }
+                },
+                "versioned-empty": {
+                  "description": "No connection yet; official endpoint presets remain available.",
+                  "summary": "versioned-empty",
+                  "value": {
+                    "connectionVersion": 1
+                  }
+                },
+                "versioned-rotated": {
+                  "description": "Same connection after an explicit Key rotation; no secret is returned.",
+                  "summary": "versioned-rotated",
+                  "value": {
+                    "connectionVersion": 1
+                  }
                 }
               },
               "schema": {
@@ -22624,6 +22739,12 @@
                   {},
                   {},
                   {},
+                  {
+                    "connectionVersion": 1
+                  },
+                  {
+                    "connectionVersion": 1
+                  },
                   {
                     "connectionVersion": 1
                   }
@@ -22663,6 +22784,91 @@
                       "ok": true
                     },
                     {
+                      "entries": [],
+                      "ok": true,
+                      "presets": [
+                        {
+                          "connection": {
+                            "endpoint": "https://api.deepseek.com",
+                            "preset": {
+                              "id": "deepseek",
+                              "version": 1
+                            },
+                            "profile": "openai-chat-completions/v1",
+                            "protocol": "openai-completions",
+                            "version": 1
+                          },
+                          "label": "DeepSeek"
+                        },
+                        {
+                          "connection": {
+                            "endpoint": "https://api.openai.com/v1",
+                            "preset": {
+                              "id": "openai",
+                              "version": 1
+                            },
+                            "profile": "openai-chat-completions/v1",
+                            "protocol": "openai-completions",
+                            "version": 1
+                          },
+                          "label": "OpenAI"
+                        }
+                      ]
+                    },
+                    {
+                      "entries": [
+                        {
+                          "connections": {
+                            "key": {
+                              "configRevision": 2,
+                              "connectionRef": "0123456789abcdef0123456789abcdef",
+                              "endpoint": "https://model.example/v1",
+                              "preset": {
+                                "id": "custom",
+                                "version": 1
+                              },
+                              "profile": "openai-chat-completions/v1",
+                              "protocol": "openai-completions",
+                              "version": 1
+                            }
+                          },
+                          "entryId": "example-custom",
+                          "fieldNames": [
+                            "key"
+                          ]
+                        }
+                      ],
+                      "ok": true,
+                      "presets": [
+                        {
+                          "connection": {
+                            "endpoint": "https://api.deepseek.com",
+                            "preset": {
+                              "id": "deepseek",
+                              "version": 1
+                            },
+                            "profile": "openai-chat-completions/v1",
+                            "protocol": "openai-completions",
+                            "version": 1
+                          },
+                          "label": "DeepSeek"
+                        },
+                        {
+                          "connection": {
+                            "endpoint": "https://api.openai.com/v1",
+                            "preset": {
+                              "id": "openai",
+                              "version": 1
+                            },
+                            "profile": "openai-chat-completions/v1",
+                            "protocol": "openai-completions",
+                            "version": 1
+                          },
+                          "label": "OpenAI"
+                        }
+                      ]
+                    },
+                    {
                       "entries": [
                         {
                           "connections": {
@@ -22685,7 +22891,35 @@
                           ]
                         }
                       ],
-                      "ok": true
+                      "ok": true,
+                      "presets": [
+                        {
+                          "connection": {
+                            "endpoint": "https://api.deepseek.com",
+                            "preset": {
+                              "id": "deepseek",
+                              "version": 1
+                            },
+                            "profile": "openai-chat-completions/v1",
+                            "protocol": "openai-completions",
+                            "version": 1
+                          },
+                          "label": "DeepSeek"
+                        },
+                        {
+                          "connection": {
+                            "endpoint": "https://api.openai.com/v1",
+                            "preset": {
+                              "id": "openai",
+                              "version": 1
+                            },
+                            "profile": "openai-chat-completions/v1",
+                            "protocol": "openai-completions",
+                            "version": 1
+                          },
+                          "label": "OpenAI"
+                        }
+                      ]
                     }
                   ],
                   "properties": {
@@ -22808,6 +23042,68 @@
                     },
                     "ok": {
                       "const": true
+                    },
+                    "presets": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "connection": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "endpoint": {
+                                "maxLength": 2048,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "preset": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "id": {
+                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                                    "type": "string"
+                                  },
+                                  "version": {
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "version"
+                                ],
+                                "type": "object"
+                              },
+                              "profile": {
+                                "const": "openai-chat-completions/v1"
+                              },
+                              "protocol": {
+                                "const": "openai-completions"
+                              },
+                              "version": {
+                                "const": 1,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "version",
+                              "endpoint",
+                              "protocol",
+                              "profile"
+                            ],
+                            "type": "object"
+                          },
+                          "label": {
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "label",
+                          "connection"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
@@ -23144,6 +23440,108 @@
             "params": {}
           },
           {
+            "description": "No connection yet; official endpoint presets remain available.",
+            "kind": "empty",
+            "name": "versioned-empty",
+            "params": {
+              "connectionVersion": 1
+            },
+            "reason": "The connection catalog is empty.",
+            "result": {
+              "entries": [],
+              "ok": true,
+              "presets": [
+                {
+                  "connection": {
+                    "endpoint": "https://api.deepseek.com",
+                    "preset": {
+                      "id": "deepseek",
+                      "version": 1
+                    },
+                    "profile": "openai-chat-completions/v1",
+                    "protocol": "openai-completions",
+                    "version": 1
+                  },
+                  "label": "DeepSeek"
+                },
+                {
+                  "connection": {
+                    "endpoint": "https://api.openai.com/v1",
+                    "preset": {
+                      "id": "openai",
+                      "version": 1
+                    },
+                    "profile": "openai-chat-completions/v1",
+                    "protocol": "openai-completions",
+                    "version": 1
+                  },
+                  "label": "OpenAI"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Same connection after an explicit Key rotation; no secret is returned.",
+            "kind": "success",
+            "name": "versioned-rotated",
+            "params": {
+              "connectionVersion": 1
+            },
+            "result": {
+              "entries": [
+                {
+                  "connections": {
+                    "key": {
+                      "configRevision": 2,
+                      "connectionRef": "0123456789abcdef0123456789abcdef",
+                      "endpoint": "https://model.example/v1",
+                      "preset": {
+                        "id": "custom",
+                        "version": 1
+                      },
+                      "profile": "openai-chat-completions/v1",
+                      "protocol": "openai-completions",
+                      "version": 1
+                    }
+                  },
+                  "entryId": "example-custom",
+                  "fieldNames": [
+                    "key"
+                  ]
+                }
+              ],
+              "ok": true,
+              "presets": [
+                {
+                  "connection": {
+                    "endpoint": "https://api.deepseek.com",
+                    "preset": {
+                      "id": "deepseek",
+                      "version": 1
+                    },
+                    "profile": "openai-chat-completions/v1",
+                    "protocol": "openai-completions",
+                    "version": 1
+                  },
+                  "label": "DeepSeek"
+                },
+                {
+                  "connection": {
+                    "endpoint": "https://api.openai.com/v1",
+                    "preset": {
+                      "id": "openai",
+                      "version": 1
+                    },
+                    "profile": "openai-chat-completions/v1",
+                    "protocol": "openai-completions",
+                    "version": 1
+                  },
+                  "label": "OpenAI"
+                }
+              ]
+            }
+          },
+          {
             "description": "Explicit metadata version; no credential value or model catalog.",
             "kind": "success",
             "name": "versioned-connection",
@@ -23173,7 +23571,35 @@
                   ]
                 }
               ],
-              "ok": true
+              "ok": true,
+              "presets": [
+                {
+                  "connection": {
+                    "endpoint": "https://api.deepseek.com",
+                    "preset": {
+                      "id": "deepseek",
+                      "version": 1
+                    },
+                    "profile": "openai-chat-completions/v1",
+                    "protocol": "openai-completions",
+                    "version": 1
+                  },
+                  "label": "DeepSeek"
+                },
+                {
+                  "connection": {
+                    "endpoint": "https://api.openai.com/v1",
+                    "preset": {
+                      "id": "openai",
+                      "version": 1
+                    },
+                    "profile": "openai-chat-completions/v1",
+                    "protocol": "openai-completions",
+                    "version": 1
+                  },
+                  "label": "OpenAI"
+                }
+              ]
             }
           }
         ],
@@ -117774,6 +118200,49 @@
           }
         },
         {
+          "description": "CAS rotation preserves the exact connection identity and increases its revision.",
+          "kind": "success",
+          "name": "connection-rotated",
+          "params": {
+            "connection": {
+              "endpoint": "https://model.example/v1",
+              "preset": {
+                "id": "custom",
+                "version": 1
+              },
+              "profile": "openai-chat-completions/v1",
+              "protocol": "openai-completions",
+              "version": 1
+            },
+            "entryId": "example-custom",
+            "expectedRevision": 1,
+            "fieldName": "key",
+            "value": "synthetic-example"
+          },
+          "result": {
+            "connections": {
+              "key": {
+                "configRevision": 2,
+                "connectionRef": "0123456789abcdef0123456789abcdef",
+                "endpoint": "https://model.example/v1",
+                "preset": {
+                  "id": "custom",
+                  "version": 1
+                },
+                "profile": "openai-chat-completions/v1",
+                "protocol": "openai-completions",
+                "version": 1
+              }
+            },
+            "entryId": "example-custom",
+            "fieldNames": [
+              "key"
+            ],
+            "ok": true,
+            "routes": {}
+          }
+        },
+        {
           "description": "A stale edit never overwrites the stored credential.",
           "error": {
             "code": "MODEL_CONFIGURATION_CONFLICT",
@@ -118046,6 +118515,68 @@
           },
           "ok": {
             "const": true
+          },
+          "presets": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "connection": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "endpoint": {
+                      "maxLength": 2048,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "preset": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                          "type": "string"
+                        },
+                        "version": {
+                          "minimum": 1,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "version"
+                      ],
+                      "type": "object"
+                    },
+                    "profile": {
+                      "const": "openai-chat-completions/v1"
+                    },
+                    "protocol": {
+                      "const": "openai-completions"
+                    },
+                    "version": {
+                      "const": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "endpoint",
+                    "protocol",
+                    "profile"
+                  ],
+                  "type": "object"
+                },
+                "label": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "connection"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -118107,6 +118638,108 @@
           "params": {}
         },
         {
+          "description": "No connection yet; official endpoint presets remain available.",
+          "kind": "empty",
+          "name": "versioned-empty",
+          "params": {
+            "connectionVersion": 1
+          },
+          "reason": "The connection catalog is empty.",
+          "result": {
+            "entries": [],
+            "ok": true,
+            "presets": [
+              {
+                "connection": {
+                  "endpoint": "https://api.deepseek.com",
+                  "preset": {
+                    "id": "deepseek",
+                    "version": 1
+                  },
+                  "profile": "openai-chat-completions/v1",
+                  "protocol": "openai-completions",
+                  "version": 1
+                },
+                "label": "DeepSeek"
+              },
+              {
+                "connection": {
+                  "endpoint": "https://api.openai.com/v1",
+                  "preset": {
+                    "id": "openai",
+                    "version": 1
+                  },
+                  "profile": "openai-chat-completions/v1",
+                  "protocol": "openai-completions",
+                  "version": 1
+                },
+                "label": "OpenAI"
+              }
+            ]
+          }
+        },
+        {
+          "description": "Same connection after an explicit Key rotation; no secret is returned.",
+          "kind": "success",
+          "name": "versioned-rotated",
+          "params": {
+            "connectionVersion": 1
+          },
+          "result": {
+            "entries": [
+              {
+                "connections": {
+                  "key": {
+                    "configRevision": 2,
+                    "connectionRef": "0123456789abcdef0123456789abcdef",
+                    "endpoint": "https://model.example/v1",
+                    "preset": {
+                      "id": "custom",
+                      "version": 1
+                    },
+                    "profile": "openai-chat-completions/v1",
+                    "protocol": "openai-completions",
+                    "version": 1
+                  }
+                },
+                "entryId": "example-custom",
+                "fieldNames": [
+                  "key"
+                ]
+              }
+            ],
+            "ok": true,
+            "presets": [
+              {
+                "connection": {
+                  "endpoint": "https://api.deepseek.com",
+                  "preset": {
+                    "id": "deepseek",
+                    "version": 1
+                  },
+                  "profile": "openai-chat-completions/v1",
+                  "protocol": "openai-completions",
+                  "version": 1
+                },
+                "label": "DeepSeek"
+              },
+              {
+                "connection": {
+                  "endpoint": "https://api.openai.com/v1",
+                  "preset": {
+                    "id": "openai",
+                    "version": 1
+                  },
+                  "profile": "openai-chat-completions/v1",
+                  "protocol": "openai-completions",
+                  "version": 1
+                },
+                "label": "OpenAI"
+              }
+            ]
+          }
+        },
+        {
           "description": "Explicit metadata version; no credential value or model catalog.",
           "kind": "success",
           "name": "versioned-connection",
@@ -118136,7 +118769,35 @@
                 ]
               }
             ],
-            "ok": true
+            "ok": true,
+            "presets": [
+              {
+                "connection": {
+                  "endpoint": "https://api.deepseek.com",
+                  "preset": {
+                    "id": "deepseek",
+                    "version": 1
+                  },
+                  "profile": "openai-chat-completions/v1",
+                  "protocol": "openai-completions",
+                  "version": 1
+                },
+                "label": "DeepSeek"
+              },
+              {
+                "connection": {
+                  "endpoint": "https://api.openai.com/v1",
+                  "preset": {
+                    "id": "openai",
+                    "version": 1
+                  },
+                  "profile": "openai-chat-completions/v1",
+                  "protocol": "openai-completions",
+                  "version": 1
+                },
+                "label": "OpenAI"
+              }
+            ]
           }
         }
       ]

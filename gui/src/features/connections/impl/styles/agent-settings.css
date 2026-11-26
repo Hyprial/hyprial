@@ -318,3 +318,19 @@
     gap: var(--ui-space-2);
   }
 }
+
+.credentials-connection-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.credentials-connection-dialog > .ui-dialog__body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.credentials-connection-dialog > .ui-dialog__header,
+.credentials-connection-dialog > .ui-dialog__actions {
+  flex-shrink: 0;
+}

@@ -9,7 +9,7 @@ from hyprial.identity import ProviderKeys, SecretResolutionError, SecretResolver
 from hyprial.kernel import DaemonRequestError, ipc_errors
 from ..agent import _legacy_agent_call
 from .specs import SECRET_PROVIDER_WRITE_SPEC, SECRET_GRANT_SPEC, SECRET_WRITE_EXAMPLES as SECRET_WRITE_EXAMPLES, SECRET_PROVIDER_WRITE as SECRET_PROVIDER_WRITE, SECRET_GRANT as SECRET_GRANT
-from .specs import SECRET_PROVIDER_LIST_SPEC, SECRET_REVOKE_SPEC
+from .specs import CONNECTION_PRESETS, SECRET_PROVIDER_LIST_SPEC, SECRET_REVOKE_SPEC
 
 
 def secret_write(app: Any, params: Mapping[str, Any], *, method: str,
@@ -44,7 +44,8 @@ def secret_catalog(app: Any, params: Mapping[str, Any], *,
         entries.append({"entryId": entry_id, "fieldNames": list(fields),
                         **({"routes": legacy} if legacy else {}),
                         **({"connections": connections} if connections else {})})
-    return {"ok": True, "entries": entries}
+    return {"ok": True, "entries": entries,
+            **({"presets": CONNECTION_PRESETS} if params.get("connectionVersion") == 1 else {})}
 
 
 SETUP_BINDINGS = tuple(

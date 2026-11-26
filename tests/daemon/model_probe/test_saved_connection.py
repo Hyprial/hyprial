@@ -112,3 +112,21 @@ def test_saved_timeout_is_unverified_and_not_authentication_failure(saved, monke
     assert result == {"ok": True, "outcome": "timeout", "httpStatus": None, "latencyMs": 30000,
                       "phase": "probe", "reason": "deadline-exceeded"}
     assert len(calls) == 1
+
+
+def test_versioned_catalog_advertises_only_supported_official_connection_presets(saved):
+    app, _, _ = saved
+    result = METHOD_REGISTRY.invoke(app, 'agent.secret.provider-list',
+                                   {'connectionVersion': 1}, trusted_message_origin='ipc')
+    presets = result['presets']
+    assert [row['connection']['preset']['id'] for row in presets] == ['deepseek', 'openai']
+    for row in presets:
+        assert row['label']
+        config = row['connection']
+        assert config['version'] == 1
+        assert config['protocol'] == 'openai-completions'
+        assert config['profile'] == 'openai-chat-completions/v1'
+        assert config['endpoint'].startswith('https://')
+        assert 'model' not in config
+    assert 'presets' not in METHOD_REGISTRY.invoke(
+        app, 'agent.secret.provider-list', {}, trusted_message_origin='ipc')

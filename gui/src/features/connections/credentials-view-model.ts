@@ -1,7 +1,7 @@
 /**
  * Agent 设置「凭据设置」的显示名称和开发数据形状。
- * Key 保存沿用 agent.secret.provider-write；服务商选择不等于配置 harness 或模型。
- * 自定义服务使用 provider-configure 一起保存地址和 Key；首批仅支持 Pi/DeepSeek。
+ * 新连接由 provider-configure 一起保存地址和 Key；旧 Key 读取/更换兼容保留。
+ * 模型 ID 手填，连接测试不等于 Agent 启动验收。
  * 测试由注入的数据端口提供；浏览器不直接携带 Key 请求模型服务。
  */
 import type { CredentialEntry, SharedGrantRow } from './shared-credentials-api';
@@ -39,7 +39,7 @@ export const CREDENTIAL_PROVIDER_ENVIRONMENTS: Readonly<Record<string, readonly 
 
 export const CREDENTIALS_SECTION_COPY = {
   title: '凭据设置',
-  add: '添加 Key',
+  add: '添加连接',
   provider: '模型服务商',
   name: '名称',
   nameHint: '名称以字母或数字开头，支持点、下划线和短横线，最多 128 字符。',
