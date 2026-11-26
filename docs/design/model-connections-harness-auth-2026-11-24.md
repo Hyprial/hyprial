@@ -642,7 +642,7 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 | PR 4b：配置协调与公开操作 | [#83](https://github.com/Hyprial/hyprial/pull/83)，固定 `35aec090cfd6a3e214d086072ee9006ac23866eb`，tree `0352f67df3c7cc9952017d4392d679ba60a38481`，base #82 `61a44c5a`，46 文件 | Pi/headless configure/status/cancel、持久 Cell 计划/取消选择/补偿、CLI/settings 与契约。固定直接71P、request-contract PASS；开发扩展731P、架构344P、GUI client66P/mock371P。fixed full因4个旧wheel workflow收集错误BLOCKED，corpus11/14 FAIL；真实GUI/厂商UNKNOWN | WIP；固定独立实现范围 PASS（19ae9f08，独立96P+143P及门禁）；CI/e2e 后补，未合并 |
 | PR 4c：原生 Auth 与集成创建 | [#84](https://github.com/Hyprial/hyprial/pull/84)，固定 `ce53e1d62e4270d1c98e9981c8b48d364f9039f8`，tree `1d8c17a53fb070521b34fb2aaf8888fbd182cb36`，base #83 `35aec090`，44 文件 | 1971108c 独立评审 FAIL（0bd5c788）：process/client误读connection Key、误拒--approve；ce53修复并补真实Pi启动/停止，修前3F/9P、修后12P，固定直接110P，含Pi扩展463P（提交前同代码树）。固定full仍4迁移收集错误/BLOCKED；1971 corpus11/14 FAIL、CI-policy91P/81F等未改判 | WIP/Draft；固定独立复评 PASS（b0ca2de9，独立12P+110P及门禁）；真实厂商/GUI及CI/e2e UNKNOWN，未合并 |
 | PR 5：连接 GUI | [#85](https://github.com/Hyprial/hyprial/pull/85)，固定 `a792e9d673fa4169b207eb6988f111fc17abebe3`，tree `c15e3a24bbb6acd5240b46e993f7e17b143f8e55`，base #84 `ce53e1d6`，27 文件 | 官方预设由现有 versioned provider-list 返回；自定义不伪装 DeepSeek，保存不要求模型；测试 ID 手填、30/35s、AbortSignal、精确修订、未知写/回读失败锁定。GUI/client/mock599P、模型探针93P；四宽度实点与parity14P（受控mock）、build/架构/契约门PASS，OpenAPI 0breaking。full4迁移收集错误BLOCKED，corpus11/14 FAIL，CI-policy91P/81F | WIP/Draft；cc-gui-orgs 固定独立实现评审 PASS（bc8a9d59，59P+93P+143P/架构门）；补充真实 GUI host 的浏览器取消2次均 abort、无重试，上游未派发。真实厂商/GUI-daemon业务网络及取消到上游仍UNKNOWN，CI/e2e后补 |
-| PR 6：Agent GUI | [#86](https://github.com/Hyprial/hyprial/pull/86)，固定 `ecafb3cacabba123661a37eacceaee9d83b5fee6`，tree `3feab9839621a2a5e7e342dbe6f403f36680a6e9`，base #85 `a792e9d6`，49 文件 | §2.2/§2.3：手填 ID、连接/原生 Auth、创建未完成恢复、status/cancel、启动复用；共享 App 四宽度实点 PASS。真实隔离 GUI/native daemon/Pi：保存连接、创建、修改模型、刷新 revision、启动 accepted/running、页面停止 PASS（合成 Key、loopback endpoint，无真实厂商请求）；随后从真实聊天页到 Pi/loopback fixture 捕获一次精确 endpoint/Key/model 请求，未宣称回复显示验收 | WIP/Draft；06c398fa 独立评审 FAIL（startup 预览误报新模型能力）；本固定提交已修 F1，增量复评请求 4a5b4cd4 已送达，结论待回。GUI640P、持久化/生命周期230P、契约焦点220P；build/架构/契约门PASS。full4迁移收集错误BLOCKED、corpus11/14 FAIL、policy91P/81F；真实账号/厂商/Windows及CI/e2e仍UNKNOWN |
+| PR 6：Agent GUI | [#86](https://github.com/Hyprial/hyprial/pull/86)，固定 `ecafb3cacabba123661a37eacceaee9d83b5fee6`，tree `3feab9839621a2a5e7e342dbe6f403f36680a6e9`，base #85 `a792e9d6`，49 文件 | §2.2/§2.3：手填 ID、连接/原生 Auth、创建未完成恢复、status/cancel、启动复用；共享 App 四宽度实点 PASS。真实隔离 GUI/native daemon/Pi：保存连接、创建、修改模型、刷新 revision、启动 accepted/running、页面停止 PASS（合成 Key、loopback endpoint，无真实厂商请求）；随后从真实聊天页到 Pi/loopback fixture 捕获一次精确 endpoint/Key/model 请求，未宣称回复显示验收 | WIP/Draft；06c398fa 独立评审 FAIL（startup 预览误报新模型能力）；本固定提交已修 F1，F1 增量独立复评 PASS（b40c25b6，独立23P与浏览器8组合通过）；全量对照终态已补送6b21326e，最终本地结论待确认。GUI640P、持久化/生命周期230P、契约焦点220P；build/架构/契约门PASS。full4迁移收集错误BLOCKED、corpus11/14 FAIL、policy91P/81F；真实账号/厂商/Windows及CI/e2e仍UNKNOWN |
 
 PR4b 本地 hygiene：registry-union、合成树结构/模块/unbounded/import 门和 term/resident 87P 通过；Node CI-policy 因已删除的 `.forgejo/git-flow.json` 缺失失败。相同去凭据子进程环境下，父61a与固定35aec均91P/81F，失败名称一致，相关策略源码/测试无diff；hygiene仍FAIL，仅可作为本片未新增该失败的证据。对照已送评审4a1036a8。
 
@@ -749,7 +749,8 @@ PR6 真实浏览器启动验收补齐了前序焦点测试遗漏的持久化交�
 共同失败为 j10-credentials 17、contract-gap 2、playwright-cache 15；不删断言、不记 skip 为通过。
 操作说明统一放在本设计 PR 的 `.agents/skills/gui-workflow/SKILL.md`（2adeafe5），
 实现 #86 不重复携带该文档差异。远端 dev 已观测到 db304b28；本次固定依赖链未混入新基，
-后续集成时另做合并与对应树验收。
+后续集成时另做合并与对应树验收。合并前置：#71 的操作 skill 先进入目标分支，
+#86 吸收并复核该基线；当前独立实现树仍有旧 skill 文案，不能称操作文档已在该树生效。
 
 ## 9. 评审和决策记录
 
