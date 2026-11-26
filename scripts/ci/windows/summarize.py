@@ -15,6 +15,12 @@ Decision (2026-11-27, tier 2 full suite).  Files dropped from the plan because t
 define no test (plan key noTestDefinitionsIgnored) and files reported only through
 a collection-time module skip (run-manifest key collectionSkippedFiles) are printed
 with their count and every path, so neither is silent.
+
+Decision (2026-11-27, tier 2 full suite).  Inside one XML file, a repeated testcase
+name made of exactly one failure-only case and one error-only case (a call failure
+followed by a teardown exception) is merged into one failed case whose message and
+text join both parts; every other repeat stays duplicate-result, matching
+wave_state.py.
 """
 
 from __future__ import annotations
@@ -328,6 +334,28 @@ def _read_ledger_ends(root: Path) -> dict[str, dict[str, Any]]:
     return ends
 
 
+def _single_outcome_kind(case: ET.Element) -> str | None:
+    failures = len(case.findall("failure"))
+    errors = len(case.findall("error"))
+    if case.find("skipped") is not None:
+        return None
+    if (failures, errors) == (1, 0):
+        return "failure"
+    if (failures, errors) == (0, 1):
+        return "error"
+    return None
+
+
+def _merge_pair_detail(entry: dict[str, Any], detail_node: ET.Element | None) -> None:
+    if detail_node is None:
+        return
+    extra_message = detail_node.attrib.get("message", "")
+    extra_text = detail_node.text or ""
+    entry["message"] = "\n".join(part for part in (entry["message"], extra_message) if part)
+    entry["text"] = "\n".join(part for part in (entry["text"], extra_text) if part)
+    entry["category"] = categorize_failure(entry["exception"], entry["message"], entry["text"])
+
+
 def _collect_suite_cases(
     xml_paths: Sequence[Path],
     planned_files: Sequence[str],
@@ -347,11 +375,22 @@ def _collect_suite_cases(
             totals["errors"] += 1
             parse_or_dup_errors.append(f"invalid JUnit XML {path.name}: {error}")
             continue
+        pair_candidates: dict[str, tuple[str, int]] = {}
         for case in xml_root.iter("testcase"):
-            totals["tests"] += 1
             nodeid = _resolve_suite_nodeid(case, planned)
+            kind = _single_outcome_kind(case)
             if nodeid in seen_nodeids:
+                previous = pair_candidates.pop(nodeid, None)
+                if previous is not None and kind is not None and {previous[0], kind} == {"failure", "error"}:
+                    if previous[0] == "error":
+                        totals["errors"] -= 1
+                        totals["failures"] += 1
+                    _merge_pair_detail(failures[previous[1]], case.find(kind))
+                    continue
                 parse_or_dup_errors.append(f"duplicate-result: {nodeid}")
+            elif kind is not None:
+                pair_candidates[nodeid] = (kind, len(failures))
+            totals["tests"] += 1
             seen_nodeids.add(nodeid)
             fail_node = case.find("failure")
             err_node = case.find("error")

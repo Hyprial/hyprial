@@ -23,6 +23,15 @@ collection_skipped_files, never through nodeids_by_file, so the ledger end-event
 check and rerun deselection are unaffected.  Tier 1 still lists it as an
 unexpected skip.  A collection error keeps its "collection failure" error child and
 stays a hard red.
+
+Decision (2026-11-27, tier 2 full suite).  pytest 8.4 with xdist 3.8 writes a test
+whose call fails and whose teardown then raises as two testcases with the same name
+in the same XML file: the first with one failure child, the second with one error
+child.  Inside one XML file such a pair (exactly one failure-only case and exactly
+one error-only case, neither skipped) is merged into a single failed case.  Any
+other repeated name, any third occurrence, and any repeat across XML files is still
+rejected as duplicate-result.  summarize.py applies the same rule and keeps both
+messages.
 """
 
 from __future__ import annotations
@@ -198,6 +207,18 @@ def _collection_skipped_file(case: ET.Element, module_names: dict[str, str]) -> 
     return module_names.get(case.attrib.get("name", ""))
 
 
+def single_outcome_kind(case: ET.Element) -> str | None:
+    failures = len(case.findall("failure"))
+    errors = len(case.findall("error"))
+    if case.find("skipped") is not None:
+        return None
+    if (failures, errors) == (1, 0):
+        return "failure"
+    if (failures, errors) == (0, 1):
+        return "error"
+    return None
+
+
 def read_junit(
     paths: Iterable[Path],
     planned_files: Sequence[str],
@@ -225,6 +246,7 @@ def read_junit(
         except ET.ParseError as error:
             parse_errors.append(f"{path.name}: {error}")
             continue
+        pair_candidates: dict[str, str] = {}
         for case in xml_root.iter("testcase"):
             skipped_module = _collection_skipped_file(case, module_names)
             if skipped_module is not None:
@@ -239,9 +261,18 @@ def read_junit(
                 other_skips.append((skipped_module, reason))
                 continue
             resolved_file, nodeid = _resolve_case_location(case, planned, root)
+            kind = single_outcome_kind(case)
             if nodeid in nodeids:
-                raise ValueError(f"duplicate-result: {nodeid}")
+                previous = pair_candidates.pop(nodeid, None)
+                if previous is None or kind is None or {previous, kind} != {"failure", "error"}:
+                    raise ValueError(f"duplicate-result: {nodeid}")
+                if previous == "error":
+                    errors -= 1
+                    failures += 1
+                continue
             nodeids.add(nodeid)
+            if kind is not None:
+                pair_candidates[nodeid] = kind
             if resolved_file is not None and resolved_file in planned:
                 files.add(resolved_file)
                 by_file.setdefault(resolved_file, []).append(nodeid)
