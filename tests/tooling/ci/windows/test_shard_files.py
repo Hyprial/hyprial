@@ -263,3 +263,15 @@ def test_plan_tier1_next_and_arm_next(tmp_path: Path) -> None:
     )
     assert arm_plan["requiredLegs"] == ["arm-next"]
     assert arm_plan["shards"] == [["tests/test_a.py", "tests/test_c.py"]]
+
+
+def test_dispatch_targets_file_is_empty_in_mergeable_tree() -> None:
+    repo_root = Path(__file__).parents[4]
+    targets_file = repo_root / "scripts/ci/windows/dispatch-targets.txt"
+    assert targets_file.is_file()
+    entries = [
+        line.strip()
+        for line in targets_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert entries == []

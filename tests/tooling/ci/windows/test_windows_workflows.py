@@ -1,8 +1,9 @@
-"""Static policy checks for the Windows smoke workflow.
+"""Static policy checks for the Windows smoke and suite workflows.
 
-Decision (2026-11-26, tier 1 smoke).  Enforces the GitHub-native compliance rules
-of the Windows smoke workflow, plus workflow coexistence and tier file-list checks.
-A file listed in tier1-rejected.tsv must not also be admitted in tier1-tests.txt.
+Decision (2026-11-26, tier 1 smoke and tier 2 full suite).  Enforces the
+GitHub-native compliance rules for both Windows workflows, plus workflow
+coexistence and tier file-list checks.  A file listed in tier1-rejected.tsv
+must not also be admitted in tier1-tests.txt.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import yaml
 
 ROOT = Path(__file__).parents[4]
 WORKFLOW = ROOT / ".github/workflows/windows-smoke.yml"
+SUITE_WORKFLOW = ROOT / ".github/workflows/windows-suite.yml"
 PINS = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
     "astral-sh/setup-uv": "1db35dd8eee11c5894872e0b383ae6c406cf738d",
@@ -22,15 +24,24 @@ PINS = {
     "actions/download-artifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
 }
 EXPECTED_CHECKOUT_REF = "${{ github.event.pull_request.head.sha || github.sha }}"
+SUITE_CHECKOUT_REF = "${{ github.sha }}"
 NATIVE = re.compile(r"^(?:uv|rustup|git|\.venv[\\/]Scripts[\\/]python\.exe)\b")
 PRIVATE_IP = re.compile(
     r"10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|100\.\d+\.\d+\.\d+"
 )
 EMAIL = re.compile(r"[\w.+-]+@([\w-]+\.[\w.]+)")
+ALLOWED_SUITE_STEP_ENV = frozenset(
+    {
+        "HYPRIAL_BUILD_NATIVE",
+        "WINDOWS_SUITE_ACL_PROBE",
+        "WINDOWS_SUITE_SELECTION",
+        "WINDOWS_SUITE_SHARD",
+    }
+)
 
 
-def document() -> dict[Any, Any]:
-    value = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+def document(path: Path = WORKFLOW) -> dict[Any, Any]:
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value
 
@@ -234,3 +245,292 @@ def test_rejected_files_are_not_admitted() -> None:
     rejected = [row[0] for row in rows]
     assert len(rejected) == len(set(rejected))
     assert admitted.isdisjoint(rejected), sorted(admitted.intersection(rejected))
+
+
+def test_suite_action_pins_permissions_and_triggers() -> None:
+    value = document(SUITE_WORKFLOW)
+    text = SUITE_WORKFLOW.read_text(encoding="utf-8")
+    found: dict[str, str] = {}
+    checkout_count = 0
+    for job in jobs(value).values():
+        assert "permissions" not in job or job["permissions"] == {"contents": "read"}
+        for step in steps(job):
+            uses = step.get("uses")
+            if not isinstance(uses, str):
+                continue
+            action, _, sha = uses.partition("@")
+            assert re.fullmatch(r"[0-9a-f]{40}", sha), uses
+            assert action in PINS, action
+            assert sha == PINS[action], uses
+            found[action] = sha
+            if action == "actions/checkout":
+                checkout_count += 1
+                with_block = step.get("with", {})
+                assert isinstance(with_block, dict)
+                assert with_block.get("persist-credentials") is False
+                assert with_block.get("ref") == SUITE_CHECKOUT_REF
+    assert found == PINS
+    assert checkout_count == 7
+    assert value["permissions"] == {"contents": "read"}
+    assert "pull_request_target" not in text
+    assert "secrets." not in text
+
+    event = trigger(value)
+    assert set(event) == {"schedule", "workflow_dispatch"}
+    assert event["schedule"] == [{"cron": "0 19 * * *"}]
+    dispatch_inputs = event["workflow_dispatch"]["inputs"]
+    assert set(dispatch_inputs) == {"selection", "acl_probe"}
+    assert dispatch_inputs["selection"]["type"] == "choice"
+    assert dispatch_inputs["selection"]["default"] == "full"
+    assert dispatch_inputs["selection"]["options"] == ["full", "tier1-next", "arm-next", "targets"]
+    assert dispatch_inputs["acl_probe"]["type"] == "boolean"
+    assert dispatch_inputs["acl_probe"]["default"] is False
+    assert text.index("\nname:") < text.index("\non:") < text.index("\npermissions:")
+
+    concurrency = value.get("concurrency")
+    assert isinstance(concurrency, dict)
+    assert concurrency.get("cancel-in-progress") is False
+    group = str(concurrency.get("group", ""))
+    assert "windows-suite-full" in group
+    assert "github.event_name == 'schedule'" in group
+    assert "inputs.selection" in group
+    assert "github.ref" in group
+
+
+def test_suite_inputs_never_interpolated_in_run_blocks() -> None:
+    value = document(SUITE_WORKFLOW)
+    for job_name, job in jobs(value).items():
+        for step in steps(job):
+            body = step.get("run")
+            if isinstance(body, str):
+                assert "${{ inputs." not in body, (job_name, step.get("name"), body)
+                assert "${{ github.event.inputs." not in body, (job_name, step.get("name"), body)
+            for key in step.get("env", {}):
+                assert str(key) in ALLOWED_SUITE_STEP_ENV, (job_name, key)
+
+
+def test_suite_jobs_runners_timeouts_and_wave_budget() -> None:
+    value = document(SUITE_WORKFLOW)
+    expected = {
+        "plan-suite": ("ubuntu-latest", 10),
+        "build-native": ("windows-latest", 35),
+        "tier2-pytest": ("windows-latest", 170),
+        "targets-run": ("windows-latest", 45),
+        "tier1-admission": ("windows-latest", 45),
+        "arm-admission": ("windows-11-arm", 45),
+        "windows-suite-summary": ("ubuntu-latest", 15),
+    }
+    all_jobs = jobs(value)
+    assert set(all_jobs) == set(expected)
+    for name, (runner, job_timeout) in expected.items():
+        actual = all_jobs[name]["runs-on"]
+        assert isinstance(actual, str) and "${{" not in actual
+        assert actual == runner
+        assert type(all_jobs[name]["timeout-minutes"]) is int
+        assert all_jobs[name]["timeout-minutes"] == job_timeout
+
+    tier2 = all_jobs["tier2-pytest"]
+    assert tier2["needs"] == ["plan-suite", "build-native"]
+    assert tier2["strategy"]["fail-fast"] is False
+    assert tier2["strategy"]["max-parallel"] == 4
+    assert tier2["strategy"]["matrix"]["shard"] == [0, 1, 2, 3]
+
+    for name in ("targets-run", "tier1-admission", "arm-admission"):
+        assert all_jobs[name]["needs"] == ["plan-suite", "build-native"]
+
+    summary = all_jobs["windows-suite-summary"]
+    assert summary.get("if") == "always()"
+    assert summary.get("needs") == [
+        "plan-suite",
+        "build-native",
+        "tier2-pytest",
+        "targets-run",
+        "tier1-admission",
+        "arm-admission",
+    ]
+    summary_steps = [step for step in steps(summary) if step.get("name") == "Summarize suite results"]
+    assert len(summary_steps) == 1
+    summary_run = str(summary_steps[0].get("run", ""))
+    assert "--mode suite" in summary_run
+    assert "--plan-manifest" in summary_run
+    inputs = re.findall(r'--input\s+"([^"=]+)=([^"]+)"', summary_run)
+    legs = [leg for _, leg in inputs]
+    assert set(legs) == {
+        "shard-0",
+        "shard-1",
+        "shard-2",
+        "shard-3",
+        "targets",
+        "tier1-next",
+        "arm-next",
+    }
+    for path, leg in inputs:
+        assert path == f"${{{{ runner.temp }}}}/suite-artifacts/windows-suite-{leg}", (path, leg)
+    assert "--expected-failures scripts/ci/windows/expected-failures.json" in summary_run
+    assert (
+        "--plan-manifest \"${{ runner.temp }}/suite-artifacts/windows-suite-plan/plan-manifest.json\""
+        in summary_run
+    )
+
+    step_timeouts = {
+        ("build-native", "Build the editable native module"): 20,
+        ("tier2-pytest", "Install the editable test environment"): 20,
+        ("tier2-pytest", "Run tier 2 shard waves"): 150,
+        ("targets-run", "Install the editable test environment"): 20,
+        ("targets-run", "Run targets waves"): 30,
+        ("tier1-admission", "Install the editable test environment"): 20,
+        ("tier1-admission", "Run tier1-next waves"): 30,
+        ("arm-admission", "Install the editable test environment"): 20,
+        ("arm-admission", "Run arm-next waves"): 30,
+    }
+    for (job_name, step_name), minutes in step_timeouts.items():
+        matching = [step for step in steps(all_jobs[job_name]) if step.get("name") == step_name]
+        assert len(matching) == 1, (job_name, step_name)
+        assert type(matching[0].get("timeout-minutes")) is int
+        assert matching[0]["timeout-minutes"] == minutes
+
+    expected_budgets = {
+        ("tier2-pytest", "Run tier 2 shard waves"): (4, 600, 900, 40, 140, 150, 170),
+        ("targets-run", "Run targets waves"): (2, 600, 900, 20, 25, 30, 45),
+        ("tier1-admission", "Run tier1-next waves"): (2, 300, 600, 20, 25, 30, 45),
+        ("arm-admission", "Run arm-next waves"): (2, 300, 600, 20, 25, 30, 45),
+    }
+    for (job_name, step_name), (workers, watchdog, idle, wave, deadline, step_m, job_m) in expected_budgets.items():
+        step = next(item for item in steps(all_jobs[job_name]) if item.get("name") == step_name)
+        body = str(step.get("run", ""))
+        assert "--tier 2" in body
+        assert f"--workers {workers}" in body
+        assert f"--watchdog-seconds {watchdog}" in body
+        assert f"--idle-seconds {idle}" in body
+        assert f"--wave-minutes {wave}" in body
+        assert f"--deadline-minutes {deadline}" in body
+        assert f"--step-minutes {step_m}" in body
+        assert f"--job-minutes {job_m}" in body
+        assert watchdog < idle < wave * 60 < deadline * 60 < step_m * 60 <= (job_m - 15) * 60
+        assert "WINDOWS_SUITE_ACL_PROBE" in (step.get("env") or {})
+        install_step = next(
+            item for item in steps(all_jobs[job_name]) if item.get("name") == "Install the editable test environment"
+        )
+        assert "HYPRIAL_BUILD_NATIVE" not in (install_step.get("env") or {})
+
+
+def test_suite_env_uploads_pwsh_and_sensitive_text() -> None:
+    value = document(SUITE_WORKFLOW)
+    text = SUITE_WORKFLOW.read_text(encoding="utf-8")
+    assert not re.search(r"(?im)^\s*[A-Z_]*(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)\s*:", text)
+    assert "continue-on-error" not in text
+    assert "Start-Process" not in text
+    assert PRIVATE_IP.search(text) is None
+    emails = [match.group(0) for match in EMAIL.finditer(text) if match.group(1) != "example.com"]
+    assert emails == []
+
+    top_env = [str(key).casefold() for key in value.get("env", {})]
+    assert len(top_env) == len(set(top_env))
+    upload_count = 0
+    for job in jobs(value).values():
+        job_steps = steps(job)
+        for index, step in enumerate(job_steps):
+            if step.get("uses", "").split("@", 1)[0] == "actions/upload-artifact":
+                upload_count += 1
+                assert isinstance(step.get("id"), str) and step["id"]
+                assert type(step.get("timeout-minutes")) is int and step["timeout-minutes"] == 10
+                assert step.get("if") == "always()"
+                assert step.get("with", {}).get("if-no-files-found") == "error"
+                assert index + 1 < len(job_steps)
+                next_run = str(job_steps[index + 1].get("run", ""))
+                assert f"steps.{step['id']}.outcome" in next_run
+        if job.get("runs-on") == "ubuntu-latest":
+            continue
+        job_keys = [str(key).casefold() for key in job.get("env", {})]
+        assert len(job_keys) == len(set(job_keys))
+        for step in job_steps:
+            step_keys = [str(key).casefold() for key in step.get("env", {})]
+            assert len(step_keys) == len(set(step_keys))
+            body = step.get("run")
+            if not isinstance(body, str):
+                continue
+            lines = [line.strip() for line in body.splitlines() if line.strip()]
+            native_indices = [idx for idx, line in enumerate(lines) if NATIVE.match(line)]
+            assert len(native_indices) <= 1, body
+            if native_indices:
+                trailing = lines[native_indices[0] + 1 :]
+                assert trailing == ["$code = $LASTEXITCODE", "exit $code"], body
+    assert upload_count == 6
+
+
+def test_suite_paths_are_neutral_and_consistent() -> None:
+    value = document(SUITE_WORKFLOW)
+    text = SUITE_WORKFLOW.read_text(encoding="utf-8")
+    all_jobs = jobs(value)
+    runner = "${{ runner.temp }}"
+    temp_paths = re.findall(r"runner\.temp\s*\}\}(/[^\"\s']+)", text) + re.findall(
+        r"RUNNER_TEMP\\([^\"\s*]+)", text
+    )
+    assert temp_paths
+    assert all(path.lstrip("/\\").startswith("suite-") for path in temp_paths), sorted(set(temp_paths))
+
+    def step_of(job_name: str, name: str) -> dict[str, Any]:
+        matching = [step for step in steps(all_jobs[job_name]) if step.get("name") == name]
+        assert len(matching) == 1, (job_name, name, len(matching))
+        return matching[0]
+
+    def uploads(job_name: str) -> list[tuple[str, str]]:
+        return [
+            (str(step.get("id")), str(step.get("with", {}).get("path", "")))
+            for step in steps(all_jobs[job_name])
+            if step.get("uses", "").split("@", 1)[0] == "actions/upload-artifact"
+        ]
+
+    def downloads(job_name: str) -> dict[str, str]:
+        return {
+            str(step.get("with", {}).get("name")): str(step.get("with", {}).get("path", ""))
+            for step in steps(all_jobs[job_name])
+            if step.get("uses", "").split("@", 1)[0] == "actions/download-artifact"
+        }
+
+    def artifacts(job_name: str) -> dict[str, str]:
+        return {
+            str(step.get("with", {}).get("name")): str(step.get("id"))
+            for step in steps(all_jobs[job_name])
+            if step.get("uses", "").split("@", 1)[0] == "actions/upload-artifact"
+        }
+
+    staging = str(step_of("build-native", "Stage editable native bundle")["run"])
+    assert '$out = "$env:RUNNER_TEMP\\suite-native-bundle"' in staging, staging
+    assert uploads("build-native") == [
+        ("upload-editable-native", f"{runner}/suite-native-bundle/")
+    ]
+    assert '--out "${{ runner.temp }}/suite-plan/plan-manifest.json"' in str(
+        step_of("plan-suite", "Plan test suite shards")["run"]
+    )
+    assert uploads("plan-suite") == [("upload-suite-plan", f"{runner}/suite-plan/")]
+
+    expected_inputs = {
+        "windows-suite-plan": f"{runner}/suite-in/plan",
+        "windows-editable-native": f"{runner}/suite-in/native",
+    }
+    expected_outputs = f"{runner}/suite-results/\n{runner}/suite-ledger/\n"
+    for job_name, wave_step, upload_id, artifact in (
+        ("tier2-pytest", "Run tier 2 shard waves", "upload-tier2-shard", "windows-suite-shard-${{ matrix.shard }}"),
+        ("targets-run", "Run targets waves", "upload-targets", "windows-suite-targets"),
+        ("tier1-admission", "Run tier1-next waves", "upload-tier1-next", "windows-suite-tier1-next"),
+        ("arm-admission", "Run arm-next waves", "upload-arm-next", "windows-suite-arm-next"),
+    ):
+        assert downloads(job_name) == expected_inputs, (job_name, downloads(job_name))
+        assert artifacts(job_name) == {artifact: upload_id}, (job_name, artifacts(job_name))
+        assert uploads(job_name) == [(upload_id, expected_outputs)], (job_name, uploads(job_name))
+        restore = str(step_of(job_name, "Restore editable native bundle")["run"])
+        assert '"$env:RUNNER_TEMP\\suite-in\\native\\*"' in restore, (job_name, restore)
+        wave = str(step_of(job_name, wave_step)["run"])
+        assert '"$env:RUNNER_TEMP\\suite-in\\plan\\plan-manifest.json"' in wave, (job_name, wave)
+        assert '--results "$env:RUNNER_TEMP\\suite-results"' in wave, (job_name, wave)
+        assert '--ledger-root "$env:RUNNER_TEMP\\suite-ledger"' in wave, (job_name, wave)
+        assert '--report "$env:RUNNER_TEMP\\suite-results\\run-manifest.json"' in wave, (job_name, wave)
+
+    summary_downloads = [
+        step
+        for step in steps(all_jobs["windows-suite-summary"])
+        if step.get("uses", "").split("@", 1)[0] == "actions/download-artifact"
+    ]
+    assert len(summary_downloads) == 1
+    assert summary_downloads[0].get("with") == {"path": f"{runner}/suite-artifacts"}
