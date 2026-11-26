@@ -14,20 +14,28 @@ directory.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from pathlib import Path
 
 import pytest
 
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+import hyprial.daemon.impl.org.network.device_key as device_key_module
 from hyprial.daemon.impl.org.network.device_key import ensure_encryption_key
-from hyprial.daemon.impl.org.network.ipc import _build_service, ipc_org_create
+from hyprial.daemon.impl.org.network.ipc import (
+    _build_service,
+    ipc_org_create,
+    publish_self_for_app,
+)
 from hyprial.identity import (
     DeviceRecord,
+    EncryptionKey,
     address_path,
     remove_logout_artifacts,
     write_device_record,
 )
+from hyprial.kernel import ProcessFileLock
 from tests.daemon.org.network.test_org_network_ipc import NODE_ID, OWNER, _FakeApp
 from tests.support.tailnet_membership import key
 
@@ -37,9 +45,15 @@ ORG = "group-acme"
 ROW_PATH = f"directory/devices/{OWNER}/{NODE_ID}.json"
 
 
+class _EmptyAgents:
+    def list(self) -> list[object]:
+        return []
+
+
 def _app(
     tmp_path: Path, *, user_id: str | None, device_uid: str | None = DEVICE_UID
 ) -> tuple[_FakeApp, Path]:
+    (tmp_path / "state").mkdir(mode=0o700)
     runtime = OrgFsRuntime(tmp_path / "state", node_id=NODE_ID, author=f"user:{OWNER}")
     write_device_record(
         tmp_path,
@@ -65,6 +79,7 @@ def _app(
     key_state.mkdir(mode=0o700)
     app = _FakeApp(runtime, tmp_path)
     app.state_dir = key_state
+    app.agents = _EmptyAgents()
     return app, key_state
 
 
@@ -74,12 +89,19 @@ def _key_records(key_state: Path) -> dict[str, str]:
     return {record["keyId"]: record["publicKey"] for record in records}
 
 
-def _device_row(app: _FakeApp) -> dict[str, object]:
+def _device_row(app: _FakeApp, org: str = ORG) -> dict[str, object]:
     space_id = next(
-        space.space_id for space in app._runtime.facade.spaces() if space.name == ORG
+        space.space_id for space in app._runtime.facade.spaces() if space.name == org
     )
     text, _version = app._runtime.facade.read_text(space_id, ROW_PATH)
     return json.loads(text)
+
+
+def _fresh_app(app: _FakeApp, key_state: Path) -> _FakeApp:
+    restarted = _FakeApp(app._runtime, app.hyprial_home)
+    restarted.state_dir = key_state
+    restarted.agents = _EmptyAgents()
+    return restarted
 
 
 def test_org_create_publishes_the_pair_from_the_committed_account(tmp_path: Path) -> None:
@@ -210,3 +232,149 @@ def test_the_two_entrances_to_the_key_leave_one_key_and_one_row(
     records = _key_records(key_state)
     assert list(records) == [row["encryptionKeyId"]]
     assert row["encryptionPublicKey"] == records[row["encryptionKeyId"]]
+
+
+def test_a_held_store_lock_keeps_the_published_pair_and_does_not_block(
+    tmp_path: Path,
+) -> None:
+    """Critic finding 1 & 2: a busy store lock must not erase the published pair or wait 15 s."""
+
+    app, key_state = _app(tmp_path, user_id=USER_ID)
+    try:
+        ipc_org_create(app, {"org": ORG})
+        before = _device_row(app)
+        assert "encryptionKeyId" in before
+        [key_dir] = list((key_state / "identity" / "encryption-keys").iterdir())
+        lock = ProcessFileLock(key_dir / ".lock")
+        restarted = _fresh_app(app, key_state)
+        lock.acquire(0.0)
+        try:
+            started = time.monotonic()
+            outcome = publish_self_for_app(restarted)
+            elapsed = time.monotonic() - started
+        finally:
+            lock.release()
+        during = _device_row(restarted)
+        after_release = publish_self_for_app(restarted)
+        after = _device_row(restarted)
+    finally:
+        app._runtime.close()
+
+    assert (
+        during.get("encryptionKeyId"),
+        during.get("encryptionPublicKey"),
+        elapsed < 3.0,
+    ) == (
+        before["encryptionKeyId"],
+        before["encryptionPublicKey"],
+        True,
+    )
+    assert outcome == {"published": [], "skipped": [], "errors": []}
+    assert after_release == {"published": [], "skipped": [], "errors": []}
+    assert after == before
+
+
+def test_periodic_publishes_reuse_the_cached_pair_without_reentering_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Steady-state periodic publishes hit memory cache and never call ``store.ensure()``."""
+
+    app, _key_state = _app(tmp_path, user_id=USER_ID)
+    try:
+        ipc_org_create(app, {"org": "group-acme"})
+        ipc_org_create(app, {"org": "group-beta"})
+        publish_self_for_app(app)
+
+        calls = 0
+        real_ensure = EncryptionKey.Store.ensure
+
+        def counted_ensure(self):
+            nonlocal calls
+            calls += 1
+            return real_ensure(self)
+
+        monkeypatch.setattr(EncryptionKey.Store, "ensure", counted_ensure)
+        assert publish_self_for_app(app) == {"published": [], "skipped": [], "errors": []}
+        assert publish_self_for_app(app) == {"published": [], "skipped": [], "errors": []}
+    finally:
+        app._runtime.close()
+
+    assert calls == 0
+
+
+def test_publish_self_for_app_reads_once_across_multiple_orgs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One ``publish_self_for_app`` pass resolves the device key once for every org."""
+
+    app, key_state = _app(tmp_path, user_id=USER_ID)
+    orgs = ("group-alpha", "group-beta", "group-gamma")
+    try:
+        for name in orgs:
+            ipc_org_create(app, {"org": name})
+        fresh = _fresh_app(app, key_state)
+
+        ensure_calls = 0
+        subject_calls = 0
+        real_ensure = EncryptionKey.Store.ensure
+        real_subject = device_key_module.read_onboarding_subject
+
+        def counted_ensure(self):
+            nonlocal ensure_calls
+            ensure_calls += 1
+            return real_ensure(self)
+
+        def counted_subject(home: Path):
+            nonlocal subject_calls
+            subject_calls += 1
+            return real_subject(home)
+
+        monkeypatch.setattr(EncryptionKey.Store, "ensure", counted_ensure)
+        monkeypatch.setattr(device_key_module, "read_onboarding_subject", counted_subject)
+        outcome = publish_self_for_app(fresh)
+        warm_outcome = publish_self_for_app(app)
+    finally:
+        app._runtime.close()
+
+    assert outcome == {"published": [], "skipped": [], "errors": []}
+    assert warm_outcome == {"published": [], "skipped": [], "errors": []}
+    assert ensure_calls == 1
+    assert subject_calls == 2
+
+
+def test_cache_invalidates_when_the_account_or_device_changes(
+    tmp_path: Path,
+) -> None:
+    """Changing ``userId`` or ``deviceUid`` invalidates the cached pair and republishes."""
+
+    app, key_state = _app(tmp_path, user_id=USER_ID)
+    second_uid = uuid.UUID(int=0x5678, version=4).hex
+    try:
+        ipc_org_create(app, {"org": ORG})
+        first = _device_row(app)["encryptionKeyId"]
+
+        settings = json.loads((tmp_path / "settings.json").read_text("utf-8"))
+        settings["userId"] = "subject-bob"
+        (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        assert publish_self_for_app(app)["published"] == [ORG]
+        second = _device_row(app)["encryptionKeyId"]
+
+        write_device_record(
+            tmp_path,
+            DeviceRecord(
+                device_id=NODE_ID,
+                owner=OWNER,
+                server_public=key("server-node-a"),
+                client_public=key("client-node-a"),
+                device_uid=second_uid,
+                name="device-b",
+            ),
+        )
+        assert publish_self_for_app(app)["published"] == [ORG]
+        third = _device_row(app)["encryptionKeyId"]
+    finally:
+        app._runtime.close()
+
+    assert len({first, second, third}) == 3
+    assert len(_key_records(key_state)) == 3
+

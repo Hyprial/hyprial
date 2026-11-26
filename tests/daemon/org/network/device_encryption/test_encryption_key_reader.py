@@ -16,7 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from hyprial.daemon.impl.org.network.device_key import encryption_key_reader
+import hyprial.daemon.impl.org.network.device_key as device_key_module
+from hyprial.daemon.impl.org.network.device_key import (
+    encryption_key_reader,
+    ensure_encryption_key,
+)
 from hyprial.identity import (
     DEVICE_RECORD_RELPATH,
     DeviceRecord,
@@ -192,3 +196,39 @@ def test_a_relative_state_directory_is_no_key(tmp_path: Path) -> None:
     home = _home(tmp_path)
 
     assert encryption_key_reader(home=home, state_dir=Path("state"))() is None
+
+
+def test_a_concurrent_device_reprovision_cannot_mint_a_chimeric_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Critic finding 3: the reader must use ``subject.device_uid``, never re-read ``device.json``."""
+
+    home = _home(tmp_path)
+    state = tmp_path / "state"
+    other_uid = uuid.UUID(int=0x9999, version=4).hex
+    real_subject = device_key_module.read_onboarding_subject
+
+    def racing_subject(path: Path):
+        subject = real_subject(path)
+        write_device_record(
+            path,
+            DeviceRecord(
+                device_id=DEVICE_ID,
+                owner="bob@example",
+                server_public=key("server-node-b"),
+                client_public=key("client-node-b"),
+                device_uid=other_uid,
+                name="device-b",
+            ),
+        )
+        return subject
+
+    monkeypatch.setattr(device_key_module, "read_onboarding_subject", racing_subject)
+    answer = ensure_encryption_key(home, state)
+
+    assert answer is not None
+    [record] = _keys(state)
+    assert record["casdoorSub"] == USER_ID
+    assert record["deviceUid"] == DEVICE_UID
+    assert record["deviceUid"] != other_uid
+

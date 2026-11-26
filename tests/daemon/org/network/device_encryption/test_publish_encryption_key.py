@@ -290,3 +290,78 @@ def test_the_private_half_is_never_published(
         "firstPublishedAt", "encryptionKeyId", "encryptionPublicKey",
     } | ({"deviceUid"} if id_form_minting() else set())
     assert set(row) == expected
+
+
+def test_a_temporarily_unavailable_reader_keeps_the_existing_pair_on_the_row(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Transient key-read errors preserve the published pair instead of erasing it."""
+
+    home = _home(tmp_path, user_id=USER_ID)
+    state = tmp_path_factory.mktemp("state")
+    fs = FakeFs()
+    _create_org_spaces(fs)
+    reader = encryption_key_reader(home=home, state_dir=state)
+    assert _service(fs, home, encryption_key=reader).publish_self()["published"] == [ORG]
+    published = _row(fs)
+    writes_before = fs.calls.count(f"write:space-{ORG}:{ROW_PATH}")
+
+    def transient_io() -> dict:
+        raise OSError("temporary I/O failure")
+
+    result = _service(fs, home, encryption_key=transient_io).publish_self()
+
+    assert result == {"published": [], "skipped": [], "errors": []}
+    assert _row(fs) == published
+    assert fs.calls.count(f"write:space-{ORG}:{ROW_PATH}") == writes_before
+
+
+def test_an_address_change_during_a_transient_key_failure_preserves_the_pair(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """When another field changes while the key is temporarily unreadable, the pair stays."""
+
+    home = _home(tmp_path, user_id=USER_ID)
+    state = tmp_path_factory.mktemp("state")
+    fs = FakeFs()
+    _create_org_spaces(fs)
+    reader = encryption_key_reader(home=home, state_dir=state)
+    assert _service(fs, home, encryption_key=reader).publish_self()["published"] == [ORG]
+    published = _row(fs)
+
+    def busy() -> dict:
+        raise identity.UserKey.Error("USER_KEY_QUARANTINED")
+
+    result = _service(
+        fs,
+        home,
+        read_own_address=lambda: "tcp://10.0.0.99:7447#rotated",
+        encryption_key=busy,
+    ).publish_self()
+
+    assert result == {"published": [ORG], "skipped": [], "errors": []}
+    updated = _row(fs)
+    assert updated["address"] == "tcp://10.0.0.99:7447#rotated"
+    assert updated["encryptionKeyId"] == published["encryptionKeyId"]
+    assert updated["encryptionPublicKey"] == published["encryptionPublicKey"]
+
+
+def test_a_definitely_absent_key_publishes_a_row_without_the_pair(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Only an explicit no-key answer (missing prerequisites) clears the pair."""
+
+    home = _home(tmp_path, user_id=USER_ID)
+    state = tmp_path_factory.mktemp("state")
+    fs = FakeFs()
+    _create_org_spaces(fs)
+    reader = encryption_key_reader(home=home, state_dir=state)
+    assert _service(fs, home, encryption_key=reader).publish_self()["published"] == [ORG]
+    assert "encryptionKeyId" in _row(fs)
+
+    result = _service(fs, home, encryption_key=lambda: None).publish_self()
+
+    assert result == {"published": [ORG], "skipped": [], "errors": []}
+    assert "encryptionKeyId" not in _row(fs)
+    assert "encryptionPublicKey" not in _row(fs)
+

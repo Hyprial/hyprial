@@ -24,12 +24,16 @@ import pytest
 from hyprial.daemon.impl.application.onboarding.account_lifecycle import (
     ServingOnboardingGateway,
 )
-from hyprial.daemon.impl.application.onboarding.lifecycle import ServingRecovery
+from hyprial.daemon.impl.application.onboarding.lifecycle import (
+    ServingRecovery,
+    recovery as recovery_module,
+)
 from hyprial.daemon.impl.onboarding.operations import OperationService, journal
 from hyprial.daemon.impl.org.network.device_key import ensure_encryption_key
 from hyprial.identity import (
     DeviceRecord,
     IdentitySnapshot,
+    IdentityTransactionLock,
     write_device_record,
 )
 
@@ -178,14 +182,15 @@ def test_an_ownerless_home_makes_no_key(tmp_path: Path) -> None:
 
 
 def test_a_reprovisioned_device_gets_the_key_of_the_new_record(tmp_path: Path) -> None:
-    home = KeyHome(tmp_path).registered()
+    old_device_uid = uuid.UUID(int=0x5678, version=4).hex
+    home = KeyHome(tmp_path).registered(old_device_uid)
     home.device = DeviceRecord(
         device_id="device-000001",
         owner="bob@example",
         server_public="nodekey:server-public",
         client_public="nodekey:client-public",
         key_generation=1,
-        device_uid=DEVICE_UID,
+        device_uid=old_device_uid,
         name="device-b",
     )
     write_device_record(home.dir, home.device)
@@ -198,6 +203,7 @@ def test_a_reprovisioned_device_gets_the_key_of_the_new_record(tmp_path: Path) -
         for path in (home.state / "identity" / "encryption-keys").glob("*/key.json")
     ]
     assert record["deviceUid"] == DEVICE_UID
+    assert record["deviceUid"] != old_device_uid
 
 
 def test_repeated_starts_keep_one_key(tmp_path: Path) -> None:
@@ -305,3 +311,37 @@ def test_the_serving_key_is_a_user_key_bound_to_the_account_and_the_device(
     assert list(home.state.joinpath("identity").iterdir()) == [
         home.state / "identity" / "encryption-keys"
     ]
+
+
+def test_the_encryption_key_step_holds_the_identity_transaction_lock(
+    tmp_path: Path,
+) -> None:
+    """Critic finding 3: encryption-key ensure runs inside ``IdentityTransactionLock``."""
+
+    home = KeyHome(tmp_path).registered()
+    lock_held: list[bool] = []
+
+    def observe(home_dir: Path, state_dir: Path) -> dict[str, str] | None:
+        lock_held.append(IdentityTransactionLock.is_held_in_process(home_dir))
+        return ensure_encryption_key(home_dir, state_dir)
+
+    assert home.recovery(observe).run() == "initialized"
+
+    assert lock_held == [True]
+    assert len(home.keys()) == 1
+
+
+def test_a_busy_identity_transaction_skips_the_encryption_key_without_failing_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A busy identity transaction skips encryption-key creation without blocking recovery."""
+
+    monkeypatch.setattr(recovery_module, "_KEY_LOCK_SECONDS", 0.1)
+    home = KeyHome(tmp_path).registered()
+
+    with IdentityTransactionLock.acquire(home.dir, timeout=0):
+        assert home.recovery().run() == "initialized"
+
+    assert home.initialize_states() == [(OWNER, "completed")]
+    assert not (home.state / "identity").exists()
+
