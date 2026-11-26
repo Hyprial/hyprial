@@ -1,6 +1,5 @@
 tests/kernel/ipc/local_ipc/test_contract.py
 tests/kernel/manysys/test_stdin_stop_windows_branches.py
-tests/tooling/architecture/platform/test_windows_portability_gate.py
 tests/tooling/architecture/platform/test_windows_portability_local_ipc.py
 tests/shell/packaging/native_engine/test_editable_build.py
 tests/daemon/harnesses/pi/configuration/launch_trust/test_pi_sdk_package_root.py

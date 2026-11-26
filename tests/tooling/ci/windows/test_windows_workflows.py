@@ -1,8 +1,8 @@
 """Static policy checks for the Windows smoke workflow.
 
-Decision (Windows CI, Step 1, 2026-11-26).  Enforces all seven GitHub-native compliance rules
-from the Step 1 Windows CI plan before PR #78 merges, plus workflow
-coexistence and tier file-list checks.
+Decision (2026-11-26, tier 1 smoke).  Enforces the GitHub-native compliance rules
+of the Windows smoke workflow, plus workflow coexistence and tier file-list checks.
+A file listed in tier1-rejected.tsv must not also be admitted in tier1-tests.txt.
 """
 
 from __future__ import annotations
@@ -169,3 +169,20 @@ def test_triggers_paths_and_sensitive_text() -> None:
         if line.strip() and not line.strip().startswith("#")
     ]
     assert arm_lines == []
+
+
+def test_rejected_files_are_not_admitted() -> None:
+    admitted = {
+        line.strip()
+        for line in (ROOT / "scripts/ci/windows/tier1-tests.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    lines = (ROOT / "scripts/ci/windows/tier1-rejected.tsv").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "path\treason\trun_id"
+    rows = [line.split("\t") for line in lines[1:] if line.strip() and not line.startswith("#")]
+    for row in rows:
+        assert len(row) == 3 and all(field.strip() for field in row), row
+        assert (ROOT / row[0]).is_file(), row[0]
+    rejected = [row[0] for row in rows]
+    assert len(rejected) == len(set(rejected))
+    assert admitted.isdisjoint(rejected), sorted(admitted.intersection(rejected))
