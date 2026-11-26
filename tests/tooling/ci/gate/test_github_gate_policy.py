@@ -379,10 +379,10 @@ def test_an_artifact_step_without_a_positive_integer_cap_is_unbounded(timeout):
     assert unbounded_artifact_steps(bounded) == []
 
 
-def artifact_workflow(proxy_at: str, clears: bool) -> str:
+def artifact_workflow(proxy_at: str, clears: bool, *, proxy_key: str = "HTTPS_PROXY") -> str:
     step_env = {name: "" for name in policy.PROXY_VARIABLES} if clears else {}
-    workflow_env = "env:\n  HTTPS_PROXY: http://proxy.invalid:3128\n" if proxy_at == "workflow" else ""
-    job_env = "    env:\n      HTTPS_PROXY: http://proxy.invalid:3128\n" if proxy_at == "job" else ""
+    workflow_env = f"env:\n  {proxy_key}: http://proxy.invalid:3128\n" if proxy_at == "workflow" else ""
+    job_env = f"    env:\n      {proxy_key}: http://proxy.invalid:3128\n" if proxy_at == "job" else ""
     return (
         "on: push\n" + workflow_env + "jobs:\n  build:\n    runs-on: ubuntu-latest\n" + job_env
         + "    steps:\n      - uses: actions/upload-artifact@" + "e" * 40 + "\n"
@@ -390,12 +390,18 @@ def artifact_workflow(proxy_at: str, clears: bool) -> str:
     )
 
 
+def test_proxy_variables_holds_the_two_canonical_names():
+    assert policy.PROXY_VARIABLES == ("HTTP_PROXY", "HTTPS_PROXY")
+
+
 @pytest.mark.parametrize("proxy_at", ["workflow", "job"])
-def test_an_artifact_step_under_a_proxy_must_clear_all_four_variables(proxy_at):
+def test_an_artifact_step_under_a_proxy_must_clear_both_proxy_variables(proxy_at):
     leaking = policy.proxy_leaking_artifact_steps(artifact_workflow(proxy_at, clears=False), "wf.yml")
     assert len(leaking) == 1
     assert all(name in leaking[0].message for name in policy.PROXY_VARIABLES)
-    assert policy.proxy_leaking_artifact_steps(artifact_workflow(proxy_at, clears=True), "wf.yml") == []
+    cleared = artifact_workflow(proxy_at, clears=True)
+    assert policy.proxy_leaking_artifact_steps(cleared, "wf.yml") == []
+    assert policy.case_duplicate_env_offenders(cleared, "wf.yml") == []
 
 
 def test_an_artifact_step_with_no_proxy_above_it_needs_no_cleared_keys():
@@ -426,13 +432,42 @@ def test_an_empty_proxy_above_the_artifact_step_is_no_proxy():
     assert policy.proxy_leaking_artifact_steps(text, "wf.yml") == []
 
 
-def test_clearing_only_the_uppercase_pair_is_still_a_leak():
+@pytest.mark.parametrize(
+    "pair",
+    [
+        ("HTTP_PROXY", "HTTPS_PROXY"),
+        ("http_proxy", "https_proxy"),
+        ("Http_Proxy", "Https_Proxy"),
+    ],
+)
+def test_clearing_one_letter_case_per_proxy_variable_passes_both_rules(pair):
+    first, second = pair
     text = artifact_workflow("job", clears=False).replace(
-        "        env:\n", "        env:\n          HTTP_PROXY: ''\n          HTTPS_PROXY: ''\n"
+        "        env:\n", f"        env:\n          {first}: ''\n          {second}: ''\n"
     )
+    assert policy.proxy_leaking_artifact_steps(text, "wf.yml") == []
+    assert policy.case_duplicate_env_offenders(text, "wf.yml") == []
+
+
+def test_clearing_all_four_proxy_keys_trips_the_duplicate_rule():
+    text = artifact_workflow("job", clears=False).replace(
+        "        env:\n",
+        "        env:\n"
+        "          HTTP_PROXY: ''\n"
+        "          HTTPS_PROXY: ''\n"
+        "          http_proxy: ''\n"
+        "          https_proxy: ''\n",
+    )
+    assert len(policy.case_duplicate_env_offenders(text, "wf.yml")) == 2
+    assert policy.proxy_leaking_artifact_steps(text, "wf.yml") == []
+
+
+def test_mixed_case_proxy_above_artifact_step_is_detected():
+    text = artifact_workflow("workflow", clears=False, proxy_key="Https_Proxy")
+    assert policy.sets_proxy(policy.env_mapping(policy.load(text), "build"))
     offenders = policy.proxy_leaking_artifact_steps(text, "wf.yml")
     assert len(offenders) == 1
-    assert "http_proxy, https_proxy" in offenders[0].message
+    assert "HTTP_PROXY" in offenders[0].message and "HTTPS_PROXY" in offenders[0].message
 
 
 def test_nothing_in_the_merge_gate_is_relaxed():
@@ -606,3 +641,284 @@ def test_a_file_that_does_not_parse_cannot_be_loaded(text):
         policy.load(text)
     with pytest.raises(yaml.YAMLError):
         policy.compose(text)
+
+
+def _tree_offenders(rule: str) -> list[policy.Finding]:
+    """Run one workflow-tree policy reader across every discovered workflow file."""
+
+    found: list[policy.Finding] = []
+    for path in policy.workflow_files():
+        text = path.read_text(encoding="utf-8")
+        if rule == "case_duplicate_env":
+            found.extend(policy.case_duplicate_env_offenders(text, path.name))
+        elif rule == "permissions":
+            found.extend(policy.permissions_offenders(policy.load(text), path.name))
+        elif rule == "unhosted_runner":
+            found.extend(policy.unhosted_runner_offenders(policy.load(text), path.name))
+        elif rule == "proxy_leaking_artifact":
+            found.extend(policy.proxy_leaking_artifact_steps(text, path.name))
+        elif rule == "relaxed_gate_surfaces":
+            found.extend(policy.relaxed_gate_surfaces(text, path.name))
+        else:
+            raise AssertionError(f"unknown rule {rule!r}")
+    return found
+
+
+TREE_WIDE_RULES = (
+    "case_duplicate_env",
+    "permissions",
+    "unhosted_runner",
+    "proxy_leaking_artifact",
+    "relaxed_gate_surfaces",
+)
+
+
+@pytest.mark.parametrize("rule", TREE_WIDE_RULES)
+def test_every_workflow_in_the_tree_satisfies_policy(rule):
+    assert _tree_offenders(rule) == []
+
+
+CLEAN_SECOND_WORKFLOW = (
+    "name: windows-followup\n"
+    "on:\n"
+    "  pull_request:\n"
+    "    branches: [dev]\n"
+    "permissions:\n"
+    "  contents: read\n"
+    "jobs:\n"
+    "  smoke:\n"
+    "    runs-on: windows-latest\n"
+    "    continue-on-error: true\n"
+    "    steps:\n"
+    "      - uses: actions/upload-artifact@" + "e" * 40 + "\n"
+)
+
+
+@pytest.mark.parametrize("rule", TREE_WIDE_RULES)
+def test_a_clean_second_workflow_passes_every_tree_wide_rule(tree, rule):
+    write(tree.parent, "windows-followup.yml", CLEAN_SECOND_WORKFLOW)
+    assert _tree_offenders(rule) == []
+
+
+@pytest.mark.parametrize(
+    "case_id,rule,text,expected_count",
+    [
+        (
+            "W01",
+            "case_duplicate_env",
+            "on: pull_request\npermissions:\n  contents: read\nenv:\n  Path: /a\n  PATH: /b\n"
+            "jobs:\n  smoke:\n    runs-on: windows-latest\n    steps:\n      - run: echo ok\n",
+            1,
+        ),
+        (
+            "W02",
+            "case_duplicate_env",
+            "on: pull_request\npermissions:\n  contents: read\n"
+            "jobs:\n  smoke:\n    runs-on: windows-latest\n    steps:\n      - run: echo ok\n"
+            "        env:\n          HTTP_PROXY: ''\n          http_proxy: ''\n",
+            1,
+        ),
+        (
+            "W03",
+            "permissions",
+            "on: pull_request\njobs:\n  smoke:\n    runs-on: windows-latest\n    steps:\n      - run: echo ok\n",
+            1,
+        ),
+        (
+            "W04",
+            "permissions",
+            "on: pull_request\npermissions: write-all\n"
+            "jobs:\n  smoke:\n    runs-on: windows-latest\n    steps:\n      - run: echo ok\n",
+            1,
+        ),
+        (
+            "W07",
+            "relaxed_gate_surfaces",
+            "on: pull_request\npermissions:\n  contents: read\n"
+            "jobs:\n  smoke:\n    runs-on: windows-latest\n    steps:\n"
+            "      - run: echo ok\n        continue-on-error: true\n",
+            1,
+        ),
+        (
+            "proxy-leak",
+            "proxy_leaking_artifact",
+            "on: pull_request\npermissions:\n  contents: read\n"
+            "env:\n  HTTPS_PROXY: http://proxy.invalid:3128\n"
+            "jobs:\n  smoke:\n    runs-on: windows-latest\n    steps:\n"
+            "      - uses: actions/upload-artifact@" + "e" * 40 + "\n",
+            1,
+        ),
+    ],
+)
+def test_a_defect_in_a_second_workflow_is_caught_by_tree_wide_rules(
+    tree, case_id, rule, text, expected_count
+):
+    write(tree.parent, "windows-followup.yml", text)
+    offenders = _tree_offenders(rule)
+    assert len(offenders) == expected_count, (case_id, offenders)
+    assert all(item.file == "windows-followup.yml" for item in offenders)
+
+
+def test_w22_four_key_proxy_clear_in_second_workflow_trips_rule_1_only(tree):
+    text = (
+        "on: pull_request\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "env:\n"
+        "  HTTPS_PROXY: http://proxy.invalid:3128\n"
+        "jobs:\n"
+        "  smoke:\n"
+        "    runs-on: windows-latest\n"
+        "    steps:\n"
+        "      - uses: actions/upload-artifact@" + "e" * 40 + "\n"
+        "        env:\n"
+        "          HTTP_PROXY: ''\n"
+        "          HTTPS_PROXY: ''\n"
+        "          http_proxy: ''\n"
+        "          https_proxy: ''\n"
+    )
+    write(tree.parent, "windows-followup.yml", text)
+    dup_offenders = _tree_offenders("case_duplicate_env")
+    assert len(dup_offenders) == 2
+    assert all(item.file == "windows-followup.yml" for item in dup_offenders)
+    assert _tree_offenders("proxy_leaking_artifact") == []
+
+
+@pytest.mark.parametrize("label", ["macos-host", "release-ci", "publish-github"])
+def test_registered_self_hosted_runner_in_second_pr_workflow_is_caught(tree, label):
+    text = (
+        "on: pull_request\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "jobs:\n"
+        "  smoke:\n"
+        f"    runs-on: {label}\n"
+        "    steps:\n"
+        "      - run: echo ok\n"
+    )
+    write(tree.parent, "windows-followup.yml", text)
+    offenders = _tree_offenders("unhosted_runner")
+    assert len(offenders) == 1
+    assert offenders[0].file == "windows-followup.yml"
+    assert repr(label) in offenders[0].message
+
+
+def test_hosted_matrix_runners_on_pull_request_are_accepted():
+    document = {
+        "on": "pull_request",
+        "jobs": {
+            "build": {
+                "runs-on": "${{ matrix.os }}",
+                "strategy": {
+                    "matrix": {
+                        "os": ["ubuntu-latest", "windows-latest", "windows-2025"],
+                        "include": [{"os": "windows-11-arm"}],
+                    }
+                },
+                "steps": [],
+            },
+            "by-leg": {
+                "runs-on": "${{ matrix.os }}",
+                "strategy": {
+                    "matrix": {
+                        "leg": ["base", "head"],
+                        "include": [
+                            {"leg": "base", "os": "windows-latest"},
+                            {"leg": "head", "os": "windows-2025"},
+                        ],
+                    }
+                },
+                "steps": [],
+            },
+        },
+    }
+    assert policy.unhosted_runner_offenders(document, "wf.yml") == []
+
+
+@pytest.mark.parametrize(
+    "matrix,expected_fragment",
+    [
+        ({"os": ["windows-latest", "windows-2022"]}, "'windows-2022'"),
+        ({"os": ["windows-latest", "macos-26"]}, "'macos-26'"),
+        ({"os": ["windows-latest", "macos-host"]}, "'macos-host'"),
+        ({"os": ["windows-latest", {"group": "custom"}]}, "'${{ matrix.os }}'"),
+        ({"os": ["windows-latest"], "include": [{"os": "windows-2022"}]}, "'windows-2022'"),
+        ({"leg": ["a", "b"], "include": [{"leg": "a", "os": "windows-latest"}, {"leg": "b", "os": "macos-26"}]}, "'macos-26'"),
+        ({"os": "windows-latest"}, "'${{ matrix.os }}'"),
+        ({"other": ["windows-latest"]}, "'${{ matrix.os }}'"),
+        ({"os": [123]}, "'${{ matrix.os }}'"),
+    ],
+)
+def test_unhosted_or_unresolvable_matrix_runner_is_reported(matrix, expected_fragment):
+    document = {
+        "on": "pull_request",
+        "jobs": {
+            "build": {
+                "runs-on": "${{ matrix.os }}",
+                "strategy": {"matrix": matrix},
+                "steps": [],
+            }
+        },
+    }
+    offenders = policy.unhosted_runner_offenders(document, "wf.yml")
+    assert len(offenders) == 1, offenders
+    assert expected_fragment in offenders[0].message
+
+
+def test_only_the_gate_workflow_defines_a_gate_job():
+    for path in policy.workflow_files():
+        document = policy.load(path.read_text(encoding="utf-8"))
+        assert policy.foreign_gate_job_offenders(document, path.name) == []
+
+
+def test_a_second_workflow_defining_a_gate_job_is_reported(tree):
+    bad = (
+        "name: windows-followup\n"
+        "on: pull_request\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "jobs:\n"
+        "  gate:\n"
+        "    runs-on: windows-latest\n"
+        "    continue-on-error: true\n"
+        "    steps:\n"
+        "      - run: echo ok\n"
+    )
+    write(tree.parent, "windows-followup.yml", bad)
+    found = [
+        item
+        for path in policy.workflow_files()
+        for item in policy.foreign_gate_job_offenders(policy.load(path.read_text()), path.name)
+    ]
+    assert len(found) == 1
+    assert found[0].file == "windows-followup.yml"
+    write(tree.parent, "windows-followup.yml", CLEAN_SECOND_WORKFLOW)
+    clean_found = [
+        item
+        for path in policy.workflow_files()
+        for item in policy.foreign_gate_job_offenders(policy.load(path.read_text()), path.name)
+    ]
+    assert clean_found == []
+
+
+def test_a_second_workflow_naming_a_job_gate_is_also_reported(tree):
+    bad = (
+        "name: windows-followup\n"
+        "on: pull_request\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "jobs:\n"
+        "  shadow:\n"
+        "    name: gate\n"
+        "    runs-on: windows-latest\n"
+        "    steps:\n"
+        "      - run: echo ok\n"
+    )
+    write(tree.parent, "windows-followup.yml", bad)
+    found = [
+        item
+        for path in policy.workflow_files()
+        for item in policy.foreign_gate_job_offenders(policy.load(path.read_text()), path.name)
+    ]
+    assert len(found) == 1
+    assert found[0].file == "windows-followup.yml"

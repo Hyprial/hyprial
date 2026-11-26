@@ -26,14 +26,19 @@ Rules, with the reason each one exists:
    ``ubuntu-latest`` is added here because it is a hosted VM; the audit keeps
    its older meaning of it, the internal container pool, which is why it is
    in both of that module's sets.
-7. An artifact step clears the proxy variables when a workflow or job above
-   it sets a proxy. With none set there is nothing to clear.
+7. An artifact step clears the proxy variables (``HTTP_PROXY`` and
+   ``HTTPS_PROXY``, matched case-insensitively) when a workflow or job above
+   it sets a proxy. Clearing one letter case per variable satisfies the rule
+   without tripping rule 1's duplicate-key prohibition. With none set there is
+   nothing to clear.
 8. ``continue-on-error``: no job and no step of the merge gate is relaxed,
    because the gate is what a branch rule requires. Another workflow may relax
    a whole job; it may not relax a step.
 9. The effective shell of a ``run`` step is the step's ``shell``, else the
    job's ``defaults.run.shell``, else the workflow's, else the platform
    default. A PowerShell script is not POSIX shell.
+10. Only ``gate.yml`` may define a job whose id or display name is ``gate``,
+    so another workflow cannot shadow the required branch-protection check.
 """
 
 from __future__ import annotations
@@ -46,7 +51,10 @@ from typing import Any, NamedTuple
 import yaml
 
 import tests.support.ci.ci_workflow_policy as tree
-from tests.support.ci_download.runners import GITHUB_HOSTED_VM_LABELS
+from tests.support.ci_download.runners import (
+    GITHUB_HOSTED_VM_LABELS,
+    matrix_runs_on_values,
+)
 
 GATE_FILE = "gate.yml"
 
@@ -84,7 +92,8 @@ POSIX_DEFAULT_SHELL = "bash"
 ARTIFACT_ACTIONS = frozenset(
     {"actions/upload-artifact", "actions/download-artifact"}
 )
-PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY")
+_PROXY_NAMES_FOLDED = frozenset(name.casefold() for name in PROXY_VARIABLES)
 MINIMAL_TOKEN = {"contents": "read"}
 
 _SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -367,7 +376,13 @@ def unhosted_runner_offenders(document: dict[str, Any], name: str) -> list[Findi
     for job_name, job in jobs_of(document).items():
         if "uses" in job and "runs-on" not in job:
             continue
-        for label in runner_labels(job.get("runs-on")):
+        runs_on = job.get("runs-on")
+        expanded = matrix_runs_on_values(runs_on, job)
+        if expanded is not None and all(isinstance(item, str) for item in expanded):
+            labels = list(expanded)
+        else:
+            labels = runner_labels(runs_on)
+        for label in labels:
             if label in GITHUB_HOSTED_RUNNER_LABELS:
                 continue
             found.append(
@@ -376,6 +391,26 @@ def unhosted_runner_offenders(document: dict[str, Any], name: str) -> list[Findi
                     0,
                     f"job {job_name} runs-on {label!r}: a workflow triggered by "
                     "pull_request may only use a GitHub-hosted runner",
+                )
+            )
+    return found
+
+
+def foreign_gate_job_offenders(document: dict[str, Any], name: str) -> list[Finding]:
+    """Only ``GATE_FILE`` may define a job whose id or display name is ``gate``."""
+
+    if name == GATE_FILE:
+        return []
+    found: list[Finding] = []
+    for job_name, job in jobs_of(document).items():
+        display_name = str(job.get("name") or "").strip()
+        if job_name == "gate" or display_name == "gate":
+            found.append(
+                Finding(
+                    name,
+                    0,
+                    f"job {job_name!r} uses the reserved check name 'gate': only "
+                    f"{GATE_FILE} may define the required merge-gate job",
                 )
             )
     return found
@@ -391,9 +426,13 @@ def env_mapping(document: dict[str, Any], job_name: str | None) -> dict[str, Any
 
 
 def sets_proxy(env: dict[str, Any]) -> bool:
-    """Whether an env block sets a proxy variable to a non-empty value."""
+    """Whether an env block sets a proxy variable (case-insensitive) to a non-empty value."""
 
-    return any(str(env.get(name) or "").strip() for name in PROXY_VARIABLES)
+    return any(
+        str(value or "").strip()
+        for key, value in env.items()
+        if str(key).casefold() in _PROXY_NAMES_FOLDED
+    )
 
 
 def is_artifact_action(uses: str) -> bool:
@@ -413,7 +452,9 @@ def proxy_leaking_artifact_steps(text: str, name: str) -> list[Finding]:
     """Artifact steps that inherit a proxy set above them and do not clear it.
 
     Only a workflow-level or job-level proxy counts. A proxy set on another
-    step is not inherited, so it imposes nothing on the artifact step.
+    step is not inherited, so it imposes nothing on the artifact step. Each
+    proxy variable in ``PROXY_VARIABLES`` is matched case-insensitively; clearing
+    one letter case per variable satisfies this rule without violating rule 1.
     """
 
     document = load(text)
@@ -422,10 +463,16 @@ def proxy_leaking_artifact_steps(text: str, name: str) -> list[Finding]:
         if not sets_proxy(env_mapping(document, job_name)):
             continue
         step_env = step.get("env") or {}
+        by_folded: dict[str, list[Any]] = {}
+        for key, value in step_env.items():
+            by_folded.setdefault(str(key).casefold(), []).append(value)
         uncleared = [
             variable
             for variable in PROXY_VARIABLES
-            if step_env.get(variable) != ""
+            if not (
+                (values := by_folded.get(variable.casefold()))
+                and all(value == "" for value in values)
+            )
         ]
         if uncleared:
             found.append(

@@ -21,12 +21,12 @@
 #   Windows environment variable names are case-insensitive, so two keys that
 #   differ only in case are two variables on Linux and one on Windows; a
 #   workflow that must run on both cannot carry that difference.
-# - The artifact upload step clears no proxy variables. It used to clear four;
-#   this workflow sets no HTTP(S) proxy at the workflow or job level, so there
-#   was nothing to clear. An artifact step only clears them when a workflow or
-#   job above it sets a proxy (v3 was measured tunnelling through a job proxy,
-#   2026-10-30, run 40608; whether v4 and later do has not been measured here,
-#   so clear first and measure before relying on it).
+# - The artifact upload step clears no proxy variables. This workflow sets no
+#   HTTP(S) proxy at the workflow or job level, so there is nothing to clear.
+#   An artifact step only clears them when a workflow or job above it sets a
+#   proxy (v3 was measured tunnelling through a job proxy, 2026-10-30, run
+#   40608). When clearing, write one letter case per variable (e.g. HTTP_PROXY
+#   and HTTPS_PROXY), never both HTTP_PROXY and http_proxy in the same `env:`.
 # - No job and no step of this workflow carries continue-on-error. The gate is
 #   the one job a branch rule requires, and a relaxed job or step here would be
 #   a green run that proved nothing. Reporting steps use `if: always()`.
