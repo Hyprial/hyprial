@@ -25,7 +25,7 @@ CANCELLED = {**EMPTY, "operation": {**RECEIPT, "phase": "cancelled",
 GUI_OPERATION = "00000000-0000-4000-8000-000000000001"
 GUI_CONFIG = {**CONFIG, "connectionRef": "0123456789abcdef0123456789abcdef"}
 GUI_SAVED = {**SAVED, "member": "agent:acme:node-1:worker", "binding": {**SAVED["binding"], "configuration": {
-    **GUI_CONFIG, "intentDigest": "b" * 64}}, "operation": {**RECEIPT, "operationId": GUI_OPERATION}}
+    **GUI_CONFIG, "intentDigest": _DIGEST}}, "operation": {**RECEIPT, "operationId": GUI_OPERATION}}
 GUI_PENDING = {**EMPTY, "member": "agent:acme:node-1:worker", "operation": {**RECEIPT, "operationId": GUI_OPERATION,
     "phase": "prepared", "coordinationPhase": "planned", "resultBindingRevision": None,
     "observedCellRevision": None}}
