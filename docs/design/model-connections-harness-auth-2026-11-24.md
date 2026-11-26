@@ -1,6 +1,6 @@
 # 模型连接、手填模型 ID 与 Agent 启动统一方案（WIP）
 
-状态：CLI developer 第七轮设计复核已闭合，用户已授权串行实施；PR 1 已合入 dev。GitHub #59 的 Lark 修复范围已通过独立本地评审；按 2026-11-26 用户更新，本地实现与独立评审持续推进，CI 与远程合并后补。#61 已在本地纳入 #59 和最新 dev，正在新固定树验证。执行状态见 §7.2。
+状态：CLI developer 第七轮设计复核已闭合，用户已授权串行实施；PR 1 已合入 dev。GitHub #59 的 Lark 修复范围已通过独立本地评审；按 2026-11-26 用户更新，本地实现与独立评审持续推进，CI 与远程合并后补。#61 与 #81 的固定组合已获本地实现范围 PASS，#82 正在独立评审。执行状态见 §7.2。
 设计结论是实现验收焦点，不代替独立实现评审或合并门禁。未交付阶段的字段、方法和错误码仍为拟议契约。
 设计固定基线：`8ccaf513ec23de3bc39a53a1cc23cddf9fb34e15`。
 PR 目标为移动的 `dev`；第二轮评审时 base 为 `ef7c2e26173d6e2dda59d71b775265af9fb2deb5`，
@@ -613,8 +613,8 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 | PR 2：Pi runtime 与会话保护 | [#61](https://github.com/Hyprial/hyprial/pull/61)，固定 `e40a634f92fe98ca646569808acee833e16ab2f0`，base 为 #59 `bbe20799`，46 文件 | 通用模板、精确模型、会话快照/单 writer/退出释放及错误分类。组合焦点与独立复评 PASS；GH full 被 4 个迁移收集错误阻断，corpus FAIL 11/14；真实服务/浏览器尚未验收 | 本地焦点 PASS，可推进后续片；CI/e2e 后补，未合并 |
 | CI 阻断修复：Lark completion | [#59](https://github.com/Hyprial/hyprial/pull/59)，固定 `bbe20799fd0631bdfc9f0ae2001d37d8ed3aba17`，base dev `ef4f983a`，2 文件 | CLOSED 立即进入原保留 receipt/失败分支，OVERLOADED 重试不变。旧实现确定性 2F/1P，新实现 3P、原用例 10/10、Lark 815P；迁移和最新 dev 组合已独立复核。full/corpus 限制同上 | 修复范围本地 PASS；CI/e2e 后补，未合并 |
 | PR 3：绑定存储与事务 | [#81](https://github.com/Hyprial/hyprial/pull/81)，固定 `716099e1f28008194529c62103ad3364acc36282`，tree `0a45e222fcf377ea7bd517e130dd52712c1f50f9`，base #61 `e40a634f`，22 文件 | §5.1 存储/回执/容量/cleanup/快照已实现。修复操作历史不一致与提交后报错，3+1 红例→固定回归469P/9skip；cc 独立38P及318P/9skip、门禁通过。059b 初次 PASS 撤回，新 head 复评 PASS；full仍4迁移收集错误，corpus仍11/14 FAIL | 本地实现范围 PASS，后续开发继续；全量/CI/e2e 未通过，未合并 |
-| PR 4a：运行准入与销毁恢复 | 隔离 `feat/model-binding-runtime`，base #81 `716099e1` | 运行绑定解析与共同准入；销毁标记/恢复与已有契约。实际调用路径与文件预算已核对 | 本地开发开始；新配置入口仍关闭 |
-| PR 4b：配置协调与公开操作 | 待 4a 本地评审通过 | configure/status/cancel、Cell CAS/补偿、create/CLI/config、生成物与操作说明 | 未开始 |
+| PR 4a：运行准入与销毁恢复 | [#82](https://github.com/Hyprial/hyprial/pull/82)，固定 `94bca2925bd1fa6f557ddf7fa72cbb2643b0a40f`，tree `d40fa80ed5781ed40ad473700b1a72b1dc774e45`，base #81 `716099e1`，49 文件 | typed 单写入者命令、Pi 绑定精确解析/共同准入、首次启动前 Cell 事实、启动投影/恢复、销毁预览/标记/清理。开发扩展1464P、直接35P、架构升级289P、GUI客户端68P；固定全量仍4个迁移收集错误。已送 cc 独立实现评审 | WIP / 评审中；新公共配置入口关闭，CI/e2e 后补 |
+| PR 4b：配置协调与公开操作 | 待 4a 本地评审通过 | configure/status/cancel、Cell CAS/补偿、原生 Auth 绑定准入、create/CLI/config、生成物与操作说明；4a 新绑定仅 Pi/headless connection，其他组合明确拒绝 | 代码未开始，具体协调落点准备中 |
 | PR 5：连接 GUI | 未开实现 PR | §2.1/§3.2：预设/自定义、测试时手填 ID、显式 30s 预算、真实点击及错误/取消旅程 | 未开始 |
 | PR 6：Agent GUI | 未开实现 PR | §2.2/§2.3：Harness+认证+手填 ID 一次保存、启动复用、status/cancel、创建/编辑/恢复实点验收 | 未开始 |
 
