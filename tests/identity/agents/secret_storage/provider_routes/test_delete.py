@@ -51,11 +51,12 @@ def test_delete_refuses_an_invalid_entry_id_before_touching_disk(home: Path) -> 
     resolver = _resolver(home)
     resolver.write_user_provider("kept", {"KEY": "synthetic-kept"})
 
-    for bad in ("", "../kept", "kept.json", "/kept", "a/b", ".hidden", "x" * 129):
+    for bad in ("", "../kept", "/kept", "a/b", ".hidden", "x" * 129, "kept\x00"):
         with pytest.raises(ValueError):
             delete_user_provider(home, bad)
 
     assert (home / "secrets" / "providers" / "kept.json").exists()
+    assert delete_user_provider(home, "kept.json") is False
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need privilege on Windows")
@@ -64,13 +65,15 @@ def test_delete_refuses_a_symlink_and_leaves_its_target(home: Path) -> None:
     resolver.write_user_provider("kept", {"KEY": "synthetic-kept"})
     outside = home.parent / "outside.json"
     outside.write_text(json.dumps({"KEY": "synthetic-outside"}), encoding="utf-8")
-    (home / "secrets" / "providers" / "grant.link").symlink_to(outside)
+    (home / "secrets" / "providers" / "grant.link.json").symlink_to(outside)
 
     with pytest.raises(SecretResolutionError) as caught:
         delete_user_provider(home, "grant.link")
 
+    assert caught.value.category == "unsafe-type"
     assert "synthetic-outside" not in str(caught.value)
     assert outside.exists()
+    assert (home / "secrets" / "providers" / "grant.link.json").is_symlink()
     assert identity.read_user_provider_value(home, "kept", "KEY") == "synthetic-kept"
 
 
