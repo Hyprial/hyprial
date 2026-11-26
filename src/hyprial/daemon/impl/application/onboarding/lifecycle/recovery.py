@@ -123,18 +123,23 @@
 #   device record; ``device_key.encryption_key_reader`` holds what counts as
 #   a complete account.  A relogin reads them again, so the key belongs to the
 #   account that is committed now and never to the one recovery started with.
-# - The step takes the home identity transaction lock with the same bounded
-#   wait as the signing-key step and skips on busy, like it.  The key store's
+# - The step runs under the home identity transaction lock.  The key store's
 #   own file lock does not cover the identity files: without the transaction
 #   lock a concurrent login could swap ``settings.json`` and ``device.json``
 #   between the two reads.  The step reads the committed account and the device
-#   uid in that one locked read and never re-reads ``device.json``.  A
-#   relogin calls it while that relogin still holds the transaction lock in
-#   this process, so there the wait is zero.  The owner is read again under
-#   the lock, so a change of account aborts the step.  It never changes the
-#   outcome of the pass: a device that cannot have a key, a busy lock, or a
-#   step that fails is still a recovered device.  A skipped key is made by
-#   the next serving start, relogin or cache-miss publish, never by a loop.
+#   uid in that one locked read and never re-reads ``device.json``.
+# - The lock is not re-entrant inside one process, and at serving start this
+#   process already holds it: ``daemon run`` takes it before reading identity
+#   and releases it only just before the accept loop, while the ready hook has
+#   already started this thread.  Taking it again there could only time out and
+#   skip the key, which then existed only after a cache-miss publish.  So when
+#   ``is_held_in_process`` is true the step runs under the lock already held;
+#   otherwise it takes the lock with the same bounded wait as the signing-key
+#   step and skips on busy.  The owner is read again under the lock, so a
+#   change of account aborts the step.  It never changes the outcome of the
+#   pass: a device that cannot have a key, a busy lock, or a step that fails
+#   is still a recovered device.  A skipped key is made by the next serving
+#   start, relogin or cache-miss publish, never by a loop.
 """Complete unfinished device registration and initialize when serving starts."""
 
 from __future__ import annotations
@@ -142,6 +147,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from contextlib import nullcontext
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -364,16 +370,23 @@ class ServingRecovery:
     def _ensure_encryption_key(self, owner: str, device: Any) -> None:
         """Ensure this device's encryption key; never raises and never blocks the pass.
 
-        Acquires the home's identity transaction lock with the same bounded
-        wait as the signing-key step so a concurrent login or relogin cannot
-        swap ``settings.json`` and ``device.json`` mid-read.
+        The step runs under the home's identity transaction lock, so a
+        concurrent login or relogin cannot swap ``settings.json`` and
+        ``device.json`` mid-read.  When this process already holds the lock,
+        as ``daemon run`` does until it is ready to serve, the step runs under
+        that lock at once: the lock is not re-entrant inside one process, so
+        taking it again could only time out.  Otherwise it is taken with the
+        same bounded wait as the signing-key step and skipped on busy.
         """
 
         if self._encryption_key is None or device is None:
             return
         try:
-            transaction = IdentityTransactionLock.acquire(
-                self._home, timeout=_KEY_LOCK_SECONDS
+            held_here = IdentityTransactionLock.is_held_in_process(self._home)
+            transaction = (
+                nullcontext()
+                if held_here
+                else IdentityTransactionLock.acquire(self._home, timeout=_KEY_LOCK_SECONDS)
             )
         except IdentityTransactionBusy:
             _LOG.info("encryption key skipped: the identity transaction is busy")
@@ -381,15 +394,14 @@ class ServingRecovery:
         except Exception as error:
             _LOG.warning("encryption key was not ensured: %s", type(error).__name__)
             return
-        try:
-            if self._owner() != owner:
-                _LOG.info("owner changed before the encryption key; skipping")
-                return
-            self._encryption_key(self._home, Path(self._operations.root).parent)
-        except Exception as error:
-            _LOG.warning("encryption key was not ensured: %s", type(error).__name__)
-        finally:
-            transaction.close()
+        with transaction:
+            try:
+                if self._owner() != owner:
+                    _LOG.info("owner changed before the encryption key; skipping")
+                    return
+                self._encryption_key(self._home, Path(self._operations.root).parent)
+            except Exception as error:
+                _LOG.warning("encryption key was not ensured: %s", type(error).__name__)
 
     def _ensure_user_key(self, owner: str, device: Any) -> dict[str, Any] | None:
         try:
