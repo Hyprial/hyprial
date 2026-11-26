@@ -821,6 +821,9 @@ def publish_self_for_app(app: Any) -> dict:
                 }
             else:
                 outcome = service.publish_self()
+        from hyprial.daemon.impl.org.network.grant_roots import ensure_owner_roots_for_app
+
+        ensure_owner_roots_for_app(app, orgs)
         from hyprial.daemon.impl.org.network.member_agents import publish_for_app
 
         inventory = publish_for_app(app, orgs)

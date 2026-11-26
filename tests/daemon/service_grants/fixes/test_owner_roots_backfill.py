@@ -85,9 +85,10 @@ def test_backfill_failure_does_not_stop_the_row_and_is_retried(
     store.put_device(ORG, dataclasses.replace(row, address="tcp://10.0.0.99:7447#stale"))
     calls = _spy_roots(monkeypatch, fail_first=1)
 
-    outcome = publish_self_for_app(app)
+    publish_self_for_app(app)
 
-    assert outcome["published"] == [ORG]
+    published = [r["fields"]["published"] for r in app.records if r["event"] == "org.publish_self"]
+    assert published[-1] == [ORG]
     [republished] = store.list_devices(ORG)
     assert republished.address == row.address
     assert not _has_grants_dir(app)
