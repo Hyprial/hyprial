@@ -13,6 +13,7 @@ from hyprial.kernel import (
     fsync_directory,
     harden_private_path,
     inspect_private_file,
+    private_metadata_violation,
     read_private_file,
     secure_private_directory,
     write_private_file_atomic,
@@ -78,11 +79,12 @@ def _secure_directory(path: Path, *, root: Path) -> None:
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise _unsafe("transport storage directory escapes its root")
     current = root
-    for index, part in enumerate(parts):
+    for part in parts:
         current = current / part
-        secure_private_directory(current, create=True)
-        if index == len(parts) - 1 and stat.S_IMODE(current.lstat().st_mode) != 0o700:
-            raise _unsafe("transport storage directory is unsafe")
+        try:
+            secure_private_directory(current, create=True)
+        except PrivateAccessUnsupported as error:
+            raise _unsafe("transport storage directory is unsafe") from error
 
 
 def _require_safe_directory(path: Path) -> None:
@@ -119,12 +121,14 @@ def _complete_paths_present(paths: tuple[Path, ...]) -> bool:
         if (
             stat.S_ISLNK(metadata.st_mode)
             or not expected_type(metadata.st_mode)
-            or (
-                mode != 0o700
-                and (metadata.st_uid != current_uid() or metadata.st_nlink != 1)
-            )
-            or stat.S_IMODE(metadata.st_mode) != mode
+            or (mode != 0o700 and metadata.st_nlink != 1)
         ):
+            raise _unsafe("transport credential storage is unsafe")
+        try:
+            violation = private_metadata_violation(path, metadata, mode=mode)
+        except (OSError, PrivateAccessUnsupported) as error:
+            raise _unsafe("transport credential storage is unsafe") from error
+        if violation is not None:
             raise _unsafe("transport credential storage is unsafe")
         present.append(True)
     return all(present)
