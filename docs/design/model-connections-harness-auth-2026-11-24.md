@@ -82,6 +82,7 @@ GUI 不重新拼出 provider/model 覆盖。CLI 新入口也使用同一配置�
 不把 ready/running 当作上游鉴权通过。
 
 PR4c 原生新绑定也先限 headless；Pi 原生 SDK 实证版本为 1.2.0，其余版本拒绝。
+原生 Pi 启动保留 `agent.start approve:true + cwd` 生成的单个 `--approve`，仍由既有目录信任检查验证；未批准不推断批准，其他 runtime args/模型覆盖拒绝。Claude/Codex 原生绑定仍不接受 runtime args。Pi process/client 传递原生 binding 快照但不读取或注入 connection Key。
 Claude/Codex 原生新绑定没有同等的不可变会话 receipt，带 session_ref 时以
 MODEL_RESUME_MISMATCH / resume / binding-changed 拒绝，要求新建会话；原有未绑定
 legacy 续会话保持原状。此为 fail-closed 能力边界，原生厂商调用尚不因此得到验收。
@@ -639,7 +640,7 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 | PR 3：绑定存储与事务 | [#81](https://github.com/Hyprial/hyprial/pull/81)，固定 `716099e1f28008194529c62103ad3364acc36282`，tree `0a45e222fcf377ea7bd517e130dd52712c1f50f9`，base #61 `e40a634f`，22 文件 | §5.1 存储/回执/容量/cleanup/快照已实现。修复操作历史不一致与提交后报错，3+1 红例→固定回归469P/9skip；cc 独立38P及318P/9skip、门禁通过。059b 初次 PASS 撤回，新 head 复评 PASS；full仍4迁移收集错误，corpus仍11/14 FAIL | 本地实现范围 PASS，后续开发继续；全量/CI/e2e 未通过，未合并 |
 | PR 4a：运行准入与销毁恢复 | [#82](https://github.com/Hyprial/hyprial/pull/82)，产品固定 `94bca292` / tree `d40fa80e`，后续测试/契约提交 `61a44c5a4f40355cfe789f39c303d19048b9b380`，tree `3c0c0fed`，base #81 `716099e1`，49 文件 | fixed 焦点1466P；cc 独立167P/9skip、369P、548P、268P及架构门通过，回执33949bc6。补成员别名正例6P、preview兼容说明，产品代码未改；增量复评回执3c7bda7f为PASS（评审独立6P）。全量4迁移收集错误/BLOCKED；94b corpus实际11/14 FAIL | 本地产品实现范围 PASS；WIP，CI/e2e 后补，未合并 |
 | PR 4b：配置协调与公开操作 | [#83](https://github.com/Hyprial/hyprial/pull/83)，固定 `35aec090cfd6a3e214d086072ee9006ac23866eb`，tree `0352f67df3c7cc9952017d4392d679ba60a38481`，base #82 `61a44c5a`，46 文件 | Pi/headless configure/status/cancel、持久 Cell 计划/取消选择/补偿、CLI/settings 与契约。固定直接71P、request-contract PASS；开发扩展731P、架构344P、GUI client66P/mock371P。fixed full因4个旧wheel workflow收集错误BLOCKED，corpus11/14 FAIL；真实GUI/厂商UNKNOWN | WIP；固定独立实现范围 PASS（19ae9f08，独立96P+143P及门禁）；CI/e2e 后补，未合并 |
-| PR 4c：原生 Auth 与集成创建 | [#84](https://github.com/Hyprial/hyprial/pull/84)，固定 `1971108c80d318153577edbeae408784336fdb4d`，tree `e5045eba408d56010300e9cb4272eaa11f06a581`，base #83 `35aec090`，41 文件 | native 目标/引用、Pi 原生快照与禁环境回退、create 协调/partial 状态/default seed 抑制；固定直接103P，开发架构升级274P、GUI66P+371P。全量4迁移收集错误/BLOCKED，corpus11/14 FAIL；扩展回归1377P/1F/3skip，唯一缺迁移 support-matrix 的用例在父35aec同败；CI-policy91P/81F，缺迁移前git-flow文件，均不记PASS | WIP/Draft；固定独立评审请求8fee8e22已送达，结论待回；真实厂商/GUI及CI/e2e UNKNOWN，未合并 |
+| PR 4c：原生 Auth 与集成创建 | [#84](https://github.com/Hyprial/hyprial/pull/84)，固定 `ce53e1d62e4270d1c98e9981c8b48d364f9039f8`，tree `1d8c17a53fb070521b34fb2aaf8888fbd182cb36`，base #83 `35aec090`，44 文件 | 1971108c 独立评审 FAIL（0bd5c788）：process/client误读connection Key、误拒--approve；ce53修复并补真实Pi启动/停止，修前3F/9P、修后12P，固定直接110P，含Pi扩展463P（提交前同代码树）。固定full仍4迁移收集错误/BLOCKED；1971 corpus11/14 FAIL、CI-policy91P/81F等未改判 | WIP/Draft；修复待固定独立复评；真实厂商/GUI及CI/e2e UNKNOWN，未合并 |
 | PR 5：连接 GUI | 未开实现 PR；已核对共享页面/契约与20–30文件预算 | §2.1/§3.2：预设/自定义、测试时手填 ID、30s探针/35s外层预算、AbortSignal取消、精确修订与旧条目兼容；1440/390实际点击及错误/取消旅程已列验收清单 | 准备完成，尚未改产品代码；待4c固定独立评审后继续，未宣称测试/浏览器通过 |
 | PR 6：Agent GUI | 未开实现 PR | §2.2/§2.3：Harness+认证+手填 ID 一次保存、启动复用、status/cancel、创建/编辑/恢复实点验收 | 未开始 |
 
