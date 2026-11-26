@@ -61,6 +61,11 @@ directory context, so cyclic garbage holding SQLite handles is reclaimed before
 the root is deleted. Values still pinned by ``item.funcargs`` are released only
 by ``_fd_hygiene``; whether any of them hold files under the root on real
 Windows is UNKNOWN. POSIX keeps the previous order and adds no collection.
+
+Decision (2026-11-26): ``pytest_configure`` forwards to
+``tests.support.windows_suite.watchdog.configure``, which registers the ledger,
+watchdogs, ``os.kill`` interceptor and ACL probe only when
+``HYPRIAL_TEST_LEDGER_DIR`` is set; without it the call does nothing.
 """
 
 from __future__ import annotations
@@ -698,3 +703,6 @@ def pytest_configure(config):
     config.pluginmanager.register(ServiceUnitTripwire(real_account_home()), "service-unit-tripwire")
     if os.environ.get("HYPRIAL_CI_PROFILE") == "1":
         config.pluginmanager.register(_CiTestProfile(config), "hyprial-ci-profile")
+    from tests.support.windows_suite.watchdog import configure as configure_windows_suite
+
+    configure_windows_suite(config)
