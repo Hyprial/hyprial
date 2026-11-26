@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
-import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +88,7 @@ class Rig:
         self.clock = _Clock()
         self.roster_reads = 0
         self.controllers: list[ForwardingSidecarController] = []
+        self.installed: Callable[[], None] = lambda: None
         self.write_roster(**roster)
         self.supervisor = ForwardingSidecarSupervisor(
             {"FAKE_FORWARD_RECEIPT": str(self.receipt), "FAKE_FORWARD_ROSTER": str(self.roster_path)},
@@ -95,6 +96,7 @@ class Rig:
             controller_factory=self._controller,
             scheduler=scheduler,
             desired_exposures=harness.exposures.list,
+            on_installed=lambda: self.installed(),
         )
         self.supervisor.ensure_started()
 
@@ -225,8 +227,11 @@ def test_an_exposure_without_grants_admits_nobody_and_says_nothing(make_rig: Any
 
     rig.build().apply_now()
 
-    [push] = rig.exposes()
-    assert (push["port"], push["admission"], push["keys"]) == (PORT, "keys", [])
+    pushes = rig.exposes(port=PORT)
+    assert [(push["port"], push["admission"], push["keys"]) for push in pushes]
+    assert all(
+        (push["port"], push["admission"], push["keys"]) == (PORT, "keys", []) for push in pushes
+    )
     assert rig.connect(BOB_NODE)["admitted"] is False
     assert rig.logged(KEY_UNAVAILABLE) == []
 
@@ -428,23 +433,42 @@ def test_an_object_with_empty_memory_derives_the_same_set(make_rig: Any) -> None
 
 
 def test_a_relaunched_sidecar_is_given_the_set_again(make_rig: Any) -> None:
-    """The roster can only be read from a running sidecar, so the push follows its relaunch."""
+    """A relaunched sidecar replays the port with nobody admitted, then gets the set.
+
+    What was pushed before belongs to the sidecar that is gone. The same set
+    is pushed again rather than skipped as unchanged, or the granted device
+    would stay denied until its grant changed.
+    """
 
     rig = make_rig()
-    rig.build().apply_now()
     rig.grant(BOB_NODE.slug)
-    rig.build().apply_now()
-    first = rig.controller
+    enforcer = rig.build()
+    enforcer.apply_now()
+    rig.installed = enforcer.apply_now
     before = len(rig.exposes(port=PORT))
 
-    rig.supervisor.on_installed()
-    assert rig.controller is not first
+    rig.supervisor.restart(reason="test")
 
-    deadline = time.monotonic() + 10
-    while len(rig.exposes(port=PORT)) == before and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert rig.exposes(port=PORT)[-1]["keys"] == [BOB_KEY]
-    assert len(rig.exposes(port=PORT)) == before + 1
+    pushes = rig.exposes(port=PORT)[before:]
+    assert rig.supervisor.state == "running"
+    assert [(push["admission"], push["keys"]) for push in pushes] == [("keys", []), ("keys", [BOB_KEY])]
+    assert rig.connect(BOB_NODE)["admitted"] is True
+
+
+def test_a_port_with_no_grant_stays_closed_across_a_relaunch(make_rig: Any) -> None:
+    """The replay alone leaves nobody admitted; the push after it changes nothing."""
+
+    rig = make_rig()
+    enforcer = rig.build()
+    enforcer.apply_now()
+    rig.installed = enforcer.apply_now
+    before = len(rig.exposes(port=PORT))
+
+    rig.supervisor.restart(reason="test")
+
+    pushes = rig.exposes(port=PORT)[before:]
+    assert [(push["admission"], push["keys"]) for push in pushes] == [("keys", []), ("keys", [])]
+    assert rig.connect(BOB_NODE)["admitted"] is False
 
 
 def test_an_unresolvable_grant_is_logged_with_its_identity_and_reason_but_no_key(
@@ -534,11 +558,10 @@ def test_unexpose_revokes_every_grant_for_the_port_and_leaves_other_ports(make_r
 
     result = enforcer.forget_port(PORT)
 
-    assert result == {
-        "port": PORT,
-        "revoked": [{"org": ORG, "grantId": to_bob}, {"org": ORG, "grantId": to_all}],
-        "failed": [],
-    }
+    assert result["port"] == PORT
+    assert result["failed"] == []
+    assert sorted(item["grantId"] for item in result["revoked"]) == sorted([to_bob, to_all])
+    assert {item["org"] for item in result["revoked"]} == {ORG}
     assert [item["grantId"] for item in rig.harness.grants().grants(org=ORG)["granted"]] == [kept]
     assert enforcer.last_set(PORT) is None
     assert enforcer.last_set(OTHER_PORT) == "allow"

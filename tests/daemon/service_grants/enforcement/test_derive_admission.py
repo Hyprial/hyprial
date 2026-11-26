@@ -120,10 +120,18 @@ def _roster(*rows: dict, ready: bool = True) -> dict:
     }
 
 
-def _derive(grants_by_org: dict, rosters: dict, *, now_ms: int = NOW_MS) -> dict:
+def _derive(
+    grants_by_org: dict,
+    rosters: dict,
+    *,
+    now_ms: int = NOW_MS,
+    tailnet_ids: dict | None = None,
+) -> dict:
     return derive_admission(
         grants_by_org,
         rosters,
+        tailnet_ids or {org: "space-group-acme" for org in rosters},
+        owner=ALICE_NODE.owner,
         device_id=LOCAL_DEVICE,
         server_public=SERVER_PUBLIC,
         now_ms=now_ms,
@@ -198,7 +206,8 @@ def test_a_port_with_only_unrelated_grants_admits_nobody() -> None:
         {ORG: _roster(_row(CAROL_NODE))},
     )
 
-    assert projection == {}
+    assert PORT not in projection
+    assert projection[PORT + 1].admission.keys == (CAROL_KEY,)
 
 
 def test_an_org_with_no_roster_observation_yet_still_admits_nobody() -> None:
@@ -259,6 +268,25 @@ def test_grants_from_two_orgs_are_unioned() -> None:
     assert sorted(projection[PORT].admission.keys) == sorted((BOB_KEY, CAROL_KEY))
 
 
+def test_a_roster_is_read_by_the_orgs_effective_tailnet_id() -> None:
+    """Ruling 1: an org inherits a parent's tailnet, so the id is resolved per org."""
+
+    grants = {ORG: (_grant("a", BOB_NODE),), BETA: (_grant("b", CAROL_NODE, org=BETA),)}
+    shared = _roster(_row(BOB_NODE), _row(CAROL_NODE))
+
+    same_tailnet = {ORG: "space-group-acme", BETA: "space-group-acme"}
+    resolved = _derive(grants, {ORG: shared, BETA: shared}, tailnet_ids=same_tailnet)
+    mismatched = _derive(
+        grants, {ORG: shared, BETA: shared}, tailnet_ids={ORG: "space-group-acme", BETA: "space-other"}
+    )
+
+    assert sorted(resolved[PORT].admission.keys) == sorted((BOB_KEY, CAROL_KEY))
+    assert mismatched[PORT].admission.keys == (BOB_KEY,)
+    assert [(item.org, item.reason) for item in mismatched[PORT].unresolved] == [
+        (BETA, ROSTER_UNAVAILABLE)
+    ]
+
+
 def test_an_unreadable_roster_leaves_only_the_readable_part_and_never_widens_to_allow() -> None:
     projection = _derive(
         {ORG: (_grant("a", BOB_NODE),), BETA: (_grant("m", ALL_MEMBERS, org=BETA),)},
@@ -316,6 +344,25 @@ def test_a_grant_by_another_grantor_is_not_this_devices_to_push() -> None:
     projection = _derive({ORG: (foreign,)}, {ORG: _roster(_row(BOB_NODE))})
 
     assert projection == {}
+
+
+def test_this_devices_owner_may_be_given_bare_or_as_a_user_uri() -> None:
+    """The daemon's owner is a bare name; S3 stores the bare name on the path."""
+
+    grants = {ORG: (_grant("a", BOB_NODE),)}
+    roster = {ORG: _roster(_row(BOB_NODE))}
+
+    bare = derive_admission(
+        grants, roster, {ORG: "space-group-acme"}, owner=ALICE_NODE.owner,
+        device_id=LOCAL_DEVICE, server_public=SERVER_PUBLIC, now_ms=NOW_MS,
+    )
+    as_uri = derive_admission(
+        grants, roster, {ORG: "space-group-acme"}, owner=f"user:{ALICE_NODE.owner}",
+        device_id=LOCAL_DEVICE, server_public=SERVER_PUBLIC, now_ms=NOW_MS,
+    )
+
+    assert bare[PORT].admission.keys == (BOB_KEY,)
+    assert as_uri == bare
 
 
 def test_a_key_that_is_not_a_canonical_nodekey_is_unresolved() -> None:
