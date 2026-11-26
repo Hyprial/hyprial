@@ -25,6 +25,17 @@
 #   limit reads ``deadline - clock`` instead of ``remaining`` so an expired
 #   budget skips the wait and expires where the baseline did, after the step.
 #   ``ACL_POLICY_DOC`` lives here so the wait no longer imports ``policy``.
+# - Package F10c (owner ruling on the F10b review, 2026-11-26; supersedes "closing,
+#   a detached sync and ``not-a-member`` still raise" above): the wait changes
+#   no outcome; it only lets late bodies arrive before the next steps.  Any
+#   ``OrgFsError`` from the wait other than ``unknown-doc`` / ``content-pending``
+#   is logged as ``org.join.body-wait-ended`` (org, spaceId, doc, code, reason;
+#   no node or path) and the wait returns, so the next steps succeed or fail as
+#   on the baseline ``8a38c910a8``.  Raising them had turned baseline successes
+#   (detach, removal) into failures and put undeclared fields on the closed
+#   ``org.join`` / ``org.execute`` error schemas (``DAEMON_ERROR``).  OrgFS
+#   still ends ``await_content`` at once on close / detach / removal.  Other
+#   exceptions are programming errors and propagate.
 """Resolve an org's daemon-owned ACL space from its durable ID binding."""
 
 from __future__ import annotations
@@ -130,23 +141,15 @@ def _body_wait_seconds(service: Any) -> float:
     return max(0.0, limit)
 
 
-def _await_join_doc(fs: Any, space_id: str, path: str, *, timeout: float) -> bool:
+def _await_join_doc(fs: Any, space_id: str, path: str, *, timeout: float) -> None:
     mesh = getattr(fs, "mesh", None)
     await_text = getattr(mesh, "await_text", None)
-    try:
-        if callable(await_text):
-            await_text(space_id, path, timeout=timeout)
-        else:
-            read_text = getattr(fs, "read_text", None)
-            if callable(read_text):
-                read_text(space_id, path)
-    except OrgFsError as exc:
-        if exc.code == "unknown-doc":
-            return True
-        if exc.code == ORGFS_CONTENT_PENDING:
-            return False
-        raise
-    return True
+    if callable(await_text):
+        await_text(space_id, path, timeout=timeout)
+        return
+    read_text = getattr(fs, "read_text", None)
+    if callable(read_text):
+        read_text(space_id, path)
 
 
 def await_org_join_bodies(
@@ -154,8 +157,10 @@ def await_org_join_bodies(
 ) -> None:
     """Best-effort wait within the join budget for the org's two required bodies.
 
-    A body still pending when the wait ends is logged and left to the resident
-    sync; closing, a detached sync and a lost membership still raise.
+    The wait never decides the join's outcome.  A body still pending when the
+    wait ends is logged and left to the resident sync; any other ``OrgFsError``
+    (closing, a detached sync, a lost membership, ...) ends the wait with a log
+    line and the following steps fail or succeed as they did without the wait.
     """
 
     fs = getattr(service, "_fs", None)
@@ -174,9 +179,19 @@ def await_org_join_bodies(
         (acl_space_id, ACL_POLICY_DOC),
     ):
         remaining = max(0.0, deadline - time.monotonic())
-        if not _await_join_doc(fs, space_id, path, timeout=remaining):
-            log("warn", "org", "org.join.body-pending", org=org, spaceId=space_id, doc=path,
-                waitedSeconds=round(time.monotonic() - started, 3))
+        try:
+            _await_join_doc(fs, space_id, path, timeout=remaining)
+        except OrgFsError as exc:
+            if exc.code == "unknown-doc":
+                continue
+            waited = round(time.monotonic() - started, 3)
+            if exc.code == ORGFS_CONTENT_PENDING:
+                log("warn", "org", "org.join.body-pending", org=org, spaceId=space_id, doc=path,
+                    waitedSeconds=waited)
+                continue
+            log("warn", "org", "org.join.body-wait-ended", org=org, spaceId=space_id, doc=path,
+                code=exc.code, reason=exc.details.get("reason"), waitedSeconds=waited)
+            return
 
 
 __all__ = [
