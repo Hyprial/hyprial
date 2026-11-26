@@ -447,12 +447,17 @@ def _onboarding_subject(
 def read_onboarding_subject(home: Path) -> OnboardingSubject | None:
     """Return the narrow server-side partition key, or ``None`` if unstable.
 
-    Only the onboarding service may use this reader to select one local receipt
-    partition.  The result is never serialized to the GUI.  A missing settings,
-    issuer, user id or device uid means there is no stable subject: callers must
-    not fall back to owner, username, session or a shared empty partition.
-    Corrupt settings or corrupt device records fail loudly and stay untouched;
-    a device owner that does not match the settings owner yields no subject.
+    The onboarding service uses this reader to select one local receipt
+    partition.  The daemon's key-binding steps use it to read the committed
+    account and device uid in one consistent read: the login signing-key step
+    and the device encryption-key step.  The reader takes no lock itself; a
+    caller that must not read across an identity commit holds the home's
+    identity transaction lock around it.  The result is never serialized to
+    the GUI.  A missing settings, issuer, user id or device uid means there is
+    no stable subject: callers must not fall back to owner, username, session
+    or a shared empty partition.  Corrupt settings or corrupt device records
+    fail loudly and stay untouched; a device owner that does not match the
+    settings owner yields no subject.
     """
 
     return read_onboarding_identity(home)[2]
