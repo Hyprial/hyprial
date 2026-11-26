@@ -12,6 +12,7 @@ Windows without sleeping for races.
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 from pathlib import Path
@@ -487,6 +488,7 @@ def test_close_interrupts_waiting_accept_within_bound(
         assert elapsed < _CLOSE_BOUND_SECONDS
         assert len(errors) == 1
         assert isinstance(errors[0], OSError)
+        assert errors[0].errno == errno.EBADF
         assert not isinstance(errors[0], TimeoutError)
         assert io.violations == []
         assert len(io.handles) == 1 and io.handles[0].close_count == 1
@@ -568,6 +570,7 @@ def test_close_waits_for_in_flight_accept_settlement_before_returning(
         assert close_errors == []
         assert len(accept_errors) == 1
         assert isinstance(accept_errors[0], OSError)
+        assert accept_errors[0].errno == errno.EBADF
         assert io.violations == []
         assert first_handle.close_count == 1
         assert first_event.close_count == 1
@@ -635,6 +638,7 @@ def test_close_racing_successful_accept_never_uses_closed_handles(
         else:
             assert len(accept_errors) == 1
             assert isinstance(accept_errors[0], OSError)
+            assert accept_errors[0].errno == errno.EBADF
             io.mark_listener_closed()
         assert io.violations == []
         assert all(event.close_count == 1 for event in io.events)
@@ -723,6 +727,7 @@ def test_accept_timeout_reuses_pending_pipe_and_race_with_close_disposes_once(
         assert elapsed < _CLOSE_BOUND_SECONDS
         assert len(accept_errors) == 1
         assert isinstance(accept_errors[0], OSError)
+        assert accept_errors[0].errno == errno.EBADF
         assert not isinstance(accept_errors[0], TimeoutError)
         assert io.violations == []
         assert io.handles[0].close_count == 1
