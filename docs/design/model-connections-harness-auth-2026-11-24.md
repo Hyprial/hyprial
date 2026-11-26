@@ -57,7 +57,7 @@ Claude/Codex 通用自定义连接只有在对应适配通过验收后开放。�
 `agent.provider.default` 只为 legacy 创建保留；其值改变不能改写已有显式绑定。
 旧创建请求没有绑定时仍可创建未配置身份，但不得让新流程借此跳过认证与模型必填校验。
 
-PR4c 实现定界（待独立评审）：nativeAuthRef 为当前 Agent incarnation 内的
+PR4c 实现定界（ce53 已获本地范围独立 PASS）：nativeAuthRef 为当前 Agent incarnation 内的
 `native:v1:<harness>:<kind>:<target>` 槽位引用，不含账号/token 指纹；OAuth refresh 保留选择，
 logout 后拒绝，显式重新登录可补回该槽位。targetsVersion=1 才在原生清单返回目标元数据；
 旧调用结果不变。不隐式复制其他 Agent 或机器默认登录；新 Agent 缺登录材料时，走既有
@@ -641,7 +641,7 @@ Lark 小修已复现的影响是 daemon 退出/重启时整个 AdapterRuntime �
 | PR 4a：运行准入与销毁恢复 | [#82](https://github.com/Hyprial/hyprial/pull/82)，产品固定 `94bca292` / tree `d40fa80e`，后续测试/契约提交 `61a44c5a4f40355cfe789f39c303d19048b9b380`，tree `3c0c0fed`，base #81 `716099e1`，49 文件 | fixed 焦点1466P；cc 独立167P/9skip、369P、548P、268P及架构门通过，回执33949bc6。补成员别名正例6P、preview兼容说明，产品代码未改；增量复评回执3c7bda7f为PASS（评审独立6P）。全量4迁移收集错误/BLOCKED；94b corpus实际11/14 FAIL | 本地产品实现范围 PASS；WIP，CI/e2e 后补，未合并 |
 | PR 4b：配置协调与公开操作 | [#83](https://github.com/Hyprial/hyprial/pull/83)，固定 `35aec090cfd6a3e214d086072ee9006ac23866eb`，tree `0352f67df3c7cc9952017d4392d679ba60a38481`，base #82 `61a44c5a`，46 文件 | Pi/headless configure/status/cancel、持久 Cell 计划/取消选择/补偿、CLI/settings 与契约。固定直接71P、request-contract PASS；开发扩展731P、架构344P、GUI client66P/mock371P。fixed full因4个旧wheel workflow收集错误BLOCKED，corpus11/14 FAIL；真实GUI/厂商UNKNOWN | WIP；固定独立实现范围 PASS（19ae9f08，独立96P+143P及门禁）；CI/e2e 后补，未合并 |
 | PR 4c：原生 Auth 与集成创建 | [#84](https://github.com/Hyprial/hyprial/pull/84)，固定 `ce53e1d62e4270d1c98e9981c8b48d364f9039f8`，tree `1d8c17a53fb070521b34fb2aaf8888fbd182cb36`，base #83 `35aec090`，44 文件 | 1971108c 独立评审 FAIL（0bd5c788）：process/client误读connection Key、误拒--approve；ce53修复并补真实Pi启动/停止，修前3F/9P、修后12P，固定直接110P，含Pi扩展463P（提交前同代码树）。固定full仍4迁移收集错误/BLOCKED；1971 corpus11/14 FAIL、CI-policy91P/81F等未改判 | WIP/Draft；固定独立复评 PASS（b0ca2de9，独立12P+110P及门禁）；真实厂商/GUI及CI/e2e UNKNOWN，未合并 |
-| PR 5：连接 GUI | 未开实现 PR；已核对共享页面/契约与20–30文件预算 | §2.1/§3.2：预设/自定义、测试时手填 ID、30s探针/35s外层预算、AbortSignal取消、精确修订与旧条目兼容；1440/390实际点击及错误/取消旅程已列验收清单 | 已基于4c独立PASS的ce53启动本地实现；尚未形成验收结论 |
+| PR 5：连接 GUI | [#85](https://github.com/Hyprial/hyprial/pull/85)，固定 `a792e9d673fa4169b207eb6988f111fc17abebe3`，tree `c15e3a24bbb6acd5240b46e993f7e17b143f8e55`，base #84 `ce53e1d6`，27 文件 | 官方预设由现有 versioned provider-list 返回；自定义不伪装 DeepSeek，保存不要求模型；测试 ID 手填、30/35s、AbortSignal、精确修订、未知写/回读失败锁定。GUI/client/mock599P、模型探针93P；四宽度实点与parity14P（受控mock）、build/架构/契约门PASS，OpenAPI 0breaking。full4迁移收集错误BLOCKED，corpus11/14 FAIL，CI-policy91P/81F | WIP/Draft；固定独立评审待结论；真实厂商/GUI-daemon网络及浏览器取消到上游链路UNKNOWN，CI/e2e后补 |
 | PR 6：Agent GUI | 未开实现 PR | §2.2/§2.3：Harness+认证+手填 ID 一次保存、启动复用、status/cancel、创建/编辑/恢复实点验收 | 未开始 |
 
 PR4b 本地 hygiene：registry-union、合成树结构/模块/unbounded/import 门和 term/resident 87P 通过；Node CI-policy 因已删除的 `.forgejo/git-flow.json` 缺失失败。相同去凭据子进程环境下，父61a与固定35aec均91P/81F，失败名称一致，相关策略源码/测试无diff；hygiene仍FAIL，仅可作为本片未新增该失败的证据。对照已送评审4a1036a8。
