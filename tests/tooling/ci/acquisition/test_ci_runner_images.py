@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from tests.support.ci import _ci_download_scanner as scanner
+from tests.support.ci_download import runners
 
 WF = ".github/workflows/fixture.yml"
 SELECTOR = "${{ startsWith(github.base_ref, 'release/') && 'release-ci' || 'ubuntu-latest' }}"
@@ -95,3 +96,47 @@ def test_every_runs_on_label_is_registered():
             except ValueError as exc:
                 unregistered.append((path.name, name, str(exc)))
     assert not unregistered, unregistered
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["windows-latest", "windows-2025", "windows-11-arm"],
+)
+def test_github_hosted_windows_vm_labels_are_registered_without_container_image(
+    tmp_path, label
+):
+    """GitHub-hosted Windows VM labels belong to the shared hosted registry."""
+    assert label in runners.GITHUB_HOSTED_VM_LABELS
+    assert label not in runners.CONTAINER_RUNNER_LABELS
+    assert scanner.runner_labels(label) == (label,)
+    inventory = scan(tmp_path, label)
+    assert not inventory.diagnostics
+    assert not inventory.sites
+
+
+def test_synthetic_windows_latest_workflow_has_no_unregistered_label(tmp_path):
+    """A synthetic workflow on disk using runs-on: windows-latest passes discovery and label checks."""
+    workflow_dir = tmp_path / ".github/workflows"
+    workflow_dir.mkdir(parents=True)
+    workflow = workflow_dir / "windows-followup.yml"
+    workflow.write_text(
+        yaml.safe_dump(
+            {
+                "name": "windows-followup",
+                "on": "pull_request",
+                "jobs": {
+                    "smoke": {
+                        "runs-on": "windows-latest",
+                        "steps": [],
+                    }
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    inventory = scanner.Scanner(tmp_path).scan()
+    assert not inventory.diagnostics
+    assert not inventory.sites
+    for name, job in (yaml.safe_load(workflow.read_text()).get("jobs") or {}).items():
+        assert scanner.runner_labels(job["runs-on"]) == ("windows-latest",), name

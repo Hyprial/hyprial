@@ -136,7 +136,6 @@ ENTRY_POINT_NAMERS = {
     "packaging/clients/stage_runtime.py": "docstring: sign_bundle.py reuses its manifest function",
     "packaging/clients/signing/archives.py": "failure message naming sign_bundle.py",
     "tests/tooling/ci/tailcat_wheel/test_wheel_builds_record_public_remote.py": "test: the script counts as a wheel build step",
-    "tests/tooling/ci/uv_resilience/test_workflow_uv_resilience.py": "test: the script's uv pin",
     _SHELL_TESTS + "candidate/script_support.py": "test harness: runs the script with fake tools",
     _SHELL_TESTS + "candidate/signed/__init__.py": "test package docstring",
     _SHELL_TESTS + "candidate/signed/test_signed_collect.py": "test of the script's signed collection",

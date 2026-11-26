@@ -28,6 +28,10 @@ from tests.support.ci_download.runners import (
     HOST_RUNNER_LABELS as HOST_RUNNER_LABELS,
     runner_labels,
 )
+from tests.support.ci_download.github_gate_policy import (
+    POWERSHELL_SHELLS,
+    effective_shell,
+)
 
 
 class Scanner(CommandMethods, SourceMethods):
@@ -259,7 +263,17 @@ class Scanner(CommandMethods, SourceMethods):
                 if "run" in step:
                     n = sm["run"]
                     start = marks[id(n)] + (1 if n.style in {"|", ">"} else 0)
-                    self.shell(str(step["run"]), sc, file, start)
+                    shell = effective_shell(step, job, doc)
+                    if shell in POWERSHELL_SHELLS:
+                        self.diagnostic(
+                            replace(sc, shell=shell),
+                            file,
+                            start,
+                            "PowerShell run step is not parsed as POSIX shell; "
+                            "its acquisitions need a reviewed reading",
+                        )
+                        continue
+                    self.shell(str(step["run"]), replace(sc, shell=shell), file, start)
 
     def use(self, target: str, ctx: Context, file: str, line: int):
         if not target.startswith("./"):

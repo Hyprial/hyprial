@@ -18,8 +18,8 @@ Decisions (2026-11-03, infra-ops/release-0.5.5.3.2, brief ``publish-gui``):
   exact.
 * The remote is the publish target remote (``DEFAULT_TARGET_REMOTE`` in
   ``scripts/ci/github_publish.py``), never the builder's
-  ``remote.origin.url``: that origin is an intranet host
-  (``git.internal.hyprial.com``) which would trip the intranet-identifier
+  ``remote.origin.url``: that origin is the builder's intranet Git host,
+  which would trip the intranet-identifier
   gate in the snapshot and leak infrastructure naming into the wheel's
   ``release.json``, which no publish gate scans.
 * The retired ``src/gui`` stamp (``hyprial.gui-source/v1`` at

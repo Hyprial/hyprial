@@ -1,27 +1,23 @@
-"""CI jobs must reach Forgejo over the internal origin, never the tunnel.
+"""Credential and source hygiene of every workflow in ``.github/workflows``.
 
-spec: spec-ci-internal-origin-2026-09-15 (hq worktree). Readings that made
-this a gate instead of a preference, all from 2026-09-14/15:
+These are directory scans over the workflow files that exist in the tree, so
+they follow the surviving gate (``gate.yml``) instead of the Forgejo-era
+workflows that first motivated them (spec-ci-internal-origin-2026-09-15,
+#531).  The invariants kept here do not depend on that topology:
 
-- The job containers resolve only two host-gateway names (`tailscale`,
-  `git.internal.hyprial.com`); `code.hyprial.com` is reachable only through
-  the Cloudflare tunnel, which that night cost: kanban gate fetch 13m45s,
-  #508 release assets at 33KB/s, skill-declaration `updated` three whole
-  5:00 timeouts (10984/10990/11033), #493 e2e-official twice 25 minutes at
-  `Check out event SHA` (11128/11131).
-- On macos-host the container-only name `tailscale` does NOT resolve
-  (measured on the host: `curl --noproxy '*' http://tailscale:3000/` => rc=6;
-  the same request through the local proxy returns a fast 502 from whatever
-  the proxy resolved -- not the instance). So host jobs use
-  `http://git.internal.hyprial.com:3000` (measured: `git ls-remote` rc=0),
-  and `${GITHUB_SERVER_URL}` on a host job is the broken form:
-  provider-calibration's calibrate job, the one place that already used it,
-  went 5/5 red (10323 10316 10233 9380 2813).
+- no workflow reaches the retired public forge host over an ``http(s)`` URL;
+- no remote URL carries a token in its userinfo;
+- a step that authenticates git (askpass / ``extraHeader`` / ``GIT_CONFIG_VALUE``)
+  carries its own step-level ``GITHUB_TOKEN`` env, because those read the
+  variable at invocation time -- an env on an earlier step is an empty token
+  on this one;
+- an ``INSPECTION_ONLY_STEPS`` exemption (a step that proves a credential is
+  absent, so it must not be handed one) never runs git itself;
+- every ``uses:`` names a pinned ref.
 
-These tests read the real workflow files. Two failure shapes they exist to
-catch: a git/API access drifting back to the tunnel host, and the subtler
-#531 shape -- a step that authenticates fine but reads an empty GITHUB_TOKEN
-because the env lived on a different step.
+The internal-origin routing of the retired Forgejo jobs (container versus
+macos-host remotes, the step-scoped PR-hygiene fetch token, the runner token
+probe) was tested against those workflow files and retired with them.
 """
 
 from __future__ import annotations
@@ -38,8 +34,6 @@ WORKFLOW_DIR = ROOT / ".github" / "workflows"
 WORKFLOWS = sorted(WORKFLOW_DIR.glob("*.yml"))
 
 PUBLIC_HOST = "code.hyprial.com"
-CONTAINER_ORIGIN = "${GITHUB_SERVER_URL"
-HOST_ORIGIN = "http://git.internal.hyprial.com:3000"
 
 # User-visible links (echoes of download URLs etc.) may still name the public
 # host: they are text for humans, not access paths. Each entry must name its
@@ -60,12 +54,7 @@ _TOKEN_IN_URL = re.compile(r"x-access-token:[^\s\"']*@")
 # ``test_inspection_only_exemptions_never_run_git`` keeps an exempted step from
 # becoming a place an authenticating command hides: a checker that has to PROVE
 # a credential absent cannot be handed that credential to satisfy the heuristic.
-INSPECTION_ONLY_STEPS: dict[str, str] = {
-    "pr-hygiene/Assert the credential did not outlive its step": (
-        "it asserts that no credential outlived its step; handing it a step-level "
-        "GITHUB_TOKEN would defeat the very assertion it makes"
-    ),
-}
+INSPECTION_ONLY_STEPS: dict[str, str] = {}
 
 
 def _text(path: Path) -> str:
@@ -134,60 +123,6 @@ def test_no_run_token_in_any_remote_url() -> None:
     )
 
 
-def test_every_git_remote_uses_the_internal_origin_for_its_runner_kind() -> None:
-    """Positive direction: deleting a remote line must not be a way to pass.
-
-    The vacuity guard used to be ``container == 9 and host == 5`` -- an
-    inventory taken on 2026-09-15, which froze the day it was written while the
-    job set kept growing (it read 17+5 today).  That is the same disease as
-    this repo's ``len(jobs) == 12`` contract, one layer up, so the guard is now
-    DERIVED from the tree: every job that fetches from the origin must also
-    declare one, and both runner kinds must stay live.  A new job is covered by
-    default instead of silently landing outside a number nobody re-reads.
-    """
-
-    container = host = 0
-    bad: list[str] = []
-    jobs_with_remote: set[str] = set()
-    jobs_with_fetch: set[str] = set()
-    for workflow, job_name, runs_on, step in _iter_steps():
-        script = step.get("run") or ""
-        # Join backslash continuations first: skill-declaration writes
-        # `git remote add origin \` and puts the URL on the next line, and the
-        # condition-reader bootstrap writes `git -C <dir> remote add origin`
-        # (which the old literal `git remote add origin` filter skipped).
-        logical_lines = re.sub(r"\\\n\s*", " ", script).splitlines()
-        for line in logical_lines:
-            if line.strip().startswith("#"):
-                continue
-            if "remote add origin" in line:
-                jobs_with_remote.add(f"{workflow.name}::{job_name}")
-                if _is_host_job(runs_on):
-                    host += 1
-                    if HOST_ORIGIN not in line:
-                        bad.append(
-                            f"{workflow.name}:{job_name} (host): {line.strip()}"
-                        )
-                else:
-                    container += 1
-                    if CONTAINER_ORIGIN not in line:
-                        bad.append(
-                            f"{workflow.name}:{job_name} (container): {line.strip()}"
-                        )
-            if re.search(r"\bgit\b[^\n]*\bfetch\b", line):
-                jobs_with_fetch.add(f"{workflow.name}::{job_name}")
-    assert bad == [], "git remote not on the internal origin:\n" + "\n".join(bad)
-    assert container >= 1 and host >= 1, (
-        "both runner kinds must keep exercising this check, got "
-        f"container={container} host={host}"
-    )
-    missing = sorted(jobs_with_fetch - jobs_with_remote)
-    assert missing == [], (
-        "these jobs fetch from the origin without declaring one (deleting a "
-        "remote must not be a way to pass):\n" + "\n".join(missing)
-    )
-
-
 def test_host_jobs_never_use_the_container_origin() -> None:
     """${GITHUB_SERVER_URL} is http://tailscale:3000/ here, and `tailscale`
     does not resolve on macos-host -- this is the exact provider-calibration
@@ -234,62 +169,6 @@ def test_every_authenticated_git_step_carries_its_own_token_env() -> None:
         "step authenticates git but has no step-level GITHUB_TOKEN env:\n"
         + "\n".join(missing)
     )
-
-
-PR_HYGIENE_FETCH_STEPS = (
-    "Gate the merge tree",
-    "Reject a registry entry dropped by the merge",
-)
-
-
-def test_pr_hygiene_fetch_steps_carry_the_step_scoped_token() -> None:
-    """The three fetch-bearing pr-hygiene steps carry PR_HYGIENE_GIT_TOKEN.
-
-    Nothing else notices if that ``env:`` is deleted, and the gate would then
-    silently degrade to the point-in-time checkout-ref path.  The submitted-by
-    step does not fetch and must not carry the token (T3 scope, #1348): the
-    token is scoped to the steps and commands that need it.
-    """
-
-    found: dict[str, object] = {}
-    for _workflow, job_name, _runs_on, step in _iter_steps():
-        if job_name != "pr-hygiene":
-            continue
-        run = str(step.get("run") or "")
-        rules = [
-            rule
-            for rule in ("merge-tree", "registry-union")
-            if rule in run
-        ]
-        if not rules:
-            continue
-        found[str(step.get("name"))] = (step.get("env") or {}).get(
-            "PR_HYGIENE_GIT_TOKEN"
-        )
-    assert sorted(found) == sorted(PR_HYGIENE_FETCH_STEPS), found
-    for name, token in found.items():
-        assert token == "${{ secrets.GITHUB_TOKEN }}", name
-
-
-def test_pr_hygiene_assertion_step_probes_both_runner_tokens() -> None:
-    """M1: the scope assertion reports GITHUB_TOKEN AND FORGEJO_TOKEN.
-
-    Forgejo documents both as injected into every action step, but only one was
-    measured before.  The probe REPORTS (yes/no), it does not fail: whether the
-    runner injects one is not ours to change, and our criterion is that we add
-    no repository-level credential exposure of our own.
-    """
-
-    step_run = next(
-        str(step.get("run") or "")
-        for _workflow, job_name, _runs_on, step in _iter_steps()
-        if job_name == "pr-hygiene"
-        and step.get("name") == "Assert the credential did not outlive its step"
-    )
-    assert "runner_injected_github_token=" in step_run
-    assert "runner_injected_forgejo_token=" in step_run
-    assert "${FORGEJO_TOKEN:-}" in step_run
-
 
 # A git command, not the substring: the askpass file is legitimately named
 # ``hyprial-git-askpass-<run>`` ("git" between dashes).  HEURISTIC, not a proof:
@@ -376,7 +255,6 @@ def test_every_uses_directive_pins_its_version() -> None:
     assert offenders == [], "unpinned `uses:` refs in the tree:\n" + "\n".join(
         offenders
     )
-
 
 # A known-good workflow, so the controls do not depend on the tree's state.
 _PINNED_CONTROL = (

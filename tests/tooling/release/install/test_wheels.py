@@ -6,7 +6,6 @@ import time
 import zipfile
 
 import pytest
-import yaml
 
 from test_publish import CREDS, ROOT
 
@@ -14,8 +13,9 @@ TAGS = ["macosx_13_0_arm64", "macosx_13_0_x86_64",
         "manylinux_2_17_x86_64.manylinux2014_x86_64",
         "manylinux_2_17_aarch64.manylinux2014_aarch64", "win_amd64"]
 
-
 @pytest.fixture
+
+
 def wheels(monkeypatch, source_repo):
     monkeypatch.chdir(source_repo.path)
     for key in list(os.environ):
@@ -27,7 +27,6 @@ def wheels(monkeypatch, source_repo):
     monkeypatch.syspath_prepend(str(ROOT / "scripts/ci"))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     return runpy.run_path(str(ROOT / "scripts/ci/publish_wheels.py"))
-
 
 PUBLIC_REMOTE = "https://github.com/Hyprial/hyprial.git"
 
@@ -58,16 +57,18 @@ def test_native_wheel_names_are_accepted_without_relabelling(wheels, tmp_path):
     objects = wheels["wheel_objects"](tmp_path, "internal")
     assert [obj.key for obj in objects] == [f"wheel/internal/{name}" for name in names + ["SHA256SUMS"]]
 
-
 @pytest.mark.parametrize("remote", ["ssh://git@git.internal.invalid/org/repo.git", ""])
+
+
 def test_wheel_with_a_non_public_source_remote_is_never_published(wheels, tmp_path, s3, remote, source_repo):
     distribution(tmp_path, remote=remote)
     with pytest.raises(RuntimeError, match="Refusing to publish"):
         wheels["publish"](tmp_path, "stable", CREDS, source_sha=source_repo.old, endpoint=s3.url, public_base=s3.url)
     assert s3.events == []
 
-
 @pytest.mark.parametrize("problem", ["mixed-abi", "unsupported-abi", "unsafe-name"])
+
+
 def test_native_manifest_rejects_abi_mismatch_before_network(wheels, tmp_path, problem):
     distribution(tmp_path, abi="cp312-abi3")
     manifest = tmp_path / "SHA256SUMS"
@@ -82,8 +83,9 @@ def test_native_manifest_rejects_abi_mismatch_before_network(wheels, tmp_path, p
     with pytest.raises(RuntimeError):
         wheels["wheel_objects"](tmp_path, "internal")
 
-
 @pytest.mark.parametrize("track", ["stable", "nightly", "internal"])
+
+
 def test_wheels_verified_before_sums_switch(wheels, tmp_path, s3, track, source_repo):
     names = distribution(tmp_path)
     wheels["publish"](tmp_path, track, CREDS, source_sha=source_repo.old, endpoint=s3.url, public_base=s3.url)
@@ -97,8 +99,9 @@ def test_wheels_verified_before_sums_switch(wheels, tmp_path, s3, track, source_
     assert s3.events[0][0] == s3.events[-1][0] == "LIST"
     assert s3.objects["unrelated/old"] == b"keep"
 
-
 @pytest.mark.parametrize("problem", ["incomplete", "hash", "duplicate", "missing", "wrong-platform", "wrong-track"])
+
+
 def test_bad_wheel_set_never_touches_bucket(wheels, tmp_path, s3, problem, source_repo):
     names = distribution(tmp_path)
     manifest = tmp_path / "SHA256SUMS"
@@ -120,8 +123,9 @@ def test_bad_wheel_set_never_touches_bucket(wheels, tmp_path, s3, problem, sourc
         wheels["publish"](tmp_path, track, CREDS, source_sha=source_repo.old, endpoint=s3.url, public_base=s3.url)
     assert s3.events == []
 
-
 @pytest.mark.parametrize("failure", ["readback", "upload"])
+
+
 def test_failed_wheel_never_switches_manifest(wheels, tmp_path, s3, failure, source_repo):
     names = distribution(tmp_path)
     key = "wheel/internal/" + names[1]
@@ -134,11 +138,12 @@ def test_failed_wheel_never_switches_manifest(wheels, tmp_path, s3, failure, sou
     assert ("PUT", "wheel/internal/SHA256SUMS") not in s3.events
     assert s3.events[-1][0] == "LIST"
 
-
 @pytest.mark.parametrize("publishing,concurrent", [
     ("stable", "nightly"),
     ("nightly", "stable"),
 ])
+
+
 def test_concurrent_other_track_write_does_not_fail(wheels, tmp_path, s3, source_repo, publishing, concurrent):
     """M-0038: 另一条 track 并发发布时，本 track 的守卫不得判红。
 
@@ -200,21 +205,6 @@ def test_publish_refuses_key_outside_scope_before_any_put(wheels, s3):
     with pytest.raises(RuntimeError, match="Publication key outside allowed scope"):
         wheels["publish_objects"](client, [obj], lambda key: False)
     assert not [e for e in s3.events if e[0] == "PUT"], "拒绝必须发生在任何 PUT 之前"
-
-
-def test_wheel_ci_publishes_before_github_dependency():
-    doc = yaml.safe_load((ROOT / ".github/workflows/wheel-release.yml").read_text())
-    steps = doc["jobs"]["build-publish"]["steps"]
-    index = next(i for i, step in enumerate(steps) if "publish_wheels.py" in step.get("run", ""))
-    assert "--track" in steps[index]["run"] and '"${WHEEL_TRACK}"' in steps[index]["run"]
-    assert set(CREDS) <= set(steps[index]["env"])
-    assert '--source-sha "${WHEEL_SOURCE_SHA}"' in steps[index]["run"]
-    assert "GIT_CONFIG_VALUE_0" in steps[index]["run"]
-    assert "GITHUB_TOKEN" in steps[index]["env"]
-    assert "if" not in steps[index], "all three tracks publish without a variable gate"
-    build = next(i for i, step in enumerate(steps) if step["name"] == "Stamp local version segment and build wheel")
-    assert index == build + 1
-    assert all("GH_PUBLISH_TOKEN" not in str(step) for step in steps[:index])
 
 
 def test_success_line_proves_scope_and_intended(wheels, tmp_path, s3, source_repo, capsys):

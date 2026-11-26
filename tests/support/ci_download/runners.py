@@ -16,6 +16,17 @@ supported. A multi-label list is a conjunction, not alternative runners;
 it needs a reviewed execution-mode contract before this audit can model it.
 The selector is not evaluated: both possible labels are audited, without
 claiming that both images are fetched in one job execution.
+
+GitHub-hosted virtual machines (2026-11-26): the public repository runs on
+GitHub's own runners. A hosted label is a fresh virtual machine image that
+GitHub maintains, not a container this repository pulls, so it adds no image
+site to the acquisition audit. ``runner_labels`` accepts them.
+``GITHUB_HOSTED_VM_LABELS`` is defined here once; the generic pull-request
+runner check in ``github_gate_policy`` reads it from here, so the audit and
+the check cannot disagree about which labels are hosted. The Windows labels
+are ``windows-latest`` and ``windows-2025`` (both Windows Server 2025 x64)
+and ``windows-11-arm`` (Windows 11 Enterprise ARM64); none of the hosted
+labels is a container image or a runner registered by this repository.
 """
 
 import re
@@ -27,6 +38,19 @@ CONTAINER_RUNNER_LABELS = frozenset({"ubuntu-latest", "publish-github", "release
 # per-job default image, so both are host labels, not container labels.
 HOST_RUNNER_LABELS = frozenset(
     {"macos-host", "ci-light", "release-linux-arm64", "release-macos-arm64"}
+)
+GITHUB_HOSTED_VM_LABELS = frozenset(
+    {
+        "windows-latest",
+        "windows-2025",
+        "windows-11-arm",
+        "macos-latest",
+        "macos-15",
+        "macos-14",
+        "macos-13",
+        "ubuntu-24.04",
+        "ubuntu-22.04",
+    }
 )
 _BASE_REF_SELECTOR = re.compile(
     r"\$\{\{\s*startsWith\(\s*github\.base_ref\s*,\s*'release/'\s*\)"
@@ -42,7 +66,12 @@ def runner_labels(value: object) -> tuple[str, ...]:
         raise ValueError(f"unsupported runs-on selection: {value!r}")
     match = _BASE_REF_SELECTOR.fullmatch(value)
     labels = tuple(dict.fromkeys(match.groups())) if match else (value,)
-    unknown = set(labels) - CONTAINER_RUNNER_LABELS - HOST_RUNNER_LABELS
+    unknown = (
+        set(labels)
+        - CONTAINER_RUNNER_LABELS
+        - HOST_RUNNER_LABELS
+        - GITHUB_HOSTED_VM_LABELS
+    )
     if unknown:
         raise ValueError(f"unregistered or unresolved runs-on selection: {value!r}")
     return labels

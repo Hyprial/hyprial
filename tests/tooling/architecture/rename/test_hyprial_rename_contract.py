@@ -16,6 +16,7 @@ NEW_ENV_PREFIX = "HYPRIAL_"
 CONTRACT_HISTORY = {
     "e2e/e2e-014-real-env-evidence.md",
     "e2e/feishu-live-roundtrip-evidence.md",
+    "rename/contract-align-report.md",
 }
 ALLOWED_CONTRACT_OLD_NAMES = (
     "alicesmith-" + OLD_LOWER + "-e2e",
@@ -189,7 +190,7 @@ def test_dead_contract_instructions_are_removed() -> None:
 
 
 def test_contract_alignment_report_records_all_three_exits() -> None:
-    report = (ROOT / "docs" / "notes" / "contract-align-report.md").read_text(
+    report = (ROOT / "contract" / "rename" / "contract-align-report.md").read_text(
         encoding="utf-8"
     )
     for heading in ("## 已换", "## 改名单漏项", "## 已删死指令", "## 需要人点"):

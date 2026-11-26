@@ -45,13 +45,13 @@
 
 ### B. Adapter 注册名
 
-`allenwoods-h2b-e2e` 全部原样保留：
+`alicesmith-h2b-e2e` 全部原样保留：
 
 - `contract/e2e-scenarios/{04-feishu-roundtrip,07-four-lark-adapters,09-squire-setup,13-all-harness-lifecycle}.md`
 - `contract/e2e-scenarios/{run-all-harness-lifecycle,run-feishu-roundtrip,run-squire-setup,run-four-lark-adapters}.py`
 - `contract/e2e-scenarios/feishu-live-roundtrip-evidence.md`
 
-它已长进 route URI、凭据文件名、脚本常量、命令参数、生产迁移代码与 desired-state；属 adapter 改名迁移单,不在本单射程。`hq-adjutant-feishu`、`hyprial-kanban`、`mac-studio-feishu`、`allen-squire` 同属 adapter 注册名，亦未改。
+它已长进 route URI、凭据文件名、脚本常量、命令参数、生产迁移代码与 desired-state；属 adapter 改名迁移单,不在本单射程。`hq-adjutant-feishu`、`hyprial-kanban`、`example-host-feishu`、`alicesmith-squire` 同属 adapter 注册名，亦未改。
 
 ### C. 悬空的 MFU lock
 

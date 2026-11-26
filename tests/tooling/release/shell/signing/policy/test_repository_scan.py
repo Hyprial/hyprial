@@ -184,9 +184,14 @@ def _mac_jobs() -> list[tuple[str, str, dict]]:
 
 
 def test_no_job_on_the_release_mac_uses_a_local_action() -> None:
-    jobs = _mac_jobs()
-    assert {(workflow, job) for workflow, job, _ in jobs} >= {("native-conformance.yml", "native-darwin-arm64"), ("kp027-native-candidate.yml", "native-darwin-arm64")}
-    for workflow, name, job in jobs:
+    """Every job on the release Mac, job-level ``uses:`` included.
+
+    No workflow in the tree runs on the release Mac as of PR #78 (2026-11-26),
+    so the loop below is empty until one does; the scan stays fail-closed
+    because any Mac job with a local ``uses:`` is reported.
+    """
+
+    for workflow, name, job in _mac_jobs():
         uses = [str(job.get("uses", ""))] + [str(step.get("uses", "")) for step in job.get("steps") or []]
         local = [item for item in uses if item.startswith(".")]
         assert local == [], f"{workflow}::{name}: {local}"

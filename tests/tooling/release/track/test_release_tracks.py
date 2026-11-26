@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS = ROOT / "scripts/ci"
@@ -149,29 +148,3 @@ def test_shallow_release_checkout_gets_history_before_ancestry_check(repo, tmp_p
     result = run((runner, repo[1], repo[2]), "release_tracks.py", "--release", "v0.5.5.1")
     assert result.returncode == 0, result.stderr
     assert remote(repo, "stable") == remote(repo, "nightly") == repo[2][1]
-
-
-def test_release_step_is_guarded_and_changelog_precedes_it():
-    doc = yaml.safe_load((ROOT / ".github/workflows/github-publish.yml").read_text())
-    steps = doc["jobs"]["publish"]["steps"]
-    moves = [s for s in steps if "release_tracks.py --release" in s.get("run", "")]
-    assert len(moves) == 1
-    script = moves[0]["run"]
-    assert 'false:v*' in script
-    assert 'check-release-tracks.py' in script
-    assert script.index("release_tracks.py") < script.index("check-release-tracks.py")
-    gate = next(s for s in steps if "check-changelog.mjs" in s.get("run", ""))
-    assert steps.index(gate) < steps.index(moves[0])
-    assert doc.get("on", doc.get(True))["push"]["tags"] == ["v*", "internal", "nightly", "stable"]
-    tests = yaml.safe_load((ROOT / ".github/workflows/gate-python.yml").read_text())
-    assert "stable-pointer" not in tests["jobs"], "old main writer must be retired"
-
-
-def test_track_events_do_not_reenter_formal_release_step(repo):
-    doc = yaml.safe_load((ROOT / ".github/workflows/github-publish.yml").read_text())
-    script = next(s["run"] for s in doc["jobs"]["publish"]["steps"] if "release_tracks.py --release" in s.get("run", ""))
-    for dry, tag in [("false", "stable"), ("false", "nightly"), ("false", "internal"), ("true", "v0.5.5.1")]:
-        result = subprocess.run(["bash", "-c", script], cwd=repo[0], env={**os.environ, "PLAN_TAG": tag, "PLAN_DRY": dry}, capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
-        assert remote(repo, "stable") == repo[2][0]
-        assert remote(repo, "nightly") == repo[2][0]

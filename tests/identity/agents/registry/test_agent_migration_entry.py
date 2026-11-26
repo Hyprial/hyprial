@@ -408,7 +408,7 @@ def test_preflight_rejects_unknown_subject_kind_with_allowed_values(
 def _review_snapshot(name: str) -> SupportMatrix:
     path = (
         Path(__file__).resolve().parents[4]
-        / 'docs/notes/evidence'
+        / 'tests/fixtures/agent_home_evidence'
         / name
         / 'support-matrix.json'
     )

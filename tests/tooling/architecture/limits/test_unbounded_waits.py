@@ -209,15 +209,16 @@ def shutdown(thread):
         self.assertTrue(report["parseErrors"])
 
     def test_ci_runs_the_gate_before_dependency_install(self) -> None:
-        workflow = (SCRIPT.parents[2] / ".github/workflows/gate-python.yml").read_text(
+        workflow = (SCRIPT.parents[2] / ".github/workflows/gate.yml").read_text(
             encoding="utf-8"
         )
-        command = (
-            "uv run --no-project --python 3.12 python "
-            "scripts/ci/check_unbounded_waits.py"
+        block = workflow.split("- name: Structural and boundary gates", 1)[1].split("- name:", 1)[0]
+        self.assertIn("check_unbounded_waits", block.split("do", 1)[0])
+        self.assertIn('python "scripts/ci/${gate}.py"', block)
+        self.assertLess(
+            workflow.index("Structural and boundary gates"),
+            workflow.index("Install the locked environment"),
         )
-        self.assertIn(command, workflow)
-        self.assertLess(workflow.index(command), workflow.index("Install Python and locked dependencies"))
 
 
 if __name__ == "__main__":

@@ -163,7 +163,7 @@ RETIRED_TRACK_TAGS: dict[str, str] = {
 VERSION_TAG_RE = re.compile(r"^v\d[0-9A-Za-z.+-]*$")
 SHA1_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
 
-BOT_COMMIT_IDENT = ("hyprial-ci", "ci@hyprial.com")
+BOT_COMMIT_IDENT = ("hyprial-ci", "ci@example.invalid")
 
 # --- bounded retry for transient network failures -----------------------------
 

@@ -4,7 +4,7 @@
   "generatedAt": "2026-09-30",
   "sources": [
     "docs/evidence/handoff-transfer-to-redacted-name-2026-09-26.md §5",
-    "docs/design/design-agent-standard-form.md §4 (Allen 2026-09-26: pre-release harness x OS x landing matrix; unpack warns off-matrix, refuses only when the sandbox smoke fails)",
+    "docs/design/design-agent-standard-form.md §4 (owner 2026-09-26: pre-release harness x OS x landing matrix; unpack warns off-matrix, refuses only when the sandbox smoke fails)",
     "src/hyprial/agents/migration-support-matrix.json (AT04-era agent-home migration matrix, adjacent but not this one)"
   ],
   "statusValues": ["PASS", "UNSUPPORTED", "NOT_RUN"],
@@ -55,7 +55,7 @@
       "operatingSystem": "Darwin 25.5.0 arm64",
       "landingMethod": "container",
       "status": "UNSUPPORTED",
-      "evidence": "AT08 bounded observation (2026-09-28, PR #832/#835): the container path has no measured cross-machine acceptance and the C mapping is not wired into landing; the outer layer does not add a system sandbox (Allen 2026-09-26)."
+      "evidence": "AT08 bounded observation (2026-09-28, PR #832/#835): the container path has no measured cross-machine acceptance and the C mapping is not wired into landing; the outer layer does not add a system sandbox (owner 2026-09-26)."
     },
     {
       "harness": "docker",
