@@ -512,7 +512,7 @@ class _DesiredStateSessionsMixin:
                 self.save(updated)  # the root vanished: rewrite the document
             else:
                 self._publish_incremental(updated)
-            return updated
+            return self.published_state()
 
     def complete_session_agent_effect(self, effect_id: str) -> bool:
         """Retire an effect only after Agent reports its correlated result."""

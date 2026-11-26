@@ -42,6 +42,7 @@ from typing import Any
 
 from hyprial.daemon.impl.state_db  import StateDatabase
 from .settlements import HARNESS_SETTLEMENT_SCHEMA
+from .bindings import schema as binding_schema
 from hyprial.kernel import DECLARED_HARNESSES
 from hyprial.daemon.impl.adapters.rollback import backup_document
 from hyprial.daemon.impl.adapters.storage import ADAPTER_SCHEMA, read_adapters, insert_adapters, migrate_adapters
@@ -54,8 +55,8 @@ from .services import (
 
 SHADOW_SCHEMA_VERSION = 1
 _MEMBER_PRIMARY_KEY = {"harness", "name", "member"}
-_HARNESS_COLUMN_ORDER = "harness name member headless args_json ownership nickname cwd endpoint session_ref command_json turn_timeout_seconds idle_timeout_seconds containerized pinned_owner container_image model_vendor model status".split()
-_HARNESS_COLUMNS = set(_HARNESS_COLUMN_ORDER)
+_HARNESS_COLUMN_ORDER = "harness name member headless args_json ownership nickname cwd endpoint session_ref command_json turn_timeout_seconds idle_timeout_seconds containerized pinned_owner container_image model_vendor model status model_binding_json".split()
+_HARNESS_COLUMNS = set(_HARNESS_COLUMN_ORDER) - {"model_binding_json"}
 
 _HARNESS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS harnesses (
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS harnesses (
     nickname TEXT, cwd TEXT, endpoint TEXT, session_ref TEXT, command_json TEXT NOT NULL,
     turn_timeout_seconds REAL, idle_timeout_seconds REAL, containerized INTEGER NOT NULL,
     pinned_owner TEXT, container_image TEXT, model_vendor TEXT, model TEXT,
-    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'failed')), PRIMARY KEY (harness, name, member)
+    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'failed')), model_binding_json TEXT, PRIMARY KEY (harness, name, member)
 );
 """
 
@@ -139,7 +140,7 @@ CREATE TABLE IF NOT EXISTS zenoh_endpoints (
     endpoint TEXT NOT NULL,
     PRIMARY KEY (direction, ordinal)
 );
-""" + _SERVICE_SCHEMA + ADAPTER_SCHEMA
+""" + _SERVICE_SCHEMA + ADAPTER_SCHEMA + binding_schema.SCHEMA
 
 def _journal_proved_running(db: sqlite3.Connection) -> set[tuple[str, str]]:
     """(harness, member) pairs the durable journal proves were up once.
@@ -224,7 +225,10 @@ class DesiredStateSqliteShadow:
         """
 
         with self._state_db.transaction(schema=_SCHEMA) as db:
+            binding_schema.guard_replace(db, document)
             columns = {row[1] for row in db.execute("PRAGMA table_info(harnesses)")}
+            if "model_binding_json" not in columns:
+                db.execute("ALTER TABLE harnesses ADD COLUMN model_binding_json TEXT")
             if "member" not in columns:
                 db.execute("ALTER TABLE harnesses ADD COLUMN member TEXT NOT NULL DEFAULT ''")
                 db.execute("UPDATE harnesses SET member=name WHERE member='' ")
@@ -237,6 +241,7 @@ class DesiredStateSqliteShadow:
             backup_document(db, migration_backup)
             self._delete_all(db)
             self._insert_all(db, document)
+            binding_schema.replace_projection(db, document)
 
     def migrate_adapters(self) -> None:
         migrate_adapters(self, _SCHEMA)
@@ -391,6 +396,7 @@ class DesiredStateSqliteShadow:
             return None
         with self._state_db.read() as db:
             db.row_factory = sqlite3.Row
+            db.execute("BEGIN")
             # The file may predate this schema entirely (the lifecycle
             # journal bootstraps lifecycle_* tables first); no desired-state
             # tables means no document yet.
@@ -489,6 +495,8 @@ class DesiredStateSqliteShadow:
                 zenoh[row["direction"]].append(row["endpoint"])
             document["zenoh"] = zenoh
             read_service_state(db, document)
+            if int(root["schema_version"]) == 4:
+                document.update(binding_schema.read(db))
             return document
     def migrate_harness_status(self) -> None:
         """U0b column migration + one-shot ghost-row resolution.
@@ -644,6 +652,7 @@ class DesiredStateSqliteShadow:
         command = json.loads(row["command_json"])
         return {
             "provider": row["harness"],
+            **({"modelBinding": json.loads(row["model_binding_json"])} if "model_binding_json" in row.keys() and row["model_binding_json"] is not None else {}),
             **({"executionRuntime": json.loads(row["execution_runtime_json"])}
                if "execution_runtime_json" in row.keys() and row["execution_runtime_json"] is not None else {}),
             "name": row["name"],
@@ -839,8 +848,8 @@ class DesiredStateSqliteShadow:
             "harness, name, member, headless, args_json, ownership, nickname, cwd, "
             "endpoint, session_ref, command_json, turn_timeout_seconds, "
             "idle_timeout_seconds, containerized, pinned_owner, "
-            "container_image, model_vendor, model, status) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "container_image, model_vendor, model, status, model_binding_json) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     spec["provider"],
@@ -862,6 +871,7 @@ class DesiredStateSqliteShadow:
                     spec.get("modelProvider"),
                     spec.get("model"),
                     spec.get("status", "running"),
+                    _json_text(spec["modelBinding"]) if spec.get("modelBinding") is not None else None,
                 )
                 for spec in _items(document, "providers")
             ],
