@@ -193,8 +193,11 @@ _IPC_STATS_METHODS = frozenset(
         "session.unregister",
         "service.connect",
         "service.disconnect",
+        "service.grant",
+        "service.grants",
         "service.guide",
         "service.list",
+        "service.revoke",
         "shutdown",
         "targets",
         "top.snapshot",
@@ -365,8 +368,11 @@ class _IpcDispatchMixin:
         if method in {
             "service.connect",
             "service.disconnect",
+            "service.grant",
+            "service.grants",
             "service.guide",
             "service.list",
+            "service.revoke",
         }:
             return METHOD_REGISTRY.invoke(
                 self, method, params, trusted_message_origin=_trusted_message_origin
