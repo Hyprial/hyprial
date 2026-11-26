@@ -619,12 +619,9 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             )
         except ValueError as error:
             duplicate_error = str(error)
+            if not duplicate_error.startswith("duplicate-result:"):
+                raise
             final_status = "unreported-files"
-            detail = (
-                duplicate_error
-                if duplicate_error.startswith("duplicate-result:")
-                else f"duplicate-result: {duplicate_error}"
-            )
             runs.append(
                 {
                     "run": attempt,
@@ -633,7 +630,7 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                     "returncode": returncode,
                     "junit": str(junit),
                     "duration": round(time.monotonic() - started, 3),
-                    "details": [detail],
+                    "details": [duplicate_error],
                 }
             )
             break
