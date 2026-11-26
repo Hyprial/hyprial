@@ -4510,7 +4510,7 @@
           "multiple": false,
           "hidden": false,
           "type": "int",
-          "help": null,
+          "help": "Saved connection revision; required only with --connection.",
           "nargs": 1,
           "metavar": null,
           "default": null,
