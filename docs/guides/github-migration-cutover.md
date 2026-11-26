@@ -46,38 +46,51 @@ git push github <分支>
 改动若落在 `docs/notes/` 或 `docs/evidence/`，改投 `hyprial-ops`；本仓库的 `docs/notes/`
 从空开始，只收不含真实主机名与人员的证据（D11）。
 
-## 归档时内部仍开着的 PR
+## 已迁移的 PR 与 issue（2026-11-25）
 
-共 26 个，按编号与分支列出，需要的由作者搬过来重开：
+归档时内部开着 26 个 PR、58 个 issue，已按下表迁到 GitHub。迁移方式：
 
-| 内部 PR | 分支 |
-| ---: | --- |
-| 2703 | `docs/org-trace-demand-measurement` |
-| 2722 | `docs/owner-relay-evidence-rules-2026-11-12` |
-| 2748 | `docs/kp-058-heartbeat-starvation` |
-| 2818 | `docs/ci-stability-ledger-reconcile-20261115` |
-| 2849 | `docs/github-development-migration-plan` |
-| 2907 | `wip/shell-signing-reference` |
-| 2988 | `wip/gui-task-page-v13-20261119` |
-| 3003 | `docs/windows-native-pi-ci-gap` |
-| 3118 | `fix/orgfs-status-incremental-20261123` |
-| 3120 | `wip/services-grant-20261123` |
-| 3129 | `design/tembox-logo` |
-| 3131 | `refs/pull/3131/head` |
-| 3132 | `fix/daemon-disallowed-tools-b-min-20261124` |
-| 3134 | `refs/pull/3134/head` |
-| 3138 | `docs/cell-daemon-request-review-20261124` |
-| 3139 | `fix/windows-followup-pi-and-dev-build` |
-| 3142 | `docs/orgfs-unified-reader-20261124` |
-| 3144 | `docs/ci-dev-red-findings-20261124` |
-| 3145 | `fix/orgfs-boot-meta-flatten-20261124` |
-| 3146 | `refactor/public-tree-scrub-1` |
-| 3148 | `fix/orgfs-facade-client-id-20261124` |
-| 3150 | `intg/orgfs-minimal` |
-| 3152 | `feat/daemon-provider-login-autogrant` |
-| 3153 | `feat/pi-model-connections` |
-| 3154 | `feat/dr-p02-agent-queries` |
-| 3155 | `fix/lark-closed-completion` |
+- **PR**：把内部 PR 相对其合并基的改动压成一个提交，放在本仓库 `dev` 之上，分支名不变。
+  原提交、作者与评审讨论留在归档的内部仓库。迁移后没有运行 CI，也没有人评审过这些
+  提交；内部标为 WIP 的在这里是 Draft。
+- 改动落在私有条目（`docs/notes/`、`docs/evidence/` 等）下的部分进了 `hyprial-ops` 的 PR。
+- 4 个 PR 在内部已与 `dev` 冲突：能应用的改动已应用，未应用的文件列在各自 PR 的正文里，
+  由作者对照内部分支补上。
+- **issue**：标题、正文与评论合并为一条新 issue，不带作者与评论者。
+- 正文与改动内容里的内部标识（真实邮箱、主机名、tailnet 地址、个人目录等）已替换为
+  `[redacted]`；带反引号的 `#编号` 是内部编号。
+
+| 内部 PR | 分支 | 迁到 | 备注 |
+| ---: | --- | --- | --- |
+| 2703 | `docs/org-trace-demand-measurement` | `hyprial-ops` 的 PR 4（私有部分） |  |
+| 2722 | `docs/owner-relay-evidence-rules-2026-11-12` | #73 |  |
+| 2748 | `docs/kp-058-heartbeat-starvation` | **未迁移** | 唯一的改动与 `dev` 冲突（内部已是不可合并状态），需作者重做 |
+| 2818 | `docs/ci-stability-ledger-reconcile-20261115` | #77；`hyprial-ops` 的 PR 5（私有部分） | 1 个文件未应用 |
+| 2849 | `docs/github-development-migration-plan` | 已随同步进入 `dev`，无需 PR |  |
+| 2907 | `wip/shell-signing-reference` | #76 | 1 个文件未应用；`.forgejo/` 下的改动不迁移 |
+| 2988 | `wip/gui-task-page-v13-20261119` | #72 |  |
+| 3003 | `docs/windows-native-pi-ci-gap` | `hyprial-ops` 的 PR 3（私有部分） |  |
+| 3118 | `fix/orgfs-status-incremental-20261123` | #67 |  |
+| 3120 | `wip/services-grant-20261123` | #75；`hyprial-ops` 的 PR 6（私有部分） | 1 个文件未应用 |
+| 3129 | `design/tembox-logo` | #66 |  |
+| 3131 | `moved/internal-pr-3131` | `hyprial-ops` 的 PR 2（私有部分） |  |
+| 3132 | `fix/daemon-disallowed-tools-b-min-20261124` | #65 |  |
+| 3134 | `moved/internal-pr-3134` | #71；`hyprial-ops` 的 PR 7（私有部分） |  |
+| 3138 | `docs/cell-daemon-request-review-20261124` | #70 |  |
+| 3139 | `fix/windows-followup-pi-and-dev-build` | #69 |  |
+| 3142 | `docs/orgfs-unified-reader-20261124` | #64 |  |
+| 3144 | `docs/ci-dev-red-findings-20261124` | `hyprial-ops` 的 PR 1（私有部分） |  |
+| 3145 | `fix/orgfs-boot-meta-flatten-20261124` | #63 |  |
+| 3146 | `refactor/public-tree-scrub-1` | 已随同步进入 `dev`，无需 PR |  |
+| 3148 | `fix/orgfs-facade-client-id-20261124` | #62 |  |
+| 3150 | `intg/orgfs-minimal` | #74 | 3 个文件未应用 |
+| 3152 | `feat/daemon-provider-login-autogrant` | #68 |  |
+| 3153 | `feat/pi-model-connections` | #61 |  |
+| 3154 | `feat/dr-p02-agent-queries` | #60 |  |
+| 3155 | `fix/lark-closed-completion` | #59 |  |
+
+内部 open issue 共 58 个，按内部编号从小到大依次成为本仓库的 #1–#58；
+每条 issue 的首行写着它的内部编号。
 
 ## 现在的状态（2026-11-25）
 
