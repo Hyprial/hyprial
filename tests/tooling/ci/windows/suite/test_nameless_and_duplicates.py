@@ -47,7 +47,7 @@ from scripts.ci.windows import run_waves as run_waves_module
 from scripts.ci.windows.run_waves import HARD_STATES, run_waves
 from scripts.ci.windows.summarize import _collect_suite_cases, validate_waves
 from scripts.ci.windows.wave_state import classify_run, read_junit
-from tests.tooling.ci.windows.test_run_waves import write_events
+from tests.tooling.ci.windows.suite.test_run_waves import write_events
 
 NAMED_PASS = '<testcase classname="tests.a" name="test_ok" time="0.010" />'
 NAMELESS = '<testcase time="0.001" />'

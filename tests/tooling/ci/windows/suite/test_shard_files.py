@@ -447,13 +447,13 @@ def test_has_test_definitions_keeps_a_subscript_base(tmp_path: Path) -> None:
 
 
 def test_has_test_definitions_drops_the_real_file_whose_only_class_has_no_base() -> None:
-    repo_root = Path(__file__).parents[4]
+    repo_root = Path(__file__).parents[5]
 
     assert has_test_definitions(repo_root / DROPPED_REAL_FILE) is False
 
 
 def test_dispatch_targets_file_is_empty_in_mergeable_tree() -> None:
-    repo_root = Path(__file__).parents[4]
+    repo_root = Path(__file__).parents[5]
     targets_file = repo_root / "scripts/ci/windows/dispatch-targets.txt"
     assert targets_file.is_file()
     entries = [

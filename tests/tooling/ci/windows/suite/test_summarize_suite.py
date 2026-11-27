@@ -20,7 +20,7 @@ import pytest
 
 from scripts.ci.windows.summarize import main as summarize_main
 from scripts.ci.windows.summarize import summarize_suite
-from tests.tooling.ci.windows.test_run_waves import write_events, write_junit
+from tests.tooling.ci.windows.suite.test_run_waves import write_events, write_junit
 
 
 def _write_suite_leg(

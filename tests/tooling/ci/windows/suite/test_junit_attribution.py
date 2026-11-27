@@ -48,7 +48,7 @@ import pytest
 from scripts.ci.windows import run_waves as run_waves_module
 from scripts.ci.windows.run_waves import RunOutcome, classify_run, read_junit, run_waves
 from scripts.ci.windows.summarize import _collect_suite_cases, summarize_suite
-from tests.tooling.ci.windows.test_run_waves import write_events
+from tests.tooling.ci.windows.suite.test_run_waves import write_events
 
 SKIPPED_MODULE = "tests/pkg/test_optional.py"
 REAL_MODULE = "tests/pkg/test_real.py"
