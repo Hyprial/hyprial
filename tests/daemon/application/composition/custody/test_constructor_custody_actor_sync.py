@@ -526,7 +526,7 @@ def test_recipient_wake_startup_failure_runs_existing_rollback(fail_at: str) -> 
         setattr(application, name, None)
     for name in (
         "_arm_shutdown_stall_dump_if_owned", "_log_trace", "_join_restore_thread",
-        "_close_ipc_clients", "_flush_agent_activity", "_close_home_lease",
+        "_close_ipc_clients", "_flush_agent_activity", "_close_home_lease", "_stop_grant_recheck",
         "_close_harnesses_before_agent_domains",
     ):
         setattr(application, name, lambda *_args, **_kwargs: None)

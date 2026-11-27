@@ -240,6 +240,7 @@ class Scenario:
         for name in (
             "_arm_shutdown_stall_dump_if_owned", "_log_trace", "_join_restore_thread",
             "_close_ipc_clients", "_flush_agent_activity", "_close_home_lease",
+            "_stop_grant_recheck",
         ):
             setattr(self.app, name, lambda *_args, **_kwargs: None)
         harness_close, _ = _method(self.source, "_close_harnesses_before_agent_domains")
