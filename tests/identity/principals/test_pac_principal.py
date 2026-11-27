@@ -22,6 +22,7 @@ from hyprial.kernel import canonical_user_uri, parse_user_uri
         ("user:allen", "user", "allen", None, None),
         ("agent:allen:hq.example-tailnet.ts.net:kanban", "agent", "allen", "hq.example-tailnet.ts.net", "kanban"),
     ],
+    ids=["user", "agent-with-machine-and-actor"],
 )
 def test_canonical_principals_parse(value, kind, owner, machine, actor):
     assert parse_principal(value) == Principal(
