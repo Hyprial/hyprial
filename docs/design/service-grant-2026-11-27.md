@@ -384,6 +384,12 @@ org cell parameters or roster fields.
   and sidecar must move to protocol v7 together. An org upgrades in one window.
 - Clocks: `expiresAtMs` is judged by each device's own clock, so two devices
   with skewed clocks disagree about expiry for the size of the skew.
+- The 240-document cap bounds the number of documents, not their size. A
+  sealed key can be up to 16384 bytes, so roughly two dozen grants that each
+  carry a near-maximum key exceed the 512 KiB per-grantor bound. Every reader,
+  the grantor's own exposing side included, then treats that grantor as
+  unknown, and the exposing side fails closed for its grants in that org.
+  Typical API keys are far smaller than this.
 
 ## Not verified on two real machines
 
