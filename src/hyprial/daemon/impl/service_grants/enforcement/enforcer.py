@@ -94,6 +94,10 @@
 #   too: its device rows whose owners are its members are what its grants may
 #   admit out of the parent's roster. That directory read failing is the
 #   read DEVICES, reported once like the others, and tightens that org.
+#   key_unavailable follows the same rule: remembered by (org, grantId,
+#   reason) as the last derivation that reached its pushes saw it, logged
+#   only when it is not remembered, so it is said again after it went away
+#   or when its reason changed.
 """Pushing each exposure's derived admission set to the sidecar."""
 
 from __future__ import annotations
@@ -237,6 +241,7 @@ class ServiceAdmissionEnforcer:
         self._retired: dict[int, int] = {}
         self._changes = 0
         self._unreadable: set[tuple[str, str]] = set()
+        self._unavailable: set[tuple[str, str, str]] = set()
 
     def invalidate(self) -> None:
         """Mark the sets stale after a change that the caller knows about.
@@ -530,18 +535,23 @@ class ServiceAdmissionEnforcer:
     def _push(self, projection: Mapping[int, Any], snapshot: _Snapshot) -> None:
         """Push each port whose set changed, unless its unexpose has begun since the list."""
 
+        with self._lock:
+            reported = set(self._unavailable)
+        seen: set[tuple[str, str, str]] = set()
         for port in snapshot.ports:
             result = projection.get(port)
             if result is None:
                 self._push_one(port, snapshot, NOBODY)
                 continue
-            self._report(port, result.unresolved)
+            self._report(port, result.unresolved, reported, seen)
             if result.admission.admission == "keys" and len(result.admission.keys) > MAX_KEYS:
                 self._log(
                     "warn", LIMIT_EVENT, port=port, count=len(result.admission.keys), limit=MAX_KEYS
                 )
                 continue
             self._push_one(port, snapshot, result.admission)
+        with self._lock:
+            self._unavailable = seen
 
     def _push_one(self, port: int, snapshot: _Snapshot, admission: AdmissionSet) -> bool:
         """Push one port's set unless it is unchanged or the port is being unexposed."""
@@ -568,8 +578,22 @@ class ServiceAdmissionEnforcer:
         with self._lock:
             return self._pushed.get(port) == admission
 
-    def _report(self, port: int, unresolved: Sequence[UnresolvedGrant]) -> None:
+    def _report(
+        self,
+        port: int,
+        unresolved: Sequence[UnresolvedGrant],
+        reported: set[tuple[str, str, str]],
+        seen: set[tuple[str, str, str]],
+    ) -> None:
+        """Log each unresolved grant neither the last derivation nor this one has reported."""
+
         for item in unresolved:
+            key = (item.org, item.grant_id, item.reason)
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in reported:
+                continue
             self._log(
                 "warn",
                 KEY_UNAVAILABLE,
