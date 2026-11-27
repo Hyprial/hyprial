@@ -4,7 +4,7 @@ Decision (service grant S5 fix, 2026-11-27, critic 3): a grant scan never
 reads without bound. Over a limit or out of time is "unknown", never "no
 grant": the startup answer is "do not start" unless another grant already
 answers yes, and the periodic path keeps its previous result. Each emits one
-fixed diagnostic event, ``service.grant.scan-limited``.
+fixed diagnostic event, ``service.grant.scan_limited``.
 
 Decision (coordinator ruling, 2026-11-27, revising the first fix): the
 document and byte limits apply to each grantor's directory on its own (256
@@ -36,7 +36,7 @@ from hyprial.identity import org_space_name, read_user_provider_value
 from tests.daemon.service_grants.consumer.support import KEY_FIELD, ORG, SECRET, as_author, grantor
 from tests.daemon.service_grants.consumer_fixes.support import close, consumer_arguments, world_at
 
-SCAN_LIMITED = "service.grant.scan-limited"
+SCAN_LIMITED = "service.grant.scan_limited"
 PORTS = (8447, 8448, 8449)
 CAROL_PORTS = (9447, 9448)
 
